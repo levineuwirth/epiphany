@@ -420,8 +420,79 @@ struct ScoreLayout {
     /// Event -> innermost tuplet membership (id + ratio), if any.
     event_tuplet: BTreeMap<EventId, (TupletId, TupletRatio)>,
     /// Measure duration (whole-note units on the notation grid) governing each
-    /// region, resolved from the region's first determinable time signature.
+    /// region, resolved from the region's first determinable time signature:
+    /// the barline grid of an event whose staff instance's measures do not
+    /// resolve.
     region_measure_units: BTreeMap<RegionId, i64>,
+    /// Each event's staff instance's bars, when its measures resolve.
+    event_bars: BTreeMap<EventId, std::rc::Rc<Vec<Bar>>>,
+}
+
+/// One measure on a staff instance's barline grid, in grid units: where it
+/// starts from the region's start, how long it is, and how far into its
+/// governing signature's bar it begins (a pickup's missing beats, so its
+/// notes keep their place in the bar).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Bar {
+    start: i64,
+    len: i64,
+    shift: i64,
+}
+
+/// A staff instance's bars: its measures in order, each starting where its
+/// region-relative anchor puts it and lasting until the next, the last as
+/// long as its governing signature's bar. The governing signature is the
+/// measure's own, else the latest before it. A first measure shorter than
+/// its signature's bar is a pickup, shifted by the beats it lacks. Empty when
+/// a measure's start is not a musical offset from the region's start, or no
+/// measure has a determinable signature to give the last its length.
+fn instance_bars(score: &Score, si: &crate::graph::StaffInstance) -> Vec<Bar> {
+    let units_of = |tsid: &crate::ids::TimeSignatureId| -> Option<i64> {
+        score
+            .time_signatures
+            .iter()
+            .find(|ts| &ts.id == tsid)
+            .and_then(|ts| to_grid_units(ts.measure_duration().rational()))
+    };
+    let mut starts: Vec<(i64, Option<i64>)> = Vec::with_capacity(si.measures.len());
+    let mut governing = None;
+    for measure in &si.measures {
+        let crate::TimeAnchor::Region {
+            edge: crate::RegionEdge::Start,
+            offset: crate::AnchorOffset::Musical(offset),
+            ..
+        } = &measure.start
+        else {
+            return Vec::new();
+        };
+        let Some(start) = to_grid_units(offset.rational()) else {
+            return Vec::new();
+        };
+        if let Some(units) = measure.time_signature.as_ref().and_then(units_of) {
+            governing = Some(units);
+        }
+        starts.push((start, governing));
+    }
+    starts.sort_by_key(|(start, _)| *start);
+    let mut bars = Vec::with_capacity(starts.len());
+    for (i, &(start, governing)) in starts.iter().enumerate() {
+        let len = match starts.get(i + 1) {
+            Some(&(next, _)) => next - start,
+            None => match governing {
+                Some(units) => units,
+                None => return Vec::new(),
+            },
+        };
+        if len <= 0 {
+            return Vec::new();
+        }
+        let shift = match governing {
+            Some(units) if i == 0 && units > len => units - len,
+            _ => 0,
+        };
+        bars.push(Bar { start, len, shift });
+    }
+    bars
 }
 
 impl ScoreLayout {
@@ -432,6 +503,7 @@ impl ScoreLayout {
         let mut voice_runs: BTreeMap<(RegionId, crate::ids::VoiceId), Vec<EventId>> =
             BTreeMap::new();
         let mut region_measure_units = BTreeMap::new();
+        let mut event_bars = BTreeMap::new();
 
         for region in &score.canvas.regions {
             let is_metric = matches!(region.time_model, RegionTimeModel::Metric(_));
@@ -440,10 +512,14 @@ impl ScoreLayout {
             }
             region_measure_units.insert(region.id, resolve_measure_units(score, region));
             for si in region.staff_instances() {
+                let bars = std::rc::Rc::new(instance_bars(score, si));
                 for v in &si.voices {
                     let run = voice_runs.entry((region.id, v.id)).or_default();
                     for &eid in &v.events {
                         event_region.insert(eid, region.id);
+                        if !bars.is_empty() {
+                            event_bars.insert(eid, std::rc::Rc::clone(&bars));
+                        }
                         run.push(eid);
                         if let Some(ev) = score.events.get(eid) {
                             if let EventPosition::Musical(p) = ev.position() {
@@ -493,6 +569,7 @@ impl ScoreLayout {
             voice_runs,
             event_tuplet,
             region_measure_units,
+            event_bars,
         }
     }
 
@@ -911,9 +988,9 @@ fn best_authored_spelling(
 /// Subdivisions of a whole note on the notation grid: `2^12`, so a sixty-fourth
 /// is `64` units and a (single-)dotted sixty-fourth is `96`.
 const GRID_DEN: i64 = 1 << 12;
-/// Phase-2 default decomposition uses single dots only (Chapter 3 / §H "simple
-/// augmentation dots; double-dotted and beyond may defer").
-const MAX_DOTS: u8 = 1;
+/// The default decomposition writes at most two augmentation dots (version 2;
+/// version 1 wrote one, and a double-dotted value as tied components).
+const MAX_DOTS: u8 = 2;
 
 /// Grid units of a base note value (undotted). This is the integer-grid mirror of
 /// [`NoteValue::whole_note_fraction`] (the rational source of truth); the two are
@@ -1058,26 +1135,52 @@ fn decompose_segment(start: i64, end: i64, out: &mut Vec<(NoteValue, u8)>) {
 }
 
 /// Decomposes a determinate musical duration starting at `position` (region-
-/// relative) under a measure of `measure_units`, splitting at barlines with
-/// ties. Returns the notated component lengths in order, or `None` if the
-/// duration is not representable on the grid.
+/// relative), splitting at barlines with ties. The barlines are `bars`' (the
+/// staff instance's measures, each with its own length, a pickup shifted to
+/// its place in the bar); before the first, beyond the last, or with none,
+/// they fall every `measure_units` from the region's start or the last bar's
+/// end. Within a bar, a span one notatable value long (at most `MAX_DOTS`
+/// dots) is written as that value; any other is split where it crosses its
+/// strongest metric boundary ([`decompose_segment`]). Returns the notated
+/// component lengths in order, or `None` if the duration is not representable
+/// on the grid.
 fn decompose_metric(
     position_units: i64,
     duration_units: i64,
+    bars: &[Bar],
     measure_units: i64,
 ) -> Option<Vec<(NoteValue, u8)>> {
     if duration_units <= 0 {
         return Some(Vec::new());
     }
     // A degenerate (zero or negative) measure length has no barline grid to align
-    // against; report it ungriddable rather than dividing by zero in the offset
-    // reduction below.
+    // against; report it ungriddable rather than dividing by zero below.
     if measure_units <= 0 {
         return None;
     }
+    // The bar holding `pos`: its start, length and pickup shift.
+    let bar_at = |pos: i64| -> Bar {
+        let i = bars.partition_point(|bar| bar.start <= pos);
+        match i.checked_sub(1).map(|i| bars[i]) {
+            Some(bar) if pos < bar.start + bar.len => bar,
+            Some(bar) if i == bars.len() => {
+                let end = bar.start + bar.len;
+                let k = (pos - end).div_euclid(bar.len);
+                Bar {
+                    start: end + k * bar.len,
+                    len: bar.len,
+                    shift: 0,
+                }
+            }
+            _ => Bar {
+                start: pos - pos.rem_euclid(measure_units),
+                len: measure_units,
+                shift: 0,
+            },
+        }
+    };
     let mut out = Vec::new();
-    // Position within the current measure; barlines fall every `measure_units`.
-    let mut offset = position_units.rem_euclid(measure_units);
+    let mut pos = position_units;
     let mut remaining = duration_units;
     let mut guard = 0;
     while remaining > 0 {
@@ -1085,14 +1188,19 @@ fn decompose_metric(
         if guard > 4096 {
             return None; // runaway guard; should be unreachable for griddable input
         }
-        let room = measure_units - offset; // until the next barline
-        let seg = remaining.min(room);
-        decompose_segment(offset, offset + seg, &mut out);
-        remaining -= seg;
-        offset += seg;
-        if offset >= measure_units {
-            offset = 0;
+        let bar = bar_at(pos);
+        let offset = pos - bar.start;
+        let seg = remaining.min(bar.len - offset);
+        if seg <= 0 {
+            return None;
         }
+        let start = bar.shift + offset;
+        match note_for_units(seg) {
+            Some(whole) => out.push(whole),
+            None => decompose_segment(start, start + seg, &mut out),
+        }
+        remaining -= seg;
+        pos += seg;
     }
     // The components must reconstruct the input exactly. They will not when the
     // duration is a grid multiple but not a note-value multiple — i.e. finer than
@@ -1239,8 +1347,13 @@ fn infer_decompositions(
                         Some(p) => to_grid_units(p.rational()),
                         None => Some(0),
                     };
+                    let bars = layout
+                        .event_bars
+                        .get(&eid)
+                        .map_or(&[][..], |b| b.as_slice());
                     position_units.and_then(|pos| {
-                        decompose_metric(pos, duration_units, measure_units).map(|l| (l, None))
+                        decompose_metric(pos, duration_units, bars, measure_units)
+                            .map(|l| (l, None))
                     })
                 }
                 None => None,

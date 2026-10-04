@@ -18,14 +18,14 @@ use epiphany_core::{
     Slur, SlurId, SlurKind, Staff, StaffExtent, StaffGroup, StaffGroupId, StaffGroupKind, StaffId,
     StaffInstance, StaffInstanceId, StaffLineConfiguration, StaffPosition, StemConfiguration, Tie,
     TieClass, TieId, TimeAnchor, TimeExtent, TimeSignature, TimeSignatureDisplay, TimeSignatureId,
-    Timestamp, UnpitchedEvent, UnpitchedMember, UnpitchedMemberId, Voice, VoiceId, VoiceOrigin,
-    WallClockTime,
+    Timestamp, Tuplet, TupletRatio, UnpitchedEvent, UnpitchedMember, UnpitchedMemberId, Voice,
+    VoiceId, VoiceOrigin, WallClockTime,
 };
 use epiphany_ops::{
     AuthorId, CausalContext, CreateCrossCuttingOp, CreateInstrumentOp, CreateMeasureOp,
-    CreateRegionOp, CreateStaffGroupOp, CreateStaffInstanceOp, CreateStaffOp, CreateVoiceOp,
-    CrossCuttingValue, HybridLogicalClock, InsertEventOp, OperationEnvelope, OperationKind,
-    OperationPayload, OperationStamp, SetMetadataOp, SetTimeSignatureOp,
+    CreateRegionOp, CreateStaffGroupOp, CreateStaffInstanceOp, CreateStaffOp, CreateTupletOp,
+    CreateVoiceOp, CrossCuttingValue, HybridLogicalClock, InsertEventOp, OperationEnvelope,
+    OperationKind, OperationPayload, OperationStamp, SetMetadataOp, SetTimeSignatureOp,
 };
 
 use crate::source::{Content, FeatureClass, GroupKind, Meter, Place, SourceScore};
@@ -55,6 +55,8 @@ pub enum Subject {
     Slur(usize, usize),
     /// A beam: part and index into its beams.
     Beam(usize, usize),
+    /// A tuplet: part and index into its tuplets.
+    Tuplet(usize, usize),
     /// A staff group: index into [`SourceScore::groups`].
     Group(usize),
 }
@@ -741,6 +743,30 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
                         sub_beams: Vec::new(),
                         geometry_override: None,
                     }),
+                }),
+            );
+        }
+        // A tuplet's required total is what its members sound, which its
+        // ratio makes a whole number of its notated values.
+        for (k, tuplet) in part.tuplets.iter().enumerate() {
+            let Some(ratio) = TupletRatio::new(tuplet.actual, tuplet.normal) else {
+                continue;
+            };
+            let required_total = tuplet.events.iter().fold(RationalTime::zero(), |sum, &i| {
+                sum.add(&part.events[i].duration)
+            });
+            let tuplet_id = e.identity.mint();
+            e.emit(
+                "CreateTuplet",
+                Subject::Tuplet(p, k),
+                OperationKind::CreateTuplet(CreateTupletOp {
+                    tuplet: Tuplet {
+                        id: tuplet_id,
+                        ratio,
+                        members: tuplet.events.iter().map(|&i| ids.events[p][i]).collect(),
+                        parent: None,
+                        required_total: MusicalDuration(required_total),
+                    },
                 }),
             );
         }

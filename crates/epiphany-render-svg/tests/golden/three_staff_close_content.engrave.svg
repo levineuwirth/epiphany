@@ -1,24 +1,24 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="174.9923" height="563.5067" viewBox="0 0 17.4992 56.3507">
+<svg xmlns="http://www.w3.org/2000/svg" width="175.6434" height="563.5067" viewBox="0 0 17.5643 56.3507">
   <!-- epiphany-render-svg: glyphs are genuine Bravura SMuFL outlines inlined as paths; geometry is the resolved layout verbatim, no engraving performed here; every glyph, stroke, and curve carries a data-prov trace to its score-graph source -->
   <g transform="translate(-5.485 -5.5006) scale(1 -1)">
     <g data-layer="0">
       <line x1="8.565" y1="-12.8926" x2="8.565" y2="-12.8926" stroke="#000000" stroke-width="0" data-prov="cab69c17ed41c68ac4c9d9fd2585f7b8" data-source-kind="6" data-kind="stroke"/>
-      <line x1="7.565" y1="-12.8926" x2="20.3594" y2="-12.8926" stroke="#000000" stroke-width="0.13" data-prov="53de5472c3073e1e2fabab582e7a6a2a" data-source-kind="3" data-kind="stroke"/>
-      <line x1="7.565" y1="-11.8926" x2="20.3594" y2="-11.8926" stroke="#000000" stroke-width="0.13" data-prov="af9e9ab8cff6e189b2b70311d333c4ab" data-source-kind="3" data-kind="stroke"/>
-      <line x1="7.565" y1="-10.8926" x2="20.3594" y2="-10.8926" stroke="#000000" stroke-width="0.13" data-prov="2298edab2b482b968611b1dfd4c4184a" data-source-kind="3" data-kind="stroke"/>
-      <line x1="7.565" y1="-9.8926" x2="20.3594" y2="-9.8926" stroke="#000000" stroke-width="0.13" data-prov="4688e9bd99908438eb2cfa44aa9b69f7" data-source-kind="3" data-kind="stroke"/>
-      <line x1="7.565" y1="-8.8926" x2="20.3594" y2="-8.8926" stroke="#000000" stroke-width="0.13" data-prov="9129d5d4f57c3cc9a6f2761bc4da188d" data-source-kind="3" data-kind="stroke"/>
-      <line x1="7.565" y1="-39.8926" x2="20.3594" y2="-39.8926" stroke="#000000" stroke-width="0.13" data-prov="f6aa19fc306fddc0ee6ffe5815adea15" data-source-kind="3" data-kind="stroke"/>
-      <line x1="7.565" y1="-38.8926" x2="20.3594" y2="-38.8926" stroke="#000000" stroke-width="0.13" data-prov="cf7f37a324c02c59d88ed58b2d6eff09" data-source-kind="3" data-kind="stroke"/>
-      <line x1="7.565" y1="-37.8926" x2="20.3594" y2="-37.8926" stroke="#000000" stroke-width="0.13" data-prov="eed90e04088a49096ff2df61528076f3" data-source-kind="3" data-kind="stroke"/>
-      <line x1="7.565" y1="-36.8926" x2="20.3594" y2="-36.8926" stroke="#000000" stroke-width="0.13" data-prov="eeba57d92a18b4e508a773d735498540" data-source-kind="3" data-kind="stroke"/>
-      <line x1="7.565" y1="-35.8926" x2="20.3594" y2="-35.8926" stroke="#000000" stroke-width="0.13" data-prov="7961fdc38d6911be6ccafdd0d4b0e650" data-source-kind="3" data-kind="stroke"/>
-      <line x1="7.565" y1="-58.2192" x2="20.3594" y2="-58.2192" stroke="#000000" stroke-width="0.13" data-prov="48e35b5f0c754fb61417abb3162cd139" data-source-kind="3" data-kind="stroke"/>
-      <line x1="7.565" y1="-57.2192" x2="20.3594" y2="-57.2192" stroke="#000000" stroke-width="0.13" data-prov="d1649442bdf17a90fad13e068be1d468" data-source-kind="3" data-kind="stroke"/>
-      <line x1="7.565" y1="-56.2192" x2="20.3594" y2="-56.2192" stroke="#000000" stroke-width="0.13" data-prov="a63a879181f96b3d9282817ce4854fa8" data-source-kind="3" data-kind="stroke"/>
-      <line x1="7.565" y1="-55.2192" x2="20.3594" y2="-55.2192" stroke="#000000" stroke-width="0.13" data-prov="407ae799175a7a5107f9b17fae444ea1" data-source-kind="3" data-kind="stroke"/>
-      <line x1="7.565" y1="-54.2192" x2="20.3594" y2="-54.2192" stroke="#000000" stroke-width="0.13" data-prov="213d70c1d0c044450c85f49532775c9e" data-source-kind="3" data-kind="stroke"/>
+      <line x1="7.565" y1="-12.8926" x2="20.9843" y2="-12.8926" stroke="#000000" stroke-width="0.13" data-prov="53de5472c3073e1e2fabab582e7a6a2a" data-source-kind="3" data-kind="stroke"/>
+      <line x1="7.565" y1="-11.8926" x2="20.9843" y2="-11.8926" stroke="#000000" stroke-width="0.13" data-prov="af9e9ab8cff6e189b2b70311d333c4ab" data-source-kind="3" data-kind="stroke"/>
+      <line x1="7.565" y1="-10.8926" x2="20.9843" y2="-10.8926" stroke="#000000" stroke-width="0.13" data-prov="2298edab2b482b968611b1dfd4c4184a" data-source-kind="3" data-kind="stroke"/>
+      <line x1="7.565" y1="-9.8926" x2="20.9843" y2="-9.8926" stroke="#000000" stroke-width="0.13" data-prov="4688e9bd99908438eb2cfa44aa9b69f7" data-source-kind="3" data-kind="stroke"/>
+      <line x1="7.565" y1="-8.8926" x2="20.9843" y2="-8.8926" stroke="#000000" stroke-width="0.13" data-prov="9129d5d4f57c3cc9a6f2761bc4da188d" data-source-kind="3" data-kind="stroke"/>
+      <line x1="7.565" y1="-39.8926" x2="20.9843" y2="-39.8926" stroke="#000000" stroke-width="0.13" data-prov="f6aa19fc306fddc0ee6ffe5815adea15" data-source-kind="3" data-kind="stroke"/>
+      <line x1="7.565" y1="-38.8926" x2="20.9843" y2="-38.8926" stroke="#000000" stroke-width="0.13" data-prov="cf7f37a324c02c59d88ed58b2d6eff09" data-source-kind="3" data-kind="stroke"/>
+      <line x1="7.565" y1="-37.8926" x2="20.9843" y2="-37.8926" stroke="#000000" stroke-width="0.13" data-prov="eed90e04088a49096ff2df61528076f3" data-source-kind="3" data-kind="stroke"/>
+      <line x1="7.565" y1="-36.8926" x2="20.9843" y2="-36.8926" stroke="#000000" stroke-width="0.13" data-prov="eeba57d92a18b4e508a773d735498540" data-source-kind="3" data-kind="stroke"/>
+      <line x1="7.565" y1="-35.8926" x2="20.9843" y2="-35.8926" stroke="#000000" stroke-width="0.13" data-prov="7961fdc38d6911be6ccafdd0d4b0e650" data-source-kind="3" data-kind="stroke"/>
+      <line x1="7.565" y1="-58.2192" x2="20.9843" y2="-58.2192" stroke="#000000" stroke-width="0.13" data-prov="48e35b5f0c754fb61417abb3162cd139" data-source-kind="3" data-kind="stroke"/>
+      <line x1="7.565" y1="-57.2192" x2="20.9843" y2="-57.2192" stroke="#000000" stroke-width="0.13" data-prov="d1649442bdf17a90fad13e068be1d468" data-source-kind="3" data-kind="stroke"/>
+      <line x1="7.565" y1="-56.2192" x2="20.9843" y2="-56.2192" stroke="#000000" stroke-width="0.13" data-prov="a63a879181f96b3d9282817ce4854fa8" data-source-kind="3" data-kind="stroke"/>
+      <line x1="7.565" y1="-55.2192" x2="20.9843" y2="-55.2192" stroke="#000000" stroke-width="0.13" data-prov="407ae799175a7a5107f9b17fae444ea1" data-source-kind="3" data-kind="stroke"/>
+      <line x1="7.565" y1="-54.2192" x2="20.9843" y2="-54.2192" stroke="#000000" stroke-width="0.13" data-prov="213d70c1d0c044450c85f49532775c9e" data-source-kind="3" data-kind="stroke"/>
       <line x1="8.565" y1="-12.8926" x2="8.565" y2="-12.8926" stroke="#000000" stroke-width="0" data-prov="ce07aadf437a74ccac9fc50e9d4d21a6" data-source-kind="2" data-kind="stroke"/>
       <line x1="13.2302" y1="-13.8926" x2="13.2302" y2="-10.3926" stroke="#000000" stroke-width="0.12" data-prov="1c2dad5590859e5faf984977c99a71b5" data-source-kind="0" data-kind="stroke"/>
       <line x1="11.7496" y1="-13.8926" x2="13.5302" y2="-13.8926" stroke="#000000" stroke-width="0.13" data-prov="411616f3ac077092b76181619405cb3c" data-source-kind="1" data-kind="stroke"/>

@@ -165,14 +165,19 @@ pub fn clef_glyph(shape: ClefShape) -> Option<&'static str> {
 }
 
 /// The SMuFL clef glyph for a clef, with the octave mark its shift calls for
-/// on a G or F clef (`gClef8vb` for a tenor's treble clef). A C clef with a
-/// shift, or a shift of more than an octave, draws without the mark.
+/// on a G or F clef (`gClef8vb` for a tenor's treble clef, `gClef15ma` two
+/// octaves up). A C clef with a shift, or a shift of more than two octaves,
+/// draws without the mark.
 pub fn clef_glyph_for(clef: &Clef) -> Option<&'static str> {
     Some(match (clef.shape, clef.octave_shift) {
         (ClefShape::G, -1) => "gClef8vb",
         (ClefShape::G, 1) => "gClef8va",
         (ClefShape::F, -1) => "fClef8vb",
         (ClefShape::F, 1) => "fClef8va",
+        (ClefShape::G, -2) => "gClef15mb",
+        (ClefShape::G, 2) => "gClef15ma",
+        (ClefShape::F, -2) => "fClef15mb",
+        (ClefShape::F, 2) => "fClef15ma",
         (shape, _) => return clef_glyph(shape),
     })
 }

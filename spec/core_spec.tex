@@ -2483,26 +2483,35 @@ algorithm is, in outline:
   by versioned identifier} disposition of
   Appendix~\ref{app:determinism} Section~\ref{sec:det:open}. The
   reserved identifier \texttt{DecompositionAlgorithmId}
-  \texttt{"default"} denotes, at version~1, the integer-grid
+  \texttt{"default"} denotes, at version~2, the integer-grid
   metric splitter, whose scope bounds are part of its normative
   definition:
   \begin{itemize}
-    \item a single governing meter per region --- a mid-region
-      meter change reduces cleanly into the region's grid (the
-      Operation Catalog pins those semantics), but derived
-      notation honours only the first governing meter until a
-      wider algorithm version lands;
-    \item the region origin is assumed to fall on a barline
-      (anacrusis/pickup handling deferred);
-    \item compound-meter beat grouping uses the dyadic default;
+    \item barlines are each staff instance's measures: a measure
+      starts where its region-relative anchor puts it and lasts until
+      the next, the last as long as its governing time signature's bar
+      (the measure's own signature, else the latest before it); where a
+      staff instance's measures do not resolve so, barlines fall at the
+      region's first governing meter, as at version~1;
+    \item a first measure shorter than its signature's bar is a pickup,
+      and its events keep their place in that bar (it begins as far in
+      as the beats it lacks);
+    \item within a bar, a span that is one notated value (with at most
+      two augmentation dots, \texttt{MAX\_DOTS}~$=$~2) is written as that
+      value; any other span is split at the strongest metric boundary it
+      crosses, recursively, and a span crossing a barline is split there
+      with ties;
+    \item metric strength within a bar is dyadic from its start, and
+      compound-meter beat grouping uses the dyadic default;
     \item tuplet nesting and cross-beat tuplet members are out of
-      scope;
-    \item at most one augmentation dot
-      (\texttt{MAX\_DOTS}~$=$~1); a double-dotted value is
-      written as tied components --- correct, if not the most
-      compact.
+      scope.
   \end{itemize}
-  A wider algorithm is a \emph{version bump}, which
+  Version~1 honoured only the first governing meter of a region,
+  assumed the region origin on a barline, wrote at most one dot, and
+  split a span at any interior boundary at least as strong as its
+  start even when one value expressed it (a half note on the second
+  beat of a $\frac{4}{4}$ bar was two tied quarters). A wider algorithm
+  is a \emph{version bump}, which
   deterministically invalidates derived output under the
   derived-annotation model --- no state migration. Style-choice
   selection among multiple valid decompositions (e.g.,
@@ -6708,16 +6717,16 @@ The score graph maintains a set of structural invariants. Implementations
       raises no violation --- wherever the comparison or the
       distance cannot be decided (base-ingested data may predate
       this rule); this is deliberate abstention, not a soundness
-      gap. A pickup/anacrusis first measure has no predecessor, so
-      only the BOUNDARY clause is vacuous for it; the AGREEMENT
-      clause is not predecessor-dependent and still applies (unless
+      gap. A first measure has no predecessor, so only the BOUNDARY
+      clause is vacuous for it; the AGREEMENT clause is not
+      predecessor-dependent and still applies (unless
       \texttt{time\_signature} is \texttt{None} or agrees with the
-      governing grid). Regardless of what the pickup itself
-      declares, its successor's boundary distance is measured
-      against this same governing signature's full
-      \texttt{measure\_duration()}, and IS flagged when that
-      distance is the pickup's own shorter length rather than a
-      full bar.
+      governing grid). A first measure may be a pickup, shorter
+      than its bar: the second measure's distance from it may be
+      any positive duration up to the governing signature's
+      \texttt{measure\_duration()} (phase X3, P13-S19). Every later
+      distance is a full bar; a short measure after the first is
+      not modelled.
     \item (P13-S16.) \texttt{Staff.group} and
       \texttt{StaffGroup.members} AGREE in both directions:
       whenever a \texttt{Staff} names a \texttt{StaffGroup}, that
@@ -7123,6 +7132,18 @@ pub enum OperationKind {
     // InsertStaffInstance parent-carrying mint pattern rather than the
     // bare-value shape above -- Measure has no back-pointer to its parent.
     CreateMeasure(CreateMeasureOp),
+
+    // X3.1: mints a Tuplet into the cross-cutting registry. Like repeats,
+    // tuplets are not CrossCuttingValue kinds on the wire. Preconditioned on
+    // live members and parent and on the members' durations filling the
+    // tuplet's required total.
+    CreateTuplet(CreateTupletOp),
+
+    // X3.6: set, replace or remove the clef or key-signature change at a
+    // musical offset in a live staff instance's region (structural LWW, keyed
+    // by instance and position, like a meter change).
+    SetClef(SetClefOp),
+    SetKeySignature(SetKeySignatureOp),
 
     // Layout-semantic operations
     SetUserSystemBreak(SetUserSystemBreakOp),
@@ -8376,7 +8397,9 @@ table is normative.
   Tuplet & Member event &
   Operation \MUST{} provide tuplet compensation
   (Section~\ref{sec:semops:deleteevent}); otherwise the operation
-  conflicts at precondition check &
+  conflicts at precondition check. A member tombstoned with no
+  compensation to declare (an undo of the transaction that inserted it,
+  or a cascade) cascade-deletes the tuplet &
   --- \\
 
   Spanner & Anchor &
@@ -12216,6 +12239,11 @@ pub enum OperationKindTag {
     // Genesis tranche G3b: the final rung, name-verbatim, as the four most
     // recent prior additions are. Closes the genesis ladder.
     CreateMeasure,
+    // X3.1: name-verbatim, as the five most recent prior additions are.
+    CreateTuplet,
+    // X3.6: name-verbatim.
+    SetClef,
+    SetKeySignature,
 }
 
 pub enum BarrierScope {
@@ -17054,6 +17082,47 @@ layouts they own versus inherit:
   shape/\texttt{end\_tempo} compatibility without determining whether a
   constant segment records an \texttt{end\_tempo} at all. The enumeration is
   unchanged.
+  \\
+  \today & \sectionsc{Sounding Duration and Notational Decomposition} &
+  \textbf{X3.3 and X3.4: the default decomposition algorithm reaches
+  version~2.} Requirement~\ref{req:time:decomposition-algorithm}'s scope
+  bounds widen: barlines from each staff instance's measures, so every
+  governing meter is honoured; a pickup keeps its place in its bar; a span
+  one value expresses within a bar is that value, dotted or double-dotted.
+  Derived output is invalidated, not migrated.
+  \\
+  \today & Chapter 6 \texttt{OperationKind}, Chapter 8
+  \texttt{OperationKindTag}, \sectionsc{Re-Anchoring} &
+  \textbf{X3.1: tuplets enter the operation set.} \texttt{OperationKind} and
+  \texttt{OperationKindTag} gain \texttt{CreateTuplet}, which mints a
+  \texttt{Tuplet} (\sectionsc{Tuplets as Grouping Objects}) into the
+  cross-cutting registry: semantics in the Operation Catalog
+  \sectionsc{CreateTuplet}, wire discriminant~40 and epoch~13 in the Binary
+  Format companion, the \texttt{create-tuplet} production in the Text
+  Projection companion. The re-anchoring table's ``Tuplet / Member event'' row
+  gains its uncompensated case: a member tombstoned with no compensation to
+  declare cascade-deletes the tuplet. The reduction algorithm version moves to
+  \texttt{2} (Operation Catalog, version~0.16.0 note).
+  \\
+  \today & \sectionsc{Graph Invariants} &
+  \textbf{X3.5: a pickup's successor is consistent.} Graph invariant~20's
+  boundary clause measured the second measure's distance from a first measure
+  against a full bar, so every pickup's successor was flagged (P13-S19). A
+  first measure may now be shorter than its bar; every later distance is still
+  a full bar. \texttt{CreateMeasure} admits the same successor (Operation
+  Catalog, version~0.16.0 note).
+  \\
+  \today & Chapter 6 \texttt{OperationKind}, Chapter 8
+  \texttt{OperationKindTag} &
+  \textbf{X3.6: clef and key changes enter the operation set.}
+  \texttt{OperationKind} and \texttt{OperationKindTag} gain \texttt{SetClef}
+  and \texttt{SetKeySignature}, which set, replace or remove the change at a
+  musical offset in a live staff instance's clef or key sequence: semantics in
+  the Operation Catalog \sectionsc{SetClef and SetKeySignature}, wire
+  discriminants~41 and~42 and epoch~14 in the Binary Format companion, the
+  \texttt{set-clef} and \texttt{set-key-signature} productions in the Text
+  Projection companion. The reduction algorithm version does not move: no
+  operation reducible before changes its verdict or the state it produces.
   \\
   \bottomrule
 \end{longtable}

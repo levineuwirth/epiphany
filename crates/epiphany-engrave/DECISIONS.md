@@ -1228,3 +1228,182 @@ before the note. The first half is unchanged. Locked by
 and the break search's reservation by
 `optimal_breaks_reserves_the_room_a_continued_tie_needs` and
 `the_overflow_net_reserves_the_room_a_continued_tie_needs`.
+
+## ENGRAVER_VERSION 21 → 22: systems within the margins, staff lines to the closing barline (X3.0, 2026-10-03)
+
+The break search measured a system by its columns' ink, while the system's
+extent, which justification fills to the content width, also holds each
+staff line's half-thickness at both ends and, on a region's first system, the
+staff lines' start about a space left of the clef. A system the search fitted
+with less slack than that ran past the right margin, and justification, which
+only stretches, left it there. The search now reserves the widest staff or
+ledger line's thickness from the width, and counts the first system from its
+staff lines' start; the overflow net does the same. Separately, a region's
+last system kept its staff lines where the spacing map extrapolated them,
+which stopped them between a final barline's thin and thick lines. Each
+system's staff lines now end at the right edge of the barline that closes it.
+Locked by `a_score_takes_its_files_page_and_keeps_within_its_margins` and
+`staff_lines_end_with_the_barline_that_closes_their_system` (`epiphany-cli`).
+
+The command-line tools now cast a file onto the page its MusicXML
+`<defaults><page-layout>` gives, in staff spaces (a tenth is a tenth of a
+staff space), rather than the default A4 at an 8 mm staff: the page its
+writer drew it on, so the two read side by side. The score graph does not
+hold the page; `epiphany_cli::geometry` reads it from the source, and a file
+without one takes the default.
+
+## ENGRAVER_VERSION 22 → 23: ties clear of the ink beside their heads (X3.0, 2026-10-03)
+
+A tie ran from 0.15 right of its head to 0.15 left of the next, whatever
+stood beside them, so once a second's head stood across the stem, or another
+voice's head beside it, a tie leaving or meeting the head next to it ran
+through that head, the stem or the column's ledger lines; a tie leaving a
+dotted note on a line ran through its dot; one arriving beside a chord-mate's
+accidental ran through it. The constrained stage now gathers each staff
+column's ink (heads where they are set, ledger lines, stems, dots,
+accidentals), and a tie starts 0.15 right of every box of its first column
+that meets its height (0.2 above and below its end) and does not stand wholly
+left of its head, and ends 0.15 left of every such box of its second column,
+accidentals included. Its ends ride their own slots, so the constrained
+frame, where columns stand closer than the spacing will set them, no longer
+clamps the end after the start. The spacing pass now gives every tie anchored
+to two slots at least a staff space between its ends (`TIE_MIN_SPAN`), as a
+least distance between those slots. A split note's own tie now takes its
+side as a tie between two notes does, by its voice beside another, then its
+place in the chord, then its stem (`tie_above`); it took it from the stem
+alone, so in a two-voice staff each voice's split ties arced toward the
+other. A measure record's edges now move with their slots' own deltas, as
+the slots' glyphs do, not through the justification's affine, which set an
+opening time signature's measure up to (a − 1) times its ink's offset right
+of the ink. Locked by `a_tie_stands_clear_of_the_ink_beside_its_heads` and
+`a_split_notes_tie_takes_its_voices_side` (`epiphany-cli`).
+
+## ENGRAVER_VERSION 23 → 24: rests clear of another voice's notes (X3.0, 2026-10-03)
+
+Beside another voice a rest moved one space off its place, up for an upper
+voice and down for a lower, whatever the other voice held there, so a lower
+voice's rest under an upper voice's low chord stood on its heads. A rest now
+keeps moving a space at a time the same way until its glyph stands 0.25 clear
+of every head of another note on its staff that starts with it, the notes
+that stand in its column (MuseScore's rule, as its rests avoid the chords of
+their segment). A note held from before stands to the rest's left and does
+not move it; so a held note's tie can still pass over a rest beside it,
+which this does not address. Locked by
+`a_rest_stands_clear_of_another_voices_notes` (`epiphany-cli`).
+
+## ENGRAVER_VERSION 24 → 25: the accidental after a tied one (X3.0, 2026-10-03)
+
+A note a tie continues into shows no accidental and left its measure's state
+as the key gave it, so after an F sharp tied over the barline a later F
+natural in the bar stood bare: right by the strict rule, since the tie
+carries the sharp to the tied note alone, but read as ambiguous, and
+MuseScore prints the courtesy natural. Where the tied note's alteration is
+not what its measure gave, its letter and octave are now marked as carried,
+an alteration no note has, so the next note of that letter and octave shows
+its own accidental: a courtesy natural, or the tied one's restated, as
+Gould restates it after a tie. Locked by
+`accidentals_are_drawn_against_the_key_and_the_measure` (`epiphany-cli`).
+
+## ENGRAVER_VERSION 25 → 26: tuplets drawn (X3.2, 2026-10-03)
+
+A tuplet reached the constrained IR as a traced anchor, and its members, which
+the pre-pass decomposes to notated values through the tuplet's ratio, were
+left unbeamed (a beamable note had to be outside a tuplet). The logical IR now
+gives a tuplet its content (`TupletContent`: ratio and members), and the
+constrained stage draws, for a tuplet whose members share one staff, its
+number (SMuFL's `tuplet0`–`tuplet9`, now bundled, showing the ratio's actual
+term) centered on its span from its first member's column to its last's. It
+stands 0.5 clear of the ink of every column between (heads, stems and beams
+on that staff, and its member rests): above for an upper voice, below for a
+lower, and for a voice alone on the side most of its members' stems point,
+above when none has a stem. A bracket of 0.16, gapped for the number, with
+0.6 hooks toward the notes, is drawn unless the members are notes beamed
+together as exactly one group — MuseScore's automatic rule, which its
+exported `bracket` attributes follow. The number rides its middle
+member's slot, the bracket's ends their members' slots. Tuplet members are now
+beamable. A tuplet across staves still draws nothing. Also: `gClef15ma`,
+`gClef15mb`, `fClef15ma` and `fClef15mb` are bundled and drawn for a clef two
+octaves up or down, which drew without its mark. Locked by
+`a_tuplet_draws_its_number_and_a_bracket_unless_beamed_alone`
+(`epiphany-cli`); the rich fixture's golden gains its tuplet's number and
+bracket.
+
+## ENGRAVER_VERSION 26 → 27: the decomposition's version 2 (X3.3, X3.4, 2026-10-03)
+
+What the engraver draws for a note's rhythm comes from the decomposition
+pre-pass in `epiphany-core`, which version 2 of the default algorithm changes
+(core specification `req:time:decomposition-algorithm`; `epiphany-core`'s
+`DECISIONS.md`): bars from each staff instance's measures, so a note after a
+meter change is written against its own bar; a pickup's notes keep their place
+in the bar; and a span one value expresses within a bar is that value, up to
+two dots. Locked by `notes_take_their_values_from_every_meter`
+(`epiphany-cli`) and the pre-pass's unit tests.
+
+## ENGRAVER_VERSION 27 → 28: clef changes drawn (X3.6, 2026-10-03)
+
+A staff instance's clef sequence held every change the importer read, and the
+notes after a change were already placed by the clef in force, but only a
+system's lead showed a clef, so a change inside a system was invisible. Each
+change now stands in a `Clef` column of its own at its time, ordered before
+the barline and notes there: mid-measure it is drawn just before its note; at
+a measure's start, before that measure's barline, so when the measure opens a
+system the change ends the system before as a courtesy and the new system's
+lead shows the clef. The glyphs are SMuFL's change-size clefs (`gClefChange`,
+`fClefChange`, `cClefChange`); SMuFL has no change-size octave clef, so an
+octave clef draws its `clef8` or `clef15` numeral centred over or under the
+clef, reaching 0.1 staff space into its box as Bravura's own octave clefs do.
+A change restating the clef in force draws nothing. The column reserves the
+clef's ink and a 0.5 gap; in the source geometry the next column clears it.
+Key changes inside a system are still not drawn (the lead shows the key in
+force at each system's start). Locked by
+`clef_changes_are_drawn_where_they_take_effect` (`epiphany-cli`); the omission
+census now counts only real changes and finds a system's lead clef as its
+leftmost.
+
+## ENGRAVER_VERSION 28 → 29: a pickup's rests keep their values (X3.5, 2026-10-03)
+
+X2 drew a rest that fills its measure as a whole rest in any meter, which is
+the measure rest's convention; with pickups imported, a first measure shorter
+than its bar is a measure too, so a quarter rest filling a one-beat pickup
+drew as a whole rest. An exporter writes a pickup's rests at their values,
+and the music reads them so. `measure_spans` (layout-ir) now leaves a first
+measure shorter than its bar out of the measure-rest rule, its bar the
+measure's own signature or the region's meter in force there; the omission
+census applies the same rule, so the two cannot agree on the wrong glyph, as
+they did. A mid-score short measure is still not modelled. Locked by
+`a_rest_filling_a_pickup_keeps_its_value` (`epiphany-cli`).
+
+## ENGRAVER_VERSION 29 → 30: a tuplet's bracket rides inked columns (X3.2, 2026-10-03)
+
+A spring slot is realized only by a glyph in its column, and a hidden rest
+keeps its column but draws nothing. A tuplet whose first or last member was a
+hidden rest, alone in its column, anchored its bracket's end to that column's
+slot, which did not exist: the constrained layout then failed validation
+(`DanglingSpanAnchor`) and the engraver returned `InternalError` with no page
+at all, for the whole score. The bracket's ends now ride the first and last
+columns its members draw in; the number keeps its middle member's column,
+which its own glyph realizes. Locked by
+`a_tuplet_opening_on_a_hidden_rest_still_engraves` (`epiphany-cli`).
+
+## ENGRAVER_VERSION 30 → 31: a stem rides its own heads' slot (X3 fix round 1, 2026-10-03)
+
+A stem has no glyph of its own source (its heads are traced to pitches, it to
+the event) and stands offset from its column, so the spacing pass and casting
+gave it the slot of the glyph with the greatest baseline at or before its x,
+on any staff. That glyph was usually a head of its own column, but not
+always: a beamed sextuplet's number stands between its third and fourth
+notes, in the fourth's column, just left of the third's up-stem; a chord's
+displaced head on another staff can stand just right of the next column's
+head; a volta's ending number, the next note's accidental, a change clef.
+The stem then moved with that column, and wherever spacing or justification
+moved the two columns apart it stood beside its head, either side, with its
+head drawn stemless. The constrained stage now gives every stem a
+`SpanAnchor` naming its heads' slot at both ends, and the solver, which reads
+anchors first in the spacing remap, in casting and in assigning a stroke to
+its system, moves the stem with its heads by identity. Only a stem whose
+column drew no glyph would go unanchored, since its slot would not exist; a
+pitched note has at least one pitch, so its heads always realize it. The
+nearest-glyph rule is otherwise left only for zero-extent traced anchors,
+which draw nothing. Locked by `a_stem_stands_on_its_own_heads` (`epiphany-cli`) and
+`stem_offsets_from_the_notehead_survive_justification`, which now includes
+the repeats fixture; the repeats golden's second ending had one such stem.

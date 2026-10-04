@@ -787,13 +787,15 @@ mod tests {
         assert_eq!(layout.strokes.len(), input.strokes.len());
         assert_eq!(
             layout.glyphs.len(),
-            14,
-            "the rich fixture's real glyph count (its three eighths draw flags)"
+            15,
+            "the rich fixture's real glyph count (its three eighths draw flags, \
+             its tuplet its number)"
         );
         assert_eq!(
             layout.strokes.len(),
-            37,
-            "the rich fixture's real stroke count"
+            40,
+            "the rich fixture's real stroke count (its tuplet's bracket, four \
+             strokes, in place of the anchor it drew before)"
         );
         // Its tie, drawn as an arc, and the curve added above.
         assert_eq!(layout.curves.len(), 2);

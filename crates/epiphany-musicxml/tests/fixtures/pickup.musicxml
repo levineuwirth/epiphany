@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
 <!-- Hand-written for epiphany-musicxml's tests. A one-beat pickup before
-     two full measures of 3/4. The reducer defers pickups, so it refuses the
-     measures after it; the import must report that, not assume it. -->
+     two full measures of 3/4: every measure imports, the second a beat
+     after the first. -->
 <score-partwise version="4.0">
   <part-list>
     <score-part id="P1"><part-name>Horn</part-name></score-part>

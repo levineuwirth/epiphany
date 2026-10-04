@@ -158,6 +158,94 @@ pub mod vectors;
 ///   Either alone would require this bump. A base materialized under `0` holds
 ///   state this version would not have computed, so it must be rebuilt rather
 ///   than reused.
+/// * `2` — **X3** (2026-10-03). X3.1 adds `CreateTuplet` (operation_catalog
+///   §CreateTuplet) and keeps tuplet membership in the referent index in both
+///   reduction modes; X3.5 admits a pickup (operation_catalog
+///   §CreateMeasure). On histories of the operation kinds that existed before
+///   it, eight **reduction verdicts** change, each intended:
+///   - a base-free `DeleteEvent` declaring `RewriteTuplets`, or
+///     `CascadeDeleteTuplets` not naming exactly the live tuplets that hold
+///     the event, is refused `TupletCompensationInvalid`, as graph-aware
+///     reduction refuses it, where version `1` applied it base-free with a
+///     `TupletCompensated` repair against a tuplet no operation had minted
+///     (and, for the cascade, that id tombstoned), on any history at all;
+///   - a base-free `DeleteEvent` whose `ReplaceWithRest` rest differs in
+///     duration from the event, read from `voice_occupancy`, is refused
+///     `TupletCompensationInvalid`, as graph-aware reduction refuses it,
+///     where version `1` applied it base-free. `CreateTuplet` makes the
+///     declaration ordinary base-free and a concurrent trim makes it stale,
+///     so without this check one valid history reduced differently in the
+///     two modes. Whether the rest's id is fresh stays a graph-aware,
+///     referential check;
+///   - a `ModifyEvent` changing a tuplet member's duration is refused
+///     `EventDurationInvalid`, where version `1` applied it over a base
+///     holding the tuplet and broke invariant 16;
+///   - a `CreateMeasure` whose predecessor is its instance's only live
+///     measure, and which starts less than a full bar after it, applies (the
+///     first measure is a pickup), where version `1` refused it
+///     `MeasureMeterMismatch`;
+///   - a base-free `ChangeRegionTimeModel` conflicts
+///     `TimeModelMigrationFailure`, naming them, when its region holds events
+///     with a metric placement that its target does not admit (a proportional
+///     target) or that a `Reassign` leaves unmapped, as graph-aware reduction
+///     conflicts, where version `1` applied it base-free. Both modes find the
+///     region's events from the indices they keep: `voice_occupancy`, the
+///     ledger's instances and voices, and a promoted voice's instance through
+///     the insert it was promoted for;
+///   - an applied `Reassign` moves `voice_occupancy` in both modes, where
+///     version `1` moved it only with a graph, so base-free reduction reads
+///     the remapped placements in a later `InsertEvent`'s overlap check, a
+///     `ModifyEvent`'s placement verdict, a replacement rest's placement and
+///     the re-anchoring "nearest" ordering, as graph-aware reduction does;
+///   - a base-free `InsertEvent` into a region that is not metric, created so
+///     or made so by an applied `ChangeRegionTimeModel`, is refused
+///     `WrongRegionTimeModel`, as graph-aware reduction refuses it, where
+///     version `1` applied it base-free. Each region's coordinate discipline
+///     is now held in both modes (`region_disciplines`), moved by an applied
+///     migration and rolled back with a failed transaction;
+///   - graph-aware, a `ChangeRegionTimeModel` judges each event the occupancy
+///     index holds by its indexed placement, and judges from the graph only
+///     the events the index does not hold (a base's events of another
+///     coordinate kind). The two readings differ only for an event an
+///     `InsertEvent` carried at a wall-clock position into a metric region,
+///     which breaks invariant 4 and which the index holds at the region's
+///     origin: a metric target now admits it, where version `1` conflicted.
+///
+///   The last four are older than X3: through `ChangeRegionTimeModel` the
+///   two modes disagreed, on valid histories for the first three, and
+///   version 2 makes them agree.
+///
+///   And two operations produce different **canonical reduced state** over a
+///   base that already holds a tuplet, each intended:
+///   - a `DeleteEvent` whose `ReplaceWithRest` compensation replaces a
+///     member puts the rest in the member's place in the index, so its
+///     effect no longer carries the `AttachmentTombstoned` repair the stale
+///     index used to record against the tuplet;
+///   - a member tombstoned with no compensation to declare, as a cue event
+///     cascaded out from under the tuplet is, or as the rest is when an undo
+///     removes the transaction that replaced a member with it,
+///     cascade-deletes the tuplet: a `CascadeDeleted` repair, and the tuplet
+///     and any decomposition attachment naming it removed from the graph,
+///     where version `1` left the tuplet naming a dead member (for the cue,
+///     with an `AttachmentTombstoned` repair).
+///
+///   Locked by `version_2_verdicts_on_histories_that_make_no_tuplet` (the
+///   first and third verdicts), the `reduction_modes` tests of
+///   `epiphany-musicxml`, which reduce one history both ways and compare
+///   (the second), `g3b_create_measure_pickup_successor_applies_end_to_end`
+///   (the fourth) and `a_base_tuplet_follows_its_members_replacement_and_cascade`
+///   (the state, the undone replacement among it). The same rule cascades a
+///   tuplet whose member an undo removes on histories that create the
+///   tuplet, which version `1` could not reduce
+///   (`undo_cascades_a_tuplet_whose_members_it_removes`). The last four
+///   verdicts are locked by the `reduction_modes` tests
+///   `a_migration_finds_its_regions_events_in_both_modes`,
+///   `a_reassigned_measure_is_read_at_its_new_placements_in_both_modes`,
+///   `an_insert_reads_its_regions_time_model_in_both_modes` and
+///   `a_migration_judges_an_indexed_event_by_its_placement_in_both_modes`,
+///   with `migration_finds_a_promoted_voices_event_in_its_region` and
+///   `migration_judges_a_bases_wall_clock_events_from_the_graph` holding
+///   graph-aware reduction's own verdicts over a base.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.
@@ -178,7 +266,7 @@ pub mod vectors;
 /// `epiphany-bundle` in order to use that crate's `ReductionAlgorithmVersion`
 /// wrapper. The wrapper is constructed at the composition boundary by whoever
 /// depends on both (P13-S27 pin 1, §0.3).
-pub const CURRENT_REDUCTION_ALGORITHM_VERSION: u32 = 1;
+pub const CURRENT_REDUCTION_ALGORITHM_VERSION: u32 = 2;
 
 pub use anomaly::{
     AnomalousReplicaSegment, IntegrityAnomaly, IntegrityAnomalyKind, ReplicaAnomalyReason,
@@ -203,15 +291,16 @@ pub use payload::{
     operation_block_introduced_minor, ChangeRegionTimeModelOp, CreateAnalysisLayerOp,
     CreateCrossCuttingOp, CreateInstrumentOp, CreateMeasureOp, CreatePartDefinitionOp,
     CreateRegionOp, CreateRepeatStructureOp, CreateStaffGroupOp, CreateStaffInstanceOp,
-    CreateStaffOp, CreateViewOp, CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp,
-    DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp, DeleteRepeatStructureOp,
-    DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp, InsertIdentifiedPitchOp,
-    ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationKind, OperationKindTag,
-    OperationPayload, PositionRemapping, ResolveConflictPayload, ResolveEquivocationPayload,
-    RespellPitchOp, SetCanvasLayoutDefaultsOp, SetMetadataOp, SetMetricGridOp,
-    SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp, SetTimeSignatureOp,
-    SetTuningContextOp, SetUserPageBreakOp, SetUserSystemBreakOp, TransactionCategory,
-    TransactionDescriptor, TransposeIntervalOp, TransposeOp, TupletCompensation,
+    CreateStaffOp, CreateTupletOp, CreateViewOp, CreateVoiceOp, CrossCuttingValue,
+    DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp, DeleteRegionOp,
+    DeleteRepeatStructureOp, DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp,
+    InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp,
+    OperationKind, OperationKindTag, OperationPayload, PositionRemapping, ResolveConflictPayload,
+    ResolveEquivocationPayload, RespellPitchOp, SetCanvasLayoutDefaultsOp, SetClefOp,
+    SetKeySignatureOp, SetMetadataOp, SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp,
+    SetTempoSegmentOp, SetTimeSignatureOp, SetTuningContextOp, SetUserPageBreakOp,
+    SetUserSystemBreakOp, TransactionCategory, TransactionDescriptor, TransposeIntervalOp,
+    TransposeOp, TupletCompensation,
 };
 pub use reduce::{
     canonical_reduction_order, measure_anchor_relation_for_agreement_test, GraphMaterialization,

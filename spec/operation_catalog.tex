@@ -231,7 +231,7 @@
   {\Large\scshape\color{epiphanyslate}Operation Catalog}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.14.0 --- Pickup/anacrusis: what a partial measure actually costs (P13-S19)}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.17.0 --- Clef and key changes enter the operation set}\\[4pt]
   {\small\color{epiphanyslate}Normative for the operation kinds it defines}
   \vfill
 \end{titlepage}
@@ -620,6 +620,94 @@ either of which alone would suffice:
 base declaring the older version. Core specification \sectionsc{Canonical
 Document Identity} requires the bump for either class of change.
 
+\medskip
+
+\noindent\textbf{Version 0.16.0 (X3.1, tuplets).} Adds one operation kind,
+\texttt{CreateTuplet} (Section~\ref{sec:k0:create-tuplet}): the score's tuplets
+join the operation-authored surfaces, on the root-level mints' bare-value
+shape. Like repeats, tuplets live in the cross-cutting registry but are not
+\texttt{CrossCuttingValue} kinds on the wire. Schema major~0 unconditionally,
+epoch~13; wire discriminant~40. No new \texttt{PreconditionFailureReason}: a
+tuplet its members do not fill refuses with \texttt{EventDurationInvalid}.
+
+\textbf{Two existing operations now preserve tuplet consistency.}
+\texttt{DeleteEvent} (Section~\ref{sec:k0:delete-event}) reads a member's
+tuplets from the graph-independent referent index rather than the graph, so a
+member's delete without its compensation is refused base-free as well as
+graph-aware (before this revision only graph-aware reduction could see a
+tuplet, and no operation could make one); base-free reduction also refuses,
+as graph-aware reduction does, a \texttt{RewriteTuplets} compensation, a
+\texttt{CascadeDeleteTuplets} that does not name exactly the live tuplets
+holding the event, and a \texttt{ReplaceWithRest} whose rest's duration
+differs from the event's, read from the graph-independent occupancy index;
+and its \texttt{ReplaceWithRest} compensation puts the rest in the deleted
+member's place in the referent index.
+\texttt{ModifyEvent} refuses a change to a tuplet member's duration
+(\texttt{EventDurationInvalid}). A member tombstoned by an undo
+cascade-deletes its tuplet.
+
+\textbf{A pickup's successor now applies (X3.5, P13-S19).}
+\texttt{CreateMeasure}'s boundary-distance precondition
+(Section~\ref{sec:k0:create-measure}) measured a first measure's successor
+against a full bar, so after a pickup every later measure was refused
+\texttt{MeasureMeterMismatch}. While the predecessor is the instance's only
+live measure, the successor's delta may now also be any positive duration less
+than the governing signature's \texttt{measure\_duration()}: a first measure may
+be a pickup. A short measure after the first is still not modelled, and its
+successor still refuses.
+
+\textbf{A canonical base materialized before this rung \MUST{} be rebuilt
+rather than reused.} On histories of the operation kinds that existed before
+it, eight verdicts change and two operations change the state they produce.
+The verdicts: a base-free \texttt{DeleteEvent} declaring
+\texttt{RewriteTuplets}, or \texttt{CascadeDeleteTuplets} not naming exactly
+the live tuplets that hold the event, is refused
+\texttt{TupletCompensationInvalid}, where it applied with a compensation
+recorded against a tuplet no operation had minted (and, for the cascade, that
+identifier tombstoned); a base-free \texttt{DeleteEvent} whose
+\texttt{ReplaceWithRest} rest differs in duration from the event is refused
+\texttt{TupletCompensationInvalid}, as graph-aware reduction refuses it, where
+it applied (with tuplets made base-free, a concurrent trim makes such a rest
+on a valid history, which the two modes would otherwise reduce differently);
+a \texttt{ModifyEvent} changing a tuplet member's
+duration over a base holding the tuplet is refused
+\texttt{EventDurationInvalid}, where it applied and broke the tuplet's
+duration consistency; a pickup's successor applies (above); a base-free
+\texttt{ChangeRegionTimeModel} conflicts \texttt{TimeModelMigrationFailure}
+when its region holds metric events its target does not admit or a
+\texttt{Reassign} leaves unmapped, where it applied; after an applied
+\texttt{Reassign}, base-free reduction reads the remapped placements (in an
+insert's overlap check, a move's placement verdict, a replacement rest's
+placement and the re-anchoring order), where it read the old ones; a base-free
+\texttt{InsertEvent} into a region that is not metric is refused
+\texttt{WrongRegionTimeModel}, where it applied; and graph-aware, a migration
+judges an event the occupancy index holds by its indexed placement, which
+differs from the graph only for an event inserted at a wall-clock position into
+a metric region (already a breach of the coordinate discipline), now admitted
+by a metric target where the migration conflicted. The last four are older
+than this revision: the two reduction modes disagreed through
+\texttt{ChangeRegionTimeModel}, and now agree (Section~\ref{sec:k0:change-region-time-model}). The states,
+over a base that already holds a tuplet: a \texttt{DeleteEvent} whose
+\texttt{ReplaceWithRest} compensation replaces a member: the index used to keep
+naming the deleted member, so the re-anchoring pass recorded an
+\texttt{AttachmentTombstoned} repair against the tuplet the graph had just
+given the rest; it records none now. And a member tombstoned with no
+compensation to declare, as a cue event cascaded out from under its tuplet
+is, or as a replacing rest is when an undo removes the transaction that
+minted it: the tuplet used to stay, naming a dead member; it now
+cascade-deletes, in the effect and the graph. Accordingly
+\texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION} moves
+\texttt{1}~$\rightarrow$~\texttt{2}.
+
+\noindent\textbf{Version 0.17.0 (X3.6, clef and key changes).} Adds two
+operation kinds, \texttt{SetClef} and \texttt{SetKeySignature}
+(Section~\ref{sec:k0:set-clef}): a staff instance's clef and key sequences,
+written until now only by \texttt{CreateStaffInstance}, take a change at a
+time. Schema major~0 unconditionally, epoch~14; wire discriminants~41
+and~42. No new \texttt{PreconditionFailureReason}. The reduction algorithm
+version does not move: no operation reducible before changes its verdict or
+the state it produces, since only the new kinds write the new registers.
+
 % ===========================================================================
 \chapter{The Catalog Framework}
 \label{ch:framework}
@@ -715,9 +803,13 @@ derivation is total without a containment walk.
 canonical bytes of \texttt{event}.
 
 \textbf{Reduction rule.} A position-keyed insert. Preconditions: the event's
-duration is positive; the event id is neither live nor tombstoned; in graph-aware
-reduction the target voice exists in a metric region and the event's pitch ids
-are fresh. The event and its pitches are minted live; the voice is created on
+duration is positive; the event id is neither live nor tombstoned; the region of
+the event's staff instance is metric, read in graph-aware reduction from the
+graph and base-free from the reducer's index of each region's coordinate
+discipline, which \texttt{CreateRegion} sets and an applied
+\texttt{ChangeRegionTimeModel} moves, so the two modes agree after a migration;
+in graph-aware reduction the target voice exists in that region and the event's
+pitch ids are fresh. The event and its pitches are minted live; the voice is created on
 first use. Concurrent inserts whose half-open duration intervals overlap in the
 same voice are resolved by an order-independent promotion pre-pass: the
 lower-\texttt{OperationId} insert is retained in the original voice, and each
@@ -757,6 +849,14 @@ deletes of the same event are idempotent.
 
 \textbf{Conflict cases.} None for the delete itself. Graph-aware reduction
 refuses an ill-formed tuplet compensation as a precondition failure (no-op).
+Base-free reduction refuses, from the referent index, a member's delete that
+declares no compensation, any \texttt{RewriteTuplets}, and a
+\texttt{CascadeDeleteTuplets} that does not name exactly the live tuplets
+holding the event; and, from the occupancy index, a \texttt{ReplaceWithRest}
+whose rest's duration differs from the event's, so the two modes reach one
+verdict on every compensation a conforming client declares. Whether the
+rest's identifier is fresh is a referential precondition, and like every
+referential precondition it is checked graph-aware only.
 
 \textbf{Undo semantics.} An insert-shaped compensation re-introduces the
 tombstoned content; for the prototype's minted-object model this is the inverse
@@ -1240,9 +1340,19 @@ remapping: PositionRemapping \}} --- the full target model value (v1).
 \texttt{declared\_incompatible} set, then \texttt{remapping}.
 
 \textbf{Reduction rule.} Structural migration. The region adopts the target time
-model. Graph-aware reduction derives coordinate-kind incompatibilities from the
-region's events (and from the remapping coverage) and refuses a migration that
-would violate the coordinate discipline.
+model. Both reduction modes derive the coordinate-kind incompatibilities from
+the reducer's graph-independent indices, so they agree: the region's events are
+those with a metric placement in the occupancy index, found through its staff
+instances and voices (a voice promoted during reduction through the insert it
+was promoted for), and each is incompatible with a proportional target, and
+with any target when a \texttt{Reassign} leaves it unmapped. Graph-aware
+reduction also judges, from the graph, the region's events the index does not
+hold (a base's events of another coordinate kind, which base-free reduction
+never has). A migration with incompatible events is refused as below; an
+applied \texttt{Reassign} moves the occupancy index in both modes, and the
+region's new coordinate discipline is recorded in both, so a later insert, move
+or re-anchoring reads the same state in each. That the region is live is a
+referential precondition, checked graph-aware only.
 
 \textbf{Conflict cases.} Concurrent same-region migrations produce a
 \texttt{StructuralFieldCollision} on the field \texttt{time\_model}; a migration
@@ -1815,17 +1925,17 @@ every non-\texttt{WallClock} referent of \texttt{measure.start} (an
 \textbf{Ordering and boundary-distance preconditions (core specification
 \sectionsc{Graph Invariants}, invariant 20).} Graph-aware, against the current
 last live measure of the same instance (vacuous for an instance's first
-measure's own ordering and boundary-distance clauses, for lack of a
-predecessor to compare against --- but \textbf{not} for that same pickup's own
-successor, which is checked against this same governing signature's full
-\texttt{measure\_duration()} from the pickup's start, and refuses with
-\texttt{MeasureMeterMismatch} when the pickup's actual, shorter length
-disagrees with it): the carried \texttt{start} must be \textbf{comparable} to
-the predecessor's start and \textbf{strictly after} it (else
-\texttt{MeasureOutOfOrder}), and, when a governing time signature is
-determinable, the \textbf{musical delta} between the two starts must equal
-that signature's \texttt{measure\_duration()} (else
-\texttt{MeasureMeterMismatch}). Either comparison being \textbf{unverifiable}
+measure, for lack of a predecessor to compare against): the carried
+\texttt{start} must be \textbf{comparable} to the predecessor's start and
+\textbf{strictly after} it (else \texttt{MeasureOutOfOrder}), and, when a
+governing time signature is determinable, the \textbf{musical delta} between
+the two starts must equal that signature's \texttt{measure\_duration()} (else
+\texttt{MeasureMeterMismatch}). The one exception is a pickup: while the
+predecessor is the instance's only live measure, it may be shorter than its
+bar, so the delta may also be any positive duration less than
+\texttt{measure\_duration()} (since version~0.16.0; before it, a pickup's
+successor refused). A short measure after the first is not modelled: its
+successor still refuses. Either comparison being \textbf{unverifiable}
 --- the two starts are not comparable, or the delta is not computable ---
 refuses with \texttt{MeasureOrderUnverifiable} rather than silently permitting
 an unverifiable mint. A resolving \texttt{time\_signature} that
@@ -1867,6 +1977,122 @@ now blocks its own undo, exactly as a live meter-change reference already did.
 \textbf{Re-anchoring.} Not applicable (a measure mint references no
 tombstonable anchor of its own; there is no \texttt{DeleteMeasure} in this
 catalogue revision).
+
+\section{CreateTuplet}
+\label{sec:k0:create-tuplet}
+
+Ratified with X3.1: a \texttt{Tuplet} (core specification
+\sectionsc{Tuplets as Grouping Objects}) joins the operation-authored
+surfaces. Tuplets live in the cross-cutting registry
+(\texttt{CrossCuttingStructures.tuplets}) but, as repeats are not, they are
+\emph{not} \texttt{CrossCuttingValue} kinds on the wire --- the cross-cutting
+operations admit only \texttt{Tie}/\texttt{Slur}/\texttt{Beam}/\texttt{Spanner}
+(Section~\ref{sec:k0:create-cross-cutting}) --- so the tuplet's mint is a
+first-class primitive. It takes the root-level mints' bare-value shape
+(Section~\ref{sec:k0:create-view}): a tuplet carries its members by
+identifier and has no parent container.
+
+\textbf{Payload schema.} \texttt{CreateTupletOp \{ tuplet: Tuplet \}} --- the
+full value: identity, the \texttt{actual:notated} ratio, the member events,
+the optional parent tuplet, and the required total sounding duration of the
+members.
+
+\textbf{Canonical encoding.} The length-framed canonical bytes of
+\texttt{tuplet}. \texttt{Tuplet} has never been versioned --- its fields are an
+identifier, a \texttt{TupletRatio}, event identifiers, an optional tuplet
+identifier and a \texttt{MusicalDuration}, none with version branching of its
+own --- so this operation is schema major~0 unconditionally. A degenerate
+ratio does not decode (core specification
+requirement \texttt{req:time:tuplet-ratio-construction} holds at decode as at
+construction).
+
+\textbf{Reduction rule.} Set-union creation: a create mints the tuplet live
+if its id is fresh; a repeat create of a live id reduces idempotently
+(\texttt{NoOpReason::AlreadyApplied}), without value comparison, the
+cross-cutting discipline; a create naming a tombstoned id is a precondition
+no-op with \texttt{TargetTombstoned}. Graph-aware reduction pushes the value
+into the registry.
+
+Preconditions, checked graph-aware and base-free alike from the
+graph-independent indices, so the two modes never disagree: the tuplet has at
+least one member, every member is a live event and a carried parent is a live
+tuplet (else \texttt{TargetMissing}); and the members' sounding durations sum
+to exactly \texttt{required\_total} (else \texttt{EventDurationInvalid}), the
+core specification's tuplet duration consistency
+(\texttt{req:time:tuplet-duration-consistency}), which a create
+may not break.
+
+\textbf{Keeping consistency.} The members enter the referent index, in both
+modes, so the tuplet is seen wherever its members are: a \texttt{DeleteEvent}
+of a member must declare its tuplet compensation (re-anchoring table row
+``Tuplet / Member event''), its membership read from the index; a
+\texttt{ReplaceWithRest} compensation puts the rest in the deleted member's
+place in the index, as it does in the graph; and a \texttt{ModifyEvent} that
+would change a member's duration is refused as a precondition no-op with
+\texttt{EventDurationInvalid}.
+
+\textbf{Conflict cases.} None (set-union; the preconditions are gates, not
+conflicts).
+
+\textbf{Undo semantics.} Undo of a create tombstones the minted tuplet and
+removes it from the registry, with any decomposition attachment naming it
+(its reference would otherwise dangle). A member tombstoned by an undo of the
+transaction that inserted it declares no compensation; the tuplet it leaves
+can no longer fill its total, so it cascade-deletes, in the index and the
+graph alike, as \texttt{CascadeDeleteTuplets} would have.
+
+\textbf{Re-anchoring.} The tuplet references its members; the rule table's
+``Tuplet / Member event'' row governs a member's delete. Nesting is
+representable (\texttt{parent}) but no producer in this revision writes it.
+
+\section{SetClef and SetKeySignature}
+\label{sec:k0:set-clef}
+
+Ratified with X3.6: a staff instance's clef and key sequences
+(\texttt{StaffInstance.clef\_sequence}, \texttt{key\_sequence}), which only
+\texttt{CreateStaffInstance} could write, become editable change by change,
+which authoring needs. The two kinds share one rule; this section states it
+for \texttt{SetClef} and \texttt{SetKeySignature} reads the same with the key
+for the clef.
+
+\textbf{Payload schema.} \texttt{SetClefOp \{ instance: StaffInstanceId,
+offset: RationalTime, clef: Option<Clef> \}} and \texttt{SetKeySignatureOp
+\{ instance: StaffInstanceId, offset: RationalTime, key:
+Option<KeySignature> \}}: the change \texttt{offset} whole notes after the
+start of the instance's region, \texttt{None} to remove it. The change is
+placed by its offset rather than by an arbitrary \texttt{TimeAnchor}, so it
+names no event or measure an undo could strand; the graph holds it anchored
+at the region's start with that musical offset, the form the importer writes.
+
+\textbf{Canonical encoding.} The instance's id (16 bytes), the length-framed
+canonical bytes of \texttt{offset}, then an option tag (\texttt{0} absent,
+\texttt{1} present) and, when present, the length-framed canonical bytes of the
+value. Neither value has been versioned standalone, so both operations are
+schema major~0 unconditionally; \texttt{KeySignature} re-validates its fifths
+at decode.
+
+\textbf{Reduction rule.} A structural last-writer-wins register keyed by
+\texttt{(instance, offset)}, on the meter change's discipline
+(Section~\ref{sec:k0:meter-tempo}): a write sets, replaces or removes the
+one change at that position in the sequence, which stays ordered by
+position; a change already there, from the base or the instance's creation,
+is the key's predecessor. The instance must be live: missing, the operation
+is a precondition no-op with \texttt{TargetMissing}; tombstoned, with
+\texttt{TargetTombstoned}. The check reads the graph-independent object
+index, so both reduction modes agree.
+
+\textbf{Conflict cases.} A write concurrent with the key's last write and
+carrying a different value records a \texttt{StructuralFieldCollision} on
+\texttt{clef\_sequence} (\texttt{key\_sequence}), the later write in
+canonical order winning; carrying the same value, it is a no-op
+(\texttt{AlreadyApplied}).
+
+\textbf{Undo semantics.} Value-restoring: undo writes back the key's
+predecessor --- the earlier change, or none --- unless a later write
+superseded the undone one.
+
+\textbf{Re-anchoring.} None: the change names only its staff instance, whose
+deletion takes the sequence with it.
 
 \section{Repeat Structures}
 \label{sec:k0:repeat-structures}

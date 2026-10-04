@@ -107,18 +107,16 @@ pub(crate) fn owning_glyph<'a>(
     })
 }
 
-/// The glyph a per-event COMPONENT stroke belongs to — the notehead that shares
-/// its `Event` source — found by source ALONE, so it also catches a **stem**,
-/// which sits offset from its column (at `notehead_x + stem_offset`) and whose
-/// x therefore contains no glyph baseline (`owning_glyph`'s x-span test misses
-/// it). Such a stroke tracks its notehead's slot rigidly, so re-spacing and
-/// justification move it *with* its head instead of stretching its offset. A
-/// stroke whose source is not an `Event` — a staff line (`Staff`), a volta
-/// bracket (a `RepeatStructure`, a source its ending-number glyphs also carry) —
-/// has no same-slot owner here and stretches with its system instead. (Every
-/// event-sourced stroke today is a single-slot component: stem, ledger, or a
-/// zero-extent anchor. A future event-spanning stroke — a beam — would need a
-/// span-aware guard added here.)
+/// The glyph an unanchored per-event COMPONENT stroke translates with: a
+/// ledger's own notehead, found by source and span, or else, for a zero-extent
+/// traced anchor, the glyph nearest to its left. A stem never comes here: it
+/// rides its heads' slot through its `SpanAnchor`, which every caller consults
+/// first, because the glyph nearest a stem can belong to another column (the
+/// next note's accidental, a tuplet number, a change clef) or another staff,
+/// and a stem moved with it leaves its head. A stroke whose source is not an
+/// `Event` — a staff line (`Staff`), a volta bracket (a `RepeatStructure`, a
+/// source its ending-number glyphs also carry) — has no same-slot owner here
+/// and stretches with its system instead.
 pub(crate) fn component_glyph<'a>(
     stroke: &Stroke,
     glyphs: &'a [GlyphObject],
@@ -138,12 +136,8 @@ pub(crate) fn component_glyph<'a>(
     if let Some(g) = owning_glyph(stroke, glyphs) {
         return Some(g);
     }
-    // A stem is `Event`-sourced with NO same-source glyph (noteheads are
-    // `Pitch`-sourced) and sits offset from its column (`stem_x = notehead_x +
-    // 1.15`, inside the 1.6 column step), so its x contains no glyph baseline.
-    // It belongs to the slot just to its LEFT — the glyph with the greatest
-    // baseline ≤ its x, which is a notehead or dot in the stem's OWN column (all
-    // of that column's glyphs share the one slot, so the pick's slot is exact).
+    // A traced anchor draws nothing and has no glyph of its own; it keeps
+    // its place beside the glyph with the greatest baseline at or before it.
     let x = stroke.from.x.0.max(stroke.to.x.0);
     glyphs
         .iter()
@@ -250,8 +244,47 @@ pub struct Engraver {
 /// tie continued into a later system began starting clear of the system's
 /// lead, or of a time signature opening it, and arcing as a tie of its own
 /// length, at least a tie's length, to its note: the system's lead and its
-/// break search make the room, and its opening columns keep their place.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(21);
+/// break search make the room, and its opening columns keep their place,
+/// and to `22` when the break search began counting the ink a system's
+/// columns do not hold, half a staff line's thickness at each end and the
+/// first system's staff lines left of its clef, so no system runs past the
+/// right margin, and each system's staff lines began ending with the barline
+/// that closes it, a final barline's thick line included, and to `23` when a
+/// tie's ends began standing clear of the ink beside its heads at the tie's
+/// height (a head set across the stem or another voice's beside it, a stem,
+/// a ledger line, a dot, an accidental) and the spacing began giving every
+/// tie a staff space to run, when a split note's tie began taking its side
+/// as a tie between notes does (its voice, then its place in the chord, then
+/// its stem), and when a measure record's edges began moving with the slots
+/// that hold them, and to `24` when a rest beside another voice began moving
+/// further off its place, a space at a time, until it stands clear of the
+/// other voice's notes that start with it, and to `25` when a note tied over
+/// the barline with an alteration its measure did not give began making the
+/// next note of its letter and octave in the measure show its own
+/// accidental, the tied one's restated or a courtesy natural, and to `26`
+/// when tuplets began drawing: their number, the ratio's actual term, clear
+/// of their members on their voice's or stems' side, with a bracket unless
+/// their notes are beamed together as one group, and their members began
+/// beaming as their notated values read; and a treble or bass clef two
+/// octaves up or down began drawing its 15 mark, and to `27` when the
+/// decomposition pre-pass reached version 2: notes are written by each
+/// measure's own meter, a pickup keeps its place in its bar, and a span one
+/// value expresses within a bar is drawn as that value, dotted or
+/// double-dotted, rather than as tied parts, and to `28` when clef changes
+/// began drawing where they take effect, in change-size clefs: mid-measure
+/// before their note, at a measure's start before its barline (a courtesy at
+/// a system's end when the measure opens the next), an octave clef with its
+/// numeral, a restated clef not at all, and to `29` when a rest filling a
+/// pickup began keeping the value its file writes rather than drawing as a
+/// measure rest, and to `30` when a tuplet's bracket began riding only the
+/// columns its members draw in, so a tuplet opening or closing on a hidden
+/// rest no longer leaves its bracket anchored to a slot that does not exist,
+/// and to `31` when a stem began riding its own heads' slot rather than the
+/// slot of the glyph nearest to its left, which could be another column's
+/// (a tuplet number, an accidental, a displaced head on another staff), so a
+/// stem no longer stands apart from its head where the two columns move by
+/// different amounts.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(31);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -576,17 +609,15 @@ impl HorizontalRemap {
                     Some((self.slot_delta.get(start)?, self.slot_delta.get(end)?))
                 });
                 let (from_x, to_x) = if let Some((start, end)) = anchored {
-                    // A spanning stroke anchored at both ends (a beam): each
-                    // end rides its own slot, so it stays on the stem it meets.
+                    // An anchored stroke: each end rides its own slot, so a
+                    // beam stays on the stems it meets and a stem, whose ends
+                    // name one slot, on its heads.
                     (s.from.x.0 + start, s.to.x.0 + end)
                 } else if let Some(g) = component_glyph(s, &input.glyphs) {
-                    // A per-event component stroke (a stem, a ledger) translates
-                    // rigidly by its *owning glyph's* slot delta — found by
-                    // source, not the stroke's own x (a stem sits offset from its
-                    // column, so its midpoint could pick a neighbouring slot). The
-                    // slot delta is the exact column translation the glyph itself
-                    // moves by, so the stroke keeps its offset from its head and
-                    // its length.
+                    // A per-event component stroke (a ledger, a traced anchor)
+                    // translates rigidly by its *owning glyph's* slot delta, the
+                    // exact column translation the glyph itself moves by, so the
+                    // stroke keeps its offset from its glyph and its length.
                     let delta = self
                         .slot_delta
                         .get(&g.horizontal_slot)
@@ -1512,31 +1543,42 @@ mod tests {
 
     #[test]
     fn stem_offsets_from_the_notehead_survive_justification() {
-        // A stem is `Event`-sourced with no same-source glyph, so it tracks its
-        // column via `component_glyph`'s nearest-left notehead. Its offset from
-        // that column must survive the FULL solve — spacing AND per-system
-        // justification — so a stem in a stretched non-final system stays
-        // attached to its head rather than being dragged into the gap (the
-        // review's severe finding). Checked across seeds that wrap (justify).
+        // A stem rides the slot of its own heads' column (its `SpanAnchor`
+        // names that slot at both ends), so its offset from a head of that
+        // column survives the FULL solve — spacing AND per-system
+        // justification — and a stem in a stretched non-final system stays on
+        // its head rather than moving with a neighbouring column. Checked
+        // across seeds that wrap (justify), and on the repeats fixture, whose
+        // second ending's first note once lost its stem to the column before.
+        let scores = (0..16).map(valid_score_rich).chain([
+            epiphany_testkit::fixtures::ten_measure_with_repeats(0x000A_11CE),
+        ]);
         let mut checked = 0;
-        for seed in 0..16 {
-            let input = to_constrained(&to_logical(&valid_score_rich(seed)));
+        for (n, score) in scores.enumerate() {
+            let input = to_constrained(&to_logical(&score));
+            let anchors = span_anchors(&input);
             let report = Engraver::default().solve(&input, &SolverConfig::default());
             for s_in in &input.strokes {
-                // Vertical, non-zero-length strokes are drawn stems.
-                if (s_in.from.x.0 - s_in.to.x.0).abs() > 1e-4
+                // Vertical, non-zero-length event strokes are drawn stems.
+                if !matches!(s_in.provenance.source, TypedObjectId::Event(_))
+                    || (s_in.from.x.0 - s_in.to.x.0).abs() > 1e-4
                     || (s_in.from.y.0 - s_in.to.y.0).abs() < 1e-3
                 {
                     continue;
                 }
-                let Some(owner_in) = component_glyph(s_in, &input.glyphs) else {
-                    continue;
+                let Some(&(slot, end)) = anchors.get(&s_in.id()) else {
+                    panic!("score {n}: a stem rides no slot");
                 };
-                // A stem's owner is found by nearest-left, NOT source match
-                // (that path is the ledger case); skip anything same-source.
-                if owner_in.provenance.source == s_in.provenance.source {
-                    continue;
-                }
+                assert_eq!(slot, end, "score {n}: a stem rides one slot");
+                let owner_in = input
+                    .glyphs
+                    .iter()
+                    .find(|g| {
+                        g.horizontal_slot == slot
+                            && g.vertical_band == s_in.vertical_band
+                            && g.glyph.as_str().starts_with("notehead")
+                    })
+                    .unwrap_or_else(|| panic!("score {n}: a stem's slot holds its head"));
                 let (Some(s_out), Some(g_out)) = (
                     report
                         .layout
@@ -1555,8 +1597,8 @@ mod tests {
                 let offset_out = s_out.from.x.0 - g_out.position.x.0;
                 assert!(
                     (offset_out - offset_in).abs() < 1e-3,
-                    "seed {seed}: stem offset drifted {offset_in} -> {offset_out} \
-                     (justification scaled it off its notehead)"
+                    "score {n}: stem offset drifted {offset_in} -> {offset_out} \
+                     (the solve moved it off its notehead)"
                 );
                 checked += 1;
             }

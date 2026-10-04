@@ -33,8 +33,9 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use epiphany_core::{
     canonical_pitch_bytes, derive_promoted_voice_id, simplest_spelling, AnalysisLayer,
-    AnalysisLayerId, AnchorOffset, AnnotationAnchor, CanonicalValue, CanvasLayoutDefaults, Event,
-    EventDuration, EventId, EventPosition, GestureAnchoring, Instrument, InstrumentId, Measure,
+    AnalysisLayerId, AnchorOffset, AnnotationAnchor, CanonicalValue, CanvasLayoutDefaults, Clef,
+    ClefChange, CoordinateDiscipline, Event, EventDuration, EventId, EventPosition,
+    GestureAnchoring, Instrument, InstrumentId, KeySignature, KeySignatureChange, Measure,
     MeasureId, MeasurePosition, MeterChange, MetricGrid, MusicalDuration, MusicalPosition,
     OperationId, PartDefinition, PartDefinitionId, Pitch, PitchId, PitchSpelling, RationalTime,
     RegionEdge, RegionId, RegionTimeModel, RepeatStructure, RepeatStructureId, ReplicaId, Score,
@@ -42,7 +43,8 @@ use epiphany_core::{
     SpellingSource, Staff, StaffGroup, StaffGroupId, StaffId, StaffInstance, StaffInstanceId,
     StaffLineConfiguration, TempoMap, TempoSegment, TempoShape, TimeAnchor, TimeSignature,
     TimeSignatureId, TransactionId, TransposeRefusal, TranspositionInterval, TuningContextSettings,
-    TypedObjectId, ViewDefinition, ViewId, Voice, VoiceId, VoiceOrigin, WallClockDuration,
+    TupletId, TypedObjectId, ViewDefinition, ViewId, Voice, VoiceId, VoiceOrigin,
+    WallClockDuration,
 };
 use epiphany_determinism::CanonicalEncode;
 
@@ -60,14 +62,14 @@ use crate::opset::OperationSet;
 use crate::payload::{
     resolved_anchor_position, CreateAnalysisLayerOp, CreateCrossCuttingOp, CreateInstrumentOp,
     CreateMeasureOp, CreatePartDefinitionOp, CreateRegionOp, CreateRepeatStructureOp,
-    CreateStaffGroupOp, CreateStaffInstanceOp, CreateStaffOp, CreateViewOp, CreateVoiceOp,
-    CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp,
+    CreateStaffGroupOp, CreateStaffInstanceOp, CreateStaffOp, CreateTupletOp, CreateViewOp,
+    CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp,
     DeleteRegionOp, DeleteRepeatStructureOp, DeleteStaffInstanceOp, DeleteVoiceOp, InsertEventOp,
     InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp,
-    OperationKind, OperationPayload, RespellPitchOp, SetCanvasLayoutDefaultsOp, SetMetadataOp,
-    SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp,
-    SetTimeSignatureOp, SetTuningContextOp, SetUserPageBreakOp, TransposeIntervalOp, TransposeOp,
-    TupletCompensation,
+    OperationKind, OperationPayload, RespellPitchOp, SetCanvasLayoutDefaultsOp, SetClefOp,
+    SetKeySignatureOp, SetMetadataOp, SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp,
+    SetTempoSegmentOp, SetTimeSignatureOp, SetTuningContextOp, SetUserPageBreakOp,
+    TransposeIntervalOp, TransposeOp, TupletCompensation,
 };
 use crate::stamp::StampTuple;
 use crate::support::{ObjectKind, SerializedCanonicalInputs};
@@ -942,6 +944,18 @@ enum ValueRestoration {
         instance: StaffInstanceId,
         value: Option<StaffLayoutValue>,
     },
+    /// X3.6.
+    Clef {
+        instance: StaffInstanceId,
+        position: MusicalPosition,
+        value: Option<Clef>,
+    },
+    /// X3.6.
+    Key {
+        instance: StaffInstanceId,
+        position: MusicalPosition,
+        value: Option<KeySignature>,
+    },
     SystemBreak {
         region: RegionId,
         position: MusicalPosition,
@@ -992,7 +1006,76 @@ fn edit_tempo_map_segments(
     }
 }
 
+/// Replaces (or removes, for `None`) the change at `position` in a staff
+/// instance's clef or key sequence, keeping the sequence ordered by resolved
+/// position — the LWW key's resolution, so one position holds one change.
+fn edit_staff_changes<T>(
+    sequence: &mut Vec<T>,
+    anchor: impl Fn(&T) -> &TimeAnchor,
+    position: &MusicalPosition,
+    change: Option<T>,
+) {
+    sequence.retain(|existing| resolved_anchor_position(anchor(existing)) != *position);
+    if let Some(change) = change {
+        let index = sequence
+            .iter()
+            .position(|existing| resolved_anchor_position(anchor(existing)) > *position)
+            .unwrap_or(sequence.len());
+        sequence.insert(index, change);
+    }
+}
+
+/// The clef and key chains of a reducer.
+type ClefChains = BTreeMap<(StaffInstanceId, MusicalPosition), WriteChain<Option<Clef>>>;
+type KeyChains = BTreeMap<(StaffInstanceId, MusicalPosition), WriteChain<Option<KeySignature>>>;
+
+/// Seeds the clef and key chains from an instance's own sequences, so a later
+/// write's chain-predecessor is what the base or the create held.
+fn seed_staff_changes(clefs: &mut ClefChains, keys: &mut KeyChains, instance: &StaffInstance) {
+    for change in &instance.clef_sequence {
+        clefs
+            .entry((instance.id, resolved_anchor_position(&change.anchor)))
+            .or_insert_with(WriteChain::new)
+            .seed(Some(change.clef));
+    }
+    for change in &instance.key_sequence {
+        keys.entry((instance.id, resolved_anchor_position(&change.anchor)))
+            .or_insert_with(WriteChain::new)
+            .seed(Some(change.key));
+    }
+}
+
+/// The anchor `position` after `region`'s start, as the importer writes a
+/// staff instance's changes.
+fn region_position_anchor(region: RegionId, position: &MusicalPosition) -> TimeAnchor {
+    TimeAnchor::Region {
+        id: region,
+        edge: RegionEdge::Start,
+        offset: AnchorOffset::Musical(MusicalDuration(position.0.clone())),
+    }
+}
+
 /// The working state of one reduction pass.
+/// Removes the tuplets `removed` from the graph, with every decomposition
+/// attachment naming one. A decomposition component records its tuplet by id;
+/// once that tuplet is gone the reference would dangle (invariant 6,
+/// cross-cutting references resolve), so the attachment goes too.
+fn remove_tuplets(score: &mut Score, removed: &BTreeSet<TupletId>) {
+    if removed.is_empty() {
+        return;
+    }
+    score
+        .cross_cutting
+        .tuplets
+        .retain(|tuplet| !removed.contains(&tuplet.id));
+    score.decomposition_attachments.retain(|attachment| {
+        !attachment
+            .components
+            .iter()
+            .any(|component| component.tuplet.is_some_and(|t| removed.contains(&t)))
+    });
+}
+
 struct Reducer<'a> {
     op_set: &'a OperationSet,
     // Canonical results.
@@ -1059,6 +1142,11 @@ struct Reducer<'a> {
     tempo_segment_chain:
         BTreeMap<(Option<RegionId>, MusicalPosition), WriteChain<Option<TempoSegment>>>,
     staff_layout_chain: BTreeMap<StaffInstanceId, WriteChain<StaffLayoutValue>>,
+    // X3.6: each staff instance's clef and key changes, keyed by musical
+    // position in its region (`SetClef`, `SetKeySignature`), seeded from the
+    // base or the created instance; `None` = an explicit removal.
+    clef_chain: ClefChains,
+    key_chain: KeyChains,
     // Carried values of set-union-minted staves and time signatures, for the
     // byte-identical-re-carry idempotence check (operation_catalog §CreateStaff:
     // identical re-create is idempotent; a differing value under a live id is a
@@ -1131,6 +1219,12 @@ struct Reducer<'a> {
     // can still diverge on a base-region target — the corpus targets only
     // op-created regions, where the two agree.
     staff_based_regions: BTreeSet<RegionId>,
+    // Each region's coordinate discipline (Chapter 5 invariant 4), from its
+    // time model: seeded from a base, set by `CreateRegion` and moved by an
+    // applied `ChangeRegionTimeModel`. `InsertEvent`'s metric-region
+    // precondition reads it base-free, as graph-aware reduction reads the
+    // graph's region, so an insert after a migration reduces alike in both.
+    region_disciplines: BTreeMap<RegionId, CoordinateDiscipline>,
     migrated_regions: BTreeSet<RegionId>,
     region_migrator: BTreeMap<RegionId, OperationId>,
     descriptors: BTreeMap<TransactionId, OperationId>,
@@ -1208,6 +1302,8 @@ struct WorkingSnapshot {
     tempo_segment_chain:
         BTreeMap<(Option<RegionId>, MusicalPosition), WriteChain<Option<TempoSegment>>>,
     staff_layout_chain: BTreeMap<StaffInstanceId, WriteChain<StaffLayoutValue>>,
+    clef_chain: ClefChains,
+    key_chain: KeyChains,
     staff_values: BTreeMap<StaffId, Staff>,
     time_signature_values: BTreeMap<TimeSignatureId, TimeSignature>,
     instrument_values: BTreeMap<InstrumentId, Instrument>,
@@ -1223,6 +1319,7 @@ struct WorkingSnapshot {
     instance_voices: BTreeMap<StaffInstanceId, BTreeSet<VoiceId>>,
     instance_staff: BTreeMap<StaffInstanceId, StaffId>,
     staff_based_regions: BTreeSet<RegionId>,
+    region_disciplines: BTreeMap<RegionId, CoordinateDiscipline>,
     migrated_regions: BTreeSet<RegionId>,
     region_migrator: BTreeMap<RegionId, OperationId>,
     descriptors: BTreeMap<TransactionId, OperationId>,
@@ -1542,6 +1639,8 @@ impl<'a> Reducer<'a> {
             meter_change_chain: BTreeMap::new(),
             tempo_segment_chain: BTreeMap::new(),
             staff_layout_chain: BTreeMap::new(),
+            clef_chain: BTreeMap::new(),
+            key_chain: BTreeMap::new(),
             staff_values: BTreeMap::new(),
             time_signature_values: BTreeMap::new(),
             instrument_values: BTreeMap::new(),
@@ -1557,6 +1656,7 @@ impl<'a> Reducer<'a> {
             instance_voices: BTreeMap::new(),
             instance_staff: BTreeMap::new(),
             staff_based_regions: BTreeSet::new(),
+            region_disciplines: BTreeMap::new(),
             migrated_regions: BTreeSet::new(),
             region_migrator: BTreeMap::new(),
             descriptors: BTreeMap::new(),
@@ -1698,6 +1798,8 @@ impl<'a> Reducer<'a> {
         for region in &score.canvas.regions {
             self.objects
                 .insert(TypedObjectId::Region(region.id), ObjectState::Live);
+            self.region_disciplines
+                .insert(region.id, region.time_model.coordinate_discipline());
             if let Some(content) = region.content.staff_based() {
                 self.staff_based_regions.insert(region.id);
                 self.metric_grid_chain
@@ -1749,6 +1851,7 @@ impl<'a> Reducer<'a> {
                         instance.staff_lines_override.clone(),
                         instance.visible,
                     ));
+                seed_staff_changes(&mut self.clef_chain, &mut self.key_chain, instance);
                 // Genesis tranche G3b (contract pin 6c, disposition A): record
                 // whether this instance authored a local grid override, so a
                 // later CreateMeasure can distinguish override from
@@ -2527,6 +2630,22 @@ impl<'a> Reducer<'a> {
         op: &InsertEventOp,
     ) -> Result<(usize, usize, usize), PreconditionFailureReason> {
         let Some(score) = self.graph.as_ref() else {
+            // The region's time model, read from the discipline index the
+            // graph's region is kept in step with: an insert into a region a
+            // migration made non-metric is refused base-free as below. A
+            // tombstoned voice is left to the voice check, as the branch below
+            // finds such a voice missing before it reads the region.
+            let voice_dead = matches!(
+                self.objects.get(&TypedObjectId::Voice(op.voice())),
+                Some(ObjectState::Tombstoned { .. })
+            );
+            let non_metric = self
+                .instance_region_of(op.staff_instance)
+                .and_then(|region| self.region_disciplines.get(&region))
+                .is_some_and(|discipline| *discipline != CoordinateDiscipline::Musical);
+            if non_metric && !voice_dead {
+                return Err(PreconditionFailureReason::WrongRegionTimeModel);
+            }
             return Ok((0, 0, 0));
         };
         let location = graph_voice_location(score, op.voice())
@@ -2620,20 +2739,51 @@ impl<'a> Reducer<'a> {
         &self,
         op: &DeleteEventOp,
     ) -> Result<(), PreconditionFailureReason> {
+        // Tuplet membership reads the referent index, which both reduction
+        // modes keep, so a member's delete without its compensation is
+        // refused in each alike.
+        let containing_tuplets = self.containing_tuplets(op.event);
         let Some(score) = self.graph.as_ref() else {
-            return Ok(());
+            return match &op.tuplet_compensation {
+                TupletCompensation::NotInTuplet if !containing_tuplets.is_empty() => {
+                    Err(PreconditionFailureReason::TupletCompensationInvalid)
+                }
+                TupletCompensation::RewriteTuplets { .. } => {
+                    Err(PreconditionFailureReason::TupletCompensationInvalid)
+                }
+                TupletCompensation::CascadeDeleteTuplets { tuplets } => {
+                    let listed: BTreeSet<_> = tuplets.iter().copied().collect();
+                    if listed == containing_tuplets && !listed.is_empty() {
+                        Ok(())
+                    } else {
+                        Err(PreconditionFailureReason::TupletCompensationInvalid)
+                    }
+                }
+                // The rest takes the event's place, so it carries the event's
+                // duration, read from `voice_occupancy` as graph-aware
+                // reduction reads it from the graph: a concurrent trim leaves
+                // a declared rest stale in both modes alike. Whether the
+                // rest's id is fresh is referential, and stays graph-aware.
+                TupletCompensation::ReplaceWithRest { rest } => {
+                    let current = self
+                        .voice_occupancy
+                        .values()
+                        .flatten()
+                        .find(|(_, _, event)| *event == op.event)
+                        .map(|(_, duration, _)| EventDuration::Musical(duration.clone()));
+                    if current.as_ref() == Some(&rest.duration) {
+                        Ok(())
+                    } else {
+                        Err(PreconditionFailureReason::TupletCompensationInvalid)
+                    }
+                }
+                TupletCompensation::NotInTuplet => Ok(()),
+            };
         };
         let event = score
             .events
             .get(op.event)
             .ok_or(PreconditionFailureReason::TargetMissing)?;
-        let containing_tuplets: Vec<_> = score
-            .cross_cutting
-            .tuplets
-            .iter()
-            .filter(|tuplet| tuplet.members.contains(&op.event))
-            .map(|tuplet| tuplet.id)
-            .collect();
         match &op.tuplet_compensation {
             TupletCompensation::NotInTuplet if !containing_tuplets.is_empty() => {
                 Err(PreconditionFailureReason::TupletCompensationInvalid)
@@ -2657,8 +2807,7 @@ impl<'a> Reducer<'a> {
             }
             TupletCompensation::CascadeDeleteTuplets { tuplets } => {
                 let listed: BTreeSet<_> = tuplets.iter().copied().collect();
-                let containing: BTreeSet<_> = containing_tuplets.into_iter().collect();
-                if listed == containing && !listed.is_empty() {
+                if listed == containing_tuplets && !listed.is_empty() {
                     Ok(())
                 } else {
                     Err(PreconditionFailureReason::TupletCompensationInvalid)
@@ -2760,23 +2909,23 @@ impl<'a> Reducer<'a> {
             }
             TupletCompensation::CascadeDeleteTuplets { tuplets } => {
                 let removed: BTreeSet<_> = tuplets.iter().copied().collect();
-                score
+                remove_tuplets(score, &removed);
+            }
+            // No compensation, yet a tuplet names the event: the precondition
+            // refuses this for a `DeleteEvent`, so it is an undo tombstoning a
+            // member, and the tuplet cascades (the ledger's rule-table row
+            // does the same).
+            TupletCompensation::NotInTuplet => {
+                let removed: BTreeSet<_> = score
                     .cross_cutting
                     .tuplets
-                    .retain(|tuplet| !removed.contains(&tuplet.id));
-                // A decomposition component records its tuplet by id; once that tuplet is
-                // gone the reference would dangle (invariant 6, cross-cutting refs
-                // resolve), so drop any attachment that names a removed tuplet. The
-                // member it described is being tombstoned in the same cascade, so the
-                // decomposition has nothing left to describe.
-                score.decomposition_attachments.retain(|attachment| {
-                    !attachment
-                        .components
-                        .iter()
-                        .any(|component| component.tuplet.is_some_and(|t| removed.contains(&t)))
-                });
+                    .iter()
+                    .filter(|tuplet| tuplet.members.contains(&op.event))
+                    .map(|tuplet| tuplet.id)
+                    .collect();
+                remove_tuplets(score, &removed);
             }
-            TupletCompensation::NotInTuplet | TupletCompensation::RewriteTuplets { .. } => {}
+            TupletCompensation::RewriteTuplets { .. } => {}
         }
 
         // Keep the materialized graph reference-clean. The detailed repair
@@ -2984,6 +3133,9 @@ impl<'a> Reducer<'a> {
                 TypedObjectId::RepeatStructure(id) => {
                     score.cross_cutting.repeats.retain(|value| value.id != *id);
                 }
+                TypedObjectId::Tuplet(id) => {
+                    remove_tuplets(score, &BTreeSet::from([*id]));
+                }
                 // Phase-3 mints: a tombstoned staff / time signature leaves the
                 // graph (the undo path preconditions no live reference remains).
                 TypedObjectId::Staff(id) => {
@@ -3146,6 +3298,9 @@ impl<'a> Reducer<'a> {
                 OperationKind::CreateAnalysisLayer(op) => self.create_analysis_layer(env, op),
                 OperationKind::CreateView(op) => self.create_view(env, op),
                 OperationKind::CreateMeasure(op) => self.create_measure(env, op),
+                OperationKind::CreateTuplet(op) => self.create_tuplet(env, op),
+                OperationKind::SetClef(op) => self.set_clef(env, op),
+                OperationKind::SetKeySignature(op) => self.set_key_signature(env, op),
             },
             OperationPayload::ResolveConflict(op) => self.resolve_conflict(env, op),
             OperationPayload::UndoTransaction(op) => self.undo_transaction(env, op),
@@ -3640,6 +3795,17 @@ impl<'a> Reducer<'a> {
                     }
                 };
                 let rest_obj = TypedObjectId::Event(new_rest);
+                // The rest takes the deleted member's place in each tuplet's
+                // referent-index entry, as it does in the graph's members.
+                for tuplet in self.containing_tuplets(op.event) {
+                    if let Some(members) = self.structures.get_mut(&TypedObjectId::Tuplet(tuplet)) {
+                        for member in members.iter_mut() {
+                            if *member == ev_obj {
+                                *member = rest_obj;
+                            }
+                        }
+                    }
+                }
                 self.objects.insert(rest_obj, ObjectState::Live);
                 self.minted_by.insert(rest_obj, env.id);
                 self.note_minted(env, rest_obj);
@@ -3992,6 +4158,98 @@ impl<'a> Reducer<'a> {
         OperationEffect::Applied
     }
 
+    /// Mints a tuplet (operation_catalog §CreateTuplet): set-union creation,
+    /// preconditioned on every member being a live event, the parent (if any)
+    /// a live tuplet, and the members' sounding durations, read from the
+    /// graph-independent `voice_occupancy`, summing to the tuplet's
+    /// `required_total` (invariant 16, which a create may not break). The
+    /// members enter the referent index, so their tombstones and a
+    /// `DeleteEvent`'s tuplet compensation see the tuplet in both reduction
+    /// modes.
+    fn create_tuplet(&mut self, env: &OperationEnvelope, op: &CreateTupletOp) -> OperationEffect {
+        let sid = TypedObjectId::Tuplet(op.tuplet.id);
+        match self.objects.get(&sid) {
+            Some(ObjectState::Live) => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::AlreadyApplied,
+                }
+            }
+            Some(ObjectState::Tombstoned { .. }) => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::TargetTombstoned,
+                }
+            }
+            None => {}
+        }
+        let members: Vec<TypedObjectId> = op
+            .tuplet
+            .members
+            .iter()
+            .copied()
+            .map(TypedObjectId::Event)
+            .collect();
+        let parent = op.tuplet.parent.map(TypedObjectId::Tuplet);
+        let missing = members.is_empty()
+            || members
+                .iter()
+                .chain(&parent)
+                .any(|object| !matches!(self.objects.get(object), Some(ObjectState::Live)));
+        if missing {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            };
+        }
+        let total = op
+            .tuplet
+            .members
+            .iter()
+            .map(|member| {
+                self.voice_occupancy
+                    .values()
+                    .flatten()
+                    .find(|(_, _, event)| event == member)
+                    .map(|(_, duration, _)| duration.clone())
+            })
+            .try_fold(MusicalDuration::zero(), |sum, duration| {
+                duration.map(|duration| sum + duration)
+            });
+        if total.as_ref() != Some(&op.tuplet.required_total) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::EventDurationInvalid,
+                },
+            };
+        }
+        if let Some(score) = self.graph.as_mut() {
+            score.cross_cutting.tuplets.push(op.tuplet.clone());
+        }
+        self.objects.insert(sid, ObjectState::Live);
+        self.minted_by.insert(sid, env.id);
+        self.note_minted(env, sid);
+        self.structures.insert(sid, members);
+        OperationEffect::Applied
+    }
+
+    /// The live tuplets whose members include `event`, from the referent
+    /// index, which holds them in both reduction modes.
+    fn containing_tuplets(&self, event: EventId) -> BTreeSet<TupletId> {
+        let member = TypedObjectId::Event(event);
+        self.structures
+            .iter()
+            .filter_map(|(sid, members)| match sid {
+                TypedObjectId::Tuplet(id)
+                    if members.contains(&member)
+                        && matches!(self.objects.get(sid), Some(ObjectState::Live)) =>
+                {
+                    Some(*id)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     fn delete_repeat_structure(
         &mut self,
         env: &OperationEnvelope,
@@ -4229,6 +4487,8 @@ impl<'a> Reducer<'a> {
         self.graph_create_region(&op.region);
         self.mint_container(env, robj);
         self.region_instances.entry(op.region_id()).or_default();
+        self.region_disciplines
+            .insert(op.region_id(), op.region.time_model.coordinate_discipline());
         if let Some(content) = op.region.content.staff_based() {
             self.staff_based_regions.insert(op.region_id());
             // Seed the region's layout/metric write chains from the carried
@@ -4340,6 +4600,7 @@ impl<'a> Reducer<'a> {
                 op.instance.staff_lines_override.clone(),
                 op.instance.visible,
             ));
+        seed_staff_changes(&mut self.clef_chain, &mut self.key_chain, &op.instance);
         OperationEffect::Applied
     }
 
@@ -5637,6 +5898,10 @@ impl<'a> Reducer<'a> {
         // outcome: pin 6c case 1 makes `None` an abstention (allow the
         // mint), while `Indeterminate` still fails closed with
         // `MeasureOrderUnverifiable` (pin 7). Collapsing them was the bug.
+        // A pickup (P13-S19, X3.5): the instance's first measure may be
+        // shorter than its bar, so its successor follows it by less than a
+        // full bar, never more.
+        let after_first = self.live_measure_starts(op.instance).len() == 1;
         if let Some(prev_start) = &predecessor {
             match self.governing_time_signature(&sequence, prev_start) {
                 GoverningElement::Unique(sig) => {
@@ -5649,6 +5914,10 @@ impl<'a> Reducer<'a> {
                         expected,
                     ) {
                         (Some(delta), Some(expected)) if delta == expected => {}
+                        (Some(delta), Some(expected))
+                            if after_first
+                                && delta > MusicalDuration::zero()
+                                && delta < expected => {}
                         (Some(_), Some(_)) => {
                             return OperationEffect::NoOp {
                                 reason: NoOpReason::PreconditionFailedUnderReduction {
@@ -6009,23 +6278,8 @@ impl<'a> Reducer<'a> {
         env: &OperationEnvelope,
         op: &SetStaffLayoutOp,
     ) -> OperationEffect {
-        match self
-            .objects
-            .get(&TypedObjectId::StaffInstance(op.staff_instance))
-        {
-            None => {
-                return OperationEffect::NoOp {
-                    reason: NoOpReason::PreconditionFailedUnderReduction {
-                        reason: PreconditionFailureReason::TargetMissing,
-                    },
-                }
-            }
-            Some(ObjectState::Tombstoned { .. }) => {
-                return OperationEffect::NoOp {
-                    reason: NoOpReason::TargetTombstoned,
-                }
-            }
-            Some(ObjectState::Live) => {}
+        if let Some(effect) = self.staff_instance_slot(op.staff_instance) {
+            return effect;
         }
         if self.graph.is_some() {
             if let Some(instrument) = op.instrument_override {
@@ -6052,6 +6306,172 @@ impl<'a> Reducer<'a> {
             .record(env.id, env.transaction, value.clone());
         self.graph_set_staff_layout(op.staff_instance, &value);
         OperationEffect::Applied
+    }
+
+    /// `Some(NoOp)` when `instance` is missing (`TargetMissing`) or tombstoned
+    /// (`TargetTombstoned`); `None` when it is live. Reads only the base-free
+    /// object index, so both reduction modes agree.
+    fn staff_instance_slot(&self, instance: StaffInstanceId) -> Option<OperationEffect> {
+        match self.objects.get(&TypedObjectId::StaffInstance(instance)) {
+            None => Some(OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            }),
+            Some(ObjectState::Tombstoned { .. }) => Some(OperationEffect::NoOp {
+                reason: NoOpReason::TargetTombstoned,
+            }),
+            Some(ObjectState::Live) => None,
+        }
+    }
+
+    /// The effect of a structural LWW write against its key's last write
+    /// (the meter change's discipline): applied, or a
+    /// `StructuralFieldCollision` the later write wins when the two are
+    /// concurrent and differ. `Err` carries `AlreadyApplied` for a concurrent
+    /// write of the same value, which records nothing.
+    fn structural_write_effect<V: PartialEq>(
+        &mut self,
+        env: &OperationEnvelope,
+        prev: Option<(OperationId, V)>,
+        written: &V,
+        field: &str,
+        object: TypedObjectId,
+    ) -> Result<OperationEffect, OperationEffect> {
+        match prev {
+            Some((prev_op, prev_value)) if self.concurrent(env.id, prev_op) => {
+                if prev_value == *written {
+                    return Err(OperationEffect::NoOp {
+                        reason: NoOpReason::AlreadyApplied,
+                    });
+                }
+                let conflict = ConflictRecord::new(
+                    ConflictKind::StructuralFieldCollision {
+                        winner: env.id,
+                        loser: prev_op,
+                        field: FieldPath(field.to_string()),
+                    },
+                    vec![env.id, prev_op],
+                    vec![object],
+                );
+                let cid = conflict.id;
+                self.conflicts.insert(conflict);
+                Ok(OperationEffect::Conflicted { conflict: cid })
+            }
+            _ => Ok(OperationEffect::Applied),
+        }
+    }
+
+    /// X3.6 (operation_catalog §SetClef): sets, replaces or removes the clef
+    /// change at a musical offset in a live staff instance's region, a
+    /// structural LWW register keyed by `(instance, position)`.
+    fn set_clef(&mut self, env: &OperationEnvelope, op: &SetClefOp) -> OperationEffect {
+        if let Some(effect) = self.staff_instance_slot(op.instance) {
+            return effect;
+        }
+        let key = (op.instance, op.position());
+        let prev = self
+            .clef_chain
+            .get(&key)
+            .and_then(|chain| chain.last_write())
+            .map(|write| (write.op, write.value));
+        let effect = match self.structural_write_effect(
+            env,
+            prev,
+            &op.clef,
+            "clef_sequence",
+            TypedObjectId::StaffInstance(op.instance),
+        ) {
+            Ok(effect) => effect,
+            Err(effect) => return effect,
+        };
+        self.clef_chain
+            .entry(key.clone())
+            .or_insert_with(WriteChain::new)
+            .record(env.id, env.transaction, op.clef);
+        self.graph_apply_clef(op.instance, &key.1, op.clef);
+        effect
+    }
+
+    /// X3.6 (operation_catalog §SetKeySignature): [`Self::set_clef`] for the
+    /// key sequence.
+    fn set_key_signature(
+        &mut self,
+        env: &OperationEnvelope,
+        op: &SetKeySignatureOp,
+    ) -> OperationEffect {
+        if let Some(effect) = self.staff_instance_slot(op.instance) {
+            return effect;
+        }
+        let key = (op.instance, op.position());
+        let prev = self
+            .key_chain
+            .get(&key)
+            .and_then(|chain| chain.last_write())
+            .map(|write| (write.op, write.value));
+        let effect = match self.structural_write_effect(
+            env,
+            prev,
+            &op.key,
+            "key_sequence",
+            TypedObjectId::StaffInstance(op.instance),
+        ) {
+            Ok(effect) => effect,
+            Err(effect) => return effect,
+        };
+        self.key_chain
+            .entry(key.clone())
+            .or_insert_with(WriteChain::new)
+            .record(env.id, env.transaction, op.key);
+        self.graph_apply_key(op.instance, &key.1, op.key);
+        effect
+    }
+
+    /// The live instance `instance_id` in the graph, with its region's id.
+    fn graph_staff_instance(
+        &mut self,
+        instance_id: StaffInstanceId,
+    ) -> Option<(RegionId, &mut StaffInstance)> {
+        let score = self.graph.as_mut()?;
+        score.canvas.regions.iter_mut().find_map(|region| {
+            let region_id = region.id;
+            let instances = region.content.staff_instances_mut()?;
+            let instance = instances.iter_mut().find(|i| i.id == instance_id)?;
+            Some((region_id, instance))
+        })
+    }
+
+    /// Puts `clef` (nothing, for `None`) at `position` in the instance's clef
+    /// sequence, in place of whatever change resolved there.
+    fn graph_apply_clef(
+        &mut self,
+        instance_id: StaffInstanceId,
+        position: &MusicalPosition,
+        clef: Option<Clef>,
+    ) {
+        if let Some((region, instance)) = self.graph_staff_instance(instance_id) {
+            let change = clef.map(|clef| ClefChange {
+                anchor: region_position_anchor(region, position),
+                clef,
+            });
+            edit_staff_changes(&mut instance.clef_sequence, |c| &c.anchor, position, change);
+        }
+    }
+
+    /// [`Self::graph_apply_clef`] for the key sequence.
+    fn graph_apply_key(
+        &mut self,
+        instance_id: StaffInstanceId,
+        position: &MusicalPosition,
+        key: Option<KeySignature>,
+    ) {
+        if let Some((region, instance)) = self.graph_staff_instance(instance_id) {
+            let change = key.map(|key| KeySignatureChange {
+                anchor: region_position_anchor(region, position),
+                key,
+            });
+            edit_staff_changes(&mut instance.key_sequence, |k| &k.anchor, position, change);
+        }
     }
 
     fn graph_set_staff_layout(&mut self, instance_id: StaffInstanceId, value: &StaffLayoutValue) {
@@ -6116,6 +6536,7 @@ impl<'a> Reducer<'a> {
         );
         self.region_instances.remove(&op.region);
         self.staff_based_regions.remove(&op.region);
+        self.region_disciplines.remove(&op.region);
         self.graph_delete_region(op.region);
         OperationEffect::Applied
     }
@@ -6285,8 +6706,25 @@ impl<'a> Reducer<'a> {
         }
         let mut incompatible_events: BTreeSet<EventId> =
             op.declared_incompatible.iter().copied().collect();
+        let mapped: Option<BTreeSet<EventId>> = match &op.remapping {
+            crate::payload::PositionRemapping::Reassign(remapping) => {
+                Some(remapping.iter().map(|(event, _)| *event).collect())
+            }
+            crate::payload::PositionRemapping::PreserveTime => None,
+        };
+        let proportional = matches!(op.new_time_model, RegionTimeModel::Proportional(_));
+        // The region's events with a metric placement, from the indices both
+        // reduction modes keep, so the two derive one set of incompatible
+        // events: a metric event is incompatible with a proportional target,
+        // and with any target when a `Reassign` leaves it unmapped.
+        for event in self.indexed_region_events(op.region) {
+            if proportional || mapped.as_ref().is_some_and(|m| !m.contains(&event)) {
+                incompatible_events.insert(event);
+            }
+        }
         let mut graph_region_index = None;
         if let Some(score) = self.graph.as_ref() {
+            // The region's liveness is referential, so graph-aware only.
             let Some(region_index) = score
                 .canvas
                 .regions
@@ -6300,12 +6738,23 @@ impl<'a> Reducer<'a> {
                 };
             };
             graph_region_index = Some(region_index);
+            // The region's events the occupancy index does not hold, judged
+            // from the graph: a base's events of another coordinate kind,
+            // which base-free reduction never has. Every event the index holds
+            // was judged above, alike in both modes.
+            let indexed: BTreeSet<EventId> = self
+                .voice_occupancy
+                .values()
+                .flatten()
+                .map(|(_, _, event)| *event)
+                .collect();
             let region = &score.canvas.regions[region_index];
             let event_ids: Vec<EventId> = region
                 .staff_instances()
                 .iter()
                 .flat_map(|instance| &instance.voices)
                 .flat_map(|voice| voice.events.iter().copied())
+                .filter(|event| !indexed.contains(event))
                 .collect();
 
             for event_id in &event_ids {
@@ -6329,15 +6778,14 @@ impl<'a> Reducer<'a> {
                 }
             }
 
-            if let crate::payload::PositionRemapping::Reassign(remapping) = &op.remapping {
-                let mapped: BTreeSet<EventId> = remapping.iter().map(|(event, _)| *event).collect();
+            if let Some(mapped) = &mapped {
                 incompatible_events.extend(
                     event_ids
                         .iter()
                         .filter(|event| !mapped.contains(event))
                         .copied(),
                 );
-                if matches!(op.new_time_model, RegionTimeModel::Proportional(_)) {
+                if proportional {
                     // Reassign carries musical positions in the current
                     // prototype schema, so it cannot satisfy a proportional
                     // region's wall-clock coordinate discipline.
@@ -6366,6 +6814,23 @@ impl<'a> Reducer<'a> {
             return OperationEffect::Conflicted { conflict: cid };
         }
 
+        // The remapping moves the occupancy index in both modes, so a later
+        // insert, move or re-anchoring reads the same placements in each.
+        if let crate::payload::PositionRemapping::Reassign(remapping) = &op.remapping {
+            for (event, position) in remapping {
+                for placements in self.voice_occupancy.values_mut() {
+                    if let Some((stored_position, _, _)) = placements
+                        .iter_mut()
+                        .find(|(_, _, stored_event)| stored_event == event)
+                    {
+                        *stored_position = position.clone();
+                    }
+                }
+            }
+        }
+        if let Some(discipline) = self.region_disciplines.get_mut(&op.region) {
+            *discipline = op.new_time_model.coordinate_discipline();
+        }
         if let Some(region_index) = graph_region_index {
             let score = self
                 .graph
@@ -6375,14 +6840,6 @@ impl<'a> Reducer<'a> {
                 for (event, position) in remapping {
                     if let Some(value) = score.events.get_mut(*event) {
                         value.set_position(EventPosition::Musical(position.clone()));
-                    }
-                    for placements in self.voice_occupancy.values_mut() {
-                        if let Some((stored_position, _, _)) = placements
-                            .iter_mut()
-                            .find(|(_, _, stored_event)| stored_event == event)
-                        {
-                            *stored_position = position.clone();
-                        }
                     }
                 }
             }
@@ -7260,6 +7717,38 @@ impl<'a> Reducer<'a> {
                 }
             }
         }
+        for ((instance, position), chain) in &self.clef_chain {
+            if !slot_live(TypedObjectId::StaffInstance(*instance)) {
+                continue;
+            }
+            match chain.undo_verdict(tx) {
+                ChainUndoVerdict::NotWritten => {}
+                ChainUndoVerdict::Superseded { by } => superseded.push(by),
+                ChainUndoVerdict::Restore(predecessor) => {
+                    restorations.push(ValueRestoration::Clef {
+                        instance: *instance,
+                        position: position.clone(),
+                        value: predecessor.and_then(Predecessor::into_value),
+                    })
+                }
+            }
+        }
+        for ((instance, position), chain) in &self.key_chain {
+            if !slot_live(TypedObjectId::StaffInstance(*instance)) {
+                continue;
+            }
+            match chain.undo_verdict(tx) {
+                ChainUndoVerdict::NotWritten => {}
+                ChainUndoVerdict::Superseded { by } => superseded.push(by),
+                ChainUndoVerdict::Restore(predecessor) => {
+                    restorations.push(ValueRestoration::Key {
+                        instance: *instance,
+                        position: position.clone(),
+                        value: predecessor.and_then(Predecessor::into_value),
+                    })
+                }
+            }
+        }
         for ((region, position), chain) in &self.break_chain {
             if !slot_live(TypedObjectId::Region(*region)) {
                 continue;
@@ -7480,6 +7969,28 @@ impl<'a> Reducer<'a> {
                             .or_insert_with(WriteChain::new)
                             .record(env.id, env.transaction, value);
                     }
+                }
+                ValueRestoration::Clef {
+                    instance,
+                    position,
+                    value,
+                } => {
+                    self.clef_chain
+                        .entry((instance, position.clone()))
+                        .or_insert_with(WriteChain::new)
+                        .record(env.id, env.transaction, value);
+                    self.graph_apply_clef(instance, &position, value);
+                }
+                ValueRestoration::Key {
+                    instance,
+                    position,
+                    value,
+                } => {
+                    self.key_chain
+                        .entry((instance, position.clone()))
+                        .or_insert_with(WriteChain::new)
+                        .record(env.id, env.transaction, value);
+                    self.graph_apply_key(instance, &position, value);
                 }
                 ValueRestoration::SystemBreak {
                     region,
@@ -7716,6 +8227,23 @@ impl<'a> Reducer<'a> {
                     reason: PreconditionFailureReason::EventDurationInvalid,
                 },
             };
+        }
+        // A tuplet's members fill its required total (invariant 16): a member
+        // keeps its duration, which only a tuplet-aware edit may change.
+        if !self.containing_tuplets(event_id).is_empty() {
+            let current = self
+                .voice_occupancy
+                .values()
+                .flatten()
+                .find(|(_, _, event)| *event == event_id)
+                .map(|(_, duration, _)| EventDuration::Musical(duration.clone()));
+            if current.as_ref() != Some(op.event.duration()) {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::EventDurationInvalid,
+                    },
+                };
+            }
         }
         let prev = self
             .event_modify_chain
@@ -8547,6 +9075,16 @@ impl<'a> Reducer<'a> {
                     // A tie's existence requires both endpoints: cascade-delete.
                     self.cascade_structure(env, sid, repairs);
                 }
+                // A member's delete must declare its tuplet compensation
+                // (rule table "Tuplet / Member event"), which a `DeleteEvent`
+                // precondition enforces and which leaves no tuplet naming the
+                // member by now. A member tombstoned with no compensation to
+                // declare (an undo of the transaction that inserted it) leaves
+                // a tuplet whose members no longer fill its total: it
+                // cascades, as `CascadeDeleteTuplets` would have.
+                TypedObjectId::Tuplet(_) => {
+                    self.cascade_structure(env, sid, repairs);
+                }
                 // The graph-only referent kinds — markers, cue events,
                 // comments, analytical annotations, graphic gestures — are
                 // repaired where their graph mutation happens
@@ -8695,6 +9233,38 @@ impl<'a> Reducer<'a> {
         self.region_instances
             .iter()
             .find_map(|(region, instances)| instances.contains(&instance).then_some(*region))
+    }
+
+    /// The region a voice's placements lie in, from the base-free ledger
+    /// indices. A voice this reduction promoted is not among its instance's
+    /// voices there, so its instance is the one its losing insert named,
+    /// which is where the graph puts it.
+    fn indexed_voice_region(&self, voice: VoiceId) -> Option<RegionId> {
+        let instance = self.voice_instance(voice).or_else(|| {
+            self.promotion.iter().find_map(|(losing, (promoted, _))| {
+                if *promoted != voice {
+                    return None;
+                }
+                match &self.env_of(*losing)?.payload {
+                    OperationPayload::Primitive(OperationKind::InsertEvent(op)) => {
+                        Some(op.staff_instance)
+                    }
+                    _ => None,
+                }
+            })
+        })?;
+        self.instance_region_of(instance)
+    }
+
+    /// The live events with a metric placement in `region`, from the
+    /// occupancy index and the ledger indices, which both reduction modes
+    /// keep.
+    fn indexed_region_events(&self, region: RegionId) -> Vec<EventId> {
+        self.voice_occupancy
+            .iter()
+            .filter(|(voice, _)| self.indexed_voice_region(**voice) == Some(region))
+            .flat_map(|(_, placements)| placements.iter().map(|(_, _, event)| *event))
+            .collect()
     }
 
     /// The voice of a live event with an indexed metric placement.
@@ -9426,6 +9996,8 @@ impl<'a> Reducer<'a> {
             meter_change_chain: self.meter_change_chain.clone(),
             tempo_segment_chain: self.tempo_segment_chain.clone(),
             staff_layout_chain: self.staff_layout_chain.clone(),
+            clef_chain: self.clef_chain.clone(),
+            key_chain: self.key_chain.clone(),
             staff_values: self.staff_values.clone(),
             time_signature_values: self.time_signature_values.clone(),
             instrument_values: self.instrument_values.clone(),
@@ -9441,6 +10013,7 @@ impl<'a> Reducer<'a> {
             instance_voices: self.instance_voices.clone(),
             instance_staff: self.instance_staff.clone(),
             staff_based_regions: self.staff_based_regions.clone(),
+            region_disciplines: self.region_disciplines.clone(),
             migrated_regions: self.migrated_regions.clone(),
             region_migrator: self.region_migrator.clone(),
             descriptors: self.descriptors.clone(),
@@ -9473,6 +10046,8 @@ impl<'a> Reducer<'a> {
         self.meter_change_chain = s.meter_change_chain;
         self.tempo_segment_chain = s.tempo_segment_chain;
         self.staff_layout_chain = s.staff_layout_chain;
+        self.clef_chain = s.clef_chain;
+        self.key_chain = s.key_chain;
         self.staff_values = s.staff_values;
         self.time_signature_values = s.time_signature_values;
         self.instrument_values = s.instrument_values;
@@ -9488,6 +10063,7 @@ impl<'a> Reducer<'a> {
         self.instance_voices = s.instance_voices;
         self.instance_staff = s.instance_staff;
         self.staff_based_regions = s.staff_based_regions;
+        self.region_disciplines = s.region_disciplines;
         self.migrated_regions = s.migrated_regions;
         self.region_migrator = s.region_migrator;
         self.descriptors = s.descriptors;
@@ -13006,6 +13582,21 @@ mod tests {
         // `MaterializedState` still embeds no `Score` field value for the
         // carried `Measure`, so there remains no surface on this type for a
         // leak to appear on.
+        //
+        // Re-pinned again at X3.1: `gen_payload` gained `CreateTuplet` (arm
+        // 37), and `rng.below(37)` became `below(38)` — the same reshuffle,
+        // same reasoning. `CreateTuplet` is schema major 0 unconditionally (no
+        // `schema_major()` arm: `Tuplet` has no versioned walk), and
+        // `MaterializedState` embeds no `Score` field value for the carried
+        // `Tuplet`, so there remains no surface on this type for a leak to
+        // appear on.
+        //
+        // Re-pinned again at X3.6: `gen_payload` gained `SetClef` and
+        // `SetKeySignature` (arms 38, 39), and `rng.below(38)` became
+        // `below(40)` — the same reshuffle, same reasoning. Both are schema
+        // major 0 unconditionally, and `MaterializedState` embeds no `Score`
+        // field value for a clef or key, so there remains no surface on this
+        // type for a leak to appear on.
         let mut rng = epiphany_determinism::fuzz::SplitMix64::new(0xBA5E);
         let envelopes = crate::fuzz::gen_envelope_set(&mut rng, 200);
         let mut set = OperationSet::new();
@@ -13015,7 +13606,7 @@ mod tests {
         let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
             hex,
-            "aefd8ecd6df3abecb84229d5b77585dead9575b6f6554097bbd6907c7b0329d7"
+            "110807c575e2c88301c7d53292716c36ff476c97c7ca17551022d8627bd89f53"
         );
     }
 
@@ -20378,114 +20969,119 @@ mod tests {
         );
     }
 
-    /// Pin 4 (spec/CONTRACT_P13S19_PARTIAL.md): a pickup's successor is
-    /// refused end-to-end, not merely read off the reducer's source. The
-    /// pickup itself — first measure of the instance, `time_signature:
-    /// None` so the agreement clause (clause 2, which is NOT
-    /// predecessor-dependent) is avoided by declaration rather than by any
-    /// first-measure exemption — mints `Applied`: clauses 1 and 3 are
-    /// vacuous for it (no predecessor). Its successor, ALSO declaring
-    /// `time_signature: None` (so its own clause 2 is out of the way and
-    /// the refusal below cannot be clause 2's), starts only HALF a
-    /// `measure_duration` after the pickup — the pickup's own actual
-    /// (unmodelled) content length, not the governing signature's full
-    /// whole-note bar — and clause 3 refuses it: `MeasureMeterMismatch`.
-    /// The governing signature's own write and the pickup's mint are both
-    /// asserted `Applied` before the refusal is asserted, so envelope
-    /// counter gaps cannot make either op silently pending and pass the
-    /// refusal off as something it isn't.
+    /// A pickup (P13-S19, closed by X3.5) end to end: the instance's first
+    /// measure may be shorter than its bar, so its successor, half a bar
+    /// later, applies. The allowance is the first measure's alone: a third
+    /// measure half a bar after the successor is refused
+    /// `MeasureMeterMismatch`, and so is a successor more than a full bar
+    /// after the pickup. Every measure declares `time_signature: None`, so
+    /// no refusal here can be clause 2's; the governing signature's write is
+    /// asserted `Applied` first, so a counter gap cannot pass a pending op
+    /// off as a verdict.
     #[test]
-    fn g3b_create_measure_pickup_successor_refused_end_to_end() {
+    fn g3b_create_measure_pickup_successor_applies_end_to_end() {
         let region = RegionId::new(ReplicaId(1), 90);
         let instance = StaffInstanceId::new(ReplicaId(1), 91);
         let staff = StaffId::new(ReplicaId(1), 92);
-        let mut envs = g3b_region_and_instance_envs(1, region, instance, staff);
-
         let sig_a = TimeSignatureId::new(ReplicaId(1), 93);
-        // numerator 4 -> measure_duration = 4/4 = one whole note ("a full bar").
-        let set_sig_a = prim_env(
-            1,
-            2,
-            2,
-            CausalContext::new(),
-            OperationKind::SetTimeSignature(SetTimeSignatureOp {
-                region,
-                anchor: g3b_region_anchor(region, 0),
-                time_signature: Some(crate::valuegen::time_signature(sig_a, 4)),
-            }),
-        );
-        envs.push(set_sig_a.clone());
 
-        fn measure(id: u64, start: TimeAnchor, sig: Option<TimeSignatureId>) -> Measure {
+        fn measure(id: u64, region: RegionId, offset: (i64, i64)) -> Measure {
             Measure {
                 id: MeasureId::new(ReplicaId(1), id),
-                start,
-                time_signature: sig,
+                start: TimeAnchor::Region {
+                    id: region,
+                    edge: RegionEdge::Start,
+                    offset: if offset.0 == 0 {
+                        AnchorOffset::Zero
+                    } else {
+                        AnchorOffset::Musical(MusicalDuration(
+                            RationalTime::new(offset.0, offset.1).unwrap(),
+                        ))
+                    },
+                },
+                time_signature: None,
                 explicit_number: None,
                 number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
             }
         }
 
-        // The pickup: first measure, `None` (pin 4's fixture constraint —
-        // `Some` of a disagreeing signature would be refused by clause 2
-        // instead, for a reason that has nothing to do with partiality).
-        let pickup = g3b_measure_env(
-            1,
-            3,
-            3,
-            instance,
-            measure(400, g3b_region_anchor(region, 0), None),
-        );
+        // The measures after the signature, each at its offset in whole
+        // notes; returns the reduced state and their envelopes.
+        let reduce_with = |offsets: &[(i64, i64)]| {
+            let mut envs = g3b_region_and_instance_envs(1, region, instance, staff);
+            // numerator 4 -> measure_duration = 4/4 = one whole note.
+            let set_sig_a = prim_env(
+                1,
+                2,
+                2,
+                CausalContext::new(),
+                OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region,
+                    anchor: g3b_region_anchor(region, 0),
+                    time_signature: Some(crate::valuegen::time_signature(sig_a, 4)),
+                }),
+            );
+            envs.push(set_sig_a.clone());
+            let measures: Vec<OperationEnvelope> = offsets
+                .iter()
+                .enumerate()
+                .map(|(i, &offset)| {
+                    let n = 3 + i as u64;
+                    g3b_measure_env(
+                        1,
+                        n,
+                        n as i64,
+                        instance,
+                        measure(400 + i as u64, region, offset),
+                    )
+                })
+                .collect();
+            envs.extend(measures.iter().cloned());
+            let mut set = OperationSet::new();
+            set.accept_all(envs);
+            let state = set.reduce();
+            assert_eq!(
+                g3b_effect_of(&state, set_sig_a.id),
+                Some(OperationEffect::Applied),
+                "the governing signature must itself be applied, or the verdicts below prove \
+                 nothing"
+            );
+            (state, measures)
+        };
+        let mismatch = Some(OperationEffect::NoOp {
+            reason: NoOpReason::PreconditionFailedUnderReduction {
+                reason: PreconditionFailureReason::MeasureMeterMismatch,
+            },
+        });
 
-        // The successor: also `None`, so ITS clause 2 is equally out of the
-        // way. Half a whole note after the pickup — not the full bar sig_a
-        // demands.
-        let successor = g3b_measure_env(
-            1,
-            4,
-            4,
-            instance,
-            measure(
-                401,
-                TimeAnchor::Region {
-                    id: region,
-                    edge: RegionEdge::Start,
-                    offset: AnchorOffset::Musical(MusicalDuration(
-                        RationalTime::new(1, 2).unwrap(),
-                    )),
-                },
-                None,
-            ),
-        );
-
-        envs.extend([pickup.clone(), successor.clone()]);
-        let mut set = OperationSet::new();
-        set.accept_all(envs);
-        let state = set.reduce();
-
+        // A half-bar pickup, its successor, and a measure half a bar later.
+        let (state, ms) = reduce_with(&[(0, 1), (1, 2), (1, 1)]);
         assert_eq!(
-            g3b_effect_of(&state, set_sig_a.id),
+            g3b_effect_of(&state, ms[0].id),
             Some(OperationEffect::Applied),
-            "the governing signature must itself be applied, or the refusal below proves nothing"
+            "the pickup itself has no predecessor"
         );
         assert_eq!(
-            g3b_effect_of(&state, pickup.id),
+            g3b_effect_of(&state, ms[1].id),
             Some(OperationEffect::Applied),
-            "pin 1: the pickup itself is neither refused nor flagged — clauses 1 and 3 are \
-             vacuous for a first measure, and clause 2 is avoided here by declaring `None`, \
-             not by any first-measure exemption"
+            "a pickup's successor follows it by less than a full bar"
         );
         assert_eq!(
-            g3b_effect_of(&state, successor.id),
-            Some(OperationEffect::NoOp {
-                reason: NoOpReason::PreconditionFailedUnderReduction {
-                    reason: PreconditionFailureReason::MeasureMeterMismatch
-                }
-            }),
-            "pin 4: the pickup's successor is measured against the governing signature's FULL \
-             measure_duration (one whole note), not the pickup's own half-note actual length — \
-             clause 3 refuses it MeasureMeterMismatch, and (both sides declaring `None`) this \
-             refusal cannot be clause 2's"
+            g3b_effect_of(&state, ms[2].id),
+            mismatch,
+            "only the first measure may be short: the successor's own bar is full"
+        );
+
+        // A successor more than a full bar after the first measure.
+        let (state, ms) = reduce_with(&[(0, 1), (3, 2)]);
+        assert_eq!(
+            g3b_effect_of(&state, ms[0].id),
+            Some(OperationEffect::Applied)
+        );
+        assert_eq!(
+            g3b_effect_of(&state, ms[1].id),
+            mismatch,
+            "a first measure is never longer than its bar"
         );
     }
 
@@ -23492,5 +24088,1187 @@ mod tests {
                  not AlreadyApplied"
             );
         }
+    }
+
+    // =========================================================================
+    // X3.1: CreateTuplet (operation_catalog §CreateTuplet).
+    // =========================================================================
+
+    /// A tuplet over `members`, its required total `total` whole notes.
+    fn tuplet_over(id: u64, members: &[EventId], total: i64) -> epiphany_core::Tuplet {
+        epiphany_core::Tuplet {
+            id: TupletId::new(ReplicaId(1), id),
+            ratio: epiphany_core::TupletRatio::new(3, 2).expect("not degenerate"),
+            members: members.to_vec(),
+            parent: None,
+            required_total: epiphany_core::MusicalDuration(
+                RationalTime::new(total, 1).expect("a nonzero denominator"),
+            ),
+        }
+    }
+
+    fn create_tuplet(tuplet: epiphany_core::Tuplet) -> OperationKind {
+        OperationKind::CreateTuplet(CreateTupletOp { tuplet })
+    }
+
+    fn no_op_reason(state: &MaterializedState, id: OperationId) -> Option<NoOpReason> {
+        match effect_of(state, id) {
+            Some(OperationEffect::NoOp { reason }) => Some(reason.clone()),
+            _ => None,
+        }
+    }
+
+    fn refused(reason: PreconditionFailureReason) -> Option<NoOpReason> {
+        Some(NoOpReason::PreconditionFailedUnderReduction { reason })
+    }
+
+    /// A tuplet mints over live members whose durations fill its required
+    /// total; a missing member or parent, no members, or a total its members
+    /// do not fill each refuse it, and a second create of a live id is
+    /// idempotent.
+    #[test]
+    fn create_tuplet_mints_over_live_members_that_fill_it() {
+        let (e1, e2) = (
+            EventId::new(ReplicaId(1), 100),
+            EventId::new(ReplicaId(1), 101),
+        );
+        let ghost = EventId::new(ReplicaId(1), 6_666);
+        let mut orphan = tuplet_over(5, &[e1, e2], 2);
+        orphan.parent = Some(TupletId::new(ReplicaId(1), 77));
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            insert(1, 0, 10, 1, 100, 0),
+            insert(1, 1, 11, 1, 101, 1),
+            prim_env(
+                1,
+                2,
+                12,
+                seen_r1(1),
+                create_tuplet(tuplet_over(1, &[e1, e2], 2)),
+            ),
+            prim_env(
+                1,
+                3,
+                13,
+                seen_r1(2),
+                create_tuplet(tuplet_over(1, &[e1, e2], 2)),
+            ),
+            prim_env(
+                1,
+                4,
+                14,
+                seen_r1(3),
+                create_tuplet(tuplet_over(2, &[e1, ghost], 2)),
+            ),
+            prim_env(
+                1,
+                5,
+                15,
+                seen_r1(4),
+                create_tuplet(tuplet_over(3, &[e1, e2], 1)),
+            ),
+            prim_env(1, 6, 16, seen_r1(5), create_tuplet(tuplet_over(4, &[], 0))),
+            prim_env(1, 7, 17, seen_r1(6), create_tuplet(orphan)),
+        ]);
+        let state = set.reduce();
+        let id = |c| OperationId::new(ReplicaId(1), c);
+        assert!(matches!(
+            state
+                .objects
+                .get(&TypedObjectId::Tuplet(TupletId::new(ReplicaId(1), 1))),
+            Some(ObjectState::Live)
+        ));
+        assert_eq!(effect_of(&state, id(2)), Some(&OperationEffect::Applied));
+        assert_eq!(
+            no_op_reason(&state, id(3)),
+            Some(NoOpReason::AlreadyApplied)
+        );
+        assert_eq!(
+            no_op_reason(&state, id(4)),
+            refused(PreconditionFailureReason::TargetMissing)
+        );
+        assert_eq!(
+            no_op_reason(&state, id(5)),
+            refused(PreconditionFailureReason::EventDurationInvalid)
+        );
+        assert_eq!(
+            no_op_reason(&state, id(6)),
+            refused(PreconditionFailureReason::TargetMissing)
+        );
+        assert_eq!(
+            no_op_reason(&state, id(7)),
+            refused(PreconditionFailureReason::TargetMissing)
+        );
+        for n in 2..=5 {
+            assert!(
+                !state
+                    .objects
+                    .contains_key(&TypedObjectId::Tuplet(TupletId::new(ReplicaId(1), n))),
+                "refused tuplet {n} minted nothing"
+            );
+        }
+    }
+
+    /// Graph-aware reduction mints the tuplet into the score, its members'
+    /// durations read from the base, and refuses one they do not fill; the
+    /// score stays invariant-clean.
+    #[test]
+    fn create_tuplet_materializes_into_the_graph() {
+        use epiphany_core::generators::valid_score;
+        let base = valid_score(0x5EED);
+        let members: Vec<EventId> = base
+            .voices()
+            .map(|(_, _, v)| v.events.clone())
+            .next()
+            .expect("the fixture has a voice")
+            .into_iter()
+            .take(2)
+            .collect();
+        let total = members
+            .iter()
+            .map(
+                |e| match base.events.get(*e).expect("a base event").duration() {
+                    EventDuration::Musical(d) => d.clone(),
+                    other => panic!("a metric fixture event, not {other:?}"),
+                },
+            )
+            .fold(MusicalDuration::zero(), |a, b| a + b);
+        let mut tuplet = tuplet_over(1, &members, 1);
+        tuplet.required_total = total;
+        let mut short = tuplet.clone();
+        short.id = TupletId::new(ReplicaId(1), 2);
+        short.required_total = MusicalDuration::whole() + short.required_total;
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            prim_env(
+                1,
+                0,
+                10,
+                CausalContext::new(),
+                create_tuplet(tuplet.clone()),
+            ),
+            prim_env(1, 1, 11, seen_r1(0), create_tuplet(short)),
+        ]);
+        let graph = set.reduce_onto(&base);
+        assert!(graph.score.cross_cutting.tuplets.contains(&tuplet));
+        assert_eq!(
+            graph.score.cross_cutting.tuplets.len(),
+            base.cross_cutting.tuplets.len() + 1
+        );
+        assert_eq!(
+            no_op_reason(&graph.state, OperationId::new(ReplicaId(1), 1)),
+            refused(PreconditionFailureReason::EventDurationInvalid)
+        );
+        assert!(epiphany_core::check_invariants(&graph.score).is_empty());
+    }
+
+    /// A tuplet's member is deleted only with its compensation, in both
+    /// reduction modes alike, and the cascade removes the tuplet.
+    #[test]
+    fn a_tuplet_member_is_deleted_only_with_its_compensation() {
+        let (e1, e2) = (
+            EventId::new(ReplicaId(1), 100),
+            EventId::new(ReplicaId(1), 101),
+        );
+        let tid = TupletId::new(ReplicaId(1), 1);
+        let delete = |event, tuplet_compensation| {
+            OperationKind::DeleteEvent(DeleteEventOp {
+                event,
+                tuplet_compensation,
+            })
+        };
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            insert(1, 0, 10, 1, 100, 0),
+            insert(1, 1, 11, 1, 101, 1),
+            prim_env(
+                1,
+                2,
+                12,
+                seen_r1(1),
+                create_tuplet(tuplet_over(1, &[e1, e2], 2)),
+            ),
+            prim_env(
+                1,
+                3,
+                13,
+                seen_r1(2),
+                delete(e1, TupletCompensation::NotInTuplet),
+            ),
+            prim_env(
+                1,
+                4,
+                14,
+                seen_r1(3),
+                delete(
+                    e1,
+                    TupletCompensation::CascadeDeleteTuplets { tuplets: vec![tid] },
+                ),
+            ),
+        ]);
+        let state = set.reduce();
+        assert_eq!(
+            no_op_reason(&state, OperationId::new(ReplicaId(1), 3)),
+            refused(PreconditionFailureReason::TupletCompensationInvalid),
+            "the ledger refuses the uncompensated delete as the graph does"
+        );
+        assert!(matches!(
+            state.objects.get(&TypedObjectId::Tuplet(tid)),
+            Some(ObjectState::Tombstoned { .. })
+        ));
+        assert!(matches!(
+            state.objects.get(&TypedObjectId::Event(e1)),
+            Some(ObjectState::Tombstoned { .. })
+        ));
+
+        // A rest replacing a member takes its place in the tuplet: the tuplet
+        // stays, and the rest is now a member whose delete needs compensation.
+        let rest = EventId::new(ReplicaId(1), 102);
+        let replacement = crate::valuegen::insert_event_value(
+            rest,
+            VoiceId::new(ReplicaId(9), 1),
+            pos(0),
+            MusicalDuration::whole(),
+            &[],
+        );
+        let Event::Rest(replacement) = replacement else {
+            panic!("an event with no pitches is a rest")
+        };
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            insert(1, 0, 10, 1, 100, 0),
+            insert(1, 1, 11, 1, 101, 1),
+            prim_env(
+                1,
+                2,
+                12,
+                seen_r1(1),
+                create_tuplet(tuplet_over(1, &[e1, e2], 2)),
+            ),
+            prim_env(
+                1,
+                3,
+                13,
+                seen_r1(2),
+                delete(
+                    e1,
+                    TupletCompensation::ReplaceWithRest { rest: replacement },
+                ),
+            ),
+            prim_env(
+                1,
+                4,
+                14,
+                seen_r1(3),
+                delete(rest, TupletCompensation::NotInTuplet),
+            ),
+        ]);
+        let state = set.reduce();
+        assert!(matches!(
+            state.objects.get(&TypedObjectId::Tuplet(tid)),
+            Some(ObjectState::Live)
+        ));
+        assert_eq!(
+            no_op_reason(&state, OperationId::new(ReplicaId(1), 4)),
+            refused(PreconditionFailureReason::TupletCompensationInvalid),
+            "the replacing rest is a member"
+        );
+
+        // The same verdicts under graph-aware reduction, over a base's events.
+        use epiphany_core::generators::valid_score;
+        let base = valid_score(0x5EED);
+        let members: Vec<EventId> = base
+            .voices()
+            .map(|(_, _, v)| v.events.clone())
+            .next()
+            .expect("the fixture has a voice")
+            .into_iter()
+            .take(2)
+            .collect();
+        let mut tuplet = tuplet_over(1, &members, 1);
+        tuplet.required_total = members
+            .iter()
+            .map(
+                |e| match base.events.get(*e).expect("a base event").duration() {
+                    EventDuration::Musical(d) => d.clone(),
+                    other => panic!("a metric fixture event, not {other:?}"),
+                },
+            )
+            .fold(MusicalDuration::zero(), |a, b| a + b);
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            prim_env(
+                1,
+                0,
+                10,
+                CausalContext::new(),
+                create_tuplet(tuplet.clone()),
+            ),
+            prim_env(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                delete(members[0], TupletCompensation::NotInTuplet),
+            ),
+            prim_env(
+                1,
+                2,
+                12,
+                seen_r1(1),
+                delete(
+                    members[0],
+                    TupletCompensation::CascadeDeleteTuplets { tuplets: vec![tid] },
+                ),
+            ),
+        ]);
+        let graph = set.reduce_onto(&base);
+        assert_eq!(
+            no_op_reason(&graph.state, OperationId::new(ReplicaId(1), 1)),
+            refused(PreconditionFailureReason::TupletCompensationInvalid)
+        );
+        assert!(!graph.score.cross_cutting.tuplets.contains(&tuplet));
+        assert!(epiphany_core::check_invariants(&graph.score).is_empty());
+    }
+
+    /// A tuplet member's duration stays; a modify that keeps it applies.
+    #[test]
+    fn modify_event_keeps_a_tuplet_members_duration() {
+        let (e1, e2) = (
+            EventId::new(ReplicaId(1), 100),
+            EventId::new(ReplicaId(1), 101),
+        );
+        let modify = |duration| {
+            OperationKind::ModifyEvent(crate::payload::ModifyEventOp {
+                event: crate::valuegen::insert_event_value(
+                    e1,
+                    VoiceId::new(ReplicaId(9), 1),
+                    pos(0),
+                    duration,
+                    &[],
+                ),
+            })
+        };
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            insert(1, 0, 10, 1, 100, 0),
+            insert(1, 1, 11, 1, 101, 1),
+            prim_env(
+                1,
+                2,
+                12,
+                seen_r1(1),
+                create_tuplet(tuplet_over(1, &[e1, e2], 2)),
+            ),
+            prim_env(
+                1,
+                3,
+                13,
+                seen_r1(2),
+                modify(MusicalDuration(RationalTime::new(1, 2).expect("a half"))),
+            ),
+            prim_env(1, 4, 14, seen_r1(3), modify(MusicalDuration::whole())),
+        ]);
+        let state = set.reduce();
+        assert_eq!(
+            no_op_reason(&state, OperationId::new(ReplicaId(1), 3)),
+            refused(PreconditionFailureReason::EventDurationInvalid)
+        );
+        assert!(!matches!(
+            effect_of(&state, OperationId::new(ReplicaId(1), 4)),
+            Some(OperationEffect::NoOp { .. })
+        ));
+    }
+
+    /// Undoing the transaction that inserted a tuplet's members cascades the
+    /// tuplet, which no compensation could be declared for; undoing the
+    /// tuplet's own create removes it from the graph.
+    #[test]
+    fn undo_cascades_a_tuplet_whose_members_it_removes() {
+        let (e1, e2) = (
+            EventId::new(ReplicaId(1), 100),
+            EventId::new(ReplicaId(1), 101),
+        );
+        let tid = TupletId::new(ReplicaId(1), 1);
+        let tx = TransactionId::new(ReplicaId(1), 900);
+        let mut a = insert(1, 1, 11, 1, 100, 0);
+        a.transaction = Some(tx);
+        a.causal_context = seen_r1(0);
+        let mut b = insert(1, 2, 12, 1, 101, 1);
+        b.transaction = Some(tx);
+        b.causal_context = seen_r1(1);
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            a,
+            b,
+            prim_env(
+                1,
+                3,
+                13,
+                seen_r1(2),
+                create_tuplet(tuplet_over(1, &[e1, e2], 2)),
+            ),
+            undo_env(1, 4, 14, seen_r1(3), tx, UndoPolicy::StrictInverse),
+        ]);
+        let state = set.reduce();
+        assert!(matches!(
+            state.objects.get(&TypedObjectId::Tuplet(tid)),
+            Some(ObjectState::Tombstoned { .. })
+        ));
+
+        use epiphany_core::generators::valid_score;
+        let base = valid_score(0x5EED);
+        let members: Vec<EventId> = base
+            .voices()
+            .map(|(_, _, v)| v.events.clone())
+            .next()
+            .expect("the fixture has a voice")
+            .into_iter()
+            .take(2)
+            .collect();
+        let mut tuplet = tuplet_over(1, &members, 1);
+        tuplet.required_total = members
+            .iter()
+            .map(
+                |e| match base.events.get(*e).expect("a base event").duration() {
+                    EventDuration::Musical(d) => d.clone(),
+                    other => panic!("a metric fixture event, not {other:?}"),
+                },
+            )
+            .fold(MusicalDuration::zero(), |a, b| a + b);
+        let tx = TransactionId::new(ReplicaId(1), 901);
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            tx_member(1, 1, 11, seen_r1(0), tx, create_tuplet(tuplet.clone())),
+            undo_env(1, 2, 12, seen_r1(1), tx, UndoPolicy::StrictInverse),
+        ]);
+        let graph = set.reduce_onto(&base);
+        assert!(!graph.score.cross_cutting.tuplets.contains(&tuplet));
+        assert!(matches!(
+            graph.state.objects.get(&TypedObjectId::Tuplet(tuplet.id)),
+            Some(ObjectState::Tombstoned { .. })
+        ));
+
+        // Undoing the insert of a member the graph holds removes the tuplet
+        // from the graph as well as the ledger.
+        let (_, instance, voice) = base.voices().next().expect("the fixture has a voice");
+        let (voice, at) = (
+            voice.id,
+            voice
+                .events
+                .iter()
+                .map(|e| {
+                    let event = base.events.get(*e).expect("a base event");
+                    match (event.position(), event.duration()) {
+                        (EventPosition::Musical(p), EventDuration::Musical(d)) => {
+                            p.clone() + d.clone()
+                        }
+                        _ => panic!("a metric fixture event"),
+                    }
+                })
+                .max()
+                .expect("the voice has events"),
+        );
+        let added = EventId::new(ReplicaId(1), 500);
+        let tx = TransactionId::new(ReplicaId(1), 902);
+        let mut tuplet = tuplet_over(3, &[members[0], added], 1);
+        tuplet.required_total = match base
+            .events
+            .get(members[0])
+            .expect("a base event")
+            .duration()
+        {
+            EventDuration::Musical(d) => d.clone() + MusicalDuration::whole(),
+            other => panic!("a metric fixture event, not {other:?}"),
+        };
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(1, 0, 10, CausalContext::new(), tx),
+            tx_member(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                tx,
+                OperationKind::InsertEvent(InsertEventOp {
+                    staff_instance: instance,
+                    event: crate::valuegen::insert_event_value(
+                        added,
+                        voice,
+                        at,
+                        MusicalDuration::whole(),
+                        &[],
+                    ),
+                }),
+            ),
+            prim_env(1, 2, 12, seen_r1(1), create_tuplet(tuplet.clone())),
+            undo_env(1, 3, 13, seen_r1(2), tx, UndoPolicy::StrictInverse),
+        ]);
+        let graph = set.reduce_onto(&base);
+        assert_eq!(
+            effect_of(&graph.state, OperationId::new(ReplicaId(1), 2)),
+            Some(&OperationEffect::Applied),
+            "the tuplet over a base event and an inserted one mints"
+        );
+        assert!(matches!(
+            graph.state.objects.get(&TypedObjectId::Tuplet(tuplet.id)),
+            Some(ObjectState::Tombstoned { .. })
+        ));
+        assert!(!graph.score.cross_cutting.tuplets.contains(&tuplet));
+        assert!(epiphany_core::check_invariants(&graph.score).is_empty());
+    }
+
+    /// Over a base holding a tuplet (reduction version 2): a member replaced
+    /// by a rest leaves the tuplet live with the rest in its place and no
+    /// repair recorded against it; and a member removed with no compensation
+    /// to declare (the rest, when an undo removes the replacement; a cue
+    /// whose source is deleted) cascades the tuplet out of the effect and the
+    /// graph alike, where version 1 left the tuplet naming a dead member.
+    #[test]
+    fn a_base_tuplet_follows_its_members_replacement_and_cascade() {
+        use epiphany_core::generators::valid_score;
+        use epiphany_core::{
+            check_invariants, CueEvent, CueRendering, EventPosition, MusicalPosition, Rest,
+        };
+        let repairs_of = |state: &MaterializedState, id: OperationId| -> Vec<RepairRecord> {
+            match effect_of(state, id) {
+                Some(OperationEffect::AppliedWithRepair { repairs }) => repairs.clone(),
+                Some(OperationEffect::Applied) => Vec::new(),
+                other => panic!("expected an applied effect, got {other:?}"),
+            }
+        };
+
+        // A tuplet over a voice's first two events; the first replaced.
+        let mut base = valid_score(0x5EED);
+        let (voice, x, y) = {
+            let v = &base.canvas.regions[0].staff_instances()[0].voices[0];
+            (v.id, v.events[0], v.events[1])
+        };
+        let duration = |e: EventId| match base.events.get(e).expect("a base event").duration() {
+            EventDuration::Musical(d) => d.clone(),
+            other => panic!("a metric fixture event, not {other:?}"),
+        };
+        let mut tuplet = tuplet_over(1, &[x, y], 1);
+        tuplet.required_total = duration(x) + duration(y);
+        base.cross_cutting.tuplets.push(tuplet.clone());
+        assert!(
+            check_invariants(&base).is_empty(),
+            "the tuplet base is well-formed"
+        );
+        let x_event = base.events.get(x).expect("a base event").clone();
+        let rest = Rest {
+            id: EventId::new(ReplicaId(9), 9_003),
+            voice,
+            position: x_event.position().clone(),
+            duration: x_event.duration().clone(),
+            vertical_position: None,
+            visible: true,
+        };
+        let replace = prim_env(
+            2,
+            0,
+            20,
+            CausalContext::new(),
+            OperationKind::DeleteEvent(DeleteEventOp {
+                event: x,
+                tuplet_compensation: TupletCompensation::ReplaceWithRest { rest: rest.clone() },
+            }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![replace.clone()]);
+        let result = set.reduce_onto(&base);
+        let tid = TypedObjectId::Tuplet(tuplet.id);
+        assert!(matches!(
+            result.state.objects.get(&tid),
+            Some(ObjectState::Live)
+        ));
+        assert!(
+            !repairs_of(&result.state, replace.id)
+                .iter()
+                .any(|r| r.target == tid),
+            "no repair is recorded against the tuplet that kept its rest"
+        );
+        let kept = result
+            .score
+            .cross_cutting
+            .tuplets
+            .iter()
+            .find(|t| t.id == tuplet.id)
+            .expect("the tuplet stays in the graph");
+        assert_eq!(kept.members, vec![rest.id, y]);
+        assert!(check_invariants(&result.score).is_empty());
+
+        // The same replacement in a transaction, then undone: the undo
+        // tombstones the rest it minted, a member no compensation can be
+        // declared for, so the tuplet cascades out of the effect and the
+        // graph, where version 1 left it naming the dead rest.
+        let tx = TransactionId::new(ReplicaId(2), 900);
+        let replace_in_tx = tx_member(
+            2,
+            1,
+            21,
+            CausalContext::new().with_seen(ReplicaId(2), 0),
+            tx,
+            OperationKind::DeleteEvent(DeleteEventOp {
+                event: x,
+                tuplet_compensation: TupletCompensation::ReplaceWithRest { rest: rest.clone() },
+            }),
+        );
+        let undo = undo_env(
+            2,
+            2,
+            22,
+            CausalContext::new().with_seen(ReplicaId(2), 1),
+            tx,
+            UndoPolicy::StrictInverse,
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            declare_transaction(2, 0, 20, CausalContext::new(), tx),
+            replace_in_tx,
+            undo.clone(),
+        ]);
+        let result = set.reduce_onto(&base);
+        let cascaded: Vec<TypedObjectId> = repairs_of(&result.state, undo.id)
+            .into_iter()
+            .filter(|r| r.kind == RepairKind::CascadeDeleted)
+            .map(|r| r.target)
+            .collect();
+        assert_eq!(cascaded, vec![TypedObjectId::Event(rest.id), tid]);
+        assert!(matches!(
+            result.state.objects.get(&tid),
+            Some(ObjectState::Tombstoned { .. })
+        ));
+        assert!(!result
+            .score
+            .cross_cutting
+            .tuplets
+            .iter()
+            .any(|t| t.id == tuplet.id));
+        assert!(check_invariants(&result.score).is_empty());
+
+        // A tuplet over a cue sourced on the voice's first event; deleting
+        // that event cascades the cue, and the cue the tuplet.
+        let mut base = valid_score(0x5EED);
+        let (voice, x, count) = {
+            let v = &base.canvas.regions[0].staff_instances()[0].voices[0];
+            (v.id, v.events[0], v.events.len() as i64)
+        };
+        let cue = EventId::new(ReplicaId(9), 9_001);
+        base.events
+            .insert(Event::Cue(CueEvent {
+                id: cue,
+                voice,
+                position: EventPosition::Musical(MusicalPosition(
+                    RationalTime::new(count, 4).unwrap(),
+                )),
+                duration: EventDuration::Musical(MusicalDuration(RationalTime::new(1, 4).unwrap())),
+                source: vec![x],
+                rendering: CueRendering,
+            }))
+            .expect("fresh cue id");
+        base.canvas.regions[0]
+            .content
+            .staff_instances_mut()
+            .expect("staff-based content")[0]
+            .voices[0]
+            .events
+            .push(cue);
+        let mut tuplet = tuplet_over(2, &[cue], 1);
+        tuplet.required_total = MusicalDuration(RationalTime::new(1, 4).unwrap());
+        base.cross_cutting.tuplets.push(tuplet.clone());
+        assert!(
+            check_invariants(&base).is_empty(),
+            "the cue tuplet base is well-formed"
+        );
+        let delete = prim_env(
+            2,
+            0,
+            20,
+            CausalContext::new(),
+            OperationKind::DeleteEvent(DeleteEventOp {
+                event: x,
+                tuplet_compensation: TupletCompensation::NotInTuplet,
+            }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![delete.clone()]);
+        let result = set.reduce_onto(&base);
+        let tid = TypedObjectId::Tuplet(tuplet.id);
+        assert!(matches!(
+            result.state.objects.get(&tid),
+            Some(ObjectState::Tombstoned { .. })
+        ));
+        let tuplet_repairs: Vec<RepairKind> = repairs_of(&result.state, delete.id)
+            .into_iter()
+            .filter(|r| r.target == tid)
+            .map(|r| r.kind)
+            .collect();
+        assert_eq!(tuplet_repairs, vec![RepairKind::CascadeDeleted]);
+        assert!(!result.score.cross_cutting.tuplets.contains(&tuplet));
+        assert!(check_invariants(&result.score).is_empty());
+    }
+
+    /// Reduction version 2's verdicts on histories that make no tuplet.
+    /// Base-free, a `DeleteEvent` declaring `RewriteTuplets`, or
+    /// `CascadeDeleteTuplets` naming tuplets that do not hold the event, is
+    /// refused `TupletCompensationInvalid`, as graph-aware reduction refuses
+    /// it; version 1 applied both base-free, recording a compensation against
+    /// a tuplet no operation minted and, for the cascade, tombstoning its id.
+    /// And over a base holding a tuplet, a `ModifyEvent` that would change a
+    /// member's duration is refused `EventDurationInvalid`, where version 1
+    /// applied it and broke invariant 16.
+    #[test]
+    fn version_2_verdicts_on_histories_that_make_no_tuplet() {
+        use epiphany_core::check_invariants;
+        use epiphany_core::generators::valid_score;
+
+        let base = valid_score(0x5EED);
+        let x = base.canvas.regions[0].staff_instances()[0].voices[0].events[0];
+        let (e, t) = (
+            EventId::new(ReplicaId(1), 100),
+            TupletId::new(ReplicaId(9), 1),
+        );
+        for compensation in [
+            TupletCompensation::RewriteTuplets { tuplets: vec![t] },
+            TupletCompensation::CascadeDeleteTuplets { tuplets: vec![t] },
+        ] {
+            let delete = |event, seen| {
+                prim_env(
+                    2,
+                    0,
+                    20,
+                    seen,
+                    OperationKind::DeleteEvent(DeleteEventOp {
+                        event,
+                        tuplet_compensation: compensation.clone(),
+                    }),
+                )
+            };
+            let mut set = OperationSet::new();
+            set.accept_all(vec![insert(1, 0, 10, 1, 100, 0), delete(e, seen_r1(0))]);
+            let state = set.reduce();
+            let id = OperationId::new(ReplicaId(2), 0);
+            assert_eq!(
+                no_op_reason(&state, id),
+                refused(PreconditionFailureReason::TupletCompensationInvalid),
+                "base-free, {compensation:?}"
+            );
+            assert!(matches!(
+                state.objects.get(&TypedObjectId::Event(e)),
+                Some(ObjectState::Live)
+            ));
+            assert_eq!(
+                state.objects.get(&TypedObjectId::Tuplet(t)),
+                None,
+                "no tuplet id is tombstoned"
+            );
+            let mut set = OperationSet::new();
+            set.accept_all(vec![delete(x, CausalContext::new())]);
+            let graph = set.reduce_onto(&base);
+            assert_eq!(
+                no_op_reason(&graph.state, id),
+                refused(PreconditionFailureReason::TupletCompensationInvalid),
+                "graph-aware, {compensation:?}"
+            );
+        }
+
+        // A tuplet over the voice's first two events; the first halved.
+        let mut base = base;
+        let y = base.canvas.regions[0].staff_instances()[0].voices[0].events[1];
+        let duration =
+            |score: &Score, e: EventId| match score.events.get(e).expect("an event").duration() {
+                EventDuration::Musical(d) => d.clone(),
+                other => panic!("a metric fixture event, not {other:?}"),
+            };
+        let mut tuplet = tuplet_over(1, &[x, y], 1);
+        tuplet.required_total = duration(&base, x) + duration(&base, y);
+        base.cross_cutting.tuplets.push(tuplet);
+        assert!(
+            check_invariants(&base).is_empty(),
+            "the base is well-formed"
+        );
+        let mut halved = base.events.get(x).expect("a base event").clone();
+        let half = EventDuration::Musical(MusicalDuration(
+            duration(&base, x)
+                .0
+                .mul(&RationalTime::new(1, 2).expect("a half")),
+        ));
+        match &mut halved {
+            Event::Pitched(event) => event.duration = half,
+            Event::Rest(event) => event.duration = half,
+            other => panic!("a note or rest, not {other:?}"),
+        }
+        let modify = prim_env(
+            2,
+            0,
+            20,
+            CausalContext::new(),
+            OperationKind::ModifyEvent(crate::payload::ModifyEventOp { event: halved }),
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(vec![modify.clone()]);
+        let graph = set.reduce_onto(&base);
+        assert_eq!(
+            no_op_reason(&graph.state, modify.id),
+            refused(PreconditionFailureReason::EventDurationInvalid)
+        );
+        assert!(check_invariants(&graph.score).is_empty());
+    }
+
+    // --- X3.6: SetClef and SetKeySignature. ---
+
+    fn whole_notes(n: i64, d: i64) -> RationalTime {
+        RationalTime::new(n, d).expect("a valid offset")
+    }
+
+    fn set_clef_kind(
+        instance: StaffInstanceId,
+        offset: RationalTime,
+        clef: Option<Clef>,
+    ) -> OperationKind {
+        OperationKind::SetClef(SetClefOp {
+            instance,
+            offset,
+            clef,
+        })
+    }
+
+    fn set_key_kind(
+        instance: StaffInstanceId,
+        offset: RationalTime,
+        key: Option<KeySignature>,
+    ) -> OperationKind {
+        OperationKind::SetKeySignature(SetKeySignatureOp {
+            instance,
+            offset,
+            key,
+        })
+    }
+
+    /// The fixture score's first staff instance, with its region.
+    fn first_staff_instance(score: &Score) -> (RegionId, StaffInstance) {
+        score
+            .canvas
+            .regions
+            .iter()
+            .find_map(|r| Some((r.id, r.staff_instances().first()?.clone())))
+            .expect("the fixture has a staff instance")
+    }
+
+    /// The fixture's staff instance after reduction.
+    fn reduced_instance(score: &Score, id: StaffInstanceId) -> StaffInstance {
+        score
+            .canvas
+            .regions
+            .iter()
+            .flat_map(|r| r.staff_instances())
+            .find(|i| i.id == id)
+            .expect("the instance survives")
+            .clone()
+    }
+
+    /// A clef or key change is written into its staff instance's sequence at
+    /// its offset, in position order; a later write at the same offset
+    /// replaces it or, with `None`, removes it; a missing instance refuses.
+    /// Ledger reduction reaches the same verdicts for an instance the set
+    /// itself creates.
+    #[test]
+    fn set_clef_and_key_edit_their_instance_sequences() {
+        let base = epiphany_core::generators::valid_score(0x5EED);
+        let (region, instance) = first_staff_instance(&base);
+        let alto = Clef {
+            shape: epiphany_core::ClefShape::C,
+            line: 3,
+            octave_shift: 0,
+        };
+        let missing = StaffInstanceId::new(ReplicaId(9), 999);
+        let envelopes = vec![
+            prim_env(
+                1,
+                0,
+                10,
+                CausalContext::new(),
+                set_clef_kind(instance.id, whole_notes(3, 1), Some(Clef::bass())),
+            ),
+            prim_env(
+                1,
+                1,
+                11,
+                seen_r1(0),
+                set_clef_kind(instance.id, whole_notes(1, 2), Some(alto)),
+            ),
+            prim_env(
+                1,
+                2,
+                12,
+                seen_r1(1),
+                set_key_kind(instance.id, whole_notes(1, 2), KeySignature::new(-3)),
+            ),
+            prim_env(
+                1,
+                3,
+                13,
+                seen_r1(2),
+                set_clef_kind(instance.id, whole_notes(5, 1), Some(Clef::treble())),
+            ),
+            prim_env(
+                1,
+                4,
+                14,
+                seen_r1(3),
+                set_clef_kind(missing, whole_notes(0, 1), Some(Clef::bass())),
+            ),
+            prim_env(
+                1,
+                5,
+                15,
+                seen_r1(4),
+                set_clef_kind(instance.id, whole_notes(5, 1), None),
+            ),
+        ];
+        let mut set = OperationSet::new();
+        set.accept_all(envelopes);
+        let graph = set.reduce_onto(&base);
+        for counter in [0, 1, 2, 3, 5] {
+            assert_eq!(
+                effect_at(&graph.state, counter),
+                Some(&OperationEffect::Applied)
+            );
+        }
+        let missing_effect = OperationEffect::NoOp {
+            reason: NoOpReason::PreconditionFailedUnderReduction {
+                reason: PreconditionFailureReason::TargetMissing,
+            },
+        };
+        assert_eq!(effect_at(&graph.state, 4), Some(&missing_effect));
+
+        // Base-free, over an instance the set creates.
+        let ledger_region = RegionId::new(ReplicaId(1), 90);
+        let ledger_instance = StaffInstanceId::new(ReplicaId(1), 91);
+        let mut envs = g3b_region_and_instance_envs(
+            1,
+            ledger_region,
+            ledger_instance,
+            StaffId::new(ReplicaId(1), 92),
+        );
+        let writes = [
+            prim_env(
+                1,
+                10,
+                20,
+                CausalContext::new(),
+                set_clef_kind(ledger_instance, whole_notes(1, 2), Some(alto)),
+            ),
+            prim_env(
+                1,
+                11,
+                21,
+                CausalContext::new(),
+                set_key_kind(ledger_instance, whole_notes(1, 2), KeySignature::new(-3)),
+            ),
+            prim_env(
+                1,
+                12,
+                22,
+                CausalContext::new(),
+                set_clef_kind(missing, whole_notes(0, 1), Some(Clef::bass())),
+            ),
+        ];
+        envs.extend(writes.iter().cloned());
+        let mut ledger_set = OperationSet::new();
+        ledger_set.accept_all(envs);
+        let ledger = ledger_set.reduce();
+        assert_eq!(
+            effect_of(&ledger, writes[0].id),
+            Some(&OperationEffect::Applied)
+        );
+        assert_eq!(
+            effect_of(&ledger, writes[1].id),
+            Some(&OperationEffect::Applied)
+        );
+        assert_eq!(effect_of(&ledger, writes[2].id), Some(&missing_effect));
+
+        let anchor = |offset: RationalTime| TimeAnchor::Region {
+            id: region,
+            edge: RegionEdge::Start,
+            offset: AnchorOffset::Musical(MusicalDuration(offset)),
+        };
+        let after = reduced_instance(&graph.score, instance.id);
+        let mut clefs = instance.clef_sequence.clone();
+        clefs.push(ClefChange {
+            anchor: anchor(whole_notes(1, 2)),
+            clef: alto,
+        });
+        clefs.push(ClefChange {
+            anchor: anchor(whole_notes(3, 1)),
+            clef: Clef::bass(),
+        });
+        clefs.sort_by_key(|c| resolved_anchor_position(&c.anchor));
+        assert_eq!(
+            after.clef_sequence, clefs,
+            "the change at 1/2 stands before the one at 3; the one at 5 was set, then removed"
+        );
+        assert!(after.key_sequence.contains(&KeySignatureChange {
+            anchor: anchor(whole_notes(1, 2)),
+            key: KeySignature::new(-3).expect("a valid key"),
+        }));
+        assert!(after.key_sequence.windows(2).all(
+            |w| resolved_anchor_position(&w[0].anchor) < resolved_anchor_position(&w[1].anchor)
+        ));
+        assert!(epiphany_core::check_invariants(&graph.score).is_empty());
+    }
+
+    /// Concurrent writes of different clefs at one offset conflict, the later
+    /// in canonical order winning; a concurrent write of the value already
+    /// there is already applied.
+    #[test]
+    fn concurrent_clef_writes_conflict_and_the_later_wins() {
+        let base = epiphany_core::generators::valid_score(0x5EED);
+        let (_, instance) = first_staff_instance(&base);
+        let at = whole_notes(2, 1);
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            prim_env(
+                1,
+                0,
+                10,
+                CausalContext::new(),
+                set_clef_kind(instance.id, at.clone(), Some(Clef::bass())),
+            ),
+            prim_env(
+                2,
+                0,
+                11,
+                CausalContext::new(),
+                set_clef_kind(instance.id, at.clone(), Some(Clef::treble())),
+            ),
+            prim_env(
+                3,
+                0,
+                12,
+                CausalContext::new(),
+                set_clef_kind(instance.id, at.clone(), Some(Clef::treble())),
+            ),
+        ]);
+        let graph = set.reduce_onto(&base);
+        assert!(matches!(
+            effect_of(&graph.state, OperationId::new(ReplicaId(2), 0)),
+            Some(OperationEffect::Conflicted { .. })
+        ));
+        assert_eq!(
+            no_op_reason(&graph.state, OperationId::new(ReplicaId(3), 0)),
+            Some(NoOpReason::AlreadyApplied)
+        );
+        assert_eq!(graph.state.conflicts.records().len(), 1);
+        let after = reduced_instance(&graph.score, instance.id);
+        let at_two: Vec<Clef> = after
+            .clef_sequence
+            .iter()
+            .filter(|c| resolved_anchor_position(&c.anchor) == MusicalPosition(at.clone()))
+            .map(|c| c.clef)
+            .collect();
+        assert_eq!(at_two, vec![Clef::treble()]);
+    }
+
+    /// Undo restores what a change replaced: the earlier key where one stood,
+    /// the base's own clef change, and no clef where none was.
+    #[test]
+    fn undo_restores_a_staff_change_or_its_absence() {
+        let mut base = epiphany_core::generators::valid_score(0x5EED);
+        let (region, _) = first_staff_instance(&base);
+        // The base holds a change of its own, a treble clef a measure in.
+        let based = ClefChange {
+            anchor: TimeAnchor::Region {
+                id: region,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Musical(MusicalDuration(whole_notes(1, 1))),
+            },
+            clef: Clef::treble(),
+        };
+        base.canvas
+            .regions
+            .iter_mut()
+            .find(|r| r.id == region)
+            .and_then(|r| r.content.staff_instances_mut())
+            .and_then(|instances| instances.first_mut())
+            .expect("the fixture's instance")
+            .clef_sequence
+            .push(based.clone());
+        let (_, instance) = first_staff_instance(&base);
+        let tx = TransactionId::from_raw(61);
+        let (key_at, clef_at) = (whole_notes(4, 1), whole_notes(5, 1));
+        let mut set = OperationSet::new();
+        set.accept_all(vec![
+            prim_env(
+                1,
+                0,
+                10,
+                CausalContext::new(),
+                set_key_kind(instance.id, key_at.clone(), KeySignature::new(-3)),
+            ),
+            declare_transaction(1, 1, 11, seen_r1(0), tx),
+            tx_member(
+                1,
+                2,
+                12,
+                seen_r1(1),
+                tx,
+                set_key_kind(instance.id, key_at.clone(), KeySignature::new(2)),
+            ),
+            tx_member(
+                1,
+                3,
+                13,
+                seen_r1(2),
+                tx,
+                set_clef_kind(instance.id, clef_at.clone(), Some(Clef::bass())),
+            ),
+            tx_member(
+                1,
+                4,
+                14,
+                seen_r1(3),
+                tx,
+                set_clef_kind(instance.id, whole_notes(1, 1), Some(Clef::bass())),
+            ),
+        ]);
+        let done = set.reduce_onto(&base);
+        let before = reduced_instance(&done.score, instance.id);
+        assert!(before.clef_sequence.iter().any(|c| c.clef == Clef::bass()
+            && resolved_anchor_position(&c.anchor) == MusicalPosition(clef_at.clone())));
+        assert!(
+            !before.clef_sequence.contains(&based),
+            "the base's change was overwritten"
+        );
+        set.accept_all(vec![undo_env(
+            1,
+            5,
+            15,
+            seen_r1(4),
+            tx,
+            UndoPolicy::StrictInverse,
+        )]);
+        let undone = set.reduce_onto(&base);
+        assert_eq!(effect_at(&undone.state, 5), Some(&OperationEffect::Applied));
+        let after = reduced_instance(&undone.score, instance.id);
+        let key_there: Vec<KeySignature> = after
+            .key_sequence
+            .iter()
+            .filter(|k| resolved_anchor_position(&k.anchor) == MusicalPosition(key_at.clone()))
+            .map(|k| k.key)
+            .collect();
+        assert_eq!(key_there, vec![KeySignature::new(-3).expect("a valid key")]);
+        assert!(!after
+            .clef_sequence
+            .iter()
+            .any(|c| resolved_anchor_position(&c.anchor) == MusicalPosition(clef_at.clone())));
+        assert!(
+            after.clef_sequence.contains(&based),
+            "the base's change is back"
+        );
+        assert_eq!(after.clef_sequence, instance.clef_sequence);
     }
 }

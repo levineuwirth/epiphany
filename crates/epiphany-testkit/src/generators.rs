@@ -17,13 +17,13 @@ use epiphany_bundle::{
     Superblock, WallClockDuration as BundleWallClockDuration, WallClockTime as BundleWallClockTime,
 };
 use epiphany_core::{
-    AnalysisLayerId, AnalyticalAnnotationId, BarlineAlignmentGroupId, BeamId, ChordSymbolId,
+    AnalysisLayerId, AnalyticalAnnotationId, BarlineAlignmentGroupId, BeamId, ChordSymbolId, Clef,
     CommentId, EventId, GraphicGestureId, GraphicObjectId, InstrumentId, IntegrityAnomalyId,
-    LyricLineId, MarkerId, MeasureId, MusicalDuration, MusicalPosition, ObjectKindRegistryId,
-    OperationId, PartDefinitionId, PitchId, RationalTime, RegionId, RepeatStructureId, ReplicaId,
-    SlurId, SpannerId, StaffGroupId, StaffId, StaffInstanceId, TieId, TimeSignatureId,
-    TransactionId, TranspositionInterval, TupletId, TypedObjectId, ViewId, VoiceId,
-    WallClockDuration, WallClockTime,
+    KeySignature, LyricLineId, MarkerId, MeasureId, MusicalDuration, MusicalPosition,
+    ObjectKindRegistryId, OperationId, PartDefinitionId, PitchId, RationalTime, RegionId,
+    RepeatStructureId, ReplicaId, SlurId, SpannerId, StaffGroupId, StaffId, StaffInstanceId, TieId,
+    TimeSignatureId, TransactionId, TranspositionInterval, TupletId, TypedObjectId, ViewId,
+    VoiceId, WallClockDuration, WallClockTime,
 };
 use epiphany_determinism::{
     CanonicalEncode, CanonicalF64, ChunkId, ContentHash, DomainTag, QuantizedCoord, Tolerance,
@@ -35,8 +35,8 @@ use epiphany_ops::{
     ConflictKind, ConflictKindRegistryId, ConflictRecord, ConflictRegistry,
     ConflictResolutionState, CreateAnalysisLayerOp, CreateCrossCuttingOp, CreateInstrumentOp,
     CreateMeasureOp, CreatePartDefinitionOp, CreateRegionOp, CreateRepeatStructureOp,
-    CreateStaffGroupOp, CreateStaffInstanceOp, CreateStaffOp, CreateViewOp, CreateVoiceOp,
-    CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp,
+    CreateStaffGroupOp, CreateStaffInstanceOp, CreateStaffOp, CreateTupletOp, CreateViewOp,
+    CreateVoiceOp, CrossCuttingValue, DeleteCrossCuttingOp, DeleteEventOp, DeleteIdentifiedPitchOp,
     DeleteRegionOp, DeleteRepeatStructureOp, DeleteStaffInstanceOp, DeleteVoiceOp,
     ExtensionPreconditionId, FieldPath, HybridLogicalClock, InsertEventOp, InsertIdentifiedPitchOp,
     IntegrityAnomaly, IntegrityAnomalyKind, IntegrityAnomalyRegistryId, MaterializedState,
@@ -47,10 +47,11 @@ use epiphany_ops::{
     ReanchorReasonRegistryId, ReanchorResult, RepairKind, RepairKindRegistryId, RepairRecord,
     ReplicaAnomalyReason, ReplicaAnomalyRegistryId, ResolutionAction, ResolutionRegistryId,
     ResolveConflictPayload, RespellPitchOp, SerializedCanonicalInputs, SetCanvasLayoutDefaultsOp,
-    SetMetadataOp, SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp, SetTempoSegmentOp,
-    SetTimeSignatureOp, SetTuningContextOp, SetUserPageBreakOp, SetUserSystemBreakOp,
-    TransactionCategory, TransactionDescriptor, TransposeIntervalOp, TransposeOp,
-    TupletCompensation, TupletCompensationKind, UndoPolicy, UndoTransactionPayload,
+    SetClefOp, SetKeySignatureOp, SetMetadataOp, SetMetricGridOp, SetSpellingPrecedenceOp,
+    SetStaffLayoutOp, SetTempoSegmentOp, SetTimeSignatureOp, SetTuningContextOp,
+    SetUserPageBreakOp, SetUserSystemBreakOp, TransactionCategory, TransactionDescriptor,
+    TransposeIntervalOp, TransposeOp, TupletCompensation, TupletCompensationKind, UndoPolicy,
+    UndoTransactionPayload,
 };
 
 use crate::rng::Rng;
@@ -655,7 +656,7 @@ pub fn operation_payload(rng: &mut Rng, events: u64, pitches: u64) -> OperationP
         }
         _ => {}
     }
-    let kind = match rng.below(40) {
+    let kind = match rng.below(43) {
         0 => {
             let pitches = if rng.boolean() {
                 vec![obj_pitch(rng.below(pitches))]
@@ -916,6 +917,29 @@ pub fn operation_payload(rng: &mut Rng, events: u64, pitches: u64) -> OperationP
                 TimeSignatureId::new(OBJ_REPLICA, rng.below(2)),
                 rng.below(4) as u32,
             ),
+        }),
+        // X3.1: a tuplet over the shared event id space.
+        39 => OperationKind::CreateTuplet(CreateTupletOp {
+            tuplet: valuegen::tuplet(
+                TupletId::new(OBJ_REPLICA, rng.below(2)),
+                vec![
+                    EventId::new(OBJ_REPLICA, rng.below(4)),
+                    EventId::new(OBJ_REPLICA, rng.below(4)),
+                ],
+            ),
+        }),
+        // X3.6: a clef or key change on a shared staff instance.
+        40 => OperationKind::SetClef(SetClefOp {
+            instance: StaffInstanceId::new(OBJ_REPLICA, rng.below(2)),
+            offset: RationalTime::from_int(rng.below(2) as i32),
+            clef: rng.boolean().then(Clef::bass),
+        }),
+        41 => OperationKind::SetKeySignature(SetKeySignatureOp {
+            instance: StaffInstanceId::new(OBJ_REPLICA, rng.below(2)),
+            offset: RationalTime::from_int(rng.below(2) as i32),
+            key: rng
+                .boolean()
+                .then(|| KeySignature::new(3).expect("a valid key")),
         }),
         _ => OperationKind::Registered(
             OperationKindRegistryId(rng.next_u64() as u128),
@@ -1958,6 +1982,9 @@ mod tests {
         let (mut saw_create_staff_group, mut saw_create_part_definition) = (false, false);
         let (mut saw_create_analysis_layer, mut saw_create_view) = (false, false);
         let mut saw_create_measure = false;
+        let mut saw_create_tuplet = false;
+        let mut saw_set_clef = false;
+        let mut saw_set_key_signature = false;
         for _ in 0..2000 {
             let OperationPayload::Primitive(kind) = operation_payload(&mut rng, 8, 8) else {
                 continue;
@@ -1973,6 +2000,9 @@ mod tests {
                 OperationKind::CreateAnalysisLayer(_) => saw_create_analysis_layer = true,
                 OperationKind::CreateView(_) => saw_create_view = true,
                 OperationKind::CreateMeasure(_) => saw_create_measure = true,
+                OperationKind::CreateTuplet(_) => saw_create_tuplet = true,
+                OperationKind::SetClef(_) => saw_set_clef = true,
+                OperationKind::SetKeySignature(_) => saw_set_key_signature = true,
                 _ => {}
             }
         }
@@ -2015,6 +2045,18 @@ mod tests {
         assert!(
             saw_create_measure,
             "CreateMeasure (kind 39, G3b debt) never drawn in 2000 samples"
+        );
+        assert!(
+            saw_create_tuplet,
+            "CreateTuplet (kind 40, X3.1) never drawn in 2000 samples"
+        );
+        assert!(
+            saw_set_clef,
+            "SetClef (kind 41, X3.6) never drawn in 2000 samples"
+        );
+        assert!(
+            saw_set_key_signature,
+            "SetKeySignature (kind 42, X3.6) never drawn in 2000 samples"
         );
     }
 

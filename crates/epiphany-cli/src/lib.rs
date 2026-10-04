@@ -7,14 +7,14 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use epiphany_core::{check_invariants, Score, WellFormednessViolation};
-use epiphany_engrave::Engraver;
+use epiphany_engrave::{Engraver, PageGeometry};
 use epiphany_layout_ir::{
-    constrained::LayoutDiagnostic, to_constrained, to_logical, ConstraintSolver, PrimitiveIndices,
-    ResolvedLayoutIR, SolverConfig,
+    constrained::LayoutDiagnostic, to_constrained, to_logical, ConstraintSolver, Margins,
+    PrimitiveIndices, ResolvedLayoutIR, Size2D, SolverConfig, StaffSpace,
 };
 use epiphany_musicxml::fidelity::{self, Fidelity};
 use epiphany_musicxml::outcome::{self, Reduced};
-use epiphany_musicxml::Import;
+use epiphany_musicxml::{Import, SourceScore};
 use epiphany_render_svg::{render, RenderOptions};
 
 /// A file imported, reduced, compared and checked.
@@ -76,11 +76,45 @@ pub struct Engraved {
     pub time: Duration,
 }
 
-/// Engraves a score with the real solver at its default configuration.
+/// Engraves a score with the real solver at its default configuration, on
+/// the default page.
 pub fn engrave(score: &Score) -> Engraved {
+    engrave_on(score, PageGeometry::default())
+}
+
+/// Engraves an imported score on the page its file sets it on, or the
+/// default page when the file gives none.
+pub fn engrave_loaded(loaded: &Loaded) -> Engraved {
+    engrave_on(&loaded.reduced.score, geometry(&loaded.import.source))
+}
+
+/// The page a file sets its score on, in staff spaces, or the default page
+/// when it gives none: the page its writer drew it on, so the two read side
+/// by side.
+pub fn geometry(source: &SourceScore) -> PageGeometry {
+    let Some(page) = source.page else {
+        return PageGeometry::default();
+    };
+    PageGeometry {
+        size: Size2D {
+            width: StaffSpace(page.width),
+            height: StaffSpace(page.height),
+        },
+        margins: Margins {
+            top: StaffSpace(page.top),
+            right: StaffSpace(page.right),
+            bottom: StaffSpace(page.bottom),
+            left: StaffSpace(page.left),
+        },
+    }
+}
+
+/// Engraves a score with the real solver at its default configuration, on
+/// the given page.
+pub fn engrave_on(score: &Score, geometry: PageGeometry) -> Engraved {
     let start = Instant::now();
     let constrained = to_constrained(&to_logical(score));
-    let report = Engraver::default().solve(&constrained, &SolverConfig::default());
+    let report = Engraver::with_geometry(geometry).solve(&constrained, &SolverConfig::default());
     let time = start.elapsed();
     Engraved {
         diagnostics: constrained.diagnostics.clone(),

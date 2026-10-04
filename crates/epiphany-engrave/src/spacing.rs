@@ -30,6 +30,10 @@ use crate::owning_glyph;
 /// the next slot's left content.
 const SLOT_GAP: f32 = 0.3;
 
+/// The least a tie runs between its ends, which stand clear of their
+/// columns' ink, in staff spaces.
+const TIE_MIN_SPAN: f32 = 1.0;
+
 /// The spacing pass's output: the interpolation control points for spanning
 /// strokes, and each glyph-bearing slot's exact `(source, target)` pair — the
 /// rigid delta every member glyph translates by, so intra-slot offsets (a
@@ -51,6 +55,7 @@ pub(crate) struct SpacedSlots {
 /// (clef + key signature) reserves real space. Deterministic: a pure function
 /// of the glyphs and their bounding boxes.
 pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
+    let anchors = crate::span_anchors(input);
     /// One slot's horizontal extent, from its member glyphs.
     struct Extent {
         /// Column reference x (the first member's baseline).
@@ -114,11 +119,37 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
+    // A tie anchored to two slots runs at least `TIE_MIN_SPAN` between its
+    // ends: the later slot stands at least that far, and its end's and the
+    // earlier end's offsets from their slots, after the earlier. Each
+    // requirement is `(earlier slot, distance)`, by the later slot.
+    let source_of: BTreeMap<SpringSlotId, f32> =
+        slots.iter().map(|(id, e)| (*id, e.source)).collect();
+    let mut ties: BTreeMap<SpringSlotId, Vec<(SpringSlotId, f32)>> = BTreeMap::new();
+    for curve in &input.curves {
+        let Some((start, end)) = anchors.get(&curve.id()) else {
+            continue;
+        };
+        let (Some(&s0), Some(&s1)) = (source_of.get(start), source_of.get(end)) else {
+            continue;
+        };
+        if start == end || s1 <= s0 {
+            continue;
+        }
+        let need = (curve.p0.x.0 - s0) + TIE_MIN_SPAN + (s1 - curve.p3.x.0);
+        ties.entry(*end).or_default().push((*start, need));
+    }
+
     let mut points = Vec::with_capacity(slots.len());
     let mut placed: BTreeMap<SpringSlotId, (f32, f32)> = BTreeMap::new();
     let mut target = 0.0_f32;
     for i in 0..slots.len() {
         let (id, extent) = &slots[i];
+        for (start, need) in ties.get(id).into_iter().flatten() {
+            if let Some(&(_, at)) = placed.get(start) {
+                target = target.max(at + need);
+            }
+        }
         points.push((extent.source, target));
         placed.insert(*id, (extent.source, target));
         let right_bearing = extent.max_right - extent.source;
