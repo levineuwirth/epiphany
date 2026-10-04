@@ -384,7 +384,7 @@ fn system_break_lww_state_is_materialized_in_the_region() {
 }
 
 #[test]
-fn migration_computes_incompatible_events_from_the_graph() {
+fn migration_computes_incompatible_events_from_its_region() {
     let base = epiphany_core::generators::valid_score(107);
     let region = base.canvas.regions[0].id;
     let operation = envelope(
@@ -414,6 +414,142 @@ fn migration_computes_incompatible_events_from_the_graph() {
         .records()
         .iter()
         .any(|record| matches!(record.kind, ConflictKind::TimeModelMigrationFailure { .. })));
+}
+
+/// The migration's incompatible events, from its conflict record.
+fn migration_failure(
+    state: &epiphany_ops::MaterializedState,
+    id: OperationId,
+) -> Vec<TypedObjectId> {
+    state
+        .conflicts
+        .records()
+        .iter()
+        .find_map(|record| match &record.kind {
+            ConflictKind::TimeModelMigrationFailure {
+                incompatible_events,
+                ..
+            } if record.caused_by.contains(&id) => Some(incompatible_events.clone()),
+            _ => None,
+        })
+        .expect("the migration conflicts")
+}
+
+/// A base's wall-clock events have no metric placement in the occupancy
+/// index, so graph-aware reduction judges them from the graph: migrating
+/// their proportional region to a metric model conflicts, naming each.
+#[test]
+fn migration_judges_a_bases_wall_clock_events_from_the_graph() {
+    let base = epiphany_core::generators::valid_score_rich(110);
+    let region = base
+        .canvas
+        .regions
+        .iter()
+        .find(|region| matches!(region.time_model, RegionTimeModel::Proportional(_)))
+        .expect("the rich score holds a proportional region");
+    let mut events: Vec<TypedObjectId> = region
+        .staff_instances()
+        .iter()
+        .flat_map(|instance| &instance.voices)
+        .flat_map(|voice| voice.events.iter().copied().map(TypedObjectId::Event))
+        .collect();
+    events.sort();
+    assert!(!events.is_empty());
+    let operation = envelope(
+        61,
+        0,
+        10,
+        CausalContext::new(),
+        None,
+        OperationPayload::Primitive(OperationKind::ChangeRegionTimeModel(
+            ChangeRegionTimeModelOp {
+                region: region.id,
+                new_time_model: valuegen::metric_model(),
+                declared_incompatible: Vec::new(),
+                remapping: PositionRemapping::PreserveTime,
+            },
+        )),
+    );
+    let id = operation.id;
+    let mut set = OperationSet::new();
+    set.accept(operation);
+
+    let result = set.reduce_onto(&base);
+
+    assert_eq!(result.score, base);
+    assert_eq!(migration_failure(&result.state, id), events);
+}
+
+/// A voice promoted during reduction is not among its staff instance's
+/// voices in the ledger index, yet its event lies in the region: a migration
+/// whose remapping misses it and its winner, concurrent with both inserts,
+/// conflicts naming the two.
+#[test]
+fn migration_finds_a_promoted_voices_event_in_its_region() {
+    let base = epiphany_core::generators::valid_score(111);
+    let (staff_instance, target_voice) = target(&base);
+    let region = base.canvas.regions[0].id;
+    let note = |replica: u64| {
+        envelope(
+            replica,
+            0,
+            10,
+            CausalContext::new(),
+            None,
+            insert(
+                staff_instance,
+                target_voice,
+                EventId::new(ReplicaId(replica), 0),
+                PitchId::new(ReplicaId(replica), 1),
+                100,
+            ),
+        )
+    };
+    let winner = note(0xC101);
+    let loser = note(0xC102);
+    let remapping: Vec<(EventId, MusicalPosition)> = base.canvas.regions[0]
+        .staff_instances()
+        .iter()
+        .flat_map(|instance| &instance.voices)
+        .flat_map(|voice| voice.events.iter().copied())
+        .map(|event| match base.events.get(event).map(Event::position) {
+            Some(EventPosition::Musical(position)) => (event, position.clone()),
+            other => panic!("a metric base event, not {other:?}"),
+        })
+        .collect();
+    let migration = envelope(
+        0xC103,
+        0,
+        11,
+        CausalContext::new(),
+        None,
+        OperationPayload::Primitive(OperationKind::ChangeRegionTimeModel(
+            ChangeRegionTimeModelOp {
+                region,
+                new_time_model: base.canvas.regions[0].time_model.clone(),
+                declared_incompatible: Vec::new(),
+                remapping: PositionRemapping::Reassign(remapping),
+            },
+        )),
+    );
+    let id = migration.id;
+    let mut set = OperationSet::new();
+    set.accept_all(vec![winner, loser.clone(), migration]);
+
+    let result = set.reduce_onto(&base);
+
+    assert!(matches!(
+        result.state.effects.iter().find(|(op, _)| *op == loser.id),
+        Some((_, OperationEffect::AppliedWithRepair { repairs }))
+            if repairs.iter().any(|r| matches!(r.kind, RepairKind::VoicePromoted { .. }))
+    ));
+    assert_eq!(
+        migration_failure(&result.state, id),
+        vec![
+            TypedObjectId::Event(EventId::new(ReplicaId(0xC101), 0)),
+            TypedObjectId::Event(EventId::new(ReplicaId(0xC102), 0)),
+        ]
+    );
 }
 
 #[test]

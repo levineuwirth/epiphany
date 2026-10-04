@@ -2365,6 +2365,51 @@ do. Locked by the `reduction_modes` integration tests of `epiphany-musicxml`,
 which reduce histories taking every compensation path both ways and compare
 every effect, every object and the canonical bytes.
 
+**`ChangeRegionTimeModel` reduces alike in both modes (also version 2).** A
+migration was the one operation whose reduction kept its state only in the
+graph, and that split the modes three ways, each older than X3 and each found
+by a test that reduces one history both ways:
+
+- a `Reassign` remapping moved the occupancy index only with a graph, so a
+  later insert on a beat the remapping freed, or a moved note trimmed where it
+  now stood, was refused base-free and applied graph-aware;
+- the incompatible events were derived only from the graph, so a migration
+  concurrent with an insert into its region conflicted graph-aware and applied
+  base-free;
+- the region's time model lived only in the graph, so an insert after a
+  concurrent migration to a non-metric model was refused graph-aware
+  (`WrongRegionTimeModel`) and applied base-free.
+
+Both modes now derive the remapping and the incompatible events from the
+indices they keep. The region's events are those with a metric placement in
+`voice_occupancy`, found through the ledger's instances and voices; a voice
+promoted during the reduction is not among its instance's voices there, so its
+instance is the one its losing insert named, which is where the graph puts it.
+Every such event is judged by its indexed placement: incompatible with a
+proportional target, or with any target when a `Reassign` leaves it unmapped.
+Graph-aware reduction judges from the graph only the region's events the index
+does not hold, which are a base's events of another coordinate kind and which
+base-free reduction never has. An applied remapping moves the index in both
+modes. A new index, `region_disciplines`, holds each region's coordinate
+discipline: seeded from a base, set by `CreateRegion`, moved by an applied
+migration, removed with its region and restored when a transaction rolls back.
+`InsertEvent` reads it base-free, as graph-aware reduction reads the graph's
+region, and leaves a tombstoned voice to the voice check, so the reason
+matches graph-aware reduction's `VoiceMissing`.
+
+Four verdicts change. Three are base-free: the migration's conflict, the
+placements read after a remapping, and the insert into a non-metric region.
+One is graph-aware and lies only on a history that already breaks invariant 4:
+an insert carrying a wall-clock position into a metric region is admitted, and
+indexed at the region's origin, so a metric target now admits it where it used
+to conflict. That admission is older than X3 and reduces alike in both modes,
+and refusing it is outside this change. The region's liveness stays a
+referential precondition, checked graph-aware only. Locked by the
+`reduction_modes` tests named in the `Bumps` entry, which fail with each half
+of the change removed, and by two `graph_reduction` tests that hold
+graph-aware reduction's verdicts over a base (a base's wall-clock events, and
+a promoted voice's event).
+
 ## X3.5 — a pickup's successor applies (2026-10-03)
 
 `create_measure`'s clause 3 compared every successor's distance with the

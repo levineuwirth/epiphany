@@ -658,7 +658,7 @@ successor still refuses.
 
 \textbf{A canonical base materialized before this rung \MUST{} be rebuilt
 rather than reused.} On histories of the operation kinds that existed before
-it, four verdicts change and two operations change the state they produce.
+it, eight verdicts change and two operations change the state they produce.
 The verdicts: a base-free \texttt{DeleteEvent} declaring
 \texttt{RewriteTuplets}, or \texttt{CascadeDeleteTuplets} not naming exactly
 the live tuplets that hold the event, is refused
@@ -672,7 +672,21 @@ on a valid history, which the two modes would otherwise reduce differently);
 a \texttt{ModifyEvent} changing a tuplet member's
 duration over a base holding the tuplet is refused
 \texttt{EventDurationInvalid}, where it applied and broke the tuplet's
-duration consistency; and a pickup's successor applies (above). The states,
+duration consistency; a pickup's successor applies (above); a base-free
+\texttt{ChangeRegionTimeModel} conflicts \texttt{TimeModelMigrationFailure}
+when its region holds metric events its target does not admit or a
+\texttt{Reassign} leaves unmapped, where it applied; after an applied
+\texttt{Reassign}, base-free reduction reads the remapped placements (in an
+insert's overlap check, a move's placement verdict, a replacement rest's
+placement and the re-anchoring order), where it read the old ones; a base-free
+\texttt{InsertEvent} into a region that is not metric is refused
+\texttt{WrongRegionTimeModel}, where it applied; and graph-aware, a migration
+judges an event the occupancy index holds by its indexed placement, which
+differs from the graph only for an event inserted at a wall-clock position into
+a metric region (already a breach of the coordinate discipline), now admitted
+by a metric target where the migration conflicted. The last four are older
+than this revision: the two reduction modes disagreed through
+\texttt{ChangeRegionTimeModel}, and now agree (Section~\ref{sec:k0:change-region-time-model}). The states,
 over a base that already holds a tuplet: a \texttt{DeleteEvent} whose
 \texttt{ReplaceWithRest} compensation replaces a member: the index used to keep
 naming the deleted member, so the re-anchoring pass recorded an
@@ -789,9 +803,13 @@ derivation is total without a containment walk.
 canonical bytes of \texttt{event}.
 
 \textbf{Reduction rule.} A position-keyed insert. Preconditions: the event's
-duration is positive; the event id is neither live nor tombstoned; in graph-aware
-reduction the target voice exists in a metric region and the event's pitch ids
-are fresh. The event and its pitches are minted live; the voice is created on
+duration is positive; the event id is neither live nor tombstoned; the region of
+the event's staff instance is metric, read in graph-aware reduction from the
+graph and base-free from the reducer's index of each region's coordinate
+discipline, which \texttt{CreateRegion} sets and an applied
+\texttt{ChangeRegionTimeModel} moves, so the two modes agree after a migration;
+in graph-aware reduction the target voice exists in that region and the event's
+pitch ids are fresh. The event and its pitches are minted live; the voice is created on
 first use. Concurrent inserts whose half-open duration intervals overlap in the
 same voice are resolved by an order-independent promotion pre-pass: the
 lower-\texttt{OperationId} insert is retained in the original voice, and each
@@ -1322,9 +1340,19 @@ remapping: PositionRemapping \}} --- the full target model value (v1).
 \texttt{declared\_incompatible} set, then \texttt{remapping}.
 
 \textbf{Reduction rule.} Structural migration. The region adopts the target time
-model. Graph-aware reduction derives coordinate-kind incompatibilities from the
-region's events (and from the remapping coverage) and refuses a migration that
-would violate the coordinate discipline.
+model. Both reduction modes derive the coordinate-kind incompatibilities from
+the reducer's graph-independent indices, so they agree: the region's events are
+those with a metric placement in the occupancy index, found through its staff
+instances and voices (a voice promoted during reduction through the insert it
+was promoted for), and each is incompatible with a proportional target, and
+with any target when a \texttt{Reassign} leaves it unmapped. Graph-aware
+reduction also judges, from the graph, the region's events the index does not
+hold (a base's events of another coordinate kind, which base-free reduction
+never has). A migration with incompatible events is refused as below; an
+applied \texttt{Reassign} moves the occupancy index in both modes, and the
+region's new coordinate discipline is recorded in both, so a later insert, move
+or re-anchoring reads the same state in each. That the region is live is a
+referential precondition, checked graph-aware only.
 
 \textbf{Conflict cases.} Concurrent same-region migrations produce a
 \texttt{StructuralFieldCollision} on the field \texttt{time\_model}; a migration

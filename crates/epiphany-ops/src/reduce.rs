@@ -34,13 +34,13 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use epiphany_core::{
     canonical_pitch_bytes, derive_promoted_voice_id, simplest_spelling, AnalysisLayer,
     AnalysisLayerId, AnchorOffset, AnnotationAnchor, CanonicalValue, CanvasLayoutDefaults, Clef,
-    ClefChange, Event, EventDuration, EventId, EventPosition, GestureAnchoring, Instrument,
-    InstrumentId, KeySignature, KeySignatureChange, Measure, MeasureId, MeasurePosition,
-    MeterChange, MetricGrid, MusicalDuration, MusicalPosition, OperationId, PartDefinition,
-    PartDefinitionId, Pitch, PitchId, PitchSpelling, RationalTime, RegionEdge, RegionId,
-    RegionTimeModel, RepeatStructure, RepeatStructureId, ReplicaId, Score, ScoreMetadata,
-    SpellingAttachment, SpellingDirective, SpellingPrecedence, SpellingScope, SpellingSource,
-    Staff, StaffGroup, StaffGroupId, StaffId, StaffInstance, StaffInstanceId,
+    ClefChange, CoordinateDiscipline, Event, EventDuration, EventId, EventPosition,
+    GestureAnchoring, Instrument, InstrumentId, KeySignature, KeySignatureChange, Measure,
+    MeasureId, MeasurePosition, MeterChange, MetricGrid, MusicalDuration, MusicalPosition,
+    OperationId, PartDefinition, PartDefinitionId, Pitch, PitchId, PitchSpelling, RationalTime,
+    RegionEdge, RegionId, RegionTimeModel, RepeatStructure, RepeatStructureId, ReplicaId, Score,
+    ScoreMetadata, SpellingAttachment, SpellingDirective, SpellingPrecedence, SpellingScope,
+    SpellingSource, Staff, StaffGroup, StaffGroupId, StaffId, StaffInstance, StaffInstanceId,
     StaffLineConfiguration, TempoMap, TempoSegment, TempoShape, TimeAnchor, TimeSignature,
     TimeSignatureId, TransactionId, TransposeRefusal, TranspositionInterval, TuningContextSettings,
     TupletId, TypedObjectId, ViewDefinition, ViewId, Voice, VoiceId, VoiceOrigin,
@@ -1219,6 +1219,12 @@ struct Reducer<'a> {
     // can still diverge on a base-region target — the corpus targets only
     // op-created regions, where the two agree.
     staff_based_regions: BTreeSet<RegionId>,
+    // Each region's coordinate discipline (Chapter 5 invariant 4), from its
+    // time model: seeded from a base, set by `CreateRegion` and moved by an
+    // applied `ChangeRegionTimeModel`. `InsertEvent`'s metric-region
+    // precondition reads it base-free, as graph-aware reduction reads the
+    // graph's region, so an insert after a migration reduces alike in both.
+    region_disciplines: BTreeMap<RegionId, CoordinateDiscipline>,
     migrated_regions: BTreeSet<RegionId>,
     region_migrator: BTreeMap<RegionId, OperationId>,
     descriptors: BTreeMap<TransactionId, OperationId>,
@@ -1313,6 +1319,7 @@ struct WorkingSnapshot {
     instance_voices: BTreeMap<StaffInstanceId, BTreeSet<VoiceId>>,
     instance_staff: BTreeMap<StaffInstanceId, StaffId>,
     staff_based_regions: BTreeSet<RegionId>,
+    region_disciplines: BTreeMap<RegionId, CoordinateDiscipline>,
     migrated_regions: BTreeSet<RegionId>,
     region_migrator: BTreeMap<RegionId, OperationId>,
     descriptors: BTreeMap<TransactionId, OperationId>,
@@ -1649,6 +1656,7 @@ impl<'a> Reducer<'a> {
             instance_voices: BTreeMap::new(),
             instance_staff: BTreeMap::new(),
             staff_based_regions: BTreeSet::new(),
+            region_disciplines: BTreeMap::new(),
             migrated_regions: BTreeSet::new(),
             region_migrator: BTreeMap::new(),
             descriptors: BTreeMap::new(),
@@ -1790,6 +1798,8 @@ impl<'a> Reducer<'a> {
         for region in &score.canvas.regions {
             self.objects
                 .insert(TypedObjectId::Region(region.id), ObjectState::Live);
+            self.region_disciplines
+                .insert(region.id, region.time_model.coordinate_discipline());
             if let Some(content) = region.content.staff_based() {
                 self.staff_based_regions.insert(region.id);
                 self.metric_grid_chain
@@ -2620,6 +2630,22 @@ impl<'a> Reducer<'a> {
         op: &InsertEventOp,
     ) -> Result<(usize, usize, usize), PreconditionFailureReason> {
         let Some(score) = self.graph.as_ref() else {
+            // The region's time model, read from the discipline index the
+            // graph's region is kept in step with: an insert into a region a
+            // migration made non-metric is refused base-free as below. A
+            // tombstoned voice is left to the voice check, as the branch below
+            // finds such a voice missing before it reads the region.
+            let voice_dead = matches!(
+                self.objects.get(&TypedObjectId::Voice(op.voice())),
+                Some(ObjectState::Tombstoned { .. })
+            );
+            let non_metric = self
+                .instance_region_of(op.staff_instance)
+                .and_then(|region| self.region_disciplines.get(&region))
+                .is_some_and(|discipline| *discipline != CoordinateDiscipline::Musical);
+            if non_metric && !voice_dead {
+                return Err(PreconditionFailureReason::WrongRegionTimeModel);
+            }
             return Ok((0, 0, 0));
         };
         let location = graph_voice_location(score, op.voice())
@@ -4461,6 +4487,8 @@ impl<'a> Reducer<'a> {
         self.graph_create_region(&op.region);
         self.mint_container(env, robj);
         self.region_instances.entry(op.region_id()).or_default();
+        self.region_disciplines
+            .insert(op.region_id(), op.region.time_model.coordinate_discipline());
         if let Some(content) = op.region.content.staff_based() {
             self.staff_based_regions.insert(op.region_id());
             // Seed the region's layout/metric write chains from the carried
@@ -6508,6 +6536,7 @@ impl<'a> Reducer<'a> {
         );
         self.region_instances.remove(&op.region);
         self.staff_based_regions.remove(&op.region);
+        self.region_disciplines.remove(&op.region);
         self.graph_delete_region(op.region);
         OperationEffect::Applied
     }
@@ -6677,8 +6706,25 @@ impl<'a> Reducer<'a> {
         }
         let mut incompatible_events: BTreeSet<EventId> =
             op.declared_incompatible.iter().copied().collect();
+        let mapped: Option<BTreeSet<EventId>> = match &op.remapping {
+            crate::payload::PositionRemapping::Reassign(remapping) => {
+                Some(remapping.iter().map(|(event, _)| *event).collect())
+            }
+            crate::payload::PositionRemapping::PreserveTime => None,
+        };
+        let proportional = matches!(op.new_time_model, RegionTimeModel::Proportional(_));
+        // The region's events with a metric placement, from the indices both
+        // reduction modes keep, so the two derive one set of incompatible
+        // events: a metric event is incompatible with a proportional target,
+        // and with any target when a `Reassign` leaves it unmapped.
+        for event in self.indexed_region_events(op.region) {
+            if proportional || mapped.as_ref().is_some_and(|m| !m.contains(&event)) {
+                incompatible_events.insert(event);
+            }
+        }
         let mut graph_region_index = None;
         if let Some(score) = self.graph.as_ref() {
+            // The region's liveness is referential, so graph-aware only.
             let Some(region_index) = score
                 .canvas
                 .regions
@@ -6692,12 +6738,23 @@ impl<'a> Reducer<'a> {
                 };
             };
             graph_region_index = Some(region_index);
+            // The region's events the occupancy index does not hold, judged
+            // from the graph: a base's events of another coordinate kind,
+            // which base-free reduction never has. Every event the index holds
+            // was judged above, alike in both modes.
+            let indexed: BTreeSet<EventId> = self
+                .voice_occupancy
+                .values()
+                .flatten()
+                .map(|(_, _, event)| *event)
+                .collect();
             let region = &score.canvas.regions[region_index];
             let event_ids: Vec<EventId> = region
                 .staff_instances()
                 .iter()
                 .flat_map(|instance| &instance.voices)
                 .flat_map(|voice| voice.events.iter().copied())
+                .filter(|event| !indexed.contains(event))
                 .collect();
 
             for event_id in &event_ids {
@@ -6721,15 +6778,14 @@ impl<'a> Reducer<'a> {
                 }
             }
 
-            if let crate::payload::PositionRemapping::Reassign(remapping) = &op.remapping {
-                let mapped: BTreeSet<EventId> = remapping.iter().map(|(event, _)| *event).collect();
+            if let Some(mapped) = &mapped {
                 incompatible_events.extend(
                     event_ids
                         .iter()
                         .filter(|event| !mapped.contains(event))
                         .copied(),
                 );
-                if matches!(op.new_time_model, RegionTimeModel::Proportional(_)) {
+                if proportional {
                     // Reassign carries musical positions in the current
                     // prototype schema, so it cannot satisfy a proportional
                     // region's wall-clock coordinate discipline.
@@ -6758,6 +6814,23 @@ impl<'a> Reducer<'a> {
             return OperationEffect::Conflicted { conflict: cid };
         }
 
+        // The remapping moves the occupancy index in both modes, so a later
+        // insert, move or re-anchoring reads the same placements in each.
+        if let crate::payload::PositionRemapping::Reassign(remapping) = &op.remapping {
+            for (event, position) in remapping {
+                for placements in self.voice_occupancy.values_mut() {
+                    if let Some((stored_position, _, _)) = placements
+                        .iter_mut()
+                        .find(|(_, _, stored_event)| stored_event == event)
+                    {
+                        *stored_position = position.clone();
+                    }
+                }
+            }
+        }
+        if let Some(discipline) = self.region_disciplines.get_mut(&op.region) {
+            *discipline = op.new_time_model.coordinate_discipline();
+        }
         if let Some(region_index) = graph_region_index {
             let score = self
                 .graph
@@ -6767,14 +6840,6 @@ impl<'a> Reducer<'a> {
                 for (event, position) in remapping {
                     if let Some(value) = score.events.get_mut(*event) {
                         value.set_position(EventPosition::Musical(position.clone()));
-                    }
-                    for placements in self.voice_occupancy.values_mut() {
-                        if let Some((stored_position, _, _)) = placements
-                            .iter_mut()
-                            .find(|(_, _, stored_event)| stored_event == event)
-                        {
-                            *stored_position = position.clone();
-                        }
                     }
                 }
             }
@@ -9170,6 +9235,38 @@ impl<'a> Reducer<'a> {
             .find_map(|(region, instances)| instances.contains(&instance).then_some(*region))
     }
 
+    /// The region a voice's placements lie in, from the base-free ledger
+    /// indices. A voice this reduction promoted is not among its instance's
+    /// voices there, so its instance is the one its losing insert named,
+    /// which is where the graph puts it.
+    fn indexed_voice_region(&self, voice: VoiceId) -> Option<RegionId> {
+        let instance = self.voice_instance(voice).or_else(|| {
+            self.promotion.iter().find_map(|(losing, (promoted, _))| {
+                if *promoted != voice {
+                    return None;
+                }
+                match &self.env_of(*losing)?.payload {
+                    OperationPayload::Primitive(OperationKind::InsertEvent(op)) => {
+                        Some(op.staff_instance)
+                    }
+                    _ => None,
+                }
+            })
+        })?;
+        self.instance_region_of(instance)
+    }
+
+    /// The live events with a metric placement in `region`, from the
+    /// occupancy index and the ledger indices, which both reduction modes
+    /// keep.
+    fn indexed_region_events(&self, region: RegionId) -> Vec<EventId> {
+        self.voice_occupancy
+            .iter()
+            .filter(|(voice, _)| self.indexed_voice_region(**voice) == Some(region))
+            .flat_map(|(_, placements)| placements.iter().map(|(_, _, event)| *event))
+            .collect()
+    }
+
     /// The voice of a live event with an indexed metric placement.
     fn event_voice(&self, event: EventId) -> Option<VoiceId> {
         self.voice_occupancy.iter().find_map(|(voice, placements)| {
@@ -9916,6 +10013,7 @@ impl<'a> Reducer<'a> {
             instance_voices: self.instance_voices.clone(),
             instance_staff: self.instance_staff.clone(),
             staff_based_regions: self.staff_based_regions.clone(),
+            region_disciplines: self.region_disciplines.clone(),
             migrated_regions: self.migrated_regions.clone(),
             region_migrator: self.region_migrator.clone(),
             descriptors: self.descriptors.clone(),
@@ -9965,6 +10063,7 @@ impl<'a> Reducer<'a> {
         self.instance_voices = s.instance_voices;
         self.instance_staff = s.instance_staff;
         self.staff_based_regions = s.staff_based_regions;
+        self.region_disciplines = s.region_disciplines;
         self.migrated_regions = s.migrated_regions;
         self.region_migrator = s.region_migrator;
         self.descriptors = s.descriptors;
