@@ -927,6 +927,46 @@ fn a_quarter_tones_accidental_keeps_its_kind_at_the_sounding_pitch() {
     assert_eq!(accidental(None, 3), Some("three-quarters-sharp"));
 }
 
+/// MuseScore marks every accidental its user sets `cautionary`, every
+/// quarter-tone accidental among them. On a quarter-tone accidental, which
+/// spells its note, the mark alone records no feature; on a standard
+/// accidental it records a cautionary accidental, and parentheses record one
+/// on either. The marks change no pitch.
+#[test]
+fn the_cautionary_mark_on_a_quarter_tone_accidental_records_nothing() {
+    let plain = xml("arrow_accidentals.musicxml");
+    let marked = plain
+        .replace(
+            "<accidental>flat-up</accidental>",
+            r#"<accidental cautionary="yes" parentheses="no">flat-up</accidental>"#,
+        )
+        .replace(
+            "<accidental>natural</accidental>",
+            r#"<accidental cautionary="yes" parentheses="no">natural</accidental>"#,
+        )
+        .replace(
+            "<accidental>sharp-up</accidental>",
+            r#"<accidental cautionary="yes" parentheses="yes">sharp-up</accidental>"#,
+        );
+    assert_eq!(marked.matches("cautionary=").count(), 6, "six marked");
+    let imported = import(&marked).expect("imports");
+    // The three flat-ups record nothing; the natural (measure 5) and the two
+    // parenthesised sharp-ups (measures 2 and 12) each record one.
+    let places: Vec<&str> = imported
+        .source
+        .features
+        .kinds
+        .get("cautionary accidental")
+        .map(|f| f.places.iter().map(|p| p.measure.as_str()).collect())
+        .unwrap_or_default();
+    assert_eq!(places, ["2", "5", "12"]);
+    let plain = import(&plain).expect("imports");
+    assert_eq!(
+        events(&reduce(&imported).score),
+        events(&reduce(&plain).score)
+    );
+}
+
 #[test]
 fn an_accidental_with_no_alter_and_no_known_alteration_is_refused_by_name() {
     let text = xml("eighth_tone.musicxml")

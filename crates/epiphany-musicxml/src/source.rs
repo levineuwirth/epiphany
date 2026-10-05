@@ -2302,8 +2302,12 @@ impl<'d, 'i> Reader<'d, 'i> {
             self.features
                 .record(FeatureClass::Notation, "invisible note", place.clone());
         }
+        // MuseScore marks each accidental its user sets `cautionary`, and
+        // every quarter-tone accidental is one. The note is spelt with a
+        // quarter-tone accidental, so on one the mark alone leaves nothing
+        // unimported; parentheses or an editorial mark still do.
         let explicit_accidental = child(note, "accidental").is_some_and(|a| {
-            a.attribute("cautionary") == Some("yes")
+            (a.attribute("cautionary") == Some("yes") && quarter_tone_name(text(a)).is_none())
                 || a.attribute("editorial") == Some("yes")
                 || a.attribute("parentheses") == Some("yes")
         });
