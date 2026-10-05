@@ -3131,3 +3131,74 @@ fn a_quarter_tone_stands_at_its_spelled_step() {
     }
     assert_eq!(checked, 26, "every quarter-tone of the fixture is checked");
 }
+
+/// Each quarter-tone accidental draws its SMuFL glyph beside its own head:
+/// the hand-written fixture's first fourteen quarter-tones hold each of the
+/// fourteen names once, ten arrowed and Stein's four, and the page draws
+/// each one's glyph traced to its pitch, with no glyph left unbundled.
+#[test]
+fn each_quarter_tone_accidental_draws_its_smufl_glyph() {
+    use epiphany_core::{Event, EventPosition, TypedObjectId};
+    use epiphany_layout_ir::constrained::LayoutDiagnosticKind;
+
+    let loaded = load(&fixture("arrow_accidentals.musicxml")).expect("loads");
+    let score = &loaded.reduced.score;
+    let engraved = epiphany_cli::engrave_loaded(&loaded);
+    assert!(
+        !engraved
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, LayoutDiagnosticKind::UnbundledGlyph(_))),
+        "{:?}",
+        engraved.diagnostics
+    );
+    // The first staff's quarter-tones in time order, the first fourteen.
+    let mut quarter_tones: Vec<(epiphany_core::RationalTime, epiphany_core::PitchId)> = score
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Pitched(p) => match &p.position {
+                EventPosition::Musical(at) => Some((at.0.clone(), p)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .flat_map(|(at, p)| {
+            p.pitches
+                .iter()
+                .filter(|ip| ip.pitch.scale_position.space.as_str() == "cmn-24")
+                .map(move |ip| (at.clone(), ip.id))
+        })
+        .collect();
+    quarter_tones.sort();
+    let drawn: Vec<Vec<&str>> = quarter_tones[..14]
+        .iter()
+        .map(|(_, id)| {
+            engraved
+                .layout
+                .glyphs
+                .iter()
+                .filter(|g| g.provenance.source == TypedObjectId::Pitch(*id))
+                .map(|g| g.glyph.as_str())
+                .filter(|name| name.starts_with("accidental"))
+                .collect()
+        })
+        .collect();
+    let expected = [
+        "accidentalQuarterToneFlatArrowUp",
+        "accidentalThreeQuarterTonesFlatArrowDown",
+        "accidentalQuarterToneSharpNaturalArrowUp",
+        "accidentalQuarterToneFlatNaturalArrowDown",
+        "accidentalThreeQuarterTonesSharpArrowUp",
+        "accidentalQuarterToneSharpArrowDown",
+        "accidentalFiveQuarterTonesSharpArrowUp",
+        "accidentalThreeQuarterTonesSharpArrowDown",
+        "accidentalThreeQuarterTonesFlatArrowUp",
+        "accidentalFiveQuarterTonesFlatArrowDown",
+        "accidentalQuarterToneFlatStein",
+        "accidentalQuarterToneSharpStein",
+        "accidentalThreeQuarterTonesFlatZimmermann",
+        "accidentalThreeQuarterTonesSharpStein",
+    ];
+    assert_eq!(drawn, expected.iter().map(|g| vec![*g]).collect::<Vec<_>>());
+}

@@ -287,8 +287,11 @@ pub struct Engraver {
 /// signature of several, an ending's numbers) began standing at their own
 /// advances rather than 0.8 apart, which overlapped them, an ending's
 /// numbers took a comma between them, and an ending's bracket began riding
-/// the slots of the columns it opens and closes at, as its numbers do.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(32);
+/// the slots of the columns it opens and closes at, as its numbers do, and
+/// to `33` when the quarter-tone accidentals, arrowed and Stein's, began
+/// drawing from their bundled SMuFL glyphs where they had been surfaced as
+/// unbundled and left undrawn.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(33);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.

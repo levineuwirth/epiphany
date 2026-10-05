@@ -67,7 +67,14 @@ NAMES = ["noteheadBlack","noteheadHalf","noteheadWhole","noteheadDoubleWhole",
 "tuplet7","tuplet8","tuplet9","tupletColon",
 "gClef15mb","gClef15ma","fClef15mb","fClef15ma",
 "gClefChange","fClefChange","cClefChange","clef8","clef15",
-"timeSigComma"]
+"timeSigComma",
+"accidentalQuarterToneFlatArrowUp","accidentalThreeQuarterTonesFlatArrowDown",
+"accidentalQuarterToneSharpNaturalArrowUp","accidentalQuarterToneFlatNaturalArrowDown",
+"accidentalThreeQuarterTonesSharpArrowUp","accidentalQuarterToneSharpArrowDown",
+"accidentalFiveQuarterTonesSharpArrowUp","accidentalThreeQuarterTonesSharpArrowDown",
+"accidentalThreeQuarterTonesFlatArrowUp","accidentalFiveQuarterTonesFlatArrowDown",
+"accidentalQuarterToneFlatStein","accidentalThreeQuarterTonesFlatZimmermann",
+"accidentalQuarterToneSharpStein","accidentalThreeQuarterTonesSharpStein"]
 
 def verify(data, expected, what):
     actual = hashlib.sha256(data).hexdigest()

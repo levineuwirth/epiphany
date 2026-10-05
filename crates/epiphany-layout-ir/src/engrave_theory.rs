@@ -183,8 +183,11 @@ pub fn clef_glyph_for(clef: &Clef) -> Option<&'static str> {
 }
 
 /// The SMuFL accidental glyph for a spelling accidental, if one is bundled.
-/// `None` for an accidental the bundled metrics don't carry (e.g. microtonal),
-/// which the caller surfaces rather than papers over.
+/// The quarter-tone accidentals go by their MusicXML names, as the importer
+/// spells them, to the glyphs MusicXML assigns them: the arrowed ones to
+/// SMuFL's Gould arrow accidentals, Stein's to Stein's (and Zimmermann's
+/// three-quarter flat). `None` for an accidental the bundled metrics don't
+/// carry, which the caller surfaces rather than papers over.
 pub fn accidental_glyph(accidental: &AccidentalId) -> Option<&'static str> {
     Some(match accidental.as_str() {
         "sharp" => "accidentalSharp",
@@ -192,6 +195,20 @@ pub fn accidental_glyph(accidental: &AccidentalId) -> Option<&'static str> {
         "natural" => "accidentalNatural",
         "doublesharp" | "double-sharp" => "accidentalDoubleSharp",
         "doubleflat" | "double-flat" | "flat-flat" => "accidentalDoubleFlat",
+        "flat-up" => "accidentalQuarterToneFlatArrowUp",
+        "flat-down" => "accidentalThreeQuarterTonesFlatArrowDown",
+        "natural-up" => "accidentalQuarterToneSharpNaturalArrowUp",
+        "natural-down" => "accidentalQuarterToneFlatNaturalArrowDown",
+        "sharp-up" => "accidentalThreeQuarterTonesSharpArrowUp",
+        "sharp-down" => "accidentalQuarterToneSharpArrowDown",
+        "double-sharp-up" => "accidentalFiveQuarterTonesSharpArrowUp",
+        "double-sharp-down" => "accidentalThreeQuarterTonesSharpArrowDown",
+        "flat-flat-up" => "accidentalThreeQuarterTonesFlatArrowUp",
+        "flat-flat-down" => "accidentalFiveQuarterTonesFlatArrowDown",
+        "quarter-flat" => "accidentalQuarterToneFlatStein",
+        "three-quarters-flat" => "accidentalThreeQuarterTonesFlatZimmermann",
+        "quarter-sharp" => "accidentalQuarterToneSharpStein",
+        "three-quarters-sharp" => "accidentalThreeQuarterTonesSharpStein",
         _ => return None,
     })
 }
@@ -484,7 +501,37 @@ mod tests {
             accidental_glyph(&AccidentalId::new("natural")),
             Some("accidentalNatural")
         );
-        assert_eq!(accidental_glyph(&AccidentalId::new("quarter-sharp")), None);
+        // Every quarter-tone accidental the importer spells with draws, from
+        // a bundled glyph, as MusicXML assigns its name to SMuFL.
+        for (name, glyph) in [
+            ("flat-up", "accidentalQuarterToneFlatArrowUp"),
+            ("flat-down", "accidentalThreeQuarterTonesFlatArrowDown"),
+            ("natural-up", "accidentalQuarterToneSharpNaturalArrowUp"),
+            ("natural-down", "accidentalQuarterToneFlatNaturalArrowDown"),
+            ("sharp-up", "accidentalThreeQuarterTonesSharpArrowUp"),
+            ("sharp-down", "accidentalQuarterToneSharpArrowDown"),
+            ("double-sharp-up", "accidentalFiveQuarterTonesSharpArrowUp"),
+            (
+                "double-sharp-down",
+                "accidentalThreeQuarterTonesSharpArrowDown",
+            ),
+            ("flat-flat-up", "accidentalThreeQuarterTonesFlatArrowUp"),
+            ("flat-flat-down", "accidentalFiveQuarterTonesFlatArrowDown"),
+            ("quarter-flat", "accidentalQuarterToneFlatStein"),
+            (
+                "three-quarters-flat",
+                "accidentalThreeQuarterTonesFlatZimmermann",
+            ),
+            ("quarter-sharp", "accidentalQuarterToneSharpStein"),
+            (
+                "three-quarters-sharp",
+                "accidentalThreeQuarterTonesSharpStein",
+            ),
+        ] {
+            assert_eq!(accidental_glyph(&AccidentalId::new(name)), Some(glyph));
+            assert!(crate::metrics(glyph).is_some(), "{glyph} is bundled");
+        }
+        assert_eq!(accidental_glyph(&AccidentalId::new("slash-flat")), None);
     }
 
     #[test]

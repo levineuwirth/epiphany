@@ -7519,7 +7519,8 @@ mod tests {
         let staff = StaffId::from_raw(10);
         let pitch = PitchId::from_raw(100);
         let mut spelling = PitchSpelling::cmn(CmnNominal::E, 5);
-        spelling.accidentals.push(AccidentalId::new("quarter-flat"));
+        // Persian music's sori, which no bundled glyph draws.
+        spelling.accidentals.push(AccidentalId::new("sori"));
         let manifested = |src, content| {
             LayoutObject::from_projection_with_content(
                 Provenance::manifested(src, region, vec![]),
@@ -7566,7 +7567,7 @@ mod tests {
             .expect("the unbundled accidental is surfaced, not hidden");
         assert!(
             matches!(&diagnostic.kind,
-                LayoutDiagnosticKind::UnbundledGlyph(g) if g.as_str() == "quarter-flat"),
+                LayoutDiagnosticKind::UnbundledGlyph(g) if g.as_str() == "sori"),
             "and says why: {:?}",
             diagnostic.kind
         );

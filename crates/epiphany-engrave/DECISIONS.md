@@ -1433,3 +1433,20 @@ and `a_time_signatures_digits_stand_apart_and_centred` (`epiphany-cli`). The
 repeats golden is re-blessed (its second ending reads "2, 3", clear of its
 hook); no other golden changes, since none has a volta or a signature of
 several digits.
+
+## ENGRAVER_VERSION 32 → 33: quarter-tone accidentals drawn (X3b.2, 2026-10-05)
+
+The importer spells a quarter-tone with the accidental its file writes, by its
+MusicXML name (`flat-up`, `quarter-flat` and the rest), and the engraver had
+no glyph for any of them, so each was surfaced as `UnbundledGlyph` and left
+undrawn. The fourteen MusicXML names now draw from bundled SMuFL glyphs, as
+MusicXML assigns them: the ten arrowed ones from SMuFL's Gould arrow
+accidentals (`accidentalQuarterToneFlatArrowUp` for `flat-up`, through
+`accidentalFiveQuarterTonesFlatArrowDown` for `flat-flat-down`), Stein's
+quarter and three-quarter sharps and quarter flat from Stein's glyphs, and the
+three-quarter flat from Zimmermann's (`accidentalThreeQuarterTonesFlatZimmermann`).
+Their boxes come from the regenerated metrics, so they join the
+accidental columns as any other accidental does; several reach left of their
+origin, or two spaces above or below their head, with the arrow. Locked by
+`each_quarter_tone_accidental_draws_its_smufl_glyph` (`epiphany-cli`) and the
+glyph table's unit test.
