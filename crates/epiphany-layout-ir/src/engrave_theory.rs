@@ -541,6 +541,71 @@ mod tests {
         assert_eq!(accidental_glyph(&AccidentalId::new("slash-flat")), None);
     }
 
+    /// Each accidental the measure's state tracks states, in quarter-tones,
+    /// the alteration its glyph's SMuFL name gives: a row per name, the value
+    /// written out and read again from the glyph `accidental_glyph` draws.
+    #[test]
+    fn each_tracked_accidental_states_the_alteration_its_glyph_names() {
+        // The alteration a SMuFL accidental's name states, in quarter-tones.
+        fn named(glyph: &str) -> i8 {
+            let rest = glyph.strip_prefix("accidental").expect("an accidental");
+            let (size, rest) = [
+                ("FiveQuarterTones", 5),
+                ("ThreeQuarterTones", 3),
+                ("QuarterTone", 1),
+                ("Double", 4),
+            ]
+            .iter()
+            .find_map(|(prefix, size)| rest.strip_prefix(prefix).map(|r| (*size, r)))
+            .unwrap_or((2, rest));
+            if rest.starts_with("Sharp") {
+                size
+            } else if rest.starts_with("Flat") {
+                -size
+            } else {
+                assert_eq!(rest, "Natural", "{glyph}");
+                0
+            }
+        }
+        for (name, quarter_tones) in [
+            ("natural", 0),
+            ("sharp", 2),
+            ("flat", -2),
+            ("doublesharp", 4),
+            ("double-sharp", 4),
+            ("doubleflat", -4),
+            ("double-flat", -4),
+            ("flat-flat", -4),
+            ("flat-flat-down", -5),
+            ("flat-flat-up", -3),
+            ("flat-down", -3),
+            ("three-quarters-flat", -3),
+            ("flat-up", -1),
+            ("natural-down", -1),
+            ("quarter-flat", -1),
+            ("natural-up", 1),
+            ("sharp-down", 1),
+            ("quarter-sharp", 1),
+            ("sharp-up", 3),
+            ("double-sharp-down", 3),
+            ("three-quarters-sharp", 3),
+            ("double-sharp-up", 5),
+        ] {
+            let accidental = AccidentalId::new(name);
+            assert_eq!(
+                stack_quarter_tones(std::slice::from_ref(&accidental)),
+                Some(quarter_tones),
+                "{name}"
+            );
+            let glyph = accidental_glyph(&accidental).expect("drawn");
+            assert_eq!(named(glyph), quarter_tones, "{name} draws {glyph}");
+        }
+        assert_eq!(stack_quarter_tones(&[]), Some(0));
+        let sharp = AccidentalId::new("sharp");
+        assert_eq!(stack_quarter_tones(&[sharp.clone(), sharp]), None);
+        assert_eq!(stack_quarter_tones(&[AccidentalId::new("sori")]), None);
+    }
+
     #[test]
     fn key_signature_positions_match_the_conventional_pattern() {
         let key = |fifths: i8| KeySignature::new(fifths).expect("fifths in range");
