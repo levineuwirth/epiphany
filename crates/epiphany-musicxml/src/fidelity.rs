@@ -6,7 +6,7 @@
 //! list of its events' exact onsets, durations and contents. It also compares
 //! clefs, keys, meters, measures, ties, slurs and each instrument's
 //! transposition, and checks the reader against a raw count of the file's
-//! `<note>` elements. Tuplets are compared twice: the score's against the
+//! `<note>` elements, and that every quarter-tone is spelt as it sounds. Tuplets are compared twice: the score's against the
 //! reader's, and the reader's against the census's own timed walk of the
 //! file, tuplet by tuplet, by the staff of the first note, the ratio and each
 //! member's onset, so a reader grouping the wrong notes under the right counts
@@ -21,7 +21,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::{
     AnchorOffset, Event, EventDuration, EventId, EventPosition, Pitch, PitchSpacePosition,
-    RationalTime, Score, StaffGroupKind, StaffId, TimeAnchor, TimeSignatureDisplay, VoiceId,
+    RationalTime, Score, SpellingDirective, SpellingNominal, SpellingScope, StaffGroupKind,
+    StaffId, TimeAnchor, TimeSignatureDisplay, VoiceId,
 };
 
 use crate::emit::{Import, Subject};
@@ -1200,7 +1201,87 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
             source.unmade_groups, census.made, census.unmade
         ));
     }
+
+    // Every quarter-tone the score holds is spelt as it sounds: an authored
+    // spelling of its letter and octave whose one accidental alters the
+    // letter by its alteration, valued here by the accidental's own name.
+    let spellings: BTreeMap<_, _> = score
+        .spelling_attachments
+        .iter()
+        .filter(|a| a.layer.is_none())
+        .filter_map(|a| match (&a.scope, &a.directive) {
+            (SpellingScope::Pitch(pitch), SpellingDirective::Explicit(spelling)) => {
+                Some((*pitch, spelling))
+            }
+            _ => None,
+        })
+        .collect();
+    let (mut quarter_tones, mut misspelt) = (0usize, Vec::new());
+    for event in score.events.iter() {
+        let Event::Pitched(event) = event else {
+            continue;
+        };
+        for ip in &event.pitches {
+            let PitchSpacePosition::Cmn {
+                nominal,
+                alteration,
+                octave,
+            } = ip.pitch.scale_position.position
+            else {
+                continue;
+            };
+            if ip.pitch.scale_position.space.as_str() != "cmn-24" || alteration % 2 == 0 {
+                continue;
+            }
+            quarter_tones += 1;
+            let agrees = spellings.get(&ip.id).is_some_and(|spelling| {
+                spelling.nominal == SpellingNominal::Cmn(nominal)
+                    && spelling.octave == octave
+                    && matches!(spelling.accidentals.as_slice(),
+                        [only] if accidental_quarter_tones(only.as_str()) == Some(alteration))
+            });
+            if !agrees {
+                misspelt.push(format!("{nominal:?}{alteration:+}q{octave}"));
+            }
+        }
+    }
+    if !misspelt.is_empty() {
+        fidelity.failures.push(format!(
+            "{} of {quarter_tones} quarter-tones are not spelt as they sound, the first {}",
+            misspelt.len(),
+            misspelt[0]
+        ));
+    }
     fidelity
+}
+
+/// The alteration in quarter-tones a quarter-tone accidental gives its
+/// letter, from its MusicXML name: Stein's by name, an arrowed one as the
+/// accidental under the arrow, a quarter-tone up or down. Kept apart from the
+/// reader's tables, so a reader that spells a quarter-tone with the wrong
+/// accidental differs here.
+fn accidental_quarter_tones(name: &str) -> Option<i8> {
+    match name {
+        "quarter-flat" => return Some(-1),
+        "quarter-sharp" => return Some(1),
+        "three-quarters-flat" => return Some(-3),
+        "three-quarters-sharp" => return Some(3),
+        _ => {}
+    }
+    let (under, arrow) = match name.rsplit_once('-')? {
+        (under, "up") => (under, 1),
+        (under, "down") => (under, -1),
+        _ => return None,
+    };
+    let semitones: i8 = match under {
+        "flat-flat" => -2,
+        "flat" => -1,
+        "natural" => 0,
+        "sharp" => 1,
+        "double-sharp" => 2,
+        _ => return None,
+    };
+    Some(2 * semitones + arrow)
 }
 
 /// A quarter-tone as compared: its onset, its staff within the part, and its

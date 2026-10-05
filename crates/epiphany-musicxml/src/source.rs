@@ -9,8 +9,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::{
-    AcousticPitch, AcousticRealization, Clef, ClefShape, CmnNominal, Pitch, PitchSpaceId,
-    PitchSpacePosition, RationalTime, ScalePosition, TranspositionInterval, TuningReference,
+    AccidentalId, AcousticPitch, AcousticRealization, Clef, ClefShape, CmnNominal, Pitch,
+    PitchSpaceId, PitchSpacePosition, PitchSpelling, RationalTime, ScalePosition, SpellingNominal,
+    TranspositionInterval, TuningReference,
 };
 use roxmltree::{Document, Node, ParsingOptions};
 
@@ -170,6 +171,12 @@ pub struct SourcePitch {
     pub pitch: Pitch,
     pub tie_start: bool,
     pub tie_stop: bool,
+    /// For a quarter-tone, the spelling its notation gives it at its
+    /// sounding pitch: its letter and octave, and the quarter-tone accidental
+    /// the file writes or carries to it ([`quarter_tone_accidental`]). The
+    /// importer authors it, since the spelling pre-pass spells no `cmn-24`
+    /// pitch. `None` for every other pitch.
+    pub spelling: Option<PitchSpelling>,
 }
 
 /// What an event is.
@@ -1227,14 +1234,101 @@ pub fn quarter_tone_pitch(nominal: CmnNominal, quarter_tones: i8, octave: i8) ->
 /// whose arrow raises or lowers the accidental by a quarter-tone (MusicXML's
 /// `-up` and `-down`; `flat-up` is SMuFL's quarter-tone flat).
 fn quarter_tones_named(name: &str) -> Option<i8> {
-    Some(match name {
-        "quarter-flat" | "flat-up" | "natural-down" => -1,
-        "quarter-sharp" | "natural-up" | "sharp-down" => 1,
-        "three-quarters-flat" | "flat-down" | "flat-flat-up" => -3,
-        "three-quarters-sharp" | "sharp-up" | "double-sharp-down" => 3,
-        "flat-flat-down" => -5,
-        "double-sharp-up" => 5,
-        _ => return None,
+    ARROWED
+        .iter()
+        .map(|(n, q, _)| (*n, *q))
+        .chain(STEIN.iter().copied())
+        .find(|(n, _)| *n == name)
+        .map(|(_, q)| q)
+}
+
+/// The arrowed quarter-tone accidentals, as MusicXML names them: each
+/// one's alteration in quarter-tones and its arrow (`1` up, `-1` down). An
+/// arrow raises or lowers the accidental it rides by a quarter-tone.
+const ARROWED: [(&str, i8, i8); 10] = [
+    ("flat-flat-down", -5, -1),
+    ("flat-flat-up", -3, 1),
+    ("flat-down", -3, -1),
+    ("flat-up", -1, 1),
+    ("natural-down", -1, -1),
+    ("natural-up", 1, 1),
+    ("sharp-down", 1, -1),
+    ("sharp-up", 3, 1),
+    ("double-sharp-down", 3, -1),
+    ("double-sharp-up", 5, 1),
+];
+
+/// Stein's quarter-tone accidentals, as MusicXML names them, each with its
+/// alteration in quarter-tones.
+const STEIN: [(&str, i8); 4] = [
+    ("three-quarters-flat", -3),
+    ("quarter-flat", -1),
+    ("quarter-sharp", 1),
+    ("three-quarters-sharp", 3),
+];
+
+/// The quarter-tone accidental `name`, as the static name the tables hold.
+fn quarter_tone_name(name: &str) -> Option<&'static str> {
+    ARROWED
+        .iter()
+        .map(|(n, _, _)| *n)
+        .chain(STEIN.iter().map(|(n, _)| *n))
+        .find(|n| *n == name)
+}
+
+/// The accidental a quarter-tone of `quarter_tones` (odd) is spelt with at
+/// its sounding pitch, from `written`, the one the file writes or carries to
+/// it: an arrowed accidental keeps its arrow, so in a concert score it is the
+/// file's own, and in a transposed part the accidental under the arrow moves
+/// with the transposition; a Stein accidental stays Stein's. Where the
+/// family has no accidental for the alteration (an arrow past a double sharp
+/// or flat, Stein past three quarter-tones), the other arrow, and the up
+/// arrow first. A pitch the file gives no quarter-tone accidental, by a
+/// fractional `<alter>` alone, takes Stein's, as MusicXML's names do. `None`
+/// where no accidental names the alteration.
+pub fn quarter_tone_accidental(written: Option<&str>, quarter_tones: i8) -> Option<&'static str> {
+    let arrowed = |arrow: i8| {
+        ARROWED
+            .iter()
+            .find(|(_, q, a)| *q == quarter_tones && *a == arrow)
+            .map(|(n, _, _)| *n)
+    };
+    let stein = || {
+        STEIN
+            .iter()
+            .find(|(_, q)| *q == quarter_tones)
+            .map(|(n, _)| *n)
+    };
+    match written.and_then(|w| ARROWED.iter().find(|(n, _, _)| *n == w)) {
+        Some(&(_, _, arrow)) => arrowed(arrow).or_else(|| arrowed(-arrow)),
+        None => stein().or_else(|| arrowed(1)).or_else(|| arrowed(-1)),
+    }
+}
+
+/// The spelling of a sounding quarter-tone, in `cmn-24` with an odd
+/// alteration, from the accidental the file writes or carries to it.
+fn quarter_tone_spelling(pitch: &Pitch, written: Option<&str>) -> Option<PitchSpelling> {
+    if pitch.scale_position.space.as_str() != "cmn-24" {
+        return None;
+    }
+    let PitchSpacePosition::Cmn {
+        nominal,
+        alteration,
+        octave,
+    } = pitch.scale_position.position
+    else {
+        return None;
+    };
+    if alteration % 2 == 0 {
+        return None;
+    }
+    Some(PitchSpelling {
+        nominal: SpellingNominal::Cmn(nominal),
+        accidentals: vec![AccidentalId::new(quarter_tone_accidental(
+            written, alteration,
+        )?)],
+        octave,
+        render_hints: Default::default(),
     })
 }
 
@@ -1310,9 +1404,9 @@ struct PartState {
     tied_over: BTreeMap<(usize, u8, i8), Tied>,
 }
 
-/// Tied pitches at one place: each one's voice and its alteration in
-/// quarter-tones.
-type Tied = Vec<(String, i8)>;
+/// Tied pitches at one place: each one's voice, its alteration in
+/// quarter-tones and the quarter-tone accidental it is written with.
+type Tied = Vec<(String, i8, Option<&'static str>)>;
 
 /// A pitch as the file writes it, kept until its measure is read.
 struct WrittenPitch {
@@ -1329,6 +1423,8 @@ struct WrittenPitch {
     /// The quarter-tones its own `<alter>` or `<accidental>` states.
     stated: Option<i8>,
     accidental: bool,
+    /// Its own `<accidental>`, when that names a quarter-tone accidental.
+    named: Option<&'static str>,
     tie_start: bool,
     tie_stop: bool,
     transpose: Option<TranspositionInterval>,
@@ -1991,16 +2087,20 @@ impl<'d, 'i> Reader<'d, 'i> {
         let mut notes = std::mem::take(&mut state.written);
         notes.sort_by(|a, b| a.onset.cmp(&b.onset));
         let tied_over = std::mem::take(&mut state.tied_over);
-        let mut accidentals: BTreeMap<(usize, u8, i8), (Time, i8)> = BTreeMap::new();
+        // Per staff, letter and octave, the measure's latest accidental: where,
+        // its alteration in quarter-tones, and its name when it is a
+        // quarter-tone accidental.
+        type Set = (Time, i8, Option<&'static str>);
+        let mut accidentals: BTreeMap<(usize, u8, i8), Set> = BTreeMap::new();
         let mut tied: BTreeMap<(usize, u8, i8, Time), Tied> = BTreeMap::new();
         // The tied pitch a note continues: one in its own voice, else another.
         let continued = |starts: Option<&Tied>, voice: &str| {
             let starts = starts?;
             starts
                 .iter()
-                .find(|(v, _)| v == voice)
+                .find(|(v, _, _)| v == voice)
                 .or(starts.first())
-                .map(|(_, quarter_tones)| *quarter_tones)
+                .map(|(_, quarter_tones, named)| (*quarter_tones, *named))
         };
         let mut resolved = Vec::with_capacity(notes.len());
         for note in &notes {
@@ -2022,12 +2122,21 @@ impl<'d, 'i> Reader<'d, 'i> {
                     .or_else(|| {
                         accidentals
                             .get(&key)
-                            .filter(|(at, _)| *at < note.onset)
-                            .map(|(_, quarter_tones)| *quarter_tones)
+                            .filter(|(at, _, _)| *at < note.onset)
+                            .map(|(_, quarter_tones, named)| (*quarter_tones, *named))
                     })
-                    .filter(|quarter_tones| quarter_tones % 2 != 0)
+                    .filter(|(quarter_tones, _)| quarter_tones % 2 != 0)
             };
-            let quarter_tones = note.stated.or(carried).unwrap_or(0);
+            let quarter_tones = note
+                .stated
+                .or(carried.map(|(quarter_tones, _)| quarter_tones))
+                .unwrap_or(0);
+            // The quarter-tone accidental the note is written with: its own,
+            // else the one it carries.
+            let named = match carried {
+                Some((_, named)) => named,
+                None => note.named,
+            };
             let pitch = || {
                 sounding(
                     quarter_tone_pitch(note.nominal, quarter_tones, note.octave),
@@ -2066,23 +2175,31 @@ impl<'d, 'i> Reader<'d, 'i> {
                 }
                 _ => {}
             }
+            // A quarter-tone is spelt with its accidental at its sounding
+            // pitch, its own or carried.
+            if let Some((event, index)) = note.at {
+                if let Content::Pitched(pitches) = &mut part.events[event].content {
+                    let sounding = &mut pitches[index];
+                    sounding.spelling = quarter_tone_spelling(&sounding.pitch, named);
+                }
+            }
             if note.accidental {
-                accidentals.insert(key, (note.onset.clone(), quarter_tones));
+                accidentals.insert(key, (note.onset.clone(), quarter_tones, note.named));
             }
             if note.tie_start {
                 tied.entry((key.0, key.1, key.2, note.end.clone()))
                     .or_default()
-                    .push((note.voice.clone(), quarter_tones));
+                    .push((note.voice.clone(), quarter_tones, named));
             }
-            resolved.push(quarter_tones);
+            resolved.push((quarter_tones, named));
         }
-        for (note, quarter_tones) in notes.iter().zip(resolved) {
+        for (note, (quarter_tones, named)) in notes.iter().zip(resolved) {
             if note.tie_start && note.end >= *length {
                 state
                     .tied_over
                     .entry((note.staff, note.nominal as u8, note.octave))
                     .or_default()
-                    .push((note.voice.clone(), quarter_tones));
+                    .push((note.voice.clone(), quarter_tones, named));
             }
         }
         Ok(())
@@ -2334,6 +2451,7 @@ impl<'d, 'i> Reader<'d, 'i> {
                 octave,
                 stated,
                 accidental: accidental.is_some(),
+                named: accidental.and_then(quarter_tone_name),
                 tie_start,
                 tie_stop,
                 transpose: state.file_transpose,
@@ -2343,6 +2461,7 @@ impl<'d, 'i> Reader<'d, 'i> {
                 pitch: sounding,
                 tie_start,
                 tie_stop,
+                spelling: None,
             })
         } else {
             None

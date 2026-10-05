@@ -27,6 +27,11 @@
 //!   accidentals, by an `<accidental>` name with no `<alter>`, carried through
 //!   the measure and over a tie as notation carries it. A pitch finer than a
 //!   quarter-tone refuses the file by name.
+//! - A quarter-tone is spelt as its notation writes it. The spelling
+//!   pre-pass infers no `cmn-24` spelling, so the importer authors one with
+//!   `RespellPitch`: the pitch's letter and octave, and the arrowed or Stein
+//!   accidental the file writes or carries to the note, by its MusicXML name,
+//!   moved to the sounding pitch with its kind kept.
 //! - The core ties only pitches it can call enharmonic, which it answers in
 //!   twelve-chromatic spaces alone, so a tie between quarter-tones is
 //!   recorded, not made.

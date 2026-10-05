@@ -714,6 +714,204 @@ fn a_quarter_tone_accidental_named_without_an_alter_gives_the_pitch_and_carries(
     assert!(!kinds.contains_key("tie without a matching end"));
 }
 
+/// Each quarter-tone of `score` with the spelling authored for it, in the
+/// order [`events`] lists them: its onset, its pitch, and its spelling's
+/// letter, accidentals and octave, or `unspelt`.
+fn spelt(score: &Score) -> Vec<String> {
+    let spellings: std::collections::BTreeMap<_, _> = score
+        .spelling_attachments
+        .iter()
+        .filter_map(|a| match (&a.scope, &a.directive) {
+            (
+                epiphany_core::SpellingScope::Pitch(pitch),
+                epiphany_core::SpellingDirective::Explicit(spelling),
+            ) => Some((*pitch, spelling)),
+            _ => None,
+        })
+        .collect();
+    let mut out = Vec::new();
+    for instance in score.canvas.regions[0].staff_instances() {
+        for voice in &instance.voices {
+            for id in &voice.events {
+                let Some(Event::Pitched(event)) = score.events.get(*id) else {
+                    continue;
+                };
+                let EventPosition::Musical(onset) = &event.position else {
+                    panic!("a non-metric position")
+                };
+                for ip in &event.pitches {
+                    if ip.pitch.scale_position.space.as_str() != "cmn-24" {
+                        continue;
+                    }
+                    let spelling = match spellings.get(&ip.id) {
+                        Some(sp) => format!(
+                            "{:?} {} {}",
+                            sp.nominal,
+                            sp.accidentals
+                                .iter()
+                                .map(|a| a.as_str())
+                                .collect::<Vec<_>>()
+                                .join("+"),
+                            sp.octave
+                        ),
+                        None => String::from("unspelt"),
+                    };
+                    out.push(format!(
+                        "{} {} {spelling}",
+                        rational(&onset.0),
+                        pitch_name(&ip.pitch.scale_position)
+                    ));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A quarter-tone is spelt with the accidental its notation gives it, its
+/// own or the one it carries, at its letter and octave, since the spelling
+/// pre-pass spells no `cmn-24` pitch: the fourteen names each as written, a
+/// carried one through its measure and over a tie, and in a transposed part
+/// the sounding pitch's accidental of the written one's kind.
+#[test]
+fn a_quarter_tone_is_spelt_with_the_accidental_its_notation_gives_it() {
+    let arrows = run("arrow_accidentals.musicxml");
+    assert_eq!(
+        spelt(&arrows.reduced.score),
+        [
+            "0 G-1q4 Cmn(G) flat-up 4",
+            "1/4 A-3q4 Cmn(A) flat-down 4",
+            "1/2 B+1q4 Cmn(B) natural-up 4",
+            "3/4 C-1q5 Cmn(C) natural-down 5",
+            "1 D+3q5 Cmn(D) sharp-up 5",
+            "5/4 E+1q5 Cmn(E) sharp-down 5",
+            "3/2 F+5q5 Cmn(F) double-sharp-up 5",
+            "7/4 G+3q5 Cmn(G) double-sharp-down 5",
+            "2 A-3q5 Cmn(A) flat-flat-up 5",
+            "9/4 B-5q5 Cmn(B) flat-flat-down 5",
+            "5/2 C-1q4 Cmn(C) quarter-flat 4",
+            "11/4 D+1q4 Cmn(D) quarter-sharp 4",
+            "3 E-3q4 Cmn(E) three-quarters-flat 4",
+            "13/4 F+3q4 Cmn(F) three-quarters-sharp 4",
+            // Carried from the other voice.
+            "9/2 B-3q4 Cmn(B) flat-down 4",
+            // Over a tie, and along a chain.
+            "23/4 B-1q4 Cmn(B) flat-up 4",
+            "6 B-1q4 Cmn(B) flat-up 4",
+            "27/4 A+1q4 Cmn(A) natural-up 4",
+            "7 A+1q4 Cmn(A) natural-up 4",
+            "8 A+1q4 Cmn(A) natural-up 4",
+            // The later accidental, carried.
+            "11 B-1q4 Cmn(B) flat-up 4",
+            "45/4 B+3q4 Cmn(B) sharp-up 4",
+            "23/2 B+3q4 Cmn(B) sharp-up 4",
+            "17/4 B-3q4 Cmn(B) flat-down 4",
+            "19/2 D+1q5 Cmn(D) natural-up 5",
+            "10 D+1q5 Cmn(D) natural-up 5",
+        ]
+    );
+    // A fractional `<alter>` with no accidental of its own, tied from one
+    // with Stein's, takes Stein's; the clarinet's written D quarter-sharp
+    // sounds C quarter-sharp, spelt so.
+    let stein = run("quarter_tones.musicxml");
+    assert_eq!(
+        spelt(&stein.reduced.score),
+        [
+            "0 G-1q4 Cmn(G) quarter-flat 4",
+            "1/4 G-1q4 Cmn(G) quarter-flat 4",
+            "1/2 C+3q5 Cmn(C) three-quarters-sharp 5",
+            "0 C+1q5 Cmn(C) quarter-sharp 5",
+        ]
+    );
+}
+
+/// The comparison holds every quarter-tone's spelling to its pitch: one
+/// spelt with an accidental of another value, at another octave, or not at
+/// all, fails it.
+#[test]
+fn the_comparison_finds_a_quarter_tone_spelt_other_than_it_sounds() {
+    let run = run("arrow_accidentals.musicxml");
+    let fails = |change: &dyn Fn(&mut epiphany_core::PitchSpelling)| {
+        let mut reduced = run.reduced.clone();
+        let attachment = reduced
+            .score
+            .spelling_attachments
+            .first_mut()
+            .expect("a quarter-tone's spelling");
+        let epiphany_core::SpellingDirective::Explicit(spelling) = &mut attachment.directive else {
+            panic!("an explicit spelling")
+        };
+        change(spelling);
+        compare(&run.import, &reduced)
+            .failures
+            .iter()
+            .any(|f| f.contains("not spelt as they sound"))
+    };
+    assert!(!fails(&|_| {}), "the import's own spellings agree");
+    // The first is G flat-up; natural-down is the same pitch, flat-down not.
+    assert!(!fails(&|s| {
+        s.accidentals = vec![epiphany_core::AccidentalId::new("natural-down")]
+    }));
+    assert!(fails(&|s| {
+        s.accidentals = vec![epiphany_core::AccidentalId::new("flat-down")]
+    }));
+    assert!(fails(&|s| s.octave += 1));
+    assert!(fails(&|s| s.accidentals.clear()));
+    let mut unspelt = run.reduced.clone();
+    unspelt.score.spelling_attachments.clear();
+    assert!(compare(&run.import, &unspelt)
+        .failures
+        .iter()
+        .any(|f| f.starts_with("26 of 26 quarter-tones")));
+}
+
+/// The accidental of a sounding quarter-tone keeps the written one's kind:
+/// an arrow its direction, moving the accidental under it with a
+/// transposition, and Stein's its family, taking an arrow where Stein has
+/// none for the alteration.
+#[test]
+fn a_quarter_tones_accidental_keeps_its_kind_at_the_sounding_pitch() {
+    use epiphany_musicxml::source::quarter_tone_accidental as accidental;
+    let arrowed = [
+        ("flat-flat-down", -5),
+        ("flat-flat-up", -3),
+        ("flat-down", -3),
+        ("flat-up", -1),
+        ("natural-down", -1),
+        ("natural-up", 1),
+        ("sharp-down", 1),
+        ("sharp-up", 3),
+        ("double-sharp-down", 3),
+        ("double-sharp-up", 5),
+    ];
+    let stein = [
+        ("three-quarters-flat", -3),
+        ("quarter-flat", -1),
+        ("quarter-sharp", 1),
+        ("three-quarters-sharp", 3),
+    ];
+    for (name, quarter_tones) in arrowed.iter().chain(&stein) {
+        assert_eq!(accidental(Some(name), *quarter_tones), Some(*name));
+    }
+    // A written F natural-up for a B-flat instrument sounds E flat-up.
+    assert_eq!(accidental(Some("natural-up"), -1), Some("flat-up"));
+    assert_eq!(accidental(Some("sharp-down"), -1), Some("natural-down"));
+    assert_eq!(accidental(Some("flat-down"), 1), Some("sharp-down"));
+    // Past a double accidental, the other arrow; past any, none.
+    assert_eq!(accidental(Some("flat-up"), -5), Some("flat-flat-down"));
+    assert_eq!(accidental(Some("sharp-down"), 5), Some("double-sharp-up"));
+    assert_eq!(accidental(Some("flat-flat-down"), -7), None);
+    // Stein past three quarter-tones takes an arrow, up first.
+    assert_eq!(
+        accidental(Some("quarter-sharp"), 5),
+        Some("double-sharp-up")
+    );
+    assert_eq!(accidental(Some("quarter-flat"), -5), Some("flat-flat-down"));
+    // No accidental of its own: Stein's.
+    assert_eq!(accidental(None, -1), Some("quarter-flat"));
+    assert_eq!(accidental(None, 3), Some("three-quarters-sharp"));
+}
+
 #[test]
 fn an_accidental_with_no_alter_and_no_known_alteration_is_refused_by_name() {
     let text = xml("eighth_tone.musicxml")

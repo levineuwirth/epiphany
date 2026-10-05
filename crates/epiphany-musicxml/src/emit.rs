@@ -25,7 +25,8 @@ use epiphany_ops::{
     AuthorId, CausalContext, CreateCrossCuttingOp, CreateInstrumentOp, CreateMeasureOp,
     CreateRegionOp, CreateStaffGroupOp, CreateStaffInstanceOp, CreateStaffOp, CreateTupletOp,
     CreateVoiceOp, CrossCuttingValue, HybridLogicalClock, InsertEventOp, OperationEnvelope,
-    OperationKind, OperationPayload, OperationStamp, SetMetadataOp, SetTimeSignatureOp,
+    OperationKind, OperationPayload, OperationStamp, RespellPitchOp, SetMetadataOp,
+    SetTimeSignatureOp,
 };
 
 use crate::source::{Content, FeatureClass, GroupKind, Meter, Place, SourceScore};
@@ -57,6 +58,8 @@ pub enum Subject {
     Beam(usize, usize),
     /// A tuplet: part and index into its tuplets.
     Tuplet(usize, usize),
+    /// A quarter-tone's spelling: part, event and the pitch's index in it.
+    Spelling(usize, usize, usize),
     /// A staff group: index into [`SourceScore::groups`].
     Group(usize),
 }
@@ -546,6 +549,22 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
                     event: value,
                 }),
             );
+            // A quarter-tone's spelling, which the spelling pre-pass does not
+            // infer in `cmn-24`, is authored as its notation gives it.
+            if let Content::Pitched(pitches) = &event.content {
+                for (a, pitch) in pitches.iter().enumerate() {
+                    if let Some(spelling) = &pitch.spelling {
+                        e.emit(
+                            "RespellPitch",
+                            Subject::Spelling(p, i, a),
+                            OperationKind::RespellPitch(RespellPitchOp {
+                                pitch: minted[a],
+                                spelling: spelling.clone(),
+                            }),
+                        );
+                    }
+                }
+            }
             event_ids.push(id);
             pitch_ids.push(minted);
         }

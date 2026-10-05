@@ -3055,3 +3055,79 @@ fn a_time_signatures_digits_stand_apart_and_centred() {
         ]
     );
 }
+
+/// A quarter-tone's notehead stands at the step of its letter and octave, as
+/// its authored spelling gives it, and draws no missing-spelling fallback:
+/// each of the hand-written fixture's quarter-tones, measured from its
+/// staff's bottom line on the page.
+#[test]
+fn a_quarter_tone_stands_at_its_spelled_step() {
+    use epiphany_core::{Event, PitchSpacePosition, TypedObjectId};
+    use epiphany_layout_ir::constrained::LayoutDiagnosticKind;
+
+    let loaded = load(&fixture("arrow_accidentals.musicxml")).expect("loads");
+    let score = &loaded.reduced.score;
+    let engraved = epiphany_cli::engrave_loaded(&loaded);
+    let layout = &engraved.layout;
+    assert!(
+        !engraved
+            .diagnostics
+            .iter()
+            .any(|d| d.kind == LayoutDiagnosticKind::MissingSpelling),
+        "a pitch drew at its clef's reference line"
+    );
+    let treble = epiphany_core::Clef {
+        shape: epiphany_core::ClefShape::G,
+        line: 2,
+        octave_shift: 0,
+    };
+    let staff = score.staves[0].id;
+    let mut checked = 0;
+    for system in layout.systems() {
+        let bottom = system
+            .primitives
+            .strokes
+            .iter()
+            .map(|&i| &layout.strokes[i as usize])
+            .filter(|s| s.provenance.source == TypedObjectId::Staff(staff))
+            .map(|s| s.from.y.0)
+            .fold(f32::INFINITY, f32::min);
+        for glyph in system
+            .primitives
+            .glyphs
+            .iter()
+            .map(|&i| &layout.glyphs[i as usize])
+            .filter(|g| g.glyph.as_str().starts_with("notehead"))
+        {
+            let TypedObjectId::Pitch(id) = glyph.provenance.source else {
+                continue;
+            };
+            let pitch = score
+                .events
+                .iter()
+                .find_map(|e| match e {
+                    Event::Pitched(p) => p.pitches.iter().find(|ip| ip.id == id),
+                    _ => None,
+                })
+                .expect("the head's pitch is in the score");
+            if pitch.pitch.scale_position.space.as_str() != "cmn-24" {
+                continue;
+            }
+            let PitchSpacePosition::Cmn {
+                nominal, octave, ..
+            } = pitch.pitch.scale_position.position
+            else {
+                panic!("a CMN pitch")
+            };
+            let step = epiphany_layout_ir::staff_position(nominal, octave, &treble);
+            let expected = bottom + step as f32 * 0.5;
+            assert!(
+                (glyph.position.y.0 - expected).abs() < 1e-3,
+                "{nominal:?}{octave} stands at {}, its step {step} at {expected}",
+                glyph.position.y.0
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 26, "every quarter-tone of the fixture is checked");
+}
