@@ -1079,7 +1079,8 @@ fn a_migration_judges_an_indexed_event_by_its_placement_in_both_modes() {
     assert_eq!(effect(&state, migrated.id), Some(OperationEffect::Applied));
 }
 
-/// Two quarter-tone quarters on one line, untied, as a file writes them.
+/// Two quarter-tone quarters on one line, untied, as a file writes them:
+/// each with its own accidental, since one applies to its own note alone.
 const QUARTER_TONES: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <score-partwise version="4.0">
   <part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list>
@@ -1089,7 +1090,7 @@ const QUARTER_TONES: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
         <time><beats>2</beats><beat-type>4</beat-type></time>
         <clef><sign>G</sign><line>2</line></clef></attributes>
       <note><pitch><step>G</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type><accidental>flat-up</accidental></note>
-      <note><pitch><step>G</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type></note>
+      <note><pitch><step>G</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type><accidental>flat-up</accidental></note>
     </measure>
   </part>
 </score-partwise>

@@ -173,9 +173,10 @@ pub struct SourcePitch {
     pub tie_stop: bool,
     /// For a quarter-tone, the spelling its notation gives it at its
     /// sounding pitch: its letter and octave, and the quarter-tone accidental
-    /// the file writes or carries to it ([`quarter_tone_accidental`]). The
-    /// importer authors it, since the spelling pre-pass spells no `cmn-24`
-    /// pitch. `None` for every other pitch.
+    /// the file writes on it or carries to it over a tie
+    /// ([`quarter_tone_accidental`]). The importer authors it, since the
+    /// spelling pre-pass spells no `cmn-24` pitch. `None` for every other
+    /// pitch.
     pub spelling: Option<PitchSpelling>,
 }
 
@@ -368,9 +369,9 @@ pub struct Census {
     pub clefs: Vec<Vec<Stated<Clef>>>,
     /// Pitched notes, not grace or cue, that the file makes quarter-tones:
     /// by a fractional `<alter>`, by a quarter-tone `<accidental>` with no
-    /// `<alter>`, or by such an accidental carried to a note that writes
-    /// neither. Each is read with its own timing, its own value for each
-    /// name and its own transposition to the sounding pitch.
+    /// `<alter>`, or by a tie from either to a note that writes neither.
+    /// Each is read with its own timing, its own value for each name and its
+    /// own transposition to the sounding pitch.
     pub quarter_tones: Vec<QuarterTone>,
 }
 
@@ -482,15 +483,16 @@ fn note_census(part: Node) -> Census {
 /// quarter-tone.
 ///
 /// A pitched note is a quarter-tone by a fractional `<alter>`, by a
-/// quarter-tone `<accidental>` with no `<alter>` (roadmap D20), or by such an
-/// accidental earlier in the measure on the same staff, step and octave, or
-/// tied over, when the note writes neither. The walk reads `<alter>`,
-/// `<accidental>`, `<divisions>` and `<transpose>` and times the notes
-/// itself, sharing none of the reader's code. A name's value comes from the
-/// accidental it alters and its arrow, not from the reader's table, and the
-/// sounding pitch from an arithmetic of its own, not from the core's
-/// transposition, so a quarter-tone the reader values or places wrongly shows
-/// as a difference, and not only one it misses.
+/// quarter-tone `<accidental>` with no `<alter>` (roadmap D20), or by a tie
+/// from such a note, when the note writes neither. A quarter-tone accidental
+/// applies to its own note alone, as MuseScore reads it (roadmap D40), so a
+/// later note of its line in the measure that writes neither is not one. The
+/// walk reads `<alter>`, `<accidental>`, `<divisions>` and `<transpose>` and
+/// times the notes itself, sharing none of the reader's code. A name's value
+/// comes from the accidental it alters and its arrow, not from the reader's
+/// table, and the sounding pitch from an arithmetic of its own, not from the
+/// core's transposition, so a quarter-tone the reader values or places
+/// wrongly shows as a difference, and not only one it misses.
 ///
 /// A chord note is dropped by its own kind and staff and its chord's first
 /// note's, in the file's order, and a tie start is ended by a stop the walk
@@ -549,7 +551,6 @@ fn timed_census(part: Node, census: &mut Census) {
         /// The alteration in quarter-tones its own `<alter>` or
         /// `<accidental>` states.
         own: Option<i32>,
-        accidental: bool,
         tie_start: bool,
         tie_stop: bool,
         /// The diatonic and chromatic steps from written to sounding.
@@ -699,7 +700,6 @@ fn timed_census(part: Node, census: &mut Census) {
                             ),
                             dropped,
                             own: None,
-                            accidental: false,
                             tie_start: ties("start"),
                             tie_stop: ties("stop"),
                             transpose,
@@ -736,7 +736,6 @@ fn timed_census(part: Node, census: &mut Census) {
                         unpitched: None,
                         dropped,
                         own,
-                        accidental: accidental.is_some(),
                         tie_start: ties("start"),
                         tie_stop: ties("stop"),
                         transpose,
@@ -748,7 +747,6 @@ fn timed_census(part: Node, census: &mut Census) {
         }
         notes.sort_by_key(|n| n.onset);
         let incoming = std::mem::take(&mut over);
-        let mut set: BTreeMap<Spot, (i64, i32)> = BTreeMap::new();
         let mut ending: BTreeMap<(Spot, i64), Starts> = BTreeMap::new();
         // The stops of the notes kept, and the starts, each with its end and
         // whether it is a quarter-tone.
@@ -766,6 +764,9 @@ fn timed_census(part: Node, census: &mut Census) {
                 }
                 continue;
             }
+            // A quarter-tone accidental applies to its own note, and over a
+            // tie to the note continuing it, never to a later note of its
+            // line (roadmap D40).
             let alteration = note.own.unwrap_or_else(|| {
                 let tied = if !note.tie_stop {
                     None
@@ -774,17 +775,8 @@ fn timed_census(part: Node, census: &mut Census) {
                 } else {
                     continued(ending.get(&(spot, onset)), note.voice)
                 };
-                tied.or_else(|| {
-                    set.get(&spot)
-                        .filter(|&&(at, _)| at < onset)
-                        .map(|&(_, alteration)| alteration)
-                })
-                .filter(|alteration| alteration % 2 != 0)
-                .unwrap_or(0)
+                tied.filter(|alteration| alteration % 2 != 0).unwrap_or(0)
             });
-            if note.accidental {
-                set.insert(spot, (onset, alteration));
-            }
             if note.tie_start {
                 let starts = ending.entry((spot, note.end)).or_default();
                 starts.push((note.voice, alteration));
@@ -1423,7 +1415,6 @@ struct WrittenPitch {
     octave: i8,
     /// The quarter-tones its own `<alter>` or `<accidental>` states.
     stated: Option<i8>,
-    accidental: bool,
     /// Its own `<accidental>`, when that names a quarter-tone accidental.
     named: Option<&'static str>,
     tie_start: bool,
@@ -2070,14 +2061,15 @@ impl<'d, 'i> Reader<'d, 'i> {
         Ok(read)
     }
 
-    /// Carries a quarter-tone accidental as notation carries any accidental,
-    /// since MuseScore writes no `<alter>` on the notes it governs (roadmap
-    /// D20): through the rest of its measure to the later notes on the same
-    /// staff, step and octave that write neither an accidental nor an
-    /// `<alter>`, and over a tie to the note continuing it, across a barline
-    /// too, found as the emitter pairs a tie: in the tie's own voice first.
-    /// Notes are taken in the order of their onsets, not the file's, so a
-    /// voice written first takes an accidental another voice sets earlier.
+    /// Carries a quarter-tone accidental over a tie to the note continuing
+    /// it, across a barline too, found as the emitter pairs a tie: in the
+    /// tie's own voice first. It carries no further. MuseScore writes no
+    /// `<alter>` on an arrowed note, and its quarter-tone accidental applies
+    /// to its own note alone (roadmap D40), so a later note on the same staff,
+    /// step and octave in the measure that writes neither an accidental nor an
+    /// `<alter>` is unaltered, and the engraver shows the natural it needs.
+    /// Notes are taken in the order of their onsets, not the file's, so a tie
+    /// is found before the note it continues into.
     fn carry(
         &self,
         state: &mut PartState,
@@ -2088,11 +2080,6 @@ impl<'d, 'i> Reader<'d, 'i> {
         let mut notes = std::mem::take(&mut state.written);
         notes.sort_by(|a, b| a.onset.cmp(&b.onset));
         let tied_over = std::mem::take(&mut state.tied_over);
-        // Per staff, letter and octave, the measure's latest accidental: where,
-        // its alteration in quarter-tones, and its name when it is a
-        // quarter-tone accidental.
-        type Set = (Time, i8, Option<&'static str>);
-        let mut accidentals: BTreeMap<(usize, u8, i8), Set> = BTreeMap::new();
         let mut tied: BTreeMap<(usize, u8, i8, Time), Tied> = BTreeMap::new();
         // The tied pitch a note continues: one in its own voice, else another.
         let continued = |starts: Option<&Tied>, voice: &str| {
@@ -2106,34 +2093,25 @@ impl<'d, 'i> Reader<'d, 'i> {
         let mut resolved = Vec::with_capacity(notes.len());
         for note in &notes {
             let key = (note.staff, note.nominal as u8, note.octave);
-            let carried = if note.stated.is_some() || note.accidental {
+            // A note that states no alteration (an `<accidental>` always
+            // does) takes a quarter-tone over a tie alone.
+            let over_tie = if note.stated.is_some() || !note.tie_stop {
                 None
+            } else if note.onset == zero() {
+                continued(tied_over.get(&key), &note.voice)
             } else {
-                let over_tie = if !note.tie_stop {
-                    None
-                } else if note.onset == zero() {
-                    continued(tied_over.get(&key), &note.voice)
-                } else {
-                    continued(
-                        tied.get(&(key.0, key.1, key.2, note.onset.clone())),
-                        &note.voice,
-                    )
-                };
-                over_tie
-                    .or_else(|| {
-                        accidentals
-                            .get(&key)
-                            .filter(|(at, _, _)| *at < note.onset)
-                            .map(|(_, quarter_tones, named)| (*quarter_tones, *named))
-                    })
-                    .filter(|(quarter_tones, _)| quarter_tones % 2 != 0)
+                continued(
+                    tied.get(&(key.0, key.1, key.2, note.onset.clone())),
+                    &note.voice,
+                )
             };
+            let carried = over_tie.filter(|(quarter_tones, _)| quarter_tones % 2 != 0);
             let quarter_tones = note
                 .stated
                 .or(carried.map(|(quarter_tones, _)| quarter_tones))
                 .unwrap_or(0);
             // The quarter-tone accidental the note is written with: its own,
-            // else the one it carries.
+            // else the one a tie carries to it.
             let named = match carried {
                 Some((_, named)) => named,
                 None => note.named,
@@ -2177,15 +2155,12 @@ impl<'d, 'i> Reader<'d, 'i> {
                 _ => {}
             }
             // A quarter-tone is spelt with its accidental at its sounding
-            // pitch, its own or carried.
+            // pitch, its own or carried over a tie.
             if let Some((event, index)) = note.at {
                 if let Content::Pitched(pitches) = &mut part.events[event].content {
                     let sounding = &mut pitches[index];
                     sounding.spelling = quarter_tone_spelling(&sounding.pitch, named);
                 }
-            }
-            if note.accidental {
-                accidentals.insert(key, (note.onset.clone(), quarter_tones, note.named));
             }
             if note.tie_start {
                 tied.entry((key.0, key.1, key.2, note.end.clone()))
@@ -2451,7 +2426,6 @@ impl<'d, 'i> Reader<'d, 'i> {
                 nominal,
                 octave,
                 stated,
-                accidental: accidental.is_some(),
                 named: accidental.and_then(quarter_tone_name),
                 tie_start,
                 tie_stop,

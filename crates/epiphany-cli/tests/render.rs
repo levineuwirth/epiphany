@@ -3129,7 +3129,7 @@ fn a_quarter_tone_stands_at_its_spelled_step() {
             checked += 1;
         }
     }
-    assert_eq!(checked, 26, "every quarter-tone of the fixture is checked");
+    assert_eq!(checked, 24, "every quarter-tone of the fixture is checked");
 }
 
 /// Each quarter-tone accidental draws its SMuFL glyph beside its own head:
@@ -3208,7 +3208,9 @@ fn each_quarter_tone_accidental_draws_its_smufl_glyph() {
 /// another quarter-tone after it on its letter is shown; the same alteration
 /// stated again, by either notation, is not; a new measure states it again;
 /// and against a key a quarter-tone is shown, and the key's own flat after it
-/// is restated.
+/// is restated. A note after it that writes no accidental is natural, since a
+/// quarter-tone accidental applies to its own note alone, and shows the
+/// natural that cancels it, in its own voice or another.
 #[test]
 fn a_quarter_tone_accidental_holds_to_the_barline_and_yields_to_a_change() {
     use epiphany_core::{Event, EventPosition, TypedObjectId};
@@ -3216,15 +3218,15 @@ fn a_quarter_tone_accidental_holds_to_the_barline_and_yields_to_a_change() {
     // In 2/4, one flat in the key, quarters: (step, octave, accidental,
     // voice) in time order. A whole-semitone alteration is the `<alter>` a
     // file writes with it (the key's B-flat included); a quarter-tone is
-    // written by name alone, as MuseScore writes its arrows, and a note it
-    // carries to writes neither (`carried`).
+    // written by name alone, as MuseScore writes its arrows; and a note that
+    // writes neither (`plain`) is natural.
     let note = |step: &str, octave: u8, accidental: &str, voice: u8| {
         let alter = match (step, accidental) {
             (_, "flat") | ("B", "") => "<alter>-1</alter>",
             _ => "",
         };
         let accidental = match accidental {
-            "" | "carried" => String::new(),
+            "" | "plain" => String::new(),
             name => format!("<accidental>{name}</accidental>"),
         };
         format!(
@@ -3233,10 +3235,22 @@ fn a_quarter_tone_accidental_holds_to_the_barline_and_yields_to_a_change() {
         )
     };
     let measures = [
-        // A quarter-flat B holds; the second voice's B, unmarked, takes it.
-        [note("B", 4, "quarter-flat", 1), note("B", 4, "carried", 1)].concat()
+        // A quarter-flat B holds: stated again, in its voice or another, it
+        // is not shown again.
+        [
+            note("B", 4, "quarter-flat", 1),
+            note("B", 4, "quarter-flat", 1),
+        ]
+        .concat()
             + "<backup><duration>2</duration></backup>"
-            + &[note("D", 4, "", 2), note("B", 4, "carried", 2)].concat(),
+            + &[note("D", 4, "", 2), note("B", 4, "quarter-flat", 2)].concat(),
+        // A plain B after the first voice's B quarter-sharp is natural, and
+        // shows its natural in the second voice; so does a plain E after an E
+        // quarter-flat in its own.
+        [note("B", 4, "natural-up", 1), note("D", 5, "", 1)].concat()
+            + "<backup><duration>2</duration></backup>"
+            + &[note("D", 4, "", 2), note("B", 4, "plain", 2)].concat(),
+        [note("E", 5, "flat-up", 1), note("E", 5, "plain", 1)].concat(),
         // The key's flat after a quarter-flat is restated; a natural is shown.
         [note("B", 4, "quarter-flat", 1), note("B", 4, "flat", 1)].concat(),
         [note("B", 4, "flat-up", 1), note("B", 4, "natural", 1)].concat(),
@@ -3326,6 +3340,12 @@ fn a_quarter_tone_accidental_holds_to_the_barline_and_yields_to_a_change() {
             "",
             "",
             "",
+            "accidentalQuarterToneSharpNaturalArrowUp",
+            "",
+            "",
+            "accidentalNatural",
+            "accidentalQuarterToneFlatArrowUp",
+            "accidentalNatural",
             "accidentalQuarterToneFlatStein",
             "accidentalFlat",
             "accidentalQuarterToneFlatArrowUp",
@@ -3366,10 +3386,11 @@ fn a_quarter_tone_accidental_holds_to_the_barline_and_yields_to_a_change() {
 }
 
 /// The hand-written quarter-tone fixture through the whole pipeline, locked
-/// to a golden: each of the fourteen quarter-tone accidentals once, a
-/// carried one drawn only where the measure's state changes, a natural that
-/// cancels one, and quarter-tones tied over a barline, along a chain and in a
-/// second voice, their continuations unmarked. Its features are counted
+/// to a golden: each of the fourteen quarter-tone accidentals once; the
+/// natural a note after a quarter-tone shows when it writes no accidental, in
+/// its own voice or another, since the accidental applies to its own note
+/// alone; a natural after a tie; and quarter-tones tied over a barline, along
+/// a chain and in a second voice, their continuations unmarked. Its features are counted
 /// first, so the golden cannot lock a page that lost one. Regenerate
 /// deliberately, with renders beside it, with `UPDATE_GOLDEN=1`.
 #[test]
@@ -3402,7 +3423,7 @@ fn the_quarter_tone_fixture_engraves_to_its_golden() {
         ("accidentalQuarterToneSharpStein", 1),
         ("accidentalThreeQuarterTonesFlatZimmermann", 1),
         ("accidentalThreeQuarterTonesSharpStein", 1),
-        ("accidentalNatural", 2),
+        ("accidentalNatural", 3),
         ("accidentalFlat", 0),
         ("accidentalSharp", 0),
     ] {

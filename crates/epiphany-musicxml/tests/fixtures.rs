@@ -621,7 +621,7 @@ fn a_quarter_tone_imports_at_its_pitch_in_cmn_24() {
 }
 
 #[test]
-fn a_quarter_tone_accidental_named_without_an_alter_gives_the_pitch_and_carries() {
+fn a_quarter_tone_accidental_named_without_an_alter_applies_to_its_note_and_its_ties() {
     let run = run("arrow_accidentals.musicxml");
     all_applied(&run);
     let score = &run.reduced.score;
@@ -644,9 +644,10 @@ fn a_quarter_tone_accidental_named_without_an_alter_gives_the_pitch_and_carries(
             "s0 v0 3 1/4 E-3q4",
             "s0 v0 13/4 1/4 F+3q4",
             "s0 v0 7/2 1/2 rest",
-            // The second voice's B three-quarter-flat at 17/4 reaches this B.
+            // The second voice's B three-quarter-flat at 17/4 does not reach
+            // this B.
             "s0 v0 4 1/2 rest",
-            "s0 v0 9/2 1/4 B-3q4",
+            "s0 v0 9/2 1/4 B4",
             "s0 v0 19/4 1/4 D5",
             // Over a tie, to the tied note alone, and along a chain.
             "s0 v0 5 1/4 C5",
@@ -663,10 +664,11 @@ fn a_quarter_tone_accidental_named_without_an_alter_gives_the_pitch_and_carries(
             "s0 v0 9 1 D5",
             "s0 v0 10 1/2 D5",
             "s0 v0 21/2 1/2 rest",
-            // The later of two accidentals governs.
+            // Neither of two accidentals before it reaches a note that writes
+            // none.
             "s0 v0 11 1/4 B-1q4",
             "s0 v0 45/4 1/4 B+3q4",
-            "s0 v0 23/2 1/4 B+3q4",
+            "s0 v0 23/2 1/4 B4",
             "s0 v0 47/4 1/4 rest",
             // Not before the accidental, not at another octave, not past a
             // natural.
@@ -695,15 +697,23 @@ fn a_quarter_tone_accidental_named_without_an_alter_gives_the_pitch_and_carries(
             "s1 v0 11 1 rest",
         ]
     );
-    // The census values each name and carry apart from the reader.
+    // The census values each name and tie apart from the reader, and in
+    // measures 5 and 12 finds only the notes that write an accidental.
     let census = &run.import.source.census[0].quarter_tones;
-    assert_eq!(census.len(), 26);
+    assert_eq!(census.len(), 24);
+    let in_measure = |m: usize| {
+        census
+            .iter()
+            .filter(|q| q.measure == m)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(in_measure(4), [quarter_tone(4, (1, 4), 6, -3, 4)]);
     assert_eq!(
-        census[23..],
+        in_measure(11),
         [
             quarter_tone(11, (0, 1), 6, -1, 4),
             quarter_tone(11, (1, 4), 6, 3, 4),
-            quarter_tone(11, (1, 2), 6, 3, 4),
         ]
     );
     // Every tie is made, the quarter-tones' among them: over a barline, along
@@ -777,10 +787,10 @@ fn spelt(score: &Score) -> Vec<String> {
 }
 
 /// A quarter-tone is spelt with the accidental its notation gives it, its
-/// own or the one it carries, at its letter and octave, since the spelling
-/// pre-pass spells no `cmn-24` pitch: the fourteen names each as written, a
-/// carried one through its measure and over a tie, and in a transposed part
-/// the sounding pitch's accidental of the written one's kind.
+/// own or the one a tie carries to it, at its letter and octave, since the
+/// spelling pre-pass spells no `cmn-24` pitch: the fourteen names each as
+/// written, one carried over a tie and along a chain, and in a transposed
+/// part the sounding pitch's accidental of the written one's kind.
 #[test]
 fn a_quarter_tone_is_spelt_with_the_accidental_its_notation_gives_it() {
     let arrows = run("arrow_accidentals.musicxml");
@@ -801,18 +811,15 @@ fn a_quarter_tone_is_spelt_with_the_accidental_its_notation_gives_it() {
             "11/4 D+1q4 Cmn(D) quarter-sharp 4",
             "3 E-3q4 Cmn(E) three-quarters-flat 4",
             "13/4 F+3q4 Cmn(F) three-quarters-sharp 4",
-            // Carried from the other voice.
-            "9/2 B-3q4 Cmn(B) flat-down 4",
             // Over a tie, and along a chain.
             "23/4 B-1q4 Cmn(B) flat-up 4",
             "6 B-1q4 Cmn(B) flat-up 4",
             "27/4 A+1q4 Cmn(A) natural-up 4",
             "7 A+1q4 Cmn(A) natural-up 4",
             "8 A+1q4 Cmn(A) natural-up 4",
-            // The later accidental, carried.
+            // Each on its own note.
             "11 B-1q4 Cmn(B) flat-up 4",
             "45/4 B+3q4 Cmn(B) sharp-up 4",
-            "23/2 B+3q4 Cmn(B) sharp-up 4",
             "17/4 B-3q4 Cmn(B) flat-down 4",
             "19/2 D+1q5 Cmn(D) natural-up 5",
             "10 D+1q5 Cmn(D) natural-up 5",
@@ -870,7 +877,7 @@ fn the_comparison_finds_a_quarter_tone_spelt_other_than_it_sounds() {
     assert!(compare(&run.import, &unspelt)
         .failures
         .iter()
-        .any(|f| f.starts_with("26 of 26 quarter-tones")));
+        .any(|f| f.starts_with("24 of 24 quarter-tones")));
 }
 
 /// The accidental of a sounding quarter-tone keeps the written one's kind:
