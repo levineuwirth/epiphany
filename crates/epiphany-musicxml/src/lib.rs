@@ -32,9 +32,9 @@
 //!   `RespellPitch`: the pitch's letter and octave, and the arrowed or Stein
 //!   accidental the file writes or carries to the note, by its MusicXML name,
 //!   moved to the sounding pitch with its kind kept.
-//! - The core ties only pitches it can call enharmonic, which it answers in
-//!   twelve-chromatic spaces alone, so a tie between quarter-tones is
-//!   recorded, not made.
+//! - A tie pairs pitches equal in their space's chromatic layer, which the
+//!   core decides in `cmn-24` as in `cmn-12`, so a tie between quarter-tones
+//!   is made as any other.
 //! - Voices are per staff: a MusicXML voice that crosses staves becomes a
 //!   voice on each. Unpitched notes keep their staff step (read against a
 //!   treble clef, bottom line 0) and their instrument member, and a tie

@@ -107,9 +107,6 @@ pub struct Import {
     /// Per part: the tie starts recorded instead of tied for want of a
     /// matching end.
     pub unended_ties: Vec<usize>,
-    /// Per part: the tie starts recorded instead of tied because the core
-    /// cannot tie quarter-tones.
-    pub quarter_tone_ties: Vec<usize>,
 }
 
 struct Emitter {
@@ -207,13 +204,6 @@ fn staff_lines(lines: Option<u8>) -> StaffLineConfiguration {
         line_count: lines.unwrap_or(5),
         ..StaffLineConfiguration::default()
     }
-}
-
-/// Whether the model can tie `pitch` to its equal: a tie's paired pitches
-/// must be enharmonically equivalent, which the core answers only in a
-/// twelve-chromatic space, so not for a quarter-tone in `cmn-24`.
-pub(crate) fn tieable(pitch: &epiphany_core::Pitch) -> bool {
-    pitch.enharmonic_equivalent(pitch)
 }
 
 /// The events of a part by staff and onset, each list in source order.
@@ -575,11 +565,11 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
     // Ties: each tied pitch continues into an event that starts where it
     // ends on its staff, holding the same pitch with a tie stop: in its own
     // voice when one does, else in another, since a chord's notes may part
-    // into voices across a tie. One tie per end event. A tied unpitched note
+    // into voices across a tie. One tie per end event. A quarter-tone ties
+    // as any pitch does, the core pairing it in `cmn-24`. A tied unpitched note
     // continues into one of the same member at the same staff step; its tie
     // pairs no pitch, which the model admits, having none to pair.
     let mut unended_ties = vec![0; source.parts.len()];
-    let mut quarter_tone_ties = vec![0; source.parts.len()];
     for (p, part) in source.parts.iter().enumerate() {
         let starts = event_starts(&part.events);
         for (i, event) in part.events.iter().enumerate() {
@@ -678,22 +668,9 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
                 match found {
                     Some((j, b, len)) => {
                         used.entry(j).or_insert_with(|| vec![false; len])[b] = true;
-                        if tieable(&x.pitch) {
-                            ends.entry(j)
-                                .or_default()
-                                .push((ids.pitches[p][i][a], ids.pitches[p][j][b]));
-                        } else {
-                            quarter_tone_ties[p] += 1;
-                            let measure = source.measures[event.measure].number.clone();
-                            source.features.record(
-                                FeatureClass::Content,
-                                "tie on a quarter-tone pitch",
-                                Place {
-                                    part: part.name.clone(),
-                                    measure,
-                                },
-                            );
-                        }
+                        ends.entry(j)
+                            .or_default()
+                            .push((ids.pitches[p][i][a], ids.pitches[p][j][b]));
                     }
                     None => {
                         unended_ties[p] += 1;
@@ -798,6 +775,5 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
         labels: e.labels,
         ids,
         unended_ties,
-        quarter_tone_ties,
     }
 }

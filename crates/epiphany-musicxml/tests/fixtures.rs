@@ -612,14 +612,12 @@ fn a_quarter_tone_imports_at_its_pitch_in_cmn_24() {
         flute.dropped_quarter_tones,
         [quarter_tone(1, (1, 2), 2, -1, 5)]
     );
-    // A tie's pitches must be enharmonically equivalent, which the core
-    // answers only in a twelve-chromatic space: the quarter-tones' tie is
-    // recorded, and the ordinary tie beside it is made.
-    assert_eq!(ties(score), ["3/4 A4 -> 1 A4"]);
+    // A tie's pitches must be equal in their space's chromatic layer, which
+    // the core decides in `cmn-24` as in `cmn-12`: the quarter-tones' tie is
+    // made, as is the ordinary tie beside it, and none is recorded.
+    assert_eq!(ties(score), ["0 G-1q4 -> 1/4 G-1q4", "3/4 A4 -> 1 A4"]);
     let kinds = &run.import.source.features.kinds;
-    let tie = &kinds["tie on a quarter-tone pitch"];
-    assert_eq!((tie.class, tie.places.len()), (FeatureClass::Content, 1));
-    assert!(!kinds.contains_key("tie without a matching end"));
+    assert!(!kinds.keys().any(|k| k.starts_with("tie")), "{kinds:?}");
 }
 
 #[test]
@@ -708,10 +706,20 @@ fn a_quarter_tone_accidental_named_without_an_alter_gives_the_pitch_and_carries(
             quarter_tone(11, (1, 2), 6, 3, 4),
         ]
     );
-    assert_eq!(ties(score), ["9 D5 -> 10 D5"]);
+    // Every tie is made, the quarter-tones' among them: over a barline, along
+    // a chain, and the second voice's beside the first's natural D.
+    assert_eq!(
+        ties(score),
+        [
+            "23/4 B-1q4 -> 6 B-1q4",
+            "27/4 A+1q4 -> 7 A+1q4",
+            "7 A+1q4 -> 8 A+1q4",
+            "9 D5 -> 10 D5",
+            "19/2 D+1q5 -> 10 D+1q5",
+        ]
+    );
     let kinds = &run.import.source.features.kinds;
-    assert_eq!(kinds["tie on a quarter-tone pitch"].places.len(), 4);
-    assert!(!kinds.contains_key("tie without a matching end"));
+    assert!(!kinds.keys().any(|k| k.starts_with("tie")), "{kinds:?}");
 }
 
 /// Each quarter-tone of `score` with the spelling authored for it, in the

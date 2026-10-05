@@ -638,6 +638,8 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
         let starts = crate::emit::event_starts(&part.events);
         let mut source_ties = BTreeMap::new();
         let mut tie_explained = Vec::new();
+        // The refused ties that start on a quarter-tone.
+        let mut refused_quarter_tones = 0usize;
         for (i, event) in part.events.iter().enumerate() {
             let end = event.onset.add(&event.duration);
             let at_end = starts
@@ -687,10 +689,8 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
                 if !ends {
                     continue; // recorded by the importer as a tie without an end
                 }
-                if !crate::emit::tieable(&pitch.pitch) {
-                    continue; // recorded by the importer as a tie on a quarter-tone
-                }
                 if let Some(why) = refused_tie(p, i) {
+                    refused_quarter_tones += usize::from(pitch_key(&pitch.pitch).1 % 2 != 0);
                     tie_explained.push(format!("{name}: tie at {} ({why})", show(&event.onset)));
                     continue;
                 }
@@ -713,24 +713,30 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
         }
         // And held to the census's count of the file's tie starts, taken
         // apart from the reader: each is tied in the score, explained by a
-        // refused tie, or recorded by the importer as without an end, on a
-        // quarter-tone, or on a note the reader dropped; and each of those
-        // three records to the census's own count of its kind.
+        // refused tie, or recorded by the importer as without an end or on a
+        // note the reader dropped, each of those two records to the census's
+        // own count of its kind; and the census's count of the file's ties on
+        // quarter-tones is the score's, tied or refused.
         let census = &source.census[p];
         let tied: isize = graph_ties.values().sum();
+        let quarter: isize = graph_ties
+            .iter()
+            .filter(|((_, _, held, _), _)| matches!(held, Tied::Pitch((_, q, _)) if q % 2 != 0))
+            .map(|(_, count)| *count)
+            .sum();
+        let quarter = quarter.unsigned_abs() + refused_quarter_tones;
         let unended = import.unended_ties.get(p).copied().unwrap_or(0);
-        let quarter = import.quarter_tone_ties.get(p).copied().unwrap_or(0);
         let (refused_ties, dropped) = (tie_explained.len(), part.dropped_tie_starts);
-        if tied.unsigned_abs() + refused_ties + unended + quarter + dropped != census.tie_starts
+        if tied.unsigned_abs() + refused_ties + unended + dropped != census.tie_starts
             || unended != census.unended_ties
             || quarter != census.quarter_tone_ties
             || dropped != census.dropped_tie_starts
         {
             fidelity.failures.push(format!(
-                "{name}: {tied} tie starts tied in the score and {refused_ties} refused; \
-                 {unended} recorded without an end, {quarter} on quarter-tones and {dropped} on \
-                 dropped notes; but the file has {} tie starts, {} without an end, {} on \
-                 quarter-tones and {} on chord notes the model cannot hold",
+                "{name}: {tied} tie starts tied in the score and {refused_ties} refused, \
+                 {quarter} of them on quarter-tones; {unended} recorded without an end and \
+                 {dropped} on dropped notes; but the file has {} tie starts, {} without an end, \
+                 {} on quarter-tones and {} on chord notes the model cannot hold",
                 census.tie_starts,
                 census.unended_ties,
                 census.quarter_tone_ties,

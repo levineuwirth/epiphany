@@ -305,7 +305,8 @@ pub struct QuarterTone {
 /// keys and clefs its `<attributes>` state; and, timed by a reading of their
 /// own, the quarter-tones at their values, the chord notes the model cannot
 /// hold, and the tie starts the file does not end or ends on a quarter-tone.
-/// Each count the reader keeps of what it leaves out is held to one of these.
+/// Each count the reader keeps of what it leaves out is held to one of these,
+/// and the quarter-tone ties to the ones the score makes.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Census {
     /// `<note>` elements with a `<pitch>`, not grace or cue.
@@ -331,8 +332,8 @@ pub struct Census {
     /// octave and instrument), carries a `<tie type="stop"/>` where the tied
     /// note ends, in its measure or at the start of the next.
     pub unended_ties: usize,
-    /// Of the tie starts the file ends, those on a quarter-tone, which the
-    /// model cannot tie.
+    /// Of the tie starts the file ends, those on a quarter-tone, each of
+    /// which the score ties or a refused tie explains.
     pub quarter_tone_ties: usize,
     /// Grace and cue notes, which are not imported.
     pub grace_or_cue: usize,

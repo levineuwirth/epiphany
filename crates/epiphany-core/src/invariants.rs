@@ -2308,7 +2308,10 @@ impl<'a> GraphIndex<'a> {
                 Some(pairs) => {
                     // Explicit pairing: each entry must reference pitches of the
                     // respective events, and be enharmonic for the classes that
-                    // require it.
+                    // require it: equal in their space's chromatic layer
+                    // (`Pitch::chromatic_equivalent`), which in a twelve-chromatic
+                    // space is enharmonic equivalence and in `cmn-24` holds
+                    // quarter-tones apart.
                     for (sp, ep) in pairs {
                         if !start_pitches.contains(sp) {
                             out.push(WellFormednessViolation::invariant(
@@ -2324,7 +2327,7 @@ impl<'a> GraphIndex<'a> {
                         }
                         if requires_enharmonic {
                             if let (Some(a), Some(b)) = (self.pitch.get(sp), self.pitch.get(ep)) {
-                                if !a.enharmonic_equivalent(b) {
+                                if !a.chromatic_equivalent(b) {
                                     out.push(WellFormednessViolation::invariant(
                                         GraphInvariant::TiePairing,
                                         format!(
@@ -2363,7 +2366,7 @@ impl<'a> GraphIndex<'a> {
                                 return false;
                             }
                             match (sp_pitch, self.pitch.get(*ep)) {
-                                (Some(a), Some(b)) => a.enharmonic_equivalent(b),
+                                (Some(a), Some(b)) => a.chromatic_equivalent(b),
                                 _ => false,
                             }
                         });
@@ -3535,6 +3538,53 @@ mod review_fix_tests {
             style: Default::default(),
         });
         assert!(!fires(&s2, GraphInvariant::TiePairing));
+    }
+
+    /// A tie pairs quarter-tones by their equality in `cmn-24`'s own chromatic
+    /// layer: a C quarter-sharp ties to itself and to its enharmonic D
+    /// three-quarter-flat, and not to a C a quarter-tone away or to the C of
+    /// `cmn-12`.
+    #[test]
+    fn inv17_pairs_quarter_tones_by_their_place_in_cmn_24() {
+        let tied = |start: (&str, CmnNominal, i8), end: (&str, CmnNominal, i8)| {
+            let (mut s, e0, e1) = two_chord_score(12, (CmnNominal::C, 4), (CmnNominal::C, 4));
+            for (event, (space, nominal, alteration)) in [(e0, start), (e1, end)] {
+                let Some(Event::Pitched(p)) = s.events.get_mut(event) else {
+                    panic!("a pitched event")
+                };
+                p.pitches[0].pitch.scale_position = ScalePosition {
+                    space: PitchSpaceId::new(space),
+                    position: PitchSpacePosition::Cmn {
+                        nominal,
+                        alteration,
+                        octave: 4,
+                    },
+                };
+            }
+            s.cross_cutting.ties.push(Tie {
+                id: TieId::new(s.identity.replica_id, 1),
+                start_event: e0,
+                end_event: e1,
+                pitch_pairing: None,
+                class: TieClass::Standard,
+                style: Default::default(),
+            });
+            !fires(&s, GraphInvariant::TiePairing)
+        };
+        let c_up = ("cmn-24", CmnNominal::C, 1);
+        assert!(tied(c_up, c_up));
+        assert!(tied(c_up, ("cmn-24", CmnNominal::D, -3)));
+        assert!(!tied(c_up, ("cmn-24", CmnNominal::C, -1)));
+        assert!(!tied(c_up, ("cmn-24", CmnNominal::C, 2)));
+        assert!(!tied(
+            ("cmn-24", CmnNominal::C, 0),
+            ("cmn-12", CmnNominal::C, 0)
+        ));
+        // Twelve-chromatic ties are as before.
+        assert!(tied(
+            ("cmn-12", CmnNominal::C, 1),
+            ("cmn-12", CmnNominal::D, -1)
+        ));
     }
 
     #[test]

@@ -1078,3 +1078,66 @@ fn a_migration_judges_an_indexed_event_by_its_placement_in_both_modes() {
     assert!(!violations.is_empty());
     assert_eq!(effect(&state, migrated.id), Some(OperationEffect::Applied));
 }
+
+/// Two quarter-tone quarters on one line, untied, as a file writes them.
+const QUARTER_TONES: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="4.0">
+  <part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>1</divisions><key><fifths>0</fifths></key>
+        <time><beats>2</beats><beat-type>4</beat-type></time>
+        <clef><sign>G</sign><line>2</line></clef></attributes>
+      <note><pitch><step>G</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type><accidental>flat-up</accidental></note>
+      <note><pitch><step>G</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type></note>
+    </measure>
+  </part>
+</score-partwise>
+"#;
+
+/// A tie between two quarter-tones applies in both reduction modes, and the
+/// score it leaves keeps every invariant, the tie's pairing among them. No
+/// reduction checks a tie's pitches, so the verdict is the one reduction gave
+/// before the core decided quarter-tone equality; what changed is the
+/// invariant the score is held to, which once called the tie unpaired.
+#[test]
+fn a_tie_between_quarter_tones_applies_and_pairs_in_both_modes() {
+    use epiphany_core::{Tie, TieClass, TieId};
+    use epiphany_ops::{CreateCrossCuttingOp, CrossCuttingValue};
+
+    let import = import(QUARTER_TONES).expect("the measure imports");
+    let events = &import.ids.events[0];
+    assert_eq!(events.len(), 2, "two quarters");
+    let tie = OperationId::new(A, 1);
+    let envelope = OperationEnvelope {
+        id: tie,
+        author: AuthorId(0),
+        stamp: OperationStamp::new(
+            HybridLogicalClock::new(WallClockTime(import.envelopes.len() as i64 + 1), 0),
+            tie,
+        ),
+        causal_context: CausalContext::new()
+            .with_seen(import.replica, import.envelopes.len() as u64 - 1),
+        transaction: None,
+        payload: primitive(OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+            structure: CrossCuttingValue::Tie(Tie {
+                id: TieId::new(A, 1),
+                start_event: events[0],
+                end_event: events[1],
+                pitch_pairing: None,
+                class: TieClass::Standard,
+                style: Default::default(),
+            }),
+        })),
+    };
+    let mut set = OperationSet::new();
+    set.accept_all(import.envelopes.iter().cloned().chain([envelope]));
+    let free = set.reduce();
+    let aware = set.reduce_onto(&Score::empty(IdentityContext::new(import.replica)));
+    assert_eq!(effect(&free, tie), Some(OperationEffect::Applied));
+    assert_eq!(effect(&aware.state, tie), Some(OperationEffect::Applied));
+    assert!(free.canonical_bytes() == aware.state.canonical_bytes());
+    assert_eq!(aware.score.cross_cutting.ties.len(), 1);
+    let violations = check_invariants(&aware.score);
+    assert!(violations.is_empty(), "{violations:?}");
+}

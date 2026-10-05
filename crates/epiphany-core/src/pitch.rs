@@ -325,8 +325,8 @@ pub enum TransposeRefusal {
 /// structurally determine. This is the structural replacement for the
 /// retired P13-S2 `"cmn-12"` identifier check
 /// (`req:pitch:space-capability-refusal`): [`Pitch::transposed`] and
-/// [`Pitch::twelve_tet_semitone`] are its only two call sites, matching the
-/// two places the interim guard used to live.
+/// [`Pitch::twelve_tet_semitone`] are the two places the interim guard used to
+/// live; the tie's chromatic equality reads it as well.
 fn diatonic_over_chromatic_structure(space: &PitchSpaceId) -> Option<(u16, Vec<u16>)> {
     match crate::pitch_space::built_in_position_structure(space)? {
         crate::pitch_space::PositionStructure::DiatonicOverChromatic {
@@ -692,6 +692,51 @@ impl Pitch {
             (Some(a), Some(b)) => a == b,
             _ => false,
         }
+    }
+
+    /// Whether two pitches stand at one position of their pitch space's
+    /// chromatic layer: the equality a tie pairs pitches by (Chapter 5
+    /// `req:graph:tie-class-validation`, "enharmonically equivalent under the
+    /// active tuning system"). Every pair [`Pitch::enharmonic_equivalent`]
+    /// accepts is equal here. Beyond that, in a built-in space with a
+    /// diatonic-over-chromatic structure whose chromatic layer is not twelve
+    /// (`cmn-24`), two CMN positions are equal when their absolute chromatic
+    /// coordinates in that space are, `octave*C + m(nominal) + alteration`
+    /// with `C` and `m` the space's own: a C quarter-sharp equals a D
+    /// three-quarter-flat, and a quarter-tone equals no position a quarter-tone
+    /// away. Pitches in different spaces are never equal, nor are positions
+    /// whose structure does not resolve.
+    pub fn chromatic_equivalent(&self, other: &Pitch) -> bool {
+        if self.enharmonic_equivalent(other) {
+            return true;
+        }
+        if self.scale_position.space != other.scale_position.space {
+            return false;
+        }
+        match (self.chromatic_coordinate(), other.chromatic_coordinate()) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        }
+    }
+
+    /// A CMN position's absolute coordinate in its space's chromatic layer,
+    /// when the space resolves to a diatonic-over-chromatic structure.
+    fn chromatic_coordinate(&self) -> Option<i32> {
+        let PitchSpacePosition::Cmn {
+            nominal,
+            alteration,
+            octave,
+        } = &self.scale_position.position
+        else {
+            return None;
+        };
+        let (chromatic_card, nominal_to_chromatic) =
+            diatonic_over_chromatic_structure(&self.scale_position.space)?;
+        Some(
+            *octave as i32 * chromatic_card as i32
+                + nominal_to_chromatic[*nominal as usize] as i32
+                + *alteration as i32,
+        )
     }
 
     /// Sounding equivalence (Chapter 2's third computed relation): two pitches
@@ -1481,6 +1526,54 @@ mod tests {
         let p = cmn_in("cmn-24", CmnNominal::E, -1, 4);
         assert_eq!(p.twelve_tet_semitone(), None);
         assert_eq!(p.twelve_tet_class(), None);
+    }
+
+    #[test]
+    fn chromatic_equivalence_is_enharmonic_in_cmn_12_and_holds_quarter_tones_in_cmn_24() {
+        // In cmn-12 it is enharmonic equivalence, pair for pair.
+        let nominals = [
+            CmnNominal::C,
+            CmnNominal::D,
+            CmnNominal::E,
+            CmnNominal::F,
+            CmnNominal::G,
+            CmnNominal::A,
+            CmnNominal::B,
+        ];
+        let mut pitches = Vec::new();
+        for &n in &nominals {
+            for alteration in -2..=2 {
+                for octave in 3..=5 {
+                    pitches.push(cmn_in("cmn-12", n, alteration, octave));
+                }
+            }
+        }
+        let mut equal = 0;
+        for a in &pitches {
+            for b in &pitches {
+                assert_eq!(a.chromatic_equivalent(b), a.enharmonic_equivalent(b));
+                equal += usize::from(a.chromatic_equivalent(b));
+            }
+        }
+        assert!(equal > pitches.len(), "enharmonic pairs beyond identity");
+        // In cmn-24, by the quarter-tone coordinate, octave included.
+        let c_up = cmn_in("cmn-24", CmnNominal::C, 1, 4);
+        assert!(c_up.chromatic_equivalent(&c_up));
+        assert!(c_up.chromatic_equivalent(&cmn_in("cmn-24", CmnNominal::D, -3, 4)));
+        assert!(cmn_in("cmn-24", CmnNominal::B, 3, 3).chromatic_equivalent(&c_up));
+        assert!(!c_up.chromatic_equivalent(&cmn_in("cmn-24", CmnNominal::C, 1, 5)));
+        assert!(!c_up.chromatic_equivalent(&cmn_in("cmn-24", CmnNominal::C, -1, 4)));
+        // Never across spaces, and never where no structure resolves.
+        assert!(
+            !cmn_in("cmn-24", CmnNominal::C, 0, 4).chromatic_equivalent(&cmn_in(
+                "cmn-12",
+                CmnNominal::C,
+                0,
+                4
+            ))
+        );
+        let unresolved = cmn_in("edo-31", CmnNominal::C, 0, 4);
+        assert!(!unresolved.chromatic_equivalent(&unresolved));
     }
 
     #[test]

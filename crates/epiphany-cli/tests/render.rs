@@ -3364,3 +3364,75 @@ fn a_quarter_tone_accidental_holds_to_the_barline_and_yields_to_a_change() {
         "two D quarter-tones share one notehead"
     );
 }
+
+/// The hand-written quarter-tone fixture through the whole pipeline, locked
+/// to a golden: each of the fourteen quarter-tone accidentals once, a
+/// carried one drawn only where the measure's state changes, a natural that
+/// cancels one, and quarter-tones tied over a barline, along a chain and in a
+/// second voice, their continuations unmarked. Its features are counted
+/// first, so the golden cannot lock a page that lost one. Regenerate
+/// deliberately, with renders beside it, with `UPDATE_GOLDEN=1`.
+#[test]
+fn the_quarter_tone_fixture_engraves_to_its_golden() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("arrow_accidentals.svg");
+    let _ = std::fs::remove_file(&out);
+    let status = Command::new(env!("CARGO_BIN_EXE_epiphany"))
+        .arg("render")
+        .arg(fixture("arrow_accidentals.musicxml"))
+        .args(["--page", "1", "-o"])
+        .arg(&out)
+        .output()
+        .expect("runs");
+    assert!(status.status.success(), "{status:?}");
+    let svg = std::fs::read_to_string(&out).expect("an SVG was written");
+
+    let count = |needle: &str| svg.matches(needle).count();
+    for (glyph, expected) in [
+        ("accidentalQuarterToneFlatArrowUp", 3),
+        ("accidentalThreeQuarterTonesFlatArrowDown", 2),
+        ("accidentalQuarterToneSharpNaturalArrowUp", 3),
+        ("accidentalQuarterToneFlatNaturalArrowDown", 1),
+        ("accidentalThreeQuarterTonesSharpArrowUp", 2),
+        ("accidentalQuarterToneSharpArrowDown", 1),
+        ("accidentalFiveQuarterTonesSharpArrowUp", 1),
+        ("accidentalThreeQuarterTonesSharpArrowDown", 1),
+        ("accidentalThreeQuarterTonesFlatArrowUp", 1),
+        ("accidentalFiveQuarterTonesFlatArrowDown", 1),
+        ("accidentalQuarterToneFlatStein", 1),
+        ("accidentalQuarterToneSharpStein", 1),
+        ("accidentalThreeQuarterTonesFlatZimmermann", 1),
+        ("accidentalThreeQuarterTonesSharpStein", 1),
+        ("accidentalNatural", 2),
+        ("accidentalFlat", 0),
+        ("accidentalSharp", 0),
+    ] {
+        assert_eq!(
+            count(&format!("data-glyph=\"{glyph}\"")),
+            expected,
+            "{glyph}"
+        );
+    }
+    assert_eq!(count("data-kind=\"curve\""), 5, "five ties, no slur");
+    let loaded = load(&fixture("arrow_accidentals.musicxml")).expect("loads");
+    let engraved = epiphany_cli::engrave_loaded(&loaded);
+    let found = omissions(
+        &loaded.reduced.score,
+        &engraved.layout,
+        &engraved.diagnostics,
+    );
+    assert!(found.kinds.is_empty(), "{found:?}");
+
+    let golden =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/arrow_accidentals.page-1.svg");
+    if std::env::var_os("UPDATE_GOLDEN").is_some() {
+        std::fs::create_dir_all(golden.parent().expect("a directory")).expect("created");
+        std::fs::write(&golden, &svg).expect("golden written");
+    }
+    let expected = std::fs::read_to_string(&golden)
+        .unwrap_or_else(|e| panic!("{}: {e}; regenerate with UPDATE_GOLDEN=1", golden.display()));
+    assert!(
+        expected == svg,
+        "the page differs from {}; if intended, regenerate with UPDATE_GOLDEN=1",
+        golden.display()
+    );
+}
