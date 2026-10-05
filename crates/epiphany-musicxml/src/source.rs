@@ -344,6 +344,11 @@ pub struct Census {
     /// another, one whose first note gives no usable ratio, or one never
     /// stopped.
     pub unmade_tuplets: usize,
+    /// The tuplets counted in `tuplets`, each where the census's own timed
+    /// walk finds it: the staff of its first note, its ratio, and the measure
+    /// and offset of each member, a member being each note of its voice, not
+    /// joining a chord, from its start to its stop.
+    pub tuplet_places: Vec<CensusTuplet>,
     /// Per staff, the `fifths` of each `<key>` the model can hold (at most
     /// seven accidentals) that applies to it, where it is stated: a numbered
     /// key to its staff, an unnumbered one to every staff the part's
@@ -359,6 +364,18 @@ pub struct Census {
     /// neither. Each is read with its own timing, its own value for each
     /// name and its own transposition to the sounding pitch.
     pub quarter_tones: Vec<QuarterTone>,
+}
+
+/// A tuplet where the census finds it, apart from the reader.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CensusTuplet {
+    /// The staff of its first note, from 0.
+    pub staff: usize,
+    /// Its `actual` and `normal` notes.
+    pub ratio: (u32, u32),
+    /// Each member's measure index and offset within the measure, in whole
+    /// notes.
+    pub members: Vec<(usize, Time)>,
 }
 
 /// A key or clef where the file states it: the index of its measure, and
@@ -531,6 +548,11 @@ fn timed_census(part: Node, census: &mut Census) {
         transpose: (i32, i32),
     }
     let mut found = Vec::new();
+    // Per voice, the open tuplets as the untimed walk pairs them: each one's
+    // number, its ratio when it is made, its first note's staff, and its
+    // members so far.
+    type OpenTuplet<'a> = (&'a str, Option<(u32, u32)>, usize, Vec<(usize, Time)>);
+    let mut tuplets: BTreeMap<&str, Vec<OpenTuplet>> = BTreeMap::new();
     // Per spot, the voice and alteration of each tied pitch.
     type Starts<'a> = Vec<(&'a str, i32)>;
     let mut over: BTreeMap<Spot, Starts> = BTreeMap::new();
@@ -588,6 +610,47 @@ fn timed_census(part: Node, census: &mut Census) {
                     }
                     let (pitch, unpitched) = (child(item, "pitch"), child(item, "unpitched"));
                     let staff = child_text(item, "staff").unwrap_or("1");
+                    if !chord {
+                        let voice = child_text(item, "voice").unwrap_or("1");
+                        let stack = tuplets.entry(voice).or_default();
+                        let marks: Vec<Node> = children(item, "notations")
+                            .flat_map(|n| children(n, "tuplet"))
+                            .collect();
+                        for mark in marks
+                            .iter()
+                            .filter(|t| t.attribute("type") == Some("start"))
+                        {
+                            let ratio = child(item, "time-modification").and_then(|m| {
+                                let actual =
+                                    child_text(m, "actual-notes")?.trim().parse::<u32>().ok()?;
+                                let normal =
+                                    child_text(m, "normal-notes")?.trim().parse::<u32>().ok()?;
+                                (actual != 0 && normal != 0 && actual != normal)
+                                    .then_some((actual, normal))
+                            });
+                            let made = ratio.filter(|_| stack.is_empty());
+                            let first = staff.parse::<usize>().map_or(0, |s| s.saturating_sub(1));
+                            let number = mark.attribute("number").unwrap_or("1");
+                            stack.push((number, made, first, Vec::new()));
+                        }
+                        let at = RationalTime::new(last, 4 * divisions)
+                            .unwrap_or_else(RationalTime::zero);
+                        for open in stack.iter_mut() {
+                            open.3.push((index, at.clone()));
+                        }
+                        for mark in marks.iter().filter(|t| t.attribute("type") == Some("stop")) {
+                            let number = mark.attribute("number").unwrap_or("1");
+                            if let Some(at) = stack.iter().rposition(|open| open.0 == number) {
+                                if let (_, Some(ratio), staff, members) = stack.remove(at) {
+                                    census.tuplet_places.push(CensusTuplet {
+                                        staff,
+                                        ratio,
+                                        members,
+                                    });
+                                }
+                            }
+                        }
+                    }
                     let ties = |kind: &str| {
                         children(item, "tie").any(|t| t.attribute("type") == Some(kind))
                     };

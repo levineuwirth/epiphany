@@ -862,6 +862,39 @@ fn tuplets_import_with_their_ratios_and_members() {
     assert_eq!(census.unmade_tuplets, 2);
 }
 
+/// The comparison holds the reader's tuplets to the census's own timed walk of
+/// the file, member by member: where the census places one member elsewhere,
+/// or one fewer, the comparison fails, though every count and ratio agrees
+/// and the score holds exactly what the reader made.
+#[test]
+fn the_comparison_holds_each_tuplets_members_to_the_census() {
+    let run = run("tuplet.musicxml");
+    let fails = |census: &dyn Fn(&mut epiphany_musicxml::source::CensusTuplet)| {
+        let mut import = run.import.clone();
+        let tuplet = import.source.census[0]
+            .tuplet_places
+            .first_mut()
+            .expect("the census places the file's tuplets");
+        census(tuplet);
+        compare(&import, &run.reduced)
+            .failures
+            .iter()
+            .any(|f| f.contains("the reader's tuplets are not the file's"))
+    };
+    assert!(!fails(&|_| {}), "the file's own census agrees");
+    assert!(fails(&|t| {
+        t.members.pop();
+    }));
+    assert!(fails(&|t| {
+        let (measure, offset) = t.members[1].clone();
+        t.members[1] = (
+            measure,
+            offset.add(&epiphany_core::RationalTime::new(1, 64).unwrap()),
+        );
+    }));
+    assert!(fails(&|t| t.staff += 1));
+}
+
 #[test]
 fn a_pickup_imports_in_full() {
     let run = run("pickup.musicxml");

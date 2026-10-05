@@ -6,7 +6,12 @@
 //! list of its events' exact onsets, durations and contents. It also compares
 //! clefs, keys, meters, measures, ties, slurs and each instrument's
 //! transposition, and checks the reader against a raw count of the file's
-//! `<note>` elements.
+//! `<note>` elements. Tuplets are compared twice: the score's against the
+//! reader's, and the reader's against the census's own timed walk of the
+//! file, tuplet by tuplet, by the staff of the first note, the ratio and each
+//! member's onset, so a reader grouping the wrong notes under the right counts
+//! is a failure. The census times a member within its measure and takes the
+//! measure's start from the reader, as its quarter-tones do.
 //!
 //! A difference is a failure unless the operation that should have produced
 //! the missing thing was refused, in which case it is reported as explained by
@@ -883,6 +888,67 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
                 "{name}: {} tuplets in the score, {} in the source",
                 graph_tuplets.values().sum::<isize>(),
                 source_tuplets.values().sum::<isize>()
+            ));
+        }
+        // Every tuplet the reader made, refused or not, held to the census's
+        // own timed walk: the staff of its first note, its ratio and each
+        // member's onset. A reader that grouped other notes under the same
+        // counts and ratios differs here. The census times a member within
+        // its measure; the measure's start is the reader's.
+        type PlacedTuplet = (usize, Vec<RationalTime>, (u32, u32));
+        let mut file_tuplets: BTreeMap<PlacedTuplet, usize> = BTreeMap::new();
+        for tuplet in &census.tuplet_places {
+            let onsets = tuplet
+                .members
+                .iter()
+                .map(|(m, offset)| {
+                    source
+                        .measures
+                        .get(*m)
+                        .map_or_else(|| RationalTime::from_int(-1), |m| m.onset.add(offset))
+                })
+                .collect();
+            *file_tuplets
+                .entry((tuplet.staff, onsets, tuplet.ratio))
+                .or_default() += 1;
+        }
+        let mut read_tuplets: BTreeMap<PlacedTuplet, usize> = BTreeMap::new();
+        for tuplet in &part.tuplets {
+            let Some(&first) = tuplet.events.first() else {
+                continue;
+            };
+            let onsets = tuplet
+                .events
+                .iter()
+                .map(|&i| part.events[i].onset.clone())
+                .collect();
+            *read_tuplets
+                .entry((
+                    part.events[first].staff,
+                    onsets,
+                    (tuplet.actual, tuplet.normal),
+                ))
+                .or_default() += 1;
+        }
+        if read_tuplets != file_tuplets {
+            let alone = |a: &BTreeMap<PlacedTuplet, usize>, b: &BTreeMap<PlacedTuplet, usize>| {
+                a.iter().find(|(at, n)| b.get(*at) != Some(n)).map_or_else(
+                    || String::from("none"),
+                    |((staff, onsets, (actual, normal)), _)| {
+                        format!(
+                            "{actual}:{normal} on staff {} with {} members from {}",
+                            staff + 1,
+                            onsets.len(),
+                            onsets.first().map_or_else(|| String::from("?"), show)
+                        )
+                    },
+                )
+            };
+            fidelity.failures.push(format!(
+                "{name}: the reader's tuplets are not the file's; first in the file alone: {}; \
+                 first read alone: {}",
+                alone(&file_tuplets, &read_tuplets),
+                alone(&read_tuplets, &file_tuplets),
             ));
         }
         if made != census.tuplets || part.unmade_tuplets != census.unmade_tuplets {
