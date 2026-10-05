@@ -21,7 +21,7 @@ use epiphany_determinism::{DomainTag, Preimage};
 
 use crate::engrave_theory::{
     accidental_glyph, alteration_glyph, clef_glyph_for, flag_count, flag_glyph, has_stem,
-    key_alteration, key_signature, notehead_glyph, rest_glyph, stack_alteration, staff_position,
+    key_alteration, key_signature, notehead_glyph, rest_glyph, stack_quarter_tones, staff_position,
     StaffStep,
 };
 use crate::engraving::{EngravingDecision, OverrideKind, OverridePriority, OverrideTarget};
@@ -1047,9 +1047,10 @@ pub fn try_to_constrained(
                                 });
                             }
                             // The accidental the key and the measure call for draws on
-                            // the first component only; a spelling whose alteration
-                            // is not whole semitones draws its own stack, and an
-                            // unbundled (microtonal) one is surfaced, not guessed.
+                            // the first component only; a spelling the measure does
+                            // not track (a stack of several, or an unbundled
+                            // accidental) draws its own stack, and an unbundled one
+                            // is surfaced, not guessed.
                             let accidentals = match (comp, shown_accidentals.get(&pitch.pitch)) {
                                 (0, Some(shown)) => shown.clone(),
                                 (0, None) => pitch_accidentals(
@@ -1061,7 +1062,7 @@ pub fn try_to_constrained(
                             };
                             let alteration = pitch.spelling.as_ref().and_then(|spelling| {
                                 matches!(spelling.nominal, SpellingNominal::Cmn(_))
-                                    .then(|| stack_alteration(&spelling.accidentals))
+                                    .then(|| stack_quarter_tones(&spelling.accidentals))
                                     .flatten()
                             });
                             placed.push((pitch.pitch, step, accidentals, alteration));
@@ -3946,8 +3947,14 @@ const CARRIED: i8 = i8::MIN;
 /// tie continues into. Where that note's alteration is not what the measure
 /// gave, the next note of its letter and octave in the measure shows its own
 /// accidental, the tied one's restated or a courtesy natural. Every voice of
-/// a staff shares its state, taken in time order. A pitch whose spelling is
-/// not whole semitones is absent, and draws its own stack.
+/// a staff shares its state, taken in time order. Alterations are counted in
+/// quarter-tones, so a quarter-tone accidental joins the same state: it holds
+/// to the barline as any other, a natural or a flat after it on its letter is
+/// shown, and one stated again is not. A whole-semitone alteration draws its
+/// standard accidental, a quarter-tone one the spelling's own (arrowed or
+/// Stein's, as the file wrote it). A pitch whose stack the state does not
+/// track (several accidentals, or one with no bundled glyph) is absent, and
+/// draws its own stack.
 fn context_accidentals(
     objects: &[crate::logical::LayoutObject],
 ) -> BTreeMap<PitchId, Vec<&'static str>> {
@@ -3984,6 +3991,8 @@ fn context_accidentals(
             .notes
             .sort_by(|a, b| time_total(&a.position, &b.position));
         let mut measure = None;
+        // Per letter and octave, the alteration in quarter-tones the measure
+        // gives so far.
         let mut state: BTreeMap<(epiphany_core::CmnNominal, i8), i8> = BTreeMap::new();
         for note in &staff.notes {
             let index = staff
@@ -4001,14 +4010,14 @@ fn context_accidentals(
                 let SpellingNominal::Cmn(nominal) = spelling.nominal else {
                     continue;
                 };
-                let Some(alteration) = stack_alteration(&spelling.accidentals) else {
+                let Some(alteration) = stack_quarter_tones(&spelling.accidentals) else {
                     continue;
                 };
                 let place = (nominal, spelling.octave);
                 let current = state
                     .get(&place)
                     .copied()
-                    .unwrap_or_else(|| key.map_or(0, |k| key_alteration(k, nominal)));
+                    .unwrap_or_else(|| key.map_or(0, |k| 2 * key_alteration(k, nominal)));
                 if tied_into.contains(&pitch.pitch) {
                     // A tie carries its accidental to the tied note alone: a
                     // later note of its letter and octave in the bar states
@@ -4023,7 +4032,15 @@ fn context_accidentals(
                     Vec::new()
                 } else {
                     state.insert(place, alteration);
-                    alteration_glyph(alteration).into_iter().collect()
+                    if alteration % 2 == 0 {
+                        alteration_glyph(alteration / 2).into_iter().collect()
+                    } else {
+                        spelling
+                            .accidentals
+                            .iter()
+                            .filter_map(accidental_glyph)
+                            .collect()
+                    }
                 };
                 shown.insert(pitch.pitch, glyphs);
             }

@@ -290,8 +290,11 @@ pub struct Engraver {
 /// the slots of the columns it opens and closes at, as its numbers do, and
 /// to `33` when the quarter-tone accidentals, arrowed and Stein's, began
 /// drawing from their bundled SMuFL glyphs where they had been surfaced as
-/// unbundled and left undrawn.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(33);
+/// unbundled and left undrawn, and to `34` when the measure's accidental
+/// state began counting in quarter-tones, so a quarter-tone accidental holds
+/// to the barline, yields to a change and is cancelled as any other, and two
+/// voices' different quarter-tones on one step no longer share a notehead.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(34);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.

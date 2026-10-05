@@ -1450,3 +1450,27 @@ accidental columns as any other accidental does; several reach left of their
 origin, or two spaces above or below their head, with the arrow. Locked by
 `each_quarter_tone_accidental_draws_its_smufl_glyph` (`epiphany-cli`) and the
 glyph table's unit test.
+
+## ENGRAVER_VERSION 33 → 34: quarter-tones in the measure's accidental state (X3b.3, 2026-10-05)
+
+X2's measure state counted alterations in semitones and left out any spelling
+whose accidental was not a whole number of them, so a quarter-tone drew its
+accidental on every note, carried or not, and a natural after one on its
+letter was not shown. The state now counts quarter-tones
+(`stack_quarter_tones`: a standard accidental two a semitone, a quarter-tone
+accidental by its MusicXML name, over exactly the accidentals
+`accidental_glyph` draws), the key's alteration doubled. A quarter-tone
+accidental holds to the barline on its letter and octave across the staff's
+voices, a change after it (a natural, the key's flat, another quarter-tone) is
+shown, and the same alteration stated again, by either notation, is not. A
+whole-semitone alteration draws its standard glyph; a quarter-tone one draws
+the spelling's own, arrowed or Stein's as the file wrote it. A tie's carry
+works in the same units. The head's alteration, which decides whether two
+voices' heads on one step are one head drawn twice, is counted the same way:
+two different quarter-tones there both read as unknown before, and so shared
+a notehead. Simultaneous notes in two voices are still taken in the order
+their objects come, as before, so a quarter-tone in one voice and a natural
+on its letter in another at one instant show only the second's accidental
+when the first comes first. Locked by
+`a_quarter_tone_accidental_holds_to_the_barline_and_yields_to_a_change`
+(`epiphany-cli`).

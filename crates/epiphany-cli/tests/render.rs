@@ -3202,3 +3202,165 @@ fn each_quarter_tone_accidental_draws_its_smufl_glyph() {
     ];
     assert_eq!(drawn, expected.iter().map(|g| vec![*g]).collect::<Vec<_>>());
 }
+
+/// Quarter-tone accidentals join the measure's accidental state: one holds to
+/// the barline on its letter and octave, across voices; a natural, a flat or
+/// another quarter-tone after it on its letter is shown; the same alteration
+/// stated again, by either notation, is not; a new measure states it again;
+/// and against a key a quarter-tone is shown, and the key's own flat after it
+/// is restated.
+#[test]
+fn a_quarter_tone_accidental_holds_to_the_barline_and_yields_to_a_change() {
+    use epiphany_core::{Event, EventPosition, TypedObjectId};
+
+    // In 2/4, one flat in the key, quarters: (step, octave, accidental,
+    // voice) in time order. A whole-semitone alteration is the `<alter>` a
+    // file writes with it (the key's B-flat included); a quarter-tone is
+    // written by name alone, as MuseScore writes its arrows, and a note it
+    // carries to writes neither (`carried`).
+    let note = |step: &str, octave: u8, accidental: &str, voice: u8| {
+        let alter = match (step, accidental) {
+            (_, "flat") | ("B", "") => "<alter>-1</alter>",
+            _ => "",
+        };
+        let accidental = match accidental {
+            "" | "carried" => String::new(),
+            name => format!("<accidental>{name}</accidental>"),
+        };
+        format!(
+            "<note><pitch><step>{step}</step>{alter}<octave>{octave}</octave></pitch>\
+             <duration>1</duration><voice>{voice}</voice><type>quarter</type>{accidental}</note>"
+        )
+    };
+    let measures = [
+        // A quarter-flat B holds; the second voice's B, unmarked, takes it.
+        [note("B", 4, "quarter-flat", 1), note("B", 4, "carried", 1)].concat()
+            + "<backup><duration>2</duration></backup>"
+            + &[note("D", 4, "", 2), note("B", 4, "carried", 2)].concat(),
+        // The key's flat after a quarter-flat is restated; a natural is shown.
+        [note("B", 4, "quarter-flat", 1), note("B", 4, "flat", 1)].concat(),
+        [note("B", 4, "flat-up", 1), note("B", 4, "natural", 1)].concat(),
+        // The same alteration by the other notation is not shown again; at
+        // another octave it is.
+        [
+            note("E", 5, "sharp-down", 1),
+            note("E", 5, "quarter-sharp", 1),
+        ]
+        .concat(),
+        [note("E", 5, "sharp-down", 1), note("E", 4, "sharp-down", 1)].concat(),
+        // A quarter-tone after a quarter-tone of another value is shown, and
+        // the next measure states each again.
+        [note("A", 4, "flat-down", 1), note("A", 4, "natural-up", 1)].concat(),
+        [note("A", 4, "natural-up", 1), note("B", 4, "", 1)].concat(),
+        // Two voices on one D, a quarter-tone flat and a quarter-tone sharp,
+        // share no notehead.
+        [note("D", 5, "flat-up", 1), note("A", 4, "", 1)].concat()
+            + "<backup><duration>2</duration></backup>"
+            + &[note("D", 5, "natural-up", 2), note("F", 4, "", 2)].concat(),
+    ];
+    let mut body = String::new();
+    for (m, content) in measures.iter().enumerate() {
+        body.push_str(&format!("<measure number=\"{}\">", m + 1));
+        if m == 0 {
+            body.push_str(
+                "<attributes><divisions>1</divisions><key><fifths>-1</fifths></key>\
+                 <time><beats>2</beats><beat-type>4</beat-type></time>\
+                 <clef><sign>G</sign><line>2</line></clef></attributes>",
+            );
+        }
+        body.push_str(content);
+        body.push_str("</measure>");
+    }
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\">\
+         <part-name>Flute</part-name></score-part></part-list><part id=\"P1\">{body}</part>\
+         </score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("quarter_tone_carry.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let score = &loaded.reduced.score;
+    let layout = epiphany_cli::engrave_loaded(&loaded).layout;
+    // Each pitch in time order, the first voice before the second at one time,
+    // with the accidentals drawn for it.
+    let mut pitches: Vec<(epiphany_core::RationalTime, u64, epiphany_core::PitchId)> = score
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Pitched(p) => match &p.position {
+                EventPosition::Musical(at) => Some((at.0.clone(), p)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .flat_map(|(at, p)| {
+            let voice = score
+                .canvas
+                .regions
+                .iter()
+                .flat_map(|r| r.staff_instances())
+                .flat_map(|i| i.voices.iter().enumerate())
+                .find(|(_, v)| v.events.contains(&p.id))
+                .map_or(9, |(k, _)| k as u64);
+            p.pitches.iter().map(move |ip| (at.clone(), voice, ip.id))
+        })
+        .collect();
+    pitches.sort();
+    let drawn: Vec<String> = pitches
+        .iter()
+        .map(|(_, _, id)| {
+            let names: Vec<&str> = layout
+                .glyphs
+                .iter()
+                .filter(|g| g.provenance.source == TypedObjectId::Pitch(*id))
+                .map(|g| g.glyph.as_str())
+                .filter(|n| n.starts_with("accidental"))
+                .collect();
+            names.join("+")
+        })
+        .collect();
+    assert_eq!(
+        drawn,
+        [
+            "accidentalQuarterToneFlatStein",
+            "",
+            "",
+            "",
+            "accidentalQuarterToneFlatStein",
+            "accidentalFlat",
+            "accidentalQuarterToneFlatArrowUp",
+            "accidentalNatural",
+            "accidentalQuarterToneSharpArrowDown",
+            "",
+            "accidentalQuarterToneSharpArrowDown",
+            "accidentalQuarterToneSharpArrowDown",
+            "accidentalThreeQuarterTonesFlatArrowDown",
+            "accidentalQuarterToneSharpNaturalArrowUp",
+            "accidentalQuarterToneSharpNaturalArrowUp",
+            "",
+            "accidentalQuarterToneFlatArrowUp",
+            "accidentalQuarterToneSharpNaturalArrowUp",
+            "",
+            "",
+        ]
+    );
+    // The last measure's two D's stand apart, a quarter-tone flat and a
+    // quarter-tone sharp.
+    let x_of = |id: &epiphany_core::PitchId| {
+        layout
+            .glyphs
+            .iter()
+            .find(|g| {
+                g.provenance.source == TypedObjectId::Pitch(*id)
+                    && g.glyph.as_str().starts_with("notehead")
+            })
+            .map(|g| g.position.x.0)
+            .expect("a head")
+    };
+    let pair = &pitches[pitches.len() - 4..pitches.len() - 2];
+    assert_eq!(pair[0].0, pair[1].0, "both voices at one time");
+    assert!(
+        (x_of(&pair[0].2) - x_of(&pair[1].2)).abs() > 0.5,
+        "two D quarter-tones share one notehead"
+    );
+}

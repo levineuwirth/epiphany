@@ -213,24 +213,31 @@ pub fn accidental_glyph(accidental: &AccidentalId) -> Option<&'static str> {
     })
 }
 
-/// The alteration, in semitones, a spelling's accidental stack states: none
-/// for an empty stack, the accidental's for a single standard one. `None` for
-/// a stack of several, or for an accidental of no whole number of semitones
-/// (a microtonal one): those are drawn as written, out of the key and
-/// measure context this tier tracks.
-pub fn stack_alteration(accidentals: &[AccidentalId]) -> Option<i8> {
-    match accidentals {
-        [] => Some(0),
-        [only] => match only.as_str() {
-            "natural" => Some(0),
-            "sharp" => Some(1),
-            "flat" => Some(-1),
-            "doublesharp" | "double-sharp" => Some(2),
-            "doubleflat" | "double-flat" | "flat-flat" => Some(-2),
-            _ => None,
-        },
-        _ => None,
-    }
+/// The alteration, in quarter-tones, a spelling's accidental stack states:
+/// none for an empty stack, the accidental's for a single one
+/// [`accidental_glyph`] draws, a standard one at two quarter-tones a semitone
+/// and a quarter-tone one by its MusicXML name. `None` for a stack of
+/// several, or an accidental with no bundled glyph: those are drawn as
+/// written, out of the key and measure context this tier tracks, and an
+/// unbundled one is surfaced.
+pub fn stack_quarter_tones(accidentals: &[AccidentalId]) -> Option<i8> {
+    let [only] = accidentals else {
+        return accidentals.is_empty().then_some(0);
+    };
+    Some(match only.as_str() {
+        "natural" => 0,
+        "sharp" => 2,
+        "flat" => -2,
+        "doublesharp" | "double-sharp" => 4,
+        "doubleflat" | "double-flat" | "flat-flat" => -4,
+        "flat-flat-down" => -5,
+        "flat-flat-up" | "flat-down" | "three-quarters-flat" => -3,
+        "flat-up" | "natural-down" | "quarter-flat" => -1,
+        "natural-up" | "sharp-down" | "quarter-sharp" => 1,
+        "sharp-up" | "double-sharp-down" | "three-quarters-sharp" => 3,
+        "double-sharp-up" => 5,
+        _ => return None,
+    })
 }
 
 /// The alteration, in semitones, a key signature gives a letter: a sharp for
