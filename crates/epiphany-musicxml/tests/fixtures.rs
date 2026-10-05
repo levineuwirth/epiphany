@@ -585,8 +585,10 @@ fn a_quarter_tone_imports_at_its_pitch_in_cmn_24() {
             "s0 v0 3/4 1/4 A4",
             "s0 v0 1 1/2 A4",
             "s0 v0 3/2 1/2 rest",
+            "s0 v0 2 1 C5 E-1q5 G+1q5",
             "s1 v0 0 1 C+1q5",
             "s1 v0 1 1 rest",
+            "s1 v0 2 1 rest",
         ]
     );
     assert_eq!(score.instruments[1].transposition, interval(-1, -2));
@@ -600,6 +602,8 @@ fn a_quarter_tone_imports_at_its_pitch_in_cmn_24() {
             quarter_tone(0, (1, 4), 4, -1, 4),
             quarter_tone(0, (1, 2), 0, 3, 5),
             quarter_tone(1, (1, 2), 2, -1, 5),
+            quarter_tone(2, (0, 1), 2, -1, 5),
+            quarter_tone(2, (0, 1), 4, 1, 5),
         ]
     );
     assert_eq!(census[1].quarter_tones, [quarter_tone(0, (0, 1), 0, 1, 5)]);
@@ -826,8 +830,9 @@ fn a_quarter_tone_is_spelt_with_the_accidental_its_notation_gives_it() {
         ]
     );
     // A fractional `<alter>` with no accidental of its own, tied from one
-    // with Stein's, takes Stein's; the clarinet's written D quarter-sharp
-    // sounds C quarter-sharp, spelt so.
+    // with Stein's, takes Stein's; each quarter-tone of a chord is spelt,
+    // not only its first note; the clarinet's written D quarter-sharp sounds
+    // C quarter-sharp, spelt so.
     let stein = run("quarter_tones.musicxml");
     assert_eq!(
         spelt(&stein.reduced.score),
@@ -835,6 +840,9 @@ fn a_quarter_tone_is_spelt_with_the_accidental_its_notation_gives_it() {
             "0 G-1q4 Cmn(G) quarter-flat 4",
             "1/4 G-1q4 Cmn(G) quarter-flat 4",
             "1/2 C+3q5 Cmn(C) three-quarters-sharp 5",
+            // The chord's second and third notes, above a natural C.
+            "2 E-1q5 Cmn(E) quarter-flat 5",
+            "2 G+1q5 Cmn(G) quarter-sharp 5",
             "0 C+1q5 Cmn(C) quarter-sharp 5",
         ]
     );
