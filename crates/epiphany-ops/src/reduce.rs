@@ -2634,7 +2634,12 @@ impl<'a> Reducer<'a> {
             // graph's region is kept in step with: an insert into a region a
             // migration made non-metric is refused base-free as below. A
             // tombstoned voice is left to the voice check, as the branch below
-            // finds such a voice missing before it reads the region.
+            // finds a voice `DeleteVoice` removed missing before it reads the
+            // region. The two modes still split on a voice an undo tombstoned
+            // while it holds an event: the graph keeps that voice, so the
+            // branch below reads the region and refuses `WrongRegionTimeModel`
+            // where this refuses `VoiceMissing`. That split is older than this
+            // check and is left to a later reduction version.
             let voice_dead = matches!(
                 self.objects.get(&TypedObjectId::Voice(op.voice())),
                 Some(ObjectState::Tombstoned { .. })
