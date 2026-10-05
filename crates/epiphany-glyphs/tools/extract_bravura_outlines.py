@@ -66,7 +66,8 @@ NAMES = ["noteheadBlack","noteheadHalf","noteheadWhole","noteheadDoubleWhole",
 "tuplet0","tuplet1","tuplet2","tuplet3","tuplet4","tuplet5","tuplet6",
 "tuplet7","tuplet8","tuplet9","tupletColon",
 "gClef15mb","gClef15ma","fClef15mb","fClef15ma",
-"gClefChange","fClefChange","cClefChange","clef8","clef15"]
+"gClefChange","fClefChange","cClefChange","clef8","clef15",
+"timeSigComma"]
 
 def verify(data, expected, what):
     actual = hashlib.sha256(data).hexdigest()

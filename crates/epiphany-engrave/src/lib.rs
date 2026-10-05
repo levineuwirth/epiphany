@@ -283,8 +283,12 @@ pub struct Engraver {
 /// slot of the glyph nearest to its left, which could be another column's
 /// (a tuplet number, an accidental, a displaced head on another staff), so a
 /// stem no longer stands apart from its head where the two columns move by
-/// different amounts.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(31);
+/// different amounts, and to `32` when digits set side by side (a time
+/// signature of several, an ending's numbers) began standing at their own
+/// advances rather than 0.8 apart, which overlapped them, an ending's
+/// numbers took a comma between them, and an ending's bracket began riding
+/// the slots of the columns it opens and closes at, as its numbers do.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(32);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.

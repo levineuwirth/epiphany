@@ -2951,3 +2951,107 @@ fn a_hand_written_score_engraves_to_its_golden() {
         golden.display()
     );
 }
+
+/// A time signature of several digits sets them side by side at their own
+/// widths, no digit's ink meeting the next, and centres its shorter line
+/// under its longer: 12 over 8, then 4 over 16.
+#[test]
+fn a_time_signatures_digits_stand_apart_and_centred() {
+    let attributes = |beats: u8, beat_type: u8, first: bool| {
+        format!(
+            "<attributes>{}<time><beats>{beats}</beats><beat-type>{beat_type}</beat-type>\
+             </time>{}</attributes>",
+            if first {
+                "<divisions>4</divisions>"
+            } else {
+                ""
+            },
+            if first {
+                "<clef><sign>G</sign><line>2</line></clef>"
+            } else {
+                ""
+            },
+        )
+    };
+    // Divisions 4: the 12/8 bar is a dotted whole, the 4/16 bar a quarter.
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\">\
+         <part-name>Flute</part-name></score-part></part-list><part id=\"P1\">\
+         <measure number=\"1\">{}<note><pitch><step>C</step><octave>5</octave></pitch>\
+         <duration>24</duration><voice>1</voice><type>whole</type><dot/></note></measure>\
+         <measure number=\"2\">{}<note><pitch><step>C</step><octave>5</octave></pitch>\
+         <duration>4</duration><voice>1</voice><type>quarter</type></note></measure>\
+         </part></score-partwise>",
+        attributes(12, 8, true),
+        attributes(4, 16, false),
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("long_meters.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = epiphany_cli::engrave_loaded(&loaded).layout;
+    // Each signature's digits (a name and its ink), by the measure they are
+    // drawn for.
+    type Digits<'a> = Vec<(&'a str, [f32; 4])>;
+    let mut signatures: Vec<(epiphany_core::TypedObjectId, Digits)> = Vec::new();
+    for glyph in &layout.glyphs {
+        if !glyph.glyph.as_str().starts_with("timeSig") {
+            continue;
+        }
+        let digit = (glyph.glyph.as_str(), glyph_box(glyph));
+        match signatures
+            .iter_mut()
+            .find(|(source, _)| *source == glyph.provenance.source)
+        {
+            Some((_, digits)) => digits.push(digit),
+            None => signatures.push((glyph.provenance.source, vec![digit])),
+        }
+    }
+    signatures.sort_by(|a, b| a.1[0].1[0].total_cmp(&b.1[0].1[0]));
+    let read: Vec<(Vec<&str>, Vec<&str>)> = signatures
+        .iter()
+        .map(|(_, digits)| {
+            let top = digits
+                .iter()
+                .map(|(_, ink)| ink[3])
+                .fold(f32::MIN, f32::max);
+            let line = |upper: bool| {
+                let mut line: Vec<&(&str, [f32; 4])> = digits
+                    .iter()
+                    .filter(|(_, ink)| (ink[3] > top - 1.0) == upper)
+                    .collect();
+                line.sort_by(|a, b| a.1[0].total_cmp(&b.1[0]));
+                for pair in line.windows(2) {
+                    assert!(
+                        pair[0].1[2] <= pair[1].1[0],
+                        "{} ends at {} but {} starts at {}",
+                        pair[0].0,
+                        pair[0].1[2],
+                        pair[1].0,
+                        pair[1].1[0]
+                    );
+                }
+                line
+            };
+            let (upper, lower) = (line(true), line(false));
+            let centre =
+                |line: &[&(&str, [f32; 4])]| (line[0].1[0] + line[line.len() - 1].1[2]) / 2.0;
+            assert!(
+                (centre(&upper) - centre(&lower)).abs() < 0.2,
+                "the lines are centred on one axis: {} and {}",
+                centre(&upper),
+                centre(&lower)
+            );
+            (
+                upper.iter().map(|(n, _)| *n).collect(),
+                lower.iter().map(|(n, _)| *n).collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        read,
+        [
+            (vec!["timeSig1", "timeSig2"], vec!["timeSig8"]),
+            (vec!["timeSig4"], vec!["timeSig1", "timeSig6"]),
+        ]
+    );
+}

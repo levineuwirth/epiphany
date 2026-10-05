@@ -298,6 +298,7 @@ pub const BRAVURA_METRICS: &[GlyphMetric] = &[
     GlyphMetric::new("cClefChange", 2073, [0, -1360, 2073, 1360]),
     GlyphMetric::new("clef8", 840, [0, 0, 840, 1012]),
     GlyphMetric::new("clef15", 1470, [0, -13, 1471, 1045]),
+    GlyphMetric::new("timeSigComma", 811, [36, -615, 754, 566]),
 ];
 
 /// Looks up one glyph's metrics by SMuFL name, if bundled.

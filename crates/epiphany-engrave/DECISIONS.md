@@ -1407,3 +1407,29 @@ nearest-glyph rule is otherwise left only for zero-extent traced anchors,
 which draw nothing. Locked by `a_stem_stands_on_its_own_heads` (`epiphany-cli`) and
 `stem_offsets_from_the_notehead_survive_justification`, which now includes
 the repeats fixture; the repeats golden's second ending had one such stem.
+
+## ENGRAVER_VERSION 31 → 32: digits at their own advances, and an ending's bracket on its slots (X3b.0, 2026-10-05)
+
+Digits set side by side advanced a fixed 0.8 staff spaces, though a
+time-signature digit is 1.3 to 1.9 wide, so a time signature of several
+digits (12/8, 11/8, 17/16) drew them over each other, and an ending for two
+passes drew its "2" and "3" as one blot. Each digit now advances by its own
+metric width. A signature whose lines are single digits keeps both on one
+origin, as before, so no single-digit signature moves; where a line has
+several digits, each line is centred under the widest, which starts where a
+single digit would. An ending's numbers take a comma between them
+(`timeSigComma`, now bundled), seated on the digits' bottom edge so it
+reaches no lower than they do and stays clear of the staff.
+
+The ending's numbers ride the slot of the column their bracket opens at, but
+the bracket's line and hooks were mapped through the spacing remap, which
+puts a column that spacing widens (an end repeat's) somewhere else: the
+second ending's hook stood a space right of its barline, through its "2".
+The line and both hooks now carry `SpanAnchor`s on the slots of the columns
+they open and close at, so the bracket, its numbers and the barline it
+starts at move together. Locked by
+`an_endings_numbers_stand_apart_inside_their_bracket` (`epiphany-render-svg`)
+and `a_time_signatures_digits_stand_apart_and_centred` (`epiphany-cli`). The
+repeats golden is re-blessed (its second ending reads "2, 3", clear of its
+hook); no other golden changes, since none has a volta or a signature of
+several digits.
