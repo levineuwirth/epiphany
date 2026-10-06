@@ -827,6 +827,165 @@ fn a_tuplet_across_two_staves_that_is_not_one_beam_is_drawn() {
     assert_eq!(count, 1, "the unbeamed triplet alone is counted");
 }
 
+/// A tuplet's number across two staves stands clear of the notes' ink, not
+/// only of their stems: a quarter space beside every head, ledger line,
+/// accidental, dot and stem of the score, and half a space above or below
+/// one. The falling groups set their upper staff's last heads close above the
+/// beam, beside the middle where the number would stand, and some stand so
+/// far below each staff that the beam falls below the lower staff's place
+/// before the staves are solved; each number still stands above its beam,
+/// within its own notes.
+#[test]
+fn a_tuplet_number_across_two_staves_stands_clear_of_heads() {
+    use epiphany_core::{Event, TypedObjectId};
+    use epiphany_layout_ir::is_beam_stroke;
+
+    // A quarter and a half space, less the layout's rounding to its grid.
+    const BESIDE: f32 = 0.25 - 0.005;
+    const OVER: f32 = 0.5 - 0.005;
+    let mut falling = 0;
+    for name in [
+        "cross_staff.musicxml",
+        "cross_staff_tuplets.musicxml",
+        "cross_staff_descending.musicxml",
+    ] {
+        let loaded = load(&fixture(name)).expect("loads");
+        let score = &loaded.reduced.score;
+        let layout = engrave(score).layout;
+        let (staff_of, _) = staves_of(score);
+        let ink: Vec<(String, [f32; 4])> = layout
+            .glyphs
+            .iter()
+            .filter(|g| {
+                let n = g.glyph.as_str();
+                n.starts_with("notehead") || n.starts_with("accidental") || n == "augmentationDot"
+            })
+            .map(|g| (g.glyph.as_str().to_owned(), glyph_box(g)))
+            .chain(
+                layout
+                    .strokes
+                    .iter()
+                    .filter(|s| !is_beam_stroke(s) && s.from != s.to)
+                    .filter_map(|s| match s.provenance.source {
+                        TypedObjectId::Pitch(_) if s.from.y == s.to.y => {
+                            Some(("ledger line".to_owned(), stroke_box(s)))
+                        }
+                        TypedObjectId::Event(_) if s.from.x == s.to.x => {
+                            Some(("stem".to_owned(), stroke_box(s)))
+                        }
+                        _ => None,
+                    }),
+            )
+            .collect();
+        assert!(
+            ink.iter().any(|(n, _)| n == "ledger line"),
+            "{name}: ledger lines found"
+        );
+        for tuplet in &score.cross_cutting.tuplets {
+            let staves: std::collections::BTreeSet<_> =
+                tuplet.members.iter().map(|e| staff_of[e]).collect();
+            if staves.len() < 2 {
+                continue;
+            }
+            for number in layout
+                .glyphs
+                .iter()
+                .filter(|g| {
+                    g.provenance.source == TypedObjectId::Tuplet(tuplet.id)
+                        && g.glyph.as_str().starts_with("tuplet")
+                })
+                .map(glyph_box)
+            {
+                let grown = [
+                    number[0] - BESIDE,
+                    number[1] - OVER,
+                    number[2] + BESIDE,
+                    number[3] + OVER,
+                ];
+                for (what, b) in &ink {
+                    assert!(
+                        !boxes_overlap(grown, *b),
+                        "{name}: a tuplet number {number:?} within reach of a {what} {b:?}"
+                    );
+                }
+                // A falling group: its first note on the upper staff, so its
+                // last upper heads stand nearest the beam at the knee.
+                let first = staff_of[&tuplet.members[0]];
+                let upper = staves.iter().copied().min_by_key(|s| {
+                    score
+                        .canvas
+                        .regions
+                        .iter()
+                        .flat_map(|r| r.staff_instances())
+                        .position(|i| i.staff == *s)
+                });
+                if name == "cross_staff_descending.musicxml"
+                    && Some(first) == upper
+                    && matches!(score.events.get(tuplet.members[0]), Some(Event::Pitched(_)))
+                {
+                    falling += 1;
+                    // The top of the tuplet's own beam under the number, each
+                    // stroke's edge taken along its slope at the number's ends.
+                    let over = layout
+                        .strokes
+                        .iter()
+                        .filter(|s| {
+                            is_beam_stroke(s)
+                                && tuplet.members.iter().any(|e| {
+                                    s.provenance
+                                        .dependencies
+                                        .contains(&TypedObjectId::Event(*e))
+                                })
+                        })
+                        .filter_map(|s| {
+                            let (x1, y1, x2, y2) = (s.from.x.0, s.from.y.0, s.to.x.0, s.to.y.0);
+                            let (lo, hi) = (x1.min(x2), x1.max(x2));
+                            if hi < number[0] || lo > number[2] {
+                                return None;
+                            }
+                            let at = |x: f32| {
+                                if hi - lo < 1e-6 {
+                                    y1
+                                } else {
+                                    y1 + (y2 - y1) * (x.clamp(lo, hi) - x1) / (x2 - x1)
+                                }
+                            };
+                            Some(at(number[0]).max(at(number[2])) + s.thickness.0 / 2.0)
+                        })
+                        .fold(f32::NEG_INFINITY, f32::max);
+                    assert!(over.is_finite(), "{name}: its beam stands under the number");
+                    assert!(
+                        number[1] > over,
+                        "{name}: the number {number:?} stands above its beam ({over})"
+                    );
+                    let xs: Vec<f32> = layout
+                        .strokes
+                        .iter()
+                        .filter(|s| {
+                            s.from.x == s.to.x
+                                && tuplet
+                                    .members
+                                    .iter()
+                                    .any(|e| s.provenance.source == TypedObjectId::Event(*e))
+                        })
+                        .map(|s| s.from.x.0)
+                        .collect();
+                    let (a, z) = xs
+                        .iter()
+                        .fold((f32::INFINITY, f32::NEG_INFINITY), |(a, z), x| {
+                            (a.min(*x), z.max(*x))
+                        });
+                    assert!(
+                        number[0] >= a && number[2] <= z,
+                        "{name}: the number stands within its own notes"
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(falling, 11, "the falling groups each numbered");
+}
+
 /// A tuplet across two staves that draws nothing keeps its traced anchor in
 /// no staff's band, where it adds no extent to a staff it is not on: a
 /// hidden tuplet that is exactly a beam, and a shown triplet no beam joins.

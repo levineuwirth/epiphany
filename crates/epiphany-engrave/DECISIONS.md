@@ -1593,3 +1593,35 @@ staves apart. Locked by
 `a_tuplet_across_two_staves_that_draws_nothing_keeps_its_anchor_off_the_staves`
 (`epiphany-cli`) and, for the count,
 `a_shown_tuplet_with_no_ink_is_counted_and_an_anchor_is_not_ink`.
+
+## ENGRAVER_VERSION 39 → 40: a cross-staff tuplet's number clear of heads (X3c fix round 1, 2026-10-06)
+
+Version 37 placed the number of a tuplet on a beam across two staves at the
+place nearest its notes' middle that no stem on its side crosses, and
+cleared nothing else. In a falling group the upper staff's notes come
+first and descend toward the beam, so that place is beside the last upper
+note, under its head: the number stood within a third of a space of a head,
+and could meet one. The number now clears the upper staff's ink, every
+head, ledger line, accidental, dot, stem and drawn rest, by
+`TUPLET_NUMBER_GAP` beside it, as it cleared stems, and by
+`TUPLET_CLEARANCE` above or below, as it stands off the beam; it moves along
+the beam to the nearest place that does, within the beam's span. In a
+falling group that is past the last upper note's head and ledger lines,
+still above the beam and within the group. MuseScore lifts such a number
+over the head instead, onto the ledger lines; standing by the beam keeps it
+with the group. The lower staff's ink is cleared by `x` alone, and only by
+a number below the beam: the placement runs in the constrained frame, where
+the staves stand a fixed pitch apart, and where the upper staff's notes
+stand deep enough to push the beam below the lower staff's place there, the
+lower staff's heads and ledger lines stand above the beam until the vertical
+solve opens the gap; read as they stand, they sent such a group's number
+below the beam, into the lower staff. Only the upper staff's ink rides with
+the beam. Where neither side of the beam has a clear place, the number
+stands at the middle above all the upper staff's ink it would meet. A
+rising group's number, already clear, is placed as before, and moves only
+with the spacing a moved number changes around it. The bracket of a tuplet
+a rest opens now rises over the beam and its upper staff's notes and rests
+alone, for the same reason, and is raised further where its number would
+meet the upper staff's ink. Locked by
+`a_tuplet_number_across_two_staves_stands_clear_of_heads` (`epiphany-cli`),
+over a hand-written fixture of falling groups, some far below each staff.
