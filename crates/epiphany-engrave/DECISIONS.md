@@ -1494,3 +1494,42 @@ none shows, as before. One alteration in both voices is shown once, as
 before. The accidental columns already set two accidentals of one step
 apart, the one nearer the heads belonging to the left head. Locked by
 `a_unison_of_two_alterations_shows_both_accidentals` (`epiphany-cli`).
+
+## ENGRAVER_VERSION 35 → 36: beams across two staves (X3c.2, 2026-10-06)
+
+A beam joining one voice's notes on both staves of a part, as MuseScore
+writes the notes it moves to the other staff, was dropped: the logical stage
+kept only beams whose notes all stood in one staff instance, so every note of
+such a beam took a flag. Each run of a score's beam that joins notes of two
+staff instances of a region is now a group of the staff of its first note
+(`StaffContent::cross_beams`), split where a note cannot be beamed, as a
+one-staff beam is. The constrained stage turns the upper staff's stems down
+and the lower's up, to one beam between the staves: its primary beam
+topmost, further beams below it as a group whose stems all turn up draws
+them, so an up stem reaches the primary and a down stem the deepest beam its
+own value takes. It rises with the line from its first member's head to its
+last's, by at most `MAX_BEAM_RISE` and at most half a space per space of run
+(the stems at a knee stand close, an up stem right of its head beside a down
+stem left of the next), and stands midway between the heights its members
+allow, each stem at least `CROSS_STEM_MIN` (2.25) from its head to the
+nearest beam it meets. It is drawn in the constrained frame, riding the upper
+staff, and recorded in `ConstrainedLayoutIR::cross_staff_beams` with its
+ink, the stems reaching it from the lower staff, and how far the lower staff
+may rise toward the upper before such a stem falls short of its least length
+(`rise_limit`).
+
+Casting reads the record three ways. The beam's ink is neither staff's
+content in the inter-staff solve, nor in `vertical_density_penalty`'s
+measurement, since it stands between them; the solve instead keeps the lower
+staff from rising past `rise_limit` relative to the upper, a floor beside the
+band's preferred clearance, in the system the beam lands in; and the bake
+moves each reaching stem's beam end with the upper staff's shift while its
+head end keeps its own. The spacing pass gives a beam across two staves at
+least 1.5 spaces between the stems at its ends (`CROSS_BEAM_MIN_SPAN`), as it
+gives a tie its least span. Nothing on one staff moves: a one-staff beam's
+strokes keep their keys, and a cross-staff beam's are keyed apart (the top
+bit, its level, its run and its first member). A group whose drawn members
+stand on more than two staves is not drawn; none is known. Locked by
+`a_beam_across_two_staves_joins_its_notes_between_them` (`epiphany-cli`),
+over a hand-written piano fixture and a score whose staves would close past
+the beam's room.

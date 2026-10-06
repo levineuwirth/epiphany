@@ -286,6 +286,248 @@ fn beams_stay_on_their_stems_through_spacing_and_justification() {
         .all(|g| !g.glyph.as_str().starts_with("flag")));
 }
 
+/// The staff each event of a score stands on, and each pitch's event.
+fn staves_of(
+    score: &epiphany_core::Score,
+) -> (
+    std::collections::BTreeMap<epiphany_core::EventId, epiphany_core::StaffId>,
+    std::collections::BTreeMap<epiphany_core::PitchId, epiphany_core::EventId>,
+) {
+    let mut staff_of = std::collections::BTreeMap::new();
+    for region in &score.canvas.regions {
+        for instance in region.staff_instances() {
+            for voice in &instance.voices {
+                for event in &voice.events {
+                    staff_of.insert(*event, instance.staff);
+                }
+            }
+        }
+    }
+    let mut event_of = std::collections::BTreeMap::new();
+    for event in score.events.iter() {
+        if let epiphany_core::Event::Pitched(p) = event {
+            for pitch in &p.pitches {
+                event_of.insert(pitch.id, p.id);
+            }
+        }
+    }
+    (staff_of, event_of)
+}
+
+/// Checks every beam of `score` that joins notes on two staves against its
+/// engraving: its primary beam at least a space and a half long and rising
+/// at most half a space per space, each note on its own staff, the upper
+/// staff's stems turned down to the beam and the lower's up, each stem
+/// meeting the outermost beam over it, and none shorter than
+/// `CROSS_STEM_MIN` from its head to the nearest beam it meets. Returns how many such beams there are, the shortest such
+/// stem, and the gap between the two staves' lines.
+fn check_cross_staff_beams(
+    score: &epiphany_core::Score,
+    layout: &epiphany_layout_ir::ResolvedLayoutIR,
+) -> (usize, f32, f32) {
+    use epiphany_core::TypedObjectId;
+    use epiphany_layout_ir::{is_beam_stroke, Stroke};
+
+    let (staff_of, event_of) = staves_of(score);
+    // Each staff's lines, bottom and top.
+    let mut lines: std::collections::BTreeMap<epiphany_core::StaffId, (f32, f32)> =
+        std::collections::BTreeMap::new();
+    for stroke in &layout.strokes {
+        if let TypedObjectId::Staff(staff) = stroke.provenance.source {
+            if stroke.from.y == stroke.to.y {
+                let y = stroke.from.y.0;
+                let entry = lines.entry(staff).or_insert((y, y));
+                entry.0 = entry.0.min(y);
+                entry.1 = entry.1.max(y);
+            }
+        }
+    }
+    assert_eq!(lines.len(), 2, "one system of two staves");
+    let mut order: Vec<_> = lines.iter().map(|(s, l)| (*s, *l)).collect();
+    order.sort_by(|a, b| b.1 .0.total_cmp(&a.1 .0));
+    let (upper, lower) = (order[0], order[1]);
+    let middle = |(_, (bottom, top)): (epiphany_core::StaffId, (f32, f32))| (bottom + top) / 2.0;
+    let heads_of = |event: epiphany_core::EventId| -> Vec<f32> {
+        layout
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str().starts_with("notehead"))
+            .filter(|g| match g.provenance.source {
+                TypedObjectId::Pitch(p) => event_of.get(&p) == Some(&event),
+                _ => false,
+            })
+            .map(|g| g.position.y.0)
+            .collect()
+    };
+    let beam_y = |beam: &Stroke, x: f32| {
+        let t = (x - beam.from.x.0) / (beam.to.x.0 - beam.from.x.0);
+        beam.from.y.0 + t * (beam.to.y.0 - beam.from.y.0)
+    };
+    let mut crossing = 0;
+    let mut shortest = f32::INFINITY;
+    for beam in &score.cross_cutting.beams {
+        let staves: std::collections::BTreeSet<_> =
+            beam.events.iter().map(|e| staff_of[e]).collect();
+        if staves.len() < 2 {
+            continue;
+        }
+        crossing += 1;
+        let strokes: Vec<&Stroke> = layout
+            .strokes
+            .iter()
+            .filter(|s| {
+                is_beam_stroke(s)
+                    && beam.events.iter().all(|e| {
+                        s.provenance
+                            .dependencies
+                            .contains(&TypedObjectId::Event(*e))
+                    })
+            })
+            .collect();
+        assert!(!strokes.is_empty(), "a beam across two staves is drawn");
+        // Its primary beam, the longest, runs at least a space and a half,
+        // rising by at most half a space per space.
+        let primary = strokes
+            .iter()
+            .max_by(|a, b| (a.to.x.0 - a.from.x.0).total_cmp(&(b.to.x.0 - b.from.x.0)))
+            .expect("a beam stroke");
+        let run = primary.to.x.0 - primary.from.x.0;
+        assert!(run >= 1.49, "a beam across two staves runs {run}");
+        let slope = (primary.to.y.0 - primary.from.y.0) / run;
+        assert!(
+            slope.abs() <= 0.51,
+            "a beam across two staves rises {slope}"
+        );
+        for event in &beam.events {
+            let heads = heads_of(*event);
+            assert!(!heads.is_empty());
+            let on_upper = staff_of[event] == upper.0;
+            for y in &heads {
+                let own = if on_upper {
+                    middle(upper)
+                } else {
+                    middle(lower)
+                };
+                let other = if on_upper {
+                    middle(lower)
+                } else {
+                    middle(upper)
+                };
+                assert!((y - own).abs() < (y - other).abs(), "a head left its staff");
+            }
+            let stem = layout
+                .strokes
+                .iter()
+                .find(|s| {
+                    s.provenance.source == TypedObjectId::Event(*event)
+                        && s.from.x == s.to.x
+                        && s.from.y != s.to.y
+                })
+                .expect("a member's stem");
+            let x = stem.from.x.0;
+            let centres: Vec<f32> = strokes
+                .iter()
+                .filter(|b| b.from.x.0 - 0.01 <= x && x <= b.to.x.0 + 0.01)
+                .map(|b| beam_y(b, x))
+                .collect();
+            assert!(!centres.is_empty(), "a beam over every member");
+            let half = strokes[0].thickness.0 / 2.0;
+            let top = centres.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let bottom = centres.iter().copied().fold(f32::INFINITY, f32::min);
+            if on_upper {
+                assert!(stem.to.y.0 < stem.from.y.0, "an upper stem turns down");
+                assert!(
+                    (stem.to.y.0 - bottom).abs() <= half + 0.17,
+                    "a down stem meets its outermost beam"
+                );
+                let head = heads.iter().copied().fold(f32::INFINITY, f32::min);
+                shortest = shortest.min(head - (top + half));
+            } else {
+                assert!(stem.to.y.0 > stem.from.y.0, "a lower stem turns up");
+                assert!(
+                    (stem.to.y.0 - top).abs() <= half + 0.17,
+                    "an up stem meets its outermost beam"
+                );
+                let head = heads.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                shortest = shortest.min((bottom - half) - head);
+            }
+        }
+    }
+    (crossing, shortest, upper.1 .0 - lower.1 .1)
+}
+
+/// A beam joining one voice's notes on both staves of a part stands between
+/// them: each note on its own staff, the upper staff's stems turned down to
+/// the beam and the lower's up, every stem meeting it after the staves are
+/// spaced, each at least `CROSS_STEM_MIN` from its head to the nearest beam
+/// it meets, and no flag left. Where the staves' own ink would let them
+/// close further, the stems reaching the beam from the lower staff hold them
+/// at that least length.
+#[test]
+fn a_beam_across_two_staves_joins_its_notes_between_them() {
+    use epiphany_layout_ir::CROSS_STEM_MIN;
+
+    let loaded = load(&fixture("cross_staff.musicxml")).expect("loads");
+    let layout = engrave(&loaded.reduced.score).layout;
+    let (crossing, shortest, _) = check_cross_staff_beams(&loaded.reduced.score, &layout);
+    assert_eq!(crossing, 7, "the fixture's beams across the staves");
+    assert!(
+        shortest >= CROSS_STEM_MIN - 0.05,
+        "a stem too short: {shortest}"
+    );
+    assert!(layout
+        .glyphs
+        .iter()
+        .all(|g| !g.glyph.as_str().starts_with("flag")));
+    // The staves realize their band's preferred clearance, and the vertical
+    // metric, which leaves the beams' ink out of both staves as the solve
+    // does, measures no deviation.
+    use epiphany_layout_ir::ConstraintSolver;
+    let report = epiphany_engrave::Engraver::default().solve(
+        &epiphany_layout_ir::to_constrained(&epiphany_layout_ir::to_logical(&loaded.reduced.score)),
+        &epiphany_layout_ir::SolverConfig::default(),
+    );
+    let penalty = report.metric_vector.vertical_density_penalty.0;
+    assert!(penalty < 1e-3, "vertical density penalty {penalty}");
+
+    // Two bass staves, whose ink stays within their lines, each beam joining
+    // the lower staff's top line to the upper's bottom line: the staves
+    // would close to the band's preferred clearance, nearer than the beam
+    // between them allows, so its stems from the lower staff hold them apart.
+    let note = |step: &str, octave: u8, staff: u8, beam: &str| {
+        format!(
+            "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+             <duration>1</duration><voice>1</voice><type>eighth</type><staff>{staff}</staff>\
+             <beam number=\"1\">{beam}</beam></note>"
+        )
+    };
+    let mut notes = String::new();
+    for _ in 0..4 {
+        notes += &note("A", 3, 2, "begin");
+        notes += &note("G", 2, 1, "end");
+    }
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\">\
+         <part-name>Piano</part-name></score-part></part-list><part id=\"P1\">\
+         <measure number=\"1\"><attributes><divisions>2</divisions>\
+         <time><beats>4</beats><beat-type>4</beat-type></time><staves>2</staves>\
+         <clef number=\"1\"><sign>F</sign><line>4</line></clef>\
+         <clef number=\"2\"><sign>F</sign><line>4</line></clef></attributes>\
+         {notes}</measure></part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("close_cross_staff.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = engrave(&loaded.reduced.score).layout;
+    let (crossing, shortest, gap) = check_cross_staff_beams(&loaded.reduced.score, &layout);
+    assert_eq!(crossing, 4);
+    assert!(
+        (shortest - CROSS_STEM_MIN).abs() < 0.05,
+        "the stems reaching the beam hold the staves at their least length: {shortest}, \
+         the staves {gap} apart"
+    );
+}
+
 /// Ties are drawn across every barline and across every system break: a long
 /// score of whole notes, each tied to the next, wraps onto many justified
 /// systems; each tie is one arc, or two half-arcs where a system breaks

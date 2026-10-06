@@ -196,7 +196,40 @@ pub struct ConstrainedLayoutIR {
     /// system's staves stand: a brace, a bracket or a sub-bracket at the left,
     /// and, for all but a choral group, barlines joined from staff to staff.
     pub staff_groups: Vec<GroupSpan>,
+    /// Each beam joining notes on two staves, drawn here riding the upper
+    /// staff: a solver leaves its ink out of both staves' content, keeps the
+    /// lower staff from rising past its `rise_limit`, and moves the beam end
+    /// of each stem reaching it from the lower staff with the upper.
+    pub cross_staff_beams: Vec<CrossStaffBeam>,
 }
+
+/// A beam joining notes on two staves of a region (see
+/// [`ConstrainedLayoutIR::cross_staff_beams`]). The upper staff's notes turn
+/// their stems down to it and the lower staff's up, so it stands between the
+/// staves, drawn in this frame where they stand `SYSTEM_STAFF_PITCH` apart.
+#[derive(Clone, PartialEq, Debug)]
+pub struct CrossStaffBeam {
+    /// Index into [`ConstrainedLayoutIR::regions`].
+    pub region: usize,
+    /// The staff the beam rides, whose notes' stems turn down to it.
+    pub upper: StaffId,
+    /// The staff whose notes' stems turn up to it.
+    pub lower: StaffId,
+    /// Every primitive standing between the two staves: the beam's strokes,
+    /// each member's stem, and the number of a tuplet the beam carries.
+    pub ink: Vec<GlyphObjectId>,
+    /// The stems from the lower staff's notes: each one's `from` (at its
+    /// head) rides the lower staff, and its `to` (at the beam) the upper.
+    pub reaching: Vec<GlyphObjectId>,
+    /// How far the lower staff may rise toward the upper from where this
+    /// frame stands it before a stem reaching the beam from it falls short
+    /// of [`CROSS_STEM_MIN`] (negative where it must sink).
+    pub rise_limit: f32,
+}
+
+/// The least distance from a head of a beam across two staves to the
+/// nearest beam its stem meets, in staff spaces.
+pub const CROSS_STEM_MIN: f32 = 2.25;
 
 /// One staff group of a region (see [`ConstrainedLayoutIR::staff_groups`]).
 #[derive(Clone, PartialEq, Debug)]
@@ -799,6 +832,7 @@ const TIE_THICKNESS: f32 = 0.14;
 const BEAM_THICKNESS: f32 = 0.5; // SMuFL's beamThickness
 const BEAM_STEP: f32 = 0.75; // centre to centre of stacked beams: a thickness and a 0.25 gap
 const MAX_BEAM_RISE: f32 = 1.0; // the most a beam rises or falls across its group, in staff spaces
+const MAX_CROSS_SLOPE: f32 = 0.5; // the steepest a beam across two staves rises, per space of run
 const BEAM_HOOK: f32 = 1.1; // the length of a lone note's partial beam
 
 /// The registry id for **notated-component synthesis**: a note/rest notated as a
@@ -907,6 +941,7 @@ pub fn try_to_constrained(
     let mut span_anchors: Vec<SpanAnchor> = Vec::new();
     let mut system_leads: Vec<SystemLead> = Vec::new();
     let mut staff_groups: Vec<GroupSpan> = Vec::new();
+    let mut cross_staff_beams: Vec<CrossStaffBeam> = Vec::new();
     // Regions tile left-to-right; this advances by each region's width so all
     // coordinates stay globally monotonic (the solver's coordinate remap relies
     // on it). v0 has no page casting-off, so this replaces region overlap.
@@ -989,6 +1024,8 @@ pub fn try_to_constrained(
         let mut column_heads: BTreeMap<(Option<StaffId>, ColumnKey), Vec<HeadRef>> =
             BTreeMap::new();
         let mut event_stems: BTreeMap<EventId, Vec<StemSeg>> = BTreeMap::new();
+        // Each note's and unpitched note's staff: a beam may join two.
+        let mut event_staff: BTreeMap<EventId, StaffId> = BTreeMap::new();
         // Each note's and unpitched note's place among its staff's voices.
         let mut event_voices: BTreeMap<EventId, VoicePlace> = BTreeMap::new();
         // Per staff, the drawn extent of each note column — the obstacle field a
@@ -1028,6 +1065,7 @@ pub fn try_to_constrained(
             let yo = staff.map(&y_origin).unwrap_or(0.0);
             match (object.provenance().source, object.content()) {
                 (TypedObjectId::Event(eid), LayoutContent::Note(note)) => {
+                    event_staff.extend(staff.map(|st| (eid, st)));
                     let mut stems = Vec::new();
                     for (comp, (offset, value, dots, tied)) in
                         components_of(&note.components).enumerate()
@@ -1121,6 +1159,7 @@ pub fn try_to_constrained(
                     event_voices.insert(eid, note.voice);
                 }
                 (TypedObjectId::Event(eid), LayoutContent::Unpitched(unpitched)) => {
+                    event_staff.extend(staff.map(|st| (eid, st)));
                     // An unpitched note: a notehead at its staff position, read
                     // as on a five-line staff, with the stem, flag and dots of
                     // its value; it has no accidental.
@@ -1336,6 +1375,17 @@ pub fn try_to_constrained(
                 };
                 for event in members {
                     if let Some(seg) = event_stems.get_mut(&event).and_then(|s| s.first_mut()) {
+                        seg.up = up;
+                    }
+                }
+            }
+            for group in &content.cross_beams {
+                let Some(kneed) = kneed_members(group, &event_stems, &event_staff, &y_origin)
+                else {
+                    continue;
+                };
+                for (event, up) in kneed.members.iter().zip(kneed.ups) {
+                    if let Some(seg) = event_stems.get_mut(event).and_then(|s| s.first_mut()) {
                         seg.up = up;
                     }
                 }
@@ -1719,6 +1769,199 @@ pub fn try_to_constrained(
             }
         }
 
+        // Beams across two staves. The upper staff's members turn their stems
+        // down and the lower's up, to one beam between the staves that rides
+        // the upper staff. Its primary beam is the topmost, further beams
+        // below it as a group whose stems all turn up draws them, so an up
+        // stem reaches the primary and a down stem the deepest beam its own
+        // value takes. The beam rises with the line from its first member's
+        // head to its last's, by at most `MAX_BEAM_RISE` and at most
+        // `MAX_CROSS_SLOPE` of its run (its stems can stand close, an up stem
+        // right of its head beside a down stem left of the next), and stands
+        // midway between the heights its members allow, each stem at least
+        // `CROSS_STEM_MIN` from its head to the nearest beam it meets; where
+        // the lower staff stands too close in this frame for that, the beam
+        // keeps the upper staff's stems their length and a solver opens the
+        // gap (`rise_limit`). Beamed notes take no flags.
+        // Each member's stem by event: its record, and whether it reaches the
+        // beam from the lower staff.
+        let mut kneed_stems: BTreeMap<EventId, (usize, bool)> = BTreeMap::new();
+        for object in &region.objects {
+            let LayoutContent::Staff(content) = object.content() else {
+                continue;
+            };
+            let head_box = metrics("noteheadBlack").map(|m| m.bounding_box());
+            let x_off = |up: bool| {
+                if up {
+                    head_box.map_or(NOTEHEAD_STEM_X, |b| b.right.0)
+                } else {
+                    head_box.map_or(0.0, |b| b.left.0)
+                }
+            };
+            // The stack of beams a value takes, from the primary's outer edge.
+            let stack = |count: u8| BEAM_THICKNESS + f32::from(count.saturating_sub(1)) * BEAM_STEP;
+            for group in &content.cross_beams {
+                let Some(kneed) = kneed_members(group, &event_stems, &event_staff, &y_origin)
+                else {
+                    continue;
+                };
+                let members = &kneed.members;
+                let mut sorted = members.clone();
+                sorted.sort();
+                beam_sets.insert(sorted);
+                let n = members.len();
+                let segs: Vec<&StemSeg> = members.iter().map(|e| &event_stems[e][0]).collect();
+                let counts: Vec<u8> = segs.iter().map(|s| s.beams).collect();
+                let keys_of: Vec<ColumnKey> = segs.iter().map(|s| s.key.clone()).collect();
+                let xs: Vec<f32> = segs
+                    .iter()
+                    .zip(&kneed.ups)
+                    .map(|(s, up)| column(&s.key).x + s.dx + x_off(*up))
+                    .collect();
+                // The head each stem leaves from, nearest the beam.
+                let near: Vec<f32> = segs
+                    .iter()
+                    .zip(&kneed.ups)
+                    .map(|(s, up)| if *up { s.hi } else { s.lo })
+                    .collect();
+                let most = counts.iter().copied().max().unwrap_or(1);
+                let (x0, xn) = (xs[0], xs[n - 1]);
+                let most_rise = MAX_BEAM_RISE.min(MAX_CROSS_SLOPE * (xn - x0).max(0.0));
+                let rise = (near[n - 1] - near[0]).clamp(-most_rise, most_rise);
+                let slope = if xn > x0 { rise / (xn - x0) } else { 0.0 };
+                // The primary beam's top edge at `x0`: no lower than each up
+                // stem's least length allows, no higher than each down stem's.
+                let mut floor = f32::NEG_INFINITY;
+                let mut ceiling = f32::INFINITY;
+                for i in 0..n {
+                    let run = slope * (xs[i] - x0);
+                    if kneed.ups[i] {
+                        floor = floor.max(near[i] + CROSS_STEM_MIN + stack(counts[i]) - run);
+                    } else {
+                        ceiling = ceiling.min(near[i] - CROSS_STEM_MIN - run);
+                    }
+                }
+                let intercept = match (floor.is_finite(), ceiling.is_finite()) {
+                    (true, true) if floor <= ceiling => (floor + ceiling) / 2.0,
+                    (_, true) => ceiling,
+                    (true, false) => floor,
+                    (false, false) => near[0],
+                };
+                let edge = |x: f32| intercept + slope * (x - x0);
+                let rise_limit = (0..n)
+                    .filter(|&i| kneed.ups[i])
+                    .map(|i| edge(xs[i]) - stack(counts[i]) - near[i] - CROSS_STEM_MIN)
+                    .fold(f32::INFINITY, f32::min);
+                let record = cross_staff_beams.len();
+                for (i, e) in members.iter().enumerate() {
+                    let up = kneed.ups[i];
+                    let staff = event_staff[e];
+                    let seg = &mut event_stems.get_mut(e).expect("a member has a stem")[0];
+                    seg.up = up;
+                    seg.x_off = x_off(up);
+                    seg.end = if up {
+                        edge(xs[i]) - STEM_THICKNESS
+                    } else {
+                        edge(xs[i]) - stack(counts[i]) + STEM_THICKNESS
+                    };
+                    seg.tip = seg.end;
+                    seg.flag = None;
+                    let entry =
+                        column_ink
+                            .entry((staff, keys_of[i].clone()))
+                            .or_insert(ColumnInk {
+                                top: seg.hi,
+                                bottom: seg.lo,
+                                stem_up: Some(up),
+                                centre: x_off(up) * 0.5,
+                            });
+                    entry.stem_up = Some(up);
+                    if up {
+                        entry.top = entry.top.max(edge(xs[i]));
+                    } else {
+                        entry.bottom = entry.bottom.min(edge(xs[i]) - stack(counts[i]));
+                    }
+                    kneed_stems.insert(*e, (record, staff == kneed.lower));
+                }
+                let source = group
+                    .beam
+                    .map_or(TypedObjectId::Event(members[0]), TypedObjectId::Beam);
+                let dependencies: Vec<TypedObjectId> =
+                    members.iter().copied().map(TypedObjectId::Event).collect();
+                let slot = |i: usize| column(&keys_of[i]).slot;
+                let mut ink: Vec<GlyphObjectId> = Vec::new();
+                for level in 1..=most {
+                    let centre = |x: f32| {
+                        edge(x) - (BEAM_THICKNESS / 2.0 + f32::from(level - 1) * BEAM_STEP)
+                    };
+                    let mut runs: Vec<(usize, usize)> = Vec::new();
+                    for (i, &count) in counts.iter().enumerate() {
+                        if count < level {
+                            continue;
+                        }
+                        match runs.last_mut() {
+                            Some((_, end)) if *end + 1 == i => *end = i,
+                            _ => runs.push((i, i)),
+                        }
+                    }
+                    for (run, &(a, b)) in runs.iter().enumerate() {
+                        let (from_x, to_x, start, end) = if a < b {
+                            (
+                                xs[a] - STEM_THICKNESS / 2.0,
+                                xs[b] + STEM_THICKNESS / 2.0,
+                                slot(a),
+                                slot(b),
+                            )
+                        } else if a + 1 == n {
+                            // A lone short note last in its group hooks back.
+                            (
+                                xs[a] - BEAM_HOOK,
+                                xs[a] + STEM_THICKNESS / 2.0,
+                                slot(a),
+                                slot(a),
+                            )
+                        } else {
+                            (
+                                xs[a] - STEM_THICKNESS / 2.0,
+                                xs[a] + BEAM_HOOK,
+                                slot(a),
+                                slot(a),
+                            )
+                        };
+                        // Keyed apart from a one-staff group's strokes: the
+                        // top bit, the level, the run and the first member.
+                        let key = 1u128 << 127
+                            | u128::from(level) << 112
+                            | (run as u128) << 96
+                            | (members[0].as_u128() & ((1u128 << 96) - 1));
+                        let provenance = Provenance::synthesized(
+                            source,
+                            SynthesisKind::Registered(BEAM_SYNTHESIS),
+                            SynthesisInstanceKey(key),
+                            dependencies.clone(),
+                        );
+                        let stroke = line_stroke(
+                            provenance,
+                            Point::new(from_x, centre(from_x)),
+                            Point::new(to_x, centre(to_x)),
+                            BEAM_THICKNESS,
+                            band_of(Some(kneed.upper)),
+                        );
+                        ink.push(stroke.id());
+                        beam_strokes.push((stroke, start, end));
+                    }
+                }
+                cross_staff_beams.push(CrossStaffBeam {
+                    region: region_index,
+                    upper: kneed.upper,
+                    lower: kneed.lower,
+                    ink,
+                    reaching: Vec::new(),
+                    rise_limit,
+                });
+            }
+        }
+
         // (provenance, owning staff, engraving content) for the region object,
         // then its contents, then this region's spanning cross-region objects.
         let specs: Vec<(&Provenance, Option<StaffId>, Option<&LayoutContent>)> =
@@ -1861,6 +2104,7 @@ pub fn try_to_constrained(
                                 keys: Vec::new(),
                                 default_clef: Clef::default(),
                                 beams: Vec::new(),
+                                cross_beams: Vec::new(),
                             };
                             &default_content
                         }
@@ -2001,6 +2245,13 @@ pub fn try_to_constrained(
                                 vertical_band: band_of(staff),
                             };
                             stem_slots.push((stem.id(), info.slot));
+                            if let Some(&(record, reaching)) = kneed_stems.get(&eid) {
+                                let record = &mut cross_staff_beams[record];
+                                record.ink.push(stem.id());
+                                if reaching {
+                                    record.reaching.push(stem.id());
+                                }
+                            }
                             emit.stroke(stem);
                             // The flag hangs from the stem's normal tip, its left
                             // edge on the stem's.
@@ -2966,6 +3217,7 @@ pub fn try_to_constrained(
         span_anchors,
         system_leads,
         staff_groups,
+        cross_staff_beams,
     })
 }
 
@@ -4666,6 +4918,56 @@ fn place_heads(
     (dx, shifts, dot_x)
 }
 
+/// A beam across two staves: its members (one drawn stem each), each one's
+/// stem direction, down from the upper staff and up from the lower, and the
+/// two staves.
+struct Kneed {
+    members: Vec<EventId>,
+    ups: Vec<bool>,
+    upper: StaffId,
+    lower: StaffId,
+}
+
+/// A cross-staff beam group's members and their stems' directions. `None`
+/// unless two or more members, one drawn stem each, stand on exactly two
+/// staves.
+fn kneed_members(
+    group: &crate::logical::BeamGroup,
+    event_stems: &BTreeMap<EventId, Vec<StemSeg>>,
+    event_staff: &BTreeMap<EventId, StaffId>,
+    y_origin: &dyn Fn(StaffId) -> f32,
+) -> Option<Kneed> {
+    let members: Vec<EventId> = group
+        .events
+        .iter()
+        .copied()
+        .filter(|e| matches!(event_stems.get(e).map(Vec::as_slice), Some([seg]) if seg.drawn))
+        .collect();
+    if members.len() < 2 {
+        return None;
+    }
+    let staves: BTreeSet<StaffId> = members
+        .iter()
+        .map(|e| event_staff.get(e).copied())
+        .collect::<Option<_>>()?;
+    let staves: Vec<StaffId> = staves.into_iter().collect();
+    let &[a, b] = staves.as_slice() else {
+        return None;
+    };
+    let (upper, lower) = if y_origin(a) >= y_origin(b) {
+        (a, b)
+    } else {
+        (b, a)
+    };
+    let ups = members.iter().map(|e| event_staff[e] == lower).collect();
+    Some(Kneed {
+        members,
+        ups,
+        upper,
+        lower,
+    })
+}
+
 /// A beam group's members, one drawn stem each, and the way their stems
 /// turn: a voice beside another turns the whole group its way; otherwise the
 /// note furthest from the middle line decides (down on a tie). `None` for a
@@ -6065,6 +6367,7 @@ mod tests {
                 key: KeySignature::new(2).expect("two sharps is a valid key"),
             }],
             beams: Vec::new(),
+            cross_beams: Vec::new(),
         });
         let logical = LogicalLayoutIR {
             source: ScoreVersion::default(),
@@ -6396,6 +6699,7 @@ mod tests {
             ],
             keys: vec![],
             beams: Vec::new(),
+            cross_beams: Vec::new(),
         });
         let logical = LogicalLayoutIR {
             source: ScoreVersion::default(),
@@ -6762,6 +7066,7 @@ mod tests {
                         clefs: vec![],
                         keys: vec![],
                         beams: Vec::new(),
+                        cross_beams: Vec::new(),
                     }),
                 ),
                 with_content(

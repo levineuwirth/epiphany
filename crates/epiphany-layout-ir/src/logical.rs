@@ -120,6 +120,10 @@ pub struct StaffContent {
     /// The instance's beamed groups: as the score's beams name them, or, in a
     /// score that names none, by its meter's beats.
     pub beams: Vec<BeamGroup>,
+    /// The beamed groups that start on this instance's notes and join notes
+    /// of another staff of the region: a beam across two staves, as the
+    /// score's beams name it.
+    pub cross_beams: Vec<BeamGroup>,
 }
 
 /// A beamed group: two or more notes of one voice, each an eighth or shorter
@@ -638,6 +642,15 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
             );
         }
 
+        // Every event of the region's staff instances: a beam may join notes
+        // of two of them.
+        let region_events: BTreeSet<EventId> = region
+            .staff_instances()
+            .iter()
+            .flat_map(|si| &si.voices)
+            .flat_map(|voice| voice.events.iter().copied())
+            .collect();
+
         // Staff instances, voices, and their events + pitches — all belong to
         // the instance's staff. The staff instance carries the clef/key in force.
         for si in region.staff_instances() {
@@ -658,7 +671,7 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
                 si_src,
                 si_deps,
                 staff,
-                staff_content(score, si, &annotations),
+                staff_content(score, si, &region_events, &annotations),
             );
             let grid = region
                 .content
@@ -993,6 +1006,7 @@ fn derive_score_version(score: &Score) -> ScoreVersion {
 fn staff_content(
     score: &Score,
     si: &epiphany_core::StaffInstance,
+    region_events: &BTreeSet<EventId>,
     annotations: &DerivedAnnotations,
 ) -> LayoutContent {
     let default_clef = score
@@ -1020,6 +1034,7 @@ fn staff_content(
             })
             .collect(),
         beams: beam_groups(score, si, annotations),
+        cross_beams: cross_beam_groups(score, si, region_events, annotations),
     })
 }
 
@@ -1044,17 +1059,7 @@ pub(crate) fn beam_groups(
             _ => None,
         }
     };
-    let beamable = |eid: EventId| -> bool {
-        let Some(event) = score.events.get(eid) else {
-            return false;
-        };
-        if !matches!(event, Event::Pitched(_) | Event::Unpitched(_)) || musical(eid).is_none() {
-            return false;
-        }
-        let components = components_of(annotations, eid);
-        matches!(components.as_slice(), [only]
-            if !matches!(only.base_value, NoteValue::Whole | NoteValue::Half | NoteValue::Quarter))
-    };
+    let beamable = |eid: EventId| beamable_note(score, annotations, eid);
     let in_instance: BTreeSet<EventId> = si
         .voices
         .iter()
@@ -1062,19 +1067,12 @@ pub(crate) fn beam_groups(
         .collect();
     let mut groups = Vec::new();
     if !score.cross_cutting.beams.is_empty() {
-        for beam in &score.cross_cutting.beams {
-            if !beam.events.iter().all(|e| in_instance.contains(e)) {
-                continue;
-            }
-            let mut events: Vec<EventId> = beam.events.clone();
-            events.sort_by_key(|e| musical(*e).map(|(start, _)| start));
-            for run in events.split(|e| !beamable(*e)) {
-                if run.len() >= 2 {
-                    groups.push(BeamGroup {
-                        events: run.to_vec(),
-                        beam: Some(beam.id),
-                    });
-                }
+        for (beam, run) in beam_runs(score, annotations) {
+            if run.iter().all(|e| in_instance.contains(e)) {
+                groups.push(BeamGroup {
+                    events: run,
+                    beam: Some(beam),
+                });
             }
         }
         return groups;
@@ -1161,6 +1159,78 @@ pub(crate) fn beam_groups(
         }
     }
     groups
+}
+
+/// The runs of each beam the score names: its events in time order, split
+/// where a note cannot be beamed, each of two or more, with the beam they
+/// come from.
+fn beam_runs(score: &Score, annotations: &DerivedAnnotations) -> Vec<(BeamId, Vec<EventId>)> {
+    let start = |eid: EventId| -> Option<MusicalPosition> {
+        match score.events.get(eid)?.position() {
+            EventPosition::Musical(start) => Some(start.clone()),
+            _ => None,
+        }
+    };
+    let mut runs = Vec::new();
+    for beam in &score.cross_cutting.beams {
+        let mut events: Vec<EventId> = beam.events.clone();
+        events.sort_by_key(|e| start(*e));
+        for run in events.split(|e| !beamable_note(score, annotations, *e)) {
+            if run.len() >= 2 {
+                runs.push((beam.id, run.to_vec()));
+            }
+        }
+    }
+    runs
+}
+
+/// Whether a note can be beamed: a pitched or unpitched note at a musical
+/// time and of a musical duration, notated as one eighth-or-shorter
+/// component, in a tuplet or not.
+fn beamable_note(score: &Score, annotations: &DerivedAnnotations, eid: EventId) -> bool {
+    let Some(event) = score.events.get(eid) else {
+        return false;
+    };
+    if !matches!(event, Event::Pitched(_) | Event::Unpitched(_))
+        || !matches!(
+            (event.position(), event.duration()),
+            (EventPosition::Musical(_), EventDuration::Musical(_))
+        )
+    {
+        return false;
+    }
+    let components = components_of(annotations, eid);
+    matches!(components.as_slice(), [only]
+        if !matches!(only.base_value, NoteValue::Whole | NoteValue::Half | NoteValue::Quarter))
+}
+
+/// The beamed groups that start on a staff instance's notes and join notes
+/// of another staff instance of its region: each run of a beam the score
+/// names (as [`beam_groups`] splits it) whose first note is this instance's,
+/// whose notes are all the region's, and which is not this instance's alone.
+fn cross_beam_groups(
+    score: &Score,
+    si: &epiphany_core::StaffInstance,
+    region_events: &BTreeSet<EventId>,
+    annotations: &DerivedAnnotations,
+) -> Vec<BeamGroup> {
+    let in_instance: BTreeSet<EventId> = si
+        .voices
+        .iter()
+        .flat_map(|voice| voice.events.iter().copied())
+        .collect();
+    beam_runs(score, annotations)
+        .into_iter()
+        .filter(|(_, run)| {
+            in_instance.contains(&run[0])
+                && run.iter().all(|e| region_events.contains(e))
+                && !run.iter().all(|e| in_instance.contains(e))
+        })
+        .map(|(beam, events)| BeamGroup {
+            events,
+            beam: Some(beam),
+        })
+        .collect()
 }
 
 /// Where each measure of a staff instance starts and ends: at the next

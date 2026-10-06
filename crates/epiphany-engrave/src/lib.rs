@@ -297,8 +297,10 @@ pub struct Engraver {
 /// and to `35` when notes sounding one letter and octave at once with two
 /// alterations began each showing their own accidental, the natural and a
 /// tie continuation's included, where the first had shown none and borrowed
-/// its neighbour's.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(35);
+/// its neighbour's, and to `36` when a beam joining notes on two staves began
+/// drawing between them, the upper staff's stems turned down to it and the
+/// lower's up, where its notes had taken flags.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(36);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -990,6 +992,7 @@ mod tests {
                             clefs: vec![],
                             keys: vec![],
                             beams: Vec::new(),
+                            cross_beams: Vec::new(),
                         }),
                     ),
                     manifested(
@@ -1435,6 +1438,7 @@ mod tests {
                 clefs: vec![],
                 keys: vec![],
                 beams: Vec::new(),
+                cross_beams: Vec::new(),
             }),
         )];
         objects.extend(note(1, 101, MusicalPosition::origin()));
@@ -1955,6 +1959,7 @@ mod tests {
                                 key: KeySignature::new(3).expect("three sharps"),
                             }],
                             beams: Vec::new(),
+                            cross_beams: Vec::new(),
                         }),
                     ),
                     manifested(

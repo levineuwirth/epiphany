@@ -34,6 +34,11 @@ const SLOT_GAP: f32 = 0.3;
 /// columns' ink, in staff spaces.
 const TIE_MIN_SPAN: f32 = 1.0;
 
+/// The least a beam across two staves runs between the stems it joins, whose
+/// up stem right of its head can stand close beside the next down stem left
+/// of its own, in staff spaces.
+const CROSS_BEAM_MIN_SPAN: f32 = 1.5;
+
 /// The spacing pass's output: the interpolation control points for spanning
 /// strokes, and each glyph-bearing slot's exact `(source, target)` pair — the
 /// rigid delta every member glyph translates by, so intra-slot offsets (a
@@ -122,7 +127,8 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
     // A tie anchored to two slots runs at least `TIE_MIN_SPAN` between its
     // ends: the later slot stands at least that far, and its end's and the
     // earlier end's offsets from their slots, after the earlier. Each
-    // requirement is `(earlier slot, distance)`, by the later slot.
+    // requirement is `(earlier slot, distance)`, by the later slot (a beam
+    // across two staves adds its own below).
     let source_of: BTreeMap<SpringSlotId, f32> =
         slots.iter().map(|(id, e)| (*id, e.source)).collect();
     let mut ties: BTreeMap<SpringSlotId, Vec<(SpringSlotId, f32)>> = BTreeMap::new();
@@ -137,6 +143,25 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
             continue;
         }
         let need = (curve.p0.x.0 - s0) + TIE_MIN_SPAN + (s1 - curve.p3.x.0);
+        ties.entry(*end).or_default().push((*start, need));
+    }
+    // Likewise a beam across two staves, between the stems at its ends.
+    let crossing: std::collections::BTreeSet<_> = input
+        .cross_staff_beams
+        .iter()
+        .flat_map(|beam| beam.ink.iter().copied())
+        .collect();
+    for stroke in input.strokes.iter().filter(|s| crossing.contains(&s.id())) {
+        let Some((start, end)) = anchors.get(&stroke.id()) else {
+            continue;
+        };
+        let (Some(&s0), Some(&s1)) = (source_of.get(start), source_of.get(end)) else {
+            continue;
+        };
+        if start == end || s1 <= s0 {
+            continue;
+        }
+        let need = (stroke.from.x.0 - s0) + CROSS_BEAM_MIN_SPAN + (s1 - stroke.to.x.0);
         ties.entry(*end).or_default().push((*start, need));
     }
 
