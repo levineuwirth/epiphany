@@ -344,6 +344,12 @@ pub struct Census {
     /// Primary beams the file begins and never ends: one begun again before
     /// its end, or still open when the part ends.
     pub unmade_beams: usize,
+    /// The beams counted in `beams`, each where the census's own timed walk
+    /// finds it: each member's staff, measure and offset, a member being
+    /// each note of its voice, not joining a chord, that carries its
+    /// primary beam from its begin to its end. A beam whose members sit on
+    /// two staves is a cross-staff beam.
+    pub beam_places: Vec<CensusBeam>,
     /// Tuplets the file begins and stops in one voice, outside any other, by
     /// the ratio (`actual`, `normal`) their first note's
     /// `<time-modification>` gives, paired by number by a walk of the notes
@@ -385,6 +391,23 @@ pub struct CensusTuplet {
     /// Each member's measure index and offset within the measure, in whole
     /// notes.
     pub members: Vec<(usize, Time)>,
+}
+
+/// A primary beam where the census finds it, apart from the reader.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CensusBeam {
+    /// Each member's staff (from 0), measure index and offset within the
+    /// measure, in whole notes.
+    pub members: Vec<(usize, usize, Time)>,
+}
+
+impl CensusBeam {
+    /// Whether its members sit on more than one staff.
+    pub fn crosses_staves(&self) -> bool {
+        self.members
+            .first()
+            .is_some_and(|(first, _, _)| self.members.iter().any(|(s, _, _)| s != first))
+    }
 }
 
 /// A key or clef where the file states it: the index of its measure, and
@@ -562,6 +585,10 @@ fn timed_census(part: Node, census: &mut Census) {
     // members so far.
     type OpenTuplet<'a> = (&'a str, Option<(u32, u32)>, usize, Vec<(usize, Time)>);
     let mut tuplets: BTreeMap<&str, Vec<OpenTuplet>> = BTreeMap::new();
+    // Per voice, the members so far of its open primary beam, each its
+    // staff, measure and offset; a beam begun again drops the open one, as
+    // the untimed walk leaves it unmade.
+    let mut beams: BTreeMap<&str, Vec<(usize, usize, Time)>> = BTreeMap::new();
     // Per spot, the voice and alteration of each tied pitch.
     type Starts<'a> = Vec<(&'a str, i32)>;
     let mut over: BTreeMap<Spot, Starts> = BTreeMap::new();
@@ -658,6 +685,31 @@ fn timed_census(part: Node, census: &mut Census) {
                                     });
                                 }
                             }
+                        }
+                        let member = (
+                            staff.parse::<usize>().map_or(0, |s| s.saturating_sub(1)),
+                            index,
+                            at,
+                        );
+                        let primary = children(item, "beam")
+                            .find(|b| b.attribute("number").is_none_or(|n| n == "1"))
+                            .map(text);
+                        match primary {
+                            Some("begin") => {
+                                beams.insert(voice, vec![member]);
+                            }
+                            Some("continue") => {
+                                if let Some(open) = beams.get_mut(voice) {
+                                    open.push(member);
+                                }
+                            }
+                            Some("end") => {
+                                if let Some(mut members) = beams.remove(voice) {
+                                    members.push(member);
+                                    census.beam_places.push(CensusBeam { members });
+                                }
+                            }
+                            _ => {}
                         }
                     }
                     let ties = |kind: &str| {

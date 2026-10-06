@@ -6,12 +6,15 @@
 //! list of its events' exact onsets, durations and contents. It also compares
 //! clefs, keys, meters, measures, ties, slurs and each instrument's
 //! transposition, and checks the reader against a raw count of the file's
-//! `<note>` elements, and that every quarter-tone is spelt as it sounds. Tuplets are compared twice: the score's against the
-//! reader's, and the reader's against the census's own timed walk of the
-//! file, tuplet by tuplet, by the staff of the first note, the ratio and each
-//! member's onset, so a reader grouping the wrong notes under the right counts
-//! is a failure. The census times a member within its measure and takes the
-//! measure's start from the reader, as its quarter-tones do.
+//! `<note>` elements, and that every quarter-tone is spelt as it sounds.
+//! Tuplets are compared twice: the score's against the reader's, and the
+//! reader's against the census's own timed walk of the file, tuplet by
+//! tuplet, by the staff of the first note, the ratio and each member's onset,
+//! so a reader grouping the wrong notes under the right counts is a failure.
+//! Beams are compared twice in the same way, each member by its own staff and
+//! onset, so a beam joining notes on two staves is held to the file's staves.
+//! The census times a member within its measure and takes the measure's start
+//! from the reader, as its quarter-tones do.
 //!
 //! A difference is a failure unless the operation that should have produced
 //! the missing thing was refused, in which case it is reported as explained by
@@ -787,25 +790,28 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
             ));
         }
 
-        // Beams: (staff, each event's onset) on each side, and the reader's
-        // beams made and recorded unmade, each held to the census's own.
-        let mut graph_beams: BTreeMap<(StaffId, Vec<RationalTime>), isize> = BTreeMap::new();
+        // Beams: each member's staff and onset on each side, so a beam
+        // across two staves is held member by member; and the reader's beams
+        // made and recorded unmade, each held to the census's own.
+        let mut graph_beams: BTreeMap<Vec<(StaffId, RationalTime)>, isize> = BTreeMap::new();
         for beam in &score.cross_cutting.beams {
-            let places: Option<Vec<&(StaffId, RationalTime)>> =
-                beam.events.iter().map(|e| event_place.get(e)).collect();
+            let places: Option<Vec<(StaffId, RationalTime)>> = beam
+                .events
+                .iter()
+                .map(|e| event_place.get(e).cloned())
+                .collect();
             let Some(places) = places else {
                 continue;
             };
-            let Some(&&(staff, _)) = places.first() else {
+            let Some(&(staff, _)) = places.first() else {
                 continue;
             };
             if !import.ids.staves[p].contains(&staff) {
                 continue;
             }
-            let onsets = places.iter().map(|(_, onset)| onset.clone()).collect();
-            *graph_beams.entry((staff, onsets)).or_default() += 1;
+            *graph_beams.entry(places).or_default() += 1;
         }
-        let mut source_beams: BTreeMap<(StaffId, Vec<RationalTime>), isize> = BTreeMap::new();
+        let mut source_beams: BTreeMap<Vec<(StaffId, RationalTime)>, isize> = BTreeMap::new();
         for (k, beam) in part.beams.iter().enumerate() {
             let Some(&first) = beam.events.first() else {
                 continue;
@@ -817,13 +823,15 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
                 ));
                 continue;
             }
-            let staff = import.ids.staves[p][part.events[first].staff];
-            let onsets = beam
+            let places = beam
                 .events
                 .iter()
-                .map(|&i| part.events[i].onset.clone())
+                .map(|&i| {
+                    let event = &part.events[i];
+                    (import.ids.staves[p][event.staff], event.onset.clone())
+                })
                 .collect();
-            *source_beams.entry((staff, onsets)).or_default() += 1;
+            *source_beams.entry(places).or_default() += 1;
         }
         if graph_beams != source_beams {
             fidelity.failures.push(format!(
@@ -840,6 +848,58 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
                 part.unmade_beams,
                 census.beams,
                 census.unmade_beams
+            ));
+        }
+        // Every beam the reader made, refused or not, held to the census's
+        // own timed walk, member by member: its staff and onset. A reader
+        // that joined other notes, or put one on the wrong staff, differs
+        // here. The measure's start is the reader's, as for tuplets.
+        type PlacedBeam = Vec<(usize, RationalTime)>;
+        let mut file_beams: BTreeMap<PlacedBeam, usize> = BTreeMap::new();
+        for beam in &census.beam_places {
+            let members = beam
+                .members
+                .iter()
+                .map(|(staff, m, offset)| {
+                    let onset = source
+                        .measures
+                        .get(*m)
+                        .map_or_else(|| RationalTime::from_int(-1), |m| m.onset.add(offset));
+                    (*staff, onset)
+                })
+                .collect();
+            *file_beams.entry(members).or_default() += 1;
+        }
+        let mut read_beams: BTreeMap<PlacedBeam, usize> = BTreeMap::new();
+        for beam in &part.beams {
+            let members = beam
+                .events
+                .iter()
+                .map(|&i| (part.events[i].staff, part.events[i].onset.clone()))
+                .collect();
+            *read_beams.entry(members).or_default() += 1;
+        }
+        if read_beams != file_beams {
+            let alone = |a: &BTreeMap<PlacedBeam, usize>, b: &BTreeMap<PlacedBeam, usize>| {
+                a.iter().find(|(at, n)| b.get(*at) != Some(n)).map_or_else(
+                    || String::from("none"),
+                    |(members, _)| {
+                        let staves: BTreeSet<usize> = members.iter().map(|(s, _)| s + 1).collect();
+                        format!(
+                            "{} members on staves {staves:?} from {}",
+                            members.len(),
+                            members
+                                .first()
+                                .map_or_else(|| String::from("?"), |(_, at)| show(at))
+                        )
+                    },
+                )
+            };
+            fidelity.failures.push(format!(
+                "{name}: the reader's beams are not the file's; first in the file alone: {}; \
+                 first read alone: {}",
+                alone(&file_beams, &read_beams),
+                alone(&read_beams, &file_beams),
             ));
         }
 

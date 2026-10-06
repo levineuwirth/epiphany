@@ -1299,6 +1299,114 @@ fn beams_join_the_notes_of_one_voice_from_begin_to_end() {
     assert_eq!(source.features.kinds["beam without an end"].places.len(), 1);
 }
 
+/// A beam joining the notes of one voice on both staves of a part is made
+/// as the file writes it, each member on the staff its `<staff>` names, and
+/// the census finds it by its own walk: every beam of the fixture's piano
+/// part, seven of them across the staves.
+#[test]
+fn a_beam_across_two_staves_keeps_each_member_on_its_staff() {
+    let run = run("cross_staff.musicxml");
+    all_applied(&run);
+    let score = &run.reduced.score;
+    let staves = &run.import.ids.staves[0];
+    let mut staff_of = std::collections::BTreeMap::new();
+    let mut onset_of = std::collections::BTreeMap::new();
+    for region in &score.canvas.regions {
+        for instance in region.staff_instances() {
+            let staff = staves
+                .iter()
+                .position(|s| *s == instance.staff)
+                .expect("a part staff");
+            for voice in &instance.voices {
+                for event in &voice.events {
+                    staff_of.insert(*event, staff + 1);
+                    if let Some(EventPosition::Musical(at)) =
+                        score.events.get(*event).map(Event::position)
+                    {
+                        onset_of.insert(*event, rational(&at.0));
+                    }
+                }
+            }
+        }
+    }
+    let mut beams: Vec<String> = score
+        .cross_cutting
+        .beams
+        .iter()
+        .map(|b| {
+            b.events
+                .iter()
+                .map(|e| format!("{}@{}", onset_of[e], staff_of[e]))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect();
+    beams.sort();
+    // Onset in whole notes @ staff: the four 6:4 groups rising from the
+    // lower staff, the two eighth groups falling from the upper, the two
+    // triplets on the upper staff alone, and the sixteenths below ending on
+    // the eighth chord above.
+    assert_eq!(
+        beams,
+        [
+            "0@2 1/24@2 1/12@2 1/8@1 1/6@1 5/24@1",
+            "1/2@2 13/24@2 7/12@2 5/8@1 2/3@1 17/24@1",
+            "1/4@2 7/24@2 1/3@2 3/8@1 5/12@1 11/24@1",
+            "1@1 9/8@1 5/4@2 11/8@2",
+            "2@1 25/12@1 13/6@1",
+            "3/2@1 13/8@1 7/4@2 15/8@2",
+            "3/4@2 19/24@2 5/6@2 7/8@1 11/12@1 23/24@1",
+            "3@2 49/16@2 25/8@2 51/16@2 13/4@1",
+            "9/4@1 7/3@1 29/12@1",
+        ]
+    );
+    let census = &run.import.source.census[0];
+    assert_eq!((census.beams, census.unmade_beams), (9, 0));
+    assert_eq!(census.beam_places.len(), 9);
+    assert_eq!(
+        census
+            .beam_places
+            .iter()
+            .filter(|b| b.crosses_staves())
+            .count(),
+        7
+    );
+}
+
+/// The comparison holds the reader's beams to the census's own timed walk,
+/// member by member and staff by staff: where the census places a member on
+/// the other staff, at another time, or one fewer, the comparison fails,
+/// though the counts agree and the score holds what the reader made.
+#[test]
+fn the_comparison_holds_each_beams_members_to_the_census() {
+    let run = run("cross_staff.musicxml");
+    let fails = |census: &dyn Fn(&mut epiphany_musicxml::source::CensusBeam)| {
+        let mut import = run.import.clone();
+        let beam = import.source.census[0]
+            .beam_places
+            .first_mut()
+            .expect("the census places the file's beams");
+        census(beam);
+        compare(&import, &run.reduced)
+            .failures
+            .iter()
+            .any(|f| f.contains("the reader's beams are not the file's"))
+    };
+    assert!(!fails(&|_| {}), "the file's own census agrees");
+    assert!(fails(&|b| {
+        b.members.pop();
+    }));
+    assert!(fails(&|b| b.members[4].0 = 1 - b.members[4].0));
+    assert!(fails(&|b| {
+        let (staff, measure, offset) = b.members[1].clone();
+        b.members[1] = (
+            staff,
+            measure,
+            offset.add(&epiphany_core::RationalTime::new(1, 64).unwrap()),
+        );
+    }));
+}
+
 #[test]
 fn part_groups_and_grand_staves_become_staff_groups() {
     let run = run("groups.musicxml");
