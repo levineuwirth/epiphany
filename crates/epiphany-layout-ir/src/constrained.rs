@@ -3947,14 +3947,19 @@ const CARRIED: i8 = i8::MIN;
 /// tie continues into. Where that note's alteration is not what the measure
 /// gave, the next note of its letter and octave in the measure shows its own
 /// accidental, the tied one's restated or a courtesy natural. Every voice of
-/// a staff shares its state, taken in time order. Alterations are counted in
-/// quarter-tones, so a quarter-tone accidental joins the same state: it holds
-/// to the barline as any other, a natural or a flat after it on its letter is
-/// shown, and one stated again is not. A whole-semitone alteration draws its
-/// standard accidental, a quarter-tone one the spelling's own (arrowed or
-/// Stein's, as the file wrote it). A pitch whose stack the state does not
-/// track (several accidentals, or one with no bundled glyph) is absent, and
-/// draws its own stack.
+/// a staff shares its state, taken in time order. Where notes starting at
+/// one time sound one letter and octave with two alterations (a unison of
+/// two voices, a natural beside a flat) and one of them is not a tie
+/// continuation, each head shows its own accidental, the natural and a tie
+/// continuation's included, whatever the measure gave, and the next note of
+/// that letter and octave states its own. Alterations are counted in
+/// quarter-tones, so a quarter-tone accidental joins the same state: it
+/// holds to the barline as any other, a natural or a flat after it on its
+/// letter is shown, and one stated again is not. A whole-semitone alteration
+/// draws its standard accidental, a quarter-tone one the spelling's own
+/// (arrowed or Stein's, as the file wrote it). A pitch whose stack the state
+/// does not track (several accidentals, or one with no bundled glyph) is
+/// absent, and draws its own stack.
 fn context_accidentals(
     objects: &[crate::logical::LayoutObject],
 ) -> BTreeMap<PitchId, Vec<&'static str>> {
@@ -3994,30 +3999,66 @@ fn context_accidentals(
         // Per letter and octave, the alteration in quarter-tones the measure
         // gives so far.
         let mut state: BTreeMap<(epiphany_core::CmnNominal, i8), i8> = BTreeMap::new();
-        for note in &staff.notes {
+        // The notes of every voice that start at one time, together.
+        for group in staff
+            .notes
+            .chunk_by(|a, b| time_total(&a.position, &b.position) == Ordering::Equal)
+        {
+            let at = &group[0].position;
             let index = staff
                 .measures
-                .partition_point(|start| time_total(start, &note.position) != Ordering::Greater);
+                .partition_point(|start| time_total(start, at) != Ordering::Greater);
             if measure != Some(index) {
                 measure = Some(index);
                 state.clear();
             }
-            let key = key_at(staff.keys, &note.position);
-            for pitch in &note.pitches {
-                let Some(spelling) = &pitch.spelling else {
+            let key = key_at(staff.keys, at);
+            // A letter and octave sounded at once with two alterations, one
+            // of them stated afresh: each head shows its own, the natural and
+            // a tie continuation's included, so no head borrows its
+            // neighbour's, and the next note there states its own. Where
+            // every one is a tie continuation, each takes its pitch from its
+            // own tie and shows none.
+            let mut heard: BTreeMap<(epiphany_core::CmnNominal, i8), (BTreeSet<i8>, bool)> =
+                BTreeMap::new();
+            for pitch in group.iter().flat_map(|note| &note.pitches) {
+                if let Some((place, alteration)) = tracked(pitch) {
+                    let (alterations, fresh) = heard.entry(place).or_default();
+                    alterations.insert(alteration);
+                    *fresh |= !tied_into.contains(&pitch.pitch);
+                }
+            }
+            let clashes: BTreeSet<(epiphany_core::CmnNominal, i8)> = heard
+                .into_iter()
+                .filter(|(_, (alterations, fresh))| alterations.len() > 1 && *fresh)
+                .map(|(place, _)| place)
+                .collect();
+            for pitch in group.iter().flat_map(|note| &note.pitches) {
+                let Some((place @ (nominal, _), alteration)) = tracked(pitch) else {
                     continue;
                 };
-                let SpellingNominal::Cmn(nominal) = spelling.nominal else {
-                    continue;
+                let spelling = pitch.spelling.as_ref().expect("a tracked pitch is spelt");
+                let glyph = || -> Vec<&'static str> {
+                    if alteration % 2 == 0 {
+                        alteration_glyph(alteration / 2).into_iter().collect()
+                    } else {
+                        spelling
+                            .accidentals
+                            .iter()
+                            .filter_map(accidental_glyph)
+                            .collect()
+                    }
                 };
-                let Some(alteration) = stack_quarter_tones(&spelling.accidentals) else {
-                    continue;
-                };
-                let place = (nominal, spelling.octave);
                 let current = state
                     .get(&place)
                     .copied()
                     .unwrap_or_else(|| key.map_or(0, |k| 2 * key_alteration(k, nominal)));
+                if clashes.contains(&place) {
+                    // A tie continuation included: beside another alteration
+                    // of its line, a bare head would take its neighbour's.
+                    shown.insert(pitch.pitch, glyph());
+                    continue;
+                }
                 if tied_into.contains(&pitch.pitch) {
                     // A tie carries its accidental to the tied note alone: a
                     // later note of its letter and octave in the bar states
@@ -4032,21 +4073,28 @@ fn context_accidentals(
                     Vec::new()
                 } else {
                     state.insert(place, alteration);
-                    if alteration % 2 == 0 {
-                        alteration_glyph(alteration / 2).into_iter().collect()
-                    } else {
-                        spelling
-                            .accidentals
-                            .iter()
-                            .filter_map(accidental_glyph)
-                            .collect()
-                    }
+                    glyph()
                 };
                 shown.insert(pitch.pitch, glyphs);
+            }
+            for place in clashes {
+                state.insert(place, CARRIED);
             }
         }
     }
     shown
+}
+
+/// A pitch's letter and octave and its alteration in quarter-tones, when the
+/// measure's accidental state tracks it: a common-practice spelling whose
+/// stack it can count.
+fn tracked(pitch: &crate::logical::NotePitch) -> Option<((epiphany_core::CmnNominal, i8), i8)> {
+    let spelling = pitch.spelling.as_ref()?;
+    let SpellingNominal::Cmn(nominal) = spelling.nominal else {
+        return None;
+    };
+    let alteration = stack_quarter_tones(&spelling.accidentals)?;
+    Some(((nominal, spelling.octave), alteration))
 }
 
 /// The key signature in force at `at` (the latest change at or before it,

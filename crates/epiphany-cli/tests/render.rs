@@ -3385,6 +3385,234 @@ fn a_quarter_tone_accidental_holds_to_the_barline_and_yields_to_a_change() {
     );
 }
 
+/// Two voices sounding one letter and octave at once with two alterations,
+/// a quarter-tone or a flat beside a natural, each show their own
+/// accidental, the natural included, in either voice's order and on a tie
+/// continuation beside a fresh one too, and stand clear of each other; the
+/// next note there states its own. A unison of one alteration shows it once,
+/// and one of two tie continuations none, each read by its tie.
+#[test]
+fn a_unison_of_two_alterations_shows_both_accidentals() {
+    use epiphany_core::{Event, EventPosition, TypedObjectId};
+
+    // In 4/4, quarters: (step, octave, alter, quarter-tone name) per voice. A
+    // quarter-tone is written by name alone, as MuseScore writes its arrows.
+    let tied = |step: &str, octave: u8, alter: i8, tie: &str, voice: u8| {
+        format!(
+            "<note><pitch><step>{step}</step><alter>{alter}</alter><octave>{octave}</octave>\
+             </pitch><duration>2</duration><tie type=\"{tie}\"/><voice>{voice}</voice>\
+             <type>quarter</type></note>"
+        )
+    };
+    let note = |step: &str, octave: u8, alter: i8, name: &str, voice: u8| {
+        let accidental = match name {
+            "" => String::new(),
+            name => format!("<accidental>{name}</accidental>"),
+        };
+        let alter = if name.is_empty() {
+            format!("<alter>{alter}</alter>")
+        } else {
+            String::new()
+        };
+        format!(
+            "<note><pitch><step>{step}</step>{alter}<octave>{octave}</octave></pitch>\
+             <duration>2</duration><voice>{voice}</voice><type>quarter</type>{accidental}</note>"
+        )
+    };
+    let backup = "<backup><duration>8</duration></backup>";
+    let measures = [
+        // B natural over B flat-up; then B natural again, in the first voice.
+        [
+            note("B", 4, 0, "", 1),
+            note("B", 4, 0, "", 1),
+            note("D", 5, 0, "", 1),
+            note("D", 5, 0, "", 1),
+        ]
+        .concat()
+            + backup
+            + &[
+                note("B", 4, 0, "flat-up", 2),
+                note("G", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+            ]
+            .concat(),
+        // B flat over B natural, the voices the other way about; then B
+        // natural again, in the second voice.
+        [
+            note("B", 4, -1, "", 1),
+            note("D", 5, 0, "", 1),
+            note("D", 5, 0, "", 1),
+            note("D", 5, 0, "", 1),
+        ]
+        .concat()
+            + backup
+            + &[
+                note("B", 4, 0, "", 2),
+                note("B", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+            ]
+            .concat(),
+        // F sharp in both voices at once: one alteration, shown once.
+        [
+            note("F", 5, 1, "", 1),
+            note("D", 5, 0, "", 1),
+            note("D", 5, 0, "", 1),
+            note("D", 5, 0, "", 1),
+        ]
+        .concat()
+            + backup
+            + &[
+                note("F", 5, 1, "", 2),
+                note("G", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+            ]
+            .concat(),
+        // B natural tied over the barline, met by B flat in the other voice:
+        // the tie continuation shows its natural, the flat its flat.
+        [
+            note("D", 5, 0, "", 1),
+            note("D", 5, 0, "", 1),
+            note("D", 5, 0, "", 1),
+            tied("B", 4, 0, "start", 1),
+        ]
+        .concat()
+            + backup
+            + &[
+                note("G", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+            ]
+            .concat(),
+        [
+            tied("B", 4, 0, "stop", 1),
+            note("D", 5, 0, "", 1),
+            note("D", 5, 0, "", 1),
+            note("D", 5, 0, "", 1),
+        ]
+        .concat()
+            + backup
+            + &[
+                note("B", 4, -1, "", 2),
+                note("G", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+            ]
+            .concat(),
+        // B natural and B flat at once, each tied over the barline: in the
+        // next measure both are tie continuations, each read by its own tie.
+        [
+            note("D", 5, 0, "", 1),
+            note("D", 5, 0, "", 1),
+            note("D", 5, 0, "", 1),
+            tied("B", 4, 0, "start", 1),
+        ]
+        .concat()
+            + backup
+            + &[
+                note("G", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+                tied("B", 4, -1, "start", 2),
+            ]
+            .concat(),
+        [
+            tied("B", 4, 0, "stop", 1),
+            note("D", 5, 0, "", 1),
+            note("D", 5, 0, "", 1),
+            note("D", 5, 0, "", 1),
+        ]
+        .concat()
+            + backup
+            + &[
+                tied("B", 4, -1, "stop", 2),
+                note("G", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+            ]
+            .concat(),
+    ];
+    let loaded = treble_part("unison_alterations.musicxml", &measures);
+    let score = &loaded.reduced.score;
+    let layout = epiphany_cli::engrave_loaded(&loaded).layout;
+    // Each pitch in time order, the first voice before the second at one time.
+    let mut pitches: Vec<(epiphany_core::RationalTime, u64, epiphany_core::PitchId)> = score
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Pitched(p) => match &p.position {
+                EventPosition::Musical(at) => Some((at.0.clone(), p)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .flat_map(|(at, p)| {
+            let voice = score
+                .canvas
+                .regions
+                .iter()
+                .flat_map(|r| r.staff_instances())
+                .flat_map(|i| i.voices.iter().enumerate())
+                .find(|(_, v)| v.events.contains(&p.id))
+                .map_or(9, |(k, _)| k as u64);
+            p.pitches.iter().map(move |ip| (at.clone(), voice, ip.id))
+        })
+        .collect();
+    pitches.sort();
+    let accidentals = |id: &epiphany_core::PitchId| -> Vec<&epiphany_layout_ir::ResolvedGlyph> {
+        layout
+            .glyphs
+            .iter()
+            .filter(|g| {
+                g.provenance.source == TypedObjectId::Pitch(*id)
+                    && g.glyph.as_str().starts_with("accidental")
+            })
+            .collect()
+    };
+    let drawn: Vec<String> = pitches
+        .iter()
+        .map(|(_, _, id)| {
+            accidentals(id)
+                .iter()
+                .map(|g| g.glyph.as_str())
+                .collect::<Vec<_>>()
+                .join("+")
+        })
+        .collect();
+    let (n, f, s, q) = (
+        "accidentalNatural",
+        "accidentalFlat",
+        "accidentalSharp",
+        "accidentalQuarterToneFlatArrowUp",
+    );
+    assert_eq!(
+        drawn,
+        [
+            n, q, n, "", "", "", "", "", // B natural and B flat-up, then B natural
+            f, n, "", n, "", "", "", "", // B flat and B natural, then B natural
+            s, "", "", "", "", "", "", "", // F sharp in both voices, shown once
+            "", "", "", "", "", "", "", "", // B natural tied over the barline
+            n, f, "", "", "", "", "", "", // the tie continuation beside B flat
+            "", "", "", "", "", "", n, f, // B natural and B flat, each tied on
+            "", "", "", "", "", "", "", "", // two tie continuations, shown by their ties
+        ]
+    );
+    // The two accidentals of each unison stand clear of each other.
+    for first in [0, 8, 32, 46] {
+        let (a, b) = (
+            accidentals(&pitches[first].2),
+            accidentals(&pitches[first + 1].2),
+        );
+        assert!(
+            !boxes_overlap(glyph_box(a[0]), glyph_box(b[0])),
+            "a unison's two accidentals overlap"
+        );
+    }
+}
+
 /// The hand-written quarter-tone fixture through the whole pipeline, locked
 /// to a golden: each of the fourteen quarter-tone accidentals once; the
 /// natural a note after a quarter-tone shows when it writes no accidental, in

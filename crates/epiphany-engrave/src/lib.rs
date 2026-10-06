@@ -293,8 +293,12 @@ pub struct Engraver {
 /// unbundled and left undrawn, and to `34` when the measure's accidental
 /// state began counting in quarter-tones, so a quarter-tone accidental holds
 /// to the barline, yields to a change and is cancelled as any other, and two
-/// voices' different quarter-tones on one step no longer share a notehead.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(34);
+/// voices' different quarter-tones on one step no longer share a notehead,
+/// and to `35` when notes sounding one letter and octave at once with two
+/// alterations began each showing their own accidental, the natural and a
+/// tie continuation's included, where the first had shown none and borrowed
+/// its neighbour's.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(35);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.

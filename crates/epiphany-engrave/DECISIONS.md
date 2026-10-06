@@ -1474,3 +1474,23 @@ on its letter in another at one instant show only the second's accidental
 when the first comes first. Locked by
 `a_quarter_tone_accidental_holds_to_the_barline_and_yields_to_a_change`
 (`epiphany-cli`).
+
+## ENGRAVER_VERSION 34 → 35: a unison of two alterations (X3c.0, 2026-10-06)
+
+The measure's accidental state took the notes of one instant in their
+objects' order, so where two voices sounded one letter and octave at once
+with two alterations (a natural beside a flat, a natural beside a
+quarter-tone), the first, which the key or the measure already gave, showed
+nothing, and the second showed its own. The two heads stand side by side
+behind that one accidental, and a player reads both as the second. The
+notes starting at one time are now taken together: where they sound a letter
+and octave with more than one alteration, each head shows its own
+accidental, the natural included, whatever the measure gave, and the next
+note there states its own, as after a tie of another alteration. A tie
+continuation in such a unison shows its own too: bare beside a flat, it
+read as flat, since the one accidental stood before both heads. Where every
+note of the unison is a tie continuation, each is read by its own tie and
+none shows, as before. One alteration in both voices is shown once, as
+before. The accidental columns already set two accidentals of one step
+apart, the one nearer the heads belonging to the left head. Locked by
+`a_unison_of_two_alterations_shows_both_accidentals` (`epiphany-cli`).
