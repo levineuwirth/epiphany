@@ -1182,6 +1182,48 @@ impl TupletRatio {
     }
 }
 
+/// Which number a tuplet shows (Chapter 3 §"Tuplets as Grouping Objects";
+/// schema major 4). Growth is by appended variant.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
+pub enum TupletNumber {
+    /// Its ratio's `actual` term: a triplet's 3.
+    #[default]
+    Actual,
+    /// No number.
+    None,
+}
+
+/// Whether a tuplet's bracket is drawn (Chapter 3 §"Tuplets as Grouping
+/// Objects"; schema major 4). Growth is by appended variant.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
+pub enum TupletBracket {
+    /// The engraver's choice: a bracket unless its members are one beamed
+    /// group.
+    #[default]
+    Auto,
+    /// No bracket.
+    Hidden,
+}
+
+/// How a tuplet's marks are shown (Chapter 3 §"Tuplets as Grouping Objects";
+/// schema major 4): display-oriented, but the author's, so it is canonical
+/// state. The v3→v4 migration default, [`TupletDisplay::default`], is the
+/// actual number and the engraver's bracket, as every tuplet was drawn
+/// before major 4.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
+pub struct TupletDisplay {
+    pub number: TupletNumber,
+    pub bracket: TupletBracket,
+}
+
+impl TupletDisplay {
+    /// A tuplet whose marks are hidden: no number and no bracket.
+    pub const HIDDEN: TupletDisplay = TupletDisplay {
+        number: TupletNumber::None,
+        bracket: TupletBracket::Hidden,
+    };
+}
+
 /// A tuplet grouping object (Chapter 3 §"Tuplets as Grouping Objects").
 /// Tuplets do not modify member sounding durations; the ratio is notational.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -1194,6 +1236,9 @@ pub struct Tuplet {
     /// (Chapter 3 §"Tuplet Consistency"; invariant 16). For a 3:2 eighth-note
     /// triplet of three members this is `1/4`.
     pub required_total: MusicalDuration,
+    /// Schema major 4 (appended; migration default
+    /// `TupletDisplay::default()`).
+    pub display: TupletDisplay,
 }
 
 /// Where a point/range annotation attaches (Chapter 5 §"Analytical

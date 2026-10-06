@@ -300,8 +300,10 @@ pub struct Engraver {
 /// its neighbour's, and to `36` when a beam joining notes on two staves began
 /// drawing between them, the upper staff's stems turned down to it and the
 /// lower's up, where its notes had taken flags, and to `37` when a tuplet
-/// whose notes are such a beam began drawing its number by it.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(37);
+/// whose notes are such a beam began drawing its number by it, and to `38`
+/// when a tuplet's display began hiding its number or bracket, a bracket
+/// whose number is hidden running unbroken.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(38);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.

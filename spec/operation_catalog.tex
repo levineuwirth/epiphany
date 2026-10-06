@@ -231,7 +231,7 @@
   {\Large\scshape\color{epiphanyslate}Operation Catalog}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.17.0 --- Clef and key changes enter the operation set}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.18.0 --- A tuplet's display, and its schema major}\\[4pt]
   {\small\color{epiphanyslate}Normative for the operation kinds it defines}
   \vfill
 \end{titlepage}
@@ -709,6 +709,16 @@ time. Schema major~0 unconditionally, epoch~14; wire discriminants~41
 and~42. No new \texttt{PreconditionFailureReason}. The reduction algorithm
 version does not move: no operation reducible before changes its verdict or
 the state it produces, since only the new kinds write the new registers.
+
+\noindent\textbf{Version 0.18.0 (X3c, a tuplet's display).}
+\texttt{CreateTuplet} (Section~\ref{sec:k0:create-tuplet}) carries the
+tuplet's \texttt{display}, which schema major~4 appends to \texttt{Tuplet}, so
+it is schema major~4 unconditionally where it was major~0; a
+\texttt{CreateTuplet} written before major~4 is refused by name. No discriminant,
+precondition or reduction rule changes. The reduction algorithm version does
+not move: the display enters no verdict and no canonical reduced state, so
+every history reduces as before, and only the graph-aware score holds the
+display.
 
 % ===========================================================================
 \chapter{The Catalog Framework}
@@ -1996,15 +2006,18 @@ identifier and has no parent container.
 
 \textbf{Payload schema.} \texttt{CreateTupletOp \{ tuplet: Tuplet \}} --- the
 full value: identity, the \texttt{actual:notated} ratio, the member events,
-the optional parent tuplet, and the required total sounding duration of the
-members.
+the optional parent tuplet, the required total sounding duration of the
+members, and how its number and bracket are shown (\texttt{display}, core
+specification requirement \texttt{req:time:tuplet-display}).
 
 \textbf{Canonical encoding.} The length-framed canonical bytes of
-\texttt{tuplet}. \texttt{Tuplet} has never been versioned --- its fields are an
-identifier, a \texttt{TupletRatio}, event identifiers, an optional tuplet
-identifier and a \texttt{MusicalDuration}, none with version branching of its
-own --- so this operation is schema major~0 unconditionally. A degenerate
-ratio does not decode (core specification
+\texttt{tuplet}. \texttt{Tuplet} appends \texttt{display}, a mandatory field,
+at schema major~4 (Binary Format companion \sectionsc{Schema Major 4}), so
+this operation is schema major~4 unconditionally. A \texttt{CreateTuplet}
+written before major~4 carries the five-field \texttt{Tuplet} of majors~0
+to~3; a decoder recognizes that layout and refuses it by name rather than
+migrate it, since before the product's 1.0 release nothing is migrated. A
+degenerate ratio does not decode (core specification
 requirement \texttt{req:time:tuplet-ratio-construction} holds at decode as at
 construction).
 

@@ -571,7 +571,8 @@ fn a_tuplet_on_a_beam_across_two_staves_takes_its_number_by_the_beam() {
                 .all(|s| s.provenance.source != TypedObjectId::Tuplet(tuplet.id) || s.from == s.to),
             "no bracket"
         );
-        if digits.is_empty() {
+        if tuplet.display == epiphany_core::TupletDisplay::HIDDEN {
+            assert!(digits.is_empty(), "a hidden tuplet shows no number");
             continue;
         }
         numbered += 1;
@@ -621,7 +622,106 @@ fn a_tuplet_on_a_beam_across_two_staves_takes_its_number_by_the_beam() {
             .fold(f32::NEG_INFINITY, f32::max);
         assert!(number[1] > top, "the number stands above the beam");
     }
-    assert_eq!(numbered, 4, "each cross-staff tuplet numbered");
+    assert_eq!(numbered, 3, "each shown cross-staff tuplet numbered");
+}
+
+/// A tuplet the file hides draws no number and no bracket; one whose number
+/// is hidden draws its bracket unbroken; the rest as before: a beamed
+/// triplet its number alone, an unbeamed one its number in its bracket.
+#[test]
+fn a_tuplet_the_file_hides_draws_no_number_or_bracket() {
+    use epiphany_core::{TupletDisplay, TupletNumber, TypedObjectId};
+
+    // Quarter-note triplets on one staff, unbeamed: hidden, numberless, and
+    // plain; then the hand-written fixture's beamed eighth triplets.
+    let triplet = |notations: &str| {
+        (0..3)
+            .map(|i| {
+                let mark = match i {
+                    0 => format!("{notations}<tuplet type=\"start\"/></notations>"),
+                    2 => "<notations><tuplet type=\"stop\"/></notations>".to_string(),
+                    _ => String::new(),
+                };
+                format!(
+                    "<note><pitch><step>B</step><octave>4</octave></pitch><duration>4</duration>\
+                     <voice>1</voice><type>quarter</type><time-modification>\
+                     <actual-notes>3</actual-notes><normal-notes>2</normal-notes>\
+                     </time-modification>{mark}</note>"
+                )
+            })
+            .collect::<String>()
+    };
+    let measures = [
+        triplet("<notations print-object=\"no\">"),
+        triplet("<notations>").replacen(
+            "<tuplet type=\"start\"/>",
+            "<tuplet type=\"start\" show-number=\"none\"/>",
+            1,
+        ),
+        triplet("<notations>"),
+    ];
+    let body: String = measures
+        .iter()
+        .enumerate()
+        .map(|(m, notes)| {
+            let attributes = if m == 0 {
+                "<attributes><divisions>6</divisions><time><beats>2</beats>\
+                 <beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef>\
+                 </attributes>"
+            } else {
+                ""
+            };
+            format!(
+                "<measure number=\"{}\">{attributes}{notes}</measure>",
+                m + 1
+            )
+        })
+        .collect();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\">{body}</part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("hidden_tuplets.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    for loaded in [
+        load(&path).expect("loads"),
+        load(&fixture("cross_staff.musicxml")).expect("loads"),
+    ] {
+        assert_eq!(
+            loaded.reduced.rejected().count(),
+            0,
+            "every operation applies"
+        );
+        let score = &loaded.reduced.score;
+        let layout = engrave(score).layout;
+        for tuplet in &score.cross_cutting.tuplets {
+            let source = TypedObjectId::Tuplet(tuplet.id);
+            let digits = layout
+                .glyphs
+                .iter()
+                .filter(|g| g.provenance.source == source && g.glyph.as_str().starts_with("tuplet"))
+                .count();
+            let lines: Vec<_> = layout
+                .strokes
+                .iter()
+                .filter(|s| s.provenance.source == source && s.from != s.to)
+                .collect();
+            if tuplet.display == TupletDisplay::HIDDEN {
+                assert_eq!(
+                    (digits, lines.len()),
+                    (0, 0),
+                    "a hidden tuplet shows nothing"
+                );
+            } else if tuplet.display.number == TupletNumber::None {
+                assert_eq!(digits, 0, "a numberless tuplet shows no number");
+                // Its two hooks and one unbroken line between them.
+                let level = lines.iter().filter(|s| s.from.y == s.to.y).count();
+                assert_eq!((lines.len(), level), (3, 1), "its bracket runs unbroken");
+            } else {
+                assert_eq!(digits, 1, "a shown tuplet shows its number");
+            }
+        }
+    }
 }
 
 /// Ties are drawn across every barline and across every system break: a long

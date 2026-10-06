@@ -1156,6 +1156,96 @@ fn the_comparison_holds_each_tuplets_members_to_the_census() {
     assert!(fails(&|t| t.staff += 1));
 }
 
+/// A tuplet the file hides (its start mark's `<notations>` not printed, as
+/// MuseScore writes a tuplet it hides) imports hidden, with no number and no
+/// bracket; one whose mark asks `show-number="none"` imports without a
+/// number; every other as any tuplet is drawn. The census reads each mark
+/// apart from the reader, and the comparison holds them together.
+#[test]
+fn a_tuplet_the_file_hides_imports_hidden() {
+    use epiphany_core::{TupletBracket, TupletDisplay, TupletNumber};
+    let run = run("cross_staff.musicxml");
+    all_applied(&run);
+    let score = &run.reduced.score;
+    let onset = |id| match score.events.get(id).map(Event::position) {
+        Some(EventPosition::Musical(p)) => rational(&p.0),
+        other => format!("{other:?}"),
+    };
+    let mut displays: Vec<(String, TupletDisplay)> = score
+        .cross_cutting
+        .tuplets
+        .iter()
+        .map(|t| (onset(t.members[0]), t.display))
+        .collect();
+    displays.sort_by_key(|(at, _)| (at.len(), at.clone()));
+    let shown = TupletDisplay::default();
+    let hidden = TupletDisplay::HIDDEN;
+    assert_eq!(
+        displays,
+        [
+            (String::from("0"), shown),
+            (String::from("2"), hidden),
+            (String::from("1/2"), shown),
+            (String::from("1/4"), hidden),
+            (String::from("3/4"), shown),
+            (String::from("9/4"), shown),
+        ]
+    );
+    let census = &run.import.source.census[0];
+    assert_eq!(census.tuplet_places.iter().filter(|t| t.hidden).count(), 2);
+
+    // A mark asking for no number, its notations printed.
+    let xml = xml("tuplet.musicxml").replacen(
+        r#"<tuplet type="start""#,
+        r#"<tuplet show-number="none" type="start""#,
+        1,
+    );
+    assert_ne!(xml, self::xml("tuplet.musicxml"), "the fixture has a mark");
+    let numberless = import(&xml).expect("imports");
+    let reduced = reduce(&numberless);
+    assert!(compare(&numberless, &reduced).passed());
+    let marked: Vec<TupletDisplay> = reduced
+        .score
+        .cross_cutting
+        .tuplets
+        .iter()
+        .map(|t| t.display)
+        .filter(|d| *d != shown)
+        .collect();
+    assert_eq!(
+        marked,
+        [TupletDisplay {
+            number: TupletNumber::None,
+            bracket: TupletBracket::Auto,
+        }]
+    );
+}
+
+/// The comparison holds each tuplet's display to the census's own reading
+/// of its start mark: where the census reads a hidden tuplet as shown, or a
+/// shown one as numberless, the comparison fails.
+#[test]
+fn the_comparison_holds_each_tuplets_display_to_the_census() {
+    let run = run("cross_staff.musicxml");
+    let fails = |census: &dyn Fn(&mut Vec<epiphany_musicxml::source::CensusTuplet>)| {
+        let mut import = run.import.clone();
+        census(&mut import.source.census[0].tuplet_places);
+        compare(&import, &run.reduced)
+            .failures
+            .iter()
+            .any(|f| f.contains("the reader's tuplets are not the file's"))
+    };
+    assert!(!fails(&|_| {}), "the file's own census agrees");
+    assert!(fails(&|t| {
+        let hidden = t.iter_mut().find(|t| t.hidden).expect("a hidden tuplet");
+        hidden.hidden = false;
+    }));
+    assert!(fails(&|t| {
+        let shown = t.iter_mut().find(|t| !t.hidden).expect("a shown tuplet");
+        shown.numberless = true;
+    }));
+}
+
 #[test]
 fn a_pickup_imports_in_full() {
     let run = run("pickup.musicxml");

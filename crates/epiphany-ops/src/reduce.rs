@@ -24109,6 +24109,7 @@ mod tests {
             required_total: epiphany_core::MusicalDuration(
                 RationalTime::new(total, 1).expect("a nonzero denominator"),
             ),
+            display: Default::default(),
         }
     }
 

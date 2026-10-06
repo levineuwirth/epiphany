@@ -813,6 +813,7 @@ fn fx_triplet_eighths() -> Score {
         members,
         parent: None,
         required_total: MusicalDuration(rt(1, 4)),
+        display: Default::default(),
     });
     b.finish(metric())
 }
@@ -844,6 +845,7 @@ fn fx_quintuplet_sixteenths() -> Score {
         members,
         parent: None,
         required_total: MusicalDuration(rt(1, 4)),
+        display: Default::default(),
     });
     b.finish(metric())
 }

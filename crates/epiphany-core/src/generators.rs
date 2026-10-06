@@ -288,6 +288,7 @@ pub fn valid_score_rich(seed: u64) -> Score {
         members: triplet_members.clone(),
         parent: None,
         required_total: MusicalDuration(RationalTime::new(1, 4).unwrap()),
+        display: Default::default(),
     });
     cross_cutting.ties.push(Tie {
         id: idc.mint::<TieId>(),
@@ -711,6 +712,7 @@ pub fn violating_score(inv: GraphInvariant, seed: u64) -> Score {
                 members: vec![e0, e1],
                 parent: None,
                 required_total: MusicalDuration::whole(),
+                display: Default::default(),
             });
         }
         TiePairing => {

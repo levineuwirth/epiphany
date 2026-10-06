@@ -633,7 +633,7 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         "create_tuplet",
         tuplet_envelope_bytes.clone(),
     ));
-    let mut tuplet_trailing = tuplet_envelope_bytes;
+    let mut tuplet_trailing = tuplet_envelope_bytes.clone();
     tuplet_trailing.push(0);
     v.push(row(
         OE,
@@ -641,6 +641,53 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         "trailing-bytes",
         "create_tuplet_trailing",
         tuplet_trailing,
+    ));
+    // Schema major 4 (X3c): the carried `Tuplet` appends `display`. A hidden
+    // one; and the envelope as written before major 4, its tuplet in the
+    // five-field form (the length-prefixed value less its last two bytes,
+    // the display's tags), which is refused by name, not migrated.
+    let crate::payload::OperationPayload::Primitive(crate::payload::OperationKind::CreateTuplet(
+        op,
+    )) = &tuplet_envelope.payload
+    else {
+        unreachable!("built above as a CreateTuplet")
+    };
+    let mut hidden = tuplet_envelope.clone();
+    hidden.payload = crate::payload::OperationPayload::Primitive(
+        crate::payload::OperationKind::CreateTuplet(crate::payload::CreateTupletOp {
+            tuplet: epiphany_core::Tuplet {
+                display: epiphany_core::TupletDisplay::HIDDEN,
+                ..op.tuplet.clone()
+            },
+        }),
+    );
+    v.push(row(
+        OE,
+        "accept",
+        "-",
+        "create_tuplet_hidden",
+        hidden.to_canonical_bytes(),
+    ));
+    let value = epiphany_core::CanonicalValue::canonical_bytes(&op.tuplet);
+    let framed = |bytes: &[u8]| {
+        let mut out = (bytes.len() as u32).to_le_bytes().to_vec();
+        out.extend_from_slice(bytes);
+        out
+    };
+    let (current, older) = (framed(&value), framed(&value[..value.len() - 2]));
+    let at = tuplet_envelope_bytes
+        .windows(current.len())
+        .position(|w| w == current.as_slice())
+        .expect("the envelope carries its tuplet length-prefixed");
+    let mut pre_display = tuplet_envelope_bytes[..at].to_vec();
+    pre_display.extend_from_slice(&older);
+    pre_display.extend_from_slice(&tuplet_envelope_bytes[at + current.len()..]);
+    v.push(row(
+        OE,
+        "reject",
+        "unsupported-layout",
+        "create_tuplet_before_major_4",
+        pre_display,
     ));
 
     // X3.6 (kinds 41 and 42): a clef change and a key change.
@@ -742,6 +789,36 @@ mod tests {
                 _ => panic!("{surface}/{name} ({class}): declared {verdict}, got {result:?}"),
             }
         }
+    }
+
+    /// A `CreateTuplet` written before schema major 4, its tuplet in the
+    /// five-field form, is refused by name (the layout is recognized and not
+    /// migrated), not as a malformed value; a malformed tuplet still is one.
+    #[test]
+    fn a_create_tuplet_before_major_4_is_refused_by_name() {
+        let vector = |name: &str| {
+            decode_vectors()
+                .into_iter()
+                .find(|(_, _, _, n, _)| n == name)
+                .map(|(.., bytes)| bytes)
+                .expect("the vector exists")
+        };
+        assert_eq!(
+            crate::envdecode::decode_envelope(&vector("create_tuplet_before_major_4")),
+            Err(crate::envdecode::EnvelopeDecodeError::UnsupportedLayout(
+                "Tuplet"
+            ))
+        );
+        let mut bytes = vector("create_tuplet");
+        // The tuplet's last byte, its bracket tag, made unknown.
+        let at = bytes.len() - 1;
+        bytes[at] = 9;
+        assert_eq!(
+            crate::envdecode::decode_envelope(&bytes),
+            Err(crate::envdecode::EnvelopeDecodeError::InvalidValue(
+                "Tuplet"
+            ))
+        );
     }
 
     /// The corpus must actually contain both verdicts on every surface, or it is

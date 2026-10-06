@@ -1549,3 +1549,17 @@ knee, as this does. A tuplet across two staves that is not one beam still
 draws nothing. Locked by
 `a_tuplet_on_a_beam_across_two_staves_takes_its_number_by_the_beam`
 (`epiphany-cli`).
+
+## ENGRAVER_VERSION 37 → 38: hidden tuplets (X3c.4, 2026-10-06)
+
+A tuplet the file hides drew its number and bracket, since the score had no
+field to hold the marking; schema major 4 gives it one (`Tuplet::display`).
+A tuplet whose number is hidden now draws none, and one whose bracket is
+hidden draws none; a bracket whose number is hidden runs unbroken from hook
+to hook, one stroke riding its first and last members' slots. Where no digit
+carries the tuplet's own provenance, its traced anchor does, as when nothing
+is drawn. A tuplet on a beam across two staves draws its number by the beam
+only when shown. Locked by
+`a_tuplet_the_file_hides_draws_no_number_or_bracket` and
+`a_tuplet_on_a_beam_across_two_staves_takes_its_number_by_the_beam`
+(`epiphany-cli`).

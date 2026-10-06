@@ -75,12 +75,13 @@ pub enum LayoutContent {
     Group(GroupContent),
 }
 
-/// A tuplet's content: its ratio, whose `actual` term it shows, and its
-/// member events, in the score's order.
+/// A tuplet's content: its ratio, whose `actual` term it shows, its member
+/// events, in the score's order, and how its number and bracket are shown.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct TupletContent {
     pub ratio: TupletRatio,
     pub members: Vec<EventId>,
+    pub display: epiphany_core::TupletDisplay,
 }
 
 /// A staff group's content in one region: its kind, and those of its staves
@@ -885,6 +886,7 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
                     LayoutContent::Tuplet(TupletContent {
                         ratio: tuplet.ratio,
                         members: tuplet.members.clone(),
+                        display: tuplet.display,
                     })
                 })
                 .unwrap_or_default(),

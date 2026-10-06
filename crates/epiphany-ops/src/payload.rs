@@ -378,6 +378,11 @@ impl OperationKind {
                 2
             }
             OperationKind::SetStaffLayout(op) if op.staff_lines_override.is_some() => 2,
+            // Born at v4 (X3c): the carried `Tuplet` appends `display`, a
+            // mandatory field, so no lower-major layout for this payload
+            // exists; a pre-major-4 `CreateTuplet` is refused by name
+            // (`EnvelopeDecodeError::UnsupportedLayout`).
+            OperationKind::CreateTuplet(_) => 4,
             // Born at v2: the carried RepeatStructure's v2 fields are
             // unconditional (`kind`/`voltas` are not `Option`s), so no
             // lower-major layout for this payload exists. The DELETE sibling

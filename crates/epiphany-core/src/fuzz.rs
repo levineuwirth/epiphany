@@ -240,14 +240,21 @@ pub fn run_decode_fuzz(iters: u64, seed: u64) {
         // The current-layout decoder: must not panic; an Ok must round-trip.
         check_score(Score::decode_canonical(&bytes), &bytes);
 
-        // The schema-version dispatch seam. Major 3 is the current layout;
-        // majors 2, 1, and 0 run the frozen migrations; an arbitrary major
+        // The schema-version dispatch seam. Major 4 is the current layout;
+        // majors 3, 2, 1, and 0 run the frozen migrations; an arbitrary major
         // exercises the defensive out-of-accept-set path. Each migration
         // default-fills the appended fields, so it does not round-trip to the
         // *current* form — but each is strictly canonical over its OWN wire
         // form: an accepted input re-encodes to itself via the frozen encoder.
         // This proves non-canonical rejection on every versioned path, not
         // just the absence of a panic.
+        if let Ok(v3_score) = Score::decode_canonical_versioned(&bytes, 3) {
+            assert_eq!(
+                crate::codec::encode_v3_score(&v3_score),
+                bytes,
+                "the v3 migration accepted a non-canonical v3 byte string"
+            );
+        }
         let _ = Score::decode_canonical_versioned(&bytes, 2);
         if let Ok(v1_score) = Score::decode_canonical_versioned(&bytes, 1) {
             assert_eq!(

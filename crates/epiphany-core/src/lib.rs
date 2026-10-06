@@ -161,7 +161,8 @@ pub use graph::{
     StaffBracketKind, StaffExtent, StaffGroup, StaffGroupKind, StaffInstance,
     StaffLineConfiguration, StemDirection, SubBeam, TempoMapReference, TextLineDefinition, Tie,
     TieClass, TimeExtent, TimeSignature, TimeSignatureDisplay, Timestamp, TuningContextSettings,
-    Tuplet, TupletRatio, UnpitchedMember, ViewDefinition, Voice, VoiceOrigin, Volta,
+    Tuplet, TupletBracket, TupletDisplay, TupletNumber, TupletRatio, UnpitchedMember,
+    ViewDefinition, Voice, VoiceOrigin, Volta,
 };
 
 pub use tempo::{

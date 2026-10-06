@@ -9,8 +9,9 @@
 //! `<note>` elements, and that every quarter-tone is spelt as it sounds.
 //! Tuplets are compared twice: the score's against the reader's, and the
 //! reader's against the census's own timed walk of the file, tuplet by
-//! tuplet, by the staff of the first note, the ratio and each member's onset,
-//! so a reader grouping the wrong notes under the right counts is a failure.
+//! tuplet, by the staff of the first note, the ratio, each member's onset and
+//! whether its start mark hides it or its number, so a reader grouping the
+//! wrong notes under the right counts is a failure.
 //! Beams are compared twice in the same way, each member by its own staff and
 //! onset, so a beam joining notes on two staves is held to the file's staves.
 //! The census times a member within its measure and takes the measure's start
@@ -25,7 +26,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use epiphany_core::{
     AnchorOffset, Event, EventDuration, EventId, EventPosition, Pitch, PitchSpacePosition,
     RationalTime, Score, SpellingDirective, SpellingNominal, SpellingScope, StaffGroupKind,
-    StaffId, TimeAnchor, TimeSignatureDisplay, VoiceId,
+    StaffId, TimeAnchor, TimeSignatureDisplay, TupletDisplay, TupletNumber, VoiceId,
 };
 
 use crate::emit::{Import, Subject};
@@ -906,7 +907,7 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
         // Tuplets: (staff, each member's onset, ratio) on each side, and the
         // reader's tuplets made, by ratio, and recorded unmade, each held to
         // the census's own walk of the file.
-        type TupletKey = (StaffId, Vec<RationalTime>, (u32, u32));
+        type TupletKey = (StaffId, Vec<RationalTime>, (u32, u32), TupletDisplay);
         let mut graph_tuplets: BTreeMap<TupletKey, isize> = BTreeMap::new();
         for tuplet in &score.cross_cutting.tuplets {
             let places: Option<Vec<&(StaffId, RationalTime)>> =
@@ -922,7 +923,9 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
             }
             let onsets = places.iter().map(|(_, onset)| onset.clone()).collect();
             let ratio = (tuplet.ratio.actual(), tuplet.ratio.notated());
-            *graph_tuplets.entry((staff, onsets, ratio)).or_default() += 1;
+            *graph_tuplets
+                .entry((staff, onsets, ratio, tuplet.display))
+                .or_default() += 1;
         }
         let mut source_tuplets: BTreeMap<TupletKey, isize> = BTreeMap::new();
         let mut made: BTreeMap<(u32, u32), usize> = BTreeMap::new();
@@ -947,7 +950,12 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
                 .map(|&i| part.events[i].onset.clone())
                 .collect();
             *source_tuplets
-                .entry((staff, onsets, (tuplet.actual, tuplet.normal)))
+                .entry((
+                    staff,
+                    onsets,
+                    (tuplet.actual, tuplet.normal),
+                    tuplet.display,
+                ))
                 .or_default() += 1;
         }
         if graph_tuplets != source_tuplets {
@@ -962,7 +970,9 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
         // member's onset. A reader that grouped other notes under the same
         // counts and ratios differs here. The census times a member within
         // its measure; the measure's start is the reader's.
-        type PlacedTuplet = (usize, Vec<RationalTime>, (u32, u32));
+        // Its display too: hidden, or numberless, as each walk reads the
+        // start mark.
+        type PlacedTuplet = (usize, Vec<RationalTime>, (u32, u32), (bool, bool));
         let mut file_tuplets: BTreeMap<PlacedTuplet, usize> = BTreeMap::new();
         for tuplet in &census.tuplet_places {
             let onsets = tuplet
@@ -976,7 +986,12 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
                 })
                 .collect();
             *file_tuplets
-                .entry((tuplet.staff, onsets, tuplet.ratio))
+                .entry((
+                    tuplet.staff,
+                    onsets,
+                    tuplet.ratio,
+                    (tuplet.hidden, tuplet.numberless),
+                ))
                 .or_default() += 1;
         }
         let mut read_tuplets: BTreeMap<PlacedTuplet, usize> = BTreeMap::new();
@@ -989,11 +1004,14 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
                 .iter()
                 .map(|&i| part.events[i].onset.clone())
                 .collect();
+            let hidden = tuplet.display == TupletDisplay::HIDDEN;
+            let numberless = !hidden && tuplet.display.number == TupletNumber::None;
             *read_tuplets
                 .entry((
                     part.events[first].staff,
                     onsets,
                     (tuplet.actual, tuplet.normal),
+                    (hidden, numberless),
                 ))
                 .or_default() += 1;
         }
@@ -1001,7 +1019,7 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
             let alone = |a: &BTreeMap<PlacedTuplet, usize>, b: &BTreeMap<PlacedTuplet, usize>| {
                 a.iter().find(|(at, n)| b.get(*at) != Some(n)).map_or_else(
                     || String::from("none"),
-                    |((staff, onsets, (actual, normal)), _)| {
+                    |((staff, onsets, (actual, normal), _), _)| {
                         format!(
                             "{actual}:{normal} on staff {} with {} members from {}",
                             staff + 1,

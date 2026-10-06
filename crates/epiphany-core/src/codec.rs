@@ -61,8 +61,8 @@ use crate::graph::{
     SpannerKind, Staff, StaffBasedContent, StaffBracketKind, StaffExtent, StaffGroup,
     StaffGroupKind, StaffInstance, StaffLineConfiguration, StemDirection, SubBeam,
     TempoMapReference, TextLineDefinition, Tie, TieClass, TimeExtent, TimeSignature,
-    TimeSignatureDisplay, Timestamp, TuningContextSettings, Tuplet, TupletRatio, UnpitchedMember,
-    ViewDefinition, Voice, VoiceOrigin, Volta,
+    TimeSignatureDisplay, Timestamp, TuningContextSettings, Tuplet, TupletBracket, TupletDisplay,
+    TupletNumber, TupletRatio, UnpitchedMember, ViewDefinition, Voice, VoiceOrigin, Volta,
 };
 use crate::ids::{
     AnalysisLayerId, AnalyticalAnnotationId, BarlineAlignmentGroupId, BeamId, ChordSymbolId,
@@ -2051,12 +2051,19 @@ impl Codec for TupletRatio {
         ))
     }
 }
+// Schema major 4: `Tuplet` gained `display` (appended after
+// `required_total`). The frozen five-field form of majors 0 to 3 is read and
+// written by `dec_tuplet_v3`/`enc_tuplet_v3`.
+cstyle_enum_codec!(TupletNumber { 0 => Actual, 1 => None });
+cstyle_enum_codec!(TupletBracket { 0 => Auto, 1 => Hidden });
+struct_codec!(TupletDisplay { number, bracket });
 struct_codec!(Tuplet {
     id,
     ratio,
     members,
     parent,
-    required_total
+    required_total,
+    display
 });
 struct_codec!(Spanner {
     id,
@@ -2597,7 +2604,7 @@ impl Score {
     /// Decodes the exact inverse of [`Score::canonical_bytes`], validating every
     /// tag, length, primitive, and type invariant. Trailing bytes are rejected.
     ///
-    /// This is the **current (schema major 3)** layout. To decode bytes whose
+    /// This is the **current (schema major 4)** layout. To decode bytes whose
     /// schema major is not known to be current, use
     /// [`Score::decode_canonical_versioned`].
     ///
@@ -2625,21 +2632,22 @@ impl Score {
     }
 
     /// The **schema-version dispatch seam** (Binary Format companion
-    /// §"Schema Major 1" / §"Schema Major 2" / §"Schema Major 3"): decodes a
-    /// full-`Score` snapshot whose bytes were written under the given schema
-    /// `major`, migrating a lower-major encoding up to the current in-memory
-    /// form on read. Major 3 is the current layout
-    /// ([`Score::decode_canonical`]); majors 2, 1, and 0 are decoded through
-    /// their frozen wire forms (`decode_v2_score`, `decode_v1_score`,
+    /// §"Schema Major 1" to §"Schema Major 4"): decodes a full-`Score`
+    /// snapshot whose bytes were written under the given schema `major`,
+    /// migrating a lower-major encoding up to the current in-memory form on
+    /// read. Major 4 is the current layout ([`Score::decode_canonical`]);
+    /// majors 3, 2, 1, and 0 are decoded through their frozen wire forms
+    /// (`decode_v3_score`, `decode_v2_score`, `decode_v1_score`,
     /// `decode_v0_score`), each a total default-filling migration — the
-    /// composed v0→v1→v2→v3 translation happens in the one v0 read.
+    /// composed v0→v1→v2→v3→v4 translation happens in the one v0 read.
     ///
     /// The caller (the bundle read path) only reaches this after the chunk gate
     /// has admitted the major into its accept-set, so a major outside
-    /// `{0, 1, 2, 3}` is a defensive error, not an expected path.
+    /// `{0, 1, 2, 3, 4}` is a defensive error, not an expected path.
     pub fn decode_canonical_versioned(bytes: &[u8], major: u16) -> Result<Score> {
         match major {
-            3 => Score::decode_canonical(bytes),
+            4 => Score::decode_canonical(bytes),
+            3 => decode_v3_score(bytes),
             2 => decode_v2_score(bytes),
             1 => decode_v1_score(bytes),
             0 => decode_v0_score(bytes),
@@ -3035,11 +3043,98 @@ fn dec_repeat_v1(r: &mut Reader<'_>) -> Result<RepeatStructure> {
     })
 }
 
+/// The **frozen schema-major-3** encoding of a [`Tuplet`]: the five fields
+/// majors 0 to 3 all share (`id`, `ratio`, `members`, `parent`,
+/// `required_total`). Schema major 4 is the first bump to change this type,
+/// appending `display`.
+fn enc_tuplet_v3(t: &Tuplet, out: &mut Vec<u8>) {
+    t.id.enc(out);
+    t.ratio.enc(out);
+    t.members.enc(out);
+    t.parent.enc(out);
+    t.required_total.enc(out);
+}
+
+/// The exact inverse of [`enc_tuplet_v3`]: reads the five-field form and
+/// default-fills `display` (Binary Format §"Schema Major 4"'s migration
+/// table).
+fn dec_tuplet_v3(r: &mut Reader<'_>) -> Result<Tuplet> {
+    Ok(Tuplet {
+        id: Codec::dec(r)?,
+        ratio: Codec::dec(r)?,
+        members: Codec::dec(r)?,
+        parent: Codec::dec(r)?,
+        required_total: Codec::dec(r)?,
+        display: TupletDisplay::default(),
+    })
+}
+
+impl Tuplet {
+    /// Decodes a tuplet's canonical bytes as written before schema major 4,
+    /// in the frozen five-field form, strictly (an accepted byte string is
+    /// that form's canonical encoding), with `display` at its migration
+    /// default. For recognizing such a value, as an operation decoder does
+    /// to refuse a pre-major-4 `CreateTuplet` by name.
+    pub fn decode_major_3(bytes: &[u8]) -> Result<Tuplet> {
+        let mut r = Reader::new(bytes);
+        let tuplet = dec_tuplet_v3(&mut r)?;
+        r.finish()?;
+        let mut again = Vec::new();
+        enc_tuplet_v3(&tuplet, &mut again);
+        if again != bytes {
+            return Err(ScoreDecodeError::InvalidValue(
+                "non-canonical major-3 Tuplet encoding",
+            ));
+        }
+        Ok(tuplet)
+    }
+}
+
+/// The **frozen schema-major-3** encoding of the [`CrossCuttingRegistry`],
+/// shared by majors 2 and 3: the live layout, but each tuplet in its frozen
+/// five-field form ([`enc_tuplet_v3`]).
+fn enc_ccr_v3(c: &CrossCuttingRegistry, out: &mut Vec<u8>) {
+    c.slurs.enc(out);
+    c.ties.enc(out);
+    c.beams.enc(out);
+    enc_vec_v1(&c.tuplets, out, enc_tuplet_v3);
+    c.spanners.enc(out);
+    c.markers.enc(out);
+    c.repeats.enc(out);
+    c.analytical.enc(out);
+    c.comments.enc(out);
+    c.graphic_gestures.enc(out);
+    c.lyrics.enc(out);
+    c.chord_symbols.enc(out);
+}
+
+/// The exact inverse of [`enc_ccr_v3`], default-filling each tuplet's
+/// `display`.
+fn dec_ccr_v3(r: &mut Reader<'_>) -> Result<CrossCuttingRegistry> {
+    Ok(CrossCuttingRegistry {
+        slurs: Codec::dec(r)?,
+        ties: Codec::dec(r)?,
+        beams: Codec::dec(r)?,
+        tuplets: dec_vec_v1(r, dec_tuplet_v3)?,
+        spanners: Codec::dec(r)?,
+        markers: Codec::dec(r)?,
+        repeats: Codec::dec(r)?,
+        analytical: Codec::dec(r)?,
+        comments: Codec::dec(r)?,
+        graphic_gestures: Codec::dec(r)?,
+        lyrics: Codec::dec(r)?,
+        chord_symbols: Codec::dec(r)?,
+    })
+}
+
+/// The frozen schema-major-1 (= 0) cross-cutting registry: the frozen v1
+/// bodies of the types major 2 filled, and each tuplet in its frozen
+/// five-field form ([`enc_tuplet_v3`]), which no major before 4 changed.
 fn enc_ccr_v1(c: &CrossCuttingRegistry, out: &mut Vec<u8>) {
     enc_vec_v1(&c.slurs, out, enc_slur_v1);
     enc_vec_v1(&c.ties, out, enc_tie_v1);
     enc_vec_v1(&c.beams, out, enc_beam_v1);
-    c.tuplets.enc(out);
+    enc_vec_v1(&c.tuplets, out, enc_tuplet_v3);
     enc_vec_v1(&c.spanners, out, enc_spanner_v1);
     c.markers.enc(out);
     enc_vec_v1(&c.repeats, out, enc_repeat_v1);
@@ -3055,7 +3150,7 @@ fn dec_ccr_v1(r: &mut Reader<'_>) -> Result<CrossCuttingRegistry> {
         slurs: dec_vec_v1(r, dec_slur_v1)?,
         ties: dec_vec_v1(r, dec_tie_v1)?,
         beams: dec_vec_v1(r, dec_beam_v1)?,
-        tuplets: Codec::dec(r)?,
+        tuplets: dec_vec_v1(r, dec_tuplet_v3)?,
         spanners: dec_vec_v1(r, dec_spanner_v1)?,
         markers: Codec::dec(r)?,
         repeats: dec_vec_v1(r, dec_repeat_v1)?,
@@ -3351,10 +3446,11 @@ fn dec_tuning_context_v2(r: &mut Reader<'_>) -> Result<ScoreTuningContext> {
 
 /// The **frozen schema-major-2** encoding of a score — the byte-exact inverse
 /// of [`decode_v2_score`]'s field walk. Schema major 3 (Push 4b tranche 3b-i)
-/// changes only `tuning_context` (Section "the frozen major-3 wire layout");
-/// every other `Score` field is byte-identical to the live [`Codec`], so this
-/// walk uses the live codec directly for all 18 other fields and
-/// [`enc_tuning_context_v2`] for `tuning_context`. Used by [`decode_v2_score`]
+/// changes only `tuning_context` (Section "the frozen major-3 wire layout"),
+/// and schema major 4 only `Tuplet`, inside `cross_cutting`; every other
+/// `Score` field is byte-identical to the live [`Codec`], so this walk uses
+/// the live codec directly for the 17 others, [`enc_ccr_v3`] for
+/// `cross_cutting` and [`enc_tuning_context_v2`] for `tuning_context`. Used by [`decode_v2_score`]
 /// to enforce strict v2 canonicality, and by migration tests to synthesize
 /// genuine v2 bytes.
 pub(crate) fn encode_v2_score(s: &Score) -> Vec<u8> {
@@ -3365,7 +3461,7 @@ pub(crate) fn encode_v2_score(s: &Score) -> Vec<u8> {
     s.staves.enc(&mut out);
     s.staff_groups.enc(&mut out);
     s.parts.enc(&mut out);
-    s.cross_cutting.enc(&mut out);
+    enc_ccr_v3(&s.cross_cutting, &mut out);
     s.time_signatures.enc(&mut out);
     enc_tuning_context_v2(&s.tuning_context, &mut out);
     s.tempo_map.enc(&mut out);
@@ -3384,7 +3480,8 @@ pub(crate) fn encode_v2_score(s: &Score) -> Vec<u8> {
 /// Decodes **schema-major-2** `Score` bytes into the current-layout `Score`,
 /// migrating on read (total, default-filling — Binary Format §"Schema Major
 /// 3"'s migration table: `tuning_context` default-fills `smufl` and
-/// `overrides`; every other field is unchanged since major 2).
+/// `overrides`; and §"Schema Major 4"'s: each tuplet default-fills
+/// `display`; every other field is unchanged since major 2).
 /// Strictly canonical on the v2 wire form, like its v0/v1 siblings: re-encodes
 /// through [`encode_v2_score`] and rejects any input that is not already its
 /// canonical v2 encoding.
@@ -3396,7 +3493,7 @@ fn decode_v2_score(bytes: &[u8]) -> Result<Score> {
     let staves = Codec::dec(&mut r)?;
     let staff_groups = Codec::dec(&mut r)?;
     let parts = Codec::dec(&mut r)?;
-    let cross_cutting = Codec::dec(&mut r)?;
+    let cross_cutting = dec_ccr_v3(&mut r)?;
     let time_signatures = Codec::dec(&mut r)?;
     let tuning_context = dec_tuning_context_v2(&mut r)?;
     let tempo_map = Codec::dec(&mut r)?;
@@ -3434,6 +3531,93 @@ fn decode_v2_score(bytes: &[u8]) -> Result<Score> {
     if encode_v2_score(&score) != bytes {
         return Err(ScoreDecodeError::InvalidValue(
             "non-canonical v2 Score encoding",
+        ));
+    }
+    Ok(score)
+}
+
+/// The **frozen schema-major-3** encoding of a score: the byte-exact inverse
+/// of [`decode_v3_score`]'s field walk. Schema major 4 changes only `Tuplet`
+/// (appending `display`), which reaches the score through
+/// `cross_cutting.tuplets`; every other field is byte-identical to the live
+/// [`Codec`], so this walk uses it for the other 18 and [`enc_ccr_v3`] for
+/// `cross_cutting`.
+pub(crate) fn encode_v3_score(s: &Score) -> Vec<u8> {
+    let mut out = Vec::new();
+    s.metadata.enc(&mut out);
+    s.canvas.enc(&mut out);
+    s.instruments.enc(&mut out);
+    s.staves.enc(&mut out);
+    s.staff_groups.enc(&mut out);
+    s.parts.enc(&mut out);
+    enc_ccr_v3(&s.cross_cutting, &mut out);
+    s.time_signatures.enc(&mut out);
+    s.tuning_context.enc(&mut out);
+    s.tempo_map.enc(&mut out);
+    s.events.enc(&mut out);
+    s.spelling_attachments.enc(&mut out);
+    s.decomposition_attachments.enc(&mut out);
+    s.spelling_precedence.enc(&mut out);
+    s.analysis_layers.enc(&mut out);
+    s.views.enc(&mut out);
+    s.identity.enc(&mut out);
+    s.tombstoned_pitches.enc(&mut out);
+    s.tombstoned_events.enc(&mut out);
+    out
+}
+
+/// Decodes **schema-major-3** `Score` bytes into the current-layout `Score`,
+/// migrating on read (total, default-filling: each tuplet's `display` takes
+/// its default, Binary Format §"Schema Major 4"'s migration table; every
+/// other field is unchanged since major 3). Strictly canonical on the v3
+/// wire form: re-encodes through [`encode_v3_score`] and rejects any input
+/// that is not already its canonical v3 encoding.
+fn decode_v3_score(bytes: &[u8]) -> Result<Score> {
+    let mut r = Reader::new(bytes);
+    let metadata = Codec::dec(&mut r)?;
+    let canvas = Codec::dec(&mut r)?;
+    let instruments = Codec::dec(&mut r)?;
+    let staves = Codec::dec(&mut r)?;
+    let staff_groups = Codec::dec(&mut r)?;
+    let parts = Codec::dec(&mut r)?;
+    let cross_cutting = dec_ccr_v3(&mut r)?;
+    let time_signatures = Codec::dec(&mut r)?;
+    let tuning_context = Codec::dec(&mut r)?;
+    let tempo_map = Codec::dec(&mut r)?;
+    let events = Codec::dec(&mut r)?;
+    let spelling_attachments = Codec::dec(&mut r)?;
+    let decomposition_attachments = Codec::dec(&mut r)?;
+    let spelling_precedence = Codec::dec(&mut r)?;
+    let analysis_layers = Codec::dec(&mut r)?;
+    let views = Codec::dec(&mut r)?;
+    let identity = Codec::dec(&mut r)?;
+    let tombstoned_pitches = Codec::dec(&mut r)?;
+    let tombstoned_events = Codec::dec(&mut r)?;
+    r.finish()?;
+    let score = Score {
+        metadata,
+        canvas,
+        instruments,
+        staves,
+        staff_groups,
+        parts,
+        cross_cutting,
+        time_signatures,
+        tuning_context,
+        tempo_map,
+        events,
+        spelling_attachments,
+        decomposition_attachments,
+        spelling_precedence,
+        analysis_layers,
+        views,
+        identity,
+        tombstoned_pitches,
+        tombstoned_events,
+    };
+    if encode_v3_score(&score) != bytes {
+        return Err(ScoreDecodeError::InvalidValue(
+            "non-canonical v3 Score encoding",
         ));
     }
     Ok(score)
@@ -4250,15 +4434,15 @@ mod tests {
             assert_eq!(migrated.canonical_bytes(), current);
             // Major 1: the frozen v1 bytes migrate to the same score.
             assert_eq!(Score::decode_canonical_versioned(&v1, 1).unwrap(), score);
-            // Major 3: the current bytes decode unchanged.
+            // Major 4: the current bytes decode unchanged.
             assert_eq!(
-                Score::decode_canonical_versioned(&current, 3).unwrap(),
+                Score::decode_canonical_versioned(&current, 4).unwrap(),
                 score
             );
         }
-        // A major outside {0, 1, 2, 3} is a defensive decode error (the gate
-        // rejects it upstream in practice).
-        assert!(Score::decode_canonical_versioned(&valid_score(1).canonical_bytes(), 4).is_err());
+        // A major outside {0, 1, 2, 3, 4} is a defensive decode error (the
+        // gate rejects it upstream in practice).
+        assert!(Score::decode_canonical_versioned(&valid_score(1).canonical_bytes(), 5).is_err());
     }
 
     #[test]
@@ -4318,6 +4502,122 @@ mod tests {
             assert_eq!(migrated, score);
             assert_eq!(migrated.canonical_bytes(), current);
         }
+    }
+
+    #[test]
+    fn schema_major_4_tuplet_wire_bytes_are_frozen() {
+        // Schema major 4 appends `display` to `Tuplet`. Every other test
+        // round-trips the live codec against itself, which a self-consistent
+        // reordering (the two tags swapped, `display` moved before
+        // `required_total`) would pass; this literal would not.
+        use crate::ids::{ReplicaId, TupletId};
+        use crate::time::MusicalDuration;
+
+        fn hex(bytes: &[u8]) -> String {
+            bytes.iter().map(|b| format!("{b:02x}")).collect()
+        }
+        let tuplet = Tuplet {
+            id: TupletId::new(ReplicaId(1), 2),
+            ratio: TupletRatio::new(3, 2).unwrap(),
+            members: Vec::new(),
+            parent: None,
+            required_total: MusicalDuration(RationalTime::new(1, 4).unwrap()),
+            display: TupletDisplay {
+                number: TupletNumber::None,
+                bracket: TupletBracket::Auto,
+            },
+        };
+        let prefix = concat!(
+            "10000000",                         // id: 16 bytes,
+            "00000000000000010000000000000002", // replica 1, counter 2
+            "03000000",                         // ratio: actual 3,
+            "02000000",                         // notated 2
+            "00000000",                         // members: count 0
+            "00",                               // parent: None
+            "0b000000",                         // required_total: 11 bytes,
+            "01",                               // numerator positive,
+            "01000000",                         // one byte long,
+            "01",                               // 1;
+            "01000000",                         // denominator one byte long,
+            "04",                               // 4
+        );
+        //   01   display.number: None
+        //   00   display.bracket: Auto
+        let mut bytes = Vec::new();
+        tuplet.enc(&mut bytes);
+        assert_eq!(
+            hex(&bytes),
+            format!("{prefix}0100"),
+            "the major-4 Tuplet moved"
+        );
+        // The frozen major-3 form is the same less `display`.
+        let mut frozen = Vec::new();
+        enc_tuplet_v3(&tuplet, &mut frozen);
+        assert_eq!(hex(&frozen), prefix, "the frozen major-3 Tuplet moved");
+        // The default display is two zero bytes: number Actual, bracket Auto.
+        let mut default = Vec::new();
+        TupletDisplay::default().enc(&mut default);
+        assert_eq!(default, [0, 0]);
+        assert_eq!(
+            Tuplet::decode_major_3(&frozen).unwrap(),
+            Tuplet {
+                display: TupletDisplay::default(),
+                ..tuplet
+            }
+        );
+        assert!(Tuplet::decode_major_3(&bytes).is_err());
+    }
+
+    #[test]
+    fn a_tuplet_migrates_from_every_frozen_form_with_its_display_defaulted() {
+        // `valid_score` holds no tuplet, so the migration tests above never
+        // carry one. Here one rides every frozen score form: majors 0 to 3
+        // all hold it in the five-field form, and each migrates it with its
+        // `display` at the default; the size anchor pins that the v3 form
+        // omits exactly the two display bytes per tuplet.
+        use crate::ids::{ReplicaId, TupletId};
+        use crate::time::MusicalDuration;
+        let mut score = valid_score(7);
+        let members: Vec<crate::ids::EventId> =
+            score.events.iter().take(2).map(|e| e.id()).collect();
+        assert_eq!(members.len(), 2);
+        score.cross_cutting.tuplets.push(Tuplet {
+            id: TupletId::new(ReplicaId(1), 99),
+            ratio: TupletRatio::new(3, 2).unwrap(),
+            members,
+            parent: None,
+            required_total: MusicalDuration(RationalTime::new(1, 4).unwrap()),
+            display: TupletDisplay::default(),
+        });
+        let current = score.canonical_bytes();
+        let v3 = encode_v3_score(&score);
+        assert_eq!(current.len() - v3.len(), 2);
+        for (major, bytes) in [
+            (3, v3),
+            (2, encode_v2_score(&score)),
+            (1, encode_v1_score(&score)),
+            (0, encode_v0_score(&score)),
+        ] {
+            let migrated = Score::decode_canonical_versioned(&bytes, major).unwrap();
+            assert_eq!(migrated, score, "major {major}");
+            assert_eq!(migrated.canonical_bytes(), current, "major {major}");
+        }
+        assert_eq!(
+            Score::decode_canonical_versioned(&current, 4).unwrap(),
+            score
+        );
+        // A hidden tuplet round-trips at major 4; its v3 form has no room for
+        // the display, so migrating it reads the default; and major-4 bytes
+        // are no major-3 encoding.
+        score.cross_cutting.tuplets[0].display = TupletDisplay::HIDDEN;
+        let bytes = score.canonical_bytes();
+        assert_eq!(Score::decode_canonical(&bytes).unwrap(), score);
+        let migrated = Score::decode_canonical_versioned(&encode_v3_score(&score), 3).unwrap();
+        assert_eq!(
+            migrated.cross_cutting.tuplets[0].display,
+            TupletDisplay::default()
+        );
+        assert!(Score::decode_canonical_versioned(&bytes, 3).is_err());
     }
 
     #[test]

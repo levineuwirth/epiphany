@@ -475,6 +475,7 @@ pub fn tuplet(id: epiphany_core::TupletId, members: Vec<EventId>) -> epiphany_co
         members,
         parent: None,
         required_total,
+        display: Default::default(),
     }
 }
 

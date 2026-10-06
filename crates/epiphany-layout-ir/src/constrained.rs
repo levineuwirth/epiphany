@@ -2672,13 +2672,26 @@ pub fn try_to_constrained(
                             let mut members = tuplet.members.clone();
                             members.sort();
                             kneed = kneed_beams.get(&members);
-                            kneed.and_then(|beam| kneed_tuplet_marks(tuplet.ratio.actual(), beam))
+                            kneed
+                                .filter(|_| {
+                                    tuplet.display.number != epiphany_core::TupletNumber::None
+                                })
+                                .and_then(|beam| kneed_tuplet_marks(tuplet.ratio.actual(), beam))
                         }
                         _ => None,
                     };
                     let staff = kneed.map_or(staff, |beam| Some(beam.upper));
                     match marks {
                         Some(marks) => {
+                            // A bracket whose number is hidden: the tuplet's
+                            // own provenance keeps its traced anchor.
+                            if marks.digits.is_empty() {
+                                emit.stroke(anchor(
+                                    provenance,
+                                    Point::new(default_x, yo),
+                                    band_of(staff),
+                                ));
+                            }
                             for (k, (name, at)) in marks.digits.into_iter().enumerate() {
                                 let digit_provenance = if k == 0 {
                                     provenance.clone()
@@ -4495,8 +4508,9 @@ struct TupletMarks {
 /// side most of its stems point (above when none has a stem). The number
 /// shows the ratio's `actual` term, centered on the span; the bracket, with
 /// a gap for the number and its ends hooked toward the notes, is left out
-/// when the members are notes beamed together as one group. `None` when no
-/// member has a column on the staff.
+/// when the members are notes beamed together as one group. The tuplet's
+/// display hides either (a bracket whose number is hidden runs unbroken).
+/// `None` when no member has a column on the staff, or nothing is shown.
 fn tuplet_marks(tuplet: &crate::logical::TupletContent, at: &TupletInk) -> Option<TupletMarks> {
     // A member's columns; with `inked`, only those it draws in, since a
     // column's slot is realized only by a glyph, and a bracket end anchored
@@ -4574,6 +4588,7 @@ fn tuplet_marks(tuplet: &crate::logical::TupletContent, at: &TupletInk) -> Optio
         return None;
     }
 
+    let numbered = tuplet.display.number != epiphany_core::TupletNumber::None;
     let names: Vec<&'static str> = digits_of(tuplet.ratio.actual())
         .into_iter()
         .map(tuplet_digit)
@@ -4593,7 +4608,9 @@ fn tuplet_marks(tuplet: &crate::logical::TupletContent, at: &TupletInk) -> Optio
     let mut x = (x0 + x1) / 2.0 - width / 2.0;
     let mut digits = Vec::with_capacity(names.len());
     for (name, b) in names.iter().zip(&boxes) {
-        digits.push((*name, Point::new(x - b.left.0, baseline)));
+        if numbered {
+            digits.push((*name, Point::new(x - b.left.0, baseline)));
+        }
         x += b.right.0 - b.left.0;
     }
 
@@ -4602,7 +4619,7 @@ fn tuplet_marks(tuplet: &crate::logical::TupletContent, at: &TupletInk) -> Optio
     let beamed =
         tuplet.members.iter().all(|e| at.rests.get(e).is_none()) && at.beams.contains(&members);
     let mut bracket = Vec::new();
-    if !beamed {
+    if !beamed && tuplet.display.bracket != epiphany_core::TupletBracket::Hidden {
         let line = baseline + height / 2.0;
         let hook = if above {
             line - TUPLET_HOOK
@@ -4615,19 +4632,26 @@ fn tuplet_marks(tuplet: &crate::logical::TupletContent, at: &TupletInk) -> Optio
         );
         let (start, end) = (left.slot, right.slot);
         bracket.push((Point::new(x0, hook), Point::new(x0, line), start, start));
-        bracket.push((
-            Point::new(x0, line),
-            Point::new(gap0.max(x0), line),
-            start,
-            slot,
-        ));
-        bracket.push((
-            Point::new(gap1.min(x1), line),
-            Point::new(x1, line),
-            slot,
-            end,
-        ));
+        if numbered {
+            bracket.push((
+                Point::new(x0, line),
+                Point::new(gap0.max(x0), line),
+                start,
+                slot,
+            ));
+            bracket.push((
+                Point::new(gap1.min(x1), line),
+                Point::new(x1, line),
+                slot,
+                end,
+            ));
+        } else {
+            bracket.push((Point::new(x0, line), Point::new(x1, line), start, end));
+        }
         bracket.push((Point::new(x1, line), Point::new(x1, hook), end, end));
+    }
+    if digits.is_empty() && bracket.is_empty() {
+        return None;
     }
     Some(TupletMarks {
         digits,

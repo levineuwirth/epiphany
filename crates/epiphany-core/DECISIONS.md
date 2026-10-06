@@ -1673,3 +1673,32 @@ well-formedness check a reduced score is held to. Locked by
 `inv17_pairs_quarter_tones_by_their_place_in_cmn_24`, and `epiphany-musicxml`'s
 `a_tie_between_quarter_tones_applies_and_pairs_in_both_modes`, which on the tree
 before this change passes every verdict assertion and fails only the invariant.
+
+## Schema major 4: a tuplet's display (X3c, 2026-10-06)
+
+`Tuplet` gains `display: TupletDisplay`, a `TupletNumber` (`Actual`, `None`)
+and a `TupletBracket` (`Auto`, `Hidden`), appended after `required_total`.
+The core specification has listed `display` on `Tuplet` since its first
+revision, as a display-oriented type for the layout chapter; nothing carried
+it, so a tuplet a file hides imported shown. It is the author's choice, and
+the engraver reads only the score, so it is canonical state
+(`req:time:tuplet-display`), and a field addition is a schema major
+(`req:binfmt:frozen-layout`).
+
+**Two enums, not a flag.** A boolean cannot grow, and MusicXML and MuseScore
+each separate the number from the bracket. Each enum grows by appended
+variant (a ratio number, an always-shown bracket), neither needed yet. The
+default, `Actual`/`Auto`, is how every tuplet was drawn before major 4, and is
+the migration default.
+
+**The frozen five-field form.** `enc_tuplet_v3`/`dec_tuplet_v3` hold the
+layout majors 0 to 3 share. `enc_ccr_v1`/`dec_ccr_v1` (majors 0 and 1) now
+route tuplets through it, and `enc_ccr_v3`/`dec_ccr_v3` hold the registry
+majors 2 and 3 share (the live layout, tuplets frozen), read by
+`decode_v2_score` and the new `decode_v3_score`. The live codec is major 4.
+`schema_major_4_tuplet_wire_bytes_are_frozen` pins both forms' bytes, which
+a self-consistent reordering of the tags or the fields would pass every
+round-trip test with; `a_tuplet_migrates_from_every_frozen_form_with_its_display_defaulted`
+carries a tuplet through majors 0 to 3, which `valid_score` never held.
+`Tuplet::decode_major_3` is public so an operation decoder can recognize a
+pre-major-4 `CreateTuplet` and refuse it by name.

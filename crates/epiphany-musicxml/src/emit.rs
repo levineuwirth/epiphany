@@ -762,6 +762,7 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
                         members: tuplet.events.iter().map(|&i| ids.events[p][i]).collect(),
                         parent: None,
                         required_total: MusicalDuration(required_total),
+                        display: tuplet.display,
                     },
                 }),
             );
