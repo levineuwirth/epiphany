@@ -528,6 +528,102 @@ fn a_beam_across_two_staves_joins_its_notes_between_them() {
     );
 }
 
+/// A tuplet whose notes are one beam across two staves is drawn by the beam:
+/// its number alone, no bracket, standing above the beam between the staves,
+/// clear of every stem and beam, within the group's span.
+#[test]
+fn a_tuplet_on_a_beam_across_two_staves_takes_its_number_by_the_beam() {
+    use epiphany_core::TypedObjectId;
+    use epiphany_layout_ir::is_beam_stroke;
+
+    let loaded = load(&fixture("cross_staff.musicxml")).expect("loads");
+    let score = &loaded.reduced.score;
+    let layout = engrave(score).layout;
+    let (staff_of, _) = staves_of(score);
+    let mut numbered = 0;
+    for tuplet in &score.cross_cutting.tuplets {
+        let staves: std::collections::BTreeSet<_> =
+            tuplet.members.iter().map(|e| staff_of[e]).collect();
+        if staves.len() < 2 {
+            continue;
+        }
+        let beam = score
+            .cross_cutting
+            .beams
+            .iter()
+            .find(|b| {
+                let mut a = b.events.clone();
+                let mut m = tuplet.members.clone();
+                a.sort();
+                m.sort();
+                a == m
+            })
+            .expect("the fixture's cross-staff tuplets are each one beam");
+        let digits: Vec<_> = layout
+            .glyphs
+            .iter()
+            .filter(|g| g.provenance.source == TypedObjectId::Tuplet(tuplet.id))
+            .collect();
+        assert!(
+            layout
+                .strokes
+                .iter()
+                .all(|s| s.provenance.source != TypedObjectId::Tuplet(tuplet.id) || s.from == s.to),
+            "no bracket"
+        );
+        if digits.is_empty() {
+            continue;
+        }
+        numbered += 1;
+        assert_eq!(digits.len(), 1);
+        assert_eq!(digits[0].glyph.as_str(), "tuplet6");
+        let number = glyph_box(digits[0]);
+        let beams: Vec<_> = layout
+            .strokes
+            .iter()
+            .filter(|s| {
+                is_beam_stroke(s)
+                    && s.provenance
+                        .dependencies
+                        .contains(&TypedObjectId::Event(beam.events[0]))
+            })
+            .collect();
+        let stems: Vec<_> = layout
+            .strokes
+            .iter()
+            .filter(|s| {
+                beam.events
+                    .iter()
+                    .any(|e| s.provenance.source == TypedObjectId::Event(*e))
+                    && s.from.x == s.to.x
+            })
+            .collect();
+        for ink in &stems {
+            assert!(
+                !boxes_overlap(number, stroke_box(ink)),
+                "the number touches its group's ink"
+            );
+        }
+        let (first, last) = stems
+            .iter()
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), s| {
+                (a.min(s.from.x.0), b.max(s.from.x.0))
+            });
+        assert!(
+            number[0] >= first && number[2] <= last,
+            "the number stands within its group"
+        );
+        // Above the beam: higher than the beam's ink across the number.
+        let top = beams
+            .iter()
+            .filter(|b| b.from.x.0 <= number[2] && number[0] <= b.to.x.0)
+            .map(|b| stroke_box(b)[3])
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(number[1] > top, "the number stands above the beam");
+    }
+    assert_eq!(numbered, 4, "each cross-staff tuplet numbered");
+}
+
 /// Ties are drawn across every barline and across every system break: a long
 /// score of whole notes, each tied to the next, wraps onto many justified
 /// systems; each tie is one arc, or two half-arcs where a system breaks

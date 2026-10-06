@@ -1533,3 +1533,19 @@ stand on more than two staves is not drawn; none is known. Locked by
 `a_beam_across_two_staves_joins_its_notes_between_them` (`epiphany-cli`),
 over a hand-written piano fixture and a score whose staves would close past
 the beam's room.
+
+## ENGRAVER_VERSION 36 → 37: a tuplet by its beam across two staves (X3c.3, 2026-10-06)
+
+A tuplet whose notes stand on two staves has no staff in the logical stage,
+so it drew nothing. One whose notes are exactly a beam across two staves now
+draws its number by that beam, and no bracket: centred on the group, above
+the beam, where only the upper staff's stems come down to it, moved along
+the beam to the place nearest the middle that no stem on that side crosses;
+below only where no such place lies within the group's span and below needs
+the shorter move. It stands `TUPLET_CLEARANCE` off the beam, rides the upper
+staff and the slot of the member nearest it, and joins the beam's ink
+between the staves. MuseScore sets such a number above the beam beside the
+knee, as this does. A tuplet across two staves that is not one beam still
+draws nothing. Locked by
+`a_tuplet_on_a_beam_across_two_staves_takes_its_number_by_the_beam`
+(`epiphany-cli`).

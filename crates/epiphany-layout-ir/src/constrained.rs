@@ -1786,6 +1786,9 @@ pub fn try_to_constrained(
         // Each member's stem by event: its record, and whether it reaches the
         // beam from the lower staff.
         let mut kneed_stems: BTreeMap<EventId, (usize, bool)> = BTreeMap::new();
+        // Each drawn beam across two staves by its sorted members: where a
+        // tuplet of exactly those notes places its number.
+        let mut kneed_beams: BTreeMap<Vec<EventId>, KneedBeam> = BTreeMap::new();
         for object in &region.objects {
             let LayoutContent::Staff(content) = object.content() else {
                 continue;
@@ -1808,7 +1811,7 @@ pub fn try_to_constrained(
                 let members = &kneed.members;
                 let mut sorted = members.clone();
                 sorted.sort();
-                beam_sets.insert(sorted);
+                beam_sets.insert(sorted.clone());
                 let n = members.len();
                 let segs: Vec<&StemSeg> = members.iter().map(|e| &event_stems[e][0]).collect();
                 let counts: Vec<u8> = segs.iter().map(|s| s.beams).collect();
@@ -1951,6 +1954,20 @@ pub fn try_to_constrained(
                         beam_strokes.push((stroke, start, end));
                     }
                 }
+                kneed_beams.insert(
+                    sorted,
+                    KneedBeam {
+                        record,
+                        upper: kneed.upper,
+                        xs: xs.clone(),
+                        ups: kneed.ups.clone(),
+                        slots: (0..n).map(slot).collect(),
+                        x0,
+                        intercept,
+                        slope,
+                        depth: stack(most),
+                    },
+                );
                 cross_staff_beams.push(CrossStaffBeam {
                     region: region_index,
                     upper: kneed.upper,
@@ -2635,7 +2652,10 @@ pub fn try_to_constrained(
                 }
                 TypedObjectId::Tuplet(_) => {
                     // A tuplet's number, and its bracket unless its notes are
-                    // one beam group, beside its members on its voice's side.
+                    // one beam group, beside its members on its voice's side;
+                    // a tuplet whose notes are one beam across two staves, its
+                    // number by the beam, riding the beam's staff.
+                    let mut kneed: Option<&KneedBeam> = None;
                     let marks = match (content, staff) {
                         (Some(LayoutContent::Tuplet(tuplet)), Some(st)) => tuplet_marks(
                             tuplet,
@@ -2648,8 +2668,15 @@ pub fn try_to_constrained(
                                 beams: &beam_sets,
                             },
                         ),
+                        (Some(LayoutContent::Tuplet(tuplet)), None) => {
+                            let mut members = tuplet.members.clone();
+                            members.sort();
+                            kneed = kneed_beams.get(&members);
+                            kneed.and_then(|beam| kneed_tuplet_marks(tuplet.ratio.actual(), beam))
+                        }
                         _ => None,
                     };
+                    let staff = kneed.map_or(staff, |beam| Some(beam.upper));
                     match marks {
                         Some(marks) => {
                             for (k, (name, at)) in marks.digits.into_iter().enumerate() {
@@ -2671,6 +2698,11 @@ pub fn try_to_constrained(
                                     staff,
                                     marks.slot,
                                 );
+                                if let Some(beam) = kneed {
+                                    cross_staff_beams[beam.record]
+                                        .ink
+                                        .push(GlyphObjectId(digit_provenance.stable_id.0));
+                                }
                             }
                             for (k, (from, to, start, end)) in marks.bracket.into_iter().enumerate()
                             {
@@ -4916,6 +4948,101 @@ fn place_heads(
         .fold(f32::NEG_INFINITY, f32::max);
     let dot_x = if right.is_finite() { right } else { 0.0 } + DOT_GAP;
     (dx, shifts, dot_x)
+}
+
+/// A drawn beam across two staves, as a tuplet of its notes places its
+/// number by it: its record, the staff it rides, each member's stem `x`,
+/// direction and slot, and its primary beam's top edge (`intercept` at
+/// `x0`, rising by `slope`) above a stack `depth` deep.
+struct KneedBeam {
+    record: usize,
+    upper: StaffId,
+    xs: Vec<f32>,
+    ups: Vec<bool>,
+    slots: Vec<SpringSlotId>,
+    x0: f32,
+    intercept: f32,
+    slope: f32,
+    depth: f32,
+}
+
+/// The number of a tuplet whose notes are one beam across two staves:
+/// centred on the group, on a side of the beam its stems leave clear (above,
+/// where only the upper staff's stems come down to it, or below, where only
+/// the lower staff's come up), moved along the beam to the place nearest the
+/// middle that no stem on its side crosses: above wherever it finds such a
+/// place within the group's span, else on the side needing the shorter
+/// move, `TUPLET_CLEARANCE` off the beam. It rides the slot
+/// of the member nearest it, and takes no bracket.
+fn kneed_tuplet_marks(actual: u32, beam: &KneedBeam) -> Option<TupletMarks> {
+    let names: Vec<&'static str> = digits_of(actual).into_iter().map(tuplet_digit).collect();
+    let boxes: Vec<BoundingBox> = names
+        .iter()
+        .map(|name| metrics(name).map(|m| m.bounding_box()))
+        .collect::<Option<_>>()?;
+    let width: f32 = boxes.iter().map(|b| b.right.0 - b.left.0).sum();
+    let height = boxes.iter().map(|b| b.top.0).fold(0.0, f32::max);
+    let (first, last) = (*beam.xs.first()?, *beam.xs.last()?);
+    let middle = (first + last) / 2.0;
+    let half = width / 2.0 + TUPLET_NUMBER_GAP;
+    // The nearest centre to the middle at which the number clears every stem
+    // on one side, and how far it moved.
+    let place = |above: bool| -> (f32, f32) {
+        let stems: Vec<f32> = beam
+            .xs
+            .iter()
+            .zip(&beam.ups)
+            .filter(|(_, up)| **up != above)
+            .map(|(x, _)| *x)
+            .collect();
+        // A candidate set against a stem clears it, rounding aside.
+        let clear = |c: f32| {
+            stems
+                .iter()
+                .all(|x| (c - x).abs() >= half + STEM_THICKNESS / 2.0 - 1e-3)
+        };
+        let mut candidates = vec![middle];
+        for x in &stems {
+            candidates.push(x - half - STEM_THICKNESS / 2.0);
+            candidates.push(x + half + STEM_THICKNESS / 2.0);
+        }
+        candidates
+            .into_iter()
+            .filter(|c| clear(*c))
+            .map(|c| (c, (c - middle).abs()))
+            .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.total_cmp(&b.0)))
+            .unwrap_or((middle, f32::INFINITY))
+    };
+    let (up_at, up_move) = place(true);
+    let (down_at, down_move) = place(false);
+    // Above wherever it finds a clear place within the group's span.
+    let above = up_move <= (last - first) / 2.0 || up_move <= down_move;
+    let centre = if above { up_at } else { down_at };
+    let edge = |x: f32| beam.intercept + beam.slope * (x - beam.x0);
+    let (left, right) = (centre - width / 2.0, centre + width / 2.0);
+    let baseline = if above {
+        edge(left).max(edge(right)) + TUPLET_CLEARANCE
+    } else {
+        edge(left).min(edge(right)) - beam.depth - TUPLET_CLEARANCE - height
+    };
+    let mut x = left;
+    let mut digits = Vec::with_capacity(names.len());
+    for (name, b) in names.iter().zip(&boxes) {
+        digits.push((*name, Point::new(x - b.left.0, baseline)));
+        x += b.right.0 - b.left.0;
+    }
+    let nearest = (0..beam.xs.len())
+        .min_by(|a, b| {
+            (beam.xs[*a] - centre)
+                .abs()
+                .total_cmp(&(beam.xs[*b] - centre).abs())
+        })
+        .unwrap_or(0);
+    Some(TupletMarks {
+        digits,
+        slot: beam.slots[nearest],
+        bracket: Vec::new(),
+    })
 }
 
 /// A beam across two staves: its members (one drawn stem each), each one's

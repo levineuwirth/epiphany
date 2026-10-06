@@ -299,8 +299,9 @@ pub struct Engraver {
 /// tie continuation's included, where the first had shown none and borrowed
 /// its neighbour's, and to `36` when a beam joining notes on two staves began
 /// drawing between them, the upper staff's stems turned down to it and the
-/// lower's up, where its notes had taken flags.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(36);
+/// lower's up, where its notes had taken flags, and to `37` when a tuplet
+/// whose notes are such a beam began drawing its number by it.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(37);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
