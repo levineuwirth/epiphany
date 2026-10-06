@@ -363,3 +363,101 @@ fn engraver_goldens_differ_from_the_stub_goldens() {
         );
     }
 }
+
+/// An ending's numbers, once spaced, stand apart and inside the bracket they
+/// label: no number's ink meets another's, and no bracket hook crosses one.
+/// The fixture's second ending is for two passes, so its label is two numbers
+/// with a comma between them, and its bracket opens at an end repeat, whose
+/// column the spacing widens.
+#[test]
+fn an_endings_numbers_stand_apart_inside_their_bracket() {
+    use epiphany_core::TypedObjectId;
+    use epiphany_engrave::Engraver;
+
+    let score = epiphany_testkit::fixtures::ten_measure_with_repeats(0x000A_11CE);
+    let constrained = to_constrained(&to_logical(&score));
+    let layout = Engraver::default()
+        .solve(&constrained, &SolverConfig::default())
+        .layout;
+    let repeat = |source: &TypedObjectId| matches!(source, TypedObjectId::RepeatStructure(_));
+    let mut labels: Vec<(&str, f32, f32)> = Vec::new();
+    // Each label glyph's ink bottom: the comma sits on the digits' bottom edge.
+    let mut bottoms: Vec<(&str, f32)> = Vec::new();
+    for g in &layout.glyphs {
+        if repeat(&g.provenance.source) && g.glyph.as_str().starts_with("timeSig") {
+            let (x, y) = (g.position.x.0, g.position.y.0);
+            labels.push((
+                g.glyph.as_str(),
+                x + g.bounding_box.left.0,
+                x + g.bounding_box.right.0,
+            ));
+            bottoms.push((g.glyph.as_str(), y + g.bounding_box.bottom.0));
+        }
+    }
+    let lowest_digit = bottoms
+        .iter()
+        .filter(|(name, _)| *name != "timeSigComma")
+        .map(|(_, bottom)| *bottom)
+        .fold(f32::MAX, f32::min);
+    for (name, bottom) in &bottoms {
+        if *name == "timeSigComma" {
+            assert!(
+                (bottom - lowest_digit).abs() < 0.1,
+                "the comma's ink ends at {bottom}, the digits' at {lowest_digit}"
+            );
+        }
+    }
+    labels.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let names: Vec<&str> = labels.iter().map(|(name, _, _)| *name).collect();
+    assert_eq!(
+        names,
+        ["timeSig1", "timeSig2", "timeSigComma", "timeSig3"],
+        "the endings read 1, then 2, 3"
+    );
+    for pair in labels.windows(2) {
+        assert!(
+            pair[0].2 <= pair[1].1,
+            "{} ends at {} but {} starts at {}",
+            pair[0].0,
+            pair[0].2,
+            pair[1].0,
+            pair[1].1
+        );
+    }
+    let hooks: Vec<f32> = layout
+        .strokes
+        .iter()
+        .filter(|s| repeat(&s.provenance.source))
+        .filter(|s| s.from.x.0 == s.to.x.0 && s.from.y.0 != s.to.y.0)
+        .map(|s| s.from.x.0)
+        .collect();
+    assert_eq!(hooks.len(), 4, "two brackets, each with two hooks");
+    // Each bracket's line runs from its opening hook to its closing one.
+    let mut ends: Vec<f32> = layout
+        .strokes
+        .iter()
+        .filter(|s| repeat(&s.provenance.source))
+        .filter(|s| s.from.y.0 == s.to.y.0 && s.from.x.0 != s.to.x.0)
+        .flat_map(|s| [s.from.x.0, s.to.x.0])
+        .collect();
+    ends.sort_by(f32::total_cmp);
+    let mut sorted = hooks.clone();
+    sorted.sort_by(f32::total_cmp);
+    assert_eq!(ends.len(), sorted.len(), "two lines");
+    for (end, hook) in ends.iter().zip(&sorted) {
+        assert!(
+            (end - hook).abs() < 1e-3,
+            "a bracket's line ends at {end}, its hook stands at {hook}"
+        );
+    }
+    for (name, left, right) in &labels {
+        for hook in &hooks {
+            assert!(
+                hook < left || hook > right,
+                "a hook at {hook} crosses {name}, inked from {left} to {right}"
+            );
+        }
+        let opening = hooks.iter().filter(|hook| *hook < left).count();
+        assert!(opening % 2 == 1, "{name} stands outside every bracket");
+    }
+}

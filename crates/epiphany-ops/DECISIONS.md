@@ -2378,7 +2378,9 @@ by a test that reduces one history both ways:
   base-free;
 - the region's time model lived only in the graph, so an insert after a
   concurrent migration to a non-metric model was refused graph-aware
-  (`WrongRegionTimeModel`) and applied base-free.
+  (`WrongRegionTimeModel`) and applied base-free, or refused base-free for
+  another reason: an overlap with an indexed event (`EventDurationInvalid`)
+  or a carried pitch id already in canonical state (`TargetTombstoned`).
 
 Both modes now derive the remapping and the incompatible events from the
 indices they keep. The region's events are those with a metric placement in
@@ -2394,8 +2396,14 @@ modes. A new index, `region_disciplines`, holds each region's coordinate
 discipline: seeded from a base, set by `CreateRegion`, moved by an applied
 migration, removed with its region and restored when a transaction rolls back.
 `InsertEvent` reads it base-free, as graph-aware reduction reads the graph's
-region, and leaves a tombstoned voice to the voice check, so the reason
-matches graph-aware reduction's `VoiceMissing`.
+region, and leaves a tombstoned voice to the voice check, so for a voice
+`DeleteVoice` removed the reason matches graph-aware reduction's
+`VoiceMissing`. It does not match for a voice an undo tombstoned while the
+voice still holds an event: the graph keeps such a voice, so graph-aware
+reduction reads the region and refuses `WrongRegionTimeModel`, where base-free
+reduction refuses `VoiceMissing`. The two modes still split there. The split is
+older than X3 and this check leaves its verdicts as version 1 had them; it is
+left to the reduction-mode fuzz and the reduction version that follows it.
 
 Four verdicts change. Three are base-free: the migration's conflict, the
 placements read after a remapping, and the insert into a non-metric region.

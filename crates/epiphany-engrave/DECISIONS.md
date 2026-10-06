@@ -1407,3 +1407,70 @@ nearest-glyph rule is otherwise left only for zero-extent traced anchors,
 which draw nothing. Locked by `a_stem_stands_on_its_own_heads` (`epiphany-cli`) and
 `stem_offsets_from_the_notehead_survive_justification`, which now includes
 the repeats fixture; the repeats golden's second ending had one such stem.
+
+## ENGRAVER_VERSION 31 → 32: digits at their own advances, and an ending's bracket on its slots (X3b.0, 2026-10-05)
+
+Digits set side by side advanced a fixed 0.8 staff spaces, though a
+time-signature digit is 1.3 to 1.9 wide, so a time signature of several
+digits (12/8, 11/8, 17/16) drew them over each other, and an ending for two
+passes drew its "2" and "3" as one blot. Each digit now advances by its own
+metric width. A signature whose lines are single digits keeps both on one
+origin, as before, so no single-digit signature moves; where a line has
+several digits, each line is centred under the widest, which starts where a
+single digit would. An ending's numbers take a comma between them
+(`timeSigComma`, now bundled), seated on the digits' bottom edge so it
+reaches no lower than they do and stays clear of the staff.
+
+The ending's numbers ride the slot of the column their bracket opens at, but
+the bracket's line and hooks were mapped through the spacing remap, which
+puts a column that spacing widens (an end repeat's) somewhere else: the
+second ending's hook stood a space right of its barline, through its "2".
+The line and both hooks now carry `SpanAnchor`s on the slots of the columns
+they open and close at, so the bracket, its numbers and the barline it
+starts at move together. Locked by
+`an_endings_numbers_stand_apart_inside_their_bracket` (`epiphany-render-svg`)
+and `a_time_signatures_digits_stand_apart_and_centred` (`epiphany-cli`). The
+repeats golden is re-blessed (its second ending reads "2, 3", clear of its
+hook); no other golden changes, since none has a volta or a signature of
+several digits.
+
+## ENGRAVER_VERSION 32 → 33: quarter-tone accidentals drawn (X3b.2, 2026-10-05)
+
+The importer spells a quarter-tone with the accidental its file writes, by its
+MusicXML name (`flat-up`, `quarter-flat` and the rest), and the engraver had
+no glyph for any of them, so each was surfaced as `UnbundledGlyph` and left
+undrawn. The fourteen MusicXML names now draw from bundled SMuFL glyphs, as
+MusicXML assigns them: the ten arrowed ones from SMuFL's Gould arrow
+accidentals (`accidentalQuarterToneFlatArrowUp` for `flat-up`, through
+`accidentalFiveQuarterTonesFlatArrowDown` for `flat-flat-down`), Stein's
+quarter and three-quarter sharps and quarter flat from Stein's glyphs, and the
+three-quarter flat from Zimmermann's (`accidentalThreeQuarterTonesFlatZimmermann`).
+Their boxes come from the regenerated metrics, so they join the
+accidental columns as any other accidental does; several reach left of their
+origin, or two spaces above or below their head, with the arrow. Locked by
+`each_quarter_tone_accidental_draws_its_smufl_glyph` (`epiphany-cli`) and the
+glyph table's unit test.
+
+## ENGRAVER_VERSION 33 → 34: quarter-tones in the measure's accidental state (X3b.3, 2026-10-05)
+
+X2's measure state counted alterations in semitones and left out any spelling
+whose accidental was not a whole number of them, so a quarter-tone drew its
+accidental on every note, carried or not, and a natural after one on its
+letter was not shown. The state now counts quarter-tones
+(`stack_quarter_tones`: a standard accidental two a semitone, a quarter-tone
+accidental by its MusicXML name, over exactly the accidentals
+`accidental_glyph` draws), the key's alteration doubled. A quarter-tone
+accidental holds to the barline on its letter and octave across the staff's
+voices, a change after it (a natural, the key's flat, another quarter-tone) is
+shown, and the same alteration stated again, by either notation, is not. A
+whole-semitone alteration draws its standard glyph; a quarter-tone one draws
+the spelling's own, arrowed or Stein's as the file wrote it. A tie's carry
+works in the same units. The head's alteration, which decides whether two
+voices' heads on one step are one head drawn twice, is counted the same way:
+two different quarter-tones there both read as unknown before, and so shared
+a notehead. Simultaneous notes in two voices are still taken in the order
+their objects come, as before, so a quarter-tone in one voice and a natural
+on its letter in another at one instant show only the second's accidental
+when the first comes first. Locked by
+`a_quarter_tone_accidental_holds_to_the_barline_and_yields_to_a_change`
+(`epiphany-cli`).

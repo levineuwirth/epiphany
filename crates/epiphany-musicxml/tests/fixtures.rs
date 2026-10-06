@@ -585,8 +585,10 @@ fn a_quarter_tone_imports_at_its_pitch_in_cmn_24() {
             "s0 v0 3/4 1/4 A4",
             "s0 v0 1 1/2 A4",
             "s0 v0 3/2 1/2 rest",
+            "s0 v0 2 1 C5 E-1q5 G+1q5",
             "s1 v0 0 1 C+1q5",
             "s1 v0 1 1 rest",
+            "s1 v0 2 1 rest",
         ]
     );
     assert_eq!(score.instruments[1].transposition, interval(-1, -2));
@@ -600,6 +602,8 @@ fn a_quarter_tone_imports_at_its_pitch_in_cmn_24() {
             quarter_tone(0, (1, 4), 4, -1, 4),
             quarter_tone(0, (1, 2), 0, 3, 5),
             quarter_tone(1, (1, 2), 2, -1, 5),
+            quarter_tone(2, (0, 1), 2, -1, 5),
+            quarter_tone(2, (0, 1), 4, 1, 5),
         ]
     );
     assert_eq!(census[1].quarter_tones, [quarter_tone(0, (0, 1), 0, 1, 5)]);
@@ -612,18 +616,16 @@ fn a_quarter_tone_imports_at_its_pitch_in_cmn_24() {
         flute.dropped_quarter_tones,
         [quarter_tone(1, (1, 2), 2, -1, 5)]
     );
-    // A tie's pitches must be enharmonically equivalent, which the core
-    // answers only in a twelve-chromatic space: the quarter-tones' tie is
-    // recorded, and the ordinary tie beside it is made.
-    assert_eq!(ties(score), ["3/4 A4 -> 1 A4"]);
+    // A tie's pitches must be equal in their space's chromatic layer, which
+    // the core decides in `cmn-24` as in `cmn-12`: the quarter-tones' tie is
+    // made, as is the ordinary tie beside it, and none is recorded.
+    assert_eq!(ties(score), ["0 G-1q4 -> 1/4 G-1q4", "3/4 A4 -> 1 A4"]);
     let kinds = &run.import.source.features.kinds;
-    let tie = &kinds["tie on a quarter-tone pitch"];
-    assert_eq!((tie.class, tie.places.len()), (FeatureClass::Content, 1));
-    assert!(!kinds.contains_key("tie without a matching end"));
+    assert!(!kinds.keys().any(|k| k.starts_with("tie")), "{kinds:?}");
 }
 
 #[test]
-fn a_quarter_tone_accidental_named_without_an_alter_gives_the_pitch_and_carries() {
+fn a_quarter_tone_accidental_named_without_an_alter_applies_to_its_note_and_its_ties() {
     let run = run("arrow_accidentals.musicxml");
     all_applied(&run);
     let score = &run.reduced.score;
@@ -646,9 +648,10 @@ fn a_quarter_tone_accidental_named_without_an_alter_gives_the_pitch_and_carries(
             "s0 v0 3 1/4 E-3q4",
             "s0 v0 13/4 1/4 F+3q4",
             "s0 v0 7/2 1/2 rest",
-            // The second voice's B three-quarter-flat at 17/4 reaches this B.
+            // The second voice's B three-quarter-flat at 17/4 does not reach
+            // this B.
             "s0 v0 4 1/2 rest",
-            "s0 v0 9/2 1/4 B-3q4",
+            "s0 v0 9/2 1/4 B4",
             "s0 v0 19/4 1/4 D5",
             // Over a tie, to the tied note alone, and along a chain.
             "s0 v0 5 1/4 C5",
@@ -665,10 +668,11 @@ fn a_quarter_tone_accidental_named_without_an_alter_gives_the_pitch_and_carries(
             "s0 v0 9 1 D5",
             "s0 v0 10 1/2 D5",
             "s0 v0 21/2 1/2 rest",
-            // The later of two accidentals governs.
+            // Neither of two accidentals before it reaches a note that writes
+            // none.
             "s0 v0 11 1/4 B-1q4",
             "s0 v0 45/4 1/4 B+3q4",
-            "s0 v0 23/2 1/4 B+3q4",
+            "s0 v0 23/2 1/4 B4",
             "s0 v0 47/4 1/4 rest",
             // Not before the accidental, not at another octave, not past a
             // natural.
@@ -697,21 +701,278 @@ fn a_quarter_tone_accidental_named_without_an_alter_gives_the_pitch_and_carries(
             "s1 v0 11 1 rest",
         ]
     );
-    // The census values each name and carry apart from the reader.
+    // The census values each name and tie apart from the reader, and in
+    // measures 5 and 12 finds only the notes that write an accidental.
     let census = &run.import.source.census[0].quarter_tones;
-    assert_eq!(census.len(), 26);
+    assert_eq!(census.len(), 24);
+    let in_measure = |m: usize| {
+        census
+            .iter()
+            .filter(|q| q.measure == m)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(in_measure(4), [quarter_tone(4, (1, 4), 6, -3, 4)]);
     assert_eq!(
-        census[23..],
+        in_measure(11),
         [
             quarter_tone(11, (0, 1), 6, -1, 4),
             quarter_tone(11, (1, 4), 6, 3, 4),
-            quarter_tone(11, (1, 2), 6, 3, 4),
         ]
     );
-    assert_eq!(ties(score), ["9 D5 -> 10 D5"]);
+    // Every tie is made, the quarter-tones' among them: over a barline, along
+    // a chain, and the second voice's beside the first's natural D.
+    assert_eq!(
+        ties(score),
+        [
+            "23/4 B-1q4 -> 6 B-1q4",
+            "27/4 A+1q4 -> 7 A+1q4",
+            "7 A+1q4 -> 8 A+1q4",
+            "9 D5 -> 10 D5",
+            "19/2 D+1q5 -> 10 D+1q5",
+        ]
+    );
     let kinds = &run.import.source.features.kinds;
-    assert_eq!(kinds["tie on a quarter-tone pitch"].places.len(), 4);
-    assert!(!kinds.contains_key("tie without a matching end"));
+    assert!(!kinds.keys().any(|k| k.starts_with("tie")), "{kinds:?}");
+}
+
+/// Each quarter-tone of `score` with the spelling authored for it, in the
+/// order [`events`] lists them: its onset, its pitch, and its spelling's
+/// letter, accidentals and octave, or `unspelt`.
+fn spelt(score: &Score) -> Vec<String> {
+    let spellings: std::collections::BTreeMap<_, _> = score
+        .spelling_attachments
+        .iter()
+        .filter_map(|a| match (&a.scope, &a.directive) {
+            (
+                epiphany_core::SpellingScope::Pitch(pitch),
+                epiphany_core::SpellingDirective::Explicit(spelling),
+            ) => Some((*pitch, spelling)),
+            _ => None,
+        })
+        .collect();
+    let mut out = Vec::new();
+    for instance in score.canvas.regions[0].staff_instances() {
+        for voice in &instance.voices {
+            for id in &voice.events {
+                let Some(Event::Pitched(event)) = score.events.get(*id) else {
+                    continue;
+                };
+                let EventPosition::Musical(onset) = &event.position else {
+                    panic!("a non-metric position")
+                };
+                for ip in &event.pitches {
+                    if ip.pitch.scale_position.space.as_str() != "cmn-24" {
+                        continue;
+                    }
+                    let spelling = match spellings.get(&ip.id) {
+                        Some(sp) => format!(
+                            "{:?} {} {}",
+                            sp.nominal,
+                            sp.accidentals
+                                .iter()
+                                .map(|a| a.as_str())
+                                .collect::<Vec<_>>()
+                                .join("+"),
+                            sp.octave
+                        ),
+                        None => String::from("unspelt"),
+                    };
+                    out.push(format!(
+                        "{} {} {spelling}",
+                        rational(&onset.0),
+                        pitch_name(&ip.pitch.scale_position)
+                    ));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A quarter-tone is spelt with the accidental its notation gives it, its
+/// own or the one a tie carries to it, at its letter and octave, since the
+/// spelling pre-pass spells no `cmn-24` pitch: the fourteen names each as
+/// written, one carried over a tie and along a chain, and in a transposed
+/// part the sounding pitch's accidental of the written one's kind.
+#[test]
+fn a_quarter_tone_is_spelt_with_the_accidental_its_notation_gives_it() {
+    let arrows = run("arrow_accidentals.musicxml");
+    assert_eq!(
+        spelt(&arrows.reduced.score),
+        [
+            "0 G-1q4 Cmn(G) flat-up 4",
+            "1/4 A-3q4 Cmn(A) flat-down 4",
+            "1/2 B+1q4 Cmn(B) natural-up 4",
+            "3/4 C-1q5 Cmn(C) natural-down 5",
+            "1 D+3q5 Cmn(D) sharp-up 5",
+            "5/4 E+1q5 Cmn(E) sharp-down 5",
+            "3/2 F+5q5 Cmn(F) double-sharp-up 5",
+            "7/4 G+3q5 Cmn(G) double-sharp-down 5",
+            "2 A-3q5 Cmn(A) flat-flat-up 5",
+            "9/4 B-5q5 Cmn(B) flat-flat-down 5",
+            "5/2 C-1q4 Cmn(C) quarter-flat 4",
+            "11/4 D+1q4 Cmn(D) quarter-sharp 4",
+            "3 E-3q4 Cmn(E) three-quarters-flat 4",
+            "13/4 F+3q4 Cmn(F) three-quarters-sharp 4",
+            // Over a tie, and along a chain.
+            "23/4 B-1q4 Cmn(B) flat-up 4",
+            "6 B-1q4 Cmn(B) flat-up 4",
+            "27/4 A+1q4 Cmn(A) natural-up 4",
+            "7 A+1q4 Cmn(A) natural-up 4",
+            "8 A+1q4 Cmn(A) natural-up 4",
+            // Each on its own note.
+            "11 B-1q4 Cmn(B) flat-up 4",
+            "45/4 B+3q4 Cmn(B) sharp-up 4",
+            "17/4 B-3q4 Cmn(B) flat-down 4",
+            "19/2 D+1q5 Cmn(D) natural-up 5",
+            "10 D+1q5 Cmn(D) natural-up 5",
+        ]
+    );
+    // A fractional `<alter>` with no accidental of its own, tied from one
+    // with Stein's, takes Stein's; each quarter-tone of a chord is spelt,
+    // not only its first note; the clarinet's written D quarter-sharp sounds
+    // C quarter-sharp, spelt so.
+    let stein = run("quarter_tones.musicxml");
+    assert_eq!(
+        spelt(&stein.reduced.score),
+        [
+            "0 G-1q4 Cmn(G) quarter-flat 4",
+            "1/4 G-1q4 Cmn(G) quarter-flat 4",
+            "1/2 C+3q5 Cmn(C) three-quarters-sharp 5",
+            // The chord's second and third notes, above a natural C.
+            "2 E-1q5 Cmn(E) quarter-flat 5",
+            "2 G+1q5 Cmn(G) quarter-sharp 5",
+            "0 C+1q5 Cmn(C) quarter-sharp 5",
+        ]
+    );
+}
+
+/// The comparison holds every quarter-tone's spelling to its pitch: one
+/// spelt with an accidental of another value, at another octave, or not at
+/// all, fails it.
+#[test]
+fn the_comparison_finds_a_quarter_tone_spelt_other_than_it_sounds() {
+    let run = run("arrow_accidentals.musicxml");
+    let fails = |change: &dyn Fn(&mut epiphany_core::PitchSpelling)| {
+        let mut reduced = run.reduced.clone();
+        let attachment = reduced
+            .score
+            .spelling_attachments
+            .first_mut()
+            .expect("a quarter-tone's spelling");
+        let epiphany_core::SpellingDirective::Explicit(spelling) = &mut attachment.directive else {
+            panic!("an explicit spelling")
+        };
+        change(spelling);
+        compare(&run.import, &reduced)
+            .failures
+            .iter()
+            .any(|f| f.contains("not spelt as they sound"))
+    };
+    assert!(!fails(&|_| {}), "the import's own spellings agree");
+    // The first is G flat-up; natural-down is the same pitch, flat-down not.
+    assert!(!fails(&|s| {
+        s.accidentals = vec![epiphany_core::AccidentalId::new("natural-down")]
+    }));
+    assert!(fails(&|s| {
+        s.accidentals = vec![epiphany_core::AccidentalId::new("flat-down")]
+    }));
+    assert!(fails(&|s| s.octave += 1));
+    assert!(fails(&|s| s.accidentals.clear()));
+    let mut unspelt = run.reduced.clone();
+    unspelt.score.spelling_attachments.clear();
+    assert!(compare(&run.import, &unspelt)
+        .failures
+        .iter()
+        .any(|f| f.starts_with("24 of 24 quarter-tones")));
+}
+
+/// The accidental of a sounding quarter-tone keeps the written one's kind:
+/// an arrow its direction, moving the accidental under it with a
+/// transposition, and Stein's its family, taking an arrow where Stein has
+/// none for the alteration.
+#[test]
+fn a_quarter_tones_accidental_keeps_its_kind_at_the_sounding_pitch() {
+    use epiphany_musicxml::source::quarter_tone_accidental as accidental;
+    let arrowed = [
+        ("flat-flat-down", -5),
+        ("flat-flat-up", -3),
+        ("flat-down", -3),
+        ("flat-up", -1),
+        ("natural-down", -1),
+        ("natural-up", 1),
+        ("sharp-down", 1),
+        ("sharp-up", 3),
+        ("double-sharp-down", 3),
+        ("double-sharp-up", 5),
+    ];
+    let stein = [
+        ("three-quarters-flat", -3),
+        ("quarter-flat", -1),
+        ("quarter-sharp", 1),
+        ("three-quarters-sharp", 3),
+    ];
+    for (name, quarter_tones) in arrowed.iter().chain(&stein) {
+        assert_eq!(accidental(Some(name), *quarter_tones), Some(*name));
+    }
+    // A written F natural-up for a B-flat instrument sounds E flat-up.
+    assert_eq!(accidental(Some("natural-up"), -1), Some("flat-up"));
+    assert_eq!(accidental(Some("sharp-down"), -1), Some("natural-down"));
+    assert_eq!(accidental(Some("flat-down"), 1), Some("sharp-down"));
+    // Past a double accidental, the other arrow; past any, none.
+    assert_eq!(accidental(Some("flat-up"), -5), Some("flat-flat-down"));
+    assert_eq!(accidental(Some("sharp-down"), 5), Some("double-sharp-up"));
+    assert_eq!(accidental(Some("flat-flat-down"), -7), None);
+    // Stein past three quarter-tones takes an arrow, up first.
+    assert_eq!(
+        accidental(Some("quarter-sharp"), 5),
+        Some("double-sharp-up")
+    );
+    assert_eq!(accidental(Some("quarter-flat"), -5), Some("flat-flat-down"));
+    // No accidental of its own: Stein's.
+    assert_eq!(accidental(None, -1), Some("quarter-flat"));
+    assert_eq!(accidental(None, 3), Some("three-quarters-sharp"));
+}
+
+/// MuseScore marks every accidental its user sets `cautionary`, every
+/// quarter-tone accidental among them. On a quarter-tone accidental, which
+/// spells its note, the mark alone records no feature; on a standard
+/// accidental it records a cautionary accidental, and parentheses record one
+/// on either. The marks change no pitch.
+#[test]
+fn the_cautionary_mark_on_a_quarter_tone_accidental_records_nothing() {
+    let plain = xml("arrow_accidentals.musicxml");
+    let marked = plain
+        .replace(
+            "<accidental>flat-up</accidental>",
+            r#"<accidental cautionary="yes" parentheses="no">flat-up</accidental>"#,
+        )
+        .replace(
+            "<accidental>natural</accidental>",
+            r#"<accidental cautionary="yes" parentheses="no">natural</accidental>"#,
+        )
+        .replace(
+            "<accidental>sharp-up</accidental>",
+            r#"<accidental cautionary="yes" parentheses="yes">sharp-up</accidental>"#,
+        );
+    assert_eq!(marked.matches("cautionary=").count(), 6, "six marked");
+    let imported = import(&marked).expect("imports");
+    // The three flat-ups record nothing; the natural (measure 5) and the two
+    // parenthesised sharp-ups (measures 2 and 12) each record one.
+    let places: Vec<&str> = imported
+        .source
+        .features
+        .kinds
+        .get("cautionary accidental")
+        .map(|f| f.places.iter().map(|p| p.measure.as_str()).collect())
+        .unwrap_or_default();
+    assert_eq!(places, ["2", "5", "12"]);
+    let plain = import(&plain).expect("imports");
+    assert_eq!(
+        events(&reduce(&imported).score),
+        events(&reduce(&plain).score)
+    );
 }
 
 #[test]
@@ -860,6 +1121,39 @@ fn tuplets_import_with_their_ratios_and_members() {
     let census = &run.import.source.census[0];
     assert_eq!(census.tuplets.values().sum::<usize>(), 4);
     assert_eq!(census.unmade_tuplets, 2);
+}
+
+/// The comparison holds the reader's tuplets to the census's own timed walk of
+/// the file, member by member: where the census places one member elsewhere,
+/// or one fewer, the comparison fails, though every count and ratio agrees
+/// and the score holds exactly what the reader made.
+#[test]
+fn the_comparison_holds_each_tuplets_members_to_the_census() {
+    let run = run("tuplet.musicxml");
+    let fails = |census: &dyn Fn(&mut epiphany_musicxml::source::CensusTuplet)| {
+        let mut import = run.import.clone();
+        let tuplet = import.source.census[0]
+            .tuplet_places
+            .first_mut()
+            .expect("the census places the file's tuplets");
+        census(tuplet);
+        compare(&import, &run.reduced)
+            .failures
+            .iter()
+            .any(|f| f.contains("the reader's tuplets are not the file's"))
+    };
+    assert!(!fails(&|_| {}), "the file's own census agrees");
+    assert!(fails(&|t| {
+        t.members.pop();
+    }));
+    assert!(fails(&|t| {
+        let (measure, offset) = t.members[1].clone();
+        t.members[1] = (
+            measure,
+            offset.add(&epiphany_core::RationalTime::new(1, 64).unwrap()),
+        );
+    }));
+    assert!(fails(&|t| t.staff += 1));
 }
 
 #[test]

@@ -298,6 +298,73 @@ pub const BRAVURA_METRICS: &[GlyphMetric] = &[
     GlyphMetric::new("cClefChange", 2073, [0, -1360, 2073, 1360]),
     GlyphMetric::new("clef8", 840, [0, 0, 840, 1012]),
     GlyphMetric::new("clef15", 1470, [0, -13, 1471, 1045]),
+    GlyphMetric::new("timeSigComma", 811, [36, -615, 754, 566]),
+    GlyphMetric::new(
+        "accidentalQuarterToneFlatArrowUp",
+        1016,
+        [-173, -725, 1016, 2372],
+    ),
+    GlyphMetric::new(
+        "accidentalThreeQuarterTonesFlatArrowDown",
+        1028,
+        [-160, -1713, 1029, 1811],
+    ),
+    GlyphMetric::new(
+        "accidentalQuarterToneSharpNaturalArrowUp",
+        868,
+        [-107, -1393, 869, 2241],
+    ),
+    GlyphMetric::new(
+        "accidentalQuarterToneFlatNaturalArrowDown",
+        700,
+        [12, -2225, 1024, 1377],
+    ),
+    GlyphMetric::new(
+        "accidentalThreeQuarterTonesSharpArrowUp",
+        1020,
+        [0, -1422, 1127, 2171],
+    ),
+    GlyphMetric::new(
+        "accidentalQuarterToneSharpArrowDown",
+        1020,
+        [-115, -2188, 1020, 1430],
+    ),
+    GlyphMetric::new(
+        "accidentalFiveQuarterTonesSharpArrowUp",
+        1016,
+        [0, -512, 1213, 1483],
+    ),
+    GlyphMetric::new(
+        "accidentalThreeQuarterTonesSharpArrowDown",
+        1016,
+        [-197, -1496, 1016, 500],
+    ),
+    GlyphMetric::new(
+        "accidentalThreeQuarterTonesFlatArrowUp",
+        1683,
+        [0, -717, 1684, 2552],
+    ),
+    GlyphMetric::new(
+        "accidentalFiveQuarterTonesFlatArrowDown",
+        1692,
+        [-246, -1713, 1692, 1811],
+    ),
+    GlyphMetric::new("accidentalQuarterToneFlatStein", 930, [4, -717, 930, 1799]),
+    GlyphMetric::new(
+        "accidentalThreeQuarterTonesFlatZimmermann",
+        1909,
+        [4, -717, 1909, 1799],
+    ),
+    GlyphMetric::new(
+        "accidentalQuarterToneSharpStein",
+        733,
+        [0, -1446, 734, 1258],
+    ),
+    GlyphMetric::new(
+        "accidentalThreeQuarterTonesSharpStein",
+        1298,
+        [12, -1422, 1299, 1512],
+    ),
 ];
 
 /// Looks up one glyph's metrics by SMuFL name, if bundled.

@@ -1,12 +1,12 @@
 fixture=ten_measure_with_repeats solver=stub
-glyph_count=55
-path_count=55
+glyph_count=56
+path_count=56
 fallback_rect_count=0
 stroke_count=99
 curve_count=1
-provenance_count=155
+provenance_count=156
 layer_count=1
-hard_constraint_count=94
+hard_constraint_count=95
 xml_well_formed=true
 view_box=[-3.065 -3.87 91.82203 12.45]
 class_counts:
@@ -14,4 +14,4 @@ class_counts:
   clef=1
   notehead=40
   repeat=5
-  timeSig=3
+  timeSig=4

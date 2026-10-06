@@ -24,12 +24,19 @@
 //! - A quarter-tone is held in `cmn-24`, whose chromatic step is the
 //!   quarter-tone; every other pitch in `cmn-12`. It is stated by a
 //!   fractional `<alter>` or, as MuseScore writes its arrowed and Stein
-//!   accidentals, by an `<accidental>` name with no `<alter>`, carried through
-//!   the measure and over a tie as notation carries it. A pitch finer than a
-//!   quarter-tone refuses the file by name.
-//! - The core ties only pitches it can call enharmonic, which it answers in
-//!   twelve-chromatic spaces alone, so a tie between quarter-tones is
-//!   recorded, not made.
+//!   accidentals, by an `<accidental>` name with no `<alter>`. Such an
+//!   accidental applies to its own note, as MuseScore reads it, and over a
+//!   tie to the note continuing it; a later note of its line in the measure
+//!   that writes neither is unaltered. A pitch finer than a quarter-tone
+//!   refuses the file by name.
+//! - A quarter-tone is spelt as its notation writes it. The spelling
+//!   pre-pass infers no `cmn-24` spelling, so the importer authors one with
+//!   `RespellPitch`: the pitch's letter and octave, and the arrowed or Stein
+//!   accidental the file writes on the note or carries to it over a tie, by
+//!   its MusicXML name, moved to the sounding pitch with its kind kept.
+//! - A tie pairs pitches equal in their space's chromatic layer, which the
+//!   core decides in `cmn-24` as in `cmn-12`, so a tie between quarter-tones
+//!   is made as any other.
 //! - Voices are per staff: a MusicXML voice that crosses staves becomes a
 //!   voice on each. Unpitched notes keep their staff step (read against a
 //!   treble clef, bottom line 0) and their instrument member, and a tie

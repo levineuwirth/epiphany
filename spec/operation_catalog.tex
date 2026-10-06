@@ -680,7 +680,9 @@ when its region holds metric events its target does not admit or a
 insert's overlap check, a move's placement verdict, a replacement rest's
 placement and the re-anchoring order), where it read the old ones; a base-free
 \texttt{InsertEvent} into a region that is not metric is refused
-\texttt{WrongRegionTimeModel}, where it applied; and graph-aware, a migration
+\texttt{WrongRegionTimeModel}, where it applied or was refused for another
+reason (an overlap, or a carried pitch identifier already in canonical state);
+and graph-aware, a migration
 judges an event the occupancy index holds by its indexed placement, which
 differs from the graph only for an event inserted at a wall-clock position into
 a metric region (already a breach of the coordinate discipline), now admitted

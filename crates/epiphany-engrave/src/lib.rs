@@ -283,8 +283,18 @@ pub struct Engraver {
 /// slot of the glyph nearest to its left, which could be another column's
 /// (a tuplet number, an accidental, a displaced head on another staff), so a
 /// stem no longer stands apart from its head where the two columns move by
-/// different amounts.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(31);
+/// different amounts, and to `32` when digits set side by side (a time
+/// signature of several, an ending's numbers) began standing at their own
+/// advances rather than 0.8 apart, which overlapped them, an ending's
+/// numbers took a comma between them, and an ending's bracket began riding
+/// the slots of the columns it opens and closes at, as its numbers do, and
+/// to `33` when the quarter-tone accidentals, arrowed and Stein's, began
+/// drawing from their bundled SMuFL glyphs where they had been surfaced as
+/// unbundled and left undrawn, and to `34` when the measure's accidental
+/// state began counting in quarter-tones, so a quarter-tone accidental holds
+/// to the barline, yields to a change and is cancelled as any other, and two
+/// voices' different quarter-tones on one step no longer share a notehead.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(34);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.

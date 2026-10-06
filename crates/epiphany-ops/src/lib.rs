@@ -200,7 +200,10 @@ pub mod vectors;
 ///   - a base-free `InsertEvent` into a region that is not metric, created so
 ///     or made so by an applied `ChangeRegionTimeModel`, is refused
 ///     `WrongRegionTimeModel`, as graph-aware reduction refuses it, where
-///     version `1` applied it base-free. Each region's coordinate discipline
+///     version `1` applied it base-free, or refused it for another reason:
+///     an overlap with an indexed event (`EventDurationInvalid`) or a
+///     carried pitch id already in canonical state (`TargetTombstoned`).
+///     Each region's coordinate discipline
 ///     is now held in both modes (`region_disciplines`), moved by an applied
 ///     migration and rolled back with a failed transaction;
 ///   - graph-aware, a `ChangeRegionTimeModel` judges each event the occupancy

@@ -6,7 +6,12 @@
 //! list of its events' exact onsets, durations and contents. It also compares
 //! clefs, keys, meters, measures, ties, slurs and each instrument's
 //! transposition, and checks the reader against a raw count of the file's
-//! `<note>` elements.
+//! `<note>` elements, and that every quarter-tone is spelt as it sounds. Tuplets are compared twice: the score's against the
+//! reader's, and the reader's against the census's own timed walk of the
+//! file, tuplet by tuplet, by the staff of the first note, the ratio and each
+//! member's onset, so a reader grouping the wrong notes under the right counts
+//! is a failure. The census times a member within its measure and takes the
+//! measure's start from the reader, as its quarter-tones do.
 //!
 //! A difference is a failure unless the operation that should have produced
 //! the missing thing was refused, in which case it is reported as explained by
@@ -16,7 +21,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::{
     AnchorOffset, Event, EventDuration, EventId, EventPosition, Pitch, PitchSpacePosition,
-    RationalTime, Score, StaffGroupKind, StaffId, TimeAnchor, TimeSignatureDisplay, VoiceId,
+    RationalTime, Score, SpellingDirective, SpellingNominal, SpellingScope, StaffGroupKind,
+    StaffId, TimeAnchor, TimeSignatureDisplay, VoiceId,
 };
 
 use crate::emit::{Import, Subject};
@@ -632,6 +638,8 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
         let starts = crate::emit::event_starts(&part.events);
         let mut source_ties = BTreeMap::new();
         let mut tie_explained = Vec::new();
+        // The refused ties that start on a quarter-tone.
+        let mut refused_quarter_tones = 0usize;
         for (i, event) in part.events.iter().enumerate() {
             let end = event.onset.add(&event.duration);
             let at_end = starts
@@ -681,10 +689,8 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
                 if !ends {
                     continue; // recorded by the importer as a tie without an end
                 }
-                if !crate::emit::tieable(&pitch.pitch) {
-                    continue; // recorded by the importer as a tie on a quarter-tone
-                }
                 if let Some(why) = refused_tie(p, i) {
+                    refused_quarter_tones += usize::from(pitch_key(&pitch.pitch).1 % 2 != 0);
                     tie_explained.push(format!("{name}: tie at {} ({why})", show(&event.onset)));
                     continue;
                 }
@@ -707,24 +713,30 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
         }
         // And held to the census's count of the file's tie starts, taken
         // apart from the reader: each is tied in the score, explained by a
-        // refused tie, or recorded by the importer as without an end, on a
-        // quarter-tone, or on a note the reader dropped; and each of those
-        // three records to the census's own count of its kind.
+        // refused tie, or recorded by the importer as without an end or on a
+        // note the reader dropped, each of those two records to the census's
+        // own count of its kind; and the census's count of the file's ties on
+        // quarter-tones is the score's, tied or refused.
         let census = &source.census[p];
         let tied: isize = graph_ties.values().sum();
+        let quarter: isize = graph_ties
+            .iter()
+            .filter(|((_, _, held, _), _)| matches!(held, Tied::Pitch((_, q, _)) if q % 2 != 0))
+            .map(|(_, count)| *count)
+            .sum();
+        let quarter = quarter.unsigned_abs() + refused_quarter_tones;
         let unended = import.unended_ties.get(p).copied().unwrap_or(0);
-        let quarter = import.quarter_tone_ties.get(p).copied().unwrap_or(0);
         let (refused_ties, dropped) = (tie_explained.len(), part.dropped_tie_starts);
-        if tied.unsigned_abs() + refused_ties + unended + quarter + dropped != census.tie_starts
+        if tied.unsigned_abs() + refused_ties + unended + dropped != census.tie_starts
             || unended != census.unended_ties
             || quarter != census.quarter_tone_ties
             || dropped != census.dropped_tie_starts
         {
             fidelity.failures.push(format!(
-                "{name}: {tied} tie starts tied in the score and {refused_ties} refused; \
-                 {unended} recorded without an end, {quarter} on quarter-tones and {dropped} on \
-                 dropped notes; but the file has {} tie starts, {} without an end, {} on \
-                 quarter-tones and {} on chord notes the model cannot hold",
+                "{name}: {tied} tie starts tied in the score and {refused_ties} refused, \
+                 {quarter} of them on quarter-tones; {unended} recorded without an end and \
+                 {dropped} on dropped notes; but the file has {} tie starts, {} without an end, \
+                 {} on quarter-tones and {} on chord notes the model cannot hold",
                 census.tie_starts,
                 census.unended_ties,
                 census.quarter_tone_ties,
@@ -883,6 +895,67 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
                 "{name}: {} tuplets in the score, {} in the source",
                 graph_tuplets.values().sum::<isize>(),
                 source_tuplets.values().sum::<isize>()
+            ));
+        }
+        // Every tuplet the reader made, refused or not, held to the census's
+        // own timed walk: the staff of its first note, its ratio and each
+        // member's onset. A reader that grouped other notes under the same
+        // counts and ratios differs here. The census times a member within
+        // its measure; the measure's start is the reader's.
+        type PlacedTuplet = (usize, Vec<RationalTime>, (u32, u32));
+        let mut file_tuplets: BTreeMap<PlacedTuplet, usize> = BTreeMap::new();
+        for tuplet in &census.tuplet_places {
+            let onsets = tuplet
+                .members
+                .iter()
+                .map(|(m, offset)| {
+                    source
+                        .measures
+                        .get(*m)
+                        .map_or_else(|| RationalTime::from_int(-1), |m| m.onset.add(offset))
+                })
+                .collect();
+            *file_tuplets
+                .entry((tuplet.staff, onsets, tuplet.ratio))
+                .or_default() += 1;
+        }
+        let mut read_tuplets: BTreeMap<PlacedTuplet, usize> = BTreeMap::new();
+        for tuplet in &part.tuplets {
+            let Some(&first) = tuplet.events.first() else {
+                continue;
+            };
+            let onsets = tuplet
+                .events
+                .iter()
+                .map(|&i| part.events[i].onset.clone())
+                .collect();
+            *read_tuplets
+                .entry((
+                    part.events[first].staff,
+                    onsets,
+                    (tuplet.actual, tuplet.normal),
+                ))
+                .or_default() += 1;
+        }
+        if read_tuplets != file_tuplets {
+            let alone = |a: &BTreeMap<PlacedTuplet, usize>, b: &BTreeMap<PlacedTuplet, usize>| {
+                a.iter().find(|(at, n)| b.get(*at) != Some(n)).map_or_else(
+                    || String::from("none"),
+                    |((staff, onsets, (actual, normal)), _)| {
+                        format!(
+                            "{actual}:{normal} on staff {} with {} members from {}",
+                            staff + 1,
+                            onsets.len(),
+                            onsets.first().map_or_else(|| String::from("?"), show)
+                        )
+                    },
+                )
+            };
+            fidelity.failures.push(format!(
+                "{name}: the reader's tuplets are not the file's; first in the file alone: {}; \
+                 first read alone: {}",
+                alone(&file_tuplets, &read_tuplets),
+                alone(&read_tuplets, &file_tuplets),
             ));
         }
         if made != census.tuplets || part.unmade_tuplets != census.unmade_tuplets {
@@ -1134,7 +1207,87 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
             source.unmade_groups, census.made, census.unmade
         ));
     }
+
+    // Every quarter-tone the score holds is spelt as it sounds: an authored
+    // spelling of its letter and octave whose one accidental alters the
+    // letter by its alteration, valued here by the accidental's own name.
+    let spellings: BTreeMap<_, _> = score
+        .spelling_attachments
+        .iter()
+        .filter(|a| a.layer.is_none())
+        .filter_map(|a| match (&a.scope, &a.directive) {
+            (SpellingScope::Pitch(pitch), SpellingDirective::Explicit(spelling)) => {
+                Some((*pitch, spelling))
+            }
+            _ => None,
+        })
+        .collect();
+    let (mut quarter_tones, mut misspelt) = (0usize, Vec::new());
+    for event in score.events.iter() {
+        let Event::Pitched(event) = event else {
+            continue;
+        };
+        for ip in &event.pitches {
+            let PitchSpacePosition::Cmn {
+                nominal,
+                alteration,
+                octave,
+            } = ip.pitch.scale_position.position
+            else {
+                continue;
+            };
+            if ip.pitch.scale_position.space.as_str() != "cmn-24" || alteration % 2 == 0 {
+                continue;
+            }
+            quarter_tones += 1;
+            let agrees = spellings.get(&ip.id).is_some_and(|spelling| {
+                spelling.nominal == SpellingNominal::Cmn(nominal)
+                    && spelling.octave == octave
+                    && matches!(spelling.accidentals.as_slice(),
+                        [only] if accidental_quarter_tones(only.as_str()) == Some(alteration))
+            });
+            if !agrees {
+                misspelt.push(format!("{nominal:?}{alteration:+}q{octave}"));
+            }
+        }
+    }
+    if !misspelt.is_empty() {
+        fidelity.failures.push(format!(
+            "{} of {quarter_tones} quarter-tones are not spelt as they sound, the first {}",
+            misspelt.len(),
+            misspelt[0]
+        ));
+    }
     fidelity
+}
+
+/// The alteration in quarter-tones a quarter-tone accidental gives its
+/// letter, from its MusicXML name: Stein's by name, an arrowed one as the
+/// accidental under the arrow, a quarter-tone up or down. Kept apart from the
+/// reader's tables, so a reader that spells a quarter-tone with the wrong
+/// accidental differs here.
+fn accidental_quarter_tones(name: &str) -> Option<i8> {
+    match name {
+        "quarter-flat" => return Some(-1),
+        "quarter-sharp" => return Some(1),
+        "three-quarters-flat" => return Some(-3),
+        "three-quarters-sharp" => return Some(3),
+        _ => {}
+    }
+    let (under, arrow) = match name.rsplit_once('-')? {
+        (under, "up") => (under, 1),
+        (under, "down") => (under, -1),
+        _ => return None,
+    };
+    let semitones: i8 = match under {
+        "flat-flat" => -2,
+        "flat" => -1,
+        "natural" => 0,
+        "sharp" => 1,
+        "double-sharp" => 2,
+        _ => return None,
+    };
+    Some(2 * semitones + arrow)
 }
 
 /// A quarter-tone as compared: its onset, its staff within the part, and its

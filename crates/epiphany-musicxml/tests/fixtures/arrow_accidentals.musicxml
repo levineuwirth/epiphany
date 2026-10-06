@@ -2,15 +2,16 @@
 <!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
 <!-- Hand-written for epiphany-musicxml's tests. Quarter-tone accidentals
      written as MuseScore writes them, by name with no <alter>: measures 1 to
-     4 hold each of the fourteen names once. In measure 5 an accidental set by
-     the second voice reaches a later note of the first voice, though the file
-     writes it earlier, and stops at another octave, at the other staff and at
-     a natural. In measures 6 to 9 an accidental carries over a tie, across
-     the barline, to the tied note alone, and along a chain of two ties. In
-     measures 10 and 11 two voices tie the same written D over a barline, one
-     natural and one a quarter-tone sharp, and each continuation keeps its
-     own. In measure 12 a note that writes no accidental takes the later of
-     two quarter-tone accidentals of different value on its line. -->
+     4 hold each of the fourteen names once. Each applies to its own note
+     alone, as MuseScore reads it: in measure 5 one set by the second voice
+     reaches no later note, neither the first voice's B, which the file
+     writes earlier, nor one at another octave or on the other staff, and a
+     natural follows it. In measures 6 to 9 an accidental carries over a tie,
+     across the barline, to the tied note alone, and along a chain of two
+     ties. In measures 10 and 11 two voices tie the same written D over a
+     barline, one natural and one a quarter-tone sharp, and each continuation
+     keeps its own. In measure 12 a note that writes no accidental, after two
+     quarter-tone accidentals of different value on its line, is natural. -->
 <score-partwise version="4.0">
   <part-list>
     <score-part id="P1"><part-name>Piano</part-name></score-part>

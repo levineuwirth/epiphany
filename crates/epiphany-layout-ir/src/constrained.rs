@@ -21,7 +21,7 @@ use epiphany_determinism::{DomainTag, Preimage};
 
 use crate::engrave_theory::{
     accidental_glyph, alteration_glyph, clef_glyph_for, flag_count, flag_glyph, has_stem,
-    key_alteration, key_signature, notehead_glyph, rest_glyph, stack_alteration, staff_position,
+    key_alteration, key_signature, notehead_glyph, rest_glyph, stack_quarter_tones, staff_position,
     StaffStep,
 };
 use crate::engraving::{EngravingDecision, OverrideKind, OverridePriority, OverrideTarget};
@@ -720,9 +720,8 @@ const SIGNATURE_GAP: f32 = 1.0; // the gap between a time signature's ink and th
 const CLEF_CHANGE_GAP: f32 = 0.5; // the gap between a clef change's ink and the barline or note after it
 const CLEF_NUMERAL_OVERLAP: f32 = 0.1; // how far an octave numeral reaches into its clef's box, as Bravura's octave clefs draw it
 const REST_VOICE_SHIFT: f32 = 1.0; // how far a rest beside another voice moves off its place
-const TIME_DIGIT_X: f32 = 0.8; // x advance per time-signature digit
-                               // Repeat/volta engraving defaults (Minimal tier; SMuFL engraving-default
-                               // neighborhood, not solver-negotiated).
+                                   // Repeat/volta engraving defaults (Minimal tier; SMuFL engraving-default
+                                   // neighborhood, not solver-negotiated).
 const REPEAT_DOTS_SEPARATION: f32 = 0.16; // gap between the dot pair and the barline it decorates
 const VOLTA_Y: f32 = 6.5; // the bracket line, above the top staff's bottom line
 const VOLTA_HOOK: f32 = 1.4; // the descending hook at each bracket end
@@ -730,9 +729,11 @@ const VOLTA_LINE_THICKNESS: f32 = 0.16; // SMuFL repeatEndingLineThickness defau
 const VOLTA_TEXT_X: f32 = 0.4; // the first ending digit sits this far right of the bracket start
 const VOLTA_TEXT_DROP: f32 = 1.3; // ending-digit baseline, below the bracket line
 const VOLTA_ENDING_GAP: f32 = 0.5; // extra gap between successive ending numbers
-                                   // Slur engraving defaults (Minimal tier; a symmetric cubic arc — Push 3 refines
-                                   // with collision-aware shaping).
-                                   // A slur's endpoints and its arc clear the notes by this much, on the arc's side.
+const VOLTA_COMMA: &str = "timeSigComma"; // between successive ending numbers
+const VOLTA_COMMA_DROP: f32 = 0.45; // the comma sits on the digits' bottom edge (their baseline is their middle), so it reaches no lower
+                                    // Slur engraving defaults (Minimal tier; a symmetric cubic arc — Push 3 refines
+                                    // with collision-aware shaping).
+                                    // A slur's endpoints and its arc clear the notes by this much, on the arc's side.
 const SLUR_ENDPOINT_GAP: f32 = 0.7;
 const SLUR_HEIGHT_FACTOR: f32 = 0.16; // auto arc apex height as a fraction of span width
 const SLUR_MIN_HEIGHT: f32 = 0.8; // …clamped to at least this many staff spaces
@@ -1046,9 +1047,10 @@ pub fn try_to_constrained(
                                 });
                             }
                             // The accidental the key and the measure call for draws on
-                            // the first component only; a spelling whose alteration
-                            // is not whole semitones draws its own stack, and an
-                            // unbundled (microtonal) one is surfaced, not guessed.
+                            // the first component only; a spelling the measure does
+                            // not track (a stack of several, or an unbundled
+                            // accidental) draws its own stack, and an unbundled one
+                            // is surfaced, not guessed.
                             let accidentals = match (comp, shown_accidentals.get(&pitch.pitch)) {
                                 (0, Some(shown)) => shown.clone(),
                                 (0, None) => pitch_accidentals(
@@ -1060,7 +1062,7 @@ pub fn try_to_constrained(
                             };
                             let alteration = pitch.spelling.as_ref().and_then(|spelling| {
                                 matches!(spelling.nominal, SpellingNominal::Cmn(_))
-                                    .then(|| stack_alteration(&spelling.accidentals))
+                                    .then(|| stack_quarter_tones(&spelling.accidentals))
                                     .flatten()
                             });
                             placed.push((pitch.pitch, step, accidentals, alteration));
@@ -2206,12 +2208,31 @@ pub fn try_to_constrained(
                                 (0u8, time_signature.numerator, yo + 3.0),
                                 (1u8, time_signature.denominator, yo + 1.0),
                             ];
+                            // Digits stand side by side at their own advances. A
+                            // signature of single digits keeps them on one origin;
+                            // where a line has several, each line is centred under
+                            // the widest, which starts at the signature's origin.
+                            let width = |value: u32| -> f32 {
+                                digits_of(value)
+                                    .iter()
+                                    .map(|digit| glyph_advance(time_digit(*digit)))
+                                    .sum()
+                            };
+                            let several = lines
+                                .iter()
+                                .any(|(_, value, _)| digits_of(u32::from(*value)).len() > 1);
+                            let widest = lines
+                                .iter()
+                                .map(|(_, value, _)| width(u32::from(*value)))
+                                .fold(0.0f32, f32::max);
                             for (role, value, baseline_y) in lines {
                                 let digits = digits_of(u32::from(value));
-                                let count = digits.len() as f32;
+                                let mut x = if several {
+                                    center_x + (widest - width(u32::from(value))) / 2.0
+                                } else {
+                                    center_x
+                                };
                                 for (i, digit) in digits.iter().enumerate() {
-                                    let x =
-                                        center_x + (i as f32 - (count - 1.0) / 2.0) * TIME_DIGIT_X;
                                     let digit_provenance = Provenance::synthesized(
                                         provenance.source,
                                         SynthesisKind::Registered(TIME_SIG_SYNTHESIS),
@@ -2226,6 +2247,7 @@ pub fn try_to_constrained(
                                         staff,
                                         info.slot,
                                     );
+                                    x += glyph_advance(time_digit(*digit));
                                 }
                             }
                         }
@@ -2272,35 +2294,63 @@ pub fn try_to_constrained(
                                 provenance.dependencies.clone(),
                             )
                         };
-                        emit.stroke(line_stroke(
+                        // The line and its hooks ride the slots of the columns
+                        // they start and end at, as the numbers ride the
+                        // start's, so spacing keeps the numbers inside the
+                        // bracket they label.
+                        let line = line_stroke(
                             volta_provenance(0),
                             Point::new(start.x, y),
                             Point::new(end.x, y),
                             VOLTA_LINE_THICKNESS,
                             band_of(staff),
-                        ));
-                        for (element, x) in [(1u128, start.x), (2u128, end.x)] {
-                            emit.stroke(line_stroke(
+                        );
+                        span_anchors.push(SpanAnchor {
+                            primitive: line.id(),
+                            start: start.slot,
+                            end: end.slot,
+                        });
+                        emit.stroke(line);
+                        for (element, column) in [(1u128, start), (2u128, end)] {
+                            let hook = line_stroke(
                                 volta_provenance(element),
-                                Point::new(x, y),
-                                Point::new(x, y - VOLTA_HOOK),
+                                Point::new(column.x, y),
+                                Point::new(column.x, y - VOLTA_HOOK),
                                 VOLTA_LINE_THICKNESS,
                                 band_of(staff),
-                            ));
+                            );
+                            span_anchors.push(SpanAnchor {
+                                primitive: hook.id(),
+                                start: column.slot,
+                                end: column.slot,
+                            });
+                            emit.stroke(hook);
                         }
+                        // The ending numbers stand at their own advances, a
+                        // comma after each but the last.
                         let mut cursor = start.x + VOLTA_TEXT_X;
                         let mut element = 3u128;
-                        for ending in &volta.endings {
-                            for digit in digits_of(*ending) {
+                        for (k, ending) in volta.endings.iter().enumerate() {
+                            let mut names: Vec<&'static str> =
+                                digits_of(*ending).into_iter().map(time_digit).collect();
+                            if k + 1 < volta.endings.len() {
+                                names.push(VOLTA_COMMA);
+                            }
+                            for name in names {
+                                let drop = if name == VOLTA_COMMA {
+                                    VOLTA_TEXT_DROP + VOLTA_COMMA_DROP
+                                } else {
+                                    VOLTA_TEXT_DROP
+                                };
                                 emit.glyph(
                                     &volta_provenance(element),
-                                    time_digit(digit),
-                                    Point::new(cursor, y - VOLTA_TEXT_DROP),
+                                    name,
+                                    Point::new(cursor, y - drop),
                                     band_of(top_staff),
                                     top_staff,
                                     start.slot,
                                 );
-                                cursor += TIME_DIGIT_X;
+                                cursor += glyph_advance(name);
                                 element += 1;
                             }
                             cursor += VOLTA_ENDING_GAP;
@@ -3610,6 +3660,12 @@ fn digits_of(value: u32) -> Vec<u8> {
 }
 
 /// The SMuFL time-signature glyph for a decimal digit.
+/// A bundled glyph's advance in staff spaces: how far the next glyph set
+/// beside it stands. Zero for a glyph the metrics do not carry.
+fn glyph_advance(name: &str) -> f32 {
+    metrics(name).map_or(0.0, |m| m.advance as f32 / 1024.0)
+}
+
 fn time_digit(digit: u8) -> &'static str {
     match digit {
         0 => "timeSig0",
@@ -3891,8 +3947,14 @@ const CARRIED: i8 = i8::MIN;
 /// tie continues into. Where that note's alteration is not what the measure
 /// gave, the next note of its letter and octave in the measure shows its own
 /// accidental, the tied one's restated or a courtesy natural. Every voice of
-/// a staff shares its state, taken in time order. A pitch whose spelling is
-/// not whole semitones is absent, and draws its own stack.
+/// a staff shares its state, taken in time order. Alterations are counted in
+/// quarter-tones, so a quarter-tone accidental joins the same state: it holds
+/// to the barline as any other, a natural or a flat after it on its letter is
+/// shown, and one stated again is not. A whole-semitone alteration draws its
+/// standard accidental, a quarter-tone one the spelling's own (arrowed or
+/// Stein's, as the file wrote it). A pitch whose stack the state does not
+/// track (several accidentals, or one with no bundled glyph) is absent, and
+/// draws its own stack.
 fn context_accidentals(
     objects: &[crate::logical::LayoutObject],
 ) -> BTreeMap<PitchId, Vec<&'static str>> {
@@ -3929,6 +3991,8 @@ fn context_accidentals(
             .notes
             .sort_by(|a, b| time_total(&a.position, &b.position));
         let mut measure = None;
+        // Per letter and octave, the alteration in quarter-tones the measure
+        // gives so far.
         let mut state: BTreeMap<(epiphany_core::CmnNominal, i8), i8> = BTreeMap::new();
         for note in &staff.notes {
             let index = staff
@@ -3946,14 +4010,14 @@ fn context_accidentals(
                 let SpellingNominal::Cmn(nominal) = spelling.nominal else {
                     continue;
                 };
-                let Some(alteration) = stack_alteration(&spelling.accidentals) else {
+                let Some(alteration) = stack_quarter_tones(&spelling.accidentals) else {
                     continue;
                 };
                 let place = (nominal, spelling.octave);
                 let current = state
                     .get(&place)
                     .copied()
-                    .unwrap_or_else(|| key.map_or(0, |k| key_alteration(k, nominal)));
+                    .unwrap_or_else(|| key.map_or(0, |k| 2 * key_alteration(k, nominal)));
                 if tied_into.contains(&pitch.pitch) {
                     // A tie carries its accidental to the tied note alone: a
                     // later note of its letter and octave in the bar states
@@ -3968,7 +4032,15 @@ fn context_accidentals(
                     Vec::new()
                 } else {
                     state.insert(place, alteration);
-                    alteration_glyph(alteration).into_iter().collect()
+                    if alteration % 2 == 0 {
+                        alteration_glyph(alteration / 2).into_iter().collect()
+                    } else {
+                        spelling
+                            .accidentals
+                            .iter()
+                            .filter_map(accidental_glyph)
+                            .collect()
+                    }
                 };
                 shown.insert(pitch.pitch, glyphs);
             }
@@ -7464,7 +7536,8 @@ mod tests {
         let staff = StaffId::from_raw(10);
         let pitch = PitchId::from_raw(100);
         let mut spelling = PitchSpelling::cmn(CmnNominal::E, 5);
-        spelling.accidentals.push(AccidentalId::new("quarter-flat"));
+        // Persian music's sori, which no bundled glyph draws.
+        spelling.accidentals.push(AccidentalId::new("sori"));
         let manifested = |src, content| {
             LayoutObject::from_projection_with_content(
                 Provenance::manifested(src, region, vec![]),
@@ -7511,7 +7584,7 @@ mod tests {
             .expect("the unbundled accidental is surfaced, not hidden");
         assert!(
             matches!(&diagnostic.kind,
-                LayoutDiagnosticKind::UnbundledGlyph(g) if g.as_str() == "quarter-flat"),
+                LayoutDiagnosticKind::UnbundledGlyph(g) if g.as_str() == "sori"),
             "and says why: {:?}",
             diagnostic.kind
         );

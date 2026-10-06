@@ -1644,3 +1644,32 @@ P12-H4's "region origin assumed to be a barline" no longer holds.
 referents. Pickups need none of it: the importer anchors every measure and
 meter change at its region's start with a musical offset, which the relation
 already orders and measures.
+
+## Quarter-tone ties: equality in the space's chromatic layer (X3b.4, 2026-10-05)
+
+`req:graph:tie-class-validation` asks a standard, editorial or cross-voice
+tie's paired pitches to be "enharmonically equivalent under the active tuning
+system". Invariant 17 read that as `Pitch::enharmonic_equivalent`, which is
+12-TET sounding equivalence and answers only in a twelve-chromatic space, so no
+two `cmn-24` quarter-tones could pair and the importer recorded every
+quarter-tone tie instead of making it. The invariant now reads it as
+`Pitch::chromatic_equivalent`: equal in the pitch space's own chromatic layer.
+Every pair enharmonic equivalence accepts is accepted, and in `cmn-12` the two
+relations agree pair for pair (tested over five alterations of every letter in
+three octaves). In another built-in space with a diatonic-over-chromatic
+structure, two CMN positions are equal when their absolute chromatic
+coordinates are, `octave*C + m(nominal) + alteration` with the space's own
+`C` and `m`: in `cmn-24` a C quarter-sharp equals a D three-quarter-flat and
+equals nothing a quarter-tone away. Different spaces never pair, nor do
+positions whose structure does not resolve. `enharmonic_equivalent` keeps its
+specification meaning and is unchanged.
+
+No reduction checks a tie's pitches (`create_cross_cutting` checks only that
+its events are live), so a quarter-tone tie applied in both reduction modes
+before this as after, and no canonical verdict or reduced state changes:
+`CURRENT_REDUCTION_ALGORITHM_VERSION` does not move. What moves is the
+well-formedness check a reduced score is held to. Locked by
+`chromatic_equivalence_is_enharmonic_in_cmn_12_and_holds_quarter_tones_in_cmn_24`,
+`inv17_pairs_quarter_tones_by_their_place_in_cmn_24`, and `epiphany-musicxml`'s
+`a_tie_between_quarter_tones_applies_and_pairs_in_both_modes`, which on the tree
+before this change passes every verdict assertion and fails only the invariant.

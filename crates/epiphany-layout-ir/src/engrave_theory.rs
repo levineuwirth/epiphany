@@ -183,8 +183,11 @@ pub fn clef_glyph_for(clef: &Clef) -> Option<&'static str> {
 }
 
 /// The SMuFL accidental glyph for a spelling accidental, if one is bundled.
-/// `None` for an accidental the bundled metrics don't carry (e.g. microtonal),
-/// which the caller surfaces rather than papers over.
+/// The quarter-tone accidentals go by their MusicXML names, as the importer
+/// spells them, to the glyphs MusicXML assigns them: the arrowed ones to
+/// SMuFL's Gould arrow accidentals, Stein's to Stein's (and Zimmermann's
+/// three-quarter flat). `None` for an accidental the bundled metrics don't
+/// carry, which the caller surfaces rather than papers over.
 pub fn accidental_glyph(accidental: &AccidentalId) -> Option<&'static str> {
     Some(match accidental.as_str() {
         "sharp" => "accidentalSharp",
@@ -192,28 +195,49 @@ pub fn accidental_glyph(accidental: &AccidentalId) -> Option<&'static str> {
         "natural" => "accidentalNatural",
         "doublesharp" | "double-sharp" => "accidentalDoubleSharp",
         "doubleflat" | "double-flat" | "flat-flat" => "accidentalDoubleFlat",
+        "flat-up" => "accidentalQuarterToneFlatArrowUp",
+        "flat-down" => "accidentalThreeQuarterTonesFlatArrowDown",
+        "natural-up" => "accidentalQuarterToneSharpNaturalArrowUp",
+        "natural-down" => "accidentalQuarterToneFlatNaturalArrowDown",
+        "sharp-up" => "accidentalThreeQuarterTonesSharpArrowUp",
+        "sharp-down" => "accidentalQuarterToneSharpArrowDown",
+        "double-sharp-up" => "accidentalFiveQuarterTonesSharpArrowUp",
+        "double-sharp-down" => "accidentalThreeQuarterTonesSharpArrowDown",
+        "flat-flat-up" => "accidentalThreeQuarterTonesFlatArrowUp",
+        "flat-flat-down" => "accidentalFiveQuarterTonesFlatArrowDown",
+        "quarter-flat" => "accidentalQuarterToneFlatStein",
+        "three-quarters-flat" => "accidentalThreeQuarterTonesFlatZimmermann",
+        "quarter-sharp" => "accidentalQuarterToneSharpStein",
+        "three-quarters-sharp" => "accidentalThreeQuarterTonesSharpStein",
         _ => return None,
     })
 }
 
-/// The alteration, in semitones, a spelling's accidental stack states: none
-/// for an empty stack, the accidental's for a single standard one. `None` for
-/// a stack of several, or for an accidental of no whole number of semitones
-/// (a microtonal one): those are drawn as written, out of the key and
-/// measure context this tier tracks.
-pub fn stack_alteration(accidentals: &[AccidentalId]) -> Option<i8> {
-    match accidentals {
-        [] => Some(0),
-        [only] => match only.as_str() {
-            "natural" => Some(0),
-            "sharp" => Some(1),
-            "flat" => Some(-1),
-            "doublesharp" | "double-sharp" => Some(2),
-            "doubleflat" | "double-flat" | "flat-flat" => Some(-2),
-            _ => None,
-        },
-        _ => None,
-    }
+/// The alteration, in quarter-tones, a spelling's accidental stack states:
+/// none for an empty stack, the accidental's for a single one
+/// [`accidental_glyph`] draws, a standard one at two quarter-tones a semitone
+/// and a quarter-tone one by its MusicXML name. `None` for a stack of
+/// several, or an accidental with no bundled glyph: those are drawn as
+/// written, out of the key and measure context this tier tracks, and an
+/// unbundled one is surfaced.
+pub fn stack_quarter_tones(accidentals: &[AccidentalId]) -> Option<i8> {
+    let [only] = accidentals else {
+        return accidentals.is_empty().then_some(0);
+    };
+    Some(match only.as_str() {
+        "natural" => 0,
+        "sharp" => 2,
+        "flat" => -2,
+        "doublesharp" | "double-sharp" => 4,
+        "doubleflat" | "double-flat" | "flat-flat" => -4,
+        "flat-flat-down" => -5,
+        "flat-flat-up" | "flat-down" | "three-quarters-flat" => -3,
+        "flat-up" | "natural-down" | "quarter-flat" => -1,
+        "natural-up" | "sharp-down" | "quarter-sharp" => 1,
+        "sharp-up" | "double-sharp-down" | "three-quarters-sharp" => 3,
+        "double-sharp-up" => 5,
+        _ => return None,
+    })
 }
 
 /// The alteration, in semitones, a key signature gives a letter: a sharp for
@@ -484,7 +508,102 @@ mod tests {
             accidental_glyph(&AccidentalId::new("natural")),
             Some("accidentalNatural")
         );
-        assert_eq!(accidental_glyph(&AccidentalId::new("quarter-sharp")), None);
+        // Every quarter-tone accidental the importer spells with draws, from
+        // a bundled glyph, as MusicXML assigns its name to SMuFL.
+        for (name, glyph) in [
+            ("flat-up", "accidentalQuarterToneFlatArrowUp"),
+            ("flat-down", "accidentalThreeQuarterTonesFlatArrowDown"),
+            ("natural-up", "accidentalQuarterToneSharpNaturalArrowUp"),
+            ("natural-down", "accidentalQuarterToneFlatNaturalArrowDown"),
+            ("sharp-up", "accidentalThreeQuarterTonesSharpArrowUp"),
+            ("sharp-down", "accidentalQuarterToneSharpArrowDown"),
+            ("double-sharp-up", "accidentalFiveQuarterTonesSharpArrowUp"),
+            (
+                "double-sharp-down",
+                "accidentalThreeQuarterTonesSharpArrowDown",
+            ),
+            ("flat-flat-up", "accidentalThreeQuarterTonesFlatArrowUp"),
+            ("flat-flat-down", "accidentalFiveQuarterTonesFlatArrowDown"),
+            ("quarter-flat", "accidentalQuarterToneFlatStein"),
+            (
+                "three-quarters-flat",
+                "accidentalThreeQuarterTonesFlatZimmermann",
+            ),
+            ("quarter-sharp", "accidentalQuarterToneSharpStein"),
+            (
+                "three-quarters-sharp",
+                "accidentalThreeQuarterTonesSharpStein",
+            ),
+        ] {
+            assert_eq!(accidental_glyph(&AccidentalId::new(name)), Some(glyph));
+            assert!(crate::metrics(glyph).is_some(), "{glyph} is bundled");
+        }
+        assert_eq!(accidental_glyph(&AccidentalId::new("slash-flat")), None);
+    }
+
+    /// Each accidental the measure's state tracks states, in quarter-tones,
+    /// the alteration its glyph's SMuFL name gives: a row per name, the value
+    /// written out and read again from the glyph `accidental_glyph` draws.
+    #[test]
+    fn each_tracked_accidental_states_the_alteration_its_glyph_names() {
+        // The alteration a SMuFL accidental's name states, in quarter-tones.
+        fn named(glyph: &str) -> i8 {
+            let rest = glyph.strip_prefix("accidental").expect("an accidental");
+            let (size, rest) = [
+                ("FiveQuarterTones", 5),
+                ("ThreeQuarterTones", 3),
+                ("QuarterTone", 1),
+                ("Double", 4),
+            ]
+            .iter()
+            .find_map(|(prefix, size)| rest.strip_prefix(prefix).map(|r| (*size, r)))
+            .unwrap_or((2, rest));
+            if rest.starts_with("Sharp") {
+                size
+            } else if rest.starts_with("Flat") {
+                -size
+            } else {
+                assert_eq!(rest, "Natural", "{glyph}");
+                0
+            }
+        }
+        for (name, quarter_tones) in [
+            ("natural", 0),
+            ("sharp", 2),
+            ("flat", -2),
+            ("doublesharp", 4),
+            ("double-sharp", 4),
+            ("doubleflat", -4),
+            ("double-flat", -4),
+            ("flat-flat", -4),
+            ("flat-flat-down", -5),
+            ("flat-flat-up", -3),
+            ("flat-down", -3),
+            ("three-quarters-flat", -3),
+            ("flat-up", -1),
+            ("natural-down", -1),
+            ("quarter-flat", -1),
+            ("natural-up", 1),
+            ("sharp-down", 1),
+            ("quarter-sharp", 1),
+            ("sharp-up", 3),
+            ("double-sharp-down", 3),
+            ("three-quarters-sharp", 3),
+            ("double-sharp-up", 5),
+        ] {
+            let accidental = AccidentalId::new(name);
+            assert_eq!(
+                stack_quarter_tones(std::slice::from_ref(&accidental)),
+                Some(quarter_tones),
+                "{name}"
+            );
+            let glyph = accidental_glyph(&accidental).expect("drawn");
+            assert_eq!(named(glyph), quarter_tones, "{name} draws {glyph}");
+        }
+        assert_eq!(stack_quarter_tones(&[]), Some(0));
+        let sharp = AccidentalId::new("sharp");
+        assert_eq!(stack_quarter_tones(&[sharp.clone(), sharp]), None);
+        assert_eq!(stack_quarter_tones(&[AccidentalId::new("sori")]), None);
     }
 
     #[test]

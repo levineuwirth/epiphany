@@ -27,10 +27,13 @@
 //!   width.
 //!
 //! Every command in the observed grammar carries exactly one point (`M`,
-//! `L`), one coordinate (`V`, `H`), three points (`C`), or none (`Z`) — the
-//! generator never merges consecutive same-type commands into a
-//! multi-coordinate group, so the parser does not need to handle that SVG
-//! generality either.
+//! `L`), one coordinate (`V`, `H`), three points (`C`), or none (`Z`), with
+//! one exception the quarter-tone accidentals brought in: a lineto that
+//! follows a moveto, before any other command, is written as a bare point
+//! after a space, SVG's implicit lineto, since the pen omits the `L` while
+//! its last command is still `M` (`SVGPathPen._lineTo`). A point after any
+//! other command always carries its letter. The parser reads exactly that,
+//! and refuses a bare point after any other command.
 
 use epiphany_layout_ir::{PathCommand, Point};
 
@@ -72,9 +75,24 @@ pub(crate) fn parse_d(d: &str) -> Vec<PathCommand> {
             .unwrap_or_else(|e| panic!("bad number token {tok:?} in {d:?}: {e}"))
     };
 
+    // The last command written with its letter: a bare point continues an
+    // `M` as an implicit lineto, and only an `M`.
+    let mut last = 0u8;
     while i < bytes.len() {
-        let cmd = bytes[i];
-        i += 1;
+        let mut cmd = bytes[i];
+        // The pen writes a bare point after a space, never directly after
+        // the previous number.
+        if cmd == b' ' {
+            assert!(
+                last == b'M',
+                "a bare point after {:?} in {d:?}: only an M's implicit lineto is bare",
+                last as char
+            );
+            cmd = b'L';
+        } else {
+            i += 1;
+            last = cmd;
+        }
         match cmd {
             b'M' => {
                 let x = take_number(bytes, &mut i);
@@ -149,10 +167,14 @@ pub(crate) fn emit_d(commands: &[PathCommand]) -> String {
     let mut out = String::new();
     let mut cur = (0.0f32, 0.0f32);
     let mut subpath_start = (0.0f32, 0.0f32);
+    // The pen's last lettered command: while it is `M`, a lineto that is not
+    // vertical or horizontal goes bare, after a space.
+    let mut last = ' ';
     for cmd in commands {
         match cmd {
             PathCommand::MoveTo(p) => {
                 let (x, y) = (p.x.0, p.y.0);
+                last = 'M';
                 out.push('M');
                 push_num(&mut out, x);
                 out.push(' ');
@@ -165,12 +187,20 @@ pub(crate) fn emit_d(commands: &[PathCommand]) -> String {
                 let x_same = x == cur.0;
                 let y_same = y == cur.1;
                 if x_same && !y_same {
+                    last = 'V';
                     out.push('V');
                     push_num(&mut out, y);
                 } else if y_same && !x_same {
+                    last = 'H';
                     out.push('H');
                     push_num(&mut out, x);
+                } else if last == 'M' {
+                    out.push(' ');
+                    push_num(&mut out, x);
+                    out.push(' ');
+                    push_num(&mut out, y);
                 } else {
+                    last = 'L';
                     out.push('L');
                     push_num(&mut out, x);
                     out.push(' ');
@@ -183,6 +213,7 @@ pub(crate) fn emit_d(commands: &[PathCommand]) -> String {
                 control2,
                 to,
             } => {
+                last = 'C';
                 out.push('C');
                 push_num(&mut out, control1.x.0);
                 out.push(' ');
@@ -198,6 +229,7 @@ pub(crate) fn emit_d(commands: &[PathCommand]) -> String {
                 cur = (to.x.0, to.y.0);
             }
             PathCommand::Close => {
+                last = 'Z';
                 out.push('Z');
                 cur = subpath_start;
             }
@@ -242,7 +274,7 @@ mod tests {
     fn every_bundled_glyph_round_trips_byte_for_byte() {
         assert_eq!(
             BRAVURA_OUTLINES.len(),
-            77,
+            92,
             "sanity: the bundled glyph count moved"
         );
         for o in BRAVURA_OUTLINES {

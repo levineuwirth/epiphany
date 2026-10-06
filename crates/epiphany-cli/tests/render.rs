@@ -2951,3 +2951,509 @@ fn a_hand_written_score_engraves_to_its_golden() {
         golden.display()
     );
 }
+
+/// A time signature of several digits sets them side by side at their own
+/// widths, no digit's ink meeting the next, and centres its shorter line
+/// under its longer: 12 over 8, then 4 over 16.
+#[test]
+fn a_time_signatures_digits_stand_apart_and_centred() {
+    let attributes = |beats: u8, beat_type: u8, first: bool| {
+        format!(
+            "<attributes>{}<time><beats>{beats}</beats><beat-type>{beat_type}</beat-type>\
+             </time>{}</attributes>",
+            if first {
+                "<divisions>4</divisions>"
+            } else {
+                ""
+            },
+            if first {
+                "<clef><sign>G</sign><line>2</line></clef>"
+            } else {
+                ""
+            },
+        )
+    };
+    // Divisions 4: the 12/8 bar is a dotted whole, the 4/16 bar a quarter.
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\">\
+         <part-name>Flute</part-name></score-part></part-list><part id=\"P1\">\
+         <measure number=\"1\">{}<note><pitch><step>C</step><octave>5</octave></pitch>\
+         <duration>24</duration><voice>1</voice><type>whole</type><dot/></note></measure>\
+         <measure number=\"2\">{}<note><pitch><step>C</step><octave>5</octave></pitch>\
+         <duration>4</duration><voice>1</voice><type>quarter</type></note></measure>\
+         </part></score-partwise>",
+        attributes(12, 8, true),
+        attributes(4, 16, false),
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("long_meters.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = epiphany_cli::engrave_loaded(&loaded).layout;
+    // Each signature's digits (a name and its ink), by the measure they are
+    // drawn for.
+    type Digits<'a> = Vec<(&'a str, [f32; 4])>;
+    let mut signatures: Vec<(epiphany_core::TypedObjectId, Digits)> = Vec::new();
+    for glyph in &layout.glyphs {
+        if !glyph.glyph.as_str().starts_with("timeSig") {
+            continue;
+        }
+        let digit = (glyph.glyph.as_str(), glyph_box(glyph));
+        match signatures
+            .iter_mut()
+            .find(|(source, _)| *source == glyph.provenance.source)
+        {
+            Some((_, digits)) => digits.push(digit),
+            None => signatures.push((glyph.provenance.source, vec![digit])),
+        }
+    }
+    signatures.sort_by(|a, b| a.1[0].1[0].total_cmp(&b.1[0].1[0]));
+    let read: Vec<(Vec<&str>, Vec<&str>)> = signatures
+        .iter()
+        .map(|(_, digits)| {
+            let top = digits
+                .iter()
+                .map(|(_, ink)| ink[3])
+                .fold(f32::MIN, f32::max);
+            let line = |upper: bool| {
+                let mut line: Vec<&(&str, [f32; 4])> = digits
+                    .iter()
+                    .filter(|(_, ink)| (ink[3] > top - 1.0) == upper)
+                    .collect();
+                line.sort_by(|a, b| a.1[0].total_cmp(&b.1[0]));
+                for pair in line.windows(2) {
+                    assert!(
+                        pair[0].1[2] <= pair[1].1[0],
+                        "{} ends at {} but {} starts at {}",
+                        pair[0].0,
+                        pair[0].1[2],
+                        pair[1].0,
+                        pair[1].1[0]
+                    );
+                }
+                line
+            };
+            let (upper, lower) = (line(true), line(false));
+            let centre =
+                |line: &[&(&str, [f32; 4])]| (line[0].1[0] + line[line.len() - 1].1[2]) / 2.0;
+            assert!(
+                (centre(&upper) - centre(&lower)).abs() < 0.2,
+                "the lines are centred on one axis: {} and {}",
+                centre(&upper),
+                centre(&lower)
+            );
+            (
+                upper.iter().map(|(n, _)| *n).collect(),
+                lower.iter().map(|(n, _)| *n).collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        read,
+        [
+            (vec!["timeSig1", "timeSig2"], vec!["timeSig8"]),
+            (vec!["timeSig4"], vec!["timeSig1", "timeSig6"]),
+        ]
+    );
+}
+
+/// A quarter-tone's notehead stands at the step of its letter and octave, as
+/// its authored spelling gives it, and draws no missing-spelling fallback:
+/// each of the hand-written fixture's quarter-tones, measured from its
+/// staff's bottom line on the page.
+#[test]
+fn a_quarter_tone_stands_at_its_spelled_step() {
+    use epiphany_core::{Event, PitchSpacePosition, TypedObjectId};
+    use epiphany_layout_ir::constrained::LayoutDiagnosticKind;
+
+    let loaded = load(&fixture("arrow_accidentals.musicxml")).expect("loads");
+    let score = &loaded.reduced.score;
+    let engraved = epiphany_cli::engrave_loaded(&loaded);
+    let layout = &engraved.layout;
+    assert!(
+        !engraved
+            .diagnostics
+            .iter()
+            .any(|d| d.kind == LayoutDiagnosticKind::MissingSpelling),
+        "a pitch drew at its clef's reference line"
+    );
+    let treble = epiphany_core::Clef {
+        shape: epiphany_core::ClefShape::G,
+        line: 2,
+        octave_shift: 0,
+    };
+    let staff = score.staves[0].id;
+    let mut checked = 0;
+    for system in layout.systems() {
+        let bottom = system
+            .primitives
+            .strokes
+            .iter()
+            .map(|&i| &layout.strokes[i as usize])
+            .filter(|s| s.provenance.source == TypedObjectId::Staff(staff))
+            .map(|s| s.from.y.0)
+            .fold(f32::INFINITY, f32::min);
+        for glyph in system
+            .primitives
+            .glyphs
+            .iter()
+            .map(|&i| &layout.glyphs[i as usize])
+            .filter(|g| g.glyph.as_str().starts_with("notehead"))
+        {
+            let TypedObjectId::Pitch(id) = glyph.provenance.source else {
+                continue;
+            };
+            let pitch = score
+                .events
+                .iter()
+                .find_map(|e| match e {
+                    Event::Pitched(p) => p.pitches.iter().find(|ip| ip.id == id),
+                    _ => None,
+                })
+                .expect("the head's pitch is in the score");
+            if pitch.pitch.scale_position.space.as_str() != "cmn-24" {
+                continue;
+            }
+            let PitchSpacePosition::Cmn {
+                nominal, octave, ..
+            } = pitch.pitch.scale_position.position
+            else {
+                panic!("a CMN pitch")
+            };
+            let step = epiphany_layout_ir::staff_position(nominal, octave, &treble);
+            let expected = bottom + step as f32 * 0.5;
+            assert!(
+                (glyph.position.y.0 - expected).abs() < 1e-3,
+                "{nominal:?}{octave} stands at {}, its step {step} at {expected}",
+                glyph.position.y.0
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 24, "every quarter-tone of the fixture is checked");
+}
+
+/// Each quarter-tone accidental draws its SMuFL glyph beside its own head:
+/// the hand-written fixture's first fourteen quarter-tones hold each of the
+/// fourteen names once, ten arrowed and Stein's four, and the page draws
+/// each one's glyph traced to its pitch, with no glyph left unbundled.
+#[test]
+fn each_quarter_tone_accidental_draws_its_smufl_glyph() {
+    use epiphany_core::{Event, EventPosition, TypedObjectId};
+    use epiphany_layout_ir::constrained::LayoutDiagnosticKind;
+
+    let loaded = load(&fixture("arrow_accidentals.musicxml")).expect("loads");
+    let score = &loaded.reduced.score;
+    let engraved = epiphany_cli::engrave_loaded(&loaded);
+    assert!(
+        !engraved
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, LayoutDiagnosticKind::UnbundledGlyph(_))),
+        "{:?}",
+        engraved.diagnostics
+    );
+    // The first staff's quarter-tones in time order, the first fourteen.
+    let mut quarter_tones: Vec<(epiphany_core::RationalTime, epiphany_core::PitchId)> = score
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Pitched(p) => match &p.position {
+                EventPosition::Musical(at) => Some((at.0.clone(), p)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .flat_map(|(at, p)| {
+            p.pitches
+                .iter()
+                .filter(|ip| ip.pitch.scale_position.space.as_str() == "cmn-24")
+                .map(move |ip| (at.clone(), ip.id))
+        })
+        .collect();
+    quarter_tones.sort();
+    let drawn: Vec<Vec<&str>> = quarter_tones[..14]
+        .iter()
+        .map(|(_, id)| {
+            engraved
+                .layout
+                .glyphs
+                .iter()
+                .filter(|g| g.provenance.source == TypedObjectId::Pitch(*id))
+                .map(|g| g.glyph.as_str())
+                .filter(|name| name.starts_with("accidental"))
+                .collect()
+        })
+        .collect();
+    let expected = [
+        "accidentalQuarterToneFlatArrowUp",
+        "accidentalThreeQuarterTonesFlatArrowDown",
+        "accidentalQuarterToneSharpNaturalArrowUp",
+        "accidentalQuarterToneFlatNaturalArrowDown",
+        "accidentalThreeQuarterTonesSharpArrowUp",
+        "accidentalQuarterToneSharpArrowDown",
+        "accidentalFiveQuarterTonesSharpArrowUp",
+        "accidentalThreeQuarterTonesSharpArrowDown",
+        "accidentalThreeQuarterTonesFlatArrowUp",
+        "accidentalFiveQuarterTonesFlatArrowDown",
+        "accidentalQuarterToneFlatStein",
+        "accidentalQuarterToneSharpStein",
+        "accidentalThreeQuarterTonesFlatZimmermann",
+        "accidentalThreeQuarterTonesSharpStein",
+    ];
+    assert_eq!(drawn, expected.iter().map(|g| vec![*g]).collect::<Vec<_>>());
+}
+
+/// Quarter-tone accidentals join the measure's accidental state: one holds to
+/// the barline on its letter and octave, across voices; a natural, a flat or
+/// another quarter-tone after it on its letter is shown; the same alteration
+/// stated again, by either notation, is not; a new measure states it again;
+/// and against a key a quarter-tone is shown, and the key's own flat after it
+/// is restated. A note after it that writes no accidental is natural, since a
+/// quarter-tone accidental applies to its own note alone, and shows the
+/// natural that cancels it, in its own voice or another.
+#[test]
+fn a_quarter_tone_accidental_holds_to_the_barline_and_yields_to_a_change() {
+    use epiphany_core::{Event, EventPosition, TypedObjectId};
+
+    // In 2/4, one flat in the key, quarters: (step, octave, accidental,
+    // voice) in time order. A whole-semitone alteration is the `<alter>` a
+    // file writes with it (the key's B-flat included); a quarter-tone is
+    // written by name alone, as MuseScore writes its arrows; and a note that
+    // writes neither (`plain`) is natural.
+    let note = |step: &str, octave: u8, accidental: &str, voice: u8| {
+        let alter = match (step, accidental) {
+            (_, "flat") | ("B", "") => "<alter>-1</alter>",
+            _ => "",
+        };
+        let accidental = match accidental {
+            "" | "plain" => String::new(),
+            name => format!("<accidental>{name}</accidental>"),
+        };
+        format!(
+            "<note><pitch><step>{step}</step>{alter}<octave>{octave}</octave></pitch>\
+             <duration>1</duration><voice>{voice}</voice><type>quarter</type>{accidental}</note>"
+        )
+    };
+    let measures = [
+        // A quarter-flat B holds: stated again, in its voice or another, it
+        // is not shown again.
+        [
+            note("B", 4, "quarter-flat", 1),
+            note("B", 4, "quarter-flat", 1),
+        ]
+        .concat()
+            + "<backup><duration>2</duration></backup>"
+            + &[note("D", 4, "", 2), note("B", 4, "quarter-flat", 2)].concat(),
+        // A plain B after the first voice's B quarter-sharp is natural, and
+        // shows its natural in the second voice; so does a plain E after an E
+        // quarter-flat in its own.
+        [note("B", 4, "natural-up", 1), note("D", 5, "", 1)].concat()
+            + "<backup><duration>2</duration></backup>"
+            + &[note("D", 4, "", 2), note("B", 4, "plain", 2)].concat(),
+        [note("E", 5, "flat-up", 1), note("E", 5, "plain", 1)].concat(),
+        // The key's flat after a quarter-flat is restated; a natural is shown.
+        [note("B", 4, "quarter-flat", 1), note("B", 4, "flat", 1)].concat(),
+        [note("B", 4, "flat-up", 1), note("B", 4, "natural", 1)].concat(),
+        // The same alteration by the other notation is not shown again; at
+        // another octave it is.
+        [
+            note("E", 5, "sharp-down", 1),
+            note("E", 5, "quarter-sharp", 1),
+        ]
+        .concat(),
+        [note("E", 5, "sharp-down", 1), note("E", 4, "sharp-down", 1)].concat(),
+        // A quarter-tone after a quarter-tone of another value is shown, and
+        // the next measure states each again.
+        [note("A", 4, "flat-down", 1), note("A", 4, "natural-up", 1)].concat(),
+        [note("A", 4, "natural-up", 1), note("B", 4, "", 1)].concat(),
+        // Two voices on one D, a quarter-tone flat and a quarter-tone sharp,
+        // share no notehead.
+        [note("D", 5, "flat-up", 1), note("A", 4, "", 1)].concat()
+            + "<backup><duration>2</duration></backup>"
+            + &[note("D", 5, "natural-up", 2), note("F", 4, "", 2)].concat(),
+    ];
+    let mut body = String::new();
+    for (m, content) in measures.iter().enumerate() {
+        body.push_str(&format!("<measure number=\"{}\">", m + 1));
+        if m == 0 {
+            body.push_str(
+                "<attributes><divisions>1</divisions><key><fifths>-1</fifths></key>\
+                 <time><beats>2</beats><beat-type>4</beat-type></time>\
+                 <clef><sign>G</sign><line>2</line></clef></attributes>",
+            );
+        }
+        body.push_str(content);
+        body.push_str("</measure>");
+    }
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\">\
+         <part-name>Flute</part-name></score-part></part-list><part id=\"P1\">{body}</part>\
+         </score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("quarter_tone_carry.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let score = &loaded.reduced.score;
+    let layout = epiphany_cli::engrave_loaded(&loaded).layout;
+    // Each pitch in time order, the first voice before the second at one time,
+    // with the accidentals drawn for it.
+    let mut pitches: Vec<(epiphany_core::RationalTime, u64, epiphany_core::PitchId)> = score
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Pitched(p) => match &p.position {
+                EventPosition::Musical(at) => Some((at.0.clone(), p)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .flat_map(|(at, p)| {
+            let voice = score
+                .canvas
+                .regions
+                .iter()
+                .flat_map(|r| r.staff_instances())
+                .flat_map(|i| i.voices.iter().enumerate())
+                .find(|(_, v)| v.events.contains(&p.id))
+                .map_or(9, |(k, _)| k as u64);
+            p.pitches.iter().map(move |ip| (at.clone(), voice, ip.id))
+        })
+        .collect();
+    pitches.sort();
+    let drawn: Vec<String> = pitches
+        .iter()
+        .map(|(_, _, id)| {
+            let names: Vec<&str> = layout
+                .glyphs
+                .iter()
+                .filter(|g| g.provenance.source == TypedObjectId::Pitch(*id))
+                .map(|g| g.glyph.as_str())
+                .filter(|n| n.starts_with("accidental"))
+                .collect();
+            names.join("+")
+        })
+        .collect();
+    assert_eq!(
+        drawn,
+        [
+            "accidentalQuarterToneFlatStein",
+            "",
+            "",
+            "",
+            "accidentalQuarterToneSharpNaturalArrowUp",
+            "",
+            "",
+            "accidentalNatural",
+            "accidentalQuarterToneFlatArrowUp",
+            "accidentalNatural",
+            "accidentalQuarterToneFlatStein",
+            "accidentalFlat",
+            "accidentalQuarterToneFlatArrowUp",
+            "accidentalNatural",
+            "accidentalQuarterToneSharpArrowDown",
+            "",
+            "accidentalQuarterToneSharpArrowDown",
+            "accidentalQuarterToneSharpArrowDown",
+            "accidentalThreeQuarterTonesFlatArrowDown",
+            "accidentalQuarterToneSharpNaturalArrowUp",
+            "accidentalQuarterToneSharpNaturalArrowUp",
+            "",
+            "accidentalQuarterToneFlatArrowUp",
+            "accidentalQuarterToneSharpNaturalArrowUp",
+            "",
+            "",
+        ]
+    );
+    // The last measure's two D's stand apart, a quarter-tone flat and a
+    // quarter-tone sharp.
+    let x_of = |id: &epiphany_core::PitchId| {
+        layout
+            .glyphs
+            .iter()
+            .find(|g| {
+                g.provenance.source == TypedObjectId::Pitch(*id)
+                    && g.glyph.as_str().starts_with("notehead")
+            })
+            .map(|g| g.position.x.0)
+            .expect("a head")
+    };
+    let pair = &pitches[pitches.len() - 4..pitches.len() - 2];
+    assert_eq!(pair[0].0, pair[1].0, "both voices at one time");
+    assert!(
+        (x_of(&pair[0].2) - x_of(&pair[1].2)).abs() > 0.5,
+        "two D quarter-tones share one notehead"
+    );
+}
+
+/// The hand-written quarter-tone fixture through the whole pipeline, locked
+/// to a golden: each of the fourteen quarter-tone accidentals once; the
+/// natural a note after a quarter-tone shows when it writes no accidental, in
+/// its own voice or another, since the accidental applies to its own note
+/// alone; a natural after a tie; and quarter-tones tied over a barline, along
+/// a chain and in a second voice, their continuations unmarked. Its features are counted
+/// first, so the golden cannot lock a page that lost one. Regenerate
+/// deliberately, with renders beside it, with `UPDATE_GOLDEN=1`.
+#[test]
+fn the_quarter_tone_fixture_engraves_to_its_golden() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("arrow_accidentals.svg");
+    let _ = std::fs::remove_file(&out);
+    let status = Command::new(env!("CARGO_BIN_EXE_epiphany"))
+        .arg("render")
+        .arg(fixture("arrow_accidentals.musicxml"))
+        .args(["--page", "1", "-o"])
+        .arg(&out)
+        .output()
+        .expect("runs");
+    assert!(status.status.success(), "{status:?}");
+    let svg = std::fs::read_to_string(&out).expect("an SVG was written");
+
+    let count = |needle: &str| svg.matches(needle).count();
+    for (glyph, expected) in [
+        ("accidentalQuarterToneFlatArrowUp", 3),
+        ("accidentalThreeQuarterTonesFlatArrowDown", 2),
+        ("accidentalQuarterToneSharpNaturalArrowUp", 3),
+        ("accidentalQuarterToneFlatNaturalArrowDown", 1),
+        ("accidentalThreeQuarterTonesSharpArrowUp", 2),
+        ("accidentalQuarterToneSharpArrowDown", 1),
+        ("accidentalFiveQuarterTonesSharpArrowUp", 1),
+        ("accidentalThreeQuarterTonesSharpArrowDown", 1),
+        ("accidentalThreeQuarterTonesFlatArrowUp", 1),
+        ("accidentalFiveQuarterTonesFlatArrowDown", 1),
+        ("accidentalQuarterToneFlatStein", 1),
+        ("accidentalQuarterToneSharpStein", 1),
+        ("accidentalThreeQuarterTonesFlatZimmermann", 1),
+        ("accidentalThreeQuarterTonesSharpStein", 1),
+        ("accidentalNatural", 3),
+        ("accidentalFlat", 0),
+        ("accidentalSharp", 0),
+    ] {
+        assert_eq!(
+            count(&format!("data-glyph=\"{glyph}\"")),
+            expected,
+            "{glyph}"
+        );
+    }
+    assert_eq!(count("data-kind=\"curve\""), 5, "five ties, no slur");
+    let loaded = load(&fixture("arrow_accidentals.musicxml")).expect("loads");
+    let engraved = epiphany_cli::engrave_loaded(&loaded);
+    let found = omissions(
+        &loaded.reduced.score,
+        &engraved.layout,
+        &engraved.diagnostics,
+    );
+    assert!(found.kinds.is_empty(), "{found:?}");
+
+    let golden =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/arrow_accidentals.page-1.svg");
+    if std::env::var_os("UPDATE_GOLDEN").is_some() {
+        std::fs::create_dir_all(golden.parent().expect("a directory")).expect("created");
+        std::fs::write(&golden, &svg).expect("golden written");
+    }
+    let expected = std::fs::read_to_string(&golden)
+        .unwrap_or_else(|e| panic!("{}: {e}; regenerate with UPDATE_GOLDEN=1", golden.display()));
+    assert!(
+        expected == svg,
+        "the page differs from {}; if intended, regenerate with UPDATE_GOLDEN=1",
+        golden.display()
+    );
+}
