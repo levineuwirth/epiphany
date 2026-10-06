@@ -1563,3 +1563,33 @@ only when shown. Locked by
 `a_tuplet_the_file_hides_draws_no_number_or_bracket` and
 `a_tuplet_on_a_beam_across_two_staves_takes_its_number_by_the_beam`
 (`epiphany-cli`).
+
+## ENGRAVER_VERSION 38 → 39: tuplets across two staves that are not one beam (X3c fix round 1, 2026-10-06)
+
+A tuplet whose members stand on two staves has no staff in the logical
+stage, and version 37 drew one only where its notes were exactly a beam
+across them; any other shape drew nothing, number and bracket alike, and
+nothing counted it. Three shapes now draw. Tuplets sharing one beam across
+the staves each take their number by the beam as version 37 placed it,
+centred on their own notes, with no bracket, as MuseScore draws them. A
+tuplet a drawn rest opens, or holds, takes a bracket as well, since the beam
+does not show where it runs: from its first member's column to its last's,
+above the beam, its notes' own ink and its rests by `TUPLET_CLEARANCE`, its
+number in the gap and its hooks toward the notes, riding the upper staff with
+the beam's ink, as MuseScore draws one. The bracket clears the tuplet's own
+notes and not another voice's. A tuplet whose ink stands on one staff, a
+hidden rest on the other, is drawn on that staff as a one-staff tuplet
+opening on a hidden rest is, clearing that staff's rests alone. A tuplet
+across two staves whose notes no beam joins still draws nothing; the
+corpus report now counts every tuplet whose number is shown and has no ink,
+or a bracket without its number, as an engraving omission. A tuplet across
+two staves that draws nothing keeps its traced anchor in no staff's band:
+versions 37 and 38 left a hidden one that is exactly its beam in the upper
+staff's band at the frame's origin, which stretches that staff toward
+whatever stands there; once every tuplet riding such a beam took the beam's
+staff, the hidden ones of a passage with a staff above the piano moved its
+staves apart. Locked by
+`a_tuplet_across_two_staves_that_is_not_one_beam_is_drawn` and
+`a_tuplet_across_two_staves_that_draws_nothing_keeps_its_anchor_off_the_staves`
+(`epiphany-cli`) and, for the count,
+`a_shown_tuplet_with_no_ink_is_counted_and_an_anchor_is_not_ink`.

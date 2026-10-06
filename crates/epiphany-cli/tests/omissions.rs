@@ -71,6 +71,53 @@ fn a_slur_with_no_ink_is_counted_and_an_anchor_is_not_ink() {
     assert_eq!(count(&loaded, &engraved, "slur not drawn"), slurs);
 }
 
+/// A shown tuplet with no ink of its own is counted, whatever the engraver
+/// draws for it today: the fixture's quarter-note triplet across two
+/// staves, which no beam joins, as drawn; every tuplet once its ink is taken
+/// away; and one whose bracket is drawn without its number.
+#[test]
+fn a_shown_tuplet_with_no_ink_is_counted_and_an_anchor_is_not_ink() {
+    let (loaded, mut engraved) = loaded("cross_staff_tuplets.musicxml");
+    let tuplets = loaded.reduced.score.cross_cutting.tuplets.len();
+    assert_eq!(tuplets, 6);
+    assert_eq!(count(&loaded, &engraved, "tuplet not drawn"), 1);
+    assert_eq!(count(&loaded, &engraved, "tuplet number not drawn"), 0);
+    let is_tuplet = |source: &TypedObjectId| matches!(source, TypedObjectId::Tuplet(_));
+    let region = TypedObjectId::Region(loaded.reduced.score.canvas.regions[0].id);
+    // A bracket drawn without its number.
+    let bracketed = engraved
+        .layout
+        .strokes
+        .iter()
+        .find(|s| is_tuplet(&s.provenance.source) && s.from != s.to)
+        .map(|s| s.provenance.source)
+        .expect("a tuplet's bracket is drawn");
+    for g in &mut engraved.layout.glyphs {
+        if g.provenance.source == bracketed {
+            g.provenance.source = region;
+        }
+    }
+    assert_eq!(count(&loaded, &engraved, "tuplet number not drawn"), 1);
+    // Re-attributed rather than removed, so the systems' indices stay valid.
+    for g in &mut engraved.layout.glyphs {
+        if is_tuplet(&g.provenance.source) {
+            g.provenance.source = region;
+        }
+    }
+    for s in &mut engraved.layout.strokes {
+        if is_tuplet(&s.provenance.source) && s.from != s.to {
+            s.provenance.source = region;
+        }
+    }
+    assert_eq!(count(&loaded, &engraved, "tuplet not drawn"), tuplets);
+    // Each tuplet keeps a traced anchor, which is no ink for it.
+    assert!(engraved
+        .layout
+        .strokes
+        .iter()
+        .any(|s| is_tuplet(&s.provenance.source) && s.from == s.to));
+}
+
 #[test]
 fn a_notehead_removed_is_counted_and_a_dot_supplied_is_not() {
     let (loaded, mut engraved) = loaded("single_part.musicxml");

@@ -625,6 +625,260 @@ fn a_tuplet_on_a_beam_across_two_staves_takes_its_number_by_the_beam() {
     assert_eq!(numbered, 3, "each shown cross-staff tuplet numbered");
 }
 
+/// A tuplet whose notes stand on two staves but are not exactly one beam is
+/// still drawn. Two sharing one beam each take their number by it, centred
+/// on their own notes, with no bracket; one a rest opens takes a bracket from
+/// the rest to its last note, above its notes and the beam and clear of
+/// them, its number in the gap; one whose ink stands on one staff, a hidden
+/// rest on the other, is drawn on that staff with its bracket, as a tuplet
+/// opening on a hidden rest is. A quarter-note triplet across the staves,
+/// which no beam joins, is not drawn, and the omission count names it.
+#[test]
+fn a_tuplet_across_two_staves_that_is_not_one_beam_is_drawn() {
+    use epiphany_core::{Event, TypedObjectId};
+    use epiphany_layout_ir::is_beam_stroke;
+
+    let loaded = load(&fixture("cross_staff_tuplets.musicxml")).expect("loads");
+    let score = &loaded.reduced.score;
+    let engraved = engrave(score);
+    let layout = &engraved.layout;
+    let (staff_of, _) = staves_of(score);
+    let digits = |id| -> Vec<[f32; 4]> {
+        layout
+            .glyphs
+            .iter()
+            .filter(|g| {
+                g.provenance.source == TypedObjectId::Tuplet(id)
+                    && g.glyph.as_str().starts_with("tuplet")
+            })
+            .map(glyph_box)
+            .collect()
+    };
+    let bracket = |id| -> Vec<&epiphany_layout_ir::Stroke> {
+        layout
+            .strokes
+            .iter()
+            .filter(|s| s.provenance.source == TypedObjectId::Tuplet(id) && s.from != s.to)
+            .collect()
+    };
+    // A member's ink: its heads and its stem.
+    let ink_of = |e: epiphany_core::EventId| -> Vec<[f32; 4]> {
+        let pitches: Vec<TypedObjectId> = match score.events.get(e) {
+            Some(Event::Pitched(p)) => p
+                .pitches
+                .iter()
+                .map(|ip| TypedObjectId::Pitch(ip.id))
+                .collect(),
+            _ => Vec::new(),
+        };
+        layout
+            .glyphs
+            .iter()
+            .filter(|g| pitches.contains(&g.provenance.source))
+            .map(glyph_box)
+            .chain(
+                layout
+                    .strokes
+                    .iter()
+                    .filter(|s| {
+                        s.provenance.source == TypedObjectId::Event(e) && s.from.x == s.to.x
+                    })
+                    .map(stroke_box),
+            )
+            .collect()
+    };
+    let stem_x = |e: epiphany_core::EventId| {
+        layout
+            .strokes
+            .iter()
+            .find(|s| s.provenance.source == TypedObjectId::Event(e) && s.from.x == s.to.x)
+            .map(|s| s.from.x.0)
+    };
+    let beams: Vec<[f32; 4]> = layout
+        .strokes
+        .iter()
+        .filter(|s| is_beam_stroke(s))
+        .map(stroke_box)
+        .collect();
+    let rest_of = |e: epiphany_core::EventId| match score.events.get(e) {
+        Some(Event::Rest(r)) => Some(r.visible),
+        _ => None,
+    };
+
+    let (mut shared, mut opened, mut hidden_led, mut exact, mut unbeamed) = (0, 0, 0, 0, 0);
+    for tuplet in &score.cross_cutting.tuplets {
+        let staves: std::collections::BTreeSet<_> =
+            tuplet.members.iter().map(|e| staff_of[e]).collect();
+        assert_eq!(
+            staves.len(),
+            2,
+            "each of the fixture's tuplets spans the staves"
+        );
+        let notes: Vec<_> = tuplet
+            .members
+            .iter()
+            .copied()
+            .filter(|e| rest_of(*e).is_none())
+            .collect();
+        let beam = score
+            .cross_cutting
+            .beams
+            .iter()
+            .find(|b| b.events.contains(&notes[0]));
+        let number = digits(tuplet.id);
+        match (rest_of(tuplet.members[0]), beam) {
+            (None, None) => {
+                unbeamed += 1;
+                assert!(number.is_empty() && bracket(tuplet.id).is_empty());
+                continue;
+            }
+            (Some(false), _) => {
+                hidden_led += 1;
+                assert_eq!(number.len(), 1, "numbered on its staff");
+                assert_eq!(
+                    bracket(tuplet.id).len(),
+                    4,
+                    "and bracketed, a hidden rest opening it"
+                );
+                continue;
+            }
+            _ => {}
+        }
+        let beam = beam.expect("its notes ride one beam");
+        assert_eq!(number.len(), 1, "each shown tuplet numbered");
+        let number = number[0];
+        let xs: Vec<f32> = notes.iter().map(|e| stem_x(*e).expect("a stem")).collect();
+        let (first, last) = (xs[0], *xs.last().expect("notes"));
+        for e in &tuplet.members {
+            for ink in ink_of(*e) {
+                assert!(!boxes_overlap(number, ink), "the number clears its notes");
+            }
+        }
+        let over = beams
+            .iter()
+            .filter(|b| b[0] <= number[2] && number[0] <= b[2])
+            .map(|b| b[3])
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(number[1] > over, "the number stands above the beam");
+        if rest_of(tuplet.members[0]) == Some(true) {
+            opened += 1;
+            let strokes = bracket(tuplet.id);
+            assert_eq!(strokes.len(), 4, "hooks and a line broken for the number");
+            let boxes: Vec<[f32; 4]> = strokes.iter().map(|s| stroke_box(s)).collect();
+            let left = boxes.iter().map(|b| b[0]).fold(f32::INFINITY, f32::min);
+            let right = boxes.iter().map(|b| b[2]).fold(f32::NEG_INFINITY, f32::max);
+            let rest = layout
+                .glyphs
+                .iter()
+                .find(|g| g.provenance.source == TypedObjectId::Event(tuplet.members[0]))
+                .map(glyph_box)
+                .expect("the rest is drawn");
+            assert!(
+                left <= rest[0] + 0.5 && right >= last,
+                "from the rest to its last note"
+            );
+            let line = strokes
+                .iter()
+                .filter(|s| s.from.y == s.to.y)
+                .map(|s| s.from.y.0)
+                .fold(f32::INFINITY, f32::min);
+            let notes_top = notes
+                .iter()
+                .flat_map(|e| ink_of(*e))
+                .map(|b| b[3])
+                .fold(over, f32::max);
+            assert!(
+                line > notes_top,
+                "the bracket stands above its notes and the beam"
+            );
+            for b in &boxes {
+                for e in &notes {
+                    for ink in ink_of(*e) {
+                        assert!(!boxes_overlap(*b, ink), "the bracket clears its notes");
+                    }
+                }
+            }
+            continue;
+        }
+        assert!(
+            bracket(tuplet.id).is_empty(),
+            "a beam's tuplet takes no bracket"
+        );
+        assert!(
+            number[0] >= first && number[2] <= last,
+            "the number stands within its own notes"
+        );
+        if beam.events.len() > tuplet.members.len() {
+            shared += 1;
+        } else {
+            exact += 1;
+        }
+    }
+    assert_eq!(
+        (shared, opened, hidden_led, exact, unbeamed),
+        (2, 1, 1, 1, 1),
+        "the fixture's shapes"
+    );
+    let count = omissions(score, layout, &engraved.diagnostics)
+        .kinds
+        .get("tuplet not drawn")
+        .copied()
+        .unwrap_or(0);
+    assert_eq!(count, 1, "the unbeamed triplet alone is counted");
+}
+
+/// A tuplet across two staves that draws nothing keeps its traced anchor in
+/// no staff's band, where it adds no extent to a staff it is not on: a
+/// hidden tuplet that is exactly a beam, and a shown triplet no beam joins.
+/// An anchor riding the upper staff's band at the frame's origin would
+/// stretch that staff toward whatever stands there.
+#[test]
+fn a_tuplet_across_two_staves_that_draws_nothing_keeps_its_anchor_off_the_staves() {
+    use epiphany_core::TypedObjectId;
+
+    let mut anchors = 0;
+    for name in ["cross_staff.musicxml", "cross_staff_tuplets.musicxml"] {
+        let loaded = load(&fixture(name)).expect("loads");
+        let score = &loaded.reduced.score;
+        let layout = engrave(score).layout;
+        let (staff_of, _) = staves_of(score);
+        let staff_bands: std::collections::BTreeSet<_> = layout
+            .strokes
+            .iter()
+            .filter(|s| matches!(s.provenance.source, TypedObjectId::Staff(_)))
+            .map(|s| s.vertical_band)
+            .collect();
+        assert_eq!(staff_bands.len(), 2, "{name}: two staves' bands");
+        for tuplet in &score.cross_cutting.tuplets {
+            let staves: std::collections::BTreeSet<_> =
+                tuplet.members.iter().map(|e| staff_of[e]).collect();
+            let source = TypedObjectId::Tuplet(tuplet.id);
+            let inked = layout.glyphs.iter().any(|g| g.provenance.source == source)
+                || layout
+                    .strokes
+                    .iter()
+                    .any(|s| s.provenance.source == source && s.from != s.to);
+            if staves.len() < 2 || inked {
+                continue;
+            }
+            anchors += 1;
+            let anchor = layout
+                .strokes
+                .iter()
+                .find(|s| s.provenance.source == source)
+                .expect("an undrawn tuplet keeps a traced anchor");
+            assert!(
+                !staff_bands.contains(&anchor.vertical_band),
+                "{name}: an undrawn tuplet's anchor rides a staff's band"
+            );
+        }
+    }
+    assert_eq!(
+        anchors, 2,
+        "the hidden beam's tuplet and the unbeamed triplet"
+    );
+}
+
 /// A tuplet the file hides draws no number and no bracket; one whose number
 /// is hidden draws its bracket unbroken; the rest as before: a beamed
 /// triplet its number alone, an unbeamed one its number in its bracket.
