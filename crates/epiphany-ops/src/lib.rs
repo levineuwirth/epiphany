@@ -331,6 +331,11 @@ pub mod vectors;
 ///     in musical time; applied, it drops the region's system and page breaks;
 ///     and a `SetUserSystemBreak` or `SetUserPageBreak` in musical time into
 ///     such a region is refused `WrongRegionTimeModel` (`AnchorOffsetModel`).
+///   - an undo that would tombstone a measure with a live later measure in its
+///     instance is blocked by it, as by the measure guard's other surfaces
+///     (strict: conflicted; best effort: the measure kept), where it removed
+///     the measure and left the next two bars from its predecessor
+///     (`MeasureMeterConsistency`).
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
@@ -353,7 +358,8 @@ pub mod vectors;
 ///   anchors in musical time,
 ///   `a_region_out_of_musical_time_keeps_no_musical_break_in_both_modes` and
 ///   `a_migration_finds_its_regions_events_in_both_modes`, whose proportional
-///   target now names the measure too.
+///   target now names the measure too; for the measure undo,
+///   `an_undo_of_a_measure_with_a_later_one_conflicts_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

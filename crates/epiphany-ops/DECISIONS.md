@@ -2681,3 +2681,13 @@ empty grids and has not reached it. Locked by
 `a_region_out_of_musical_time_keeps_no_musical_break_in_both_modes`,
 `a_migration_finds_its_regions_events_in_both_modes` (now naming the
 measure) and two committed histories, each part observed failing without it.
+
+**A measure with a later one is not undone.** Undoing the transaction that
+created a measure, after another author had added the next one, removed the
+measure and left its successor two bars from its predecessor
+(`MeasureMeterConsistency`). The measure strand guard gains a surface: a live
+later measure of the same instance, read from `measure_values` and ordered by
+`anchors_comparable_order`, owned by that measure, so a strict undo conflicts
+and a best-effort one keeps the measure. Locked by
+`an_undo_of_a_measure_with_a_later_one_conflicts_in_both_modes` (the surface
+removed, it fails) and a committed history.

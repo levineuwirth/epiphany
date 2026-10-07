@@ -7664,6 +7664,28 @@ impl<'a> Reducer<'a> {
                                 .then_some((*target, mobj))
                         })
                     })
+                    // 3b. A later measure of the same instance (`measure_values`),
+                    // owned by that measure: removing any measure but the last
+                    // leaves its successor two bars after its predecessor
+                    // (`MeasureMeterConsistency`; reduction version 3, before
+                    // which the undo removed it).
+                    .or_else(|| {
+                        let TypedObjectId::Measure(target_id) = target else {
+                            return None;
+                        };
+                        let (instance, mine) = self.measure_values.get(target_id)?;
+                        self.measure_values
+                            .iter()
+                            .find_map(|(mid, (other_instance, other))| {
+                                let mobj = TypedObjectId::Measure(*mid);
+                                let later = mid != target_id
+                                    && other_instance == instance
+                                    && self.anchors_comparable_order(&mine.start, &other.start)
+                                        == Some(Ordering::Less);
+                                (later && self.owner_licenses_block(mobj, targets))
+                                    .then_some((*target, mobj))
+                            })
+                    })
                     // 4. Meter change (`meter_change_chain`) — restoration-
                     // aware, owned by the enclosing region.
                     .or_else(|| {

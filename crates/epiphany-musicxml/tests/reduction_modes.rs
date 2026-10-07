@@ -1788,3 +1788,66 @@ fn a_region_out_of_musical_time_keeps_no_musical_break_in_both_modes() {
     );
     assert!(state.breaks.keys().all(|(r, _)| *r != region));
 }
+
+/// A transaction adds the measure after the import's, another author, who
+/// has seen it, adds the one after that, and the transaction is undone:
+/// removing the second measure would leave the third two bars from the first
+/// (`MeasureMeterConsistency`), so a strict undo conflicts, in both modes.
+/// Before reduction version 3 the undo removed it.
+#[test]
+fn an_undo_of_a_measure_with_a_later_one_conflicts_in_both_modes() {
+    use epiphany_core::{Measure as Bar, MeasureId, MeasureNumberVisibility};
+    use epiphany_ops::CreateMeasureOp;
+    let m = Measure::new();
+    let instance = m.import.ids.instances[0][0];
+    let bar = |author: ReplicaId, counter: u64, at: i64| {
+        OperationKind::CreateMeasure(CreateMeasureOp {
+            instance,
+            measure: Bar {
+                id: MeasureId::new(author, counter),
+                start: valuegen::region_start_anchor(
+                    m.region,
+                    MusicalPosition(RationalTime::new(at, 1).expect("a bar")),
+                ),
+                time_signature: None,
+                explicit_number: None,
+                number_visibility: MeasureNumberVisibility::Auto,
+            },
+        })
+    };
+    let tx = TransactionId::new(A, 950);
+    let mut declare = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("a bar"),
+            category: None,
+        })),
+    );
+    declare.transaction = Some(tx);
+    let mut second = m.op(A, 1, 2, &[declare.id], primitive(bar(A, 951, 1)));
+    second.transaction = Some(tx);
+    let third = m.op(B, 0, 3, &[second.id], primitive(bar(B, 952, 2)));
+    let undo = m.op(
+        A,
+        2,
+        4,
+        &[second.id],
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::StrictInverse,
+        }),
+    );
+    let state = m.agree(
+        "an undone measure before a later one",
+        &[declare, second, third.clone(), undo.clone()],
+    );
+    assert_eq!(effect(&state, third.id), Some(OperationEffect::Applied));
+    assert!(matches!(
+        effect(&state, undo.id),
+        Some(OperationEffect::Conflicted { .. })
+    ));
+}

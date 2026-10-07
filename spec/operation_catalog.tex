@@ -762,7 +762,9 @@ anchors to is refused with \texttt{ContainerNotEmpty}; a migration to a model
 admitting no musical offset conflicts on the region's measures as on its
 events, and applied drops the region's breaks; and a break written in musical
 time into such a region is refused with \texttt{WrongRegionTimeModel}, each
-where an anchor was left naming nothing or a time the region no longer has.
+where an anchor was left naming nothing or a time the region no longer has. An
+undo cannot remove a measure a later measure of its instance follows, which
+would leave that measure two bars from its predecessor.
 One requirement label is added;
 no payload, discriminant or \texttt{PreconditionFailureReason} changes.
 Accordingly
@@ -2087,7 +2089,10 @@ removes it from the owning instance's \texttt{measures} vector
 reference would be stranded, across \textbf{seven} inbound surface classes: a
 spanner endpoint, a repeat structure's anchor sites, another measure's
 \texttt{start}, a meter change, a system-break advisory, a page-break
-advisory, or a tempo segment's \texttt{start} or optional \texttt{end}. Six of
+advisory, or a tempo segment's \texttt{start} or optional \texttt{end}; and,
+since version~0.19.0, by a live later measure of the same instance, which
+removing any measure but the last would leave two bars from its predecessor
+(owned by that measure, an immutable value map). Six of
 the seven surfaces are owned (the referencing object must be live and not
 itself part of the transaction being undone); a score-level
 (\texttt{region: None}) tempo segment has no owning object and blocks on the
