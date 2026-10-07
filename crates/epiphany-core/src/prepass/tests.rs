@@ -1060,6 +1060,7 @@ fn tuplet_member_event_decomposes_with_tuplet_membership() {
             members,
             parent: None,
             required_total: MusicalDuration(r(1, 4)),
+            display: Default::default(),
         };
         (events, vec![tuplet])
     });

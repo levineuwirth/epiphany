@@ -961,6 +961,46 @@ pub(crate) fn cast_off(
         .map(|c| staff_of(c.vertical_band))
         .collect();
 
+    // The ink of each beam across two staves stands between them and is
+    // neither staff's content: the solve keeps the lower staff from rising
+    // past its `rise_limit` instead, in the system the beam lands in.
+    let between: BTreeSet<GlyphObjectId> = input
+        .cross_staff_beams
+        .iter()
+        .flat_map(|beam| beam.ink.iter().copied())
+        .collect();
+    let stroke_index: BTreeMap<GlyphObjectId, usize> = input
+        .strokes
+        .iter()
+        .enumerate()
+        .map(|(i, stroke)| (stroke.id(), i))
+        .collect();
+    // Per system, each (upper, lower) pair's least downward shift of the
+    // lower staff relative to the upper.
+    let mut floors: BTreeMap<(usize, StaffId, StaffId), f32> = BTreeMap::new();
+    for beam in &input.cross_staff_beams {
+        let system = beam
+            .ink
+            .iter()
+            .find_map(|id| match fates.get(*stroke_index.get(id)?) {
+                Some(StrokeFate::Rigid(Some(s))) => Some(*s),
+                _ => None,
+            });
+        if let Some(s) = system {
+            let floor = floors
+                .entry((s, beam.upper, beam.lower))
+                .or_insert(f32::NEG_INFINITY);
+            *floor = floor.max(-beam.rise_limit);
+        }
+    }
+    // Each stem reaching such a beam from the lower staff, by the staff its
+    // beam end rides.
+    let reach_upper: BTreeMap<GlyphObjectId, StaffId> = input
+        .cross_staff_beams
+        .iter()
+        .flat_map(|beam| beam.reaching.iter().map(|id| (*id, beam.upper)))
+        .collect();
+
     // Pass A: system extents (unshifted), and per (system, staff) content
     // y-extents plus the staff-line reference y (for ordering).
     let mut extents: Vec<Extent> = vec![Extent::empty(); systems.len()];
@@ -993,6 +1033,9 @@ pub(crate) fn cast_off(
                     x + glyph.bounding_box.left.0,
                     x + glyph.bounding_box.right.0,
                 );
+                if between.contains(&input.glyphs[g].id()) {
+                    continue;
+                }
                 match glyph_staff_of[g] {
                     Some(_) => into_staff(&mut staff_ext, s, glyph_staff_of[g], lo_y, hi_y),
                     None => extents[s].add_y(lo_y, hi_y),
@@ -1017,6 +1060,9 @@ pub(crate) fn cast_off(
                 _ => to.x.0,
             };
             extents[s].add_x(from.x.0 - half, right + half);
+            if between.contains(&spaced.id()) {
+                continue;
+            }
             match staff {
                 Some(_) => into_staff(&mut staff_ext, s, staff, lo_y, hi_y),
                 None => extents[s].add_y(lo_y, hi_y),
@@ -1152,6 +1198,18 @@ pub(crate) fn cast_off(
             // closes a slack one, and it accumulates down the stack.
             let gap = upper_lo - lower_hi;
             shift += target_gap(g + 1) - gap;
+            // A beam across two staves keeps each stem reaching it from the
+            // lower staff its least length.
+            for (&(_, above, below), &floor) in floors
+                .range((s, StaffId::from_raw(0), StaffId::from_raw(0))..)
+                .take_while(|((sys, ..), _)| *sys == s)
+            {
+                if below == lower {
+                    if let Some(&above_shift) = staff_shift.get(&(s, above)) {
+                        shift = shift.max(above_shift + floor);
+                    }
+                }
+            }
             staff_shift.insert((s, lower), shift);
         }
         if staves.len() == 1 {
@@ -1388,6 +1446,12 @@ pub(crate) fn cast_off(
                             anchors.get(&source.id()),
                         );
                         end_staff_line(&mut stroke, staff_end[*s].map(|x| p.x(x)));
+                        // A stem reaching a beam across two staves: its beam
+                        // end rides the staff the beam does.
+                        if let Some(&upper) = reach_upper.get(&source.id()) {
+                            let dy = staff_dy(*s, stroke_staff_of[si]) - staff_dy(*s, Some(upper));
+                            stroke.to = Point::new(stroke.to.x.0, stroke.to.y.0 + dy);
+                        }
                         stroke
                     }
                     None => spaced.clone(),

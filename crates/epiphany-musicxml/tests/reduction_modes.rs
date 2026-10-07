@@ -135,6 +135,7 @@ impl Measure {
                 members: members.iter().map(|i| self.q(*i)).collect(),
                 parent: None,
                 required_total,
+                display: Default::default(),
             },
         })
     }
@@ -1141,4 +1142,68 @@ fn a_tie_between_quarter_tones_applies_and_pairs_in_both_modes() {
     assert_eq!(aware.score.cross_cutting.ties.len(), 1);
     let violations = check_invariants(&aware.score);
     assert!(violations.is_empty(), "{violations:?}");
+}
+
+/// A tuplet's display (schema major 4) is held in the graph alone: one
+/// history with the tuplet shown and with it hidden, a member then deleted
+/// with the tuplet rewritten, reduces to the same effects, objects and
+/// canonical bytes in both modes, and the graph-aware scores differ only in
+/// the tuplet's display. So schema major 4 changes no reduction verdict and
+/// no canonical reduced state.
+#[test]
+fn a_tuplets_display_changes_no_verdict_or_canonical_state() {
+    use epiphany_core::TupletDisplay;
+    let m = Measure::new();
+    let history = |display: TupletDisplay| {
+        let OperationKind::CreateTuplet(mut op) = m.tuplet(1, &[0, 1, 2]) else {
+            unreachable!("a CreateTuplet")
+        };
+        op.tuplet.display = display;
+        let create = m.op(A, 0, 1, &[], primitive(OperationKind::CreateTuplet(op)));
+        let removed = m.op(
+            A,
+            1,
+            2,
+            &[create.id],
+            delete(
+                m.q(2),
+                TupletCompensation::RewriteTuplets {
+                    tuplets: vec![TupletId::new(A, 1)],
+                },
+            ),
+        );
+        vec![create, removed]
+    };
+    let (shown, hidden) = (
+        history(TupletDisplay::default()),
+        history(TupletDisplay::HIDDEN),
+    );
+    let free_shown = m.agree("shown", &shown);
+    let free_hidden = m.agree("hidden", &hidden);
+    for envelope in &shown {
+        assert_eq!(
+            effect(&free_shown, envelope.id),
+            effect(&free_hidden, envelope.id)
+        );
+    }
+    assert_eq!(
+        effect(&free_shown, shown[0].id),
+        Some(OperationEffect::Applied)
+    );
+    assert_eq!(free_shown.canonical_bytes(), free_hidden.canonical_bytes());
+    let aware = |authored: &[OperationEnvelope]| {
+        let mut set = OperationSet::new();
+        set.accept_all(m.import.envelopes.iter().chain(authored).cloned());
+        set.reduce_onto(&Score::empty(IdentityContext::new(m.import.replica)))
+    };
+    let (a, b) = (aware(&shown), aware(&hidden));
+    assert_eq!(a.state.canonical_bytes(), b.state.canonical_bytes());
+    assert_eq!(b.score.cross_cutting.tuplets.len(), 1);
+    assert_eq!(
+        b.score.cross_cutting.tuplets[0].display,
+        TupletDisplay::HIDDEN
+    );
+    let mut unhidden = b.score.clone();
+    unhidden.cross_cutting.tuplets[0].display = TupletDisplay::default();
+    assert_eq!(a.score, unhidden);
 }

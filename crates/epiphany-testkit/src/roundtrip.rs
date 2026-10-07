@@ -367,7 +367,7 @@ pub fn assert_score_serialization_stable(score: &Score, frontier: &[u8], seed: u
     );
 
     // serialize: stage the score as a properly-roled ACCELERATION snapshot
-    // (Binary Format §Schema Major 3): a `ChunkKind::Snapshot` stamped with
+    // (Binary Format §Schema Major 4): a `ChunkKind::Snapshot` stamped with
     // the current schema major and referenced from the manifest's
     // `acceleration_snapshots` — NOT the canonical base, which is the
     // MaterializedState's role and stays major 0. (The `SnapshotId` here is a
@@ -384,7 +384,7 @@ pub fn assert_score_serialization_stable(score: &Score, frontier: &[u8], seed: u
     .expect("create bundle");
     let snapshot = StagedChunk {
         kind: ChunkKind::Snapshot,
-        schema_version: SchemaVersion::for_major(3),
+        schema_version: SchemaVersion::for_major(4),
         payload: canonical.clone(),
     };
     let frontier = frontier.to_vec();
@@ -424,7 +424,7 @@ pub fn assert_score_serialization_stable(score: &Score, frontier: &[u8], seed: u
         .acceleration_snapshots
         .first()
         .expect("an acceleration snapshot");
-    assert_eq!(accel.root.schema_version, SchemaVersion::for_major(3));
+    assert_eq!(accel.root.schema_version, SchemaVersion::for_major(4));
     let loaded = reopened
         .read_chunk(&accel.root)
         .expect("read snapshot chunk back");
@@ -773,20 +773,59 @@ mod tests {
     }
 
     #[test]
+    fn a_create_tuplet_block_stamps_4_13_and_reopens_read_write() {
+        use epiphany_core::{EventId, OperationId, ReplicaId, TupletId, WallClockTime};
+        use epiphany_ops::{
+            valuegen, AuthorId, CausalContext, CreateTupletOp, HybridLogicalClock,
+            OperationEnvelope, OperationKind, OperationPayload, OperationStamp,
+        };
+
+        let id = OperationId::new(ReplicaId(1), 1);
+        let env = OperationEnvelope {
+            id,
+            author: AuthorId(0xAB),
+            stamp: OperationStamp::new(HybridLogicalClock::new(WallClockTime(100), 0), id),
+            causal_context: CausalContext::new(),
+            transaction: None,
+            payload: OperationPayload::Primitive(OperationKind::CreateTuplet(CreateTupletOp {
+                tuplet: valuegen::tuplet(
+                    TupletId::new(ReplicaId(1), 1),
+                    vec![EventId::new(ReplicaId(1), 1), EventId::new(ReplicaId(1), 2)],
+                ),
+            })),
+        };
+
+        let staged = crate::bundle_harness::stage_operation_block(&[env]);
+        assert_eq!(
+            staged.schema_version,
+            SchemaVersion::new(4, 13),
+            "a block carrying CreateTuplet stamps major 4 (its Tuplet appends \
+             `display` at major 4) and minor 13 (its X3.1 epoch)"
+        );
+
+        let reopened = reopen_with_op_block(0xD2_0004, staged);
+        assert!(
+            !reopened.is_read_only(),
+            "major 4 is inside the raised op-block accept-set [0, 4], so the \
+             bundle must open read-write"
+        );
+    }
+
+    #[test]
     fn op_block_beyond_the_accept_set_opens_read_only() {
         use epiphany_bundle::IntegrityAnomaly;
-        // A newer writer's op block, stamped schema major 4 — beyond the reader's
-        // op-block accept-set [0,3]. The bundle opens read-only preservation (the
+        // A newer writer's op block, stamped schema major 5 — beyond the reader's
+        // op-block accept-set [0,4]. The bundle opens read-only preservation (the
         // canonical base and manifest still read) rather than hard-rejecting.
         //
-        // Major 4, not 3: genesis tranche G2b raised the op-block accept-set
-        // to [0, 3] (`SetTuningContext` is born at major 3), so major 3 is
-        // now admitted and this test's "beyond the accept-set" major must
-        // move past it to stay an actual test of the read-only-on-overflow
-        // path.
+        // Major 5: genesis tranche G2b raised the op-block accept-set to
+        // [0, 3] (`SetTuningContext` is born at major 3) and X3c to [0, 4]
+        // (`CreateTuplet` is born at major 4), so this test's "beyond the
+        // accept-set" major must move past both to stay an actual test of
+        // the read-only-on-overflow path.
         let block = StagedChunk::operation_block_versioned(
             encode_block(&[vec![1u8, 2, 3, 4]]),
-            SchemaVersion::new(4, 0),
+            SchemaVersion::new(5, 0),
         );
         let reopened = reopen_with_op_block(0xD2_0002, block);
         assert!(
@@ -795,7 +834,7 @@ mod tests {
         );
         assert!(reopened.anomalies().iter().any(|a| matches!(
             a,
-            IntegrityAnomaly::UnsupportedCanonicalChunkMajor { schema_major: 4 }
+            IntegrityAnomaly::UnsupportedCanonicalChunkMajor { schema_major: 5 }
         )));
     }
 

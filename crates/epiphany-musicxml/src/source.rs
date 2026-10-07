@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use epiphany_core::{
     AccidentalId, AcousticPitch, AcousticRealization, Clef, ClefShape, CmnNominal, Pitch,
     PitchSpaceId, PitchSpacePosition, PitchSpelling, RationalTime, ScalePosition, SpellingNominal,
-    TranspositionInterval, TuningReference,
+    TranspositionInterval, TuningReference, TupletBracket, TupletDisplay, TupletNumber,
 };
 use roxmltree::{Document, Node, ParsingOptions};
 
@@ -219,12 +219,36 @@ pub struct SourceEvent {
 /// A tuplet of a part's events, by index into [`SourcePart::events`]: the
 /// notes and rests of one voice from a `<tuplet type="start">` to the stop of
 /// the same number, at the ratio its first note's `<time-modification>`
-/// gives (`actual` notes in the time of `normal`).
+/// gives (`actual` notes in the time of `normal`), shown as its start mark
+/// says: hidden where the mark's `<notations>` is not printed, without a
+/// number where it asks `show-number="none"`.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SourceTuplet {
     pub actual: u32,
     pub normal: u32,
     pub events: Vec<usize>,
+    pub display: TupletDisplay,
+}
+
+/// How a tuplet's start mark shows it: hidden, with no number and no
+/// bracket, where the `<notations>` holding it is not printed
+/// (`print-object="no"`, as MuseScore writes a tuplet it hides); with no
+/// number where the mark says `show-number="none"`; otherwise as an engraver
+/// draws any tuplet. A mark's `bracket` attribute is not read: MuseScore
+/// writes `no` on a beamed tuplet it draws without one and `yes` on one it
+/// brackets, which the engraver's own choice already follows.
+fn tuplet_display(notations: Node, mark: Node) -> TupletDisplay {
+    if notations.attribute("print-object") == Some("no") {
+        return TupletDisplay::HIDDEN;
+    }
+    TupletDisplay {
+        number: if mark.attribute("show-number") == Some("none") {
+            TupletNumber::None
+        } else {
+            TupletNumber::Actual
+        },
+        bracket: TupletBracket::Auto,
+    }
 }
 
 /// A beamed group of a part's events, by index into [`SourcePart::events`]:
@@ -344,6 +368,12 @@ pub struct Census {
     /// Primary beams the file begins and never ends: one begun again before
     /// its end, or still open when the part ends.
     pub unmade_beams: usize,
+    /// The beams counted in `beams`, each where the census's own timed walk
+    /// finds it: each member's staff, measure and offset, a member being
+    /// each note of its voice, not joining a chord, that carries its
+    /// primary beam from its begin to its end. A beam whose members sit on
+    /// two staves is a cross-staff beam.
+    pub beam_places: Vec<CensusBeam>,
     /// Tuplets the file begins and stops in one voice, outside any other, by
     /// the ratio (`actual`, `normal`) their first note's
     /// `<time-modification>` gives, paired by number by a walk of the notes
@@ -385,6 +415,27 @@ pub struct CensusTuplet {
     /// Each member's measure index and offset within the measure, in whole
     /// notes.
     pub members: Vec<(usize, Time)>,
+    /// Whether its start mark's `<notations>` is not printed, and whether
+    /// the mark asks for no number.
+    pub hidden: bool,
+    pub numberless: bool,
+}
+
+/// A primary beam where the census finds it, apart from the reader.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CensusBeam {
+    /// Each member's staff (from 0), measure index and offset within the
+    /// measure, in whole notes.
+    pub members: Vec<(usize, usize, Time)>,
+}
+
+impl CensusBeam {
+    /// Whether its members sit on more than one staff.
+    pub fn crosses_staves(&self) -> bool {
+        self.members
+            .first()
+            .is_some_and(|(first, _, _)| self.members.iter().any(|(s, _, _)| s != first))
+    }
 }
 
 /// A key or clef where the file states it: the index of its measure, and
@@ -560,8 +611,18 @@ fn timed_census(part: Node, census: &mut Census) {
     // Per voice, the open tuplets as the untimed walk pairs them: each one's
     // number, its ratio when it is made, its first note's staff, and its
     // members so far.
-    type OpenTuplet<'a> = (&'a str, Option<(u32, u32)>, usize, Vec<(usize, Time)>);
+    type OpenTuplet<'a> = (
+        &'a str,
+        Option<(u32, u32)>,
+        usize,
+        Vec<(usize, Time)>,
+        (bool, bool),
+    );
     let mut tuplets: BTreeMap<&str, Vec<OpenTuplet>> = BTreeMap::new();
+    // Per voice, the members so far of its open primary beam, each its
+    // staff, measure and offset; a beam begun again drops the open one, as
+    // the untimed walk leaves it unmade.
+    let mut beams: BTreeMap<&str, Vec<(usize, usize, Time)>> = BTreeMap::new();
     // Per spot, the voice and alteration of each tied pitch.
     type Starts<'a> = Vec<(&'a str, i32)>;
     let mut over: BTreeMap<Spot, Starts> = BTreeMap::new();
@@ -640,7 +701,10 @@ fn timed_census(part: Node, census: &mut Census) {
                             let made = ratio.filter(|_| stack.is_empty());
                             let first = staff.parse::<usize>().map_or(0, |s| s.saturating_sub(1));
                             let number = mark.attribute("number").unwrap_or("1");
-                            stack.push((number, made, first, Vec::new()));
+                            let hidden = mark.parent().and_then(|n| n.attribute("print-object"))
+                                == Some("no");
+                            let numberless = mark.attribute("show-number") == Some("none");
+                            stack.push((number, made, first, Vec::new(), (hidden, numberless)));
                         }
                         let at = RationalTime::new(last, 4 * divisions)
                             .unwrap_or_else(RationalTime::zero);
@@ -650,14 +714,43 @@ fn timed_census(part: Node, census: &mut Census) {
                         for mark in marks.iter().filter(|t| t.attribute("type") == Some("stop")) {
                             let number = mark.attribute("number").unwrap_or("1");
                             if let Some(at) = stack.iter().rposition(|open| open.0 == number) {
-                                if let (_, Some(ratio), staff, members) = stack.remove(at) {
+                                if let (_, Some(ratio), staff, members, (hidden, numberless)) =
+                                    stack.remove(at)
+                                {
                                     census.tuplet_places.push(CensusTuplet {
                                         staff,
                                         ratio,
                                         members,
+                                        hidden,
+                                        numberless,
                                     });
                                 }
                             }
+                        }
+                        let member = (
+                            staff.parse::<usize>().map_or(0, |s| s.saturating_sub(1)),
+                            index,
+                            at,
+                        );
+                        let primary = children(item, "beam")
+                            .find(|b| b.attribute("number").is_none_or(|n| n == "1"))
+                            .map(text);
+                        match primary {
+                            Some("begin") => {
+                                beams.insert(voice, vec![member]);
+                            }
+                            Some("continue") => {
+                                if let Some(open) = beams.get_mut(voice) {
+                                    open.push(member);
+                                }
+                            }
+                            Some("end") => {
+                                if let Some(mut members) = beams.remove(voice) {
+                                    members.push(member);
+                                    census.beam_places.push(CensusBeam { members });
+                                }
+                            }
+                            _ => {}
                         }
                     }
                     let ties = |kind: &str| {
@@ -1375,6 +1468,7 @@ struct OpenTuplet {
     number: String,
     ratio: Option<(u32, u32)>,
     events: Vec<usize>,
+    display: TupletDisplay,
 }
 
 struct PartState {
@@ -2601,18 +2695,20 @@ impl<'d, 'i> Reader<'d, 'i> {
         // another is recorded and not made: nesting is not yet read.
         if !is_chord {
             let voice = child_text(note, "voice").unwrap_or("1").to_owned();
-            let marks: Vec<Node> = children(note, "notations")
-                .flat_map(|n| children(n, "tuplet"))
+            // Each mark with the `<notations>` that holds it.
+            let held: Vec<(Node, Node)> = children(note, "notations")
+                .flat_map(|n| children(n, "tuplet").map(move |t| (n, t)))
                 .collect();
+            let marks: Vec<Node> = held.iter().map(|(_, mark)| *mark).collect();
             let ratio = child(note, "time-modification").and_then(|m| {
                 let actual = child_text(m, "actual-notes")?.trim().parse::<u32>().ok()?;
                 let normal = child_text(m, "normal-notes")?.trim().parse::<u32>().ok()?;
                 (actual != 0 && normal != 0 && actual != normal).then_some((actual, normal))
             });
             let stack = state.open_tuplets.entry(voice).or_default();
-            for mark in marks
+            for (notations, mark) in held
                 .iter()
-                .filter(|t| t.attribute("type") == Some("start"))
+                .filter(|(_, t)| t.attribute("type") == Some("start"))
             {
                 let made = match ratio {
                     Some(r) if stack.is_empty() => Some(r),
@@ -2637,6 +2733,7 @@ impl<'d, 'i> Reader<'d, 'i> {
                     number: mark.attribute("number").unwrap_or("1").to_owned(),
                     ratio: made,
                     events: Vec::new(),
+                    display: tuplet_display(*notations, *mark),
                 });
             }
             for open in stack.iter_mut().filter(|open| open.ratio.is_some()) {
@@ -2652,6 +2749,7 @@ impl<'d, 'i> Reader<'d, 'i> {
                                 actual,
                                 normal,
                                 events: open.events,
+                                display: open.display,
                             }),
                             None => part.unmade_tuplets += 1,
                         }

@@ -203,6 +203,12 @@ impl SchemaVersion {
     /// carried the same falsehood.
     pub const V3: SchemaVersion = SchemaVersion { major: 3, minor: 0 };
 
+    /// Schema major 4 — the fourth data-model expansion major (Binary Format
+    /// companion §"Schema Major 4", X3c): `Tuplet` gains `display` on the
+    /// wire. Stamped on the acceleration full-`Score` snapshot and on any
+    /// operation-envelope block carrying a `CreateTuplet`.
+    pub const V4: SchemaVersion = SchemaVersion { major: 4, minor: 0 };
+
     /// Constructs a schema version.
     #[inline]
     pub const fn new(major: u16, minor: u16) -> Self {
@@ -211,8 +217,8 @@ impl SchemaVersion {
 
     /// The **baseline** schema version at a given major: [`Self::V0`] for
     /// major 0, [`Self::V1`] for major 1, [`Self::V2`] for major 2,
-    /// [`Self::V3`] for major 3, and `{major, 0}` for any higher (future)
-    /// major. A writer maps a chunk's derived schema major to a version this
+    /// [`Self::V3`] for major 3, [`Self::V4`] for major 4, and `{major, 0}`
+    /// for any higher (future) major. A writer maps a chunk's derived schema major to a version this
     /// way — e.g. an operation-envelope block stamps the max over its
     /// operations' `schema_major()`.
     ///
@@ -232,6 +238,7 @@ impl SchemaVersion {
             1 => SchemaVersion::V1,
             2 => SchemaVersion::V2,
             3 => SchemaVersion::V3,
+            4 => SchemaVersion::V4,
             m => SchemaVersion { major: m, minor: 0 },
         }
     }

@@ -2461,3 +2461,23 @@ draws the two kinds, so its digest is re-pinned. Locked by
 `set_clef_and_key_edit_their_instance_sequences`,
 `concurrent_clef_writes_conflict_and_the_later_wins` and
 `undo_restores_a_staff_change_or_its_absence`.
+
+## X3c — `CreateTuplet` is born at schema major 4 (2026-10-06)
+
+`CreateTuplet` carries the whole `Tuplet`, which appends `display` at schema
+major 4 (core `DECISIONS.md`, "Schema major 4"), so it stamps major 4
+unconditionally, as `SetTuningContext` stamps 3, and the op-block accept-set
+rises to `[0, 4]`. A `CreateTuplet` written before X3c stamped major 0 and
+carries the five-field value; its envelope's bytes are its identity, so it is
+not migrated. The decoder recognizes the older layout (`Tuplet::decode_major_3`
+accepts it) and refuses it by name, `EnvelopeDecodeError::UnsupportedLayout`,
+rather than as an invalid value; the decode corpus pins the rejection
+(`create_tuplet_before_major_4`) and a hidden tuplet's acceptance.
+
+**No reduction version bump.** No precondition or verdict reads a display,
+and `MaterializedState` holds no tuplet value, so every history reduces to
+the same effects and canonical bytes; only the graph-aware score carries the
+display. `a_tuplets_display_changes_no_verdict_or_canonical_state`
+(`epiphany-musicxml`'s `reduction_modes`) holds one history shown and hidden
+to that in both modes. The fuzz streams hide the tuplet whose drawn id
+counter is 1, from the same draw, so no pinned stream moves.

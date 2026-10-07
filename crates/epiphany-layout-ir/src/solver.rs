@@ -638,6 +638,7 @@ mod tests {
             span_anchors: Vec::new(),
             system_leads: Vec::new(),
             staff_groups: Vec::new(),
+            cross_staff_beams: Vec::new(),
         }
     }
 
@@ -729,6 +730,7 @@ mod tests {
             span_anchors: Vec::new(),
             system_leads: Vec::new(),
             staff_groups: Vec::new(),
+            cross_staff_beams: Vec::new(),
         };
         let report = StubSolver.solve(&input, &SolverConfig::default());
         assert_eq!(report.status, SolveStatus::InternalError);

@@ -341,16 +341,28 @@ fn gen_payload(rng: &mut SplitMix64) -> OperationPayload {
             ),
         }),
         // X3.1: a tuplet over the shared event id space, its required total
-        // a twelfth per member, which members of other lengths do not fill.
-        37 => OperationKind::CreateTuplet(crate::payload::CreateTupletOp {
-            tuplet: valuegen::tuplet(
-                epiphany_core::TupletId::new(ReplicaId(7), rng.below(2)),
+        // a twelfth per member, which members of other lengths do not fill;
+        // the second id's is hidden (X3c, schema major 4), from the same draw.
+        37 => {
+            let counter = rng.below(2);
+            let tuplet = valuegen::tuplet(
+                epiphany_core::TupletId::new(ReplicaId(7), counter),
                 vec![
                     EventId::new(ReplicaId(7), rng.below(4)),
                     EventId::new(ReplicaId(7), rng.below(4)),
                 ],
-            ),
-        }),
+            );
+            OperationKind::CreateTuplet(crate::payload::CreateTupletOp {
+                tuplet: epiphany_core::Tuplet {
+                    display: if counter == 1 {
+                        epiphany_core::TupletDisplay::HIDDEN
+                    } else {
+                        epiphany_core::TupletDisplay::default()
+                    },
+                    ..tuplet
+                },
+            })
+        }
         // X3.6: a clef or key change, set or removed, at one of two offsets
         // on one of the shared staff instances.
         38 => OperationKind::SetClef(crate::payload::SetClefOp {

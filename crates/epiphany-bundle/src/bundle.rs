@@ -50,7 +50,7 @@ pub const SUPPORTED_SCHEMA_MAJOR: u16 = 0;
 /// bound of its per-role accept-set `[0, max]` (Binary Format companion
 /// §"Schema Major 1", "The accept-set gate").
 ///
-/// `OperationEnvelopeBlock` admits major 3 (schema major 2 fills the
+/// `OperationEnvelopeBlock` admits major 4 (schema major 2 fills the
 /// cross-cutting/staff/metadata bodies its payloads embed; major 1 embedded a
 /// v1 `CreateRegion`; the reader treats the block bytes opaquely, so it
 /// parses a higher-major block without decoding the payload). **Schema major
@@ -59,8 +59,12 @@ pub const SUPPORTED_SCHEMA_MAJOR: u16 = 0;
 /// context (`epiphany_core::TuningContextSettings`, born at major 3
 /// unconditionally), so an op block carrying one is now born at v3 — this
 /// superseded the earlier Push 4b tranche 3b-i note claiming no payload ever
-/// would. `Snapshot` admits major 3 for the acceleration full-`Score` form
-/// (decoded through the core versioned seam); the canonical BASE carried
+/// would. **Schema major 4 is raised by X3c**: `CreateTuplet` carries the
+/// whole `Tuplet`, which appends `display` at major 4, so an op block carrying
+/// one is born at v4 (a pre-major-4 `CreateTuplet` is refused by name when
+/// its envelope is decoded). `Snapshot` admits major 4 for the acceleration
+/// full-`Score` form (decoded through the core versioned seam); the canonical
+/// BASE carried
 /// under the same kind must stay major 0, enforced per role. Every other role
 /// stays at [`SUPPORTED_SCHEMA_MAJOR`] until its own versioned path lands —
 /// the layout cache, the operation index, and the manifest (carried opaquely,
@@ -69,14 +73,14 @@ pub const SUPPORTED_SCHEMA_MAJOR: u16 = 0;
 /// (a lower-major-only reader meeting a newer op block), not a hard reject.
 pub fn max_supported_major(kind: ChunkKind) -> u16 {
     match kind {
-        ChunkKind::OperationEnvelopeBlock => 3,
+        ChunkKind::OperationEnvelopeBlock => 4,
         // The payload-polymorphic Snapshot role: the acceleration
         // full-`Score` form is decoded through the core versioned seam
-        // (`Score::decode_canonical_versioned`, majors {0,1,2,3}). The
+        // (`Score::decode_canonical_versioned`, majors {0,1,2,3,4}). The
         // *canonical base* must stay major 0 regardless — that is enforced
         // per ROLE (`mis_stamped_canonical_base`, consulted at open and
         // commit), not by this per-kind bound.
-        ChunkKind::Snapshot => 3,
+        ChunkKind::Snapshot => 4,
         _ => SUPPORTED_SCHEMA_MAJOR,
     }
 }
@@ -1563,18 +1567,20 @@ mod tests {
         // operation payload that embeds the tuning context, born at major 3
         // unconditionally, so a block carrying one is now born at v3 — this
         // supersedes the earlier Push 4b tranche 3b-i note claiming no
-        // payload ever would.
+        // payload ever would. X3c raises it to major 4: `CreateTuplet` carries
+        // the whole `Tuplet`, which appends `display` at major 4.
         assert_eq!(SchemaVersion::V1.major, 1);
         assert_eq!(SchemaVersion::V2.major, 2);
         assert_eq!(SchemaVersion::V3.major, 3);
-        // (t4) The op-block role admits [0, 3] as of genesis tranche G2b.
-        assert_eq!(max_supported_major(ChunkKind::OperationEnvelopeBlock), 3);
-        // The snapshot role admits the major-3 acceleration form (decoded
+        assert_eq!(SchemaVersion::V4.major, 4);
+        // (t4) The op-block role admits [0, 4] as of X3c.
+        assert_eq!(max_supported_major(ChunkKind::OperationEnvelopeBlock), 4);
+        // The snapshot role admits the major-4 acceleration form (decoded
         // through the core versioned seam); the canonical BASE stays major 0
         // per role (`mis_stamped_canonical_base`). The remaining roles stay
         // at the generic baseline: the layout cache and the operation index.
         assert_eq!(SUPPORTED_SCHEMA_MAJOR, 0);
-        assert_eq!(max_supported_major(ChunkKind::Snapshot), 3);
+        assert_eq!(max_supported_major(ChunkKind::Snapshot), 4);
         assert_eq!(max_supported_major(ChunkKind::LayoutCache), 0);
         assert_eq!(max_supported_major(ChunkKind::OperationIndex), 0);
         // The manifest gate is exact to the manifest's own major (0), independent
@@ -1622,14 +1628,15 @@ mod tests {
         // LIVE bundle must go read-only at once — not only on the next reopen —
         // so no further commit runs against canonical history it cannot parse.
         //
-        // Major 4, not 3: genesis tranche G2b raised the op-block accept-set
-        // to [0, 3] (`SetTuningContext` is born at major 3), so major 3 is now
-        // admitted and this test's "future major" must move past it to stay
-        // an actual test of the read-only-on-overflow path.
+        // Major 5: genesis tranche G2b raised the op-block accept-set to
+        // [0, 3] (`SetTuningContext` is born at major 3) and X3c to [0, 4]
+        // (`CreateTuplet` is born at major 4), so this test's "future major"
+        // must move past both to stay an actual test of the
+        // read-only-on-overflow path.
         let mut bundle = fresh_bundle();
         let block = StagedChunk::operation_block_versioned(
             crate::block::encode_block(&[vec![1u8, 2, 3]]),
-            SchemaVersion::new(4, 0),
+            SchemaVersion::new(5, 0),
         );
         bundle
             .commit(&[block], |ctx| {
@@ -1645,7 +1652,7 @@ mod tests {
         );
         assert!(bundle.anomalies().iter().any(|a| matches!(
             a,
-            IntegrityAnomaly::UnsupportedCanonicalChunkMajor { schema_major: 4 }
+            IntegrityAnomaly::UnsupportedCanonicalChunkMajor { schema_major: 5 }
         )));
         // A further commit against the now-read-only bundle is refused.
         let more = StagedChunk::operation_block_versioned(

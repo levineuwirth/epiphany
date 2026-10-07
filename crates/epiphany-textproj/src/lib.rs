@@ -74,7 +74,14 @@ use epiphany_ops::OperationEnvelope;
 /// the `kind` production — the same reasoning as every prior kind append —
 /// and 0.15.0 → 0.16.0 by X3.6, which appended `set-clef` and
 /// `set-key-signature`.
-pub const COMPANION_VERSION: (u32, u32, u32) = (0, 16, 0);
+///
+/// Bumped again 0.16.0 → 0.17.0 by X3c, whose schema major 4 gave `Tuplet`
+/// its `display`: the `create-tuplet` value gains a sixth field,
+/// `(tuplet-display …)`. Not a kind append but the same reasoning: a
+/// `(0 16 0)` parser meets a six-field tuplet as an arity error, and this
+/// parser would meet a five-field one so, with no version signal to explain
+/// either; at 0.17.0 each refuses the other's document at line one.
+pub const COMPANION_VERSION: (u32, u32, u32) = (0, 17, 0);
 
 /// A parsed canonical Text Projection document.
 ///

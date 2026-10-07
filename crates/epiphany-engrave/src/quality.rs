@@ -68,8 +68,8 @@ use epiphany_layout_ir::quality::{
     anchors, normalize, MetricThresholds, QUALITY_FLOOR_FRACTION, QUALITY_METRIC_KINDS,
 };
 use epiphany_layout_ir::{
-    inter_staff_gap_id, ConstrainedLayoutIR, Curve, QualityMetricVector, SolverWarning,
-    SolverWarningKind, SpringSlotId, VerticalBand, VerticalBandId, VerticalBandKind,
+    inter_staff_gap_id, ConstrainedLayoutIR, Curve, GlyphObjectId, QualityMetricVector,
+    SolverWarning, SolverWarningKind, SpringSlotId, VerticalBand, VerticalBandId, VerticalBandKind,
 };
 
 use crate::casting::{CastLayout, PageGeometry};
@@ -378,6 +378,13 @@ fn vertical_units(
     // derivation. `glyph_system` is parallel to `input.glyphs`, exactly as the
     // `stroke_system`/`curve_system` reads below are to their arrays.
     let system_of_glyph = |index: usize| -> Option<usize> { cast.glyph_system[index] };
+    // A beam across two staves stands between them, the content of neither
+    // (the solve keeps its own room for it, `rise_limit`).
+    let between: BTreeSet<GlyphObjectId> = input
+        .cross_staff_beams
+        .iter()
+        .flat_map(|beam| beam.ink.iter().copied())
+        .collect();
     let mut content: BTreeMap<(usize, VerticalBandId), (f64, f64)> = BTreeMap::new();
     {
         let mut add = |system: usize, band: VerticalBandId, lo: f64, hi: f64| {
@@ -388,6 +395,9 @@ fn vertical_units(
             entry.1 = entry.1.max(hi);
         };
         for (index, glyph) in input.glyphs.iter().enumerate() {
+            if between.contains(&glyph.id()) {
+                continue;
+            }
             if let Some(system) = system_of_glyph(index) {
                 let ink = ink_box(cast, input, index);
                 add(system, glyph.vertical_band, ink[1], ink[3]);
@@ -413,6 +423,9 @@ fn vertical_units(
             let Some(system) = cast.stroke_system[index] else {
                 continue;
             };
+            if between.contains(&stroke.id()) {
+                continue;
+            }
             let half = f64::from(stroke.thickness.0.max(0.0)) * 0.5;
             let lo = f64::from(stroke.from.y.0.min(stroke.to.y.0)) - half;
             let hi = f64::from(stroke.from.y.0.max(stroke.to.y.0)) + half;

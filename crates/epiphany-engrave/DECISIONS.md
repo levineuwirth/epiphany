@@ -1474,3 +1474,154 @@ on its letter in another at one instant show only the second's accidental
 when the first comes first. Locked by
 `a_quarter_tone_accidental_holds_to_the_barline_and_yields_to_a_change`
 (`epiphany-cli`).
+
+## ENGRAVER_VERSION 34 → 35: a unison of two alterations (X3c.0, 2026-10-06)
+
+The measure's accidental state took the notes of one instant in their
+objects' order, so where two voices sounded one letter and octave at once
+with two alterations (a natural beside a flat, a natural beside a
+quarter-tone), the first, which the key or the measure already gave, showed
+nothing, and the second showed its own. The two heads stand side by side
+behind that one accidental, and a player reads both as the second. The
+notes starting at one time are now taken together: where they sound a letter
+and octave with more than one alteration, each head shows its own
+accidental, the natural included, whatever the measure gave, and the next
+note there states its own, as after a tie of another alteration. A tie
+continuation in such a unison shows its own too: bare beside a flat, it
+read as flat, since the one accidental stood before both heads. Where every
+note of the unison is a tie continuation, each is read by its own tie and
+none shows, as before. One alteration in both voices is shown once, as
+before. The accidental columns already set two accidentals of one step
+apart, the one nearer the heads belonging to the left head. Locked by
+`a_unison_of_two_alterations_shows_both_accidentals` (`epiphany-cli`).
+
+## ENGRAVER_VERSION 35 → 36: beams across two staves (X3c.2, 2026-10-06)
+
+A beam joining one voice's notes on both staves of a part, as MuseScore
+writes the notes it moves to the other staff, was dropped: the logical stage
+kept only beams whose notes all stood in one staff instance, so every note of
+such a beam took a flag. Each run of a score's beam that joins notes of two
+staff instances of a region is now a group of the staff of its first note
+(`StaffContent::cross_beams`), split where a note cannot be beamed, as a
+one-staff beam is. The constrained stage turns the upper staff's stems down
+and the lower's up, to one beam between the staves: its primary beam
+topmost, further beams below it as a group whose stems all turn up draws
+them, so an up stem reaches the primary and a down stem the deepest beam its
+own value takes. It rises with the line from its first member's head to its
+last's, by at most `MAX_BEAM_RISE` and at most half a space per space of run
+(the stems at a knee stand close, an up stem right of its head beside a down
+stem left of the next), and stands midway between the heights its members
+allow, each stem at least `CROSS_STEM_MIN` (2.25) from its head to the
+nearest beam it meets. It is drawn in the constrained frame, riding the upper
+staff, and recorded in `ConstrainedLayoutIR::cross_staff_beams` with its
+ink, the stems reaching it from the lower staff, and how far the lower staff
+may rise toward the upper before such a stem falls short of its least length
+(`rise_limit`).
+
+Casting reads the record three ways. The beam's ink is neither staff's
+content in the inter-staff solve, nor in `vertical_density_penalty`'s
+measurement, since it stands between them; the solve instead keeps the lower
+staff from rising past `rise_limit` relative to the upper, a floor beside the
+band's preferred clearance, in the system the beam lands in; and the bake
+moves each reaching stem's beam end with the upper staff's shift while its
+head end keeps its own. The spacing pass gives a beam across two staves at
+least 1.5 spaces between the stems at its ends (`CROSS_BEAM_MIN_SPAN`), as it
+gives a tie its least span. Nothing on one staff moves: a one-staff beam's
+strokes keep their keys, and a cross-staff beam's are keyed apart (the top
+bit, its level, its run and its first member). A group whose drawn members
+stand on more than two staves is not drawn; none is known. Locked by
+`a_beam_across_two_staves_joins_its_notes_between_them` (`epiphany-cli`),
+over a hand-written piano fixture and a score whose staves would close past
+the beam's room.
+
+## ENGRAVER_VERSION 36 → 37: a tuplet by its beam across two staves (X3c.3, 2026-10-06)
+
+A tuplet whose notes stand on two staves has no staff in the logical stage,
+so it drew nothing. One whose notes are exactly a beam across two staves now
+draws its number by that beam, and no bracket: centred on the group, above
+the beam, where only the upper staff's stems come down to it, moved along
+the beam to the place nearest the middle that no stem on that side crosses;
+below only where no such place lies within the group's span and below needs
+the shorter move. It stands `TUPLET_CLEARANCE` off the beam, rides the upper
+staff and the slot of the member nearest it, and joins the beam's ink
+between the staves. MuseScore sets such a number above the beam beside the
+knee, as this does. A tuplet across two staves that is not one beam still
+draws nothing. Locked by
+`a_tuplet_on_a_beam_across_two_staves_takes_its_number_by_the_beam`
+(`epiphany-cli`).
+
+## ENGRAVER_VERSION 37 → 38: hidden tuplets (X3c.4, 2026-10-06)
+
+A tuplet the file hides drew its number and bracket, since the score had no
+field to hold the marking; schema major 4 gives it one (`Tuplet::display`).
+A tuplet whose number is hidden now draws none, and one whose bracket is
+hidden draws none; a bracket whose number is hidden runs unbroken from hook
+to hook, one stroke riding its first and last members' slots. Where no digit
+carries the tuplet's own provenance, its traced anchor does, as when nothing
+is drawn. A tuplet on a beam across two staves draws its number by the beam
+only when shown. Locked by
+`a_tuplet_the_file_hides_draws_no_number_or_bracket` and
+`a_tuplet_on_a_beam_across_two_staves_takes_its_number_by_the_beam`
+(`epiphany-cli`).
+
+## ENGRAVER_VERSION 38 → 39: tuplets across two staves that are not one beam (X3c fix round 1, 2026-10-06)
+
+A tuplet whose members stand on two staves has no staff in the logical
+stage, and version 37 drew one only where its notes were exactly a beam
+across them; any other shape drew nothing, number and bracket alike, and
+nothing counted it. Three shapes now draw. Tuplets sharing one beam across
+the staves each take their number by the beam as version 37 placed it,
+centred on their own notes, with no bracket, as MuseScore draws them. A
+tuplet a drawn rest opens, or holds, takes a bracket as well, since the beam
+does not show where it runs: from its first member's column to its last's,
+above the beam, its notes' own ink and its rests by `TUPLET_CLEARANCE`, its
+number in the gap and its hooks toward the notes, riding the upper staff with
+the beam's ink, as MuseScore draws one. The bracket clears the tuplet's own
+notes and not another voice's. A tuplet whose ink stands on one staff, a
+hidden rest on the other, is drawn on that staff as a one-staff tuplet
+opening on a hidden rest is, clearing that staff's rests alone. A tuplet
+across two staves whose notes no beam joins still draws nothing; the
+corpus report now counts every tuplet whose number is shown and has no ink,
+or a bracket without its number, as an engraving omission. A tuplet across
+two staves that draws nothing keeps its traced anchor in no staff's band:
+versions 37 and 38 left a hidden one that is exactly its beam in the upper
+staff's band at the frame's origin, which stretches that staff toward
+whatever stands there; once every tuplet riding such a beam took the beam's
+staff, the hidden ones of a passage with a staff above the piano moved its
+staves apart. Locked by
+`a_tuplet_across_two_staves_that_is_not_one_beam_is_drawn` and
+`a_tuplet_across_two_staves_that_draws_nothing_keeps_its_anchor_off_the_staves`
+(`epiphany-cli`) and, for the count,
+`a_shown_tuplet_with_no_ink_is_counted_and_an_anchor_is_not_ink`.
+
+## ENGRAVER_VERSION 39 → 40: a cross-staff tuplet's number clear of heads (X3c fix round 1, 2026-10-06)
+
+Version 37 placed the number of a tuplet on a beam across two staves at the
+place nearest its notes' middle that no stem on its side crosses, and
+cleared nothing else. In a falling group the upper staff's notes come
+first and descend toward the beam, so that place is beside the last upper
+note, under its head: the number stood within a third of a space of a head,
+and could meet one. The number now clears the upper staff's ink, every
+head, ledger line, accidental, dot, stem and drawn rest, by
+`TUPLET_NUMBER_GAP` beside it, as it cleared stems, and by
+`TUPLET_CLEARANCE` above or below, as it stands off the beam; it moves along
+the beam to the nearest place that does, within the beam's span. In a
+falling group that is past the last upper note's head and ledger lines,
+still above the beam and within the group. MuseScore lifts such a number
+over the head instead, onto the ledger lines; standing by the beam keeps it
+with the group. The lower staff's ink is cleared by `x` alone, and only by
+a number below the beam: the placement runs in the constrained frame, where
+the staves stand a fixed pitch apart, and where the upper staff's notes
+stand deep enough to push the beam below the lower staff's place there, the
+lower staff's heads and ledger lines stand above the beam until the vertical
+solve opens the gap; read as they stand, they sent such a group's number
+below the beam, into the lower staff. Only the upper staff's ink rides with
+the beam. Where neither side of the beam has a clear place, the number
+stands at the middle above all the upper staff's ink it would meet. A
+rising group's number, already clear, is placed as before, and moves only
+with the spacing a moved number changes around it. The bracket of a tuplet
+a rest opens now rises over the beam and its upper staff's notes and rests
+alone, for the same reason, and is raised further where its number would
+meet the upper staff's ink. Locked by
+`a_tuplet_number_across_two_staves_stands_clear_of_heads` (`epiphany-cli`),
+over a hand-written fixture of falling groups, some far below each staff.

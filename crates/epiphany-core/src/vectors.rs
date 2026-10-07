@@ -18,17 +18,18 @@
 //!   [`Pitch`], [`Event`], [`Slur`] — plus the four schema-major-3
 //!   tuning-context leaves ([`SmuflVersion`], [`SmuflVersionRequirement`],
 //!   [`TuningScope`], [`TuningOverride`]) and their container
-//!   ([`ScoreTuningContext`]). Every leaf routes through
+//!   ([`ScoreTuningContext`]), and the schema-major-4 [`Tuplet`]. Every leaf
+//!   routes through
 //!   [`CanonicalValue::decode_canonical`] — the same public, production API a
 //!   value-typed operation payload uses — never a decoder reimplemented here.
 //! * **Whole `Score`, one per schema major** — `core.score_v0` through
-//!   `core.score_v3`, routed through [`Score::decode_canonical_versioned`].
-//!   Majors 0–2 are **not** literal-byte-locked at the *current* layout: a
+//!   `core.score_v4`, routed through [`Score::decode_canonical_versioned`].
+//!   Majors 0–3 are **not** literal-byte-locked at the *current* layout: a
 //!   migration deliberately rewrites bytes (that is the point of
 //!   default-filling), so injectivity there means the input was already
 //!   canonical *at its own major* — `decode_vN_score` re-encodes through the
 //!   frozen `encode_vN_score` and rejects a mismatch, so a successful decode
-//!   already proves that. Only `core.score_v3` compares
+//!   already proves that. Only `core.score_v4` compares
 //!   `decoded.canonical_bytes() == bytes`. See the contract's "trap" section;
 //!   getting this backwards (comparing v0–v2 against the *current* encoding)
 //!   would fail on every vector, and "fixing" it by relaxing the check would
@@ -39,8 +40,10 @@ use epiphany_determinism::CanonicalF64;
 use crate::accidental::{SmuflVersion, SmuflVersionRequirement};
 use crate::codec::Codec;
 use crate::event::{Event, PitchedEvent, StemConfiguration};
-use crate::graph::{ScoreTuningContext, Slur, SlurKind, SpanStyle};
-use crate::ids::{EventId, PitchId, ReplicaId, SlurId, VoiceId};
+use crate::graph::{
+    ScoreTuningContext, Slur, SlurKind, SpanStyle, Tuplet, TupletDisplay, TupletRatio,
+};
+use crate::ids::{EventId, PitchId, ReplicaId, SlurId, TupletId, VoiceId};
 use crate::pitch::{
     AcousticPitch, AcousticRealization, CmnNominal, IdentifiedPitch, Pitch, PitchSpaceId,
     PitchSpacePosition, ScalePosition, TuningReference, TuningSystemId,
@@ -407,12 +410,15 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
     // rely on), encoded through each frozen per-major encoder. Majors 0-2 are
     // genuinely *older* wire forms of the same value, synthesized via the
     // pub(crate) `encode_vN_score` mirrors (never a fresh hand-rolled layout);
-    // major 3 is the live `canonical_bytes()`.
+    // major 4 is the live `canonical_bytes()`. The score holds no tuplet, so
+    // its major-3 and major-4 forms are one byte string; the vectors after
+    // these carry one.
     let score = crate::generators::valid_score(7);
     let v0 = crate::codec::encode_v0_score(&score);
     let v1 = crate::codec::encode_v1_score(&score);
     let v2 = crate::codec::encode_v2_score(&score);
-    let v3 = score.canonical_bytes();
+    let v3 = crate::codec::encode_v3_score(&score);
+    let v4 = score.canonical_bytes();
 
     const SV0: &str = "core.score_v0";
     v.push(row(SV0, "accept", "-", "valid_score_seed_7", v0.clone()));
@@ -444,6 +450,23 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         with_trailing_byte(&v2),
     ));
 
+    // Schema major 4 appends `display` to `Tuplet`: the same score with a
+    // tuplet, in the five-field form majors 0 to 3 share (accepted at major
+    // 3, its display then the default) and with a hidden display at major
+    // 4; the major-3 bytes are no major-4 encoding.
+    let mut tupled = score.clone();
+    let members: Vec<EventId> = tupled.events.iter().take(2).map(|e| e.id()).collect();
+    let tuplet = Tuplet {
+        id: TupletId::new(ReplicaId(1), 99),
+        ratio: TupletRatio::new(3, 2).expect("not degenerate"),
+        members,
+        parent: None,
+        required_total: MusicalDuration(RationalTime::new(1, 4).expect("a denominator")),
+        display: TupletDisplay::HIDDEN,
+    };
+    tupled.cross_cutting.tuplets.push(tuplet.clone());
+    let tupled_v3 = crate::codec::encode_v3_score(&tupled);
+
     const SV3: &str = "core.score_v3";
     v.push(row(SV3, "accept", "-", "valid_score_seed_7", v3.clone()));
     v.push(row(
@@ -452,6 +475,63 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         "trailing-bytes",
         "valid_score_seed_7_trailing",
         with_trailing_byte(&v3),
+    ));
+    v.push(row(SV3, "accept", "-", "with_a_tuplet", tupled_v3.clone()));
+
+    const SV4: &str = "core.score_v4";
+    v.push(row(SV4, "accept", "-", "valid_score_seed_7", v4.clone()));
+    v.push(row(
+        SV4,
+        "reject",
+        "trailing-bytes",
+        "valid_score_seed_7_trailing",
+        with_trailing_byte(&v4),
+    ));
+    v.push(row(
+        SV4,
+        "accept",
+        "-",
+        "with_a_hidden_tuplet",
+        tupled.canonical_bytes(),
+    ));
+    v.push(row(
+        SV4,
+        "reject",
+        "unsupported-layout",
+        "with_a_major_3_tuplet",
+        tupled_v3,
+    ));
+
+    // --- Tuplet ----------------------------------------------------------
+    const TUPLET: &str = "core.tuplet";
+    let tuplet_bytes = tuplet.canonical_bytes();
+    v.push(row(TUPLET, "accept", "-", "hidden", tuplet_bytes.clone()));
+    v.push(row(
+        TUPLET,
+        "accept",
+        "-",
+        "shown",
+        Tuplet {
+            display: TupletDisplay::default(),
+            ..tuplet.clone()
+        }
+        .canonical_bytes(),
+    ));
+    // The five-field form of majors 0 to 3: its last two bytes are the
+    // display's two tags.
+    v.push(row(
+        TUPLET,
+        "reject",
+        "unsupported-layout",
+        "major_3_form",
+        tuplet_bytes[..tuplet_bytes.len() - 2].to_vec(),
+    ));
+    v.push(row(
+        TUPLET,
+        "reject",
+        "trailing-bytes",
+        "hidden_trailing",
+        with_trailing_byte(&tuplet_bytes),
     ));
 
     v
@@ -471,19 +551,19 @@ fn leaf_check<T: CanonicalValue>(bytes: &[u8]) -> Result<bool, String> {
     }
 }
 
-/// Runs [`Score::decode_canonical_versioned`] at `major`. Majors 0-2 report
+/// Runs [`Score::decode_canonical_versioned`] at `major`. Majors 0-3 report
 /// injectivity as `true` unconditionally on a successful decode: migration
 /// deliberately rewrites the bytes (default-filling new fields), so comparing
 /// against the *current* `canonical_bytes()` would fail on every vector, and
 /// `decode_vN_score`'s own re-encode-through-`encode_vN_score` guard already
 /// proved the input canonical at *its own* major before returning `Ok` at all
-/// (see the module doc's account of the contract's "trap"). Only major 3
+/// (see the module doc's account of the contract's "trap"). Only major 4
 /// compares `decoded.canonical_bytes() == bytes` — the live layout, where that
 /// comparison is exactly what injectivity means.
 fn score_check(bytes: &[u8], major: u16) -> Result<bool, String> {
     match Score::decode_canonical_versioned(bytes, major) {
         Ok(decoded) => {
-            if major == 3 {
+            if major == 4 {
                 Ok(decoded.canonical_bytes() == bytes)
             } else {
                 Ok(true)
@@ -512,6 +592,8 @@ pub fn check(surface: &str, bytes: &[u8]) -> Option<Result<bool, String>> {
         "core.score_v1" => Some(score_check(bytes, 1)),
         "core.score_v2" => Some(score_check(bytes, 2)),
         "core.score_v3" => Some(score_check(bytes, 3)),
+        "core.score_v4" => Some(score_check(bytes, 4)),
+        "core.tuplet" => Some(leaf_check::<Tuplet>(bytes)),
         _ => None,
     }
 }
@@ -551,7 +633,7 @@ mod tests {
                 other => panic!("unknown verdict {other}"),
             }
         }
-        assert_eq!(seen.len(), 14, "surfaces: {:?}", seen.keys());
+        assert_eq!(seen.len(), 16, "surfaces: {:?}", seen.keys());
         for (surface, (accept, reject)) in seen {
             assert!(accept, "{surface} has no accept vector");
             assert!(reject, "{surface} has no reject vector");

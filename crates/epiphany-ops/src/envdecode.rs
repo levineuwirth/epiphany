@@ -85,6 +85,11 @@ pub enum EnvelopeDecodeError {
     /// The bytes decoded structurally but are not the canonical encoding of the
     /// value they decode to.
     NonCanonical,
+    /// An embedded value in a layout written before its type's current
+    /// schema major, which this reader recognizes and does not decode: before
+    /// the product's 1.0 release nothing is migrated (a `CreateTuplet`
+    /// carrying the five-field `Tuplet` of majors 0 to 3).
+    UnsupportedLayout(&'static str),
 }
 
 impl core::fmt::Display for EnvelopeDecodeError {
@@ -110,6 +115,12 @@ impl core::fmt::Display for EnvelopeDecodeError {
             ),
             Self::TargetsNotSorted => f.write_str("Transpose targets are not sorted"),
             Self::NonCanonical => f.write_str("envelope bytes are not canonical"),
+            Self::UnsupportedLayout(what) => {
+                write!(
+                    f,
+                    "unsupported layout: {what}, written before its current schema major"
+                )
+            }
         }
     }
 }
@@ -617,7 +628,18 @@ fn operation_kind(r: &mut Reader<'_>) -> Result<OperationKind> {
             measure: value::<Measure>(r, "Measure")?,
         }),
         40 => OperationKind::CreateTuplet(CreateTupletOp {
-            tuplet: value::<Tuplet>(r, "Tuplet")?,
+            tuplet: {
+                // A tuplet written before schema major 4 lacks `display`:
+                // recognized and refused by name, not migrated.
+                let bytes = r.lp_bytes()?;
+                match Tuplet::decode_canonical(bytes) {
+                    Ok(tuplet) => tuplet,
+                    Err(_) if Tuplet::decode_major_3(bytes).is_ok() => {
+                        return Err(EnvelopeDecodeError::UnsupportedLayout("Tuplet"));
+                    }
+                    Err(_) => return Err(EnvelopeDecodeError::InvalidValue("Tuplet")),
+                }
+            },
         }),
         41 => OperationKind::SetClef(SetClefOp {
             instance: staff_instance_id(r)?,

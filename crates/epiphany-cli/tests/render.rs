@@ -286,6 +286,857 @@ fn beams_stay_on_their_stems_through_spacing_and_justification() {
         .all(|g| !g.glyph.as_str().starts_with("flag")));
 }
 
+/// The staff each event of a score stands on, and each pitch's event.
+fn staves_of(
+    score: &epiphany_core::Score,
+) -> (
+    std::collections::BTreeMap<epiphany_core::EventId, epiphany_core::StaffId>,
+    std::collections::BTreeMap<epiphany_core::PitchId, epiphany_core::EventId>,
+) {
+    let mut staff_of = std::collections::BTreeMap::new();
+    for region in &score.canvas.regions {
+        for instance in region.staff_instances() {
+            for voice in &instance.voices {
+                for event in &voice.events {
+                    staff_of.insert(*event, instance.staff);
+                }
+            }
+        }
+    }
+    let mut event_of = std::collections::BTreeMap::new();
+    for event in score.events.iter() {
+        if let epiphany_core::Event::Pitched(p) = event {
+            for pitch in &p.pitches {
+                event_of.insert(pitch.id, p.id);
+            }
+        }
+    }
+    (staff_of, event_of)
+}
+
+/// Checks every beam of `score` that joins notes on two staves against its
+/// engraving: its primary beam at least a space and a half long and rising
+/// at most half a space per space, each note on its own staff, the upper
+/// staff's stems turned down to the beam and the lower's up, each stem
+/// meeting the outermost beam over it, and none shorter than
+/// `CROSS_STEM_MIN` from its head to the nearest beam it meets. Returns how many such beams there are, the shortest such
+/// stem, and the gap between the two staves' lines.
+fn check_cross_staff_beams(
+    score: &epiphany_core::Score,
+    layout: &epiphany_layout_ir::ResolvedLayoutIR,
+) -> (usize, f32, f32) {
+    use epiphany_core::TypedObjectId;
+    use epiphany_layout_ir::{is_beam_stroke, Stroke};
+
+    let (staff_of, event_of) = staves_of(score);
+    // Each staff's lines, bottom and top.
+    let mut lines: std::collections::BTreeMap<epiphany_core::StaffId, (f32, f32)> =
+        std::collections::BTreeMap::new();
+    for stroke in &layout.strokes {
+        if let TypedObjectId::Staff(staff) = stroke.provenance.source {
+            if stroke.from.y == stroke.to.y {
+                let y = stroke.from.y.0;
+                let entry = lines.entry(staff).or_insert((y, y));
+                entry.0 = entry.0.min(y);
+                entry.1 = entry.1.max(y);
+            }
+        }
+    }
+    assert_eq!(lines.len(), 2, "one system of two staves");
+    let mut order: Vec<_> = lines.iter().map(|(s, l)| (*s, *l)).collect();
+    order.sort_by(|a, b| b.1 .0.total_cmp(&a.1 .0));
+    let (upper, lower) = (order[0], order[1]);
+    let middle = |(_, (bottom, top)): (epiphany_core::StaffId, (f32, f32))| (bottom + top) / 2.0;
+    let heads_of = |event: epiphany_core::EventId| -> Vec<f32> {
+        layout
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str().starts_with("notehead"))
+            .filter(|g| match g.provenance.source {
+                TypedObjectId::Pitch(p) => event_of.get(&p) == Some(&event),
+                _ => false,
+            })
+            .map(|g| g.position.y.0)
+            .collect()
+    };
+    let beam_y = |beam: &Stroke, x: f32| {
+        let t = (x - beam.from.x.0) / (beam.to.x.0 - beam.from.x.0);
+        beam.from.y.0 + t * (beam.to.y.0 - beam.from.y.0)
+    };
+    let mut crossing = 0;
+    let mut shortest = f32::INFINITY;
+    for beam in &score.cross_cutting.beams {
+        let staves: std::collections::BTreeSet<_> =
+            beam.events.iter().map(|e| staff_of[e]).collect();
+        if staves.len() < 2 {
+            continue;
+        }
+        crossing += 1;
+        let strokes: Vec<&Stroke> = layout
+            .strokes
+            .iter()
+            .filter(|s| {
+                is_beam_stroke(s)
+                    && beam.events.iter().all(|e| {
+                        s.provenance
+                            .dependencies
+                            .contains(&TypedObjectId::Event(*e))
+                    })
+            })
+            .collect();
+        assert!(!strokes.is_empty(), "a beam across two staves is drawn");
+        // Its primary beam, the longest, runs at least a space and a half,
+        // rising by at most half a space per space.
+        let primary = strokes
+            .iter()
+            .max_by(|a, b| (a.to.x.0 - a.from.x.0).total_cmp(&(b.to.x.0 - b.from.x.0)))
+            .expect("a beam stroke");
+        let run = primary.to.x.0 - primary.from.x.0;
+        assert!(run >= 1.49, "a beam across two staves runs {run}");
+        let slope = (primary.to.y.0 - primary.from.y.0) / run;
+        assert!(
+            slope.abs() <= 0.51,
+            "a beam across two staves rises {slope}"
+        );
+        for event in &beam.events {
+            let heads = heads_of(*event);
+            assert!(!heads.is_empty());
+            let on_upper = staff_of[event] == upper.0;
+            for y in &heads {
+                let own = if on_upper {
+                    middle(upper)
+                } else {
+                    middle(lower)
+                };
+                let other = if on_upper {
+                    middle(lower)
+                } else {
+                    middle(upper)
+                };
+                assert!((y - own).abs() < (y - other).abs(), "a head left its staff");
+            }
+            let stem = layout
+                .strokes
+                .iter()
+                .find(|s| {
+                    s.provenance.source == TypedObjectId::Event(*event)
+                        && s.from.x == s.to.x
+                        && s.from.y != s.to.y
+                })
+                .expect("a member's stem");
+            let x = stem.from.x.0;
+            let centres: Vec<f32> = strokes
+                .iter()
+                .filter(|b| b.from.x.0 - 0.01 <= x && x <= b.to.x.0 + 0.01)
+                .map(|b| beam_y(b, x))
+                .collect();
+            assert!(!centres.is_empty(), "a beam over every member");
+            let half = strokes[0].thickness.0 / 2.0;
+            let top = centres.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let bottom = centres.iter().copied().fold(f32::INFINITY, f32::min);
+            if on_upper {
+                assert!(stem.to.y.0 < stem.from.y.0, "an upper stem turns down");
+                assert!(
+                    (stem.to.y.0 - bottom).abs() <= half + 0.17,
+                    "a down stem meets its outermost beam"
+                );
+                let head = heads.iter().copied().fold(f32::INFINITY, f32::min);
+                shortest = shortest.min(head - (top + half));
+            } else {
+                assert!(stem.to.y.0 > stem.from.y.0, "a lower stem turns up");
+                assert!(
+                    (stem.to.y.0 - top).abs() <= half + 0.17,
+                    "an up stem meets its outermost beam"
+                );
+                let head = heads.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                shortest = shortest.min((bottom - half) - head);
+            }
+        }
+    }
+    (crossing, shortest, upper.1 .0 - lower.1 .1)
+}
+
+/// A beam joining one voice's notes on both staves of a part stands between
+/// them: each note on its own staff, the upper staff's stems turned down to
+/// the beam and the lower's up, every stem meeting it after the staves are
+/// spaced, each at least `CROSS_STEM_MIN` from its head to the nearest beam
+/// it meets, and no flag left. Where the staves' own ink would let them
+/// close further, the stems reaching the beam from the lower staff hold them
+/// at that least length.
+#[test]
+fn a_beam_across_two_staves_joins_its_notes_between_them() {
+    use epiphany_layout_ir::CROSS_STEM_MIN;
+
+    let loaded = load(&fixture("cross_staff.musicxml")).expect("loads");
+    let layout = engrave(&loaded.reduced.score).layout;
+    let (crossing, shortest, _) = check_cross_staff_beams(&loaded.reduced.score, &layout);
+    assert_eq!(crossing, 7, "the fixture's beams across the staves");
+    assert!(
+        shortest >= CROSS_STEM_MIN - 0.05,
+        "a stem too short: {shortest}"
+    );
+    assert!(layout
+        .glyphs
+        .iter()
+        .all(|g| !g.glyph.as_str().starts_with("flag")));
+    // The staves realize their band's preferred clearance, and the vertical
+    // metric, which leaves the beams' ink out of both staves as the solve
+    // does, measures no deviation.
+    use epiphany_layout_ir::ConstraintSolver;
+    let report = epiphany_engrave::Engraver::default().solve(
+        &epiphany_layout_ir::to_constrained(&epiphany_layout_ir::to_logical(&loaded.reduced.score)),
+        &epiphany_layout_ir::SolverConfig::default(),
+    );
+    let penalty = report.metric_vector.vertical_density_penalty.0;
+    assert!(penalty < 1e-3, "vertical density penalty {penalty}");
+
+    // Two bass staves, whose ink stays within their lines, each beam joining
+    // the lower staff's top line to the upper's bottom line: the staves
+    // would close to the band's preferred clearance, nearer than the beam
+    // between them allows, so its stems from the lower staff hold them apart.
+    let note = |step: &str, octave: u8, staff: u8, beam: &str| {
+        format!(
+            "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+             <duration>1</duration><voice>1</voice><type>eighth</type><staff>{staff}</staff>\
+             <beam number=\"1\">{beam}</beam></note>"
+        )
+    };
+    let mut notes = String::new();
+    for _ in 0..4 {
+        notes += &note("A", 3, 2, "begin");
+        notes += &note("G", 2, 1, "end");
+    }
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\">\
+         <part-name>Piano</part-name></score-part></part-list><part id=\"P1\">\
+         <measure number=\"1\"><attributes><divisions>2</divisions>\
+         <time><beats>4</beats><beat-type>4</beat-type></time><staves>2</staves>\
+         <clef number=\"1\"><sign>F</sign><line>4</line></clef>\
+         <clef number=\"2\"><sign>F</sign><line>4</line></clef></attributes>\
+         {notes}</measure></part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("close_cross_staff.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = engrave(&loaded.reduced.score).layout;
+    let (crossing, shortest, gap) = check_cross_staff_beams(&loaded.reduced.score, &layout);
+    assert_eq!(crossing, 4);
+    assert!(
+        (shortest - CROSS_STEM_MIN).abs() < 0.05,
+        "the stems reaching the beam hold the staves at their least length: {shortest}, \
+         the staves {gap} apart"
+    );
+}
+
+/// A tuplet whose notes are one beam across two staves is drawn by the beam:
+/// its number alone, no bracket, standing above the beam between the staves,
+/// clear of every stem and beam, within the group's span.
+#[test]
+fn a_tuplet_on_a_beam_across_two_staves_takes_its_number_by_the_beam() {
+    use epiphany_core::TypedObjectId;
+    use epiphany_layout_ir::is_beam_stroke;
+
+    let loaded = load(&fixture("cross_staff.musicxml")).expect("loads");
+    let score = &loaded.reduced.score;
+    let layout = engrave(score).layout;
+    let (staff_of, _) = staves_of(score);
+    let mut numbered = 0;
+    for tuplet in &score.cross_cutting.tuplets {
+        let staves: std::collections::BTreeSet<_> =
+            tuplet.members.iter().map(|e| staff_of[e]).collect();
+        if staves.len() < 2 {
+            continue;
+        }
+        let beam = score
+            .cross_cutting
+            .beams
+            .iter()
+            .find(|b| {
+                let mut a = b.events.clone();
+                let mut m = tuplet.members.clone();
+                a.sort();
+                m.sort();
+                a == m
+            })
+            .expect("the fixture's cross-staff tuplets are each one beam");
+        let digits: Vec<_> = layout
+            .glyphs
+            .iter()
+            .filter(|g| g.provenance.source == TypedObjectId::Tuplet(tuplet.id))
+            .collect();
+        assert!(
+            layout
+                .strokes
+                .iter()
+                .all(|s| s.provenance.source != TypedObjectId::Tuplet(tuplet.id) || s.from == s.to),
+            "no bracket"
+        );
+        if tuplet.display == epiphany_core::TupletDisplay::HIDDEN {
+            assert!(digits.is_empty(), "a hidden tuplet shows no number");
+            continue;
+        }
+        numbered += 1;
+        assert_eq!(digits.len(), 1);
+        assert_eq!(digits[0].glyph.as_str(), "tuplet6");
+        let number = glyph_box(digits[0]);
+        let beams: Vec<_> = layout
+            .strokes
+            .iter()
+            .filter(|s| {
+                is_beam_stroke(s)
+                    && s.provenance
+                        .dependencies
+                        .contains(&TypedObjectId::Event(beam.events[0]))
+            })
+            .collect();
+        let stems: Vec<_> = layout
+            .strokes
+            .iter()
+            .filter(|s| {
+                beam.events
+                    .iter()
+                    .any(|e| s.provenance.source == TypedObjectId::Event(*e))
+                    && s.from.x == s.to.x
+            })
+            .collect();
+        for ink in &stems {
+            assert!(
+                !boxes_overlap(number, stroke_box(ink)),
+                "the number touches its group's ink"
+            );
+        }
+        let (first, last) = stems
+            .iter()
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), s| {
+                (a.min(s.from.x.0), b.max(s.from.x.0))
+            });
+        assert!(
+            number[0] >= first && number[2] <= last,
+            "the number stands within its group"
+        );
+        // Above the beam: higher than the beam's ink across the number.
+        let top = beams
+            .iter()
+            .filter(|b| b.from.x.0 <= number[2] && number[0] <= b.to.x.0)
+            .map(|b| stroke_box(b)[3])
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(number[1] > top, "the number stands above the beam");
+    }
+    assert_eq!(numbered, 3, "each shown cross-staff tuplet numbered");
+}
+
+/// A tuplet whose notes stand on two staves but are not exactly one beam is
+/// still drawn. Two sharing one beam each take their number by it, centred
+/// on their own notes, with no bracket; one a rest opens takes a bracket from
+/// the rest to its last note, above its notes and the beam and clear of
+/// them, its number in the gap; one whose ink stands on one staff, a hidden
+/// rest on the other, is drawn on that staff with its bracket, as a tuplet
+/// opening on a hidden rest is. A quarter-note triplet across the staves,
+/// which no beam joins, is not drawn, and the omission count names it.
+#[test]
+fn a_tuplet_across_two_staves_that_is_not_one_beam_is_drawn() {
+    use epiphany_core::{Event, TypedObjectId};
+    use epiphany_layout_ir::is_beam_stroke;
+
+    let loaded = load(&fixture("cross_staff_tuplets.musicxml")).expect("loads");
+    let score = &loaded.reduced.score;
+    let engraved = engrave(score);
+    let layout = &engraved.layout;
+    let (staff_of, _) = staves_of(score);
+    let digits = |id| -> Vec<[f32; 4]> {
+        layout
+            .glyphs
+            .iter()
+            .filter(|g| {
+                g.provenance.source == TypedObjectId::Tuplet(id)
+                    && g.glyph.as_str().starts_with("tuplet")
+            })
+            .map(glyph_box)
+            .collect()
+    };
+    let bracket = |id| -> Vec<&epiphany_layout_ir::Stroke> {
+        layout
+            .strokes
+            .iter()
+            .filter(|s| s.provenance.source == TypedObjectId::Tuplet(id) && s.from != s.to)
+            .collect()
+    };
+    // A member's ink: its heads and its stem.
+    let ink_of = |e: epiphany_core::EventId| -> Vec<[f32; 4]> {
+        let pitches: Vec<TypedObjectId> = match score.events.get(e) {
+            Some(Event::Pitched(p)) => p
+                .pitches
+                .iter()
+                .map(|ip| TypedObjectId::Pitch(ip.id))
+                .collect(),
+            _ => Vec::new(),
+        };
+        layout
+            .glyphs
+            .iter()
+            .filter(|g| pitches.contains(&g.provenance.source))
+            .map(glyph_box)
+            .chain(
+                layout
+                    .strokes
+                    .iter()
+                    .filter(|s| {
+                        s.provenance.source == TypedObjectId::Event(e) && s.from.x == s.to.x
+                    })
+                    .map(stroke_box),
+            )
+            .collect()
+    };
+    let stem_x = |e: epiphany_core::EventId| {
+        layout
+            .strokes
+            .iter()
+            .find(|s| s.provenance.source == TypedObjectId::Event(e) && s.from.x == s.to.x)
+            .map(|s| s.from.x.0)
+    };
+    let beams: Vec<[f32; 4]> = layout
+        .strokes
+        .iter()
+        .filter(|s| is_beam_stroke(s))
+        .map(stroke_box)
+        .collect();
+    let rest_of = |e: epiphany_core::EventId| match score.events.get(e) {
+        Some(Event::Rest(r)) => Some(r.visible),
+        _ => None,
+    };
+
+    let (mut shared, mut opened, mut hidden_led, mut exact, mut unbeamed) = (0, 0, 0, 0, 0);
+    for tuplet in &score.cross_cutting.tuplets {
+        let staves: std::collections::BTreeSet<_> =
+            tuplet.members.iter().map(|e| staff_of[e]).collect();
+        assert_eq!(
+            staves.len(),
+            2,
+            "each of the fixture's tuplets spans the staves"
+        );
+        let notes: Vec<_> = tuplet
+            .members
+            .iter()
+            .copied()
+            .filter(|e| rest_of(*e).is_none())
+            .collect();
+        let beam = score
+            .cross_cutting
+            .beams
+            .iter()
+            .find(|b| b.events.contains(&notes[0]));
+        let number = digits(tuplet.id);
+        match (rest_of(tuplet.members[0]), beam) {
+            (None, None) => {
+                unbeamed += 1;
+                assert!(number.is_empty() && bracket(tuplet.id).is_empty());
+                continue;
+            }
+            (Some(false), _) => {
+                hidden_led += 1;
+                assert_eq!(number.len(), 1, "numbered on its staff");
+                assert_eq!(
+                    bracket(tuplet.id).len(),
+                    4,
+                    "and bracketed, a hidden rest opening it"
+                );
+                continue;
+            }
+            _ => {}
+        }
+        let beam = beam.expect("its notes ride one beam");
+        assert_eq!(number.len(), 1, "each shown tuplet numbered");
+        let number = number[0];
+        let xs: Vec<f32> = notes.iter().map(|e| stem_x(*e).expect("a stem")).collect();
+        let (first, last) = (xs[0], *xs.last().expect("notes"));
+        for e in &tuplet.members {
+            for ink in ink_of(*e) {
+                assert!(!boxes_overlap(number, ink), "the number clears its notes");
+            }
+        }
+        let over = beams
+            .iter()
+            .filter(|b| b[0] <= number[2] && number[0] <= b[2])
+            .map(|b| b[3])
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(number[1] > over, "the number stands above the beam");
+        if rest_of(tuplet.members[0]) == Some(true) {
+            opened += 1;
+            let strokes = bracket(tuplet.id);
+            assert_eq!(strokes.len(), 4, "hooks and a line broken for the number");
+            let boxes: Vec<[f32; 4]> = strokes.iter().map(|s| stroke_box(s)).collect();
+            let left = boxes.iter().map(|b| b[0]).fold(f32::INFINITY, f32::min);
+            let right = boxes.iter().map(|b| b[2]).fold(f32::NEG_INFINITY, f32::max);
+            let rest = layout
+                .glyphs
+                .iter()
+                .find(|g| g.provenance.source == TypedObjectId::Event(tuplet.members[0]))
+                .map(glyph_box)
+                .expect("the rest is drawn");
+            assert!(
+                left <= rest[0] + 0.5 && right >= last,
+                "from the rest to its last note"
+            );
+            let line = strokes
+                .iter()
+                .filter(|s| s.from.y == s.to.y)
+                .map(|s| s.from.y.0)
+                .fold(f32::INFINITY, f32::min);
+            let notes_top = notes
+                .iter()
+                .flat_map(|e| ink_of(*e))
+                .map(|b| b[3])
+                .fold(over, f32::max);
+            assert!(
+                line > notes_top,
+                "the bracket stands above its notes and the beam"
+            );
+            for b in &boxes {
+                for e in &notes {
+                    for ink in ink_of(*e) {
+                        assert!(!boxes_overlap(*b, ink), "the bracket clears its notes");
+                    }
+                }
+            }
+            continue;
+        }
+        assert!(
+            bracket(tuplet.id).is_empty(),
+            "a beam's tuplet takes no bracket"
+        );
+        assert!(
+            number[0] >= first && number[2] <= last,
+            "the number stands within its own notes"
+        );
+        if beam.events.len() > tuplet.members.len() {
+            shared += 1;
+        } else {
+            exact += 1;
+        }
+    }
+    assert_eq!(
+        (shared, opened, hidden_led, exact, unbeamed),
+        (2, 1, 1, 1, 1),
+        "the fixture's shapes"
+    );
+    let count = omissions(score, layout, &engraved.diagnostics)
+        .kinds
+        .get("tuplet not drawn")
+        .copied()
+        .unwrap_or(0);
+    assert_eq!(count, 1, "the unbeamed triplet alone is counted");
+}
+
+/// A tuplet's number across two staves stands clear of the notes' ink, not
+/// only of their stems: a quarter space beside every head, ledger line,
+/// accidental, dot and stem of the score, and half a space above or below
+/// one. The falling groups set their upper staff's last heads close above the
+/// beam, beside the middle where the number would stand, and some stand so
+/// far below each staff that the beam falls below the lower staff's place
+/// before the staves are solved; each number still stands above its beam,
+/// within its own notes.
+#[test]
+fn a_tuplet_number_across_two_staves_stands_clear_of_heads() {
+    use epiphany_core::{Event, TypedObjectId};
+    use epiphany_layout_ir::is_beam_stroke;
+
+    // A quarter and a half space, less the layout's rounding to its grid.
+    const BESIDE: f32 = 0.25 - 0.005;
+    const OVER: f32 = 0.5 - 0.005;
+    let mut falling = 0;
+    for name in [
+        "cross_staff.musicxml",
+        "cross_staff_tuplets.musicxml",
+        "cross_staff_descending.musicxml",
+    ] {
+        let loaded = load(&fixture(name)).expect("loads");
+        let score = &loaded.reduced.score;
+        let layout = engrave(score).layout;
+        let (staff_of, _) = staves_of(score);
+        let ink: Vec<(String, [f32; 4])> = layout
+            .glyphs
+            .iter()
+            .filter(|g| {
+                let n = g.glyph.as_str();
+                n.starts_with("notehead") || n.starts_with("accidental") || n == "augmentationDot"
+            })
+            .map(|g| (g.glyph.as_str().to_owned(), glyph_box(g)))
+            .chain(
+                layout
+                    .strokes
+                    .iter()
+                    .filter(|s| !is_beam_stroke(s) && s.from != s.to)
+                    .filter_map(|s| match s.provenance.source {
+                        TypedObjectId::Pitch(_) if s.from.y == s.to.y => {
+                            Some(("ledger line".to_owned(), stroke_box(s)))
+                        }
+                        TypedObjectId::Event(_) if s.from.x == s.to.x => {
+                            Some(("stem".to_owned(), stroke_box(s)))
+                        }
+                        _ => None,
+                    }),
+            )
+            .collect();
+        assert!(
+            ink.iter().any(|(n, _)| n == "ledger line"),
+            "{name}: ledger lines found"
+        );
+        for tuplet in &score.cross_cutting.tuplets {
+            let staves: std::collections::BTreeSet<_> =
+                tuplet.members.iter().map(|e| staff_of[e]).collect();
+            if staves.len() < 2 {
+                continue;
+            }
+            for number in layout
+                .glyphs
+                .iter()
+                .filter(|g| {
+                    g.provenance.source == TypedObjectId::Tuplet(tuplet.id)
+                        && g.glyph.as_str().starts_with("tuplet")
+                })
+                .map(glyph_box)
+            {
+                let grown = [
+                    number[0] - BESIDE,
+                    number[1] - OVER,
+                    number[2] + BESIDE,
+                    number[3] + OVER,
+                ];
+                for (what, b) in &ink {
+                    assert!(
+                        !boxes_overlap(grown, *b),
+                        "{name}: a tuplet number {number:?} within reach of a {what} {b:?}"
+                    );
+                }
+                // A falling group: its first note on the upper staff, so its
+                // last upper heads stand nearest the beam at the knee.
+                let first = staff_of[&tuplet.members[0]];
+                let upper = staves.iter().copied().min_by_key(|s| {
+                    score
+                        .canvas
+                        .regions
+                        .iter()
+                        .flat_map(|r| r.staff_instances())
+                        .position(|i| i.staff == *s)
+                });
+                if name == "cross_staff_descending.musicxml"
+                    && Some(first) == upper
+                    && matches!(score.events.get(tuplet.members[0]), Some(Event::Pitched(_)))
+                {
+                    falling += 1;
+                    // The top of the tuplet's own beam under the number, each
+                    // stroke's edge taken along its slope at the number's ends.
+                    let over = layout
+                        .strokes
+                        .iter()
+                        .filter(|s| {
+                            is_beam_stroke(s)
+                                && tuplet.members.iter().any(|e| {
+                                    s.provenance
+                                        .dependencies
+                                        .contains(&TypedObjectId::Event(*e))
+                                })
+                        })
+                        .filter_map(|s| {
+                            let (x1, y1, x2, y2) = (s.from.x.0, s.from.y.0, s.to.x.0, s.to.y.0);
+                            let (lo, hi) = (x1.min(x2), x1.max(x2));
+                            if hi < number[0] || lo > number[2] {
+                                return None;
+                            }
+                            let at = |x: f32| {
+                                if hi - lo < 1e-6 {
+                                    y1
+                                } else {
+                                    y1 + (y2 - y1) * (x.clamp(lo, hi) - x1) / (x2 - x1)
+                                }
+                            };
+                            Some(at(number[0]).max(at(number[2])) + s.thickness.0 / 2.0)
+                        })
+                        .fold(f32::NEG_INFINITY, f32::max);
+                    assert!(over.is_finite(), "{name}: its beam stands under the number");
+                    assert!(
+                        number[1] > over,
+                        "{name}: the number {number:?} stands above its beam ({over})"
+                    );
+                    let xs: Vec<f32> = layout
+                        .strokes
+                        .iter()
+                        .filter(|s| {
+                            s.from.x == s.to.x
+                                && tuplet
+                                    .members
+                                    .iter()
+                                    .any(|e| s.provenance.source == TypedObjectId::Event(*e))
+                        })
+                        .map(|s| s.from.x.0)
+                        .collect();
+                    let (a, z) = xs
+                        .iter()
+                        .fold((f32::INFINITY, f32::NEG_INFINITY), |(a, z), x| {
+                            (a.min(*x), z.max(*x))
+                        });
+                    assert!(
+                        number[0] >= a && number[2] <= z,
+                        "{name}: the number stands within its own notes"
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(falling, 11, "the falling groups each numbered");
+}
+
+/// A tuplet across two staves that draws nothing keeps its traced anchor in
+/// no staff's band, where it adds no extent to a staff it is not on: a
+/// hidden tuplet that is exactly a beam, and a shown triplet no beam joins.
+/// An anchor riding the upper staff's band at the frame's origin would
+/// stretch that staff toward whatever stands there.
+#[test]
+fn a_tuplet_across_two_staves_that_draws_nothing_keeps_its_anchor_off_the_staves() {
+    use epiphany_core::TypedObjectId;
+
+    let mut anchors = 0;
+    for name in ["cross_staff.musicxml", "cross_staff_tuplets.musicxml"] {
+        let loaded = load(&fixture(name)).expect("loads");
+        let score = &loaded.reduced.score;
+        let layout = engrave(score).layout;
+        let (staff_of, _) = staves_of(score);
+        let staff_bands: std::collections::BTreeSet<_> = layout
+            .strokes
+            .iter()
+            .filter(|s| matches!(s.provenance.source, TypedObjectId::Staff(_)))
+            .map(|s| s.vertical_band)
+            .collect();
+        assert_eq!(staff_bands.len(), 2, "{name}: two staves' bands");
+        for tuplet in &score.cross_cutting.tuplets {
+            let staves: std::collections::BTreeSet<_> =
+                tuplet.members.iter().map(|e| staff_of[e]).collect();
+            let source = TypedObjectId::Tuplet(tuplet.id);
+            let inked = layout.glyphs.iter().any(|g| g.provenance.source == source)
+                || layout
+                    .strokes
+                    .iter()
+                    .any(|s| s.provenance.source == source && s.from != s.to);
+            if staves.len() < 2 || inked {
+                continue;
+            }
+            anchors += 1;
+            let anchor = layout
+                .strokes
+                .iter()
+                .find(|s| s.provenance.source == source)
+                .expect("an undrawn tuplet keeps a traced anchor");
+            assert!(
+                !staff_bands.contains(&anchor.vertical_band),
+                "{name}: an undrawn tuplet's anchor rides a staff's band"
+            );
+        }
+    }
+    assert_eq!(
+        anchors, 2,
+        "the hidden beam's tuplet and the unbeamed triplet"
+    );
+}
+
+/// A tuplet the file hides draws no number and no bracket; one whose number
+/// is hidden draws its bracket unbroken; the rest as before: a beamed
+/// triplet its number alone, an unbeamed one its number in its bracket.
+#[test]
+fn a_tuplet_the_file_hides_draws_no_number_or_bracket() {
+    use epiphany_core::{TupletDisplay, TupletNumber, TypedObjectId};
+
+    // Quarter-note triplets on one staff, unbeamed: hidden, numberless, and
+    // plain; then the hand-written fixture's beamed eighth triplets.
+    let triplet = |notations: &str| {
+        (0..3)
+            .map(|i| {
+                let mark = match i {
+                    0 => format!("{notations}<tuplet type=\"start\"/></notations>"),
+                    2 => "<notations><tuplet type=\"stop\"/></notations>".to_string(),
+                    _ => String::new(),
+                };
+                format!(
+                    "<note><pitch><step>B</step><octave>4</octave></pitch><duration>4</duration>\
+                     <voice>1</voice><type>quarter</type><time-modification>\
+                     <actual-notes>3</actual-notes><normal-notes>2</normal-notes>\
+                     </time-modification>{mark}</note>"
+                )
+            })
+            .collect::<String>()
+    };
+    let measures = [
+        triplet("<notations print-object=\"no\">"),
+        triplet("<notations>").replacen(
+            "<tuplet type=\"start\"/>",
+            "<tuplet type=\"start\" show-number=\"none\"/>",
+            1,
+        ),
+        triplet("<notations>"),
+    ];
+    let body: String = measures
+        .iter()
+        .enumerate()
+        .map(|(m, notes)| {
+            let attributes = if m == 0 {
+                "<attributes><divisions>6</divisions><time><beats>2</beats>\
+                 <beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef>\
+                 </attributes>"
+            } else {
+                ""
+            };
+            format!(
+                "<measure number=\"{}\">{attributes}{notes}</measure>",
+                m + 1
+            )
+        })
+        .collect();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\">{body}</part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("hidden_tuplets.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    for loaded in [
+        load(&path).expect("loads"),
+        load(&fixture("cross_staff.musicxml")).expect("loads"),
+    ] {
+        assert_eq!(
+            loaded.reduced.rejected().count(),
+            0,
+            "every operation applies"
+        );
+        let score = &loaded.reduced.score;
+        let layout = engrave(score).layout;
+        for tuplet in &score.cross_cutting.tuplets {
+            let source = TypedObjectId::Tuplet(tuplet.id);
+            let digits = layout
+                .glyphs
+                .iter()
+                .filter(|g| g.provenance.source == source && g.glyph.as_str().starts_with("tuplet"))
+                .count();
+            let lines: Vec<_> = layout
+                .strokes
+                .iter()
+                .filter(|s| s.provenance.source == source && s.from != s.to)
+                .collect();
+            if tuplet.display == TupletDisplay::HIDDEN {
+                assert_eq!(
+                    (digits, lines.len()),
+                    (0, 0),
+                    "a hidden tuplet shows nothing"
+                );
+            } else if tuplet.display.number == TupletNumber::None {
+                assert_eq!(digits, 0, "a numberless tuplet shows no number");
+                // Its two hooks and one unbroken line between them.
+                let level = lines.iter().filter(|s| s.from.y == s.to.y).count();
+                assert_eq!((lines.len(), level), (3, 1), "its bracket runs unbroken");
+            } else {
+                assert_eq!(digits, 1, "a shown tuplet shows its number");
+            }
+        }
+    }
+}
+
 /// Ties are drawn across every barline and across every system break: a long
 /// score of whole notes, each tied to the next, wraps onto many justified
 /// systems; each tie is one arc, or two half-arcs where a system breaks
@@ -877,6 +1728,216 @@ fn voices_turn_their_stems_rests_ties_and_dots_apart() {
         .collect();
     dots.sort_by(|a, b| a.0.total_cmp(&b.0));
     assert_eq!(dots.iter().map(|d| d.1).collect::<Vec<_>>(), [1, -1]);
+}
+
+/// The lower staff of a grand staff holds two voices of its own, the file's
+/// 5 and 6, and the upper staff's voice 1 writes one note on it a measure
+/// later. The lower staff's voices keep their sides: voice 5's rests,
+/// stems and sextuplet above, voice 6's stems below, as they would were the
+/// visiting note not there.
+#[test]
+fn a_voice_visiting_a_staff_leaves_its_own_voices_their_sides() {
+    use epiphany_core::{Event, TypedObjectId};
+
+    let note =
+        |what: &str, duration: u8, voice: u8, kind: &str, six: bool, staff: u8, tail: &str| {
+            let modification = if six {
+                "<time-modification><actual-notes>6</actual-notes><normal-notes>4</normal-notes>\
+             </time-modification>"
+            } else {
+                ""
+            };
+            format!(
+            "<note>{what}<duration>{duration}</duration><voice>{voice}</voice><type>{kind}</type>\
+             {modification}<staff>{staff}</staff>{tail}</note>"
+        )
+        };
+    let pitch = |step: &str, alter: i8, octave: u8| {
+        format!("<pitch><step>{step}</step><alter>{alter}</alter><octave>{octave}</octave></pitch>")
+    };
+    let start = "<notations><tuplet type=\"start\" bracket=\"yes\"/></notations>";
+    let beam = |kind: &str| format!("<beam number=\"1\">{kind}</beam>");
+    let end = "<beam number=\"1\">end</beam><notations><tuplet type=\"stop\"/></notations>";
+    let backup = "<backup><duration>12</duration></backup>";
+    let six = |p: String, staff: u8, tail: &str| note(&p, 1, 5, "eighth", true, staff, tail);
+    let first = [
+        // The upper staff's voice: two half notes.
+        note(&pitch("C", 0, 5), 6, 1, "half", false, 1, ""),
+        note(&pitch("D", 0, 5), 6, 1, "half", false, 1, ""),
+        backup.to_owned(),
+        // Voice 5: a sextuplet a rest opens, on the lower staff alone, then
+        // one a rest opens whose first note stands on the upper staff.
+        note("<rest/>", 1, 5, "eighth", true, 2, start),
+        six(pitch("E", -1, 3), 2, &beam("begin")),
+        six(pitch("D", -1, 3), 2, &beam("continue")),
+        six(pitch("B", -1, 3), 2, &beam("continue")),
+        six(pitch("A", -1, 3), 2, &beam("continue")),
+        six(pitch("D", 0, 4), 2, end),
+        note("<rest/>", 1, 5, "eighth", true, 2, start),
+        six(pitch("A", 0, 4), 1, &beam("begin")),
+        six(pitch("E", -1, 4), 2, &beam("continue")),
+        six(pitch("B", -1, 3), 2, &beam("continue")),
+        six(pitch("F", 0, 3), 2, &beam("continue")),
+        six(pitch("C", 0, 3), 2, end),
+        backup.to_owned(),
+        // Voice 6: two half notes under it.
+        note(&pitch("G", -1, 2), 6, 6, "half", false, 2, ""),
+        note(&pitch("A", 0, 1), 6, 6, "half", false, 2, ""),
+    ];
+    let second = [
+        // The upper staff's voice writes its third quarter on the lower
+        // staff, over voice 5's whole note.
+        note(&pitch("C", 0, 5), 3, 1, "quarter", false, 1, ""),
+        note(&pitch("D", 0, 5), 3, 1, "quarter", false, 1, ""),
+        note(&pitch("G", 0, 3), 3, 1, "quarter", false, 2, ""),
+        note(&pitch("E", 0, 5), 3, 1, "quarter", false, 1, ""),
+        backup.to_owned(),
+        note(&pitch("C", 0, 3), 12, 5, "whole", false, 2, ""),
+    ];
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>Piano\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
+         <attributes><divisions>3</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time><staves>2</staves><clef number=\"1\"><sign>G</sign><line>2</line></clef>\
+         <clef number=\"2\"><sign>F</sign><line>4</line></clef></attributes>{}</measure>\
+         <measure number=\"2\">{}</measure></part></score-partwise>",
+        first.concat(),
+        second.concat()
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("visiting_voice.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    assert!(loaded.fidelity.passed(), "{:#?}", loaded.fidelity.failures);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let systems: Vec<_> = layout.systems().collect();
+    assert_eq!(systems.len(), 1);
+    let lower_staff = loaded.import.ids.staves[0][1];
+    let lower = &systems[0]
+        .staves
+        .iter()
+        .find(|s| s.staff == lower_staff)
+        .expect("the lower staff")
+        .bounding_box;
+    let middle = lower.origin.y.0 + lower.size.height.0 / 2.0;
+
+    // Each event's source note: its staff (0 the upper) and voice, and its
+    // index among the part's events.
+    let source = &loaded.import.source.parts[0].events;
+    let events = &loaded.import.ids.events[0];
+    let of = |voice: &str, staff: usize| -> Vec<(usize, epiphany_core::EventId)> {
+        source
+            .iter()
+            .zip(events)
+            .enumerate()
+            .filter(|(_, (e, _))| e.voice == voice && e.staff == staff && e.measure == 0)
+            .map(|(i, (_, id))| (i, *id))
+            .collect()
+    };
+    // A note's heads and whether its stem turns up, from its one upright
+    // stroke against its heads.
+    let heads = |id: epiphany_core::EventId| -> Vec<[f32; 4]> {
+        let Some(Event::Pitched(n)) = loaded.reduced.score.events.get(id) else {
+            return Vec::new();
+        };
+        layout
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str().starts_with("notehead"))
+            .filter(|g| matches!(g.provenance.source, TypedObjectId::Pitch(p) if n.pitches.iter().any(|q| q.id == p)))
+            .map(glyph_box)
+            .collect()
+    };
+    let stem_up = |id: epiphany_core::EventId| -> bool {
+        let head = heads(id)[0];
+        let stem = layout
+            .strokes
+            .iter()
+            .find(|s| s.provenance.source == TypedObjectId::Event(id) && s.from.x == s.to.x)
+            .expect("a stem");
+        stem.from.y.0.max(stem.to.y.0) > head[3] + 1.0
+    };
+
+    // Voice 5's rests above the middle line, and the stems of its notes
+    // on the lower staff up.
+    let upper_voice = of("5", 1);
+    let rests: Vec<f32> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("rest"))
+        .filter(|g| {
+            upper_voice
+                .iter()
+                .any(|(_, id)| g.provenance.source == TypedObjectId::Event(*id))
+        })
+        .map(|g| {
+            let b = glyph_box(g);
+            (b[1] + b[3]) / 2.0 - middle
+        })
+        .collect();
+    assert_eq!(rests.len(), 2);
+    for (k, rest) in rests.iter().enumerate() {
+        assert!(
+            *rest > 0.5,
+            "voice 5's rest {k} stands {rest} from the middle line"
+        );
+    }
+    let notes: Vec<_> = upper_voice
+        .iter()
+        .filter(|(i, _)| {
+            !matches!(
+                source[*i].content,
+                epiphany_musicxml::source::Content::Rest { .. }
+            )
+        })
+        .collect();
+    assert_eq!(notes.len(), 9);
+    for (i, id) in &notes {
+        assert!(stem_up(*id), "voice 5's note {i} turns its stem down");
+    }
+    // Voice 6's stems down.
+    let lower_voice = of("6", 1);
+    assert_eq!(lower_voice.len(), 2);
+    for (i, id) in &lower_voice {
+        assert!(!stem_up(*id), "voice 6's note {i} turns its stem up");
+    }
+    // Voice 5's first sextuplet, on the lower staff alone, takes its number
+    // and bracket above its notes.
+    let first_rest = upper_voice[0].1;
+    let tuplet = loaded
+        .reduced
+        .score
+        .cross_cutting
+        .tuplets
+        .iter()
+        .find(|t| t.members.first() == Some(&first_rest))
+        .expect("the first sextuplet");
+    let top = tuplet
+        .members
+        .iter()
+        .flat_map(|id| heads(*id))
+        .map(|h| h[3])
+        .fold(f32::MIN, f32::max);
+    let number: Vec<[f32; 4]> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.provenance.source == TypedObjectId::Tuplet(tuplet.id))
+        .map(glyph_box)
+        .collect();
+    assert!(!number.is_empty(), "the first sextuplet draws its number");
+    let bracket: Vec<[f32; 4]> = layout
+        .strokes
+        .iter()
+        .filter(|s| s.provenance.source == TypedObjectId::Tuplet(tuplet.id) && s.from.y == s.to.y)
+        .map(stroke_box)
+        .collect();
+    assert!(!bracket.is_empty(), "the first sextuplet draws its bracket");
+    for ink in number.iter().chain(&bracket) {
+        assert!(
+            ink[1] > top,
+            "the first sextuplet's mark stands at {} under its notes' top {top}",
+            ink[1]
+        );
+    }
 }
 
 /// A glyph's ink box on the page: left, bottom, right, top.
@@ -3383,6 +4444,234 @@ fn a_quarter_tone_accidental_holds_to_the_barline_and_yields_to_a_change() {
         (x_of(&pair[0].2) - x_of(&pair[1].2)).abs() > 0.5,
         "two D quarter-tones share one notehead"
     );
+}
+
+/// Two voices sounding one letter and octave at once with two alterations,
+/// a quarter-tone or a flat beside a natural, each show their own
+/// accidental, the natural included, in either voice's order and on a tie
+/// continuation beside a fresh one too, and stand clear of each other; the
+/// next note there states its own. A unison of one alteration shows it once,
+/// and one of two tie continuations none, each read by its tie.
+#[test]
+fn a_unison_of_two_alterations_shows_both_accidentals() {
+    use epiphany_core::{Event, EventPosition, TypedObjectId};
+
+    // In 4/4, quarters: (step, octave, alter, quarter-tone name) per voice. A
+    // quarter-tone is written by name alone, as MuseScore writes its arrows.
+    let tied = |step: &str, octave: u8, alter: i8, tie: &str, voice: u8| {
+        format!(
+            "<note><pitch><step>{step}</step><alter>{alter}</alter><octave>{octave}</octave>\
+             </pitch><duration>2</duration><tie type=\"{tie}\"/><voice>{voice}</voice>\
+             <type>quarter</type></note>"
+        )
+    };
+    let note = |step: &str, octave: u8, alter: i8, name: &str, voice: u8| {
+        let accidental = match name {
+            "" => String::new(),
+            name => format!("<accidental>{name}</accidental>"),
+        };
+        let alter = if name.is_empty() {
+            format!("<alter>{alter}</alter>")
+        } else {
+            String::new()
+        };
+        format!(
+            "<note><pitch><step>{step}</step>{alter}<octave>{octave}</octave></pitch>\
+             <duration>2</duration><voice>{voice}</voice><type>quarter</type>{accidental}</note>"
+        )
+    };
+    let backup = "<backup><duration>8</duration></backup>";
+    let measures = [
+        // B natural over B flat-up; then B natural again, in the first voice.
+        [
+            note("B", 4, 0, "", 1),
+            note("B", 4, 0, "", 1),
+            note("D", 5, 0, "", 1),
+            note("D", 5, 0, "", 1),
+        ]
+        .concat()
+            + backup
+            + &[
+                note("B", 4, 0, "flat-up", 2),
+                note("G", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+            ]
+            .concat(),
+        // B flat over B natural, the voices the other way about; then B
+        // natural again, in the second voice.
+        [
+            note("B", 4, -1, "", 1),
+            note("D", 5, 0, "", 1),
+            note("D", 5, 0, "", 1),
+            note("D", 5, 0, "", 1),
+        ]
+        .concat()
+            + backup
+            + &[
+                note("B", 4, 0, "", 2),
+                note("B", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+            ]
+            .concat(),
+        // F sharp in both voices at once: one alteration, shown once.
+        [
+            note("F", 5, 1, "", 1),
+            note("D", 5, 0, "", 1),
+            note("D", 5, 0, "", 1),
+            note("D", 5, 0, "", 1),
+        ]
+        .concat()
+            + backup
+            + &[
+                note("F", 5, 1, "", 2),
+                note("G", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+            ]
+            .concat(),
+        // B natural tied over the barline, met by B flat in the other voice:
+        // the tie continuation shows its natural, the flat its flat.
+        [
+            note("D", 5, 0, "", 1),
+            note("D", 5, 0, "", 1),
+            note("D", 5, 0, "", 1),
+            tied("B", 4, 0, "start", 1),
+        ]
+        .concat()
+            + backup
+            + &[
+                note("G", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+            ]
+            .concat(),
+        [
+            tied("B", 4, 0, "stop", 1),
+            note("D", 5, 0, "", 1),
+            note("D", 5, 0, "", 1),
+            note("D", 5, 0, "", 1),
+        ]
+        .concat()
+            + backup
+            + &[
+                note("B", 4, -1, "", 2),
+                note("G", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+            ]
+            .concat(),
+        // B natural and B flat at once, each tied over the barline: in the
+        // next measure both are tie continuations, each read by its own tie.
+        [
+            note("D", 5, 0, "", 1),
+            note("D", 5, 0, "", 1),
+            note("D", 5, 0, "", 1),
+            tied("B", 4, 0, "start", 1),
+        ]
+        .concat()
+            + backup
+            + &[
+                note("G", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+                tied("B", 4, -1, "start", 2),
+            ]
+            .concat(),
+        [
+            tied("B", 4, 0, "stop", 1),
+            note("D", 5, 0, "", 1),
+            note("D", 5, 0, "", 1),
+            note("D", 5, 0, "", 1),
+        ]
+        .concat()
+            + backup
+            + &[
+                tied("B", 4, -1, "stop", 2),
+                note("G", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+                note("G", 4, 0, "", 2),
+            ]
+            .concat(),
+    ];
+    let loaded = treble_part("unison_alterations.musicxml", &measures);
+    let score = &loaded.reduced.score;
+    let layout = epiphany_cli::engrave_loaded(&loaded).layout;
+    // Each pitch in time order, the first voice before the second at one time.
+    let mut pitches: Vec<(epiphany_core::RationalTime, u64, epiphany_core::PitchId)> = score
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Pitched(p) => match &p.position {
+                EventPosition::Musical(at) => Some((at.0.clone(), p)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .flat_map(|(at, p)| {
+            let voice = score
+                .canvas
+                .regions
+                .iter()
+                .flat_map(|r| r.staff_instances())
+                .flat_map(|i| i.voices.iter().enumerate())
+                .find(|(_, v)| v.events.contains(&p.id))
+                .map_or(9, |(k, _)| k as u64);
+            p.pitches.iter().map(move |ip| (at.clone(), voice, ip.id))
+        })
+        .collect();
+    pitches.sort();
+    let accidentals = |id: &epiphany_core::PitchId| -> Vec<&epiphany_layout_ir::ResolvedGlyph> {
+        layout
+            .glyphs
+            .iter()
+            .filter(|g| {
+                g.provenance.source == TypedObjectId::Pitch(*id)
+                    && g.glyph.as_str().starts_with("accidental")
+            })
+            .collect()
+    };
+    let drawn: Vec<String> = pitches
+        .iter()
+        .map(|(_, _, id)| {
+            accidentals(id)
+                .iter()
+                .map(|g| g.glyph.as_str())
+                .collect::<Vec<_>>()
+                .join("+")
+        })
+        .collect();
+    let (n, f, s, q) = (
+        "accidentalNatural",
+        "accidentalFlat",
+        "accidentalSharp",
+        "accidentalQuarterToneFlatArrowUp",
+    );
+    assert_eq!(
+        drawn,
+        [
+            n, q, n, "", "", "", "", "", // B natural and B flat-up, then B natural
+            f, n, "", n, "", "", "", "", // B flat and B natural, then B natural
+            s, "", "", "", "", "", "", "", // F sharp in both voices, shown once
+            "", "", "", "", "", "", "", "", // B natural tied over the barline
+            n, f, "", "", "", "", "", "", // the tie continuation beside B flat
+            "", "", "", "", "", "", n, f, // B natural and B flat, each tied on
+            "", "", "", "", "", "", "", "", // two tie continuations, shown by their ties
+        ]
+    );
+    // The two accidentals of each unison stand clear of each other.
+    for first in [0, 8, 32, 46] {
+        let (a, b) = (
+            accidentals(&pitches[first].2),
+            accidentals(&pitches[first + 1].2),
+        );
+        assert!(
+            !boxes_overlap(glyph_box(a[0]), glyph_box(b[0])),
+            "a unison's two accidentals overlap"
+        );
+    }
 }
 
 /// The hand-written quarter-tone fixture through the whole pipeline, locked

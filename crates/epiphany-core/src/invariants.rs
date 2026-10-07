@@ -3813,6 +3813,7 @@ mod review_fix_tests_2 {
             members: vec![e],
             parent: Some(TupletId::new(r, 7_000_002)),
             required_total: MusicalDuration(RationalTime::new(1, 4).unwrap()),
+            display: Default::default(),
         });
         assert!(fires(&s, GraphInvariant::CrossCuttingRefsResolve));
     }

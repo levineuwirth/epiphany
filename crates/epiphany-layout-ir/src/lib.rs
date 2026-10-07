@@ -96,8 +96,9 @@ pub use constrained::{
     active_clef, active_clef_or, is_beam_stroke, is_rigid_width_stroke, tie_arc, to_constrained,
     try_to_constrained, Axis, BreakClass, BreakKind, BreakOrigin, ConstrainedLayoutIR,
     ConstrainedLayoutRegion, ConstrainedValidationError, ConstraintParameters,
-    ConstraintRegistryId, Curve, GlyphObject, GlyphObjectId, GlyphStyle, GroupSign, GroupSpan,
-    LayoutConstraint, LayoutTransformError, LeadGlyph, SpanAnchor, SpringSlot, Stroke, SystemLead,
+    ConstraintRegistryId, CrossStaffBeam, Curve, GlyphObject, GlyphObjectId, GlyphStyle, GroupSign,
+    GroupSpan, LayoutConstraint, LayoutTransformError, LeadGlyph, SpanAnchor, SpringSlot, Stroke,
+    SystemLead, CROSS_STEM_MIN,
 };
 pub use engrave_theory::{
     accidental_glyph, clef_glyph, clef_glyph_for, flag_count, flag_glyph, has_stem, key_signature,

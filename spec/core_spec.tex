@@ -2543,11 +2543,34 @@ pub struct Tuplet {
     /// Range of events in this tuplet, by event ID.
     pub members: Vec<EventId>,
 
-    /// Display: bracket style, number placement, parentheses, etc.
+    /// Display: whether its number and bracket are shown (defined
+    /// below; schema major 4).
     pub display: TupletDisplay,
 
     /// Nesting: if this tuplet is itself inside another, the parent.
     pub parent: Option<TupletId>,
+}
+
+/// How a tuplet's marks are shown. Growth of either vocabulary is by
+/// appended variant.
+pub struct TupletDisplay {
+    pub number: TupletNumber,
+    pub bracket: TupletBracket,
+}
+
+pub enum TupletNumber {
+    /// The ratio's `actual` term: a triplet's 3. The default.
+    Actual,
+    /// No number.
+    None,
+}
+
+pub enum TupletBracket {
+    /// The engraver's choice: conventionally a bracket unless the
+    /// members are one beamed group. The default.
+    Auto,
+    /// No bracket.
+    Hidden,
 }
 
 pub struct TupletRatio {
@@ -2579,6 +2602,23 @@ impl TupletRatio {
   not a runtime graph invariant (Section~\ref{sec:graph:invariants}):
   a degenerate ratio is never a representable graph state, so no
   invariant restores it after the fact.
+\end{requirement}
+
+\begin{requirement}
+  \label{req:time:tuplet-display}
+  A tuplet's \texttt{display} is the author's record of how its marks
+  are shown, and so is canonical state, though it is display-oriented.
+  A conforming engraver \MUSTNOT{} draw the number of a tuplet whose
+  \texttt{display.number} is \texttt{None}, nor the bracket of one whose
+  \texttt{display.bracket} is \texttt{Hidden}; with \texttt{Actual} it
+  draws the ratio's \texttt{actual} term, and with \texttt{Auto} the
+  bracket is its own choice. A tuplet whose number and bracket are both
+  hidden is still a tuplet: its members, ratio and consistency
+  (Requirement~\ref{req:time:tuplet-duration-consistency}) are
+  unaffected. The display enters no reduction verdict and no canonical
+  reduced state. A tuplet read from a schema major before \tablenums{4},
+  which carried none, takes the default, \texttt{Actual} and
+  \texttt{Auto}.
 \end{requirement}
 
 \subsection{Tuplet Nesting}
@@ -2829,8 +2869,9 @@ only the static time structure of the score.
   \item \texttt{SpaceUnit} is defined normatively in
     Chapter~\ref{ch:graph} as of schema major~2 (it entered canonical
     state through \texttt{StaffLineConfiguration}).
-    \texttt{TupletDisplay} and other purely display-oriented types are
-    defined in Chapter~\ref{ch:layout-ir}.
+    \texttt{TupletDisplay} is defined above: the author's choice to hide
+    a tuplet's marks is part of the score (schema major~4). Other purely
+    display-oriented types are defined in Chapter~\ref{ch:layout-ir}.
 \end{itemize}
 
 % ===========================================================================
@@ -17123,6 +17164,18 @@ layouts they own versus inherit:
   \texttt{set-clef} and \texttt{set-key-signature} productions in the Text
   Projection companion. The reduction algorithm version does not move: no
   operation reducible before changes its verdict or the state it produces.
+  \\
+  \today & \sectionsc{Tuplets as Grouping Objects} &
+  \textbf{X3c: a tuplet's display.} \texttt{Tuplet.display}, listed here
+  since the first revision but never defined, nor carried, gains its type:
+  \texttt{TupletDisplay}, a \texttt{TupletNumber} (\texttt{Actual},
+  \texttt{None}) and a \texttt{TupletBracket} (\texttt{Auto},
+  \texttt{Hidden}), each growing by appended variant. It is canonical state,
+  on the wire from schema major~4 (Binary Format companion
+  \sectionsc{Schema Major 4}), and
+  Requirement~\ref{req:time:tuplet-display} binds an engraver to it. The
+  reduction algorithm version does not move: the display enters no verdict
+  and no canonical reduced state.
   \\
   \bottomrule
 \end{longtable}

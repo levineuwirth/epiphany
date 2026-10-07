@@ -383,6 +383,145 @@ fn a_part_on_two_staves_shares_one_instrument() {
     assert_eq!(run.fidelity.counts[0][0].staves, 2);
 }
 
+/// A staff ranks its own voices first, in the file's numbering, and a voice
+/// visiting from another staff after them, so that the engraver, which sets
+/// a staff's first voice above and the next below, places the staff's own
+/// voices as it would without the visitor. A number sounding on two staves
+/// at once, as where a file numbers each staff's voices afresh, names a
+/// voice on each and stays first on both; voice 10 follows voice 9.
+#[test]
+fn each_staff_ranks_its_own_voices_before_a_visiting_one() {
+    let note = |step: &str, octave: u8, duration: u8, voice: &str, staff: u8| {
+        format!(
+            "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+             <duration>{duration}</duration><voice>{voice}</voice><staff>{staff}</staff></note>"
+        )
+    };
+    let backup = "<backup><duration>4</duration></backup>";
+    // Per staff, its voices by the file's number in the order the score
+    // holds them, the primary starred.
+    let ranked = |staves: u8, measures: &[String]| -> Vec<String> {
+        let body: String = measures
+            .iter()
+            .enumerate()
+            .map(|(m, content)| {
+                let attributes = if m == 0 {
+                    format!(
+                        "<attributes><divisions>1</divisions><time><beats>4</beats>\
+                         <beat-type>4</beat-type></time><staves>{staves}</staves></attributes>"
+                    )
+                } else {
+                    String::new()
+                };
+                format!(
+                    "<measure number=\"{}\">{attributes}{content}</measure>",
+                    m + 1
+                )
+            })
+            .collect();
+        let xml = format!(
+            "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+             </part-name></score-part></part-list><part id=\"P1\">{body}</part></score-partwise>"
+        );
+        let import = import(&xml).expect("imports");
+        let reduced = reduce(&import);
+        assert!(compare(&import, &reduced).passed());
+        let names: std::collections::BTreeMap<_, _> = import
+            .ids
+            .voices
+            .iter()
+            .map(|((_, _, name), id)| (*id, name.clone()))
+            .collect();
+        let staves = &import.ids.staves[0];
+        let mut lines = Vec::new();
+        for region in &reduced.score.canvas.regions {
+            for instance in region.staff_instances() {
+                let staff = staves
+                    .iter()
+                    .position(|s| *s == instance.staff)
+                    .expect("a staff");
+                let voices: Vec<String> = instance
+                    .voices
+                    .iter()
+                    .map(|v| format!("{}{}", names[&v.id], if v.is_primary { "*" } else { "" }))
+                    .collect();
+                lines.push(format!("s{}: {}", staff + 1, voices.join(" ")));
+            }
+        }
+        lines.sort();
+        lines
+    };
+
+    // The upper staff's voice 1 writes its third quarter on the lower staff,
+    // whose own voices are 5 and 6; voice 5 writes one note on the upper.
+    let visiting = [
+        format!(
+            "{}{backup}{}{}{}{}{backup}{}",
+            note("C", 5, 4, "1", 1),
+            note("C", 3, 1, "5", 2),
+            note("D", 3, 1, "5", 2),
+            note("E", 4, 1, "5", 1),
+            note("F", 3, 1, "5", 2),
+            note("C", 2, 4, "6", 2),
+        ),
+        format!(
+            "{}{}{}{}{backup}{}",
+            note("C", 5, 1, "1", 1),
+            note("D", 5, 1, "1", 1),
+            note("G", 3, 1, "1", 2),
+            note("E", 5, 1, "1", 1),
+            note("C", 3, 4, "5", 2),
+        ),
+    ];
+    assert_eq!(ranked(2, &visiting), ["s1: 1* 5", "s2: 5* 6 1"]);
+
+    // Each staff numbers its voices from 1: voice 1 sounds on both staves at
+    // once, as many on one as on the other.
+    let afresh = [
+        format!(
+            "{}{backup}{}{backup}{}",
+            note("C", 5, 4, "1", 1),
+            note("C", 3, 4, "1", 2),
+            note("C", 2, 4, "2", 2),
+        ),
+        format!(
+            "{}{backup}{}{backup}{}",
+            note("D", 5, 4, "1", 1),
+            note("D", 3, 4, "1", 2),
+            note("D", 2, 4, "2", 2),
+        ),
+    ];
+    assert_eq!(ranked(2, &afresh), ["s1: 1*", "s2: 1* 2"]);
+
+    // Voice 2 writes as many notes on each staff, one after another: it is
+    // at home on the upper.
+    let even = [
+        format!(
+            "{}{}{}{backup}{}{backup}{}",
+            note("C", 5, 2, "1", 1),
+            note("E", 5, 1, "1", 1),
+            note("D", 5, 1, "1", 1),
+            note("C", 3, 4, "5", 2),
+            note("A", 4, 2, "2", 1),
+        ),
+        format!(
+            "{}{backup}{}{}",
+            note("C", 5, 4, "1", 1),
+            note("C", 3, 2, "5", 2),
+            note("G", 3, 2, "2", 2),
+        ),
+    ];
+    assert_eq!(ranked(2, &even), ["s1: 1* 2", "s2: 5* 2"]);
+
+    // Voices 9 and 10 on one staff.
+    let numbered = [format!(
+        "{}{backup}{}",
+        note("C", 5, 4, "9", 1),
+        note("C", 4, 4, "10", 1),
+    )];
+    assert_eq!(ranked(1, &numbered), ["s1: 9* 10"]);
+}
+
 #[test]
 fn a_key_written_before_the_staves_reaches_each_staff_it_names() {
     let run = run("keyed_grand_staves.musicxml");
@@ -1156,6 +1295,96 @@ fn the_comparison_holds_each_tuplets_members_to_the_census() {
     assert!(fails(&|t| t.staff += 1));
 }
 
+/// A tuplet the file hides (its start mark's `<notations>` not printed, as
+/// MuseScore writes a tuplet it hides) imports hidden, with no number and no
+/// bracket; one whose mark asks `show-number="none"` imports without a
+/// number; every other as any tuplet is drawn. The census reads each mark
+/// apart from the reader, and the comparison holds them together.
+#[test]
+fn a_tuplet_the_file_hides_imports_hidden() {
+    use epiphany_core::{TupletBracket, TupletDisplay, TupletNumber};
+    let run = run("cross_staff.musicxml");
+    all_applied(&run);
+    let score = &run.reduced.score;
+    let onset = |id| match score.events.get(id).map(Event::position) {
+        Some(EventPosition::Musical(p)) => rational(&p.0),
+        other => format!("{other:?}"),
+    };
+    let mut displays: Vec<(String, TupletDisplay)> = score
+        .cross_cutting
+        .tuplets
+        .iter()
+        .map(|t| (onset(t.members[0]), t.display))
+        .collect();
+    displays.sort_by_key(|(at, _)| (at.len(), at.clone()));
+    let shown = TupletDisplay::default();
+    let hidden = TupletDisplay::HIDDEN;
+    assert_eq!(
+        displays,
+        [
+            (String::from("0"), shown),
+            (String::from("2"), hidden),
+            (String::from("1/2"), shown),
+            (String::from("1/4"), hidden),
+            (String::from("3/4"), shown),
+            (String::from("9/4"), shown),
+        ]
+    );
+    let census = &run.import.source.census[0];
+    assert_eq!(census.tuplet_places.iter().filter(|t| t.hidden).count(), 2);
+
+    // A mark asking for no number, its notations printed.
+    let xml = xml("tuplet.musicxml").replacen(
+        r#"<tuplet type="start""#,
+        r#"<tuplet show-number="none" type="start""#,
+        1,
+    );
+    assert_ne!(xml, self::xml("tuplet.musicxml"), "the fixture has a mark");
+    let numberless = import(&xml).expect("imports");
+    let reduced = reduce(&numberless);
+    assert!(compare(&numberless, &reduced).passed());
+    let marked: Vec<TupletDisplay> = reduced
+        .score
+        .cross_cutting
+        .tuplets
+        .iter()
+        .map(|t| t.display)
+        .filter(|d| *d != shown)
+        .collect();
+    assert_eq!(
+        marked,
+        [TupletDisplay {
+            number: TupletNumber::None,
+            bracket: TupletBracket::Auto,
+        }]
+    );
+}
+
+/// The comparison holds each tuplet's display to the census's own reading
+/// of its start mark: where the census reads a hidden tuplet as shown, or a
+/// shown one as numberless, the comparison fails.
+#[test]
+fn the_comparison_holds_each_tuplets_display_to_the_census() {
+    let run = run("cross_staff.musicxml");
+    let fails = |census: &dyn Fn(&mut Vec<epiphany_musicxml::source::CensusTuplet>)| {
+        let mut import = run.import.clone();
+        census(&mut import.source.census[0].tuplet_places);
+        compare(&import, &run.reduced)
+            .failures
+            .iter()
+            .any(|f| f.contains("the reader's tuplets are not the file's"))
+    };
+    assert!(!fails(&|_| {}), "the file's own census agrees");
+    assert!(fails(&|t| {
+        let hidden = t.iter_mut().find(|t| t.hidden).expect("a hidden tuplet");
+        hidden.hidden = false;
+    }));
+    assert!(fails(&|t| {
+        let shown = t.iter_mut().find(|t| !t.hidden).expect("a shown tuplet");
+        shown.numberless = true;
+    }));
+}
+
 #[test]
 fn a_pickup_imports_in_full() {
     let run = run("pickup.musicxml");
@@ -1297,6 +1526,114 @@ fn beams_join_the_notes_of_one_voice_from_begin_to_end() {
     );
     assert_eq!(source.parts[0].unmade_beams, 1);
     assert_eq!(source.features.kinds["beam without an end"].places.len(), 1);
+}
+
+/// A beam joining the notes of one voice on both staves of a part is made
+/// as the file writes it, each member on the staff its `<staff>` names, and
+/// the census finds it by its own walk: every beam of the fixture's piano
+/// part, seven of them across the staves.
+#[test]
+fn a_beam_across_two_staves_keeps_each_member_on_its_staff() {
+    let run = run("cross_staff.musicxml");
+    all_applied(&run);
+    let score = &run.reduced.score;
+    let staves = &run.import.ids.staves[0];
+    let mut staff_of = std::collections::BTreeMap::new();
+    let mut onset_of = std::collections::BTreeMap::new();
+    for region in &score.canvas.regions {
+        for instance in region.staff_instances() {
+            let staff = staves
+                .iter()
+                .position(|s| *s == instance.staff)
+                .expect("a part staff");
+            for voice in &instance.voices {
+                for event in &voice.events {
+                    staff_of.insert(*event, staff + 1);
+                    if let Some(EventPosition::Musical(at)) =
+                        score.events.get(*event).map(Event::position)
+                    {
+                        onset_of.insert(*event, rational(&at.0));
+                    }
+                }
+            }
+        }
+    }
+    let mut beams: Vec<String> = score
+        .cross_cutting
+        .beams
+        .iter()
+        .map(|b| {
+            b.events
+                .iter()
+                .map(|e| format!("{}@{}", onset_of[e], staff_of[e]))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect();
+    beams.sort();
+    // Onset in whole notes @ staff: the four 6:4 groups rising from the
+    // lower staff, the two eighth groups falling from the upper, the two
+    // triplets on the upper staff alone, and the sixteenths below ending on
+    // the eighth chord above.
+    assert_eq!(
+        beams,
+        [
+            "0@2 1/24@2 1/12@2 1/8@1 1/6@1 5/24@1",
+            "1/2@2 13/24@2 7/12@2 5/8@1 2/3@1 17/24@1",
+            "1/4@2 7/24@2 1/3@2 3/8@1 5/12@1 11/24@1",
+            "1@1 9/8@1 5/4@2 11/8@2",
+            "2@1 25/12@1 13/6@1",
+            "3/2@1 13/8@1 7/4@2 15/8@2",
+            "3/4@2 19/24@2 5/6@2 7/8@1 11/12@1 23/24@1",
+            "3@2 49/16@2 25/8@2 51/16@2 13/4@1",
+            "9/4@1 7/3@1 29/12@1",
+        ]
+    );
+    let census = &run.import.source.census[0];
+    assert_eq!((census.beams, census.unmade_beams), (9, 0));
+    assert_eq!(census.beam_places.len(), 9);
+    assert_eq!(
+        census
+            .beam_places
+            .iter()
+            .filter(|b| b.crosses_staves())
+            .count(),
+        7
+    );
+}
+
+/// The comparison holds the reader's beams to the census's own timed walk,
+/// member by member and staff by staff: where the census places a member on
+/// the other staff, at another time, or one fewer, the comparison fails,
+/// though the counts agree and the score holds what the reader made.
+#[test]
+fn the_comparison_holds_each_beams_members_to_the_census() {
+    let run = run("cross_staff.musicxml");
+    let fails = |census: &dyn Fn(&mut epiphany_musicxml::source::CensusBeam)| {
+        let mut import = run.import.clone();
+        let beam = import.source.census[0]
+            .beam_places
+            .first_mut()
+            .expect("the census places the file's beams");
+        census(beam);
+        compare(&import, &run.reduced)
+            .failures
+            .iter()
+            .any(|f| f.contains("the reader's beams are not the file's"))
+    };
+    assert!(!fails(&|_| {}), "the file's own census agrees");
+    assert!(fails(&|b| {
+        b.members.pop();
+    }));
+    assert!(fails(&|b| b.members[4].0 = 1 - b.members[4].0));
+    assert!(fails(&|b| {
+        let (staff, measure, offset) = b.members[1].clone();
+        b.members[1] = (
+            staff,
+            measure,
+            offset.add(&epiphany_core::RationalTime::new(1, 64).unwrap()),
+        );
+    }));
 }
 
 #[test]

@@ -112,6 +112,15 @@ fn report(loaded: &Loaded, report: &mut String) -> (usize, usize) {
         loaded.import.envelopes.len(),
         loaded.import.envelopes.len() - rejected.len()
     );
+    // Beams as the census's own walk of the file finds them, which the
+    // comparison holds the import to member by member.
+    let beams: Vec<_> = source.census.iter().flat_map(|c| &c.beam_places).collect();
+    let _ = writeln!(
+        report,
+        "  beams: {}, {} across two staves",
+        beams.len(),
+        beams.iter().filter(|b| b.crosses_staves()).count()
+    );
     let mut by_kind: BTreeMap<String, usize> = BTreeMap::new();
     for &i in &rejected {
         let verdict = &loaded.reduced.verdicts[i];

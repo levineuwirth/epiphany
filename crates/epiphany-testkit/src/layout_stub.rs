@@ -228,6 +228,7 @@ pub fn gen_layout_content(rng: &mut Rng) -> LayoutContent {
             clefs: clefs(rng),
             keys: keys(rng),
             beams: Vec::new(),
+            cross_beams: Vec::new(),
         }),
         2 => LayoutContent::Note(NoteContent {
             voice: epiphany_layout_ir::VoicePlace::Alone,
@@ -444,6 +445,7 @@ pub fn gen_constrained_layout_ir(rng: &mut Rng) -> ConstrainedLayoutIR {
         span_anchors: Vec::new(),
         system_leads: Vec::new(),
         staff_groups: Vec::new(),
+        cross_staff_beams: Vec::new(),
     }
 }
 

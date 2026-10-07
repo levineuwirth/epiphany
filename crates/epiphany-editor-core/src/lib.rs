@@ -5435,6 +5435,7 @@ mod tests {
             members: vec![],
             parent: Some(triplet_id),
             required_total: MusicalDuration(RationalTime::new(1, 8).unwrap()),
+            display: Default::default(),
         });
         let mut session = EditorSession::open(score, Box::new(StubSolver)).expect("renders");
 
@@ -9131,6 +9132,7 @@ mod tests {
             members: vec![],
             parent: Some(triplet_id),
             required_total: MusicalDuration(RationalTime::new(1, 8).unwrap()),
+            display: Default::default(),
         });
         let mut dest = EditorSession::open(score, Box::new(StubSolver)).expect("renders");
         let region = a_region_with(&dest, true);
@@ -9481,6 +9483,7 @@ mod tests {
             members: triplet_members,
             parent: None,
             required_total: MusicalDuration(RationalTime::new(1, 4).unwrap()),
+            display: Default::default(),
         });
         // A nested child: the flat cascade cannot safely restate its ratio.
         score.cross_cutting.tuplets.push(Tuplet {
@@ -9489,6 +9492,7 @@ mod tests {
             members: vec![],
             parent: Some(triplet_id),
             required_total: MusicalDuration(RationalTime::new(1, 8).unwrap()),
+            display: Default::default(),
         });
         score
     }

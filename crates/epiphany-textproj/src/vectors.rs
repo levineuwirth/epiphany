@@ -686,15 +686,15 @@ pub fn document_vectors() -> Vec<TextVector> {
         .map(|(name, text)| (SURFACE, "accept", "-", *name, text.as_bytes().to_vec()))
         .collect();
 
-    // The rejected version must be one this crate does NOT implement. X3.6
-    // moved `COMPANION_VERSION` to 0.16.0; this vector now names 0.15.0, the
-    // immediately superseded companion (previously 0.14.0, when the committed
-    // version was 0.15.0) — rejecting the version right behind you is exactly
+    // The rejected version must be one this crate does NOT implement. X3c
+    // moved `COMPANION_VERSION` to 0.17.0; this vector now names 0.16.0, the
+    // immediately superseded companion (previously 0.15.0, when the committed
+    // version was 0.16.0) — rejecting the version right behind you is exactly
     // the deferred migrate-on-read posture (`req:textproj:header-version`).
     let wrong_version = replace_once(
         minimal,
+        "(text-projection (0 17 0))",
         "(text-projection (0 16 0))",
-        "(text-projection (0 15 0))",
     );
     vectors.push((
         SURFACE,
@@ -1165,23 +1165,13 @@ mod tests {
         );
     }
 
-    /// (t14) X3.6: text projection round-trips the new `set-clef` and
-    /// `set-key-signature` kinds, and the companion version is **0.16.0**
-    /// (bumped from 0.15.0), with the negative vector rejecting **0.15.0**
-    /// (the immediately superseded companion).
+    /// (t14) X3.6: text projection round-trips the `set-clef` and
+    /// `set-key-signature` kinds.
     ///
     /// **Mutation:** drop `OperationKindTag::SetClef` from
-    /// `OperationKind::parse` in `textproj_kind.rs`; must fail. Separately,
-    /// leave `COMPANION_VERSION` at `(0, 15, 0)`; the negative vector must
-    /// fail.
+    /// `OperationKind::parse` in `textproj_kind.rs`; must fail.
     #[test]
-    fn t14_x3_staff_change_kinds_round_trip_and_companion_is_0_16_0_rejecting_0_15_0() {
-        assert_eq!(
-            crate::COMPANION_VERSION,
-            (0, 16, 0),
-            "the companion version must be 0.16.0"
-        );
-
+    fn t14_x3_staff_change_kinds_round_trip() {
         for name in ["set_clef", "set_key_signature"] {
             let text = accept_documents()
                 .into_iter()
@@ -1198,9 +1188,104 @@ mod tests {
                 "{name}: project(serialize(parse(T))) == T must hold"
             );
         }
+    }
+
+    /// The `create_tuplet` document as companion 0.16.0 wrote it, before
+    /// `Tuplet` carried its display: five fields where 0.17.0 has six.
+    const CREATE_TUPLET_0_16_0: &str = "(text-projection (0 16 0))\n\
+        (document #x0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b (schema 0 1))\n\
+        (profile full (0 1 0) (constraints 67108864 (retention 1 () true)))\n\
+        (envelope #x0000000000000001000000000000000d #x000000000000000000000000000000ab \
+        (stamp 1300 0 #x0000000000000001000000000000000d) (causal () ()) () (primitive \
+        (create-tuplet (tuplet #x00000000000000010000000000000001 (tuplet-ratio 3 2) \
+        (#x00000000000000010000000000000001 #x00000000000000010000000000000002) () \
+        (ratio 1 6)))))\n";
+
+    /// (t15) X3c: a `create-tuplet` written before the tuplet's display is
+    /// refused by its header, at line one, as `req:textproj:header-version`
+    /// names it, not read on to an arity error inside its envelope. Its
+    /// envelope alone, under the current header, is that arity error: the
+    /// five-field form is refused, never migrated (D4).
+    ///
+    /// **Mutation:** hold `COMPANION_VERSION` at `(0, 16, 0)`; the document
+    /// then fails on the tuplet's arity, and this test fails.
+    #[test]
+    fn t15_a_create_tuplet_from_before_the_display_is_refused_by_its_header() {
+        assert_eq!(
+            parse_document(CREATE_TUPLET_0_16_0).map(|_| ()),
+            Err(epiphany_core::textvalue::TextError::NotCanonical(
+                "the header names a companion version other than the one this crate implements"
+            ))
+        );
+        // It is this corpus's own `create_tuplet` document, less the display.
+        let current = accept_documents()
+            .into_iter()
+            .find(|(n, _)| *n == "create_tuplet")
+            .expect("accept document is present: create_tuplet")
+            .1;
+        let (major, minor, patch) = crate::COMPANION_VERSION;
+        assert_eq!(
+            current
+                .replacen(
+                    &format!("(text-projection ({major} {minor} {patch}))"),
+                    "(text-projection (0 16 0))",
+                    1,
+                )
+                .replacen(" (tuplet-display actual auto)", "", 1),
+            CREATE_TUPLET_0_16_0
+        );
+        let restamped = CREATE_TUPLET_0_16_0.replacen(
+            "(text-projection (0 16 0))",
+            &format!("(text-projection ({major} {minor} {patch}))"),
+            1,
+        );
+        assert!(
+            matches!(
+                parse_document(&restamped),
+                Err(epiphany_core::textvalue::TextError::Arity {
+                    expected: 6,
+                    found: 5,
+                    ..
+                })
+            ),
+            "the five-field tuplet is not read under the current header"
+        );
+    }
+
+    /// (t16) X3c: the companion version is **0.17.0** (bumped from 0.16.0
+    /// with the tuplet's display), its `create_tuplet` document carries the
+    /// display and round-trips, and the negative vector rejects **0.16.0**
+    /// (the immediately superseded companion).
+    ///
+    /// **Mutation:** the committed negative vector naming `(0 15 0)`, as it
+    /// did at 0.16.0; must fail.
+    #[test]
+    fn t16_x3c_companion_is_0_17_0_rejecting_0_16_0() {
+        assert_eq!(
+            crate::COMPANION_VERSION,
+            (0, 17, 0),
+            "the companion version must be 0.17.0"
+        );
+        let name = "create_tuplet";
+        let text = accept_documents()
+            .into_iter()
+            .find(|(n, _)| *n == name)
+            .unwrap_or_else(|| panic!("accept document is absent: {name}"))
+            .1;
+        assert!(
+            text.contains("(tuplet-display actual auto)"),
+            "the tuplet carries its display: {text}"
+        );
+        let document = parse_document(&text).unwrap_or_else(|e| panic!("{name} must parse: {e}"));
+        let reprojected =
+            project_text_document(&document).expect("an accept document carries no canonical base");
+        assert_eq!(
+            reprojected, text,
+            "{name}: project(serialize(parse(T))) == T"
+        );
 
         // The negative vector must reject exactly the immediately superseded
-        // companion, 0.15.0.
+        // companion, 0.16.0.
         let rows = parse(COMMITTED).expect("the committed corpus parses");
         let superseded = rows
             .iter()
@@ -1209,8 +1294,8 @@ mod tests {
         assert_eq!(superseded.verdict, "reject");
         let text = String::from_utf8(superseded.text.clone()).expect("utf8");
         assert!(
-            text.contains("(text-projection (0 15 0))"),
-            "the negative vector must name the immediately superseded companion 0.15.0, got: {text}"
+            text.contains("(text-projection (0 16 0))"),
+            "the negative vector must name the immediately superseded companion 0.16.0, got: {text}"
         );
         assert!(
             parse_document(&text).is_err(),

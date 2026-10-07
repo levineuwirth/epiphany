@@ -234,7 +234,7 @@
   {\Large\scshape\color{epiphanyslate}Text Projection}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.16.0 --- Clef and key changes reach the grammar}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.17.0 --- A tuplet carries its display}\\[4pt]
   {\small\color{epiphanyslate}Normative for the text form it defines}
   \vfill
 \end{titlepage}
@@ -483,7 +483,7 @@ A projection is, in order:
 \begin{requirement}
   \label{req:textproj:header-version}
   A parser implementing this companion \MUST{} accept exactly one header
-  version: \texttt{(0 16 0)}, the version of the companion it implements. It
+  version: \texttt{(0 17 0)}, the version of the companion it implements. It
   \MUST{} reject any other version at line one.
 
   Multi-version acceptance and text migrate-on-read are deferred in the same
@@ -534,7 +534,7 @@ projection introduces no ordering of its own.
   A parser \MUST{} reject every \texttt{(blob ...)} line whose blob is
   unreferenced by canonical state
   (Requirement~\ref{req:textproj:canonical-blobs}). At companion
-  version~0.16.0, neither a canonical operation nor canonical reduced state can
+  version~0.17.0, neither a canonical operation nor canonical reduced state can
   carry a \texttt{BlobId}; canonical state therefore cannot reference a blob,
   and a parser \MUST{} reject every \texttt{(blob ...)} line.
 \end{requirement}
@@ -1171,7 +1171,7 @@ A document of one operation --- a transposition of two pitches up a perfect
 fifth --- projects to four lines:
 
 \begin{lstlisting}
-(text-projection (0 16 0))
+(text-projection (0 17 0))
 (document #x05050505050505050505050505050505 (schema 0 1))
 (profile full (0 1 0) (constraints 67108864 (retention 1 () true)))
 (envelope #x00000000000000070000000000000001 #x00000000000000000000000011223344 (stamp 42 7 #x00000000000000070000000000000001) (causal ((#x0000000000000001 3)) (#x00000000000000020000000000000009)) (some #x00000000000000070000000000000005) (primitive (transpose-interval (#x00000000000000070000000000000001 #x00000000000000070000000000000002) (transposition-interval 4 7))))
@@ -1505,6 +1505,24 @@ containing it parses, projects, or serializes
   grammars both claiming \texttt{(0 15 0)}. Cached projections at
   \texttt{(0 15 0)} do not migrate; a stale \texttt{TextProjection} chunk is
   regenerated, not converted. \\
+
+    \today & Chapter 5 & 0.17.0 --- A tuplet carries its display (X3c). The
+  Binary Format's schema major~4 gives \texttt{Tuplet} a sixth field,
+  \texttt{display}, a \texttt{TupletDisplay}; the \texttt{value} of
+  \texttt{"(create-tuplet " value ")"} is the tuplet's struct projection, so it
+  gains \texttt{(tuplet-display} \emph{number} \emph{bracket}\texttt{)} after
+  its \texttt{required\_total}, in the codec's field order. No production of
+  the grammar is added; the language it accepts changes all the same.
+
+  Same forcing reason as every prior grammar-changing bump: holding the version
+  would leave two mutually incompatible readings of \texttt{(0 16 0)}, in which
+  a parser of either meets the other's \texttt{create-tuplet} as a struct of
+  the wrong arity, with no version signal to explain why. At 0.17.0 a
+  \texttt{(0 16 0)} document is refused at line one
+  (\texttt{req:textproj:header-version}); a five-field tuplet is refused, never
+  migrated, as the Binary Format refuses a \texttt{CreateTuplet} stamped below
+  major~4. Cached projections at \texttt{(0 16 0)} do not migrate; a stale
+  \texttt{TextProjection} chunk is regenerated, not converted. \\
 \bottomrule
 \end{longtable}
 

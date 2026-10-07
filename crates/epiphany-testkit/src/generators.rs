@@ -918,16 +918,28 @@ pub fn operation_payload(rng: &mut Rng, events: u64, pitches: u64) -> OperationP
                 rng.below(4) as u32,
             ),
         }),
-        // X3.1: a tuplet over the shared event id space.
-        39 => OperationKind::CreateTuplet(CreateTupletOp {
-            tuplet: valuegen::tuplet(
-                TupletId::new(OBJ_REPLICA, rng.below(2)),
+        // X3.1: a tuplet over the shared event id space; the second id's is
+        // hidden (X3c, schema major 4), from the same draw.
+        39 => {
+            let counter = rng.below(2);
+            let tuplet = valuegen::tuplet(
+                TupletId::new(OBJ_REPLICA, counter),
                 vec![
                     EventId::new(OBJ_REPLICA, rng.below(4)),
                     EventId::new(OBJ_REPLICA, rng.below(4)),
                 ],
-            ),
-        }),
+            );
+            OperationKind::CreateTuplet(CreateTupletOp {
+                tuplet: epiphany_core::Tuplet {
+                    display: if counter == 1 {
+                        epiphany_core::TupletDisplay::HIDDEN
+                    } else {
+                        epiphany_core::TupletDisplay::default()
+                    },
+                    ..tuplet
+                },
+            })
+        }
         // X3.6: a clef or key change on a shared staff instance.
         40 => OperationKind::SetClef(SetClefOp {
             instance: StaffInstanceId::new(OBJ_REPLICA, rng.below(2)),

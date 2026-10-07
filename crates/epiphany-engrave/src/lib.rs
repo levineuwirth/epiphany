@@ -293,8 +293,22 @@ pub struct Engraver {
 /// unbundled and left undrawn, and to `34` when the measure's accidental
 /// state began counting in quarter-tones, so a quarter-tone accidental holds
 /// to the barline, yields to a change and is cancelled as any other, and two
-/// voices' different quarter-tones on one step no longer share a notehead.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(34);
+/// voices' different quarter-tones on one step no longer share a notehead,
+/// and to `35` when notes sounding one letter and octave at once with two
+/// alterations began each showing their own accidental, the natural and a
+/// tie continuation's included, where the first had shown none and borrowed
+/// its neighbour's, and to `36` when a beam joining notes on two staves began
+/// drawing between them, the upper staff's stems turned down to it and the
+/// lower's up, where its notes had taken flags, and to `37` when a tuplet
+/// whose notes are such a beam began drawing its number by it, and to `38`
+/// when a tuplet's display began hiding its number or bracket, a bracket
+/// whose number is hidden running unbroken, and to `39` when a tuplet across
+/// two staves that is not exactly one beam began drawing: by its beam where
+/// its notes share one, with a bracket where a rest opens it, and on its one
+/// staff where its ink stands on one, and to `40` when such a tuplet's
+/// number began standing clear of the heads, ledger lines, accidentals and
+/// dots of both staves as well as their stems.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(40);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -986,6 +1000,7 @@ mod tests {
                             clefs: vec![],
                             keys: vec![],
                             beams: Vec::new(),
+                            cross_beams: Vec::new(),
                         }),
                     ),
                     manifested(
@@ -1431,6 +1446,7 @@ mod tests {
                 clefs: vec![],
                 keys: vec![],
                 beams: Vec::new(),
+                cross_beams: Vec::new(),
             }),
         )];
         objects.extend(note(1, 101, MusicalPosition::origin()));
@@ -1951,6 +1967,7 @@ mod tests {
                                 key: KeySignature::new(3).expect("three sharps"),
                             }],
                             beams: Vec::new(),
+                            cross_beams: Vec::new(),
                         }),
                     ),
                     manifested(

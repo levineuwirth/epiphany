@@ -196,7 +196,40 @@ pub struct ConstrainedLayoutIR {
     /// system's staves stand: a brace, a bracket or a sub-bracket at the left,
     /// and, for all but a choral group, barlines joined from staff to staff.
     pub staff_groups: Vec<GroupSpan>,
+    /// Each beam joining notes on two staves, drawn here riding the upper
+    /// staff: a solver leaves its ink out of both staves' content, keeps the
+    /// lower staff from rising past its `rise_limit`, and moves the beam end
+    /// of each stem reaching it from the lower staff with the upper.
+    pub cross_staff_beams: Vec<CrossStaffBeam>,
 }
+
+/// A beam joining notes on two staves of a region (see
+/// [`ConstrainedLayoutIR::cross_staff_beams`]). The upper staff's notes turn
+/// their stems down to it and the lower staff's up, so it stands between the
+/// staves, drawn in this frame where they stand `SYSTEM_STAFF_PITCH` apart.
+#[derive(Clone, PartialEq, Debug)]
+pub struct CrossStaffBeam {
+    /// Index into [`ConstrainedLayoutIR::regions`].
+    pub region: usize,
+    /// The staff the beam rides, whose notes' stems turn down to it.
+    pub upper: StaffId,
+    /// The staff whose notes' stems turn up to it.
+    pub lower: StaffId,
+    /// Every primitive standing between the two staves: the beam's strokes,
+    /// each member's stem, and the number of a tuplet the beam carries.
+    pub ink: Vec<GlyphObjectId>,
+    /// The stems from the lower staff's notes: each one's `from` (at its
+    /// head) rides the lower staff, and its `to` (at the beam) the upper.
+    pub reaching: Vec<GlyphObjectId>,
+    /// How far the lower staff may rise toward the upper from where this
+    /// frame stands it before a stem reaching the beam from it falls short
+    /// of [`CROSS_STEM_MIN`] (negative where it must sink).
+    pub rise_limit: f32,
+}
+
+/// The least distance from a head of a beam across two staves to the
+/// nearest beam its stem meets, in staff spaces.
+pub const CROSS_STEM_MIN: f32 = 2.25;
 
 /// One staff group of a region (see [`ConstrainedLayoutIR::staff_groups`]).
 #[derive(Clone, PartialEq, Debug)]
@@ -799,6 +832,7 @@ const TIE_THICKNESS: f32 = 0.14;
 const BEAM_THICKNESS: f32 = 0.5; // SMuFL's beamThickness
 const BEAM_STEP: f32 = 0.75; // centre to centre of stacked beams: a thickness and a 0.25 gap
 const MAX_BEAM_RISE: f32 = 1.0; // the most a beam rises or falls across its group, in staff spaces
+const MAX_CROSS_SLOPE: f32 = 0.5; // the steepest a beam across two staves rises, per space of run
 const BEAM_HOOK: f32 = 1.1; // the length of a lone note's partial beam
 
 /// The registry id for **notated-component synthesis**: a note/rest notated as a
@@ -907,6 +941,7 @@ pub fn try_to_constrained(
     let mut span_anchors: Vec<SpanAnchor> = Vec::new();
     let mut system_leads: Vec<SystemLead> = Vec::new();
     let mut staff_groups: Vec<GroupSpan> = Vec::new();
+    let mut cross_staff_beams: Vec<CrossStaffBeam> = Vec::new();
     // Regions tile left-to-right; this advances by each region's width so all
     // coordinates stay globally monotonic (the solver's coordinate remap relies
     // on it). v0 has no page casting-off, so this replaces region overlap.
@@ -989,6 +1024,8 @@ pub fn try_to_constrained(
         let mut column_heads: BTreeMap<(Option<StaffId>, ColumnKey), Vec<HeadRef>> =
             BTreeMap::new();
         let mut event_stems: BTreeMap<EventId, Vec<StemSeg>> = BTreeMap::new();
+        // Each note's and unpitched note's staff: a beam may join two.
+        let mut event_staff: BTreeMap<EventId, StaffId> = BTreeMap::new();
         // Each note's and unpitched note's place among its staff's voices.
         let mut event_voices: BTreeMap<EventId, VoicePlace> = BTreeMap::new();
         // Per staff, the drawn extent of each note column — the obstacle field a
@@ -1028,6 +1065,7 @@ pub fn try_to_constrained(
             let yo = staff.map(&y_origin).unwrap_or(0.0);
             match (object.provenance().source, object.content()) {
                 (TypedObjectId::Event(eid), LayoutContent::Note(note)) => {
+                    event_staff.extend(staff.map(|st| (eid, st)));
                     let mut stems = Vec::new();
                     for (comp, (offset, value, dots, tied)) in
                         components_of(&note.components).enumerate()
@@ -1121,6 +1159,7 @@ pub fn try_to_constrained(
                     event_voices.insert(eid, note.voice);
                 }
                 (TypedObjectId::Event(eid), LayoutContent::Unpitched(unpitched)) => {
+                    event_staff.extend(staff.map(|st| (eid, st)));
                     // An unpitched note: a notehead at its staff position, read
                     // as on a five-line staff, with the stem, flag and dots of
                     // its value; it has no accidental.
@@ -1336,6 +1375,17 @@ pub fn try_to_constrained(
                 };
                 for event in members {
                     if let Some(seg) = event_stems.get_mut(&event).and_then(|s| s.first_mut()) {
+                        seg.up = up;
+                    }
+                }
+            }
+            for group in &content.cross_beams {
+                let Some(kneed) = kneed_members(group, &event_stems, &event_staff, &y_origin)
+                else {
+                    continue;
+                };
+                for (event, up) in kneed.members.iter().zip(kneed.ups) {
+                    if let Some(seg) = event_stems.get_mut(event).and_then(|s| s.first_mut()) {
                         seg.up = up;
                     }
                 }
@@ -1719,6 +1769,216 @@ pub fn try_to_constrained(
             }
         }
 
+        // Beams across two staves. The upper staff's members turn their stems
+        // down and the lower's up, to one beam between the staves that rides
+        // the upper staff. Its primary beam is the topmost, further beams
+        // below it as a group whose stems all turn up draws them, so an up
+        // stem reaches the primary and a down stem the deepest beam its own
+        // value takes. The beam rises with the line from its first member's
+        // head to its last's, by at most `MAX_BEAM_RISE` and at most
+        // `MAX_CROSS_SLOPE` of its run (its stems can stand close, an up stem
+        // right of its head beside a down stem left of the next), and stands
+        // midway between the heights its members allow, each stem at least
+        // `CROSS_STEM_MIN` from its head to the nearest beam it meets; where
+        // the lower staff stands too close in this frame for that, the beam
+        // keeps the upper staff's stems their length and a solver opens the
+        // gap (`rise_limit`). Beamed notes take no flags.
+        // Each member's stem by event: its record, and whether it reaches the
+        // beam from the lower staff.
+        let mut kneed_stems: BTreeMap<EventId, (usize, bool)> = BTreeMap::new();
+        // Each drawn beam across two staves, and each member's beam: where a
+        // tuplet of its notes places its number.
+        let mut kneed_beams: Vec<KneedBeam> = Vec::new();
+        let mut kneed_of: BTreeMap<EventId, usize> = BTreeMap::new();
+        for object in &region.objects {
+            let LayoutContent::Staff(content) = object.content() else {
+                continue;
+            };
+            let head_box = metrics("noteheadBlack").map(|m| m.bounding_box());
+            let x_off = |up: bool| {
+                if up {
+                    head_box.map_or(NOTEHEAD_STEM_X, |b| b.right.0)
+                } else {
+                    head_box.map_or(0.0, |b| b.left.0)
+                }
+            };
+            // The stack of beams a value takes, from the primary's outer edge.
+            let stack = |count: u8| BEAM_THICKNESS + f32::from(count.saturating_sub(1)) * BEAM_STEP;
+            for group in &content.cross_beams {
+                let Some(kneed) = kneed_members(group, &event_stems, &event_staff, &y_origin)
+                else {
+                    continue;
+                };
+                let members = &kneed.members;
+                let mut sorted = members.clone();
+                sorted.sort();
+                beam_sets.insert(sorted);
+                let n = members.len();
+                let segs: Vec<&StemSeg> = members.iter().map(|e| &event_stems[e][0]).collect();
+                let counts: Vec<u8> = segs.iter().map(|s| s.beams).collect();
+                let keys_of: Vec<ColumnKey> = segs.iter().map(|s| s.key.clone()).collect();
+                let xs: Vec<f32> = segs
+                    .iter()
+                    .zip(&kneed.ups)
+                    .map(|(s, up)| column(&s.key).x + s.dx + x_off(*up))
+                    .collect();
+                // The head each stem leaves from, nearest the beam.
+                let near: Vec<f32> = segs
+                    .iter()
+                    .zip(&kneed.ups)
+                    .map(|(s, up)| if *up { s.hi } else { s.lo })
+                    .collect();
+                let most = counts.iter().copied().max().unwrap_or(1);
+                let (x0, xn) = (xs[0], xs[n - 1]);
+                let most_rise = MAX_BEAM_RISE.min(MAX_CROSS_SLOPE * (xn - x0).max(0.0));
+                let rise = (near[n - 1] - near[0]).clamp(-most_rise, most_rise);
+                let slope = if xn > x0 { rise / (xn - x0) } else { 0.0 };
+                // The primary beam's top edge at `x0`: no lower than each up
+                // stem's least length allows, no higher than each down stem's.
+                let mut floor = f32::NEG_INFINITY;
+                let mut ceiling = f32::INFINITY;
+                for i in 0..n {
+                    let run = slope * (xs[i] - x0);
+                    if kneed.ups[i] {
+                        floor = floor.max(near[i] + CROSS_STEM_MIN + stack(counts[i]) - run);
+                    } else {
+                        ceiling = ceiling.min(near[i] - CROSS_STEM_MIN - run);
+                    }
+                }
+                let intercept = match (floor.is_finite(), ceiling.is_finite()) {
+                    (true, true) if floor <= ceiling => (floor + ceiling) / 2.0,
+                    (_, true) => ceiling,
+                    (true, false) => floor,
+                    (false, false) => near[0],
+                };
+                let edge = |x: f32| intercept + slope * (x - x0);
+                let rise_limit = (0..n)
+                    .filter(|&i| kneed.ups[i])
+                    .map(|i| edge(xs[i]) - stack(counts[i]) - near[i] - CROSS_STEM_MIN)
+                    .fold(f32::INFINITY, f32::min);
+                let record = cross_staff_beams.len();
+                for (i, e) in members.iter().enumerate() {
+                    let up = kneed.ups[i];
+                    let staff = event_staff[e];
+                    let seg = &mut event_stems.get_mut(e).expect("a member has a stem")[0];
+                    seg.up = up;
+                    seg.x_off = x_off(up);
+                    seg.end = if up {
+                        edge(xs[i]) - STEM_THICKNESS
+                    } else {
+                        edge(xs[i]) - stack(counts[i]) + STEM_THICKNESS
+                    };
+                    seg.tip = seg.end;
+                    seg.flag = None;
+                    let entry =
+                        column_ink
+                            .entry((staff, keys_of[i].clone()))
+                            .or_insert(ColumnInk {
+                                top: seg.hi,
+                                bottom: seg.lo,
+                                stem_up: Some(up),
+                                centre: x_off(up) * 0.5,
+                            });
+                    entry.stem_up = Some(up);
+                    if up {
+                        entry.top = entry.top.max(edge(xs[i]));
+                    } else {
+                        entry.bottom = entry.bottom.min(edge(xs[i]) - stack(counts[i]));
+                    }
+                    kneed_stems.insert(*e, (record, staff == kneed.lower));
+                }
+                let source = group
+                    .beam
+                    .map_or(TypedObjectId::Event(members[0]), TypedObjectId::Beam);
+                let dependencies: Vec<TypedObjectId> =
+                    members.iter().copied().map(TypedObjectId::Event).collect();
+                let slot = |i: usize| column(&keys_of[i]).slot;
+                let mut ink: Vec<GlyphObjectId> = Vec::new();
+                for level in 1..=most {
+                    let centre = |x: f32| {
+                        edge(x) - (BEAM_THICKNESS / 2.0 + f32::from(level - 1) * BEAM_STEP)
+                    };
+                    let mut runs: Vec<(usize, usize)> = Vec::new();
+                    for (i, &count) in counts.iter().enumerate() {
+                        if count < level {
+                            continue;
+                        }
+                        match runs.last_mut() {
+                            Some((_, end)) if *end + 1 == i => *end = i,
+                            _ => runs.push((i, i)),
+                        }
+                    }
+                    for (run, &(a, b)) in runs.iter().enumerate() {
+                        let (from_x, to_x, start, end) = if a < b {
+                            (
+                                xs[a] - STEM_THICKNESS / 2.0,
+                                xs[b] + STEM_THICKNESS / 2.0,
+                                slot(a),
+                                slot(b),
+                            )
+                        } else if a + 1 == n {
+                            // A lone short note last in its group hooks back.
+                            (
+                                xs[a] - BEAM_HOOK,
+                                xs[a] + STEM_THICKNESS / 2.0,
+                                slot(a),
+                                slot(a),
+                            )
+                        } else {
+                            (
+                                xs[a] - STEM_THICKNESS / 2.0,
+                                xs[a] + BEAM_HOOK,
+                                slot(a),
+                                slot(a),
+                            )
+                        };
+                        // Keyed apart from a one-staff group's strokes: the
+                        // top bit, the level, the run and the first member.
+                        let key = 1u128 << 127
+                            | u128::from(level) << 112
+                            | (run as u128) << 96
+                            | (members[0].as_u128() & ((1u128 << 96) - 1));
+                        let provenance = Provenance::synthesized(
+                            source,
+                            SynthesisKind::Registered(BEAM_SYNTHESIS),
+                            SynthesisInstanceKey(key),
+                            dependencies.clone(),
+                        );
+                        let stroke = line_stroke(
+                            provenance,
+                            Point::new(from_x, centre(from_x)),
+                            Point::new(to_x, centre(to_x)),
+                            BEAM_THICKNESS,
+                            band_of(Some(kneed.upper)),
+                        );
+                        ink.push(stroke.id());
+                        beam_strokes.push((stroke, start, end));
+                    }
+                }
+                kneed_of.extend(members.iter().map(|e| (*e, kneed_beams.len())));
+                kneed_beams.push(KneedBeam {
+                    record,
+                    members: members.clone(),
+                    upper: kneed.upper,
+                    lower: kneed.lower,
+                    xs: xs.clone(),
+                    slots: (0..n).map(slot).collect(),
+                    x0,
+                    intercept,
+                    slope,
+                    depth: stack(most),
+                });
+                cross_staff_beams.push(CrossStaffBeam {
+                    region: region_index,
+                    upper: kneed.upper,
+                    lower: kneed.lower,
+                    ink,
+                    reaching: Vec::new(),
+                    rise_limit,
+                });
+            }
+        }
+
         // (provenance, owning staff, engraving content) for the region object,
         // then its contents, then this region's spanning cross-region objects.
         let specs: Vec<(&Provenance, Option<StaffId>, Option<&LayoutContent>)> =
@@ -1777,8 +2037,10 @@ pub fn try_to_constrained(
         for ys in chord_ys.values_mut() {
             ys.sort_by(|a, b| b.total_cmp(a));
         }
-        // Each staff column's ink a tie's end must stand clear of.
+        // Each staff column's ink a tie's end must stand clear of; and each
+        // note's own, which a tuplet's bracket across two staves clears.
         let mut tie_ink: BTreeMap<(Option<StaffId>, ColumnKey), Vec<InkBox>> = BTreeMap::new();
+        let mut event_ink: BTreeMap<EventId, Vec<InkBox>> = BTreeMap::new();
         for ((staff, key), refs) in &column_heads {
             let Some(info) = columns.get(key) else {
                 continue;
@@ -1788,7 +2050,10 @@ pub fn try_to_constrained(
             let mut stems = BTreeSet::new();
             for r in refs {
                 let head = r.get(&pitch_heads, &unpitched_heads);
-                boxes.extend(column_ink_boxes(head, info.x, yo));
+                let own = event_ink.entry(head.event).or_default();
+                let head_ink = column_ink_boxes(head, info.x, yo);
+                own.extend(head_ink.iter().copied());
+                boxes.extend(head_ink);
                 if stems.insert((head.event, head.comp)) {
                     let seg = event_stems
                         .get(&head.event)
@@ -1797,13 +2062,15 @@ pub fn try_to_constrained(
                     if let Some(seg) = seg {
                         let x = info.x + seg.dx + seg.x_off;
                         let base = if seg.up { seg.lo } else { seg.hi };
-                        boxes.push(InkBox {
+                        let stem = InkBox {
                             left: x - STEM_THICKNESS / 2.0,
                             right: x + STEM_THICKNESS / 2.0,
                             bottom: base.min(seg.end),
                             top: base.max(seg.end),
                             behind: false,
-                        });
+                        };
+                        own.push(stem);
+                        boxes.push(stem);
                     }
                 }
             }
@@ -1861,6 +2128,7 @@ pub fn try_to_constrained(
                                 keys: Vec::new(),
                                 default_clef: Clef::default(),
                                 beams: Vec::new(),
+                                cross_beams: Vec::new(),
                             };
                             &default_content
                         }
@@ -2001,6 +2269,13 @@ pub fn try_to_constrained(
                                 vertical_band: band_of(staff),
                             };
                             stem_slots.push((stem.id(), info.slot));
+                            if let Some(&(record, reaching)) = kneed_stems.get(&eid) {
+                                let record = &mut cross_staff_beams[record];
+                                record.ink.push(stem.id());
+                                if reaching {
+                                    record.reaching.push(stem.id());
+                                }
+                            }
                             emit.stroke(stem);
                             // The flag hangs from the stem's normal tip, its left
                             // edge on the stem's.
@@ -2385,8 +2660,16 @@ pub fn try_to_constrained(
                 TypedObjectId::Tuplet(_) => {
                     // A tuplet's number, and its bracket unless its notes are
                     // one beam group, beside its members on its voice's side.
-                    let marks = match (content, staff) {
-                        (Some(LayoutContent::Tuplet(tuplet)), Some(st)) => tuplet_marks(
+                    // One whose members stand on two staves is drawn on the
+                    // one staff its ink stands on, a hidden rest on the other
+                    // aside; or, its notes riding one beam across the two, it
+                    // takes its number by the beam, riding the beam's staff,
+                    // with a bracket where a rest is among them.
+                    let mut kneed: Option<&KneedBeam> = None;
+                    let logical = staff;
+                    let mut staff = staff;
+                    let one_staff = |tuplet: &crate::logical::TupletContent, st: StaffId| {
+                        tuplet_marks(
                             tuplet,
                             &TupletInk {
                                 columns: &columns,
@@ -2395,12 +2678,108 @@ pub fn try_to_constrained(
                                 ink: staff_notes.get(&st).unwrap_or(&no_notes),
                                 voices: &event_voices,
                                 beams: &beam_sets,
+                                staff: st,
                             },
-                        ),
+                        )
+                    };
+                    let marks = match (content, staff) {
+                        (Some(LayoutContent::Tuplet(tuplet)), Some(st)) => one_staff(tuplet, st),
+                        (Some(LayoutContent::Tuplet(tuplet)), None) => {
+                            let inked: BTreeSet<StaffId> = tuplet
+                                .members
+                                .iter()
+                                .filter_map(|e| {
+                                    event_staff.get(e).copied().or_else(|| {
+                                        event_rests
+                                            .get(e)?
+                                            .iter()
+                                            .find(|r| r.visible && r.name.is_some())?
+                                            .staff
+                                    })
+                                })
+                                .collect();
+                            if let [st] = inked.iter().copied().collect::<Vec<_>>()[..] {
+                                staff = Some(st);
+                                one_staff(tuplet, st)
+                            } else {
+                                let rests: Vec<&RestSeg> = tuplet
+                                    .members
+                                    .iter()
+                                    .filter_map(|e| event_rests.get(e))
+                                    .flatten()
+                                    .filter(|r| r.visible && r.name.is_some())
+                                    .collect();
+                                kneed = tuplet
+                                    .members
+                                    .iter()
+                                    .find_map(|e| kneed_of.get(e))
+                                    .map(|&b| &kneed_beams[b]);
+                                kneed.and_then(|beam| {
+                                    // Every head, ledger line, accidental,
+                                    // dot, stem and drawn rest of each of the
+                                    // beam's staves: what its marks clear.
+                                    let ink_of = |staff: StaffId| {
+                                        let mut ink: Vec<InkBox> = tie_ink
+                                            .iter()
+                                            .filter(|((st, _), _)| *st == Some(staff))
+                                            .flat_map(|(_, boxes)| boxes.iter().copied())
+                                            .collect();
+                                        for rest in event_rests
+                                            .values()
+                                            .flatten()
+                                            .filter(|r| r.visible && r.staff == Some(staff))
+                                        {
+                                            let (Some(b), Some(info)) = (
+                                                rest.name
+                                                    .and_then(metrics)
+                                                    .map(|m| m.bounding_box()),
+                                                columns.get(&rest.key),
+                                            ) else {
+                                                continue;
+                                            };
+                                            ink.push(InkBox {
+                                                left: info.x + b.left.0,
+                                                right: info.x + b.right.0,
+                                                bottom: rest.y + b.bottom.0,
+                                                top: rest.y + b.top.0,
+                                                behind: false,
+                                            });
+                                        }
+                                        ink
+                                    };
+                                    let (upper_ink, lower_ink) =
+                                        (ink_of(beam.upper), ink_of(beam.lower));
+                                    kneed_tuplet_marks(
+                                        tuplet,
+                                        beam,
+                                        &KneedInk {
+                                            columns: &columns,
+                                            stems: &event_stems,
+                                            staves: &event_staff,
+                                            rests: &rests,
+                                            ink: &event_ink,
+                                            upper_ink: &upper_ink,
+                                            lower_ink: &lower_ink,
+                                        },
+                                    )
+                                })
+                            }
+                        }
                         _ => None,
                     };
+                    let staff = kneed.map_or(staff, |beam| Some(beam.upper));
                     match marks {
                         Some(marks) => {
+                            // A bracket whose number is hidden: the tuplet's
+                            // own provenance keeps its traced anchor, at the
+                            // origin of the staff it is drawn on.
+                            if marks.digits.is_empty() {
+                                emit.stroke(anchor(
+                                    provenance,
+                                    Point::new(default_x, staff.map(&y_origin).unwrap_or(0.0)),
+                                    band_of(staff),
+                                ));
+                            }
                             for (k, (name, at)) in marks.digits.into_iter().enumerate() {
                                 let digit_provenance = if k == 0 {
                                     provenance.clone()
@@ -2420,6 +2799,11 @@ pub fn try_to_constrained(
                                     staff,
                                     marks.slot,
                                 );
+                                if let Some(beam) = kneed {
+                                    cross_staff_beams[beam.record]
+                                        .ink
+                                        .push(GlyphObjectId(digit_provenance.stable_id.0));
+                                }
                             }
                             for (k, (from, to, start, end)) in marks.bracket.into_iter().enumerate()
                             {
@@ -2440,13 +2824,19 @@ pub fn try_to_constrained(
                                     start,
                                     end,
                                 });
+                                if let Some(beam) = kneed {
+                                    cross_staff_beams[beam.record].ink.push(stroke.id());
+                                }
                                 emit.stroke(stroke);
                             }
                         }
+                        // Nothing drawn: the anchor keeps the logical
+                        // stage's staff, none for a tuplet across two, and
+                        // so adds no extent to a staff it is not on.
                         None => emit.stroke(anchor(
                             provenance,
                             Point::new(default_x, yo),
-                            band_of(staff),
+                            band_of(logical),
                         )),
                     }
                 }
@@ -2966,6 +3356,7 @@ pub fn try_to_constrained(
         span_anchors,
         system_leads,
         staff_groups,
+        cross_staff_beams,
     })
 }
 
@@ -3947,14 +4338,19 @@ const CARRIED: i8 = i8::MIN;
 /// tie continues into. Where that note's alteration is not what the measure
 /// gave, the next note of its letter and octave in the measure shows its own
 /// accidental, the tied one's restated or a courtesy natural. Every voice of
-/// a staff shares its state, taken in time order. Alterations are counted in
-/// quarter-tones, so a quarter-tone accidental joins the same state: it holds
-/// to the barline as any other, a natural or a flat after it on its letter is
-/// shown, and one stated again is not. A whole-semitone alteration draws its
-/// standard accidental, a quarter-tone one the spelling's own (arrowed or
-/// Stein's, as the file wrote it). A pitch whose stack the state does not
-/// track (several accidentals, or one with no bundled glyph) is absent, and
-/// draws its own stack.
+/// a staff shares its state, taken in time order. Where notes starting at
+/// one time sound one letter and octave with two alterations (a unison of
+/// two voices, a natural beside a flat) and one of them is not a tie
+/// continuation, each head shows its own accidental, the natural and a tie
+/// continuation's included, whatever the measure gave, and the next note of
+/// that letter and octave states its own. Alterations are counted in
+/// quarter-tones, so a quarter-tone accidental joins the same state: it
+/// holds to the barline as any other, a natural or a flat after it on its
+/// letter is shown, and one stated again is not. A whole-semitone alteration
+/// draws its standard accidental, a quarter-tone one the spelling's own
+/// (arrowed or Stein's, as the file wrote it). A pitch whose stack the state
+/// does not track (several accidentals, or one with no bundled glyph) is
+/// absent, and draws its own stack.
 fn context_accidentals(
     objects: &[crate::logical::LayoutObject],
 ) -> BTreeMap<PitchId, Vec<&'static str>> {
@@ -3994,30 +4390,66 @@ fn context_accidentals(
         // Per letter and octave, the alteration in quarter-tones the measure
         // gives so far.
         let mut state: BTreeMap<(epiphany_core::CmnNominal, i8), i8> = BTreeMap::new();
-        for note in &staff.notes {
+        // The notes of every voice that start at one time, together.
+        for group in staff
+            .notes
+            .chunk_by(|a, b| time_total(&a.position, &b.position) == Ordering::Equal)
+        {
+            let at = &group[0].position;
             let index = staff
                 .measures
-                .partition_point(|start| time_total(start, &note.position) != Ordering::Greater);
+                .partition_point(|start| time_total(start, at) != Ordering::Greater);
             if measure != Some(index) {
                 measure = Some(index);
                 state.clear();
             }
-            let key = key_at(staff.keys, &note.position);
-            for pitch in &note.pitches {
-                let Some(spelling) = &pitch.spelling else {
+            let key = key_at(staff.keys, at);
+            // A letter and octave sounded at once with two alterations, one
+            // of them stated afresh: each head shows its own, the natural and
+            // a tie continuation's included, so no head borrows its
+            // neighbour's, and the next note there states its own. Where
+            // every one is a tie continuation, each takes its pitch from its
+            // own tie and shows none.
+            let mut heard: BTreeMap<(epiphany_core::CmnNominal, i8), (BTreeSet<i8>, bool)> =
+                BTreeMap::new();
+            for pitch in group.iter().flat_map(|note| &note.pitches) {
+                if let Some((place, alteration)) = tracked(pitch) {
+                    let (alterations, fresh) = heard.entry(place).or_default();
+                    alterations.insert(alteration);
+                    *fresh |= !tied_into.contains(&pitch.pitch);
+                }
+            }
+            let clashes: BTreeSet<(epiphany_core::CmnNominal, i8)> = heard
+                .into_iter()
+                .filter(|(_, (alterations, fresh))| alterations.len() > 1 && *fresh)
+                .map(|(place, _)| place)
+                .collect();
+            for pitch in group.iter().flat_map(|note| &note.pitches) {
+                let Some((place @ (nominal, _), alteration)) = tracked(pitch) else {
                     continue;
                 };
-                let SpellingNominal::Cmn(nominal) = spelling.nominal else {
-                    continue;
+                let spelling = pitch.spelling.as_ref().expect("a tracked pitch is spelt");
+                let glyph = || -> Vec<&'static str> {
+                    if alteration % 2 == 0 {
+                        alteration_glyph(alteration / 2).into_iter().collect()
+                    } else {
+                        spelling
+                            .accidentals
+                            .iter()
+                            .filter_map(accidental_glyph)
+                            .collect()
+                    }
                 };
-                let Some(alteration) = stack_quarter_tones(&spelling.accidentals) else {
-                    continue;
-                };
-                let place = (nominal, spelling.octave);
                 let current = state
                     .get(&place)
                     .copied()
                     .unwrap_or_else(|| key.map_or(0, |k| 2 * key_alteration(k, nominal)));
+                if clashes.contains(&place) {
+                    // A tie continuation included: beside another alteration
+                    // of its line, a bare head would take its neighbour's.
+                    shown.insert(pitch.pitch, glyph());
+                    continue;
+                }
                 if tied_into.contains(&pitch.pitch) {
                     // A tie carries its accidental to the tied note alone: a
                     // later note of its letter and octave in the bar states
@@ -4032,21 +4464,28 @@ fn context_accidentals(
                     Vec::new()
                 } else {
                     state.insert(place, alteration);
-                    if alteration % 2 == 0 {
-                        alteration_glyph(alteration / 2).into_iter().collect()
-                    } else {
-                        spelling
-                            .accidentals
-                            .iter()
-                            .filter_map(accidental_glyph)
-                            .collect()
-                    }
+                    glyph()
                 };
                 shown.insert(pitch.pitch, glyphs);
+            }
+            for place in clashes {
+                state.insert(place, CARRIED);
             }
         }
     }
     shown
+}
+
+/// A pitch's letter and octave and its alteration in quarter-tones, when the
+/// measure's accidental state tracks it: a common-practice spelling whose
+/// stack it can count.
+fn tracked(pitch: &crate::logical::NotePitch) -> Option<((epiphany_core::CmnNominal, i8), i8)> {
+    let spelling = pitch.spelling.as_ref()?;
+    let SpellingNominal::Cmn(nominal) = spelling.nominal else {
+        return None;
+    };
+    let alteration = stack_quarter_tones(&spelling.accidentals)?;
+    Some(((nominal, spelling.octave), alteration))
 }
 
 /// The key signature in force at `at` (the latest change at or before it,
@@ -4137,8 +4576,9 @@ fn tie_curve(
 
 /// What a tuplet's marks are placed by: the columns, each event's stems and
 /// rests (their columns and extents), the drawn ink of its staff's columns
-/// (heads, stems and beams), each event's voice place, and the staff's drawn
-/// beam groups by their sorted members.
+/// (heads, stems and beams), each event's voice place, the staff's drawn
+/// beam groups by their sorted members, and the staff, whose rests alone the
+/// marks clear.
 struct TupletInk<'a> {
     columns: &'a BTreeMap<ColumnKey, ColumnInfo>,
     stems: &'a BTreeMap<EventId, Vec<StemSeg>>,
@@ -4146,6 +4586,7 @@ struct TupletInk<'a> {
     ink: &'a BTreeMap<ColumnKey, ColumnInk>,
     voices: &'a BTreeMap<EventId, VoicePlace>,
     beams: &'a BTreeSet<Vec<EventId>>,
+    staff: StaffId,
 }
 
 /// A tuplet's marks: its number's digit glyphs and where they stand, the slot
@@ -4163,8 +4604,9 @@ struct TupletMarks {
 /// side most of its stems point (above when none has a stem). The number
 /// shows the ratio's `actual` term, centered on the span; the bracket, with
 /// a gap for the number and its ends hooked toward the notes, is left out
-/// when the members are notes beamed together as one group. `None` when no
-/// member has a column on the staff.
+/// when the members are notes beamed together as one group. The tuplet's
+/// display hides either (a bracket whose number is hidden runs unbroken).
+/// `None` when no member has a column on the staff, or nothing is shown.
 fn tuplet_marks(tuplet: &crate::logical::TupletContent, at: &TupletInk) -> Option<TupletMarks> {
     // A member's columns; with `inked`, only those it draws in, since a
     // column's slot is realized only by a glyph, and a bracket end anchored
@@ -4220,7 +4662,7 @@ fn tuplet_marks(tuplet: &crate::logical::TupletContent, at: &TupletInk) -> Optio
     };
 
     // The ink the marks clear: every column between the first member's and
-    // the last's, and each member rest's glyph.
+    // the last's, and each member rest's glyph on the staff.
     let mut top = f32::NEG_INFINITY;
     let mut bottom = f32::INFINITY;
     for ink in at.ink.range(first..=last).map(|(_, ink)| ink) {
@@ -4232,6 +4674,7 @@ fn tuplet_marks(tuplet: &crate::logical::TupletContent, at: &TupletInk) -> Optio
         .iter()
         .filter_map(|e| at.rests.get(e))
         .flatten()
+        .filter(|r| r.staff == Some(at.staff))
     {
         if let Some(b) = rest.name.and_then(metrics).map(|m| m.bounding_box()) {
             top = top.max(rest.y + b.top.0);
@@ -4242,6 +4685,7 @@ fn tuplet_marks(tuplet: &crate::logical::TupletContent, at: &TupletInk) -> Optio
         return None;
     }
 
+    let numbered = tuplet.display.number != epiphany_core::TupletNumber::None;
     let names: Vec<&'static str> = digits_of(tuplet.ratio.actual())
         .into_iter()
         .map(tuplet_digit)
@@ -4261,7 +4705,9 @@ fn tuplet_marks(tuplet: &crate::logical::TupletContent, at: &TupletInk) -> Optio
     let mut x = (x0 + x1) / 2.0 - width / 2.0;
     let mut digits = Vec::with_capacity(names.len());
     for (name, b) in names.iter().zip(&boxes) {
-        digits.push((*name, Point::new(x - b.left.0, baseline)));
+        if numbered {
+            digits.push((*name, Point::new(x - b.left.0, baseline)));
+        }
         x += b.right.0 - b.left.0;
     }
 
@@ -4270,7 +4716,7 @@ fn tuplet_marks(tuplet: &crate::logical::TupletContent, at: &TupletInk) -> Optio
     let beamed =
         tuplet.members.iter().all(|e| at.rests.get(e).is_none()) && at.beams.contains(&members);
     let mut bracket = Vec::new();
-    if !beamed {
+    if !beamed && tuplet.display.bracket != epiphany_core::TupletBracket::Hidden {
         let line = baseline + height / 2.0;
         let hook = if above {
             line - TUPLET_HOOK
@@ -4283,19 +4729,26 @@ fn tuplet_marks(tuplet: &crate::logical::TupletContent, at: &TupletInk) -> Optio
         );
         let (start, end) = (left.slot, right.slot);
         bracket.push((Point::new(x0, hook), Point::new(x0, line), start, start));
-        bracket.push((
-            Point::new(x0, line),
-            Point::new(gap0.max(x0), line),
-            start,
-            slot,
-        ));
-        bracket.push((
-            Point::new(gap1.min(x1), line),
-            Point::new(x1, line),
-            slot,
-            end,
-        ));
+        if numbered {
+            bracket.push((
+                Point::new(x0, line),
+                Point::new(gap0.max(x0), line),
+                start,
+                slot,
+            ));
+            bracket.push((
+                Point::new(gap1.min(x1), line),
+                Point::new(x1, line),
+                slot,
+                end,
+            ));
+        } else {
+            bracket.push((Point::new(x0, line), Point::new(x1, line), start, end));
+        }
         bracket.push((Point::new(x1, line), Point::new(x1, hook), end, end));
+    }
+    if digits.is_empty() && bracket.is_empty() {
+        return None;
     }
     Some(TupletMarks {
         digits,
@@ -4616,6 +5069,321 @@ fn place_heads(
         .fold(f32::NEG_INFINITY, f32::max);
     let dot_x = if right.is_finite() { right } else { 0.0 } + DOT_GAP;
     (dx, shifts, dot_x)
+}
+
+/// A drawn beam across two staves, as a tuplet of its notes places its
+/// number by it: its record, its members, the staff it rides and the other,
+/// each member's stem `x` and slot, and its primary beam's top edge
+/// (`intercept` at `x0`, rising by `slope`) above a stack `depth` deep.
+struct KneedBeam {
+    record: usize,
+    members: Vec<EventId>,
+    upper: StaffId,
+    lower: StaffId,
+    xs: Vec<f32>,
+    slots: Vec<SpringSlotId>,
+    x0: f32,
+    intercept: f32,
+    slope: f32,
+    depth: f32,
+}
+
+/// What a tuplet across two staves is placed by: the columns, each event's
+/// stems and staff, its members' drawn rests, each note's own ink, and all
+/// the ink of the beam's upper staff and of its lower. The upper staff's ink
+/// rides with the beam. The lower staff's stands below the beam once the
+/// staves are solved, but not yet in this frame, where the staves stand a
+/// fixed pitch apart and the lower one can stand above a beam that deep
+/// notes of the upper one push down; so its ink is cleared by `x` alone.
+struct KneedInk<'a> {
+    columns: &'a BTreeMap<ColumnKey, ColumnInfo>,
+    stems: &'a BTreeMap<EventId, Vec<StemSeg>>,
+    staves: &'a BTreeMap<EventId, StaffId>,
+    rests: &'a [&'a RestSeg],
+    ink: &'a BTreeMap<EventId, Vec<InkBox>>,
+    upper_ink: &'a [InkBox],
+    lower_ink: &'a [InkBox],
+}
+
+/// The marks of a tuplet whose notes ride one beam across two staves, all of
+/// it or a run of it shared with other tuplets. Its number is centred on its
+/// own notes, `TUPLET_CLEARANCE` off the beam on one side (above, where the
+/// upper staff's stems come down to it, or below, where the lower staff's
+/// come up), moved along the beam to the place nearest the middle where it
+/// stands clear of the upper staff's ink, every head, ledger line,
+/// accidental, dot, stem and drawn rest, by `TUPLET_NUMBER_GAP` beside it and
+/// `TUPLET_CLEARANCE` above or below; below the beam it also stands beside
+/// all the lower staff's ink, never over or under it (`KneedInk`). It stands
+/// above wherever it finds such a place within its notes' span, else on the
+/// side needing the shorter move; where neither side has one along the beam,
+/// it stands at the middle above all the upper staff's ink it would meet. It
+/// rides the slot of its note nearest it, and takes no bracket. A tuplet a
+/// drawn rest opens, or holds, takes a bracket as well, since the beam does
+/// not show where it runs: above its members from the first's column to the
+/// last's, `TUPLET_CLEARANCE` clear of the beam and of its upper staff's
+/// notes and rests, its number in the gap, raised further where the number
+/// would meet the upper staff's ink, as MuseScore draws one. `None` when a note of the tuplet is not on
+/// the beam, or nothing is shown.
+fn kneed_tuplet_marks(
+    tuplet: &crate::logical::TupletContent,
+    beam: &KneedBeam,
+    at: &KneedInk,
+) -> Option<TupletMarks> {
+    let notes: Vec<EventId> = tuplet
+        .members
+        .iter()
+        .copied()
+        .filter(|e| at.stems.contains_key(e))
+        .collect();
+    let span: Vec<usize> = notes
+        .iter()
+        .map(|e| beam.members.iter().position(|m| m == e))
+        .collect::<Option<_>>()?;
+    let (i0, i1) = (*span.iter().min()?, *span.iter().max()?);
+    let numbered = tuplet.display.number != epiphany_core::TupletNumber::None;
+    let bracketed =
+        !at.rests.is_empty() && tuplet.display.bracket != epiphany_core::TupletBracket::Hidden;
+    if !numbered && !bracketed {
+        return None;
+    }
+    let names: Vec<&'static str> = digits_of(tuplet.ratio.actual())
+        .into_iter()
+        .map(tuplet_digit)
+        .collect();
+    let boxes: Vec<BoundingBox> = names
+        .iter()
+        .map(|name| metrics(name).map(|m| m.bounding_box()))
+        .collect::<Option<_>>()?;
+    let width: f32 = boxes.iter().map(|b| b.right.0 - b.left.0).sum();
+    let height = boxes.iter().map(|b| b.top.0).fold(0.0, f32::max);
+    let edge = |x: f32| beam.intercept + beam.slope * (x - beam.x0);
+    let (first, last) = (beam.xs[i0], beam.xs[i1]);
+    // The digits from `left` on a baseline, if the number is shown.
+    let set = |left: f32, baseline: f32| {
+        let mut x = left;
+        let mut digits = Vec::with_capacity(names.len());
+        for (name, b) in names.iter().zip(&boxes) {
+            if numbered {
+                digits.push((*name, Point::new(x - b.left.0, baseline)));
+            }
+            x += b.right.0 - b.left.0;
+        }
+        digits
+    };
+    // The slot of the tuplet's note nearest `x`.
+    let nearest = |x: f32| {
+        let i = (i0..=i1)
+            .min_by(|a, b| (beam.xs[*a] - x).abs().total_cmp(&(beam.xs[*b] - x).abs()))
+            .unwrap_or(i0);
+        beam.slots[i]
+    };
+
+    if bracketed {
+        let head_right =
+            metrics("noteheadBlack").map_or(NOTEHEAD_STEM_X, |m| m.bounding_box().right.0);
+        let mut keys: Vec<&ColumnKey> = notes
+            .iter()
+            .filter_map(|e| at.stems.get(e)?.first())
+            .map(|seg| &seg.key)
+            .chain(at.rests.iter().map(|r| &r.key))
+            .collect();
+        keys.sort();
+        let (left, right) = (
+            at.columns.get(*keys.first()?)?,
+            at.columns.get(*keys.last()?)?,
+        );
+        let (x0, x1) = (left.x, right.x + head_right);
+        let mut top = edge(first).max(edge(last));
+        for b in notes
+            .iter()
+            .filter(|e| at.staves.get(e) == Some(&beam.upper))
+            .filter_map(|e| at.ink.get(e))
+            .flatten()
+        {
+            top = top.max(b.top);
+        }
+        for rest in at.rests.iter().filter(|r| r.staff == Some(beam.upper)) {
+            if let Some(b) = rest.name.and_then(metrics).map(|m| m.bounding_box()) {
+                top = top.max(rest.y + b.top.0);
+            }
+        }
+        let middle = (x0 + x1) / 2.0;
+        let baseline = rise_clear(
+            at.upper_ink,
+            (middle - width / 2.0, middle + width / 2.0, height),
+            top + TUPLET_CLEARANCE,
+        );
+        let line = baseline + height / 2.0;
+        let hook = line - TUPLET_HOOK;
+        let slot = nearest(middle);
+        let (gap0, gap1) = (
+            middle - width / 2.0 - TUPLET_NUMBER_GAP,
+            middle + width / 2.0 + TUPLET_NUMBER_GAP,
+        );
+        let (start, end) = (left.slot, right.slot);
+        let mut bracket = vec![(Point::new(x0, hook), Point::new(x0, line), start, start)];
+        if numbered {
+            bracket.push((
+                Point::new(x0, line),
+                Point::new(gap0.max(x0), line),
+                start,
+                slot,
+            ));
+            bracket.push((
+                Point::new(gap1.min(x1), line),
+                Point::new(x1, line),
+                slot,
+                end,
+            ));
+        } else {
+            bracket.push((Point::new(x0, line), Point::new(x1, line), start, end));
+        }
+        bracket.push((Point::new(x1, line), Point::new(x1, hook), end, end));
+        return Some(TupletMarks {
+            digits: set(middle - width / 2.0, baseline),
+            slot,
+            bracket,
+        });
+    }
+
+    let middle = (first + last) / 2.0;
+    let (from, to) = (beam.xs[0], beam.xs[beam.xs.len() - 1]);
+    // The number's baseline at centre `c`, `TUPLET_CLEARANCE` off the beam.
+    let baseline_at = |c: f32, above: bool| {
+        let (left, right) = (c - width / 2.0, c + width / 2.0);
+        if above {
+            edge(left).max(edge(right)) + TUPLET_CLEARANCE
+        } else {
+            edge(left).min(edge(right)) - beam.depth - TUPLET_CLEARANCE - height
+        }
+    };
+    // The nearest centre to the middle, along the beam, at which the number
+    // meets no ink on one side, and how far it moved.
+    let place = |above: bool| -> (f32, f32) {
+        let mut candidates = vec![middle];
+        for b in at.upper_ink.iter().chain(at.lower_ink) {
+            candidates.push(b.left - width / 2.0 - TUPLET_NUMBER_GAP);
+            candidates.push(b.right + width / 2.0 + TUPLET_NUMBER_GAP);
+        }
+        candidates
+            .into_iter()
+            .filter(|c| (from..=to).contains(c))
+            .filter(|c| {
+                let span = (c - width / 2.0, c + width / 2.0, height);
+                !meets_ink(at.upper_ink, span, baseline_at(*c, above))
+                    && (above || !beside_ink(at.lower_ink, span))
+            })
+            .map(|c| (c, (c - middle).abs()))
+            .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.total_cmp(&b.0)))
+            .unwrap_or((middle, f32::INFINITY))
+    };
+    let (up_at, up_move) = place(true);
+    let (down_at, down_move) = place(false);
+    // Above wherever it finds a clear place within the group's span.
+    let above = up_move <= (last - first) / 2.0 || up_move <= down_move;
+    let centre = if above { up_at } else { down_at };
+    let (left, right) = (centre - width / 2.0, centre + width / 2.0);
+    let baseline = if up_move.is_finite() || down_move.is_finite() {
+        baseline_at(centre, above)
+    } else {
+        rise_clear(
+            at.upper_ink,
+            (left, right, height),
+            baseline_at(centre, true),
+        )
+    };
+    Some(TupletMarks {
+        digits: set(left, baseline),
+        slot: nearest(centre),
+        bracket: Vec::new(),
+    })
+}
+
+/// Whether a number spanning `left` to `right`, `height` tall on `baseline`,
+/// comes within `TUPLET_NUMBER_GAP` beside or `TUPLET_CLEARANCE` above or
+/// below any of `ink`, rounding aside.
+fn meets_ink(ink: &[InkBox], (left, right, height): (f32, f32, f32), baseline: f32) -> bool {
+    let (beside, over) = (TUPLET_NUMBER_GAP - 1e-3, TUPLET_CLEARANCE - 1e-3);
+    ink.iter().any(|b| {
+        b.right > left - beside
+            && b.left < right + beside
+            && b.top > baseline - over
+            && b.bottom < baseline + height + over
+    })
+}
+
+/// Whether a number spanning `left` to `right` comes within
+/// `TUPLET_NUMBER_GAP` beside any of `ink`, at any height.
+fn beside_ink(ink: &[InkBox], (left, right, _): (f32, f32, f32)) -> bool {
+    let beside = TUPLET_NUMBER_GAP - 1e-3;
+    ink.iter()
+        .any(|b| b.right > left - beside && b.left < right + beside)
+}
+
+/// The lowest baseline from `baseline` up at which a number spanning `left`
+/// to `right`, `height` tall, meets none of `ink` (`meets_ink`): raised over
+/// each box it would meet in turn.
+fn rise_clear(ink: &[InkBox], (left, right, height): (f32, f32, f32), baseline: f32) -> f32 {
+    let mut baseline = baseline;
+    while let Some(top) = ink
+        .iter()
+        .filter(|b| meets_ink(std::slice::from_ref(b), (left, right, height), baseline))
+        .map(|b| b.top)
+        .reduce(f32::max)
+    {
+        baseline = top + TUPLET_CLEARANCE;
+    }
+    baseline
+}
+
+/// A beam across two staves: its members (one drawn stem each), each one's
+/// stem direction, down from the upper staff and up from the lower, and the
+/// two staves.
+struct Kneed {
+    members: Vec<EventId>,
+    ups: Vec<bool>,
+    upper: StaffId,
+    lower: StaffId,
+}
+
+/// A cross-staff beam group's members and their stems' directions. `None`
+/// unless two or more members, one drawn stem each, stand on exactly two
+/// staves.
+fn kneed_members(
+    group: &crate::logical::BeamGroup,
+    event_stems: &BTreeMap<EventId, Vec<StemSeg>>,
+    event_staff: &BTreeMap<EventId, StaffId>,
+    y_origin: &dyn Fn(StaffId) -> f32,
+) -> Option<Kneed> {
+    let members: Vec<EventId> = group
+        .events
+        .iter()
+        .copied()
+        .filter(|e| matches!(event_stems.get(e).map(Vec::as_slice), Some([seg]) if seg.drawn))
+        .collect();
+    if members.len() < 2 {
+        return None;
+    }
+    let staves: BTreeSet<StaffId> = members
+        .iter()
+        .map(|e| event_staff.get(e).copied())
+        .collect::<Option<_>>()?;
+    let staves: Vec<StaffId> = staves.into_iter().collect();
+    let &[a, b] = staves.as_slice() else {
+        return None;
+    };
+    let (upper, lower) = if y_origin(a) >= y_origin(b) {
+        (a, b)
+    } else {
+        (b, a)
+    };
+    let ups = members.iter().map(|e| event_staff[e] == lower).collect();
+    Some(Kneed {
+        members,
+        ups,
+        upper,
+        lower,
+    })
 }
 
 /// A beam group's members, one drawn stem each, and the way their stems
@@ -6017,6 +6785,7 @@ mod tests {
                 key: KeySignature::new(2).expect("two sharps is a valid key"),
             }],
             beams: Vec::new(),
+            cross_beams: Vec::new(),
         });
         let logical = LogicalLayoutIR {
             source: ScoreVersion::default(),
@@ -6348,6 +7117,7 @@ mod tests {
             ],
             keys: vec![],
             beams: Vec::new(),
+            cross_beams: Vec::new(),
         });
         let logical = LogicalLayoutIR {
             source: ScoreVersion::default(),
@@ -6714,6 +7484,7 @@ mod tests {
                         clefs: vec![],
                         keys: vec![],
                         beams: Vec::new(),
+                        cross_beams: Vec::new(),
                     }),
                 ),
                 with_content(

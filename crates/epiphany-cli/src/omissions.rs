@@ -7,6 +7,8 @@
 //! for an object it does not engrave, and does not count as ink. The checks:
 //!
 //! - an event, pitch, tie or slur with no primitive at all;
+//! - a tuplet whose number is shown with nothing drawn for it, or with its
+//!   bracket and no number;
 //! - a notehead or rest drawn at a value other than its duration's, a flag or
 //!   an augmentation dot the duration needs and the event lacks (an eighth or
 //!   shorter needs a flag or a beam), for every
@@ -20,7 +22,8 @@
 //!
 //! Not checked, and counted as such: whether an accidental is the one the
 //! key and the measure's earlier notes call for; an unpitched note's value;
-//! and a key change after the start.
+//! a key change after the start; and a tuplet whose number alone is hidden,
+//! whose bracket may be left out by rule.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -353,6 +356,20 @@ pub fn omissions(
     for slur in &score.cross_cutting.slurs {
         if !inked.contains(&TypedObjectId::Slur(slur.id)) {
             out.add("slur not drawn");
+        }
+    }
+    // A tuplet the file hides draws nothing; one whose number is hidden may
+    // draw nothing too, beamed alone, so only a shown number is held to ink.
+    for tuplet in &score.cross_cutting.tuplets {
+        let source = TypedObjectId::Tuplet(tuplet.id);
+        if tuplet.display.number == epiphany_core::TupletNumber::None {
+            if tuplet.display.bracket != epiphany_core::TupletBracket::Hidden {
+                out.skip("tuplet without a number: its bracket not checked");
+            }
+        } else if !inked.contains(&source) {
+            out.add("tuplet not drawn");
+        } else if !names(source).iter().any(|g| g.starts_with("tuplet")) {
+            out.add("tuplet number not drawn");
         }
     }
 

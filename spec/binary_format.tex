@@ -240,7 +240,7 @@
   {\Large\scshape\color{epiphanyslate}Binary Format}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.19.0 --- Clef and key changes enter the operation set}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.20.0 --- Schema major 4: a tuplet's display}\\[4pt]
   {\small\color{epiphanyslate}Normative for the byte layouts it defines}
   \vfill
 \end{titlepage}
@@ -2387,22 +2387,24 @@ Every chunk declares a \texttt{SchemaVersion} (major, minor) in its
     $[\textsc{min}, \textsc{max}]$ of majors and rejects any chunk whose major
     falls \emph{outside} $[\textsc{min}, \textsc{max}]$ --- too new (above
     \textsc{max}) or, once \textsc{min} rises past a retired major, too old
-    (Section~\ref{sec:evolution:major1}). Four majors are defined:
+    (Section~\ref{sec:evolution:major1}). Five majors are defined:
     \tablenums{0}, \tablenums{1} (Section~\ref{sec:evolution:major1}),
-    \tablenums{2} (Section~\ref{sec:evolution:major2}), and \tablenums{3}
-    (Section~\ref{sec:evolution:major3}). The accept-set is \textbf{per chunk
+    \tablenums{2} (Section~\ref{sec:evolution:major2}), \tablenums{3}
+    (Section~\ref{sec:evolution:major3}), and \tablenums{4}
+    (Section~\ref{sec:evolution:major4}). The accept-set is \textbf{per chunk
     role}, not one shared bound (Section~\ref{sec:evolution:major1}'s ``raised
     per chunk role'' rule, sharpened by major~3, the first bump under which the
     roles' maxima genuinely diverge): the \texttt{Snapshot} role's max is
-    \tablenums{3}; the \texttt{OperationEnvelopeBlock} role's max is
-    \tablenums{3} as of genesis tranche G2b
-    (\texttt{spec/CONTRACT\_GENESIS\_G2B\_TUNING.md} ---
-    \texttt{SetTuningContext}, \tablenums{34}, is born at v3
-    unconditionally; the role stayed at \tablenums{2} from Push~4b tranche
-    3b-i, when schema major~3 embedded no operation payload, until this
-    rung); every other role's max is \tablenums{0}. The reference
-    implementation's overall envelope is $\{0, 1, 2, 3\}$ ($\textsc{min} = 0$,
-    $\textsc{max} = 3$), realized as these differing per-role maxima rather
+    \tablenums{4}; the \texttt{OperationEnvelopeBlock} role's max is
+    \tablenums{4} as of X3c (\texttt{CreateTuplet}, \tablenums{40}, is born
+    at v4 unconditionally; the role was \tablenums{3} from genesis tranche
+    G2b, \texttt{spec/CONTRACT\_GENESIS\_G2B\_TUNING.md}, when
+    \texttt{SetTuningContext}, \tablenums{34}, was born at v3
+    unconditionally, and \tablenums{2} from Push~4b tranche 3b-i, when
+    schema major~3 embedded no operation payload, until that rung); every
+    other role's max is \tablenums{0}. The reference implementation's
+    overall envelope is $\{0, 1, 2, 3, 4\}$ ($\textsc{min} = 0$,
+    $\textsc{max} = 4$), realized as these differing per-role maxima rather
     than a single shared bound.
   \item \textbf{Minor} = additive. v0 readers verify the major only; the
     minor is a \emph{record}, not a gate --- but it is a mandatory record:
@@ -2457,9 +2459,12 @@ The \emph{only} minor-additive mechanism in schema major~0 is
     embeds a v2 layout, so its blocks stamp major~2,
     Section~\ref{sec:evolution:major2}; \tablenums{34}'s payload embeds a v3
     layout unconditionally, so its blocks stamp major~3,
-    Section~\ref{sec:evolution:major3} --- the sole appended kind to do so;
-    \tablenums{35}--\tablenums{42} are each major~0, no versioned walk
-    existing for any of their carried types);
+    Section~\ref{sec:evolution:major3}; \tablenums{40}'s payload embeds the
+    v4 \texttt{Tuplet} unconditionally since X3c, so its blocks stamp
+    major~4, Section~\ref{sec:evolution:major4};
+    \tablenums{35}--\tablenums{39}, \tablenums{41} and \tablenums{42} are
+    each major~0, no versioned walk existing for any of their carried
+    types);
   \item \texttt{OperationKindTag}: append at ${\geq}\,\tablenums{43}$
     (Requirement~\ref{req:binfmt:kind-tag}; the same nineteen variants as
     \texttt{OperationKind}, at the same nineteen discriminants, appended by
@@ -3172,6 +3177,98 @@ already on the wire.
 \end{tabular}
 \end{center}
 
+\section{Schema Major 4}
+\label{sec:evolution:major4}
+
+Schema major~4 is the fourth data-model expansion major (X3c): a
+\texttt{Tuplet} gains \texttt{display} (core specification
+\sectionsc{Tuplets as Grouping Objects},
+\texttt{req:time:tuplet-display}), whether its number and bracket are shown.
+The core specification has listed the field since its first revision; no
+earlier major carried it, so a tuplet a file marks hidden had nowhere in the
+score to land, and its marks were drawn regardless.
+
+\subsection{Where the changed fields reach}
+
+\begin{itemize}
+  \item \textbf{Two sites.} \texttt{Tuplet} reaches the wire through the
+    acceleration full-\texttt{Score} snapshot (the cross-cutting registry's
+    \texttt{tuplets}), and through the canonical operation layer:
+    \texttt{CreateTuplet} (\tablenums{40}) carries the whole value, so it is
+    \emph{born at v4 unconditionally}, as \texttt{SetTuningContext} was born
+    at v3, \texttt{display} being a mandatory append with no lower-major
+    layout for the payload to fall back to. The
+    \texttt{OperationEnvelopeBlock} and \texttt{Snapshot} roles'
+    accept-sets therefore both \textbf{widen to major~4}
+    (Section~\ref{sec:evolution:gate}).
+  \item \textbf{The canonical base is unchanged.} The
+    \texttt{MaterializedState} embeds no tuplet (nor any other
+    \texttt{Score} field value), and no reduction verdict reads a display,
+    so it remains major~0, byte-identical across the bump, as for
+    majors~1 to~3.
+  \item The manifest stays major~0.
+\end{itemize}
+
+\subsection{Cross-major reader behaviour}
+The rules of the earlier majors extend unchanged for the acceleration
+snapshot: a major-4 reader migrates a snapshot of any lower major in one read,
+v0${\to}$v1${\to}$v2${\to}$v3${\to}$v4, each step total and
+default-filling. A major-3-only reader meeting a major-4 op block opens
+read-only, the one-way door Section~\ref{sec:evolution:gate} describes.
+
+A \texttt{CreateTuplet} written before this major carries the five-field
+\texttt{Tuplet} of majors~0 to~3. Its operation envelope is canonical and its
+bytes are its identity, so it cannot be migrated in place: a migrated
+envelope would be another operation. Before the product's 1.0 release no such
+history is supported. A conforming decoder \MUST{} reject such an envelope,
+since the five-field value is no canonical major-4 \texttt{Tuplet}; the
+reference implementation recognizes the older layout and refuses it by name
+(\texttt{EnvelopeDecodeError::UnsupportedLayout}), so it reads as a version
+boundary and not as corruption. The decode corpus pins the rejection
+(\texttt{create\_tuplet\_before\_major\_4}).
+
+\subsection{Changed value layout}
+As in majors~1 to~3, the wire form appends the new field \emph{after} the
+existing ones, independent of the core specification's presentational field
+order (Section~\ref{sec:evolution:major1}'s note applies unchanged):
+
+\begin{itemize}
+  \item \texttt{Tuplet} $=$ \texttt{id} \cat{} \texttt{ratio} \cat{}
+    \texttt{members} \cat{} \texttt{parent} \cat{} \texttt{required\_total}
+    (the frozen major-0 to major-3 prefix) \cat{}
+    \textbf{\texttt{display}}.
+\end{itemize}
+
+\subsection{New leaf-type layouts}
+\begin{itemize}
+  \item \texttt{TupletNumber}: one discriminant byte --- \tablenums{0}
+    Actual, \tablenums{1} None. Growth is by appended discriminant.
+  \item \texttt{TupletBracket}: one discriminant byte --- \tablenums{0}
+    Auto, \tablenums{1} Hidden. Growth is by appended discriminant.
+  \item \texttt{TupletDisplay} $=$ \texttt{number} (\texttt{TupletNumber})
+    \cat{} \texttt{bracket} (\texttt{TupletBracket}) --- two bytes, neither
+    length-framed.
+\end{itemize}
+
+\subsection{Migration from major 3}
+Total and default-filling, needing no score context; composes after the
+earlier migrations for lower-major input. Each tuplet gains two zero bytes,
+the default display.
+
+\begin{center}
+\begin{tabular}{p{1.9in} p{3.4in}}
+  \toprule
+  \textbf{major-3 form} & \textbf{major-4 form} \\
+  \midrule
+  \texttt{Tuplet} & append \texttt{display} $=$ \texttt{Actual} /
+    \texttt{Auto}, the number and bracket every tuplet was drawn with before
+    this major \\
+  canonical-base \texttt{MaterializedState} & unchanged, byte-identical,
+    stays major~0 \\
+  \bottomrule
+\end{tabular}
+\end{center}
+
 % ===========================================================================
 \chapter{Non-Canonical Pinned Encodings}
 \label{ch:noncanon}
@@ -3802,6 +3899,19 @@ only}: implementations need not agree on an error taxonomy.
   already embeds in a staff instance's change sequences, now reachable per
   value; \texttt{KeySignature} re-validates its fifths at decode. Semantics:
   Operation Catalog \sectionsc{SetClef and SetKeySignature}, 0.17.0. \\
+
+    \today & Schema evolution, operation wire forms & 0.20.0 --- X3c:
+  schema major~4 (Section~\ref{sec:evolution:major4}). \texttt{Tuplet}
+  appends \texttt{display}, a \texttt{TupletDisplay} of two one-byte
+  discriminants, so \texttt{CreateTuplet} (\tablenums{40}) is born at v4
+  unconditionally where it was major~0, and the
+  \texttt{OperationEnvelopeBlock} and \texttt{Snapshot} accept-sets rise to
+  \tablenums{4}. A \texttt{CreateTuplet} written before major~4 is rejected,
+  recognized by its five-field layout and refused by name. The canonical base
+  stays major~0. The decode corpus gains \texttt{core.score\_v4} and
+  \texttt{core.tuplet}, a major-3 score with a tuplet, and a hidden
+  \texttt{CreateTuplet} with its pre-major-4 rejection. Semantics: Operation
+  Catalog \sectionsc{CreateTuplet}, 0.18.0. \\
 \bottomrule
 \end{longtable}
 
