@@ -656,8 +656,8 @@ mod tests {
     /// S27 predicted it would**, and the literal below was updated by hand. That
     /// is the tripwire working, not friction: editing this literal is how a rung
     /// *states* that the authority moved. It broke again when X3.1 bumped it
-    /// `1` → `2`, and was updated by hand again. A future bump must break this
-    /// test again.
+    /// `1` → `2`, and again when X4a bumped it `2` → `3`, each time updated by
+    /// hand. A future bump must break this test again.
     #[test]
     fn serialize_document_supplies_the_real_reduction_authority() {
         let document = minimal_document(42);
@@ -665,7 +665,7 @@ mod tests {
             .expect("a base-free document serializes");
         assert_eq!(
             bundle.capabilities().current_reduction_version,
-            ReductionAlgorithmVersion(2),
+            ReductionAlgorithmVersion(3),
             "the production writer must supply the real authority, not a literal of its own"
         );
     }

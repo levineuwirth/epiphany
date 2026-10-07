@@ -250,6 +250,25 @@ pub mod vectors;
 ///   `migration_judges_a_bases_wall_clock_events_from_the_graph` holding
 ///   graph-aware reduction's own verdicts over a base.
 ///
+/// * `3` — **X4a** (2026-10-07). The two reduction modes are held to each
+///   other by a fuzz over editors' concurrent histories (`fuzz::modes`), and
+///   each split it finds is closed here, in the mode that disagreed. Each
+///   change is a **reduction verdict** change, and with it the state the
+///   verdict produces:
+///   - the promotion pre-pass buckets every concurrent `InsertEvent` into a
+///     voice, whatever its preconditions, as the catalog's rule reads, where
+///     graph-aware reduction took only inserts whose voice its graph held
+///     before anything applied. Over the importer's empty base it promoted
+///     nothing, so the later of two overlapping concurrent inserts into a
+///     voice the history made was refused `EventDurationInvalid` (or applied
+///     where its winner failed) graph-aware and promoted base-free; now both
+///     modes promote it. Base-free reduction is unchanged.
+///
+///   Locked by the committed histories of `tests/two_modes/` (each declares
+///   whether it reduces alike) and, for the promotion,
+///   `two_replacements_of_one_quarter_promote_alike_in_both_modes`
+///   (`epiphany-musicxml`'s `reduction_modes`).
+///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.
 ///
@@ -269,7 +288,7 @@ pub mod vectors;
 /// `epiphany-bundle` in order to use that crate's `ReductionAlgorithmVersion`
 /// wrapper. The wrapper is constructed at the composition boundary by whoever
 /// depends on both (P13-S27 pin 1, §0.3).
-pub const CURRENT_REDUCTION_ALGORITHM_VERSION: u32 = 2;
+pub const CURRENT_REDUCTION_ALGORITHM_VERSION: u32 = 3;
 
 pub use anomaly::{
     AnomalousReplicaSegment, IntegrityAnomaly, IntegrityAnomalyKind, ReplicaAnomalyReason,

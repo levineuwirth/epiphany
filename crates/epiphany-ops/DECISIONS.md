@@ -2510,3 +2510,22 @@ envelope text form, its class and whether it still splits in its header;
 `tests/two_modes.rs` reduces each as it declares, and runs a CI budget that
 must find no class not committed and must author and apply every kind. The
 `fuzz_modes` example runs a local budget and minimizes what it finds.
+
+## X4a.2 — reduction version 3: the two modes agree (2026-10-07)
+
+Each split the two-mode fuzz finds is settled in the mode that disagreed,
+under one reduction version, `3`, whose `Bumps` entry names every change;
+the catalog's version 0.19.0 note names them too.
+
+**The promotion pre-pass takes every insert.** `compute_promotions` skipped
+an insert that failed `graph_insert_precondition` before anything applied.
+Base-free that check passes every insert, its index being empty then;
+graph-aware it reads the graph as the base left it, so over an empty base
+every voice the history made is missing and nothing was promoted. The
+catalog's rule (and the core specification's) buckets the concurrent inserts
+into a voice with no such filter, so the filter goes, and the later of two
+overlapping concurrent inserts is promoted in both modes. An insert that fails
+its own preconditions when it applies still fails them; it may meanwhile have
+promoted a loser it overlaps, as base-free reduction always allowed. Locked by
+`two_replacements_of_one_quarter_promote_alike_in_both_modes` and 43 committed
+histories that now agree; with the filter restored both fail.

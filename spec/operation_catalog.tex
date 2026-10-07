@@ -231,7 +231,7 @@
   {\Large\scshape\color{epiphanyslate}Operation Catalog}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.18.0 --- A tuplet's display, and its schema major}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.19.0 --- The two reduction modes agree}\\[4pt]
   {\small\color{epiphanyslate}Normative for the operation kinds it defines}
   \vfill
 \end{titlepage}
@@ -720,6 +720,20 @@ not move: the display enters no verdict and no canonical reduced state, so
 every history reduces as before, and only the graph-aware score holds the
 display.
 
+\noindent\textbf{Version 0.19.0 (X4a.2, the two reduction modes agree).}
+Base-free reduction and graph-aware reduction onto an empty base are held to
+each other, in every effect, the objects and the canonical bytes, over
+concurrent histories that editors write, each operation naming only what its
+author has seen; each verdict on which they parted is settled here, in the
+mode that disagreed. \texttt{InsertEvent}'s promotion pre-pass takes every
+concurrent insert into a voice, whatever its preconditions
+(Section~\ref{sec:k0:insert-event}): graph-aware reduction took only inserts
+whose voice its graph held before anything applied, so over an empty base it
+promoted none, refusing as an overlap the insert base-free reduction promoted.
+No payload, discriminant or \texttt{PreconditionFailureReason} changes.
+Accordingly \texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION}
+moves \texttt{2}~$\rightarrow$~\texttt{3}.
+
 % ===========================================================================
 \chapter{The Catalog Framework}
 \label{ch:framework}
@@ -823,9 +837,11 @@ discipline, which \texttt{CreateRegion} sets and an applied
 in graph-aware reduction the target voice exists in that region and the event's
 pitch ids are fresh. The event and its pitches are minted live; the voice is created on
 first use. Concurrent inserts whose half-open duration intervals overlap in the
-same voice are resolved by an order-independent promotion pre-pass: the
-lower-\texttt{OperationId} insert is retained in the original voice, and each
-overlapping loser is promoted to the deterministic system voice
+same voice are resolved by an order-independent promotion pre-pass, which
+takes every such insert whatever its preconditions, in both modes (since
+version~0.19.0): the lower-\texttt{OperationId} insert is retained in the
+original voice, and each overlapping loser is promoted to the deterministic
+system voice
 \texttt{derive\_promoted\_voice\_id(staff\_instance, voice, winner, loser)} and
 tagged \texttt{VoicePromoted}.
 

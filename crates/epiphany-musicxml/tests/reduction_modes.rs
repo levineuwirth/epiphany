@@ -1207,3 +1207,47 @@ fn a_tuplets_display_changes_no_verdict_or_canonical_state() {
     unhidden.cross_cutting.tuplets[0].display = TupletDisplay::default();
     assert_eq!(a.score, unhidden);
 }
+
+/// Two authors each replace the same imported quarter with a rest of their
+/// own, neither having seen the other: the two rests collide in the quarter's
+/// voice, and the later is promoted to a system voice, in both modes. Before
+/// reduction version 3 the promotion pre-pass took only inserts whose voice
+/// the graph held before anything applied, so over the importer's empty base
+/// graph-aware reduction promoted nothing and refused the second rest.
+#[test]
+fn two_replacements_of_one_quarter_promote_alike_in_both_modes() {
+    let m = Measure::new();
+    let quarter = m.quarters[0].duration().clone();
+    let rest_a = m.rest(1000, 0, quarter.clone());
+    let mut rest_b = m.rest(1000, 0, quarter);
+    rest_b.id = EventId::new(B, 1000);
+    let delete_a = m.op(
+        A,
+        0,
+        1,
+        &[],
+        delete(m.q(0), TupletCompensation::NotInTuplet),
+    );
+    let insert_a = m.op(A, 1, 2, &[delete_a.id], m.insert(rest_a.clone()));
+    let delete_b = m.op(
+        B,
+        0,
+        1,
+        &[],
+        delete(m.q(0), TupletCompensation::NotInTuplet),
+    );
+    let insert_b = m.op(B, 1, 2, &[delete_b.id], m.insert(rest_b.clone()));
+    let state = m.agree(
+        "two replacements of one quarter",
+        &[delete_a, insert_a.clone(), delete_b, insert_b.clone()],
+    );
+    assert_eq!(effect(&state, insert_a.id), Some(OperationEffect::Applied));
+    let Some(OperationEffect::AppliedWithRepair { repairs }) = effect(&state, insert_b.id) else {
+        panic!("the later rest is promoted");
+    };
+    assert!(repairs
+        .iter()
+        .any(|r| matches!(r.kind, RepairKind::VoicePromoted { .. })));
+    assert!(live(&state, TypedObjectId::Event(rest_a.id)));
+    assert!(live(&state, TypedObjectId::Event(rest_b.id)));
+}

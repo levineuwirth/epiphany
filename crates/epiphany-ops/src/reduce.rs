@@ -2482,12 +2482,13 @@ impl<'a> Reducer<'a> {
         // globally unique and (Invariant 5) belongs to exactly one staff
         // instance, so the voice id alone determines the pair. Promotion applies
         // only to concurrent operations whose half-open duration intervals overlap.
+        // Every insert takes part, whatever its preconditions: graph-aware
+        // reduction once took only inserts whose voice its graph held before
+        // anything applied, so over an empty base it promoted none while
+        // base-free reduction promoted (reduction version 3).
         let mut buckets: BTreeMap<VoiceId, Vec<&OperationEnvelope>> = BTreeMap::new();
         for env in active {
             if let OperationPayload::Primitive(OperationKind::InsertEvent(op)) = &env.payload {
-                if self.graph_insert_precondition(op).is_err() {
-                    continue;
-                }
                 buckets.entry(op.voice()).or_default().push(env);
             }
         }

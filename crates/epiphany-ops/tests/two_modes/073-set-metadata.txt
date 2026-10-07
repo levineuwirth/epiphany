@@ -1,5 +1,6 @@
 # class: effect SetMetadata: base-free AppliedWithRepair VoicePromoted | graph-aware Applied
-# expect: split
+# expect: agree
+# agrees since: the promotion pre-pass buckets every insert
 # found: seed 0x4a08df, 24 authored; minimized from 48 to 26 envelopes
 (envelope #x00000000000000010000000000000000 #x00000000000000000000000000000001 (stamp 1 0 #x00000000000000010000000000000000) (causal () ()) () (primitive (set-metadata (score-metadata (some "title-0") (some "composer") () () () () 0 0 ()))))
 (envelope #x00000000000000010000000000000001 #x00000000000000000000000000000001 (stamp 2 0 #x00000000000000010000000000000001) (causal ((#x0000000000000001 0)) ()) () (primitive (create-staff-group (staff-group #x00000000000000010000000000000000 (some "staff-group-0") grand-staff ()))))

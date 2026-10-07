@@ -1,4 +1,5 @@
-# class: effect SetMetadata: base-free AppliedWithRepair VoicePromoted | graph-aware NoOp PreconditionFailedUnderReduction EventDurationInvalid
+# class: effect TransposeInterval: base-free Applied | graph-aware NoOp PreconditionFailedUnderReduction TranspositionOutOfRange
+# was: effect SetMetadata: base-free AppliedWithRepair VoicePromoted | graph-aware NoOp PreconditionFailedUnderReduction EventDurationInvalid, until the promotion pre-pass buckets every insert
 # expect: split
 # found: seed 0x4a0871, 24 authored; minimized from 64 to 49 envelopes
 (envelope #x00000000000000010000000000000000 #x00000000000000000000000000000001 (stamp 1 0 #x00000000000000010000000000000000) (causal () ()) () (primitive (set-metadata (score-metadata (some "title-0") (some "composer") () () () () 0 0 ()))))
