@@ -1452,9 +1452,30 @@ fn make(
             }
         }
         15 => {
-            // CreateRegion: another staff-based metric region.
+            // CreateRegion: another staff-based region, placed after every
+            // region the view holds, as an editor places one; two authors
+            // unaware of each other may still choose one place.
             let id: RegionId = sim.mint(r);
             let mut region: Region = valuegen::region(id);
+            let after = h
+                .score
+                .canvas
+                .regions
+                .iter()
+                .filter_map(|other| match other.time_extent.end {
+                    epiphany_core::TimeAnchor::WallClock { time } => Some(time.0),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0);
+            region.time_extent = epiphany_core::TimeExtent {
+                start: epiphany_core::TimeAnchor::WallClock {
+                    time: WallClockTime(after),
+                },
+                end: epiphany_core::TimeAnchor::WallClock {
+                    time: WallClockTime(after + 1000),
+                },
+            };
             if sim.rng.chance(3) {
                 region.time_model = valuegen::proportional_model();
             }
