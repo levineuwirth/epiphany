@@ -2330,7 +2330,9 @@ fn mints_and_refs(payload: &OperationPayload) -> (Vec<TypedObjectId>, Vec<TypedO
 }
 
 /// Whether every object an operation of `history` names was minted by an
-/// operation its author had seen, or by itself.
+/// operation its author had seen, or by itself. A system-derived id (a
+/// promoted voice) is minted by a promotion, not a payload, and an author
+/// names one only from a view whose reduction made it, so it is not checked.
 pub fn valid(history: &[OperationEnvelope]) -> bool {
     let mut minted_by: BTreeMap<TypedObjectId, OperationId> = BTreeMap::new();
     for envelope in history {
@@ -2341,7 +2343,8 @@ pub fn valid(history: &[OperationEnvelope]) -> bool {
     history.iter().all(|envelope| {
         let (mints, refs) = mints_and_refs(&envelope.payload);
         refs.iter().all(|object| {
-            mints.contains(object)
+            matches!(object, TypedObjectId::Voice(v) if v.replica() == ReplicaId::SYSTEM_DERIVED)
+                || mints.contains(object)
                 || minted_by
                     .get(object)
                     .is_some_and(|op| *op == envelope.id || envelope.causal_context.covers(*op))

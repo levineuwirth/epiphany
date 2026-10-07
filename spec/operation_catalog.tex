@@ -840,7 +840,9 @@ in object existence and in the canonical bytes (since version~0.19.0).
   one that no envelope of the set mints may come from a base, and is taken as
   live; one that an envelope of the set mints is live only if an operation of
   the reduction made it live and none has since tombstoned it, a losing
-  candidate's mints and a refused operation's included among those minted.
+  candidate's mints and a refused operation's included among those minted; and
+  a system-promoted voice is live only if a promotion of the reduction made
+  it.
   Each referential precondition this catalog states (that a named staff,
   instrument, group, analysis layer, time signature, voice or region is live)
   is checked in both modes on that reading.

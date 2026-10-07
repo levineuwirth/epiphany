@@ -280,6 +280,9 @@ pub mod vectors;
 ///     `InsertEvent` into such a voice `VoiceMissing`, as graph-aware
 ///     reduction refuses each; before, base-free reduction checked none of
 ///     these referents, and created a voice it had never seen on first use.
+///     So is a system-promoted voice no promotion of the reduction made, and
+///     a migration of a region an undo tombstoned, which the graph keeps, is
+///     refused graph-aware as well, where it applied.
 ///     An object no envelope mints is still taken as live. The pinned digest
 ///     of a seeded `gen_envelope_set` reduction moves with these verdicts.
 ///   - base-free reduction keeps each pitch it minted at its current value

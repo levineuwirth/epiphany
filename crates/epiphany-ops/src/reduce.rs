@@ -2761,8 +2761,14 @@ impl<'a> Reducer<'a> {
             // check and is left to a later reduction version.
             // A voice an envelope of the set mints that never came to be is
             // missing, as the graph finds it (reduction version 3).
+            // So is a system-promoted voice no promotion of this reduction
+            // made: an author can name one only from a view in which a
+            // promotion made it.
             let voice = TypedObjectId::Voice(op.voice());
-            if !self.objects.contains_key(&voice) && self.history_mints.contains(&voice) {
+            if !self.objects.contains_key(&voice)
+                && (self.history_mints.contains(&voice)
+                    || op.voice().replica() == ReplicaId::SYSTEM_DERIVED)
+            {
                 return Err(PreconditionFailureReason::VoiceMissing);
             }
             let voice_dead = matches!(
@@ -6823,9 +6829,11 @@ impl<'a> Reducer<'a> {
                 incompatible_events.insert(event);
             }
         }
-        // The region's liveness, base-free as far as the set shows it
-        // (`referent_dead`); graph-aware below, from the graph.
-        if self.graph.is_none() && self.referent_dead(TypedObjectId::Region(op.region)) {
+        // The region's liveness: in both modes as the set leaves it
+        // (`referent_dead`), so a region an undo tombstoned, which the graph
+        // keeps, is not migrated graph-aware either; graph-aware below, from
+        // the graph as well.
+        if self.referent_dead(TypedObjectId::Region(op.region)) {
             return OperationEffect::NoOp {
                 reason: NoOpReason::PreconditionFailedUnderReduction {
                     reason: PreconditionFailureReason::TargetMissing,

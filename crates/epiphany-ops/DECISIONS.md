@@ -2611,3 +2611,13 @@ pitch; it now removes every attachment scoped to it. Locked by
 `a_transpose_past_a_triple_accidental_refuses`,
 `an_unfollowable_authored_spelling_is_dropped_and_the_pitch_moves` and three
 committed histories (restoring the narrow removal fails one of them).
+
+**Two referents the first reading missed.** A larger budget found an author
+inserting into a system-promoted voice its view held, which the whole
+history's reduction never promotes: base-free reduction, the id being
+system-derived and so minted by no payload, created it on first use; it is
+now missing in both modes. And an undo tombstones a region it minted while
+the graph keeps the region, so graph-aware migration applied to it where
+base-free reduction, reading the tombstone, refused: the migration now reads
+the region's liveness through `referent_dead` in both modes. Locked by four
+committed histories, `118` to `121`.
