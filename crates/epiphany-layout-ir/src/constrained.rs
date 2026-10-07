@@ -859,6 +859,7 @@ const KEY_SIG_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x4B45_5953_4
 /// octave clef's numeral) is synthesized from it, keyed by the change's place
 /// among the drawn changes and the glyph's within the change.
 const CLEF_CHANGE_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x434C_4546_4348_4E47); // "CLEFCHNG"
+const KEY_CHANGE_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x4B45_5943_4841_4E47); // "KEYCHANG"
 
 /// The registry id for **time-signature synthesis**: the measure introduces the
 /// meter, but its numerator/denominator digit glyphs each need a distinct stable
@@ -1047,6 +1048,9 @@ pub fn try_to_constrained(
         let mut column_overhang: BTreeMap<ColumnKey, f32> = BTreeMap::new();
         // How far each clef-change column's ink reaches right of it.
         let mut clef_reach: BTreeMap<ColumnKey, f32> = BTreeMap::new();
+        // How far the widest key change drawn in each barline column reaches
+        // right of the barline's ink.
+        let mut key_change_reach: BTreeMap<ColumnKey, f32> = BTreeMap::new();
         // The right edge of the widest lead (clef and key signature): the first
         // note column clears it.
         let mut lead_right = 0.0f32;
@@ -1312,6 +1316,18 @@ pub fn try_to_constrained(
                         keys.insert(ColumnKey::Lead);
                         lead_right = lead_right.max(lead_extent(&glyphs));
                     }
+                    // Each key change in the barline column at its time,
+                    // after the barline, so a change a system break falls at
+                    // ends the system before as a courtesy while the new
+                    // system's lead shows the key.
+                    for (time, old, new) in drawn_key_changes(content) {
+                        let clef = active_clef_or(&content.clefs, &time, content.default_clef);
+                        let key = ColumnKey::Timed(time, ColumnRole::Barline);
+                        let reach = lead_extent(&key_change_glyphs(old, new, &clef, yo));
+                        let entry = key_change_reach.entry(key.clone()).or_insert(0.0);
+                        *entry = entry.max(reach);
+                        keys.insert(key);
+                    }
                     // Each clef change in a column of its own at its time,
                     // before the barline or notes there.
                     for (time, clef) in drawn_clef_changes(content) {
@@ -1528,6 +1544,14 @@ pub fn try_to_constrained(
                     .or_insert(0.0);
                 *entry = entry.max(reach);
             }
+        }
+
+        // A key change stands after its barline's ink, a repeat sign's
+        // included, and the column after clears it as it clears a clef change.
+        for (key, reach) in &key_change_reach {
+            let at = key_change_x(marks.get(key)) + reach;
+            let entry = clef_reach.entry(key.clone()).or_insert(0.0);
+            *entry = entry.max(at);
         }
 
         // The column after a clef change clears the change's ink and gap.
@@ -2165,6 +2189,33 @@ pub fn try_to_constrained(
                             staff,
                             info.slot,
                         );
+                    }
+                    // Each key change, after the barline in its column.
+                    for (c, (time, old, new)) in drawn_key_changes(content).into_iter().enumerate()
+                    {
+                        let column_key = ColumnKey::Timed(time.clone(), ColumnRole::Barline);
+                        let info = column(&column_key);
+                        let x0 = info.x + key_change_x(marks.get(&column_key));
+                        let clef = active_clef_or(&content.clefs, &time, content.default_clef);
+                        for (g, (name, x, y)) in key_change_glyphs(old, new, &clef, yo)
+                            .into_iter()
+                            .enumerate()
+                        {
+                            let glyph_provenance = Provenance::synthesized(
+                                provenance.source,
+                                SynthesisKind::Registered(KEY_CHANGE_SYNTHESIS),
+                                SynthesisInstanceKey((c as u128) << 8 | g as u128),
+                                provenance.dependencies.clone(),
+                            );
+                            emit.glyph(
+                                &glyph_provenance,
+                                name,
+                                Point::new(x0 + x, y),
+                                band_of(staff),
+                                staff,
+                                info.slot,
+                            );
+                        }
                     }
                     // Each clef change, in its column.
                     for (c, (time, clef)) in drawn_clef_changes(content).into_iter().enumerate() {
@@ -3100,6 +3151,9 @@ pub fn try_to_constrained(
                 ColumnKey::Lead => reserve(LEAD_GAP),
                 ColumnKey::Timed(_, ColumnRole::Signature) => reserve(SIGNATURE_GAP),
                 ColumnKey::Timed(_, ColumnRole::Clef) => reserve(CLEF_CHANGE_GAP),
+                ColumnKey::Timed(_, ColumnRole::Barline) if key_change_reach.contains_key(key) => {
+                    reserve(CLEF_CHANGE_GAP)
+                }
                 _ => 0.0,
             }
             .max(COLUMN_PREFERRED_WIDTH);
@@ -4291,6 +4345,64 @@ fn drawn_clef_changes(content: &StaffContent) -> Vec<(TimePoint, Clef)> {
         current = clef;
     }
     out
+}
+
+/// The key changes a staff draws within its systems, in time order: each
+/// change after the staff's start to a key other than the one in force before
+/// it, with that key (none, where the staff has had no key signature). A
+/// change restating the key in force draws nothing.
+fn drawn_key_changes(content: &StaffContent) -> Vec<(TimePoint, KeySignature, KeySignature)> {
+    let mut changes: Vec<&PlacedKeySignature> = content.keys.iter().collect();
+    changes.sort_by(|a, b| time_total(&a.time, &b.time));
+    let mut current = KeySignature::default();
+    let mut out = Vec::new();
+    for change in changes {
+        if time_total(&change.time, &origin()) == Ordering::Greater && change.key != current {
+            out.push((change.time.clone(), current, change.key));
+        }
+        current = change.key;
+    }
+    out
+}
+
+/// A key change's glyphs from x 0, `KEY_ACC_X` apart: a natural cancelling
+/// each accidental of the old key the new one does not keep, at its place,
+/// then the new key's accidentals. A new key on the same side keeps the old
+/// one's first accidentals, so only those past its own count are cancelled;
+/// one on the other side, or none, cancels them all.
+fn key_change_glyphs(
+    old: KeySignature,
+    new: KeySignature,
+    clef: &Clef,
+    yo: f32,
+) -> Vec<(&'static str, f32, f32)> {
+    let before = key_signature(old, clef);
+    let after = key_signature(new, clef);
+    let same_side = old.fifths().signum() == new.fifths().signum();
+    let kept = if same_side { after.len() } else { 0 };
+    before
+        .iter()
+        .skip(kept)
+        .map(|accidental| ("accidentalNatural", accidental.position))
+        .chain(
+            after
+                .iter()
+                .map(|accidental| (accidental.glyph, accidental.position)),
+        )
+        .enumerate()
+        .map(|(i, (glyph, position))| (glyph, i as f32 * KEY_ACC_X, step_to_y(yo, position)))
+        .collect()
+}
+
+/// Where a key change starts right of its barline column's x: past the
+/// barline's ink, the repeat sign a boundary there morphs it into included,
+/// and a gap.
+fn key_change_x(mark: Option<&RepeatMark>) -> f32 {
+    let name = mark.map_or("barlineSingle", |mark| {
+        repeat_sign_name(mark.start, mark.end)
+    });
+    let right = metrics(name).map_or(0.0, |m| m.bounding_box().right.0);
+    repeat_sign_x(name, 0.0) + right + KEY_GAP
 }
 
 /// A clef change's glyphs, smaller than a staff's leading clef: the change

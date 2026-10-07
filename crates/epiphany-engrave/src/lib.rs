@@ -311,8 +311,11 @@ pub struct Engraver {
 /// a beam it shares with other tuplets began staying over its own notes,
 /// where it could settle among a neighbour's, and to `42` when a staff whose
 /// first key signature comes after its start began showing none before it,
-/// where it had been read in that key from its start.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(42);
+/// where it had been read in that key from its start, and to `43` when a key
+/// change began drawing after its barline with the naturals that cancel what
+/// the new key drops, a change at a system break ending the system before as
+/// a courtesy, where a key change inside a system had drawn nothing.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(43);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.

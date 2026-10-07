@@ -1652,3 +1652,24 @@ is now none. A staff whose first key stands at its start, every one the
 importer made before, is unchanged, and so is one whose open key the
 importer held as C before. Locked by
 `a_staff_has_no_key_before_its_first` (`epiphany-cli`).
+
+## ENGRAVER_VERSION 42 → 43: key changes drawn, with their cancellation (X4a.4, 2026-10-07)
+
+A key change showed only in a later system's lead, which reads the key in
+force at its start; one inside a system drew nothing, though its notes were
+spelt against it (D33). It now draws in its barline's column, after the
+barline's ink (a repeat sign's included) and the key gap: first a natural at
+the place of each accidental of the old key the new one does not keep, then
+the new key's accidentals, all `KEY_ACC_X` apart. A new key on the same side
+keeps the old one's first accidentals, so only those past its count are
+cancelled; a change of side, or to no key, cancels them all; a larger key on
+the same side cancels none. Placing it in the barline's column rather than a
+column after it means a change a system break falls at ends the system before,
+after its closing barline, as a courtesy, the staff lines running under it,
+while the new system's lead shows the new key alone, with no change repeated
+at its start. The column after clears the change as it clears a clef change,
+and the barline column reserves its ink only where a change stands in it, so
+no other barline moves. A change inside a measure takes a barline column of
+its own with no barline, which is never a break. A restatement draws nothing.
+Locked by `a_key_change_is_drawn_with_its_cancellation` and
+`a_staff_has_no_key_before_its_first` (`epiphany-cli`).

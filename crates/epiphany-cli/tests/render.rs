@@ -4824,4 +4824,149 @@ fn a_staff_has_no_key_before_its_first() {
         1,
         "the first B flat states its flat, the key carries the second"
     );
+    // The change to four flats, drawn after the first measure's barline.
+    assert_eq!(
+        flats
+            .iter()
+            .filter(of_key)
+            .filter(|g| g.position.x.0 > first_head)
+            .count(),
+        4
+    );
+}
+
+/// A key change is drawn after its barline with the naturals that cancel what
+/// the new key drops: all of the old key's accidentals for a change of side
+/// or to no key, those past the new count for a smaller key on the same
+/// side, none for a larger. Inside a system it stands between its barline and
+/// the measure's music; at a system break it ends the system before, after
+/// the closing barline, as a courtesy, and the new system's lead shows the
+/// new key alone. A key restated draws nothing.
+#[test]
+fn a_key_change_is_drawn_with_its_cancellation() {
+    let key = |fifths: i8| format!("<attributes><key><fifths>{fifths}</fifths></key></attributes>");
+    let rest = "<note><rest/><duration>4</duration><voice>1</voice><type>whole</type></note>";
+    let mut fifths: Vec<i8> = vec![3, -1, -3, -1, 0, 0];
+    fifths.extend((0..60).map(|m| if m % 2 == 0 { 2 } else { -2 }));
+    let body: String = fifths
+        .iter()
+        .enumerate()
+        .map(|(m, f)| {
+            let opening = if m == 0 {
+                format!(
+                    "<attributes><divisions>1</divisions><key><fifths>{f}</fifths></key>\
+                     <time><beats>4</beats><beat-type>4</beat-type></time>\
+                     <clef><sign>G</sign><line>2</line></clef></attributes>"
+                )
+            } else {
+                key(*f)
+            };
+            format!("<measure number=\"{}\">{opening}{rest}</measure>", m + 1)
+        })
+        .collect();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\">{body}</part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("key_changes.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = engrave(&loaded.reduced.score).layout;
+    let systems: Vec<_> = layout.systems().collect();
+    assert!(systems.len() > 2, "the score wraps");
+
+    let short = |name: &str| match name {
+        "accidentalNatural" => "n",
+        "accidentalSharp" => "#",
+        "accidentalFlat" => "b",
+        _ => "",
+    };
+    // Per system, its rests, barlines and accidentals in x order.
+    let mut rests_before = 0;
+    let mut courtesy: Option<String> = None;
+    for (s, system) in systems.iter().enumerate() {
+        let mut glyphs: Vec<&epiphany_layout_ir::ResolvedGlyph> = system
+            .primitives
+            .glyphs
+            .iter()
+            .map(|&i| &layout.glyphs[i as usize])
+            .collect();
+        glyphs.sort_by(|a, b| a.position.x.0.total_cmp(&b.position.x.0));
+        let rests: Vec<f32> = glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str().starts_with("rest"))
+            .map(|g| g.position.x.0)
+            .collect();
+        let accidentals: Vec<&&epiphany_layout_ir::ResolvedGlyph> = glyphs
+            .iter()
+            .filter(|g| !short(g.glyph.as_str()).is_empty())
+            .collect();
+        // The lead: the key in force at the system's first measure, alone.
+        let lead: String = accidentals
+            .iter()
+            .filter(|g| g.position.x.0 < rests[0])
+            .map(|g| short(g.glyph.as_str()))
+            .collect();
+        let in_force = fifths[rests_before];
+        let expected_lead =
+            if in_force > 0 { "#" } else { "b" }.repeat(in_force.unsigned_abs() as usize);
+        assert_eq!(lead, expected_lead, "system {s}'s lead");
+        if s > 0 {
+            // The courtesy that ended the system before named this key.
+            if let Some(courtesy) = courtesy.take() {
+                assert!(courtesy.ends_with(&expected_lead), "system {s}: {courtesy}");
+            }
+        }
+        // Each change inside the system, between its barline and its rest.
+        let barlines: Vec<f32> = glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str() == "barlineSingle")
+            .map(|g| g.position.x.0)
+            .collect();
+        let drawn = |from: f32, to: f32| -> String {
+            accidentals
+                .iter()
+                .filter(|g| g.position.x.0 > from && g.position.x.0 < to)
+                .map(|g| short(g.glyph.as_str()))
+                .collect()
+        };
+        for (r, pair) in rests.windows(2).enumerate() {
+            let m = rests_before + r + 1;
+            let barline = barlines
+                .iter()
+                .copied()
+                .find(|x| *x > pair[0] && *x < pair[1])
+                .expect("a barline between two measures");
+            assert_eq!(
+                drawn(pair[0], barline),
+                "",
+                "nothing before measure {m}'s barline"
+            );
+            let expected = match (fifths[m - 1], fifths[m]) {
+                (3, -1) => "nnnb",
+                (-1, -3) => "bbb",
+                (-3, -1) => "nnb",
+                (-1, 0) => "n",
+                (0, 0) => "",
+                (0, 2) => "##",
+                (2, -2) => "nnbb",
+                (-2, 2) => "nn##",
+                other => panic!("unexpected change {other:?}"),
+            };
+            assert_eq!(drawn(barline, pair[1]), expected, "measure {m}'s change");
+        }
+        rests_before += rests.len();
+        // A change at the break: after the system's last barline.
+        if rests_before < fifths.len() {
+            let last = barlines.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let after = drawn(last, f32::INFINITY);
+            if fifths[rests_before] != fifths[rests_before - 1] {
+                assert!(!after.is_empty(), "system {s} ends with a courtesy");
+                courtesy = Some(after);
+            } else {
+                assert_eq!(after, "");
+            }
+        }
+    }
+    assert_eq!(rests_before, fifths.len());
 }
