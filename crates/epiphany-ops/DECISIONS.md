@@ -2592,3 +2592,22 @@ alone, and none the fuzz draws is such. Locked by
 `a_transpose_and_a_concurrent_pitch_edit_conflict_in_both_modes` and
 `an_undone_transpose_restores_its_pitch_in_both_modes` (both fail with the
 graph-only read restored) and 17 committed histories.
+
+**A transposition refuses by its value and drops a spelling it cannot move.**
+Two classes of the fuzz's invariant findings came from transposing. A
+transposed value past a triple accidental was written by a spelling of
+repeated double accidentals (`accidental_ids` stacks them), which
+`SpellingScopeResolves` forbids, and an authored spelling the transposition
+could not move refused the whole operation, graph-aware alone. Now
+`alteration_writable` refuses a value no well-formed stack writes, in both
+modes since both hold the value; the core's `PitchSpelling::transposed` and
+`transposed_by_quarter_tones` return nothing for a stack that would repeat;
+and an authored spelling that cannot follow is removed, the pitch taking the
+propagated spelling, so no verdict reads a graph-only spelling. The catalog's
+requirement that such a spelling refuse is withdrawn; it read state base-free
+reduction cannot hold. Separately, `graph_delete_pitch` removed only the
+user-chosen attachment, and a transposition's propagated one outlived the
+pitch; it now removes every attachment scoped to it. Locked by
+`a_transpose_past_a_triple_accidental_refuses`,
+`an_unfollowable_authored_spelling_is_dropped_and_the_pitch_moves` and three
+committed histories (restoring the narrow removal fails one of them).

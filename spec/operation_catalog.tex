@@ -743,8 +743,11 @@ each pitch it minted at its current value, so a \texttt{TransposeInterval}
 writes its targets' values in both modes: its concurrency with a
 \texttt{ModifyIdentifiedPitch} of the same pitch, and an undo of it, reduce
 alike (Section~\ref{sec:k0:transpose-interval}), where base-free reduction
-recorded no write and so applied the edit and refused the undo. One
-requirement label is added;
+recorded no write and so applied the edit and refused the undo. A
+transposition refuses a value no accidental stack writes, from the value in
+both modes, and drops an authored spelling it cannot move rather than refusing
+on it; a deleted pitch takes every spelling attachment scoped to it, a
+transposition's propagated one included. One requirement label is added;
 no payload, discriminant or \texttt{PreconditionFailureReason} changes.
 Accordingly
 \texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION}
@@ -1231,9 +1234,16 @@ is transposed by \texttt{interval}.
   quarter-tones the quarter-tone accidental of the spelling's own kind, an
   arrowed accidental keeping its arrow and Stein's staying Stein's where it has
   one for the alteration (since version~0.19.0; before it, any authored
-  spelling on a \texttt{cmn-24} pitch refused). If any such
-  attachment cannot be written at the transposed position, the operation
-  \MUST{} refuse, atomically, with \texttt{TranspositionOutOfRange}.
+  spelling on a \texttt{cmn-24} pitch refused). An attachment that cannot be
+  written at the transposed position (an octave out of range, or an
+  alteration only a repeated accidental would write) \MUST{} be removed, the
+  pitch then taking the spelling the transposition propagates; before
+  version~0.19.0 the operation refused instead, which only graph-aware
+  reduction could see. A transposition whose transposed \emph{value} no
+  well-formed accidental stack writes --- past a triple sharp or flat, or in
+  \texttt{cmn-24} an odd alteration past five quarter-tones --- \MUST{}
+  refuse, atomically, with \texttt{TranspositionOutOfRange}, in both modes,
+  each reading the value.
 \end{requirement}
 
 \begin{rationale}

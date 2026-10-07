@@ -1039,12 +1039,17 @@ impl PitchSpelling {
         // Guard the accidental stack: `accidental_ids` allocates |alteration|/2
         // glyphs, so an unbounded alteration is an unbounded allocation.
         i8::try_from(alteration).ok()?;
-        Some(PitchSpelling {
+        let spelling = PitchSpelling {
             nominal: SpellingNominal::Cmn(new_nominal),
             accidentals: crate::prepass::accidental_ids(alteration),
             octave,
             render_hints: self.render_hints,
-        })
+        };
+        // Past a triple accidental the stack repeats a double one, which no
+        // spelling may (`accidental_stack_is_well_formed`): nothing writes it.
+        spelling
+            .accidental_stack_is_well_formed()
+            .then_some(spelling)
     }
 
     /// This spelling moved by `interval` to a pitch sounding
@@ -1083,12 +1088,15 @@ impl PitchSpelling {
                 quarter_tones,
             )?)]
         };
-        Some(PitchSpelling {
+        let spelling = PitchSpelling {
             nominal: SpellingNominal::Cmn(new_nominal),
             accidentals,
             octave,
             render_hints: self.render_hints,
-        })
+        };
+        spelling
+            .accidental_stack_is_well_formed()
+            .then_some(spelling)
     }
 
     /// A bare CMN spelling with no accidental glyph at the given octave.

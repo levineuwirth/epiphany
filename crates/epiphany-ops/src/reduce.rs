@@ -882,8 +882,9 @@ type StaffLayoutValue = (Option<InstrumentId>, Option<StaffLineConfiguration>, b
 struct ResolvedTranspose {
     pitch: PitchId,
     value: Pitch,
-    /// `(index into score.spelling_attachments, moved spelling)`.
-    authored: Vec<(usize, PitchSpelling)>,
+    /// `(index into score.spelling_attachments, moved spelling)`, `None`
+    /// where the spelling cannot follow and is dropped.
+    authored: Vec<(usize, Option<PitchSpelling>)>,
 }
 
 enum ValueRestoration {
@@ -1477,6 +1478,29 @@ const PROXIMITY_SAME_STAFF_INSTANCE: u8 = 1;
 /// voice's placement is unresolvable, a selection-order tie the recording
 /// must not launder into a positive proximity claim — route through
 /// [`Reduction::rank_reason`], which downgrades those to `ExplicitFallback`.
+/// Whether an accidental stack writes a CMN pitch's alteration: a twelve-tone
+/// one up to a triple sharp or flat (a double accidental and a single, past
+/// which the stack repeats a double one); in `cmn-24` a whole number of
+/// semitones likewise, and an odd number of quarter-tones up to five, the
+/// most a quarter-tone accidental names. Any other position is not this
+/// check's to refuse.
+fn alteration_writable(pitch: &Pitch) -> bool {
+    let epiphany_core::PitchSpacePosition::Cmn { alteration, .. } = pitch.scale_position.position
+    else {
+        return true;
+    };
+    let alteration = i32::from(alteration);
+    if pitch.scale_position.space.as_str() == "cmn-24" {
+        if alteration % 2 == 0 {
+            (alteration / 2).abs() <= 3
+        } else {
+            alteration.abs() <= 5
+        }
+    } else {
+        alteration.abs() <= 3
+    }
+}
+
 /// The objects an operation's payload mints, as their ids (the referents a
 /// later operation can name): events and their pitches, structures,
 /// containers, signatures, a replacement rest. A system-derived id (a
@@ -8618,6 +8642,15 @@ impl<'a> Reducer<'a> {
                 continue; // a base's pitch, base-free: no value to check or write
             };
             let next = match current.transposed(op.interval) {
+                // A value no accidental stack writes refuses, read from the
+                // value in both modes (reduction version 3).
+                Ok(next) if !alteration_writable(&next) => {
+                    return OperationEffect::NoOp {
+                        reason: NoOpReason::PreconditionFailedUnderReduction {
+                            reason: PreconditionFailureReason::TranspositionOutOfRange,
+                        },
+                    };
+                }
                 Ok(next) => next,
                 Err(refusal) => {
                     let reason = match refusal {
@@ -8637,32 +8670,33 @@ impl<'a> Reducer<'a> {
                     };
                 }
             };
-            match self.resolve_transposed_spellings(*pitch, &next, op.interval) {
-                Some(authored) => resolved.push(ResolvedTranspose {
-                    pitch: *pitch,
-                    value: next,
-                    authored,
-                }),
-                // An authored spelling that cannot be written at the transposed
-                // staff position refuses the whole operation, like any other
-                // untransposable target. Silently leaving it stale is what this
-                // operation exists to stop.
-                None => {
-                    return OperationEffect::NoOp {
-                        reason: NoOpReason::PreconditionFailedUnderReduction {
-                            reason: PreconditionFailureReason::TranspositionOutOfRange,
-                        },
-                    }
-                }
-            }
+            resolved.push(ResolvedTranspose {
+                pitch: *pitch,
+                authored: self.resolve_transposed_spellings(*pitch, &next, op.interval),
+                value: next,
+            });
         }
 
-        // Two passes. The authored rewrites address `spelling_attachments` by
-        // index, and the propagated upsert may PUSH — which would shift every
-        // later target's indices. So every rewrite lands before any append.
+        // Three passes. The authored rewrites address `spelling_attachments`
+        // by index, and both a dropped spelling's removal and the propagated
+        // upsert's push would shift every later target's indices. So every
+        // rewrite lands first, then every removal, from the last index down,
+        // then every append.
         for r in &resolved {
             self.graph_modify_pitch(r.pitch, &r.value);
             self.graph_rewrite_authored_spellings(&r.authored);
+        }
+        let mut dropped: Vec<usize> = resolved
+            .iter()
+            .flat_map(|r| r.authored.iter())
+            .filter(|(_, spelling)| spelling.is_none())
+            .map(|(index, _)| *index)
+            .collect();
+        dropped.sort_unstable();
+        if let Some(score) = self.graph.as_mut() {
+            for index in dropped.into_iter().rev() {
+                score.spelling_attachments.remove(index);
+            }
         }
         for r in &resolved {
             self.graph_propagate_spelling(r.pitch, &r.value);
@@ -8684,8 +8718,10 @@ impl<'a> Reducer<'a> {
     }
 
     /// The engraved-layer authored spellings on `pitch`, each moved to where the
-    /// transposed pitch writes it. `None` if any of them cannot be written
-    /// there.
+    /// transposed pitch writes it, or `None` where it cannot be written there
+    /// and is dropped, the pitch then taking the spelling the transposition
+    /// propagates (reduction version 3: before it, such a spelling refused the
+    /// transpose, graph-aware only, base-free reduction holding no spelling).
     ///
     /// `Propagated` attachments are skipped: they are this operation's own
     /// output, regenerated from the transposed value. Everything else —
@@ -8698,9 +8734,9 @@ impl<'a> Reducer<'a> {
         pitch: PitchId,
         transposed: &Pitch,
         interval: TranspositionInterval,
-    ) -> Option<Vec<(usize, PitchSpelling)>> {
+    ) -> Vec<(usize, Option<PitchSpelling>)> {
         let Some(score) = self.graph.as_ref() else {
-            return Some(Vec::new());
+            return Vec::new();
         };
         let mut out = Vec::new();
         for (index, att) in score.spelling_attachments.iter().enumerate() {
@@ -8717,28 +8753,29 @@ impl<'a> Reducer<'a> {
             // quarter-tone's (`cmn-24`) by its quarter-tone, keeping its
             // accidental's kind (reduction version 3: before it, any authored
             // spelling on a `cmn-24` pitch refused the transpose graph-aware,
-            // where base-free reduction, holding no spelling, applied it). A
-            // spelling no accidental can write at the transposed pitch still
-            // refuses, as `?` returns.
+            // where base-free reduction, holding no spelling, applied it).
             let rewritten = match transposed.twelve_tet_semitone() {
                 Some(semitone) => spelling.transposed(interval, semitone),
-                None => spelling
-                    .transposed_by_quarter_tones(interval, transposed.quarter_tone_position()?),
+                None => transposed
+                    .quarter_tone_position()
+                    .and_then(|position| spelling.transposed_by_quarter_tones(interval, position)),
             };
-            out.push((index, rewritten?));
+            out.push((index, rewritten));
         }
-        Some(out)
+        out
     }
 
     /// Applies the rewrites `resolve_transposed_spellings` computed, preserving
     /// each attachment's `source`, `priority`, and `layer`. A transposed
     /// `UserChosen` spelling is still the user's choice.
-    fn graph_rewrite_authored_spellings(&mut self, rewrites: &[(usize, PitchSpelling)]) {
+    fn graph_rewrite_authored_spellings(&mut self, rewrites: &[(usize, Option<PitchSpelling>)]) {
         let Some(score) = self.graph.as_mut() else {
             return;
         };
         for (index, spelling) in rewrites {
-            if let Some(att) = score.spelling_attachments.get_mut(*index) {
+            if let (Some(att), Some(spelling)) =
+                (score.spelling_attachments.get_mut(*index), spelling)
+            {
                 att.directive = SpellingDirective::Explicit(spelling.clone());
             }
         }
@@ -9094,13 +9131,12 @@ impl<'a> Reducer<'a> {
         // pitch is not added to `tombstoned_pitches` here: unlike a whole-event
         // delete the event survives, and a later ModifyEvent may legitimately
         // reintroduce the id — tombstoning it would make it both live and
-        // tombstoned (invariant 11).
-        score.spelling_attachments.retain(|a| {
-            !(a.layer.is_none()
-                && matches!(a.source, SpellingSource::UserChosen)
-                && matches!(&a.scope, SpellingScope::Pitch(p) if *p == pitch)
-                && matches!(a.directive, SpellingDirective::Explicit(_)))
-        });
+        // tombstoned (invariant 11). Every attachment scoped to the pitch goes,
+        // whatever its source: a transposition's propagated one too (reduction
+        // version 3; before it a propagated spelling outlived its pitch).
+        score
+            .spelling_attachments
+            .retain(|a| !matches!(&a.scope, SpellingScope::Pitch(p) if *p == pitch));
         let Some(event) = Self::graph_event_of_pitch(score, pitch) else {
             return;
         };
@@ -12676,14 +12712,35 @@ mod tests {
     }
 
     #[test]
-    fn an_untransposable_authored_spelling_refuses_the_whole_operation() {
+    fn an_unfollowable_authored_spelling_is_dropped_and_the_pitch_moves() {
         // The pitch itself transposes fine; its authored spelling cannot be
-        // written at the new staff position. Leaving it stale is exactly the
-        // bug, so the operation refuses and nothing moves.
+        // written at the new staff position (its octave would overflow).
+        // Reduction version 3: the transpose applies and the spelling is
+        // dropped, the pitch taking the spelling the transposition propagates,
+        // where before it the whole operation refused, graph-aware only,
+        // base-free reduction holding no spelling to find unwritable.
         let (mut base, pid) = base_with_pitch(cmn_pitch(CmnNominal::C, 0, 4));
         author_spelling(&mut base, pid, PitchSpelling::cmn(CmnNominal::C, 127));
 
         let (effect, score) = run_transpose(&base, &[pid], interval(7, 12));
+        assert_eq!(effect, OperationEffect::Applied);
+        assert_eq!(cmn_of(&pitch_of(&score, pid)), (CmnNominal::C, 0, 5));
+        let sources: Vec<&SpellingSource> = score
+            .spelling_attachments
+            .iter()
+            .filter(|a| matches!(&a.scope, SpellingScope::Pitch(p) if *p == pid))
+            .map(|a| &a.source)
+            .collect();
+        assert_eq!(sources, vec![&SpellingSource::Propagated { from: pid }]);
+    }
+
+    /// A transpose to a value no accidental stack writes (four flats) refuses,
+    /// read from the value, so in both modes alike (reduction version 3).
+    #[test]
+    fn a_transpose_past_a_triple_accidental_refuses() {
+        let (base, pid) = base_with_pitch(cmn_pitch(CmnNominal::C, -2, 4));
+        // C double-flat down an augmented unison and a half: C four flats.
+        let (effect, score) = run_transpose(&base, &[pid], interval(0, -2));
         assert_eq!(
             effect,
             OperationEffect::NoOp {
@@ -12692,7 +12749,9 @@ mod tests {
                 },
             }
         );
-        assert_eq!(cmn_of(&pitch_of(&score, pid)), (CmnNominal::C, 0, 4));
+        assert_eq!(cmn_of(&pitch_of(&score, pid)), (CmnNominal::C, -2, 4));
+        let (effect, _) = run_transpose(&base, &[pid], interval(0, -1));
+        assert_eq!(effect, OperationEffect::Applied, "a triple flat is written");
     }
 
     /// A declared transaction containing one `TransposeInterval`, plus a

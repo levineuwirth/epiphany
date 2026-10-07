@@ -290,6 +290,15 @@ pub mod vectors;
 ///     and an undo of a transpose restores the pitch base-free, where it was
 ///     refused `TargetMissing` for having nothing to restore. A pitch from a
 ///     base is still unknown base-free.
+///   - a `TransposeInterval` whose transposed value no well-formed accidental
+///     stack writes (past a triple accidental, or in `cmn-24` past five
+///     quarter-tones) is refused `TranspositionOutOfRange` in both modes, read
+///     from the value; an authored spelling it cannot move is dropped, the
+///     pitch taking the propagated one, where the operation was refused
+///     graph-aware alone, and the graph wrote a repeated accidental for a
+///     value past a triple one. A deleted pitch takes every spelling
+///     attachment scoped to it, where a propagated one outlived it
+///     (`SpellingScopeResolves`).
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
@@ -301,7 +310,10 @@ pub mod vectors;
 ///   `an_instrument_minted_by_a_failed_transaction_is_missing_in_both_modes`;
 ///   for pitch values,
 ///   `a_transpose_and_a_concurrent_pitch_edit_conflict_in_both_modes` and
-///   `an_undone_transpose_restores_its_pitch_in_both_modes`.
+///   `an_undone_transpose_restores_its_pitch_in_both_modes`; for spellings,
+///   `a_transpose_past_a_triple_accidental_refuses` and
+///   `an_unfollowable_authored_spelling_is_dropped_and_the_pitch_moves`
+///   (which replaces `an_untransposable_authored_spelling_refuses_the_whole_operation`).
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.
