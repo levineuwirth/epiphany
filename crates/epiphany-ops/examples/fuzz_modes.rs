@@ -2,6 +2,8 @@
 //!
 //!     cargo run --release -p epiphany-ops --example fuzz_modes -- \
 //!         [ITERATIONS] [SEED] [AUTHORED] [--effects] [--minimize DIR]
+//!     ... -- --recheck FILE...       # each committed history now, against its header
+//!     ... -- --reminimize FILE...    # each shrunk again against its class, in place
 //!
 //! Prints each class of failure once with the first seed that showed it, and
 //! how many of each kind were authored and applied (with `--effects`, what
@@ -13,6 +15,11 @@ use epiphany_ops::fuzz::modes;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        Some("--recheck") => return recheck(&args[1..]),
+        Some("--reminimize") => return reminimize(&args[1..]),
+        _ => {}
+    }
     let minimize = args
         .iter()
         .position(|a| a == "--minimize")
@@ -77,5 +84,67 @@ fn parse(s: &str) -> Option<u64> {
     match s.strip_prefix("0x") {
         Some(hex) => u64::from_str_radix(hex, 16).ok(),
         None => s.parse().ok(),
+    }
+}
+
+/// The class and the `#` lines of a committed history.
+fn header(text: &str) -> (String, Vec<&str>) {
+    let class = text
+        .lines()
+        .find_map(|l| l.strip_prefix("# class: "))
+        .expect("a `# class:` line")
+        .to_owned();
+    (class, text.lines().filter(|l| l.starts_with('#')).collect())
+}
+
+/// Prints, for each history, whether it now splits as its class, agrees, or
+/// fails otherwise, beside what its header declares; exits nonzero where the
+/// two disagree.
+fn recheck(files: &[String]) {
+    let mut disagree = 0;
+    for path in files {
+        let text = std::fs::read_to_string(path).expect("readable");
+        let (class, _) = header(&text);
+        let declared_split = text.lines().any(|l| l == "# expect: split");
+        let found = modes::findings(&modes::parse(&text).expect("parses"));
+        let now = if found.iter().any(|f| f.class == class) {
+            "split"
+        } else if found.is_empty() {
+            "agree"
+        } else {
+            "other"
+        };
+        let matches = (now == "split") == declared_split && now != "other";
+        disagree += usize::from(!matches);
+        println!(
+            "{} {now:<5} (declared {}) {class}{}",
+            path.rsplit('/').next().unwrap_or(path),
+            if declared_split { "split" } else { "agree" },
+            if now == "other" {
+                format!(
+                    " | now: {:?}",
+                    found.iter().map(|f| &f.class).collect::<Vec<_>>()
+                )
+            } else {
+                String::new()
+            }
+        );
+    }
+    if disagree > 0 {
+        std::process::exit(1);
+    }
+}
+
+/// Shrinks each history again against its class, keeping its `#` lines.
+fn reminimize(files: &[String]) {
+    for path in files {
+        let text = std::fs::read_to_string(path).expect("readable");
+        let (class, lines) = header(&text);
+        let history = modes::parse(&text).expect("parses");
+        let small = modes::minimize(&history, &class);
+        let mut out: String = lines.iter().map(|l| format!("{l}\n")).collect();
+        out.push_str(&modes::render(&small, &[]));
+        std::fs::write(path, out).expect("written");
+        println!("{path}: {} -> {} envelopes", history.len(), small.len());
     }
 }
