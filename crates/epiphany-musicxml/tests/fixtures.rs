@@ -383,6 +383,145 @@ fn a_part_on_two_staves_shares_one_instrument() {
     assert_eq!(run.fidelity.counts[0][0].staves, 2);
 }
 
+/// A staff ranks its own voices first, in the file's numbering, and a voice
+/// visiting from another staff after them, so that the engraver, which sets
+/// a staff's first voice above and the next below, places the staff's own
+/// voices as it would without the visitor. A number sounding on two staves
+/// at once, as where a file numbers each staff's voices afresh, names a
+/// voice on each and stays first on both; voice 10 follows voice 9.
+#[test]
+fn each_staff_ranks_its_own_voices_before_a_visiting_one() {
+    let note = |step: &str, octave: u8, duration: u8, voice: &str, staff: u8| {
+        format!(
+            "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+             <duration>{duration}</duration><voice>{voice}</voice><staff>{staff}</staff></note>"
+        )
+    };
+    let backup = "<backup><duration>4</duration></backup>";
+    // Per staff, its voices by the file's number in the order the score
+    // holds them, the primary starred.
+    let ranked = |staves: u8, measures: &[String]| -> Vec<String> {
+        let body: String = measures
+            .iter()
+            .enumerate()
+            .map(|(m, content)| {
+                let attributes = if m == 0 {
+                    format!(
+                        "<attributes><divisions>1</divisions><time><beats>4</beats>\
+                         <beat-type>4</beat-type></time><staves>{staves}</staves></attributes>"
+                    )
+                } else {
+                    String::new()
+                };
+                format!(
+                    "<measure number=\"{}\">{attributes}{content}</measure>",
+                    m + 1
+                )
+            })
+            .collect();
+        let xml = format!(
+            "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+             </part-name></score-part></part-list><part id=\"P1\">{body}</part></score-partwise>"
+        );
+        let import = import(&xml).expect("imports");
+        let reduced = reduce(&import);
+        assert!(compare(&import, &reduced).passed());
+        let names: std::collections::BTreeMap<_, _> = import
+            .ids
+            .voices
+            .iter()
+            .map(|((_, _, name), id)| (*id, name.clone()))
+            .collect();
+        let staves = &import.ids.staves[0];
+        let mut lines = Vec::new();
+        for region in &reduced.score.canvas.regions {
+            for instance in region.staff_instances() {
+                let staff = staves
+                    .iter()
+                    .position(|s| *s == instance.staff)
+                    .expect("a staff");
+                let voices: Vec<String> = instance
+                    .voices
+                    .iter()
+                    .map(|v| format!("{}{}", names[&v.id], if v.is_primary { "*" } else { "" }))
+                    .collect();
+                lines.push(format!("s{}: {}", staff + 1, voices.join(" ")));
+            }
+        }
+        lines.sort();
+        lines
+    };
+
+    // The upper staff's voice 1 writes its third quarter on the lower staff,
+    // whose own voices are 5 and 6; voice 5 writes one note on the upper.
+    let visiting = [
+        format!(
+            "{}{backup}{}{}{}{}{backup}{}",
+            note("C", 5, 4, "1", 1),
+            note("C", 3, 1, "5", 2),
+            note("D", 3, 1, "5", 2),
+            note("E", 4, 1, "5", 1),
+            note("F", 3, 1, "5", 2),
+            note("C", 2, 4, "6", 2),
+        ),
+        format!(
+            "{}{}{}{}{backup}{}",
+            note("C", 5, 1, "1", 1),
+            note("D", 5, 1, "1", 1),
+            note("G", 3, 1, "1", 2),
+            note("E", 5, 1, "1", 1),
+            note("C", 3, 4, "5", 2),
+        ),
+    ];
+    assert_eq!(ranked(2, &visiting), ["s1: 1* 5", "s2: 5* 6 1"]);
+
+    // Each staff numbers its voices from 1: voice 1 sounds on both staves at
+    // once, as many on one as on the other.
+    let afresh = [
+        format!(
+            "{}{backup}{}{backup}{}",
+            note("C", 5, 4, "1", 1),
+            note("C", 3, 4, "1", 2),
+            note("C", 2, 4, "2", 2),
+        ),
+        format!(
+            "{}{backup}{}{backup}{}",
+            note("D", 5, 4, "1", 1),
+            note("D", 3, 4, "1", 2),
+            note("D", 2, 4, "2", 2),
+        ),
+    ];
+    assert_eq!(ranked(2, &afresh), ["s1: 1*", "s2: 1* 2"]);
+
+    // Voice 2 writes as many notes on each staff, one after another: it is
+    // at home on the upper.
+    let even = [
+        format!(
+            "{}{}{}{backup}{}{backup}{}",
+            note("C", 5, 2, "1", 1),
+            note("E", 5, 1, "1", 1),
+            note("D", 5, 1, "1", 1),
+            note("C", 3, 4, "5", 2),
+            note("A", 4, 2, "2", 1),
+        ),
+        format!(
+            "{}{backup}{}{}",
+            note("C", 5, 4, "1", 1),
+            note("C", 3, 2, "5", 2),
+            note("G", 3, 2, "2", 2),
+        ),
+    ];
+    assert_eq!(ranked(2, &even), ["s1: 1* 2", "s2: 5* 2"]);
+
+    // Voices 9 and 10 on one staff.
+    let numbered = [format!(
+        "{}{backup}{}",
+        note("C", 5, 4, "9", 1),
+        note("C", 4, 4, "10", 1),
+    )];
+    assert_eq!(ranked(1, &numbered), ["s1: 9* 10"]);
+}
+
 #[test]
 fn a_key_written_before_the_staves_reaches_each_staff_it_names() {
     let run = run("keyed_grand_staves.musicxml");

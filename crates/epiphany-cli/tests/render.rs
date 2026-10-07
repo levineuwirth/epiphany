@@ -1730,6 +1730,216 @@ fn voices_turn_their_stems_rests_ties_and_dots_apart() {
     assert_eq!(dots.iter().map(|d| d.1).collect::<Vec<_>>(), [1, -1]);
 }
 
+/// The lower staff of a grand staff holds two voices of its own, the file's
+/// 5 and 6, and the upper staff's voice 1 writes one note on it a measure
+/// later. The lower staff's voices keep their sides: voice 5's rests,
+/// stems and sextuplet above, voice 6's stems below, as they would were the
+/// visiting note not there.
+#[test]
+fn a_voice_visiting_a_staff_leaves_its_own_voices_their_sides() {
+    use epiphany_core::{Event, TypedObjectId};
+
+    let note =
+        |what: &str, duration: u8, voice: u8, kind: &str, six: bool, staff: u8, tail: &str| {
+            let modification = if six {
+                "<time-modification><actual-notes>6</actual-notes><normal-notes>4</normal-notes>\
+             </time-modification>"
+            } else {
+                ""
+            };
+            format!(
+            "<note>{what}<duration>{duration}</duration><voice>{voice}</voice><type>{kind}</type>\
+             {modification}<staff>{staff}</staff>{tail}</note>"
+        )
+        };
+    let pitch = |step: &str, alter: i8, octave: u8| {
+        format!("<pitch><step>{step}</step><alter>{alter}</alter><octave>{octave}</octave></pitch>")
+    };
+    let start = "<notations><tuplet type=\"start\" bracket=\"yes\"/></notations>";
+    let beam = |kind: &str| format!("<beam number=\"1\">{kind}</beam>");
+    let end = "<beam number=\"1\">end</beam><notations><tuplet type=\"stop\"/></notations>";
+    let backup = "<backup><duration>12</duration></backup>";
+    let six = |p: String, staff: u8, tail: &str| note(&p, 1, 5, "eighth", true, staff, tail);
+    let first = [
+        // The upper staff's voice: two half notes.
+        note(&pitch("C", 0, 5), 6, 1, "half", false, 1, ""),
+        note(&pitch("D", 0, 5), 6, 1, "half", false, 1, ""),
+        backup.to_owned(),
+        // Voice 5: a sextuplet a rest opens, on the lower staff alone, then
+        // one a rest opens whose first note stands on the upper staff.
+        note("<rest/>", 1, 5, "eighth", true, 2, start),
+        six(pitch("E", -1, 3), 2, &beam("begin")),
+        six(pitch("D", -1, 3), 2, &beam("continue")),
+        six(pitch("B", -1, 3), 2, &beam("continue")),
+        six(pitch("A", -1, 3), 2, &beam("continue")),
+        six(pitch("D", 0, 4), 2, end),
+        note("<rest/>", 1, 5, "eighth", true, 2, start),
+        six(pitch("A", 0, 4), 1, &beam("begin")),
+        six(pitch("E", -1, 4), 2, &beam("continue")),
+        six(pitch("B", -1, 3), 2, &beam("continue")),
+        six(pitch("F", 0, 3), 2, &beam("continue")),
+        six(pitch("C", 0, 3), 2, end),
+        backup.to_owned(),
+        // Voice 6: two half notes under it.
+        note(&pitch("G", -1, 2), 6, 6, "half", false, 2, ""),
+        note(&pitch("A", 0, 1), 6, 6, "half", false, 2, ""),
+    ];
+    let second = [
+        // The upper staff's voice writes its third quarter on the lower
+        // staff, over voice 5's whole note.
+        note(&pitch("C", 0, 5), 3, 1, "quarter", false, 1, ""),
+        note(&pitch("D", 0, 5), 3, 1, "quarter", false, 1, ""),
+        note(&pitch("G", 0, 3), 3, 1, "quarter", false, 2, ""),
+        note(&pitch("E", 0, 5), 3, 1, "quarter", false, 1, ""),
+        backup.to_owned(),
+        note(&pitch("C", 0, 3), 12, 5, "whole", false, 2, ""),
+    ];
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>Piano\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
+         <attributes><divisions>3</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time><staves>2</staves><clef number=\"1\"><sign>G</sign><line>2</line></clef>\
+         <clef number=\"2\"><sign>F</sign><line>4</line></clef></attributes>{}</measure>\
+         <measure number=\"2\">{}</measure></part></score-partwise>",
+        first.concat(),
+        second.concat()
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("visiting_voice.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    assert!(loaded.fidelity.passed(), "{:#?}", loaded.fidelity.failures);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let systems: Vec<_> = layout.systems().collect();
+    assert_eq!(systems.len(), 1);
+    let lower_staff = loaded.import.ids.staves[0][1];
+    let lower = &systems[0]
+        .staves
+        .iter()
+        .find(|s| s.staff == lower_staff)
+        .expect("the lower staff")
+        .bounding_box;
+    let middle = lower.origin.y.0 + lower.size.height.0 / 2.0;
+
+    // Each event's source note: its staff (0 the upper) and voice, and its
+    // index among the part's events.
+    let source = &loaded.import.source.parts[0].events;
+    let events = &loaded.import.ids.events[0];
+    let of = |voice: &str, staff: usize| -> Vec<(usize, epiphany_core::EventId)> {
+        source
+            .iter()
+            .zip(events)
+            .enumerate()
+            .filter(|(_, (e, _))| e.voice == voice && e.staff == staff && e.measure == 0)
+            .map(|(i, (_, id))| (i, *id))
+            .collect()
+    };
+    // A note's heads and whether its stem turns up, from its one upright
+    // stroke against its heads.
+    let heads = |id: epiphany_core::EventId| -> Vec<[f32; 4]> {
+        let Some(Event::Pitched(n)) = loaded.reduced.score.events.get(id) else {
+            return Vec::new();
+        };
+        layout
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str().starts_with("notehead"))
+            .filter(|g| matches!(g.provenance.source, TypedObjectId::Pitch(p) if n.pitches.iter().any(|q| q.id == p)))
+            .map(glyph_box)
+            .collect()
+    };
+    let stem_up = |id: epiphany_core::EventId| -> bool {
+        let head = heads(id)[0];
+        let stem = layout
+            .strokes
+            .iter()
+            .find(|s| s.provenance.source == TypedObjectId::Event(id) && s.from.x == s.to.x)
+            .expect("a stem");
+        stem.from.y.0.max(stem.to.y.0) > head[3] + 1.0
+    };
+
+    // Voice 5's rests above the middle line, and the stems of its notes
+    // on the lower staff up.
+    let upper_voice = of("5", 1);
+    let rests: Vec<f32> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("rest"))
+        .filter(|g| {
+            upper_voice
+                .iter()
+                .any(|(_, id)| g.provenance.source == TypedObjectId::Event(*id))
+        })
+        .map(|g| {
+            let b = glyph_box(g);
+            (b[1] + b[3]) / 2.0 - middle
+        })
+        .collect();
+    assert_eq!(rests.len(), 2);
+    for (k, rest) in rests.iter().enumerate() {
+        assert!(
+            *rest > 0.5,
+            "voice 5's rest {k} stands {rest} from the middle line"
+        );
+    }
+    let notes: Vec<_> = upper_voice
+        .iter()
+        .filter(|(i, _)| {
+            !matches!(
+                source[*i].content,
+                epiphany_musicxml::source::Content::Rest { .. }
+            )
+        })
+        .collect();
+    assert_eq!(notes.len(), 9);
+    for (i, id) in &notes {
+        assert!(stem_up(*id), "voice 5's note {i} turns its stem down");
+    }
+    // Voice 6's stems down.
+    let lower_voice = of("6", 1);
+    assert_eq!(lower_voice.len(), 2);
+    for (i, id) in &lower_voice {
+        assert!(!stem_up(*id), "voice 6's note {i} turns its stem up");
+    }
+    // Voice 5's first sextuplet, on the lower staff alone, takes its number
+    // and bracket above its notes.
+    let first_rest = upper_voice[0].1;
+    let tuplet = loaded
+        .reduced
+        .score
+        .cross_cutting
+        .tuplets
+        .iter()
+        .find(|t| t.members.first() == Some(&first_rest))
+        .expect("the first sextuplet");
+    let top = tuplet
+        .members
+        .iter()
+        .flat_map(|id| heads(*id))
+        .map(|h| h[3])
+        .fold(f32::MIN, f32::max);
+    let number: Vec<[f32; 4]> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.provenance.source == TypedObjectId::Tuplet(tuplet.id))
+        .map(glyph_box)
+        .collect();
+    assert!(!number.is_empty(), "the first sextuplet draws its number");
+    let bracket: Vec<[f32; 4]> = layout
+        .strokes
+        .iter()
+        .filter(|s| s.provenance.source == TypedObjectId::Tuplet(tuplet.id) && s.from.y == s.to.y)
+        .map(stroke_box)
+        .collect();
+    assert!(!bracket.is_empty(), "the first sextuplet draws its bracket");
+    for ink in number.iter().chain(&bracket) {
+        assert!(
+            ink[1] > top,
+            "the first sextuplet's mark stands at {} under its notes' top {top}",
+            ink[1]
+        );
+    }
+}
+
 /// A glyph's ink box on the page: left, bottom, right, top.
 fn glyph_box(glyph: &epiphany_layout_ir::ResolvedGlyph) -> [f32; 4] {
     let (x, y, b) = (glyph.position.x.0, glyph.position.y.0, &glyph.bounding_box);

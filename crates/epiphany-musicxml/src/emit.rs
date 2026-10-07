@@ -29,7 +29,7 @@ use epiphany_ops::{
     SetTimeSignatureOp,
 };
 
-use crate::source::{Content, FeatureClass, GroupKind, Meter, Place, SourceScore};
+use crate::source::{Content, FeatureClass, GroupKind, Meter, Place, SourcePart, SourceScore};
 
 /// The replica an import authors from unless told otherwise.
 pub const DEFAULT_REPLICA: ReplicaId = ReplicaId(0x6D75_7369_6378_6D6C);
@@ -204,6 +204,72 @@ fn staff_lines(lines: Option<u8>) -> StaffLineConfiguration {
         line_count: lines.unwrap_or(5),
         ..StaffLineConfiguration::default()
     }
+}
+
+/// The voices the file writes on each staff of a part, in the order the
+/// staff's voices take: its own voices first, then any that only visit it
+/// from another staff, each group in the file's numbering. The first is the
+/// staff's primary voice and the engraver sets the others below and above by
+/// turns, so a voice of another staff that writes a note here must not stand
+/// before this staff's own voices, as it would by its number alone. A voice
+/// is at home on the staff holding most of its events, the upper of two
+/// holding as many; a number that sounds on two staves at once names a voice
+/// on each, as where a file numbers each staff's voices afresh, and is at
+/// home on both.
+fn staff_voices(part: &SourcePart) -> Vec<Vec<&str>> {
+    let mut counts: BTreeMap<&str, BTreeMap<usize, usize>> = BTreeMap::new();
+    let mut spans: BTreeMap<&str, Vec<(&RationalTime, RationalTime, usize)>> = BTreeMap::new();
+    for event in &part.events {
+        let voice = event.voice.as_str();
+        *counts
+            .entry(voice)
+            .or_default()
+            .entry(event.staff)
+            .or_default() += 1;
+        if !event.duration.is_zero() {
+            let end = event.onset.add(&event.duration);
+            spans
+                .entry(voice)
+                .or_default()
+                .push((&event.onset, end, event.staff));
+        }
+    }
+    let homes: BTreeMap<&str, Option<usize>> = counts
+        .iter()
+        .map(|(&voice, on)| {
+            let mut sounding = spans.remove(voice).unwrap_or_default();
+            sounding.sort();
+            // Where the voice's sounding so far ends on each staff.
+            let mut ends: BTreeMap<usize, RationalTime> = BTreeMap::new();
+            let mut at_once = false;
+            for (start, end, staff) in sounding {
+                at_once |= ends.iter().any(|(s, e)| *s != staff && e > start);
+                if ends.get(&staff).is_none_or(|e| end > *e) {
+                    ends.insert(staff, end);
+                }
+            }
+            let most = on
+                .iter()
+                .max_by(|(a, m), (b, n)| m.cmp(n).then(b.cmp(a)))
+                .map(|(staff, _)| *staff);
+            (voice, most.filter(|_| !at_once))
+        })
+        .collect();
+    (0..part.staves.len())
+        .map(|staff| {
+            let mut voices: Vec<&str> = counts
+                .iter()
+                .filter(|(_, on)| on.contains_key(&staff))
+                .map(|(voice, _)| *voice)
+                .collect();
+            voices.sort_by_key(|voice| {
+                let visiting = homes[voice].is_some_and(|home| home != staff);
+                let number = voice.parse::<u64>().map_or((1, 0), |n| (0, n));
+                (visiting, number, *voice)
+            });
+            voices
+        })
+        .collect()
 }
 
 /// The events of a part by staff and onset, each list in source order.
@@ -388,6 +454,7 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
     // Staff instances with their clefs and keys, then voices.
     for (p, part) in source.parts.iter().enumerate() {
         let mut instances = Vec::new();
+        let staff_voices = staff_voices(part);
         for (s, staff) in part.staves.iter().enumerate() {
             let instance_id: StaffInstanceId = e.identity.mint();
             let mut instance = StaffInstance::new(instance_id, ids.staves[p][s]);
@@ -417,15 +484,7 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
             );
             instances.push(instance_id);
 
-            let mut voices: Vec<&str> = part
-                .events
-                .iter()
-                .filter(|ev| ev.staff == s)
-                .map(|ev| ev.voice.as_str())
-                .collect();
-            voices.sort_unstable();
-            voices.dedup();
-            for (v, voice) in voices.iter().enumerate() {
+            for (v, voice) in staff_voices[s].iter().enumerate() {
                 let voice_id: VoiceId = e.identity.mint();
                 ids.voices.insert((p, s, (*voice).to_owned()), voice_id);
                 e.emit(
