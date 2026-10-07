@@ -2675,9 +2675,8 @@ in the existing `TimeModelMigrationFailure`; applied, it drops the region's
 system and page breaks, advisory layout with no musical time left to stand at
 (the canonical `breaks` and `page_breaks` and the graph alike); and
 `musical_slot` refuses a break written in musical time into such a region,
-`WrongRegionTimeModel`, so a concurrent one cannot reintroduce it. A metric
-grid written into such a region is not yet refused; the fuzz writes only
-empty grids and has not reached it. Locked by
+`WrongRegionTimeModel`, so a concurrent one cannot reintroduce it (meters
+follow, below). Locked by
 `a_region_out_of_musical_time_keeps_no_musical_break_in_both_modes`,
 `a_migration_finds_its_regions_events_in_both_modes` (now naming the
 measure) and two committed histories, each part observed failing without it.
@@ -2699,3 +2698,28 @@ both live and tombstoned (`UniqueIdentifiers`). Each pitch the undo tombstones
 now also goes through `graph_delete_pitch`. Graph state only; no verdict
 moves. Locked by two committed histories (without the call they break the
 invariant again).
+
+**Containers, dangling restorations and meters.** A budget of 20000 at the
+fuzz's region fix found three invariant classes, none splitting the modes.
+An undo tombstoned a region, staff instance or voice it minted while another
+author's instance, voice or event lived in it, and the graph kept the
+container, so its child named a tombstone or, removed, nothing
+(`StaffInstanceResolves`). The strand guard gains those three containers,
+each blocked by a live child the undo leaves (read from `region_instances`,
+`instance_voices` and `voice_occupancy`), and an instance or region the undo
+does tombstone leaves the graph through `graph_delete_staff_instance` and
+`graph_delete_region`, as a pitch already did. An undo restoring a
+cross-cutting value whose endpoint a later operation deleted reinstated the
+dangling reference (`CrossCuttingRefsResolve`); the delete now supersedes the
+restoration, so a strict undo conflicts and a best-effort one skips the key.
+And a time signature set in a region out of musical time, or one a migration
+left in the region's grid, kept a meter at a musical offset the region no
+longer admits (`AnchorOffsetModel`): `SetTimeSignature`, and a
+`SetMetricGrid` that sets a grid, now read `musical_slot` and refuse
+`WrongRegionTimeModel`, and such a migration drops the region's default and
+local grids with its breaks. Locked by
+`an_undo_of_a_container_another_author_filled_conflicts_in_both_modes` (each
+guard removed, its own case fails), `an_undone_region_leaves_the_graph`,
+`a_meter_in_a_region_out_of_musical_time_is_refused_in_both_modes` (each check
+removed, it fails) and three committed histories, `127` to `129`, each
+observed failing with its part removed.

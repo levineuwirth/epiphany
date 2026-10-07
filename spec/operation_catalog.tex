@@ -764,7 +764,13 @@ events, and applied drops the region's breaks; and a break written in musical
 time into such a region is refused with \texttt{WrongRegionTimeModel}, each
 where an anchor was left naming nothing or a time the region no longer has. An
 undo cannot remove a measure a later measure of its instance follows, which
-would leave that measure two bars from its predecessor.
+would leave that measure two bars from its predecessor, nor a region, staff
+instance or voice another transaction has filled, and an undone region or
+instance leaves the graph; an undo restoring a cross-cutting value whose
+endpoint was deleted since is superseded by the delete; and a time signature
+or metric grid set in a region admitting no musical offset is refused with
+\texttt{WrongRegionTimeModel}, a migration into such a model dropping the
+region's grids.
 One requirement label is added;
 no payload, discriminant or \texttt{PreconditionFailureReason} changes.
 Accordingly
@@ -1464,8 +1470,8 @@ with any target when a \texttt{Reassign} leaves it unmapped, or would leave it
 overlapping another event of its voice (invariant~3; since version~0.19.0, the
 migration having applied before it). A target that admits no musical offset
 strands each of the region's live measures as well, named beside the events,
-and an applied such migration drops the region's system and page breaks
-(since version~0.19.0). Graph-aware
+and an applied such migration drops the region's system and page breaks and
+its default and local metric grids (since version~0.19.0). Graph-aware
 reduction also judges, from the graph, the region's events the index does not
 hold (a base's events of another coordinate kind, which base-free reduction
 never has). A migration with incompatible events is refused as below; an
@@ -1529,7 +1535,11 @@ gate, not a conflict.
 
 \textbf{Undo semantics.} Undo of a \emph{create} tombstones the minted container
 (Section~\ref{sec:k0:undo}); \texttt{StrictInverse} conflicts if it was
-concurrently mutated, with the policy treatment as for InsertEvent. A
+concurrently mutated, with the policy treatment as for InsertEvent, and, since
+version~0.19.0, if a live child the undo leaves is in it (a region's staff
+instance, an instance's voice, a voice's event), which it would leave naming
+nothing. An undone region or staff instance leaves the graph-aware score, as a
+deleted one does. A
 \emph{delete} mints nothing, so the prototype's minted-object undo does not
 re-introduce it (P11-C8).
 
@@ -2346,7 +2356,9 @@ singleton). \emph{SetMetricGrid} is a \textbf{structural} field overwrite keyed
 by region: precondition the region is live and staff-based (a FreeGraphic region
 has no metric-grid slot --- the op is a no-op there), and reject a grid whose
 meter sequence names a time signature that is not live (the Chapter~5 invariant
-forbids installing such a grid). \emph{SetUserPageBreak} is a canonical LWW
+forbids installing such a grid); a grid set in a region whose time model admits
+no musical offset is refused with \texttt{WrongRegionTimeModel} in both modes
+(since version~0.19.0; clearing it still applies). \emph{SetUserPageBreak} is a canonical LWW
 advisory keyed by the anchor's resolved musical position, with the same
 staff-based precondition. Graph-aware reduction overwrites the metadata singleton,
 sets the region's default metric grid, or adds/removes the page-break anchor
@@ -2399,7 +2411,10 @@ reduction. A tempo-segment write preconditions that the \emph{resulting} map
 is well-formed (segments ordered and non-overlapping; a non-constant shape
 carries its end data; the carried segment's own start equals the operation's
 \texttt{start} key) --- a write that would malform the map is refused as a
-precondition no-op (\texttt{TempoMapMalformed}). Graph-aware reduction applies
+precondition no-op (\texttt{TempoMapMalformed}). A time signature written in a
+region whose time model admits no musical offset is refused with
+\texttt{WrongRegionTimeModel} in both modes (since version~0.19.0, before which
+it applied and left a meter in musical time). Graph-aware reduction applies
 the meter change to \texttt{default\_metric\_grid.meter\_sequence} and the
 segment to the scoped tempo map.
 
@@ -2596,7 +2611,9 @@ value is a pure function of the operation set: permutation-invariant by
 construction. When a causally-later or canonically-later write has
 superseded the key, \texttt{StrictInverse} refuses the whole undo with a
 \texttt{TransactionConflict} conflict naming the undo and the superseding
-writer; \texttt{BestEffort} restores the still-last-written keys and skips
+writer; a cross-cutting value whose restoration would name an endpoint deleted
+since is superseded by that delete (since version~0.19.0, before which the
+dangling value was restored); \texttt{BestEffort} restores the still-last-written keys and skips
 the superseded ones. Restorations are expressed in the effect status (a fully
 clean compensation is \texttt{Applied}; a mixed one is
 \texttt{AppliedWithRepair} carrying only the tombstone repairs) --- no new

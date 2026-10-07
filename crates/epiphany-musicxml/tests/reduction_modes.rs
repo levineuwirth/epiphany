@@ -1851,3 +1851,264 @@ fn an_undo_of_a_measure_with_a_later_one_conflicts_in_both_modes() {
         Some(OperationEffect::Conflicted { .. })
     ));
 }
+
+/// Three containers, each made in a transaction that another author, having
+/// seen it, then fills: a region given a staff instance, an instance given a
+/// voice, a voice given a rest. Undoing the transaction would leave the child
+/// naming a removed parent, so a strict undo conflicts, in both modes, and
+/// the container stays. Before reduction version 3 the undo removed it.
+#[test]
+fn an_undo_of_a_container_another_author_filled_conflicts_in_both_modes() {
+    use epiphany_core::{StaffInstanceId, VoiceId};
+    use epiphany_ops::{CreateRegionOp, CreateStaffInstanceOp, CreateVoiceOp};
+    let m = Measure::new();
+    let staff = m.import.ids.staves[0][0];
+    let declare = |counter: u64, at: i64, seen: &[OperationId], tx: TransactionId| {
+        let mut declare = m.op(
+            A,
+            counter,
+            at,
+            seen,
+            primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                id: tx,
+                label: String::from("a container"),
+                category: None,
+            })),
+        );
+        declare.transaction = Some(tx);
+        declare
+    };
+    let undo = |counter: u64, at: i64, made: OperationId, tx: TransactionId| {
+        m.op(
+            A,
+            counter,
+            at,
+            &[made],
+            OperationPayload::UndoTransaction(UndoTransactionPayload {
+                target: tx,
+                policy: UndoPolicy::StrictInverse,
+            }),
+        )
+    };
+    let create_region = |region: RegionId| {
+        primitive(OperationKind::CreateRegion(CreateRegionOp {
+            region: valuegen::region(region),
+        }))
+    };
+    let create_instance = |region: RegionId, instance: StaffInstanceId| {
+        primitive(OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+            region,
+            instance: valuegen::staff_instance(instance, staff),
+        }))
+    };
+    let create_voice = |instance: StaffInstanceId, voice: VoiceId| {
+        primitive(OperationKind::CreateVoice(CreateVoiceOp {
+            staff_instance: instance,
+            voice: valuegen::voice(voice),
+        }))
+    };
+    let check = |history: &str, authored: &[OperationEnvelope], filled: OperationId| {
+        let undone = authored.last().expect("an undo").id;
+        let state = m.agree(history, authored);
+        assert_eq!(effect(&state, filled), Some(OperationEffect::Applied));
+        assert!(
+            matches!(
+                effect(&state, undone),
+                Some(OperationEffect::Conflicted { .. })
+            ),
+            "{history}: {:?}",
+            effect(&state, undone)
+        );
+    };
+
+    let tx = TransactionId::new(A, 960);
+    let region = RegionId::new(A, 961);
+    let opening = declare(0, 1, &[], tx);
+    let mut made = m.op(A, 1, 2, &[opening.id], create_region(region));
+    made.transaction = Some(tx);
+    let filled = m.op(
+        B,
+        0,
+        3,
+        &[made.id],
+        create_instance(region, StaffInstanceId::new(B, 962)),
+    );
+    let undone = undo(2, 4, made.id, tx);
+    check(
+        "an undone region holding another author's instance",
+        &[opening, made, filled.clone(), undone],
+        filled.id,
+    );
+
+    let tx = TransactionId::new(A, 963);
+    let region = RegionId::new(A, 964);
+    let instance = StaffInstanceId::new(A, 965);
+    let before = m.op(A, 0, 1, &[], create_region(region));
+    let opening = declare(1, 2, &[before.id], tx);
+    let mut made = m.op(A, 2, 3, &[opening.id], create_instance(region, instance));
+    made.transaction = Some(tx);
+    let filled = m.op(
+        B,
+        0,
+        4,
+        &[made.id],
+        create_voice(instance, VoiceId::new(B, 966)),
+    );
+    let undone = undo(3, 5, made.id, tx);
+    check(
+        "an undone instance holding another author's voice",
+        &[before, opening, made, filled.clone(), undone],
+        filled.id,
+    );
+
+    let tx = TransactionId::new(A, 967);
+    let voice = VoiceId::new(A, 968);
+    let opening = declare(0, 1, &[], tx);
+    let mut made = m.op(
+        A,
+        1,
+        2,
+        &[opening.id],
+        create_voice(m.import.ids.instances[0][0], voice),
+    );
+    made.transaction = Some(tx);
+    let mut rest = m.rest(969, 0, eighth());
+    rest.id = EventId::new(B, 969);
+    rest.voice = voice;
+    let filled = m.op(B, 0, 3, &[made.id], m.insert(rest));
+    let undone = undo(2, 4, made.id, tx);
+    check(
+        "an undone voice holding another author's rest",
+        &[opening, made, filled.clone(), undone],
+        filled.id,
+    );
+}
+
+/// A region made in a transaction that is then undone leaves the graph-aware
+/// score with the transaction, where before reduction version 3 the score
+/// kept a region its objects held tombstoned.
+#[test]
+fn an_undone_region_leaves_the_graph() {
+    use epiphany_ops::CreateRegionOp;
+    let m = Measure::new();
+    let tx = TransactionId::new(A, 970);
+    let region = RegionId::new(A, 971);
+    let mut opening = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("a region"),
+            category: None,
+        })),
+    );
+    opening.transaction = Some(tx);
+    let mut made = m.op(
+        A,
+        1,
+        2,
+        &[opening.id],
+        primitive(OperationKind::CreateRegion(CreateRegionOp {
+            region: valuegen::region(region),
+        })),
+    );
+    made.transaction = Some(tx);
+    let undone = m.op(
+        A,
+        2,
+        3,
+        &[made.id],
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::StrictInverse,
+        }),
+    );
+    let authored = [opening, made, undone.clone()];
+    let state = m.agree("an undone region", &authored);
+    assert!(matches!(
+        effect(&state, undone.id),
+        Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
+    ));
+    assert!(tombstoned(&state, TypedObjectId::Region(region)));
+    let mut set = OperationSet::new();
+    set.accept_all(m.import.envelopes.iter().chain(&authored).cloned());
+    let aware = set.reduce_onto(&Score::empty(IdentityContext::new(m.import.replica)));
+    assert!(
+        aware.score.canvas.regions.iter().all(|r| r.id != region),
+        "the undone region is still drawn"
+    );
+}
+
+/// A meter in a region out of musical time: a time signature and a metric
+/// grid in a region migrated to proportional time are refused, in both
+/// modes, where before reduction version 3 each applied and the graph held a
+/// musical meter in a region with no musical offsets (`AnchorOffsetModel`).
+/// Clearing the grid still applies.
+#[test]
+fn a_meter_in_a_region_out_of_musical_time_is_refused_in_both_modes() {
+    use epiphany_core::TimeSignatureId;
+    use epiphany_ops::{CreateRegionOp, SetMetricGridOp, SetTimeSignatureOp};
+    let m = Measure::new();
+    let region = RegionId::new(A, 980);
+    let create = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::CreateRegion(CreateRegionOp {
+            region: valuegen::region(region),
+        })),
+    );
+    let migrate = m.op(
+        A,
+        1,
+        2,
+        &[create.id],
+        m.migrate_region(region, valuegen::proportional_model()),
+    );
+    let signature = m.op(
+        A,
+        2,
+        3,
+        &[migrate.id],
+        primitive(OperationKind::SetTimeSignature(SetTimeSignatureOp {
+            region,
+            anchor: valuegen::region_start_anchor(region, MusicalPosition::origin()),
+            time_signature: Some(valuegen::time_signature(TimeSignatureId::new(A, 981), 3)),
+        })),
+    );
+    let grid = |counter: u64, at: i64, grid| {
+        m.op(
+            A,
+            counter,
+            at,
+            &[migrate.id],
+            primitive(OperationKind::SetMetricGrid(SetMetricGridOp {
+                region,
+                grid,
+            })),
+        )
+    };
+    let set_grid = grid(3, 4, Some(valuegen::metric_grid()));
+    let cleared = grid(4, 5, None);
+    let state = m.agree(
+        "a meter in a proportional region",
+        &[
+            create,
+            migrate.clone(),
+            signature.clone(),
+            set_grid.clone(),
+            cleared.clone(),
+        ],
+    );
+    assert_eq!(effect(&state, migrate.id), Some(OperationEffect::Applied));
+    for refused_op in [&signature, &set_grid] {
+        assert_eq!(
+            effect(&state, refused_op.id),
+            refused(PreconditionFailureReason::WrongRegionTimeModel)
+        );
+    }
+    assert_eq!(effect(&state, cleared.id), Some(OperationEffect::Applied));
+}

@@ -339,6 +339,20 @@ pub mod vectors;
 ///   - a pitch an undo tombstones leaves its surviving event in the graph, as
 ///     a deleted pitch does, where it stayed both live and tombstoned
 ///     (`UniqueIdentifiers`); a graph-state change only.
+///   - an undo that would tombstone a region, a staff instance or a voice with
+///     a live child the same undo leaves (an instance, a voice, an event) is
+///     blocked by it, as a measure is, where it removed the container and left
+///     the child naming it; and an instance or region an undo tombstones
+///     leaves the graph, as a deleted one does, where the graph kept it
+///     (`StaffInstanceResolves`).
+///   - an undo whose restored cross-cutting value names an endpoint deleted
+///     since is superseded by that delete, where it restored the dangling
+///     reference (`CrossCuttingRefsResolve`).
+///   - a `SetTimeSignature`, and a `SetMetricGrid` that sets a grid, into a
+///     region admitting no musical offset is refused `WrongRegionTimeModel`,
+///     and a `ChangeRegionTimeModel` into such a model drops the region's
+///     default and local metric grids, where each kept a meter in musical
+///     time (`AnchorOffsetModel`).
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
@@ -362,7 +376,10 @@ pub mod vectors;
 ///   `a_region_out_of_musical_time_keeps_no_musical_break_in_both_modes` and
 ///   `a_migration_finds_its_regions_events_in_both_modes`, whose proportional
 ///   target now names the measure too; for the measure undo,
-///   `an_undo_of_a_measure_with_a_later_one_conflicts_in_both_modes`.
+///   `an_undo_of_a_measure_with_a_later_one_conflicts_in_both_modes`; for the
+///   containers, `an_undo_of_a_container_another_author_filled_conflicts_in_both_modes`
+///   and `an_undone_region_leaves_the_graph`; for meters,
+///   `a_meter_in_a_region_out_of_musical_time_is_refused_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

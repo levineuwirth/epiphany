@@ -3399,8 +3399,16 @@ impl<'a> Reducer<'a> {
         // version 3: before it the graph kept the pitch in its event, both
         // live and tombstoned, `UniqueIdentifiers`).
         for target in targets {
-            if let TypedObjectId::Pitch(pitch) = target {
-                self.graph_delete_pitch(*pitch);
+            match target {
+                TypedObjectId::Pitch(pitch) => self.graph_delete_pitch(*pitch),
+                // An undone instance or region leaves the graph too, the
+                // strand guard having kept any with a live child of another
+                // transaction (reduction version 3).
+                TypedObjectId::StaffInstance(instance) => {
+                    self.graph_delete_staff_instance(*instance)
+                }
+                TypedObjectId::Region(region) => self.graph_delete_region(*region),
+                _ => {}
             }
         }
         repairs
@@ -3664,6 +3672,11 @@ impl<'a> Reducer<'a> {
     ) -> OperationEffect {
         if let Some(effect) = self.layout_region_slot(op.region) {
             return effect;
+        }
+        if op.grid.is_some() {
+            if let Some(effect) = self.musical_slot(op.region, None) {
+                return effect;
+            }
         }
         // A non-empty grid names a time signature per meter change; the graph
         // invariant (epiphany-core invariants.rs) rejects a grid that references an
@@ -6219,6 +6232,9 @@ impl<'a> Reducer<'a> {
         if let Some(effect) = self.layout_region_slot(op.region) {
             return effect;
         }
+        if let Some(effect) = self.musical_slot(op.region, Some(&op.anchor)) {
+            return effect;
+        }
         // Contract pin 9c.2/M45: EVERY invariant check must precede any
         // mint. `written`'s signature id is a field read off `op` itself —
         // no mint needed to know it — so the prospective invariant-20
@@ -7147,6 +7163,11 @@ impl<'a> Reducer<'a> {
                 {
                     content.user_system_breaks.clear();
                     content.user_page_breaks.clear();
+                    // And its metric grids, meter changes in musical time.
+                    content.default_metric_grid = None;
+                    for instance in &mut content.staff_instances {
+                        instance.local_metric_grid = None;
+                    }
                 }
             }
             if let crate::payload::PositionRemapping::Reassign(remapping) = &op.remapping {
@@ -7526,6 +7547,39 @@ impl<'a> Reducer<'a> {
         restorations: &[ValueRestoration],
     ) -> Option<(TypedObjectId, TypedObjectId)> {
         match target {
+            // A container with a live child the same undo does not remove: a
+            // region's staff instance, an instance's voice, a voice's event
+            // (reduction version 3: before it the undo tombstoned the
+            // container and the graph kept it, both live and tombstoned or
+            // naming a removed parent).
+            TypedObjectId::Region(region) => {
+                self.region_instances.get(region).and_then(|instances| {
+                    instances.iter().find_map(|instance| {
+                        let iobj = TypedObjectId::StaffInstance(*instance);
+                        (!targets.contains(&iobj)
+                            && matches!(self.objects.get(&iobj), Some(ObjectState::Live)))
+                        .then_some((*target, iobj))
+                    })
+                })
+            }
+            TypedObjectId::StaffInstance(instance) => {
+                self.instance_voices.get(instance).and_then(|voices| {
+                    voices.iter().find_map(|voice| {
+                        let vobj = TypedObjectId::Voice(*voice);
+                        (!targets.contains(&vobj)
+                            && matches!(self.objects.get(&vobj), Some(ObjectState::Live)))
+                        .then_some((*target, vobj))
+                    })
+                })
+            }
+            TypedObjectId::Voice(voice) => self.voice_occupancy.get(voice).and_then(|events| {
+                events.iter().find_map(|(_, _, event)| {
+                    let eobj = TypedObjectId::Event(*event);
+                    (!targets.contains(&eobj)
+                        && matches!(self.objects.get(&eobj), Some(ObjectState::Live)))
+                    .then_some((*target, eobj))
+                })
+            }),
             TypedObjectId::Staff(staff) => {
                 self.instance_staff
                     .iter()
@@ -7931,10 +7985,27 @@ impl<'a> Reducer<'a> {
                 ChainUndoVerdict::NotWritten => {}
                 ChainUndoVerdict::Superseded { by } => superseded.push(by),
                 ChainUndoVerdict::Restore(predecessor) => {
-                    restorations.push(ValueRestoration::CrossCutting {
-                        id: *id,
-                        value: predecessor.map(Predecessor::into_value),
-                    })
+                    let value = predecessor.map(Predecessor::into_value);
+                    // A restored value naming an endpoint deleted since is
+                    // superseded by that delete: restoring it would reinstate a
+                    // dangling reference (`CrossCuttingRefsResolve`; reduction
+                    // version 3, before which it was restored).
+                    let deleted = value.as_ref().and_then(|value| {
+                        value.endpoints().iter().find_map(|endpoint| {
+                            match self.objects.get(endpoint) {
+                                Some(ObjectState::Tombstoned { deleted_by, .. }) => {
+                                    Some(*deleted_by)
+                                }
+                                _ => None,
+                            }
+                        })
+                    });
+                    match deleted {
+                        Some(by) => superseded.push(by),
+                        None => {
+                            restorations.push(ValueRestoration::CrossCutting { id: *id, value })
+                        }
+                    }
                 }
             }
         }
