@@ -1,5 +1,6 @@
 # class: effect ResolveConflict: base-free Applied | graph-aware NoOp TransactionConflict
-# expect: split
+# expect: agree
+# agrees since: base-free reduction holds the pitch values it minted
 # found: seed 0x4a49cc, 24 authored; minimized from 83 to 67 envelopes
 (envelope #x00000000000000010000000000000000 #x00000000000000000000000000000001 (stamp 1 0 #x00000000000000010000000000000000) (causal () ()) () (primitive (set-metadata (score-metadata (some "title-0") (some "composer") () () () () 0 0 ()))))
 (envelope #x00000000000000010000000000000001 #x00000000000000000000000000000001 (stamp 2 0 #x00000000000000010000000000000001) (causal ((#x0000000000000001 0)) ()) () (primitive (create-staff-group (staff-group #x00000000000000010000000000000000 (some "staff-group-0") grand-staff ()))))

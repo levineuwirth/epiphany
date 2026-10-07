@@ -1471,3 +1471,100 @@ fn an_instrument_minted_by_a_failed_transaction_is_missing_in_both_modes() {
         refused(PreconditionFailureReason::TargetMissing)
     );
 }
+
+/// One author transposes an imported quarter's pitch while another, unaware,
+/// sets it to another pitch: two concurrent writes of one pitch's value, which
+/// conflict in both modes. Before reduction version 3 base-free reduction,
+/// which held no pitch values, could not resolve the transpose, recorded no
+/// write for it, and applied the second write.
+#[test]
+fn a_transpose_and_a_concurrent_pitch_edit_conflict_in_both_modes() {
+    use epiphany_core::TranspositionInterval;
+    use epiphany_ops::{ModifyIdentifiedPitchOp, TransposeIntervalOp};
+    let m = Measure::new();
+    let pitch = m.import.ids.pitches[0][0][0];
+    let transpose = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::TransposeInterval(TransposeIntervalOp {
+            targets: [pitch].into_iter().collect(),
+            interval: TranspositionInterval {
+                diatonic_steps: 1,
+                chromatic_steps: 2,
+            },
+        })),
+    );
+    let edit = m.op(
+        B,
+        0,
+        2,
+        &[],
+        primitive(OperationKind::ModifyIdentifiedPitch(
+            ModifyIdentifiedPitchOp {
+                pitch,
+                value: valuegen::pitch_value_nth(32),
+            },
+        )),
+    );
+    let state = m.agree(
+        "a transpose and a concurrent pitch edit",
+        &[transpose.clone(), edit.clone()],
+    );
+    assert_eq!(effect(&state, transpose.id), Some(OperationEffect::Applied));
+    assert!(matches!(
+        effect(&state, edit.id),
+        Some(OperationEffect::Conflicted { .. })
+    ));
+}
+
+/// A transpose its author undoes: the undo restores the pitch in both modes.
+/// Before reduction version 3 base-free reduction recorded nothing for the
+/// transpose, so the undo found nothing to restore and was refused.
+#[test]
+fn an_undone_transpose_restores_its_pitch_in_both_modes() {
+    use epiphany_core::TranspositionInterval;
+    use epiphany_ops::TransposeIntervalOp;
+    let m = Measure::new();
+    let pitch = m.import.ids.pitches[0][1][0];
+    let tx = TransactionId::new(A, 700);
+    let mut declare = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("transpose"),
+            category: None,
+        })),
+    );
+    declare.transaction = Some(tx);
+    let mut transpose = m.op(
+        A,
+        1,
+        2,
+        &[declare.id],
+        primitive(OperationKind::TransposeInterval(TransposeIntervalOp {
+            targets: [pitch].into_iter().collect(),
+            interval: TranspositionInterval {
+                diatonic_steps: 2,
+                chromatic_steps: 4,
+            },
+        })),
+    );
+    transpose.transaction = Some(tx);
+    let undo = m.op(
+        A,
+        2,
+        3,
+        &[transpose.id],
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::StrictInverse,
+        }),
+    );
+    let state = m.agree("an undone transpose", &[declare, transpose, undo.clone()]);
+    assert_eq!(effect(&state, undo.id), Some(OperationEffect::Applied));
+}

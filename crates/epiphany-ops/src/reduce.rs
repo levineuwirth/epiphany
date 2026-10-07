@@ -1118,6 +1118,11 @@ struct Reducer<'a> {
     engraved_spelling_chain: BTreeMap<PitchId, WriteChain<Vec<SpellingAttachment>>>,
     event_modify_chain: BTreeMap<EventId, WriteChain<Event>>,
     pitch_modify_chain: BTreeMap<PitchId, WriteChain<Pitch>>,
+    // Base-free only: each pitch's value as the reduction leaves it, written
+    // wherever the graph writes one, so a value-reading verdict (a transpose's
+    // resolution, and with it its write chain) is the graph-aware one
+    // (reduction version 3). Graph-aware reduction reads the graph.
+    pitch_values: BTreeMap<PitchId, Pitch>,
     cross_cutting_modify_chain: BTreeMap<TypedObjectId, WriteChain<CrossCuttingValue>>,
     metric_grid_chain: BTreeMap<RegionId, WriteChain<Option<MetricGrid>>>,
     metadata_chain: WriteChain<ScoreMetadata>,
@@ -1298,6 +1303,7 @@ struct WorkingSnapshot {
     engraved_spelling_chain: BTreeMap<PitchId, WriteChain<Vec<SpellingAttachment>>>,
     event_modify_chain: BTreeMap<EventId, WriteChain<Event>>,
     pitch_modify_chain: BTreeMap<PitchId, WriteChain<Pitch>>,
+    pitch_values: BTreeMap<PitchId, Pitch>,
     cross_cutting_modify_chain: BTreeMap<TypedObjectId, WriteChain<CrossCuttingValue>>,
     metric_grid_chain: BTreeMap<RegionId, WriteChain<Option<MetricGrid>>>,
     metadata_chain: WriteChain<ScoreMetadata>,
@@ -1687,6 +1693,7 @@ impl<'a> Reducer<'a> {
             engraved_spelling_chain: BTreeMap::new(),
             event_modify_chain: BTreeMap::new(),
             pitch_modify_chain: BTreeMap::new(),
+            pitch_values: BTreeMap::new(),
             cross_cutting_modify_chain: BTreeMap::new(),
             metric_grid_chain: BTreeMap::new(),
             metadata_chain: WriteChain::new(),
@@ -3777,6 +3784,9 @@ impl<'a> Reducer<'a> {
                 .entry(ip.id)
                 .or_insert_with(WriteChain::new)
                 .seed(ip.pitch.clone());
+            if self.graph.is_none() {
+                self.pitch_values.insert(ip.id, ip.pitch.clone());
+            }
         }
         let mut pitches = Vec::new();
         for p in op.pitch_ids() {
@@ -8604,8 +8614,8 @@ impl<'a> Reducer<'a> {
         // canonically-first offender — `req:opcat:transpose-interval-atomic`.
         let mut resolved: Vec<ResolvedTranspose> = Vec::with_capacity(mutable.len());
         for pitch in &mutable {
-            let Some(current) = self.graph_pitch_value(*pitch) else {
-                continue; // base-free: no value to check, and none to write
+            let Some(current) = self.pitch_value(*pitch) else {
+                continue; // a base's pitch, base-free: no value to check or write
             };
             let next = match current.transposed(op.interval) {
                 Ok(next) => next,
@@ -8731,6 +8741,17 @@ impl<'a> Reducer<'a> {
             if let Some(att) = score.spelling_attachments.get_mut(*index) {
                 att.directive = SpellingDirective::Explicit(spelling.clone());
             }
+        }
+    }
+
+    /// The current value of a live pitch: the graph's, graph-aware; base-free,
+    /// the value index's, which holds each pitch the reduction minted as it
+    /// stands (`None` for a pitch from a base, which base-free reduction never
+    /// sees).
+    fn pitch_value(&self, pitch: PitchId) -> Option<Pitch> {
+        match self.graph {
+            Some(_) => self.graph_pitch_value(pitch),
+            None => self.pitch_values.get(&pitch).cloned(),
         }
     }
 
@@ -8958,6 +8979,33 @@ impl<'a> Reducer<'a> {
     fn graph_replace_event(&mut self, new_event: &Event, materialize_move: bool) {
         let placement_changed;
         let voice;
+        if self.graph.is_none() {
+            // The pitch values the graph would take, under the graph's own
+            // gate: a well-formed event whose placement stands, or whose move
+            // is sanctioned (`voice_occupancy` holds its placement until the
+            // caller moves it).
+            if let Event::Pitched(pe) = new_event {
+                let standing = self
+                    .voice_occupancy
+                    .values()
+                    .flatten()
+                    .find(|(_, _, event)| *event == pe.id)
+                    .map(|(position, duration, _)| (position.clone(), duration.clone()));
+                let placement = match (&pe.position, &pe.duration) {
+                    (EventPosition::Musical(p), EventDuration::Musical(d)) => {
+                        Some((p.clone(), d.clone()))
+                    }
+                    _ => None,
+                };
+                let placement_changed = standing.is_none() || standing != placement;
+                if pe.is_well_formed() && (!placement_changed || materialize_move) {
+                    for ip in &pe.pitches {
+                        self.pitch_values.insert(ip.id, ip.pitch.clone());
+                    }
+                }
+            }
+            return;
+        }
         {
             let Some(score) = self.graph.as_mut() else {
                 return;
@@ -9003,6 +9051,7 @@ impl<'a> Reducer<'a> {
 
     fn graph_insert_pitch(&mut self, event: EventId, pitch: &epiphany_core::IdentifiedPitch) {
         let Some(score) = self.graph.as_mut() else {
+            self.pitch_values.insert(pitch.id, pitch.pitch.clone());
             return;
         };
         let Some(slot) = score.events.get_mut(event) else {
@@ -9082,6 +9131,7 @@ impl<'a> Reducer<'a> {
 
     fn graph_modify_pitch(&mut self, pitch: PitchId, value: &Pitch) {
         let Some(score) = self.graph.as_mut() else {
+            self.pitch_values.insert(pitch, value.clone());
             return;
         };
         let Some(event) = Self::graph_event_of_pitch(score, pitch) else {
@@ -9096,6 +9146,14 @@ impl<'a> Reducer<'a> {
 
     fn graph_transpose_pitch(&mut self, pitch: PitchId, chromatic_steps: i32) {
         let Some(score) = self.graph.as_mut() else {
+            if let Some(epiphany_core::PitchSpacePosition::Cmn { alteration, .. }) = self
+                .pitch_values
+                .get_mut(&pitch)
+                .map(|p| &mut p.scale_position.position)
+            {
+                let shifted = (*alteration as i32).saturating_add(chromatic_steps);
+                *alteration = shifted.clamp(i8::MIN as i32, i8::MAX as i32) as i8;
+            }
             return;
         };
         let Some(event) = Self::graph_event_of_pitch(score, pitch) else {
@@ -10059,6 +10117,7 @@ impl<'a> Reducer<'a> {
             engraved_spelling_chain: self.engraved_spelling_chain.clone(),
             event_modify_chain: self.event_modify_chain.clone(),
             pitch_modify_chain: self.pitch_modify_chain.clone(),
+            pitch_values: self.pitch_values.clone(),
             cross_cutting_modify_chain: self.cross_cutting_modify_chain.clone(),
             metric_grid_chain: self.metric_grid_chain.clone(),
             metadata_chain: self.metadata_chain.clone(),
@@ -10109,6 +10168,7 @@ impl<'a> Reducer<'a> {
         self.engraved_spelling_chain = s.engraved_spelling_chain;
         self.event_modify_chain = s.event_modify_chain;
         self.pitch_modify_chain = s.pitch_modify_chain;
+        self.pitch_values = s.pitch_values;
         self.cross_cutting_modify_chain = s.cross_cutting_modify_chain;
         self.metric_grid_chain = s.metric_grid_chain;
         self.metadata_chain = s.metadata_chain;

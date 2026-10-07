@@ -2574,3 +2574,21 @@ from a `fuzz::modes` history as well. Locked by
 migration's guard removed, it fails) and
 `an_instrument_minted_by_a_failed_transaction_is_missing_in_both_modes` (the
 set's mints ignored, it fails), and seven committed histories.
+
+**Base-free reduction holds its pitches' values.** A `TransposeInterval`
+resolved each target's new value from the graph and skipped base-free, so
+base-free reduction recorded no write in the pitch's chain: a concurrent
+`ModifyIdentifiedPitch` of the pitch conflicted graph-aware and applied
+base-free, and an undo of the transpose restored the pitch graph-aware and
+found nothing to restore base-free. The reducer now keeps, base-free only, each
+minted pitch's current value (`pitch_values`), written wherever the graph
+writes one (`graph_modify_pitch`, `graph_transpose_pitch`, `graph_insert_pitch`,
+and `graph_replace_event` under the graph's own placement gate, read from
+`voice_occupancy`) and snapshotted with a transaction, and the transpose reads
+values through `pitch_value`, the graph's graph-aware and the index's
+base-free. A base's pitch is still unknown base-free. Authored spellings stay
+graph-only: a transpose a spelling cannot follow is still refused graph-aware
+alone, and none the fuzz draws is such. Locked by
+`a_transpose_and_a_concurrent_pitch_edit_conflict_in_both_modes` and
+`an_undone_transpose_restores_its_pitch_in_both_modes` (both fail with the
+graph-only read restored) and 17 committed histories.

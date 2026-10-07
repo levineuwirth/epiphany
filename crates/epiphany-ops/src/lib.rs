@@ -282,6 +282,14 @@ pub mod vectors;
 ///     these referents, and created a voice it had never seen on first use.
 ///     An object no envelope mints is still taken as live. The pinned digest
 ///     of a seeded `gen_envelope_set` reduction moves with these verdicts.
+///   - base-free reduction keeps each pitch it minted at its current value
+///     (`pitch_values`, written wherever the graph writes one), so a
+///     `TransposeInterval` resolves its targets and records its write in the
+///     pitch's chain in both modes: a concurrent `ModifyIdentifiedPitch` of a
+///     transposed pitch conflicts base-free as graph-aware, where it applied,
+///     and an undo of a transpose restores the pitch base-free, where it was
+///     refused `TargetMissing` for having nothing to restore. A pitch from a
+///     base is still unknown base-free.
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
@@ -290,7 +298,10 @@ pub mod vectors;
 ///   `an_imported_quarter_tone_transposes_alike_in_both_modes` and
 ///   `cmn_24_with_an_authored_spelling_moves_it`; for referents,
 ///   `a_region_the_history_made_and_deleted_is_missing_in_both_modes` and
-///   `an_instrument_minted_by_a_failed_transaction_is_missing_in_both_modes`.
+///   `an_instrument_minted_by_a_failed_transaction_is_missing_in_both_modes`;
+///   for pitch values,
+///   `a_transpose_and_a_concurrent_pitch_edit_conflict_in_both_modes` and
+///   `an_undone_transpose_restores_its_pitch_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

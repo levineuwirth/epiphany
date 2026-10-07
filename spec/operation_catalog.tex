@@ -738,7 +738,13 @@ the transpose. And base-free reduction reads a referent its set mints as the
 set leaves it (Section~\ref{sec:framework:modes},
 Requirement~\ref{req:catalog:base-free-referents}): each referential
 precondition, checked graph-aware only before, is checked in both modes, an
-object no envelope mints still taken as live. One requirement label is added;
+object no envelope mints still taken as live. Base-free reduction also holds
+each pitch it minted at its current value, so a \texttt{TransposeInterval}
+writes its targets' values in both modes: its concurrency with a
+\texttt{ModifyIdentifiedPitch} of the same pitch, and an undo of it, reduce
+alike (Section~\ref{sec:k0:transpose-interval}), where base-free reduction
+recorded no write and so applied the edit and refused the undo. One
+requirement label is added;
 no payload, discriminant or \texttt{PreconditionFailureReason} changes.
 Accordingly
 \texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION}
@@ -1263,7 +1269,10 @@ is transposed by \texttt{interval}.
 and that pitch's resulting \emph{engraved spelling set} into the spelling-set
 chain, so that value-restoring undo recovers the pre-transpose pitch \emph{and}
 its pre-transpose spelling. Restoring the pitch alone would leave a notehead
-spelled for a pitch that no longer exists. This is where
+spelled for a pitch that no longer exists. The value chain is written in both
+reduction modes, base-free reduction reading each pitch its operation set
+minted at the value it holds (since version~0.19.0; before it, base-free
+reduction, holding no pitch values, recorded nothing). This is where
 \texttt{TransposeInterval} departs from the frozen \texttt{Transpose}, which
 records nothing and is therefore not undoable.
 
