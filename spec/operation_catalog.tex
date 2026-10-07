@@ -770,7 +770,7 @@ instance leaves the graph; an undo restoring a cross-cutting value whose
 endpoint was deleted since is superseded by the delete; and a time signature
 or metric grid set in a region admitting no musical offset is refused with
 \texttt{WrongRegionTimeModel}, a migration into such a model dropping the
-region's grids.
+region's grids, as is an insert carrying a wall-clock position.
 One requirement label is added;
 no payload, discriminant or \texttt{PreconditionFailureReason} changes.
 Accordingly
@@ -905,7 +905,10 @@ derivation is total without a containment walk.
 canonical bytes of \texttt{event}.
 
 \textbf{Reduction rule.} A position-keyed insert. Preconditions: the event's
-duration is positive; the event id is neither live nor tombstoned; the region of
+duration is positive; its position is musical, a wall-clock one refused with
+\texttt{WrongRegionTimeModel} in both modes (since version~0.19.0, before which
+it was admitted into a metric region at the region's origin); the event id is
+neither live nor tombstoned; the region of
 the event's staff instance is metric, read in graph-aware reduction from the
 graph and base-free from the reducer's index of each region's coordinate
 discipline, which \texttt{CreateRegion} sets and an applied

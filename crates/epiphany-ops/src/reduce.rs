@@ -3794,6 +3794,17 @@ impl<'a> Reducer<'a> {
                 },
             };
         }
+        // Only a metric region admits an insert, and it places events in
+        // musical time: a wall-clock position is refused in both modes, read
+        // from the value (reduction version 3: before it the insert was
+        // admitted and indexed at the region's origin, breaking invariant 4).
+        if !matches!(op.event.position(), EventPosition::Musical(_)) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::WrongRegionTimeModel,
+                },
+            };
+        }
         let ev_obj = TypedObjectId::Event(event_id);
         match self.objects.get(&ev_obj) {
             Some(ObjectState::Live) => {

@@ -353,6 +353,10 @@ pub mod vectors;
 ///     and a `ChangeRegionTimeModel` into such a model drops the region's
 ///     default and local metric grids, where each kept a meter in musical
 ///     time (`AnchorOffsetModel`).
+///   - an `InsertEvent` carrying a wall-clock position is refused
+///     `WrongRegionTimeModel` in both modes, read from the value, where it was
+///     admitted into a metric region and indexed at the region's origin
+///     (`EventCoordinateModel`).
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
@@ -379,7 +383,10 @@ pub mod vectors;
 ///   `an_undo_of_a_measure_with_a_later_one_conflicts_in_both_modes`; for the
 ///   containers, `an_undo_of_a_container_another_author_filled_conflicts_in_both_modes`
 ///   and `an_undone_region_leaves_the_graph`; for meters,
-///   `a_meter_in_a_region_out_of_musical_time_is_refused_in_both_modes`.
+///   `a_meter_in_a_region_out_of_musical_time_is_refused_in_both_modes`; for
+///   the wall-clock insert, `an_insert_at_a_wall_clock_position_is_refused_in_both_modes`
+///   and `a_migration_judges_an_indexed_event_by_its_placement_in_both_modes`,
+///   which held its admission and now holds its refusal.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

@@ -2723,3 +2723,15 @@ guard removed, its own case fails), `an_undone_region_leaves_the_graph`,
 `a_meter_in_a_region_out_of_musical_time_is_refused_in_both_modes` (each check
 removed, it fails) and three committed histories, `127` to `129`, each
 observed failing with its part removed.
+
+**An insert places its event in musical time.** The third invariant break
+review 3 of C3 found, an insert carrying a wall-clock position into a metric
+region, was admitted: X3's note above left refusing it outside that change,
+and the fuzz never authors one. Only a metric region admits an insert, so a
+wall-clock position can never stand; `insert_event` now refuses it,
+`WrongRegionTimeModel`, from the value, in both modes, before anything reads
+its placement. `a_migration_judges_an_indexed_event_by_its_placement_in_both_modes`,
+which held the admission and its `EventCoordinateModel` violation, now holds
+the refusal and a graph keeping every invariant. Locked by
+`an_insert_at_a_wall_clock_position_is_refused_in_both_modes` (the check
+removed, it fails).

@@ -16,10 +16,10 @@
 //! refusing everything.
 
 use epiphany_core::{
-    check_invariants, Event, EventDuration, EventId, EventPosition, GraphInvariant,
-    IdentityContext, MusicalDuration, MusicalPosition, OperationId, RationalTime, RegionId,
-    RegionTimeModel, ReplicaId, Rest, Score, TransactionId, Tuplet, TupletId, TupletRatio,
-    TypedObjectId, ViolationKind, WallClockDuration, WallClockTime, WellFormednessViolation,
+    check_invariants, Event, EventDuration, EventId, EventPosition, IdentityContext,
+    MusicalDuration, MusicalPosition, OperationId, RationalTime, RegionId, RegionTimeModel,
+    ReplicaId, Rest, Score, TransactionId, Tuplet, TupletId, TupletRatio, TypedObjectId,
+    WallClockDuration, WallClockTime, WellFormednessViolation,
 };
 use epiphany_musicxml::{import, Import};
 use epiphany_ops::{
@@ -1056,9 +1056,11 @@ fn an_insert_reads_its_regions_time_model_in_both_modes() {
 
 /// A migration judges every event the occupancy index holds by its indexed
 /// placement, in both modes. An insert carrying a wall-clock position into the
-/// metric region is admitted today, against invariant 4, and indexed at the
-/// region's origin; a metric target then admits it in both modes, where
-/// graph-aware reduction once judged it from the graph and conflicted.
+/// metric region was admitted, against invariant 4, and indexed at the
+/// region's origin, where a metric target admitted it in both modes and
+/// graph-aware reduction once judged it from the graph and conflicted. Since
+/// reduction version 3 the insert is refused, so the graph keeps every
+/// invariant and the migration applies.
 #[test]
 fn a_migration_judges_an_indexed_event_by_its_placement_in_both_modes() {
     let m = Measure::new();
@@ -1082,16 +1084,14 @@ fn a_migration_judges_an_indexed_event_by_its_placement_in_both_modes() {
         &[deleted.id, inserted.id],
         m.migrate(m.model.clone()),
     );
-    let (state, violations) = m.compare(
+    let state = m.agree(
         "a wall-clock rest in the metric region, then a metric target",
         &[deleted, inserted.clone(), migrated.clone()],
     );
-    assert_eq!(effect(&state, inserted.id), Some(OperationEffect::Applied));
-    assert!(violations.iter().all(|violation| matches!(
-        violation.kind,
-        ViolationKind::Invariant(GraphInvariant::EventCoordinateModel)
-    )));
-    assert!(!violations.is_empty());
+    assert_eq!(
+        effect(&state, inserted.id),
+        refused(PreconditionFailureReason::WrongRegionTimeModel)
+    );
     assert_eq!(effect(&state, migrated.id), Some(OperationEffect::Applied));
 }
 
@@ -2111,4 +2111,40 @@ fn a_meter_in_a_region_out_of_musical_time_is_refused_in_both_modes() {
         );
     }
     assert_eq!(effect(&state, cleared.id), Some(OperationEffect::Applied));
+}
+
+/// A rest carrying a wall-clock position, inserted into a voice of the
+/// metric region, is refused `WrongRegionTimeModel` in both modes; a metric
+/// region places events in musical time. Before reduction version 3 it was
+/// admitted, indexed at the region's origin, and the graph held a wall-clock
+/// event in a metric region.
+#[test]
+fn an_insert_at_a_wall_clock_position_is_refused_in_both_modes() {
+    use epiphany_core::VoiceId;
+    use epiphany_ops::CreateVoiceOp;
+    let m = Measure::new();
+    let voice = VoiceId::new(A, 990);
+    let made = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::CreateVoice(CreateVoiceOp {
+            staff_instance: m.import.ids.instances[0][0],
+            voice: valuegen::voice(voice),
+        })),
+    );
+    let mut rest = m.rest(991, 0, eighth());
+    rest.voice = voice;
+    rest.position = EventPosition::WallClock(WallClockTime(5));
+    let inserted = m.op(A, 1, 2, &[made.id], m.insert(rest));
+    let state = m.agree(
+        "a wall-clock rest in a metric region",
+        &[made.clone(), inserted.clone()],
+    );
+    assert_eq!(effect(&state, made.id), Some(OperationEffect::Applied));
+    assert_eq!(
+        effect(&state, inserted.id),
+        refused(PreconditionFailureReason::WrongRegionTimeModel)
+    );
 }
