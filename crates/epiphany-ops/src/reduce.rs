@@ -1256,6 +1256,14 @@ struct Reducer<'a> {
     // question itself. Gates the identity-cursor derivation to from-empty
     // reduction only, never a transaction snapshot (fixed for the whole run).
     from_empty_base: bool,
+    // Every object an envelope of the set mints, whatever became of it (a
+    // refused mint, an equivocation's losing candidate, a pending or
+    // quarantined operation included). Base-free reduction has no universe,
+    // but it knows these: an object here that no operation made live never
+    // came to be, as graph-aware reduction finds it missing; an object no
+    // envelope mints may still come from a base, and stays unchecked
+    // (`referent_dead`, reduction version 3). Fixed for the run.
+    history_mints: BTreeSet<TypedObjectId>,
 }
 
 /// A snapshot of the working state, for atomic transaction rollback.
@@ -1463,6 +1471,57 @@ const PROXIMITY_SAME_STAFF_INSTANCE: u8 = 1;
 /// voice's placement is unresolvable, a selection-order tie the recording
 /// must not launder into a positive proximity claim — route through
 /// [`Reduction::rank_reason`], which downgrades those to `ExplicitFallback`.
+/// The objects an operation's payload mints, as their ids (the referents a
+/// later operation can name): events and their pitches, structures,
+/// containers, signatures, a replacement rest. A system-derived id (a
+/// promoted voice) is not the payload's, and is left out.
+fn minted_objects(payload: &OperationPayload) -> Vec<TypedObjectId> {
+    use TypedObjectId as T;
+    let OperationPayload::Primitive(kind) = payload else {
+        return Vec::new();
+    };
+    let event = |e: &Event| -> Vec<TypedObjectId> {
+        let mut pitches = Vec::new();
+        e.collect_identified_pitches(&mut pitches);
+        std::iter::once(T::Event(e.id()))
+            .chain(pitches.iter().map(|p| T::Pitch(p.id)))
+            .collect()
+    };
+    match kind {
+        OperationKind::InsertEvent(op) => event(&op.event),
+        OperationKind::DeleteEvent(op) => match &op.tuplet_compensation {
+            TupletCompensation::ReplaceWithRest { rest } => vec![T::Event(rest.id)],
+            _ => Vec::new(),
+        },
+        OperationKind::InsertIdentifiedPitch(op) => vec![T::Pitch(op.pitch.id)],
+        OperationKind::CreateCrossCutting(op) => vec![match &op.structure {
+            CrossCuttingValue::Tie(x) => T::Tie(x.id),
+            CrossCuttingValue::Slur(x) => T::Slur(x.id),
+            CrossCuttingValue::Beam(x) => T::Beam(x.id),
+            CrossCuttingValue::Spanner(x) => T::Spanner(x.id),
+        }],
+        OperationKind::CreateRegion(op) => vec![T::Region(op.region.id)],
+        OperationKind::CreateStaffInstance(op) => vec![T::StaffInstance(op.instance.id)],
+        OperationKind::CreateVoice(op) => vec![T::Voice(op.voice.id)],
+        OperationKind::CreateStaff(op) => vec![T::Staff(op.staff.id)],
+        OperationKind::CreateInstrument(op) => vec![T::Instrument(op.instrument.id)],
+        OperationKind::CreateStaffGroup(op) => vec![T::StaffGroup(op.group.id)],
+        OperationKind::CreatePartDefinition(op) => vec![T::PartDefinition(op.part.id)],
+        OperationKind::CreateAnalysisLayer(op) => vec![T::AnalysisLayer(op.layer.id)],
+        OperationKind::CreateView(op) => vec![T::View(op.view.id)],
+        OperationKind::CreateMeasure(op) => vec![T::Measure(op.measure.id)],
+        OperationKind::CreateTuplet(op) => vec![T::Tuplet(op.tuplet.id)],
+        OperationKind::CreateRepeatStructure(op) => vec![T::RepeatStructure(op.repeat.id)],
+        OperationKind::SetTimeSignature(op) => op
+            .time_signature
+            .as_ref()
+            .map(|t| T::TimeSignature(t.id))
+            .into_iter()
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn reason_for_rank(rank: u8) -> ReanchorReason {
     match rank {
         0 => ReanchorReason::SameVoiceNearer,
@@ -1668,6 +1727,7 @@ impl<'a> Reducer<'a> {
             promoted_singles: BTreeMap::new(),
             graph: None,
             from_empty_base: false,
+            history_mints: BTreeSet::new(),
         }
     }
 
@@ -1680,6 +1740,21 @@ impl<'a> Reducer<'a> {
         reducer.graph = Some(base.clone());
         reducer.seed_from_graph();
         reducer
+    }
+
+    /// Whether a referent an operation names is gone: not live. Graph-aware,
+    /// whatever is not live (the graph seeds every base object). Base-free,
+    /// with no universe, only what the set itself shows: an object it
+    /// tombstoned, or one an envelope mints that no operation made live; an
+    /// object no envelope mints may come from a base, and is taken as live,
+    /// as the catalog's base-free reduction takes every referent (reduction
+    /// version 3, `req:catalog:base-free-referents`).
+    fn referent_dead(&self, object: TypedObjectId) -> bool {
+        match self.objects.get(&object) {
+            Some(ObjectState::Live) => false,
+            Some(ObjectState::Tombstoned { .. }) => true,
+            None => self.graph.is_some() || self.history_mints.contains(&object),
+        }
     }
 
     /// Seeds reduction indices from the canonical base graph. Base objects are
@@ -2185,6 +2260,18 @@ impl<'a> Reducer<'a> {
     }
 
     fn run(mut self) -> (MaterializedState, Option<Score>) {
+        for (_, slot) in self.op_set.slots() {
+            let envelopes: Vec<&OperationEnvelope> = match slot.single() {
+                Some(env) => vec![env],
+                None => slot
+                    .candidates()
+                    .filter_map(|hash| self.op_set.candidate(hash))
+                    .collect(),
+            };
+            for env in envelopes {
+                self.history_mints.extend(minted_objects(&env.payload));
+            }
+        }
         let singles = self.op_set.single_envelopes();
         let equivocated_all: BTreeSet<OperationId> =
             self.op_set.equivocated_ids().into_iter().collect();
@@ -2641,8 +2728,14 @@ impl<'a> Reducer<'a> {
             // branch below reads the region and refuses `WrongRegionTimeModel`
             // where this refuses `VoiceMissing`. That split is older than this
             // check and is left to a later reduction version.
+            // A voice an envelope of the set mints that never came to be is
+            // missing, as the graph finds it (reduction version 3).
+            let voice = TypedObjectId::Voice(op.voice());
+            if !self.objects.contains_key(&voice) && self.history_mints.contains(&voice) {
+                return Err(PreconditionFailureReason::VoiceMissing);
+            }
             let voice_dead = matches!(
-                self.objects.get(&TypedObjectId::Voice(op.voice())),
+                self.objects.get(&voice),
                 Some(ObjectState::Tombstoned { .. })
             );
             let non_metric = self
@@ -4566,15 +4659,10 @@ impl<'a> Reducer<'a> {
         }
         // With staves mintable (operation_catalog §CreateStaff), the instance's
         // referenced global Staff must be live — the mint must leave the graph
-        // satisfying reference resolution. Graph-aware only (like the insert
-        // preconditions): base-free reduction has no staff universe to check
-        // against, and the base-seeded scenarios satisfy this vacuously.
-        if self.graph.is_some()
-            && !matches!(
-                self.objects.get(&TypedObjectId::Staff(op.instance.staff)),
-                Some(ObjectState::Live)
-            )
-        {
+        // satisfying reference resolution. Base-free reduction has no staff
+        // universe, and checks only a staff the set itself mints
+        // (`referent_dead`).
+        if self.referent_dead(TypedObjectId::Staff(op.instance.staff)) {
             return OperationEffect::NoOp {
                 reason: NoOpReason::PreconditionFailedUnderReduction {
                     reason: PreconditionFailureReason::TargetMissing,
@@ -4681,15 +4769,11 @@ impl<'a> Reducer<'a> {
             }
             None => {}
         }
-        // Reference-resolution preconditions are graph-aware (like the insert
-        // preconditions): base-free reduction has no instrument/group universe
-        // to check against.
-        if self.graph.is_some() {
-            if !matches!(
-                self.objects
-                    .get(&TypedObjectId::Instrument(op.staff.instrument)),
-                Some(ObjectState::Live)
-            ) {
+        // Reference-resolution preconditions: base-free reduction has no
+        // instrument/group universe, and checks only what the set itself
+        // mints (`referent_dead`).
+        {
+            if self.referent_dead(TypedObjectId::Instrument(op.staff.instrument)) {
                 return OperationEffect::NoOp {
                     reason: NoOpReason::PreconditionFailedUnderReduction {
                         reason: PreconditionFailureReason::TargetMissing,
@@ -4697,10 +4781,7 @@ impl<'a> Reducer<'a> {
                 };
             }
             if let Some(group) = op.staff.group {
-                if !matches!(
-                    self.objects.get(&TypedObjectId::StaffGroup(group)),
-                    Some(ObjectState::Live)
-                ) {
+                if self.referent_dead(TypedObjectId::StaffGroup(group)) {
                     return OperationEffect::NoOp {
                         reason: NoOpReason::PreconditionFailedUnderReduction {
                             reason: PreconditionFailureReason::TargetMissing,
@@ -4897,12 +4978,9 @@ impl<'a> Reducer<'a> {
             }
             None => {}
         }
-        if self.graph.is_some() {
+        {
             for staff in &op.part.staves {
-                if !matches!(
-                    self.objects.get(&TypedObjectId::Staff(*staff)),
-                    Some(ObjectState::Live)
-                ) {
+                if self.referent_dead(TypedObjectId::Staff(*staff)) {
                     return OperationEffect::NoOp {
                         reason: NoOpReason::PreconditionFailedUnderReduction {
                             reason: PreconditionFailureReason::TargetMissing,
@@ -4994,12 +5072,9 @@ impl<'a> Reducer<'a> {
             }
             None => {}
         }
-        if self.graph.is_some() {
+        {
             for layer in &op.view.active_layers {
-                if !matches!(
-                    self.objects.get(&TypedObjectId::AnalysisLayer(*layer)),
-                    Some(ObjectState::Live)
-                ) {
+                if self.referent_dead(TypedObjectId::AnalysisLayer(*layer)) {
                     return OperationEffect::NoOp {
                         reason: NoOpReason::PreconditionFailedUnderReduction {
                             reason: PreconditionFailureReason::TargetMissing,
@@ -5808,14 +5883,12 @@ impl<'a> Reducer<'a> {
             None => {}
         }
 
-        // Pins 8.2/8.3: reference-resolution preconditions are graph-aware
-        // only (base-free reduction has no universe to check against).
-        if self.graph.is_some() {
+        // Pins 8.2/8.3: reference-resolution preconditions; base-free
+        // reduction has no universe, and checks only what the set itself
+        // mints (`referent_dead`).
+        {
             if let Some(sig) = op.measure.time_signature {
-                if !matches!(
-                    self.objects.get(&TypedObjectId::TimeSignature(sig)),
-                    Some(ObjectState::Live)
-                ) {
+                if self.referent_dead(TypedObjectId::TimeSignature(sig)) {
                     return OperationEffect::NoOp {
                         reason: NoOpReason::PreconditionFailedUnderReduction {
                             reason: PreconditionFailureReason::TargetMissing,
@@ -5824,18 +5897,9 @@ impl<'a> Reducer<'a> {
                 }
             }
             let start_resolves = match &op.measure.start {
-                TimeAnchor::Event { id, .. } => matches!(
-                    self.objects.get(&TypedObjectId::Event(*id)),
-                    Some(ObjectState::Live)
-                ),
-                TimeAnchor::Measure { id, .. } => matches!(
-                    self.objects.get(&TypedObjectId::Measure(*id)),
-                    Some(ObjectState::Live)
-                ),
-                TimeAnchor::Region { id, .. } => matches!(
-                    self.objects.get(&TypedObjectId::Region(*id)),
-                    Some(ObjectState::Live)
-                ),
+                TimeAnchor::Event { id, .. } => !self.referent_dead(TypedObjectId::Event(*id)),
+                TimeAnchor::Measure { id, .. } => !self.referent_dead(TypedObjectId::Measure(*id)),
+                TimeAnchor::Region { id, .. } => !self.referent_dead(TypedObjectId::Region(*id)),
                 TimeAnchor::WallClock { .. } => true,
             };
             if !start_resolves {
@@ -6287,12 +6351,9 @@ impl<'a> Reducer<'a> {
         if let Some(effect) = self.staff_instance_slot(op.staff_instance) {
             return effect;
         }
-        if self.graph.is_some() {
+        {
             if let Some(instrument) = op.instrument_override {
-                if !matches!(
-                    self.objects.get(&TypedObjectId::Instrument(instrument)),
-                    Some(ObjectState::Live)
-                ) {
+                if self.referent_dead(TypedObjectId::Instrument(instrument)) {
                     return OperationEffect::NoOp {
                         reason: NoOpReason::PreconditionFailedUnderReduction {
                             reason: PreconditionFailureReason::TargetMissing,
@@ -6728,9 +6789,17 @@ impl<'a> Reducer<'a> {
                 incompatible_events.insert(event);
             }
         }
+        // The region's liveness, base-free as far as the set shows it
+        // (`referent_dead`); graph-aware below, from the graph.
+        if self.graph.is_none() && self.referent_dead(TypedObjectId::Region(op.region)) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            };
+        }
         let mut graph_region_index = None;
         if let Some(score) = self.graph.as_ref() {
-            // The region's liveness is referential, so graph-aware only.
             let Some(region_index) = score
                 .canvas
                 .regions
@@ -13611,6 +13680,14 @@ mod tests {
         // major 0 unconditionally, and `MaterializedState` embeds no `Score`
         // field value for a clef or key, so there remains no surface on this
         // type for a leak to appear on.
+        //
+        // Re-pinned again at X4a.2, reduction version 3, by a verdict change
+        // rather than a reshuffle: the seeded stream is unchanged, but
+        // base-free reduction now refuses a referent the set mints that never
+        // came to be (`referent_dead`), and this stream's inserts and creates
+        // name many voices, staves and instances whose minting operation it
+        // refused. Effects, objects and conflicts move; no value enters the
+        // base.
         let mut rng = epiphany_determinism::fuzz::SplitMix64::new(0xBA5E);
         let envelopes = crate::fuzz::gen_envelope_set(&mut rng, 200);
         let mut set = OperationSet::new();
@@ -13620,7 +13697,7 @@ mod tests {
         let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
             hex,
-            "110807c575e2c88301c7d53292716c36ff476c97c7ca17551022d8627bd89f53"
+            "75e5fcbd7ab4411d573ae27d0a1caee71f9393a2e3d7bd54d7a166447a37dce2"
         );
     }
 

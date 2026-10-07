@@ -794,6 +794,20 @@ fn build_decode_corpus(rng: &mut SplitMix64) -> DecodeCorpus {
             spellings |= !state.spellings.is_empty();
             states.push(state.canonical_bytes());
         }
+        // A history editors write, which spells its quarter-tones: since
+        // reduction version 3 the streams above, whose inserts mostly name
+        // voices a refused `CreateVoice` of the set mints, seldom reach a live
+        // pitch to respell.
+        let state = {
+            let mut set = OperationSet::new();
+            set.accept_all(modes::generate(rng.next_u64(), 24).history);
+            set.reduce()
+        };
+        conflicts |= !state.conflicts.records().is_empty();
+        anomalies |= !state.anomalies.is_empty();
+        pending |= !state.pending.is_empty();
+        spellings |= !state.spellings.is_empty();
+        states.push(state.canonical_bytes());
         if conflicts && anomalies && pending && spellings {
             break;
         }

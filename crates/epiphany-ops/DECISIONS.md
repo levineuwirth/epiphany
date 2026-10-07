@@ -2551,3 +2551,26 @@ An interval's chromatic steps count in the pitch's own space, so one
 interval over a selection holding both a twelve-tone pitch and a quarter-tone
 moves them by different amounts; that is the operation's definition, not a
 split, and is left as it stands.
+
+**Base-free reduction reads a referent its set mints.** The catalog checked
+every referential precondition (a named staff, instrument, group, layer, time
+signature, voice or region is live) graph-aware only, base-free reduction
+having no universe. But on a valid history every referent's mint is in the
+set, and the fuzz found base-free reduction applying an operation that named
+an object its history minted and lost: deleted concurrently, minted by a
+transaction that failed, or by an equivocation's losing candidate. The
+reducer now collects, before it walks, every object any envelope of the set
+mints (`history_mints`, by `minted_objects`, over every slot's candidates),
+and `referent_dead` reads a referent base-free as the set leaves it: live if
+an operation made it so and none tombstoned it, dead if minted by the set
+and not live, and live, as before, if no envelope mints it, since it may come
+from a base. Each graph-gated referential check now runs in both modes
+through it, and base-free `InsertEvent` no longer creates on first use a
+voice the set mints. `req:catalog:base-free-referents` states the reading. The
+earlier fuzz streams name such referents freely, so the seeded
+canonical-base digest is re-pinned and the decode corpus draws its spellings
+from a `fuzz::modes` history as well. Locked by
+`a_region_the_history_made_and_deleted_is_missing_in_both_modes` (the
+migration's guard removed, it fails) and
+`an_instrument_minted_by_a_failed_transaction_is_missing_in_both_modes` (the
+set's mints ignored, it fails), and seven committed histories.

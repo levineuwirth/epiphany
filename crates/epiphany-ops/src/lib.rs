@@ -271,13 +271,26 @@ pub mod vectors;
 ///     spelling, applied it. Every quarter-tone the importer reads carries
 ///     such a spelling. The graph's pitch, spelling and value chain change with
 ///     the verdict.
+///   - base-free reduction reads a referent its set mints as the set leaves
+///     it (`req:catalog:base-free-referents`): one an envelope mints that no
+///     operation made live, or that one tombstoned, is missing, so a
+///     `CreateStaffInstance`, `CreateStaff`, `CreatePartDefinition`,
+///     `CreateView`, `CreateMeasure`, `SetStaffLayout` or
+///     `ChangeRegionTimeModel` naming it is refused `TargetMissing`, and an
+///     `InsertEvent` into such a voice `VoiceMissing`, as graph-aware
+///     reduction refuses each; before, base-free reduction checked none of
+///     these referents, and created a voice it had never seen on first use.
+///     An object no envelope mints is still taken as live. The pinned digest
+///     of a seeded `gen_envelope_set` reduction moves with these verdicts.
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
 ///   `two_replacements_of_one_quarter_promote_alike_in_both_modes`
 ///   (`epiphany-musicxml`'s `reduction_modes`); for the quarter-tone,
 ///   `an_imported_quarter_tone_transposes_alike_in_both_modes` and
-///   `cmn_24_with_an_authored_spelling_moves_it`.
+///   `cmn_24_with_an_authored_spelling_moves_it`; for referents,
+///   `a_region_the_history_made_and_deleted_is_missing_in_both_modes` and
+///   `an_instrument_minted_by_a_failed_transaction_is_missing_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

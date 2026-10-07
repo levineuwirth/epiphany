@@ -734,8 +734,13 @@ promoted none, refusing as an overlap the insert base-free reduction promoted.
 (Section~\ref{sec:k0:transpose-interval}): it refused any authored spelling
 on a \texttt{cmn-24} pitch, which every quarter-tone the importer reads
 carries, graph-aware, where base-free reduction, holding no spelling, applied
-the transpose. No payload, discriminant or \texttt{PreconditionFailureReason}
-changes. Accordingly
+the transpose. And base-free reduction reads a referent its set mints as the
+set leaves it (Section~\ref{sec:framework:modes},
+Requirement~\ref{req:catalog:base-free-referents}): each referential
+precondition, checked graph-aware only before, is checked in both modes, an
+object no envelope mints still taken as live. One requirement label is added;
+no payload, discriminant or \texttt{PreconditionFailureReason} changes.
+Accordingly
 \texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION}
 moves \texttt{2}~$\rightarrow$~\texttt{3}.
 
@@ -810,6 +815,37 @@ descriptor precedence; and the two meta-operations (conflict resolution and
 forward undo). A primitive added later that reuses one of these disciplines
 inherits its reduction, conflict, undo, and re-anchoring treatment.
 
+\section{The Two Reduction Modes}
+\label{sec:framework:modes}
+
+An operation set is reduced either \emph{graph-aware}, onto a canonical base
+whose objects are all known, or \emph{base-free}, with no base and so no
+universe of objects beyond what the set itself shows. A history whose every
+operation names only what its author had seen, reduced from an empty base, is
+\emph{valid}; on a valid history the two modes \MUST{} agree in every effect,
+in object existence and in the canonical bytes (since version~0.19.0).
+
+\begin{requirement}
+  \label{req:catalog:base-free-referents}
+  Base-free reduction \MUST{} read a referent an operation names as follows:
+  one that no envelope of the set mints may come from a base, and is taken as
+  live; one that an envelope of the set mints is live only if an operation of
+  the reduction made it live and none has since tombstoned it, a losing
+  candidate's mints and a refused operation's included among those minted.
+  Each referential precondition this catalog states (that a named staff,
+  instrument, group, analysis layer, time signature, voice or region is live)
+  is checked in both modes on that reading.
+\end{requirement}
+
+\begin{rationale}
+  Before version~0.19.0 these preconditions were checked graph-aware only, so
+  an operation naming an object its history minted and lost (deleted
+  concurrently, or minted by a transaction that failed, or by an
+  equivocation's losing candidate) applied base-free and was refused
+  graph-aware, on a valid history. Base-free reduction still has no universe:
+  an object no envelope mints is never refused for being unknown.
+\end{rationale}
+
 % ===========================================================================
 \chapter{K0 --- Representative Primitives}
 \label{ch:k0}
@@ -839,7 +875,8 @@ the event's staff instance is metric, read in graph-aware reduction from the
 graph and base-free from the reducer's index of each region's coordinate
 discipline, which \texttt{CreateRegion} sets and an applied
 \texttt{ChangeRegionTimeModel} moves, so the two modes agree after a migration;
-in graph-aware reduction the target voice exists in that region and the event's
+the target voice exists in that region (graph-aware, from the graph; base-free,
+as Requirement~\ref{req:catalog:base-free-referents} reads it) and the event's
 pitch ids are fresh. The event and its pitches are minted live; the voice is created on
 first use. Concurrent inserts whose half-open duration intervals overlap in the
 same voice are resolved by an order-independent promotion pre-pass, which
@@ -1391,7 +1428,9 @@ never has). A migration with incompatible events is refused as below; an
 applied \texttt{Reassign} moves the occupancy index in both modes, and the
 region's new coordinate discipline is recorded in both, so a later insert, move
 or re-anchoring reads the same state in each. That the region is live is a
-referential precondition, checked graph-aware only.
+referential precondition, checked in both modes as
+Requirement~\ref{req:catalog:base-free-referents} reads a referent (since
+version~0.19.0; graph-aware only before it).
 
 \textbf{Conflict cases.} Concurrent same-region migrations produce a
 \texttt{StructuralFieldCollision} on the field \texttt{time\_model}; a migration
@@ -1956,7 +1995,9 @@ precondition no-op with \texttt{TargetTombstoned}.
 Referential preconditions: the parent \texttt{StaffInstance} must be live
 (ungated --- checked graph-aware and base-free alike, mirroring
 \texttt{CreateStaffInstance}'s own region check: a mint into a non-existent
-parent has nowhere to go even base-free); graph-aware only, a resolving
+parent has nowhere to go even base-free); and, in both modes as
+Requirement~\ref{req:catalog:base-free-referents} reads a referent (graph-aware
+only before version~0.19.0), a resolving
 \texttt{measure.time\_signature} must name a live \texttt{TimeSignature}, and
 every non-\texttt{WallClock} referent of \texttt{measure.start} (an
 \texttt{Event}, another \texttt{Measure}, or a \texttt{Region}) must resolve.

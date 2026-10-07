@@ -1330,3 +1330,144 @@ fn an_imported_quarter_tone_transposes_alike_in_both_modes() {
         "the spelling moves to A flat-up: {spelt:?}"
     );
 }
+
+/// A region one author makes and another deletes while the first, unaware,
+/// migrates it: the migration names a region the history minted and lost,
+/// which graph-aware reduction finds missing. Before reduction version 3
+/// base-free reduction, which has no universe, applied it; it now refuses a
+/// referent the set itself mints that is not live, and still takes as live one
+/// no envelope mints, which may come from a base.
+#[test]
+fn a_region_the_history_made_and_deleted_is_missing_in_both_modes() {
+    use epiphany_ops::{CreateRegionOp, DeleteRegionOp};
+    let m = Measure::new();
+    let region = RegionId::new(A, 500);
+    let create = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::CreateRegion(CreateRegionOp {
+            region: valuegen::region(region),
+        })),
+    );
+    let delete = m.op(
+        B,
+        0,
+        2,
+        &[create.id],
+        primitive(OperationKind::DeleteRegion(DeleteRegionOp { region })),
+    );
+    let migrate = m.op(
+        A,
+        1,
+        3,
+        &[create.id],
+        primitive(OperationKind::ChangeRegionTimeModel(
+            ChangeRegionTimeModelOp {
+                region,
+                new_time_model: valuegen::proportional_model(),
+                declared_incompatible: Vec::new(),
+                remapping: PositionRemapping::PreserveTime,
+            },
+        )),
+    );
+    let state = m.agree(
+        "a region made, deleted and migrated",
+        &[create, delete.clone(), migrate.clone()],
+    );
+    assert_eq!(effect(&state, delete.id), Some(OperationEffect::Applied));
+    assert_eq!(
+        effect(&state, migrate.id),
+        refused(PreconditionFailureReason::TargetMissing)
+    );
+}
+
+/// An instrument made in a transaction that fails: its author empties a voice
+/// in the same transaction while another author, concurrently, enters a rest
+/// in it, so the transaction's delete finds the voice full and the instrument
+/// never comes to be. Its author, who saw the transaction apply, then names
+/// the instrument from a new staff. Graph-aware reduction finds it missing;
+/// base-free reduction, since version 3, refuses it too, the set itself
+/// minting the instrument, where it applied.
+#[test]
+fn an_instrument_minted_by_a_failed_transaction_is_missing_in_both_modes() {
+    use epiphany_core::{InstrumentId, StaffId, VoiceId};
+    use epiphany_ops::{CreateInstrumentOp, CreateStaffOp, CreateVoiceOp};
+    let m = Measure::new();
+    let voice = VoiceId::new(A, 600);
+    let instrument = InstrumentId::new(A, 601);
+    let tx = TransactionId::new(A, 602);
+    let create_voice = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::CreateVoice(CreateVoiceOp {
+            staff_instance: m.import.ids.instances[0][0],
+            voice: valuegen::voice(voice),
+        })),
+    );
+    let mut rest = m.rest(603, 0, m.quarters[0].duration().clone());
+    rest.id = EventId::new(B, 603);
+    rest.voice = voice;
+    let fill = m.op(B, 0, 2, &[create_voice.id], m.insert(rest));
+    let mut declare = m.op(
+        A,
+        1,
+        3,
+        &[create_voice.id],
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("instrument"),
+            category: None,
+        })),
+    );
+    declare.transaction = Some(tx);
+    let mut mint = m.op(
+        A,
+        2,
+        4,
+        &[declare.id],
+        primitive(OperationKind::CreateInstrument(CreateInstrumentOp {
+            instrument: valuegen::instrument(instrument),
+        })),
+    );
+    mint.transaction = Some(tx);
+    let mut empty = m.op(
+        A,
+        3,
+        5,
+        &[mint.id],
+        primitive(OperationKind::DeleteVoice(DeleteVoiceOp { voice })),
+    );
+    empty.transaction = Some(tx);
+    let staff = m.op(
+        A,
+        4,
+        6,
+        &[empty.id],
+        primitive(OperationKind::CreateStaff(CreateStaffOp {
+            staff: valuegen::staff(StaffId::new(A, 604), instrument),
+        })),
+    );
+    let state = m.agree(
+        "an instrument minted by a failed transaction",
+        &[
+            create_voice,
+            fill,
+            declare,
+            mint.clone(),
+            empty,
+            staff.clone(),
+        ],
+    );
+    assert!(
+        !live(&state, TypedObjectId::Instrument(instrument)),
+        "the transaction fails, so the instrument never comes to be"
+    );
+    assert_eq!(
+        effect(&state, staff.id),
+        refused(PreconditionFailureReason::TargetMissing)
+    );
+}
