@@ -309,8 +309,10 @@ pub struct Engraver {
 /// number began standing clear of the heads, ledger lines, accidentals and
 /// dots of both staves as well as their stems, and to `41` when a number on
 /// a beam it shares with other tuplets began staying over its own notes,
-/// where it could settle among a neighbour's.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(41);
+/// where it could settle among a neighbour's, and to `42` when a staff whose
+/// first key signature comes after its start began showing none before it,
+/// where it had been read in that key from its start.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(42);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.

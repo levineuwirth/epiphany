@@ -12,7 +12,9 @@ use epiphany_core::{
     TimeSignatureDisplay, TranspositionInterval,
 };
 use epiphany_engrave::Engraver;
-use epiphany_layout_ir::{to_constrained, to_logical, ConstraintSolver, SolverConfig};
+use epiphany_layout_ir::{
+    to_constrained, to_logical, written_view, ConstraintSolver, SolverConfig,
+};
 use epiphany_musicxml::fidelity::{compare, show, Fidelity};
 use epiphany_musicxml::outcome::{reduce, Reduced, Verdict};
 use epiphany_musicxml::source::{FeatureClass, QuarterTone};
@@ -679,6 +681,66 @@ fn a_transposed_score_imports_the_sounding_pitch() {
         ["s0 v0 0 1/4 C5", "s0 v0 1/4 1/4 E5", "s0 v0 1/2 1/2 Bb4"]
     );
     assert_eq!(score.instruments[0].transposition, interval(-1, -2));
+}
+
+/// A transposed score's keys are written, as its pitches are, and both are
+/// held at concert pitch: the clarinet's two sharps and three are the keys of
+/// C and G. The horn's open key is no key signature, which no transposition
+/// moves, and the flute's are as written. The written view gives back the
+/// keys and pitches the file writes.
+#[test]
+fn a_transposed_scores_keys_are_held_at_concert_pitch_and_drawn_written() {
+    let run = run("written_keys.musicxml");
+    all_applied(&run);
+    assert!(!run.import.source.concert);
+    let score = &run.reduced.score;
+    assert_eq!(
+        events(score),
+        [
+            "s0 v0 0 1 D5",
+            "s0 v0 1 1 F#5",
+            "s1 v0 0 1 C4",
+            "s1 v0 1 1 F4",
+            "s2 v0 0 1 D5",
+            "s2 v0 1 1 F#5"
+        ]
+    );
+    assert_eq!(keys(score), ["s0 0 0", "s0 1 1", "s2 0 0", "s2 1 1"]);
+    let view = written_view(score);
+    assert_eq!(keys(&view), ["s0 0 2", "s0 1 3", "s2 0 0", "s2 1 1"]);
+    assert_eq!(
+        events(&view),
+        [
+            "s0 v0 0 1 E5",
+            "s0 v0 1 1 G#5",
+            "s1 v0 0 1 G4",
+            "s1 v0 1 1 C5",
+            "s2 v0 0 1 D5",
+            "s2 v0 1 1 F#5"
+        ]
+    );
+}
+
+/// A quarter-tone of a transposing part is drawn at its written pitch with
+/// its written spelling: the clarinet's sounding C quarter-sharp, spelt so,
+/// is written D quarter-sharp, as the file writes it; the flute's are
+/// unchanged.
+#[test]
+fn a_transposed_parts_quarter_tone_is_drawn_with_its_written_spelling() {
+    let run = run("quarter_tones.musicxml");
+    assert!(!run.import.source.concert);
+    let view = written_view(&run.reduced.score);
+    assert_eq!(
+        spelt(&view),
+        [
+            "0 G-1q4 Cmn(G) quarter-flat 4",
+            "1/4 G-1q4 Cmn(G) quarter-flat 4",
+            "1/2 C+3q5 Cmn(C) three-quarters-sharp 5",
+            "2 E-1q5 Cmn(E) quarter-flat 5",
+            "2 G+1q5 Cmn(G) quarter-sharp 5",
+            "0 D+1q5 Cmn(D) quarter-sharp 5",
+        ]
+    );
 }
 
 #[test]

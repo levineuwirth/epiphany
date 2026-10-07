@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use epiphany_core::{check_invariants, Score, WellFormednessViolation};
 use epiphany_engrave::{Engraver, PageGeometry};
 use epiphany_layout_ir::{
-    constrained::LayoutDiagnostic, to_constrained, to_logical, ConstraintSolver, Margins,
-    PrimitiveIndices, ResolvedLayoutIR, Size2D, SolverConfig, StaffSpace,
+    constrained::LayoutDiagnostic, to_constrained, to_logical, written_view, ConstraintSolver,
+    Margins, PrimitiveIndices, ResolvedLayoutIR, Size2D, SolverConfig, StaffSpace,
 };
 use epiphany_musicxml::fidelity::{self, Fidelity};
 use epiphany_musicxml::outcome::{self, Reduced};
@@ -83,9 +83,16 @@ pub fn engrave(score: &Score) -> Engraved {
 }
 
 /// Engraves an imported score on the page its file sets it on, or the
-/// default page when the file gives none.
+/// default page when the file gives none, and at the pitch its file sets it
+/// in: a concert score at concert pitch, a transposed one with each
+/// transposing part at written pitch under its written key.
 pub fn engrave_loaded(loaded: &Loaded) -> Engraved {
-    engrave_on(&loaded.reduced.score, geometry(&loaded.import.source))
+    let geometry = geometry(&loaded.import.source);
+    if loaded.import.source.concert {
+        engrave_on(&loaded.reduced.score, geometry)
+    } else {
+        engrave_on(&written_view(&loaded.reduced.score), geometry)
+    }
 }
 
 /// The page a file sets its score on, in staff spaces, or the default page

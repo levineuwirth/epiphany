@@ -4746,3 +4746,82 @@ fn the_quarter_tone_fixture_engraves_to_its_golden() {
         golden.display()
     );
 }
+
+/// A file set transposed is drawn as it is set: `engrave_loaded` lays out
+/// the written view of a transposed score, its transposing parts at written
+/// pitch, and a concert score as the model holds it.
+#[test]
+fn a_transposed_file_is_drawn_at_written_pitch_and_a_concert_one_at_concert_pitch() {
+    use epiphany_cli::{engrave_loaded, engrave_on, geometry};
+    use epiphany_layout_ir::written_view;
+    let transposed = load(&fixture("written_keys.musicxml")).expect("loads");
+    assert!(!transposed.import.source.concert);
+    let page = geometry(&transposed.import.source);
+    let drawn = engrave_loaded(&transposed).layout;
+    assert_eq!(
+        drawn,
+        engrave_on(&written_view(&transposed.reduced.score), page).layout
+    );
+    assert_ne!(drawn, engrave_on(&transposed.reduced.score, page).layout);
+
+    let concert = load(&fixture("concert_transposing.musicxml")).expect("loads");
+    assert!(concert.import.source.concert);
+    let page = geometry(&concert.import.source);
+    assert_eq!(
+        engrave_loaded(&concert).layout,
+        engrave_on(&concert.reduced.score, page).layout
+    );
+}
+
+/// An open key is no key signature until the staff's first: the lead shows
+/// none and a B flat before the change states its flat, which the four-flat
+/// key then carries. Before, a staff whose first key came later was read in
+/// that key from its start.
+#[test]
+fn a_staff_has_no_key_before_its_first() {
+    use epiphany_core::TypedObjectId;
+    let note = "<note><pitch><step>B</step><alter>-1</alter><octave>4</octave></pitch>\
+                <duration>4</duration><voice>1</voice><type>whole</type></note>";
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\">\
+         <measure number=\"1\"><attributes><divisions>1</divisions>\
+         <key><fifths>0</fifths><mode>none</mode></key><time><beats>4</beats>\
+         <beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef>\
+         </attributes>{note}</measure>\
+         <measure number=\"2\"><attributes><key><fifths>-4</fifths></key></attributes>\
+         {note}</measure></part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("open_key.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = engrave(&loaded.reduced.score).layout;
+    let first_head = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("notehead"))
+        .map(|g| g.position.x.0)
+        .fold(f32::INFINITY, f32::min);
+    let flats: Vec<&epiphany_layout_ir::ResolvedGlyph> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str() == "accidentalFlat")
+        .collect();
+    let of_key = |g: &&&epiphany_layout_ir::ResolvedGlyph| {
+        matches!(g.provenance.source, TypedObjectId::StaffInstance(_))
+    };
+    assert_eq!(
+        flats
+            .iter()
+            .filter(of_key)
+            .filter(|g| g.position.x.0 < first_head)
+            .count(),
+        0,
+        "no key in the lead"
+    );
+    assert_eq!(
+        flats.iter().filter(|g| !of_key(g)).count(),
+        1,
+        "the first B flat states its flat, the key carries the second"
+    );
+}

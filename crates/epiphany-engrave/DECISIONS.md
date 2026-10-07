@@ -1639,3 +1639,16 @@ placed as before, its notes' span being the beam's.
 Locked by `a_shared_beam_number_stays_over_its_own_notes`
 (`epiphany-layout-ir`), which plants ink over the first group's notes on
 both sides of the beam and none over the second's.
+
+## ENGRAVER_VERSION 41 → 42: no key before a staff's first (X4a.3, 2026-10-07)
+
+The key in force at a time was the latest change at or before it, else the
+staff's earliest change, so a staff whose first key signature comes after
+its start was read in that key from its start: its lead drew it and its
+notes were spelt against it. The importer now holds an open key
+(`<mode>none</mode>`) where no key is in force as no key signature, which
+made such staves common in exported scores, so the key before a staff's first
+is now none. A staff whose first key stands at its start, every one the
+importer made before, is unchanged, and so is one whose open key the
+importer held as C before. Locked by
+`a_staff_has_no_key_before_its_first` (`epiphany-cli`).

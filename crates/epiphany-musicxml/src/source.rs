@@ -938,9 +938,12 @@ fn timed_census(part: Node, census: &mut Census) {
 /// from the elements, each at its measure and at an offset the census times
 /// itself from the notes, `<backup>` and `<forward>` before it. It shares
 /// none of the reader's order of reading, so it holds the reader's placement
-/// of them to account: on which staff, and when.
+/// of them to account: on which staff, and when. A key is counted at concert
+/// pitch, and an open one (`<mode>none</mode>`) only after a key signature,
+/// as the model holds them.
 #[allow(clippy::type_complexity)]
-fn attribute_census(part: Node) -> (Vec<Vec<Stated<i8>>>, Vec<Vec<Stated<Clef>>>) {
+fn attribute_census(part: Node, concert: bool) -> (Vec<Vec<Stated<i8>>>, Vec<Vec<Stated<Clef>>>) {
+    let shift = concert_key_shift(part, concert);
     let attributes = || children(part, "measure").flat_map(|m| children(m, "attributes"));
     let staves = attributes()
         .flat_map(|a| children(a, "staves"))
@@ -990,14 +993,29 @@ fn attribute_census(part: Node) -> (Vec<Vec<Stated<i8>>>, Vec<Vec<Stated<Clef>>>
                 else {
                     continue;
                 };
+                let open = child_text(key, "mode") == Some("none");
+                let fifths = if open {
+                    0
+                } else {
+                    match i8::try_from(i32::from(fifths) + shift)
+                        .ok()
+                        .filter(|f| (-7..=7).contains(f))
+                    {
+                        Some(concert) => concert,
+                        None => continue,
+                    }
+                };
+                let push = |list: &mut Vec<Stated<i8>>| {
+                    if !(open && list.is_empty()) {
+                        list.push(stated(index, &offset, fifths));
+                    }
+                };
                 match key.attribute("number") {
-                    None => keys
-                        .iter_mut()
-                        .for_each(|k| k.push(stated(index, &offset, fifths))),
+                    None => keys.iter_mut().for_each(push),
                     Some(n) => {
                         let staff = n.parse::<usize>().ok().and_then(|n| n.checked_sub(1));
                         if let Some(list) = staff.and_then(|s| keys.get_mut(s)) {
-                            list.push(stated(index, &offset, fifths));
+                            push(list);
                         }
                     }
                 }
@@ -1406,6 +1424,11 @@ struct PartState {
     divisions: i64,
     /// What is added to a pitch in the file to reach the sounding pitch.
     file_transpose: Option<TranspositionInterval>,
+    /// The fifths added to a key the file writes to reach the concert key:
+    /// zero in a concert score, and in a transposed one the part's first
+    /// `<transpose>`'s, read before any key since `<transpose>` follows
+    /// `<key>` within an `<attributes>`.
+    key_shift: i32,
     /// Open slurs by number: the index of their start event.
     open_slurs: BTreeMap<String, usize>,
     /// Open beams by voice: the indices of their events so far.
@@ -1885,6 +1908,7 @@ impl<'d, 'i> Reader<'d, 'i> {
         let mut state = PartState {
             divisions: 1,
             file_transpose: None,
+            key_shift: concert_key_shift(node, concert),
             open_slurs: BTreeMap::new(),
             open_beams: BTreeMap::new(),
             open_tuplets: BTreeMap::new(),
@@ -2081,7 +2105,7 @@ impl<'d, 'i> Reader<'d, 'i> {
         }
         read.part = part;
         read.census = note_census(node);
-        (read.census.keys, read.census.clefs) = attribute_census(node);
+        (read.census.keys, read.census.clefs) = attribute_census(node, concert);
         timed_census(node, &mut read.census);
         Ok(read)
     }
@@ -2787,6 +2811,30 @@ impl<'d, 'i> Reader<'d, 'i> {
                         );
                         continue;
                     }
+                    // An open key (`<mode>none</mode>`) is no key signature,
+                    // which no transposition moves; the model holds it as
+                    // the absence of one where none is in force, and as no
+                    // accidentals after one.
+                    let open = child_text(item, "mode") == Some("none");
+                    let fifths = if open {
+                        0
+                    } else {
+                        // At concert pitch, as the model holds every pitch.
+                        match i8::try_from(i32::from(fifths) + state.key_shift)
+                            .ok()
+                            .filter(|f| (-7..=7).contains(f))
+                        {
+                            Some(concert) => concert,
+                            None => {
+                                self.features.record(
+                                    FeatureClass::Content,
+                                    "key signature beyond seven accidentals at concert pitch",
+                                    place.clone(),
+                                );
+                                continue;
+                            }
+                        }
+                    };
                     let staves: Vec<usize> = match item.attribute("number") {
                         Some(n) => match n.parse::<usize>() {
                             Ok(n) if n >= 1 && n <= part.staves.len() => vec![n - 1],
@@ -2802,6 +2850,16 @@ impl<'d, 'i> Reader<'d, 'i> {
                         None => (0..part.staves.len()).collect(),
                     };
                     for s in staves {
+                        if open {
+                            if part.staves[s].keys.is_empty() {
+                                continue;
+                            }
+                            self.features.record(
+                                FeatureClass::Content,
+                                "an open key after a key signature",
+                                place.clone(),
+                            );
+                        }
                         part.staves[s].keys.push(KeyChange {
                             onset: zero(),
                             measure,
@@ -3078,6 +3136,28 @@ impl<'d, 'i> Reader<'d, 'i> {
             self.features.record(class, kind, place.clone());
         }
     }
+}
+
+/// The fifths a transposition adds to a key: `7` per semitone less `12` per
+/// diatonic step, so a B-flat instrument's `(-1, -2)` takes two flats and an
+/// octave none.
+pub(crate) fn key_shift(interval: TranspositionInterval) -> i32 {
+    7 * interval.chromatic_steps - 12 * interval.diatonic_steps
+}
+
+/// The fifths added to a key a part writes to reach its concert key: none in
+/// a concert score, whose keys are at concert pitch; in a transposed one, the
+/// shift of the part's first `<transpose>`, its later changes being recorded
+/// as unsupported.
+fn concert_key_shift(part: Node, concert: bool) -> i32 {
+    if concert {
+        return 0;
+    }
+    children(part, "measure")
+        .flat_map(|m| children(m, "attributes"))
+        .flat_map(|a| children(a, "transpose"))
+        .next()
+        .map_or(0, |t| key_shift(read_interval(t)))
 }
 
 fn read_interval(node: Node) -> TranspositionInterval {

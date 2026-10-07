@@ -4488,8 +4488,9 @@ fn tracked(pitch: &crate::logical::NotePitch) -> Option<((epiphany_core::CmnNomi
     Some(((nominal, spelling.octave), alteration))
 }
 
-/// The key signature in force at `at` (the latest change at or before it,
-/// else the earliest), or `None` when the staff declares none.
+/// The key signature in force at `at`: the latest change at or before it,
+/// or `None` before the staff's first, where it has no key signature (an
+/// open key is held as none).
 fn key_at(keys: &[PlacedKeySignature], at: &TimePoint) -> Option<KeySignature> {
     keys.iter()
         .filter(|placed| {
@@ -4499,7 +4500,6 @@ fn key_at(keys: &[PlacedKeySignature], at: &TimePoint) -> Option<KeySignature> {
             )
         })
         .max_by(|a, b| time_total(&a.time, &b.time))
-        .or_else(|| keys.iter().min_by(|a, b| time_total(&a.time, &b.time)))
         .map(|placed| placed.key)
 }
 

@@ -81,6 +81,7 @@ pub mod solver;
 pub mod spatial;
 pub mod time_axis;
 pub mod vertical_band;
+pub mod written;
 
 pub use barrier::{
     decode_affected_object_kinds, decode_edit_barriers, edit_barriers_introduced_minor,
@@ -161,6 +162,7 @@ pub use time_axis::{
     TimeRange,
 };
 pub use vertical_band::{inter_staff_gap_id, VerticalBand, VerticalBandId, VerticalBandKind};
+pub use written::written_view;
 
 // Re-exported so doc links and the `OperationKindTag`-keyed edit-barrier API are
 // reachable from this crate's root.
