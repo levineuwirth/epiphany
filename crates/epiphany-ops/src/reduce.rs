@@ -675,7 +675,11 @@ fn effect_introduced_minor(effect: &OperationEffect) -> Option<u16> {
 
 /// Reduces an [`OperationSet`] to its canonical [`MaterializedState`].
 pub fn reduce_operation_set(op_set: &OperationSet) -> MaterializedState {
-    Reducer::new(op_set).run().0
+    let mut reducer = Reducer::new(op_set);
+    reducer.seed_score_settings(ScoreSettings::of(&Score::empty(
+        epiphany_core::IdentityContext::new(ReplicaId(0)),
+    )));
+    reducer.run().0
 }
 
 /// Reduces an [`OperationSet`] onto a canonical base [`Score`].
@@ -1272,6 +1276,31 @@ struct Reducer<'a> {
     history_mints: BTreeSet<TypedObjectId>,
 }
 
+/// A score's always-valued settings, which seed the score-level write chains.
+struct ScoreSettings {
+    metadata: ScoreMetadata,
+    canvas_layout_defaults: CanvasLayoutDefaults,
+    spelling_precedence: SpellingPrecedence,
+    tuning_context: TuningContextSettings,
+}
+
+impl ScoreSettings {
+    fn of(score: &Score) -> Self {
+        ScoreSettings {
+            metadata: score.metadata.clone(),
+            canvas_layout_defaults: score.canvas.layout_defaults,
+            spelling_precedence: score.spelling_precedence.clone(),
+            tuning_context: TuningContextSettings {
+                default_pitch_space: score.tuning_context.default_pitch_space.clone(),
+                default_tuning_system: score.tuning_context.default_tuning_system.clone(),
+                reference: score.tuning_context.reference.clone(),
+                smufl: score.tuning_context.smufl,
+                overrides: score.tuning_context.overrides.clone(),
+            },
+        }
+    }
+}
+
 /// A snapshot of the working state, for atomic transaction rollback.
 struct WorkingSnapshot {
     objects: BTreeMap<TypedObjectId, ObjectState>,
@@ -1773,6 +1802,33 @@ impl<'a> Reducer<'a> {
         reducer
     }
 
+    /// Seeds the score-level settings chains with `score`'s values (metadata,
+    /// canvas layout defaults, spelling precedence, the tuning context's five
+    /// wire-bearing fields), as `seed_from_graph` does with a base's. Base-free
+    /// reduction seeds them with an empty score's, which is where a history
+    /// with no base starts for these always-valued fields, so an undo
+    /// restoring one restores it as graph-aware reduction onto an empty base
+    /// does (reduction version 3: before it base-free reduction restored to
+    /// absence, and a second undo of the transaction applied where it
+    /// conflicted graph-aware).
+    fn seed_score_settings(&mut self, settings: ScoreSettings) {
+        self.metadata_chain.seed(settings.metadata);
+        // Genesis tranche G2a (contract pin 6): same discipline for the two new
+        // settings setters. Both are always-valued `Score` fields — like
+        // `metadata`, not a map key — so there is no "never authored" state to
+        // distinguish; restoring the seeded base default is correct whether the
+        // base was authored-to-default or never touched.
+        self.canvas_layout_defaults_chain
+            .seed(settings.canvas_layout_defaults);
+        self.spelling_precedence_chain
+            .seed(settings.spelling_precedence);
+        // Genesis tranche G2b (contract pin 5): same discipline, seeded with
+        // only the five wire-bearing fields — the subset the chain's value
+        // type carries. `accidental_extensions` is not part of the seed and
+        // is never touched by undo.
+        self.tuning_context_chain.seed(settings.tuning_context);
+    }
+
     /// Whether a referent an operation names is gone: not live. Graph-aware,
     /// whatever is not live (the graph seeds every base object). Base-free,
     /// with no universe, only what the set itself shows: an object it
@@ -1873,27 +1929,11 @@ impl<'a> Reducer<'a> {
         // The score-level LWW chains seed with the base values so a
         // value-restoring undo of the first operational write can restore the
         // pre-operational state (operation_catalog §UndoTransaction).
-        self.metadata_chain.seed(score.metadata.clone());
-        // Genesis tranche G2a (contract pin 6): same discipline for the two new
-        // settings setters. Both are always-valued `Score` fields — like
-        // `metadata`, not a map key — so there is no "never authored" state to
-        // distinguish; restoring the seeded base default is correct whether the
-        // base was authored-to-default or never touched.
-        self.canvas_layout_defaults_chain
-            .seed(score.canvas.layout_defaults);
-        self.spelling_precedence_chain
-            .seed(score.spelling_precedence.clone());
-        // Genesis tranche G2b (contract pin 5): same discipline, seeded with
-        // only the five wire-bearing fields — the subset the chain's value
-        // type carries. `accidental_extensions` is not part of the seed and
-        // is never touched by undo.
-        self.tuning_context_chain.seed(TuningContextSettings {
-            default_pitch_space: score.tuning_context.default_pitch_space.clone(),
-            default_tuning_system: score.tuning_context.default_tuning_system.clone(),
-            reference: score.tuning_context.reference.clone(),
-            smufl: score.tuning_context.smufl,
-            overrides: score.tuning_context.overrides.clone(),
-        });
+        let settings = ScoreSettings::of(score);
+        self.seed_score_settings(settings);
+        let Some(score) = self.graph.as_ref() else {
+            return;
+        };
         for segment in &score.tempo_map.segments {
             self.tempo_segment_chain
                 .entry((None, resolved_anchor_position(&segment.start)))
@@ -4092,14 +4132,18 @@ impl<'a> Reducer<'a> {
     }
 
     /// Records `pitch`'s current graph attachment set as a write on
-    /// [`Self::engraved_spelling_chain`]. A no-op under base-free reduction,
-    /// which has no graph attachments to own — so base-free canonical bytes do
-    /// not move.
+    /// [`Self::engraved_spelling_chain`]. Base-free reduction, which has no
+    /// graph attachments, records the write with an empty set: an undo reads
+    /// the chain's writers to find a write superseded, and only graph-aware
+    /// reduction restores a set (reduction version 3: before it base-free
+    /// reduction recorded nothing, and undid a respelling a later transpose had
+    /// superseded, where graph-aware reduction conflicted).
     fn record_engraved_spellings(&mut self, env: &OperationEnvelope, pitch: PitchId) {
-        if self.graph.is_none() {
-            return;
-        }
-        let set = self.graph_spelling_set(pitch);
+        let set = if self.graph.is_some() {
+            self.graph_spelling_set(pitch)
+        } else {
+            Vec::new()
+        };
         self.engraved_spelling_chain
             .entry(pitch)
             .or_insert_with(WriteChain::new)

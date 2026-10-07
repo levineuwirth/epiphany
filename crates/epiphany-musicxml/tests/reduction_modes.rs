@@ -1568,3 +1568,128 @@ fn an_undone_transpose_restores_its_pitch_in_both_modes() {
     let state = m.agree("an undone transpose", &[declare, transpose, undo.clone()]);
     assert_eq!(effect(&state, undo.id), Some(OperationEffect::Applied));
 }
+
+/// A transaction respells an imported quarter's pitch, the same author then
+/// transposes the pitch, and then undoes the transaction: the transpose wrote
+/// the pitch's spelling set after the respelling, so a strict undo conflicts,
+/// in both modes. Before reduction version 3 base-free reduction kept no
+/// spelling-set writes and undid the respelling.
+#[test]
+fn an_undo_of_a_respelling_a_transpose_superseded_conflicts_in_both_modes() {
+    use epiphany_core::{CmnNominal, PitchSpelling, TranspositionInterval};
+    use epiphany_ops::{RespellPitchOp, TransposeIntervalOp};
+    let m = Measure::new();
+    let pitch = m.import.ids.pitches[0][2][0];
+    let tx = TransactionId::new(A, 800);
+    let mut declare = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("respell"),
+            category: None,
+        })),
+    );
+    declare.transaction = Some(tx);
+    let mut respell = m.op(
+        A,
+        1,
+        2,
+        &[declare.id],
+        primitive(OperationKind::RespellPitch(RespellPitchOp {
+            pitch,
+            spelling: PitchSpelling::cmn(CmnNominal::E, 4),
+        })),
+    );
+    respell.transaction = Some(tx);
+    let transpose = m.op(
+        A,
+        2,
+        3,
+        &[respell.id],
+        primitive(OperationKind::TransposeInterval(TransposeIntervalOp {
+            targets: [pitch].into_iter().collect(),
+            interval: TranspositionInterval {
+                diatonic_steps: 1,
+                chromatic_steps: 2,
+            },
+        })),
+    );
+    let undo = m.op(
+        A,
+        3,
+        4,
+        &[transpose.id],
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::StrictInverse,
+        }),
+    );
+    let state = m.agree(
+        "an undo of a superseded respelling",
+        &[declare, respell, transpose, undo.clone()],
+    );
+    assert!(matches!(
+        effect(&state, undo.id),
+        Some(OperationEffect::Conflicted { .. })
+    ));
+}
+
+/// A transaction sets the score's metadata and is undone twice: the first undo
+/// restores the empty score's metadata, a write of its own, so the second
+/// finds the transaction's write superseded and conflicts, in both modes.
+/// Before reduction version 3 base-free reduction, seeding no metadata,
+/// restored to absence and wrote nothing, so the second undo applied.
+#[test]
+fn a_second_undo_of_a_settings_transaction_conflicts_in_both_modes() {
+    use epiphany_ops::SetMetadataOp;
+    let m = Measure::new();
+    let tx = TransactionId::new(A, 810);
+    let mut declare = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("metadata"),
+            category: None,
+        })),
+    );
+    declare.transaction = Some(tx);
+    let mut set = m.op(
+        A,
+        1,
+        2,
+        &[declare.id],
+        primitive(OperationKind::SetMetadata(SetMetadataOp {
+            metadata: valuegen::score_metadata(5),
+        })),
+    );
+    set.transaction = Some(tx);
+    let undo = |counter: u64, at: i64, after: OperationId| {
+        m.op(
+            A,
+            counter,
+            at,
+            &[after],
+            OperationPayload::UndoTransaction(UndoTransactionPayload {
+                target: tx,
+                policy: UndoPolicy::StrictInverse,
+            }),
+        )
+    };
+    let first = undo(2, 3, set.id);
+    let second = undo(3, 4, first.id);
+    let state = m.agree(
+        "a settings transaction undone twice",
+        &[declare, set, first.clone(), second.clone()],
+    );
+    assert_eq!(effect(&state, first.id), Some(OperationEffect::Applied));
+    assert!(matches!(
+        effect(&state, second.id),
+        Some(OperationEffect::Conflicted { .. })
+    ));
+}

@@ -747,7 +747,12 @@ recorded no write and so applied the edit and refused the undo. A
 transposition refuses a value no accidental stack writes, from the value in
 both modes, and drops an authored spelling it cannot move rather than refusing
 on it; a deleted pitch takes every spelling attachment scoped to it, a
-transposition's propagated one included. One requirement label is added;
+transposition's propagated one included. An undo reads the same write
+chains in both modes: base-free reduction seeds the score-level settings
+with an empty score's values, where it restored them to absence, and records
+every write to a pitch's spelling set
+(Requirement~\ref{req:opcat:spelling-set-chain}), where it recorded none. One
+requirement label is added;
 no payload, discriminant or \texttt{PreconditionFailureReason} changes.
 Accordingly
 \texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION}

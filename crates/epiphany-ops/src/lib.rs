@@ -302,6 +302,14 @@ pub mod vectors;
 ///     value past a triple one. A deleted pitch takes every spelling
 ///     attachment scoped to it, where a propagated one outlived it
 ///     (`SpellingScopeResolves`).
+///   - an undo reads the same history in both modes: base-free reduction seeds
+///     the score-level settings chains (metadata, canvas layout defaults,
+///     spelling precedence, tuning context) with an empty score's values, as
+///     graph-aware reduction onto an empty base does, so a second undo of a
+///     settings transaction conflicts base-free as graph-aware, where it
+///     applied; and it records each write to a pitch's spelling set, so an
+///     undo of a respelling a later transpose superseded conflicts base-free,
+///     where it was undone.
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
@@ -316,7 +324,9 @@ pub mod vectors;
 ///   `an_undone_transpose_restores_its_pitch_in_both_modes`; for spellings,
 ///   `a_transpose_past_a_triple_accidental_refuses` and
 ///   `an_unfollowable_authored_spelling_is_dropped_and_the_pitch_moves`
-///   (which replaces `an_untransposable_authored_spelling_refuses_the_whole_operation`).
+///   (which replaces `an_untransposable_authored_spelling_refuses_the_whole_operation`);
+///   for undo, `a_second_undo_of_a_settings_transaction_conflicts_in_both_modes`
+///   and `an_undo_of_a_respelling_a_transpose_superseded_conflicts_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

@@ -2621,3 +2621,22 @@ the graph keeps the region, so graph-aware migration applied to it where
 base-free reduction, reading the tombstone, refused: the migration now reads
 the region's liveness through `referent_dead` in both modes. Locked by four
 committed histories, `118` to `121`.
+
+**Undo reads the same chains in both modes.** Two undo splits remained, both
+in bookkeeping only graph-aware reduction kept. Graph-aware reduction seeds
+each score-level settings chain from its base (`seed_from_graph`), and an
+empty base has values for these always-valued fields, so undoing a settings
+transaction restores them by a write of the undo's own and a second undo of
+it finds that write and conflicts; base-free reduction seeded nothing,
+restored to absence without a write, and applied the second undo. It now
+seeds the same chains with an empty score's settings (`seed_score_settings`,
+shared with `seed_from_graph`, over `ScoreSettings` so no base is cloned to
+read them). And `record_engraved_spellings` was a no-op base-free, so a
+respelling a later transpose superseded on the pitch's spelling set (a key
+both operations write, `req:opcat:spelling-set-chain`) was undone base-free
+and conflicted graph-aware; base-free reduction now records the write with
+an empty set, since undo reads only the chain's writers and only the graph
+restores a set. Locked by
+`a_second_undo_of_a_settings_transaction_conflicts_in_both_modes` and
+`an_undo_of_a_respelling_a_transpose_superseded_conflicts_in_both_modes`
+(each fails with its half removed) and five committed histories.
