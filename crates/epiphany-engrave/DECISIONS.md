@@ -1625,3 +1625,17 @@ alone, for the same reason, and is raised further where its number would
 meet the upper staff's ink. Locked by
 `a_tuplet_number_across_two_staves_stands_clear_of_heads` (`epiphany-cli`),
 over a hand-written fixture of falling groups, some far below each staff.
+
+## ENGRAVER_VERSION 40 → 41: a shared beam's number over its own notes (X4a.0, 2026-10-07)
+
+Version 40 moved a cross-staff tuplet's number along the beam to the clear
+place nearest its notes' middle, anywhere within the beam's span. On a beam
+two tuplets share, a number that found no clear place over its own notes
+could therefore settle over its neighbour's, reading as theirs. Its search
+now runs over its own notes' span alone; where nothing there is clear, it
+stands at its middle above the upper staff's ink, as it already did where
+the whole beam had no clear place. A tuplet that is exactly its beam is
+placed as before, its notes' span being the beam's.
+Locked by `a_shared_beam_number_stays_over_its_own_notes`
+(`epiphany-layout-ir`), which plants ink over the first group's notes on
+both sides of the beam and none over the second's.

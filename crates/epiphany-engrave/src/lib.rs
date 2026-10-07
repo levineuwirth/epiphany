@@ -307,8 +307,10 @@ pub struct Engraver {
 /// its notes share one, with a bracket where a rest opens it, and on its one
 /// staff where its ink stands on one, and to `40` when such a tuplet's
 /// number began standing clear of the heads, ledger lines, accidentals and
-/// dots of both staves as well as their stems.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(40);
+/// dots of both staves as well as their stems, and to `41` when a number on
+/// a beam it shares with other tuplets began staying over its own notes,
+/// where it could settle among a neighbour's.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(41);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
