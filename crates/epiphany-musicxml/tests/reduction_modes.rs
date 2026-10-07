@@ -2148,3 +2148,83 @@ fn an_insert_at_a_wall_clock_position_is_refused_in_both_modes() {
         refused(PreconditionFailureReason::WrongRegionTimeModel)
     );
 }
+
+/// A tempo segment anchored by a musical offset in a region, and the region
+/// migrated to proportional time, in either order: written after the
+/// migration, the segment is refused `WrongRegionTimeModel`; written before
+/// it, it strands the migration, which conflicts naming the region, the
+/// segment having no id of its own. Both in both modes. Before reduction
+/// version 3 each applied and left a tempo anchored in musical time in a
+/// region with none (`AnchorOffsetModel`).
+#[test]
+fn a_tempo_in_a_region_out_of_musical_time_is_refused_in_both_modes() {
+    use epiphany_ops::{CreateRegionOp, SetTempoSegmentOp};
+    let m = Measure::new();
+    let tempo = |region: RegionId| {
+        primitive(OperationKind::SetTempoSegment(SetTempoSegmentOp {
+            region: None,
+            start: valuegen::region_start_anchor(region, MusicalPosition::origin()),
+            segment: Some(valuegen::tempo_segment(
+                region,
+                MusicalPosition::origin(),
+                96.0,
+            )),
+        }))
+    };
+    let create = |counter: u64, region: RegionId| {
+        m.op(
+            A,
+            counter,
+            counter as i64 + 1,
+            &[],
+            primitive(OperationKind::CreateRegion(CreateRegionOp {
+                region: valuegen::region(region),
+            })),
+        )
+    };
+
+    let region = RegionId::new(A, 1000);
+    let made = create(0, region);
+    let migrated = m.op(
+        A,
+        1,
+        2,
+        &[made.id],
+        m.migrate_region(region, valuegen::proportional_model()),
+    );
+    let after = m.op(A, 2, 3, &[migrated.id], tempo(region));
+    let state = m.agree(
+        "a tempo after a migration out of musical time",
+        &[made, migrated.clone(), after.clone()],
+    );
+    assert_eq!(effect(&state, migrated.id), Some(OperationEffect::Applied));
+    assert_eq!(
+        effect(&state, after.id),
+        refused(PreconditionFailureReason::WrongRegionTimeModel)
+    );
+
+    let region = RegionId::new(A, 1001);
+    let made = create(0, region);
+    let before = m.op(A, 1, 2, &[made.id], tempo(region));
+    let migrated = m.op(
+        A,
+        2,
+        3,
+        &[before.id],
+        m.migrate_region(region, valuegen::proportional_model()),
+    );
+    let state = m.agree(
+        "a tempo before a migration out of musical time",
+        &[made, before.clone(), migrated.clone()],
+    );
+    assert_eq!(effect(&state, before.id), Some(OperationEffect::Applied));
+    assert_eq!(
+        migration_failure(&state, migrated.id),
+        vec![TypedObjectId::Region(region)]
+    );
+    // The conflict names the region once, so the state decodes as written.
+    assert_eq!(
+        MaterializedState::decode_canonical(&state.canonical_bytes()).as_ref(),
+        Ok(&state)
+    );
+}

@@ -770,7 +770,10 @@ instance leaves the graph; an undo restoring a cross-cutting value whose
 endpoint was deleted since is superseded by the delete; and a time signature
 or metric grid set in a region admitting no musical offset is refused with
 \texttt{WrongRegionTimeModel}, a migration into such a model dropping the
-region's grids, as is an insert carrying a wall-clock position.
+region's grids, as is an insert carrying a wall-clock position. A tempo
+segment's anchors are read as referents and held to their region's time model,
+and a segment anchored in musical time strands its region's migration out of
+it.
 One requirement label is added;
 no payload, discriminant or \texttt{PreconditionFailureReason} changes.
 Accordingly
@@ -1473,6 +1476,8 @@ with any target when a \texttt{Reassign} leaves it unmapped, or would leave it
 overlapping another event of its voice (invariant~3; since version~0.19.0, the
 migration having applied before it). A target that admits no musical offset
 strands each of the region's live measures as well, named beside the events,
+and a live tempo segment of any map anchored to the region by a musical offset
+strands the region itself, named among them, the segment having no identifier,
 and an applied such migration drops the region's system and page breaks and
 its default and local metric grids (since version~0.19.0). Graph-aware
 reduction also judges, from the graph, the region's events the index does not
@@ -2420,6 +2425,13 @@ region whose time model admits no musical offset is refused with
 it applied and left a meter in musical time). Graph-aware reduction applies
 the meter change to \texttt{default\_metric\_grid.meter\_sequence} and the
 segment to the scoped tempo map.
+
+A tempo segment whose start or end anchor names a region that is not live is
+refused with \texttt{TargetMissing}, the region read as a referent in both
+modes (Requirement~\ref{req:catalog:base-free-referents}), and one anchored by
+a musical offset to a region admitting none with \texttt{WrongRegionTimeModel}
+(both since version~0.19.0, before which a score-level segment's anchors were
+not read).
 
 \textbf{Conflict cases.} Two concurrent differing writes of one key produce a
 \texttt{StructuralFieldCollision} on the field \texttt{meter\_sequence} or

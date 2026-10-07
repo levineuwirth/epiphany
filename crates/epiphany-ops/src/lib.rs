@@ -357,6 +357,14 @@ pub mod vectors;
 ///     `WrongRegionTimeModel` in both modes, read from the value, where it was
 ///     admitted into a metric region and indexed at the region's origin
 ///     (`EventCoordinateModel`).
+///   - a `SetTempoSegment` whose segment is anchored to a region that is not
+///     live is refused `TargetMissing`, the anchor read as a referent in both
+///     modes, where a score-level segment's anchor was not read
+///     (`CrossCuttingRefsResolve`); one anchored by a musical offset to a
+///     region admitting none is refused `WrongRegionTimeModel`; and a live
+///     segment so anchored strands a migration of its region to such a model,
+///     which conflicts naming the region, where each applied
+///     (`AnchorOffsetModel`).
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
@@ -386,7 +394,8 @@ pub mod vectors;
 ///   `a_meter_in_a_region_out_of_musical_time_is_refused_in_both_modes`; for
 ///   the wall-clock insert, `an_insert_at_a_wall_clock_position_is_refused_in_both_modes`
 ///   and `a_migration_judges_an_indexed_event_by_its_placement_in_both_modes`,
-///   which held its admission and now holds its refusal.
+///   which held its admission and now holds its refusal; for tempo,
+///   `a_tempo_in_a_region_out_of_musical_time_is_refused_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

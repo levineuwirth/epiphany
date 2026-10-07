@@ -2735,3 +2735,24 @@ which held the admission and its `EventCoordinateModel` violation, now holds
 the refusal and a graph keeping every invariant. Locked by
 `an_insert_at_a_wall_clock_position_is_refused_in_both_modes` (the check
 removed, it fails).
+
+**A tempo segment's anchors.** A budget of 50000 at `cabdd6f` found no split
+and five invariant classes, two of them new causes of earlier classes, both
+in `SetTempoSegment`, which checked only that its map's region was live. A
+score-level segment anchored to a region an equivocation's losing candidate
+minted named nothing (`CrossCuttingRefsResolve`): each region a segment's
+start or end anchor names is now a referent, read through `referent_dead`, and
+a dead one refuses `TargetMissing`. And a segment anchored by a musical offset
+kept that anchor through a migration of its region to proportional time
+(`AnchorOffsetModel`): such a segment, written after the migration, is refused
+by `musical_slot`, and a live one strands the migration, which conflicts in
+the existing `TimeModelMigrationFailure`, naming the region itself since the
+segment has no id. Locked by
+`a_tempo_in_a_region_out_of_musical_time_is_refused_in_both_modes` (each half
+removed, it fails) and histories `130` and `131` (each failing with its check
+removed). `131` keeps 35 envelopes: its referents need their authors' whole
+causal past, so the minimizer cannot shorten it. The conflict's incompatible
+list is now sorted as it is encoded and its affected objects name the region
+once, so the state decodes as written (the test decodes it; a duplicate region
+fails it). The seeded digest moves once more: its stream anchors segments to
+regions it never made, and with the referent check alone removed it returns.

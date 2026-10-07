@@ -6428,6 +6428,28 @@ impl<'a> Reducer<'a> {
                 };
             }
         }
+        // A segment anchored by a musical offset into a region out of musical
+        // time is refused, as a break is (reduction version 3: before it the
+        // segment applied, `AnchorOffsetModel`).
+        // And one anchored to a region that is not live names nothing: a
+        // referent, read in both modes (reduction version 3: before it a
+        // score-level segment's anchor was not read, `CrossCuttingRefsResolve`).
+        if let Some(segment) = &op.segment {
+            for anchor in std::iter::once(&segment.start).chain(segment.end.as_ref()) {
+                if let TimeAnchor::Region { id, .. } = anchor {
+                    if self.referent_dead(TypedObjectId::Region(*id)) {
+                        return OperationEffect::NoOp {
+                            reason: NoOpReason::PreconditionFailedUnderReduction {
+                                reason: PreconditionFailureReason::TargetMissing,
+                            },
+                        };
+                    }
+                    if let Some(effect) = self.musical_slot(*id, Some(anchor)) {
+                        return effect;
+                    }
+                }
+            }
+        }
         let key = (op.region, op.resolved_start());
         if let Some(segment) = &op.segment {
             if !self.prospective_tempo_write_well_formed(&key, segment) {
@@ -7110,21 +7132,47 @@ impl<'a> Reducer<'a> {
             Vec::new()
         } else {
             let instances = self.region_instances.get(&op.region);
+            let musical_here = |anchor: &TimeAnchor| {
+                matches!(anchor, TimeAnchor::Region { id, offset: AnchorOffset::Musical(_), .. }
+                    if *id == op.region)
+            };
+            // A live tempo segment of any map anchored here by a musical
+            // offset strands the region itself, the segment having no id of
+            // its own (reduction version 3).
+            let tempo_stranded = self.tempo_segment_chain.values().any(|chain| {
+                matches!(
+                    chain.current(),
+                    Some(Some(segment))
+                        if musical_here(&segment.start)
+                            || segment.end.as_ref().is_some_and(musical_here)
+                )
+            });
             self.measure_values
                 .iter()
                 .filter(|(_, (instance, _))| instances.is_some_and(|set| set.contains(instance)))
                 .map(|(id, _)| TypedObjectId::Measure(*id))
                 .filter(|m| matches!(self.objects.get(m), Some(ObjectState::Live)))
+                .chain(tempo_stranded.then_some(TypedObjectId::Region(op.region)))
                 .collect()
         };
         if !incompatible_events.is_empty() || !stranded_measures.is_empty() {
-            let incompatible: Vec<TypedObjectId> = incompatible_events
-                .into_iter()
-                .map(TypedObjectId::Event)
-                .chain(stranded_measures)
-                .collect();
+            // In canonical order, as the conflict encodes it: the region a
+            // tempo segment strands does not sort after the events.
+            let incompatible: Vec<TypedObjectId> = epiphany_determinism::sorted_canonical(
+                incompatible_events
+                    .into_iter()
+                    .map(TypedObjectId::Event)
+                    .chain(stranded_measures)
+                    .collect(),
+            );
+            // The region once, though a tempo segment names it incompatible.
             let mut affected = vec![TypedObjectId::Region(op.region)];
-            affected.extend(incompatible.iter().copied());
+            affected.extend(
+                incompatible
+                    .iter()
+                    .copied()
+                    .filter(|object| *object != TypedObjectId::Region(op.region)),
+            );
             let conflict = ConflictRecord::new(
                 ConflictKind::TimeModelMigrationFailure {
                     region: op.region,
@@ -14116,7 +14164,9 @@ mod tests {
         // refused. Effects, objects and conflicts move; no value enters the
         // base. Moved again, within version 3, when a second instance of a
         // staff in one region became refused: this stream's instances all
-        // name one staff.
+        // name one staff. Moved again when a tempo segment's anchors became
+        // referents: this stream anchors its segments to regions it never
+        // made.
         let mut rng = epiphany_determinism::fuzz::SplitMix64::new(0xBA5E);
         let envelopes = crate::fuzz::gen_envelope_set(&mut rng, 200);
         let mut set = OperationSet::new();
@@ -14126,7 +14176,7 @@ mod tests {
         let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
             hex,
-            "7be35b6853099eb346962c8570d35737dedcad107eacb76f7174cf0517f263b6"
+            "a3cc0d5111c905abd5c92596962bd0aef9b65dd08239e6c3b85539bee9fd640f"
         );
     }
 
