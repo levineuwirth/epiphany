@@ -1,0 +1,6 @@
+# class: invariant Invariant(CrossCuttingRefsResolve
+# expect: split
+# found: seed 0x4a2272, 24 authored; minimized from 59 to 3 envelopes
+(envelope #x00000000000000010000000000000000 #x00000000000000000000000000000001 (stamp 44 0 #x00000000000000010000000000000000) (causal () ()) () (primitive (create-region (region #x00000000000000010000000000000032 (metric (metric-time-model () tempo-map-reference)) (staff-based (staff-based-content () () () () ())) (time-extent (wall-clock 1000000000) (wall-clock 1000001000)) (staff-extent ()) () false))))
+(envelope #x00000000000000010000000000000001 #x00000000000000000000000000000001 (stamp 48 0 #x00000000000000010000000000000001) (causal ((#x0000000000000001 0)) ()) () (primitive (set-tempo-segment () (region #x00000000000000010000000000000032 start (musical (ratio 0 1))) (some (tempo-segment (region #x00000000000000010000000000000032 start (musical (ratio 0 1))) () (tempo #x0000000000004e40 (ratio 1 4)) () constant)))))
+(envelope #x00000000000000010000000000000002 #x00000000000000000000000000000001 (stamp 53 0 #x00000000000000010000000000000002) (causal ((#x0000000000000001 1)) ()) () (primitive (delete-region #x00000000000000010000000000000032)))

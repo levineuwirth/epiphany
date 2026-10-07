@@ -1,0 +1,147 @@
+//! The two-mode fuzz in CI (`epiphany_ops::fuzz::modes`), and every history
+//! it has found failing, minimized and committed under `tests/two_modes/`.
+//!
+//! A committed history is one envelope per line in the envelope text form,
+//! after `#` lines. Two of them are read here: `# class:` names the failure
+//! the fuzz found (an effect split, the objects or canonical bytes differing,
+//! or an invariant the graph-aware score breaks), and `# expect:` says
+//! whether the history must now reduce alike (`agree`) or still shows that
+//! failure (`split`), for a failure not yet fixed. A fix flips its histories
+//! from `split` to `agree`; a `split` history whose failure has gone fails
+//! here until it is flipped, so a fix cannot pass unrecorded.
+//!
+//! The CI budget runs a small number of generated histories and requires
+//! that every failure it finds is a committed `split` class, and that every
+//! operation kind and payload is authored and applied. The local budget is
+//! the `fuzz_modes` example.
+
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+use std::sync::OnceLock;
+
+use epiphany_ops::fuzz::modes;
+
+/// The CI budget: histories, their first seed, and the operations each
+/// authors after its genesis.
+const CI_HISTORIES: u64 = 96;
+const CI_SEED: u64 = 0x4A_0001;
+const CI_AUTHORED: usize = 24;
+
+/// The CI budget's run, shared by the tests that read it.
+fn ci_run() -> &'static modes::Report {
+    static REPORT: OnceLock<modes::Report> = OnceLock::new();
+    REPORT.get_or_init(|| modes::run(CI_SEED, CI_HISTORIES, CI_AUTHORED))
+}
+
+struct Committed {
+    file: String,
+    class: String,
+    split: bool,
+    history: Vec<epiphany_ops::OperationEnvelope>,
+}
+
+fn committed() -> Vec<Committed> {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/two_modes");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .expect("the committed histories' directory")
+        .map(|e| e.expect("a directory entry").path())
+        .filter(|p| p.extension().is_some_and(|e| e == "txt"))
+        .collect();
+    files.sort();
+    files
+        .into_iter()
+        .map(|path| {
+            let file = path.file_name().unwrap().to_string_lossy().into_owned();
+            let text = std::fs::read_to_string(&path).expect("readable");
+            let header = |key: &str| {
+                text.lines()
+                    .find_map(|l| l.strip_prefix(&format!("# {key}: ")))
+                    .unwrap_or_else(|| panic!("{file} has no `# {key}:` line"))
+                    .to_owned()
+            };
+            let class = header("class");
+            let split = match header("expect").as_str() {
+                "split" => true,
+                "agree" => false,
+                other => panic!("{file}: `# expect: {other}` is neither split nor agree"),
+            };
+            let history = modes::parse(&text).unwrap_or_else(|e| panic!("{file}: {e:?}"));
+            assert!(!history.is_empty(), "{file} holds no envelope");
+            Committed {
+                file,
+                class,
+                split,
+                history,
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn every_committed_history_reduces_as_it_declares() {
+    let all = committed();
+    assert!(!all.is_empty(), "no committed history was read");
+    for c in &all {
+        assert!(
+            modes::valid(&c.history),
+            "{}: names an object no operation its author saw minted",
+            c.file
+        );
+        let found = modes::findings(&c.history);
+        if c.split {
+            assert!(
+                found.iter().any(|f| f.class == c.class),
+                "{}: declared to split as `{}`, but finds {:?}; if the fix is in, \
+                 flip it to `# expect: agree`",
+                c.file,
+                c.class,
+                found.iter().map(|f| &f.class).collect::<Vec<_>>()
+            );
+        } else {
+            assert!(
+                found.is_empty(),
+                "{}: declared to agree, but finds {:#?}",
+                c.file,
+                found
+            );
+        }
+    }
+}
+
+#[test]
+fn the_ci_budget_finds_no_failure_that_is_not_committed() {
+    let known: BTreeSet<String> = committed()
+        .into_iter()
+        .filter(|c| c.split)
+        .map(|c| c.class)
+        .collect();
+    let report = ci_run();
+    let unknown: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|(class, _)| !known.contains(*class))
+        .map(|(class, (seed, history, finding))| {
+            format!(
+                "{class}\n  seed {seed:#x}, {} envelopes; minimize with the fuzz_modes \
+                 example and commit it\n  {}",
+                history.len(),
+                finding.detail
+            )
+        })
+        .collect();
+    assert!(unknown.is_empty(), "{}", unknown.join("\n"));
+}
+
+#[test]
+fn the_ci_budget_authors_and_applies_every_kind() {
+    let report = ci_run();
+    let mut missing = Vec::new();
+    for kind in modes::Coverage::kinds() {
+        let authored = report.coverage.authored.get(&kind).copied().unwrap_or(0);
+        let applied = report.coverage.applied.get(&kind).copied().unwrap_or(0);
+        if authored == 0 || applied == 0 {
+            missing.push(format!("{kind}: authored {authored}, applied {applied}"));
+        }
+    }
+    assert!(missing.is_empty(), "{missing:#?}");
+}

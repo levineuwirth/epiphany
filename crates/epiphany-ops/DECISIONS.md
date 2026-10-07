@@ -2481,3 +2481,32 @@ display. `a_tuplets_display_changes_no_verdict_or_canonical_state`
 (`epiphany-musicxml`'s `reduction_modes`) holds one history shown and hidden
 to that in both modes. The fuzz streams hide the tuplet whose drawn id
 counter is 1, from the same draw, so no pinned stream moves.
+
+## X4a.1 — the two-mode fuzz (2026-10-07)
+
+`fuzz::modes` generates concurrent histories and reduces each base-free and
+graph-aware onto an empty base, holding the two to each other in every
+effect, the objects and the canonical bytes, and the graph-aware score to
+every invariant, in each replica's view as the history grows as well as at its
+end. The earlier fuzz streams (`gen_envelope_set`) name ids no operation mints,
+which base-free reduction deliberately admits and graph-aware reduction
+refuses, so they compare nothing; these histories are written by simulated
+editors instead. Replica 1 authors a genesis the way the importer builds a
+score, which every replica has seen; then replicas take turns, merging another
+replica's history or authoring against the graph-aware reduction of their own.
+An operation names only what its author's view holds, so the history is
+valid, and the comparison is the one the operation catalog asks of the two
+modes. Every operation kind is drawn, with undo, conflict resolution and,
+rarely, an equivocation and its resolution.
+
+**Minimized and committed.** `minimize` removes runs of envelopes while the
+failure keeps its class, renumbering each replica's operations after every
+removal (`compact`), since a gap in a replica's counters would leave every
+later context waiting, and keeping a candidate only while every object an
+operation names is minted in its author's causal past (`valid`), since a
+history that loses a referent's mint shows the deliberate base-free admission,
+not a split. Each finding is committed under `tests/two_modes/` in the
+envelope text form, its class and whether it still splits in its header;
+`tests/two_modes.rs` reduces each as it declares, and runs a CI budget that
+must find no class not committed and must author and apply every kind. The
+`fuzz_modes` example runs a local budget and minimizes what it finds.
