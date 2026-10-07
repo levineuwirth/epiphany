@@ -2543,12 +2543,16 @@ pub struct Tuplet {
     /// Range of events in this tuplet, by event ID.
     pub members: Vec<EventId>,
 
+    /// Nesting: if this tuplet is itself inside another, the parent.
+    pub parent: Option<TupletId>,
+
+    /// The total sounding duration the members must sum to
+    /// (Tuplet Consistency, below): a 3:2 eighth-note triplet's 1/4.
+    pub required_total: MusicalDuration,
+
     /// Display: whether its number and bracket are shown (defined
     /// below; schema major 4).
     pub display: TupletDisplay,
-
-    /// Nesting: if this tuplet is itself inside another, the parent.
-    pub parent: Option<TupletId>,
 }
 
 /// How a tuplet's marks are shown. Growth of either vocabulary is by
@@ -17176,6 +17180,16 @@ layouts they own versus inherit:
   Requirement~\ref{req:time:tuplet-display} binds an engraver to it. The
   reduction algorithm version does not move: the display enters no verdict
   and no canonical reduced state.
+  \\
+  \today & \sectionsc{Tuplets as Grouping Objects} &
+  \textbf{X4a.0: the \texttt{Tuplet} listing in wire order.} The listing
+  gains \texttt{required\_total}, carried since the first revision but never
+  listed, and gives the fields in the order the binary layout writes them,
+  \texttt{display} last; it had put \texttt{display} before
+  \texttt{parent}. The Text Projection companion writes a struct's fields in
+  the order its listing here declares (\texttt{req:textproj:value-projection}),
+  so the listing now agrees with the text form, which always followed the
+  binary layout. No byte and no requirement changes.
   \\
   \bottomrule
 \end{longtable}
