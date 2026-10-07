@@ -1,5 +1,6 @@
 # class: effect CreateVoice: base-free Applied | graph-aware NoOp TransactionConflict
-# expect: split
+# expect: agree
+# agrees since: an authored quarter-tone spelling moves with a transpose
 # found: seed 0x4a07e3, 24 authored; minimized from 127 to 18 envelopes
 (envelope #x00000000000000010000000000000000 #x00000000000000000000000000000001 (stamp 1 0 #x00000000000000010000000000000000) (causal () ()) () (primitive (create-staff-group (staff-group #x00000000000000010000000000000000 (some "staff-group-0") grand-staff ()))))
 (envelope #x00000000000000010000000000000001 #x00000000000000000000000000000001 (stamp 2 0 #x00000000000000010000000000000001) (causal ((#x0000000000000001 0)) ()) () (primitive (create-instrument (instrument #x00000000000000010000000000000001 "instrument-1" () () #x () (clef g 2 0) (staff-line-configuration 5 #x000000000000f03f solid ()) ()))))

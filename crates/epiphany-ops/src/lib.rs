@@ -263,11 +263,21 @@ pub mod vectors;
 ///     voice the history made was refused `EventDurationInvalid` (or applied
 ///     where its winner failed) graph-aware and promoted base-free; now both
 ///     modes promote it. Base-free reduction is unchanged.
+///   - a `TransposeInterval` of a pitch in `cmn-24` with an authored spelling
+///     applies, the spelling moved by quarter-tones and its accidental kept to
+///     its kind (`PitchSpelling::transposed_by_quarter_tones`), where
+///     graph-aware reduction refused it `TranspositionOutOfRange`, unable to
+///     rewrite a 24-chromatic spelling, and base-free reduction, which holds no
+///     spelling, applied it. Every quarter-tone the importer reads carries
+///     such a spelling. The graph's pitch, spelling and value chain change with
+///     the verdict.
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
 ///   `two_replacements_of_one_quarter_promote_alike_in_both_modes`
-///   (`epiphany-musicxml`'s `reduction_modes`).
+///   (`epiphany-musicxml`'s `reduction_modes`); for the quarter-tone,
+///   `an_imported_quarter_tone_transposes_alike_in_both_modes` and
+///   `cmn_24_with_an_authored_spelling_moves_it`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

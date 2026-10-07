@@ -8634,20 +8634,19 @@ impl<'a> Reducer<'a> {
             let SpellingDirective::Explicit(spelling) = &att.directive else {
                 continue;
             };
-            // The transposed 12-TET semitone is needed ONLY to rewrite an
-            // authored spelling, and the spelling pre-pass is still
-            // 12-chromatic (the built-in catalog's conformance note). So it is
-            // computed here, at point of use, and NOT before the loop: a pitch
-            // in a resolved non-12-chromatic space (`cmn-24`, since Push 4b
-            // tranche 1) transposes its *value* correctly and must not be
-            // refused merely for carrying no authored spelling to rewrite.
-            // When it does carry one, `?` still refuses — a 24-chromatic
-            // authored spelling is the documented spelling-layer limitation,
-            // not a silently stale write. Hoisting this above the loop is what
-            // made a spelling-less `cmn-24` transpose refuse (P13-S3-shaped:
-            // latent in code, made reachable the moment the space resolved).
-            let semitone = transposed.twelve_tet_semitone()?;
-            out.push((index, spelling.transposed(interval, semitone)?));
+            // A twelve-tone pitch's spelling moves by its 12-TET semitone; a
+            // quarter-tone's (`cmn-24`) by its quarter-tone, keeping its
+            // accidental's kind (reduction version 3: before it, any authored
+            // spelling on a `cmn-24` pitch refused the transpose graph-aware,
+            // where base-free reduction, holding no spelling, applied it). A
+            // spelling no accidental can write at the transposed pitch still
+            // refuses, as `?` returns.
+            let rewritten = match transposed.twelve_tet_semitone() {
+                Some(semitone) => spelling.transposed(interval, semitone),
+                None => spelling
+                    .transposed_by_quarter_tones(interval, transposed.quarter_tone_position()?),
+            };
+            out.push((index, rewritten?));
         }
         Some(out)
     }
@@ -12368,29 +12367,38 @@ mod tests {
     }
 
     #[test]
-    fn cmn_24_with_an_authored_spelling_still_refuses() {
-        // The complement: the spelling pre-pass remains 12-chromatic, so an
-        // *authored* spelling on a `cmn-24` pitch genuinely cannot be rewritten
-        // at the transposed position, and the operation refuses rather than
-        // leave the spelling stale — the point-of-use `?` still fires when
-        // there is a spelling to transpose.
-        let mut c4 = cmn_pitch(CmnNominal::B, 0, 4);
-        c4.scale_position.space = epiphany_core::PitchSpaceId::new("cmn-24");
-        let (mut base, pid) = base_with_pitch(c4);
-        author_spelling(&mut base, pid, PitchSpelling::cmn(CmnNominal::B, 4));
-        let expected = pitch_of(&base, pid);
+    fn cmn_24_with_an_authored_spelling_moves_it() {
+        // Reduction version 3: an authored spelling on a `cmn-24` pitch moves
+        // with it by quarter-tones, its accidental keeping its kind, where the
+        // operation refused (graph-aware only, base-free reduction holding no
+        // spelling, so the two modes split). B4 quarter-flat, spelt with
+        // Stein's quarter-flat, up a major second (four quarter-tones) is C5
+        // quarter-sharp, spelt with Stein's quarter-sharp.
+        let mut b4 = cmn_pitch(CmnNominal::B, -1, 4);
+        b4.scale_position.space = epiphany_core::PitchSpaceId::new("cmn-24");
+        let (mut base, pid) = base_with_pitch(b4);
+        let spelt = |nominal, name: &str, octave| PitchSpelling {
+            nominal: epiphany_core::SpellingNominal::Cmn(nominal),
+            accidentals: vec![epiphany_core::AccidentalId::new(name)],
+            octave,
+            render_hints: Default::default(),
+        };
+        author_spelling(&mut base, pid, spelt(CmnNominal::B, "quarter-flat", 4));
 
-        let (effect, score) = run_transpose(&base, &[pid], interval(1, 2));
-        assert_eq!(
-            effect,
-            OperationEffect::NoOp {
-                reason: NoOpReason::PreconditionFailedUnderReduction {
-                    reason: PreconditionFailureReason::TranspositionOutOfRange,
-                },
-            }
-        );
-        // Refused atomically: the value is untouched, not left half-transposed.
-        assert_eq!(pitch_of(&score, pid), expected);
+        let (effect, score) = run_transpose(&base, &[pid], interval(1, 4));
+        assert_eq!(effect, OperationEffect::Applied);
+        assert_eq!(cmn_of(&pitch_of(&score, pid)), (CmnNominal::C, 1, 5));
+        let authored: Vec<&PitchSpelling> = score
+            .spelling_attachments
+            .iter()
+            .filter(|a| matches!(&a.scope, SpellingScope::Pitch(p) if *p == pid))
+            .filter(|a| !matches!(a.source, SpellingSource::Propagated { .. }))
+            .filter_map(|a| match &a.directive {
+                SpellingDirective::Explicit(s) => Some(s),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(authored, vec![&spelt(CmnNominal::C, "quarter-sharp", 5)]);
     }
 
     #[test]

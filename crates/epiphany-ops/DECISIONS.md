@@ -2529,3 +2529,25 @@ its own preconditions when it applies still fails them; it may meanwhile have
 promoted a loser it overlaps, as base-free reduction always allowed. Locked by
 `two_replacements_of_one_quarter_promote_alike_in_both_modes` and 43 committed
 histories that now agree; with the filter restored both fail.
+
+**An authored quarter-tone spelling moves with its transpose.**
+`resolve_transposed_spellings` rewrote an authored spelling from the
+transposed pitch's 12-TET semitone, which a `cmn-24` pitch lacks, so any
+authored spelling on a quarter-tone refused the transpose graph-aware, and
+base-free reduction, holding no spelling, applied it. The importer authors a
+spelling for every quarter-tone, so every imported quarter-tone's transpose
+split the modes (D42). A `cmn-24` pitch's spelling now moves by quarter-tones
+(`PitchSpelling::transposed_by_quarter_tones` in the core): the letter by the
+interval's steps, the alteration counted from where the pitch sounds, a whole
+number of semitones taking the standard accidentals and an odd number of
+quarter-tones the accidental of the spelling's own kind, by the chooser the
+importer already used, now the core's (`quarter_tone_accidental`, with its
+two tables). A spelling no accidental names at the new pitch still refuses.
+Locked by `an_imported_quarter_tone_transposes_alike_in_both_modes`,
+`cmn_24_with_an_authored_spelling_moves_it` (which replaces
+`cmn_24_with_an_authored_spelling_still_refuses`) and 36 committed histories
+that now agree; with the twelve-tone rewrite restored the first two fail.
+An interval's chromatic steps count in the pitch's own space, so one
+interval over a selection holding both a twelve-tone pitch and a quarter-tone
+moves them by different amounts; that is the operation's definition, not a
+split, and is left as it stands.

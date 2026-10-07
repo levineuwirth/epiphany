@@ -1,4 +1,5 @@
-# class: effect DeleteCrossCutting: base-free NoOp AlreadyApplied | graph-aware Applied
+# class: invariant Invariant(SpellingScopeResolves
+# was: effect DeleteCrossCutting: base-free NoOp AlreadyApplied | graph-aware Applied, until an authored quarter-tone spelling moves with a transpose
 # expect: split
 # found: seed 0x4a467e, 24 authored; minimized from 78 to 19 envelopes
 (envelope #x00000000000000010000000000000000 #x00000000000000000000000000000001 (stamp 2 0 #x00000000000000010000000000000000) (causal () ()) () (primitive (create-instrument (instrument #x00000000000000010000000000000000 "instrument-0" () () #x () (clef g 2 0) (staff-line-configuration 5 #x000000000000f03f solid ()) ()))))

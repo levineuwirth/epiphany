@@ -1251,3 +1251,82 @@ fn two_replacements_of_one_quarter_promote_alike_in_both_modes() {
     assert!(live(&state, TypedObjectId::Event(rest_a.id)));
     assert!(live(&state, TypedObjectId::Event(rest_b.id)));
 }
+
+/// An imported quarter-tone, which the importer spells as its file does, is
+/// transposed alike in both modes, and its spelling moves with it, keeping
+/// its arrow. Before reduction version 3 graph-aware reduction refused the
+/// transpose, finding the authored spelling it could not rewrite, while
+/// base-free reduction, which holds no spelling, applied it.
+#[test]
+fn an_imported_quarter_tone_transposes_alike_in_both_modes() {
+    use epiphany_core::{
+        AccidentalId, CmnNominal, PitchSpacePosition, PitchSpelling, SpellingDirective,
+        SpellingNominal, SpellingScope, TranspositionInterval,
+    };
+    use epiphany_ops::TransposeIntervalOp;
+
+    let import = import(QUARTER_TONES).expect("the measure imports");
+    let pitch = import.ids.pitches[0][0][0];
+    let transpose = OperationId::new(A, 0);
+    let envelope = OperationEnvelope {
+        id: transpose,
+        author: AuthorId(0),
+        stamp: OperationStamp::new(
+            HybridLogicalClock::new(WallClockTime(import.envelopes.len() as i64 + 1), 0),
+            transpose,
+        ),
+        causal_context: CausalContext::new()
+            .with_seen(import.replica, import.envelopes.len() as u64 - 1),
+        transaction: None,
+        // Up a major second: a step, and four quarter-tones in `cmn-24`.
+        payload: primitive(OperationKind::TransposeInterval(TransposeIntervalOp {
+            targets: [pitch].into_iter().collect(),
+            interval: TranspositionInterval {
+                diatonic_steps: 1,
+                chromatic_steps: 4,
+            },
+        })),
+    };
+    let mut set = OperationSet::new();
+    set.accept_all(import.envelopes.iter().cloned().chain([envelope]));
+    let free = set.reduce();
+    let aware = set.reduce_onto(&Score::empty(IdentityContext::new(import.replica)));
+    assert_eq!(effect(&free, transpose), Some(OperationEffect::Applied));
+    assert_eq!(
+        effect(&aware.state, transpose),
+        Some(OperationEffect::Applied)
+    );
+    assert_eq!(free.objects, aware.state.objects);
+    assert!(free.canonical_bytes() == aware.state.canonical_bytes());
+    let violations = check_invariants(&aware.score);
+    assert!(violations.is_empty(), "{violations:?}");
+
+    let Some(Event::Pitched(event)) = aware.score.events.get(import.ids.events[0][0]) else {
+        panic!("the first quarter");
+    };
+    assert_eq!(
+        event.pitches[0].pitch.scale_position.position,
+        PitchSpacePosition::Cmn {
+            nominal: CmnNominal::A,
+            alteration: -1,
+            octave: 4,
+        }
+    );
+    let spelt: Vec<&PitchSpelling> = aware
+        .score
+        .spelling_attachments
+        .iter()
+        .filter(|a| matches!(&a.scope, SpellingScope::Pitch(p) if *p == pitch))
+        .filter_map(|a| match &a.directive {
+            SpellingDirective::Explicit(s) => Some(s),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        spelt
+            .iter()
+            .any(|s| s.nominal == SpellingNominal::Cmn(CmnNominal::A)
+                && s.accidentals == vec![AccidentalId::new("flat-up")]),
+        "the spelling moves to A flat-up: {spelt:?}"
+    );
+}

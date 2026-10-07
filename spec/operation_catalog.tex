@@ -730,8 +730,13 @@ concurrent insert into a voice, whatever its preconditions
 (Section~\ref{sec:k0:insert-event}): graph-aware reduction took only inserts
 whose voice its graph held before anything applied, so over an empty base it
 promoted none, refusing as an overlap the insert base-free reduction promoted.
-No payload, discriminant or \texttt{PreconditionFailureReason} changes.
-Accordingly \texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION}
+\texttt{TransposeInterval} moves an authored spelling on a quarter-tone
+(Section~\ref{sec:k0:transpose-interval}): it refused any authored spelling
+on a \texttt{cmn-24} pitch, which every quarter-tone the importer reads
+carries, graph-aware, where base-free reduction, holding no spelling, applied
+the transpose. No payload, discriminant or \texttt{PreconditionFailureReason}
+changes. Accordingly
+\texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION}
 moves \texttt{2}~$\rightarrow$~\texttt{3}.
 
 % ===========================================================================
@@ -1177,7 +1182,13 @@ is transposed by \texttt{interval}.
   that is not itself \texttt{Propagated}, preserving each attachment's
   \texttt{source}, \texttt{priority}, and \texttt{layer}. A spelling is moved
   by transposing its \emph{nominal} diatonically and taking whatever accidental
-  the transposed pitch then requires at that staff position. If any such
+  the transposed pitch then requires at that staff position. A quarter-tone's
+  spelling (a pitch in \texttt{cmn-24}) takes it in quarter-tones: a whole
+  number of semitones takes the standard accidentals, and an odd number of
+  quarter-tones the quarter-tone accidental of the spelling's own kind, an
+  arrowed accidental keeping its arrow and Stein's staying Stein's where it has
+  one for the alteration (since version~0.19.0; before it, any authored
+  spelling on a \texttt{cmn-24} pitch refused). If any such
   attachment cannot be written at the transposed position, the operation
   \MUST{} refuse, atomically, with \texttt{TranspositionOutOfRange}.
 \end{requirement}

@@ -667,6 +667,32 @@ impl Pitch {
         }
     }
 
+    /// The absolute quarter-tone of a CMN pitch in a twelve- or 24-chromatic
+    /// space (`cmn-12`, `cmn-24`), from C0: twice its semitone in the first, its
+    /// own chromatic coordinate in the second, so a quarter-tone and a
+    /// twelve-tone pitch share one frame. `None` for any other position or
+    /// space.
+    pub fn quarter_tone_position(&self) -> Option<i32> {
+        let PitchSpacePosition::Cmn {
+            nominal,
+            alteration,
+            octave,
+        } = &self.scale_position.position
+        else {
+            return None;
+        };
+        let (chromatic_card, nominal_to_chromatic) =
+            diatonic_over_chromatic_structure(&self.scale_position.space)?;
+        let coordinate = i32::from(chromatic_card) * i32::from(*octave)
+            + i32::from(nominal_to_chromatic[*nominal as usize])
+            + i32::from(*alteration);
+        match chromatic_card {
+            12 => Some(2 * coordinate),
+            24 => Some(coordinate),
+            _ => None,
+        }
+    }
+
     /// Enharmonic equivalence (Chapter 2): sounding-equivalent under 12-tone
     /// equal temperament, regardless of the actual tuning system. This is a
     /// *sounding* notion, so octave matters — C4 and C5 are **not**
@@ -1016,6 +1042,50 @@ impl PitchSpelling {
         Some(PitchSpelling {
             nominal: SpellingNominal::Cmn(new_nominal),
             accidentals: crate::prepass::accidental_ids(alteration),
+            octave,
+            render_hints: self.render_hints,
+        })
+    }
+
+    /// This spelling moved by `interval` to a pitch sounding
+    /// `sounding_quarter_tone` ([`Pitch::quarter_tone_position`]): the nominal
+    /// and octave as [`PitchSpelling::transposed`] moves them, the alteration
+    /// counted in quarter-tones. A whole number of semitones takes the standard
+    /// accidentals; an odd number of quarter-tones takes the quarter-tone
+    /// accidental of this spelling's kind ([`crate::quarter_tone_accidental`]),
+    /// an arrow keeping its direction and Stein's staying Stein's. `None` for a
+    /// non-CMN nominal, an octave out of range, or an alteration no accidental
+    /// names.
+    pub fn transposed_by_quarter_tones(
+        &self,
+        interval: TranspositionInterval,
+        sounding_quarter_tone: i32,
+    ) -> Option<PitchSpelling> {
+        let SpellingNominal::Cmn(nominal) = self.nominal else {
+            return None;
+        };
+        let step = i64::from(nominal as u8) + i64::from(interval.diatonic_steps);
+        let new_nominal = CmnNominal::from_index(step.rem_euclid(7) as i32);
+        let new_octave = i64::from(self.octave) + step.div_euclid(7);
+        let quarter_tones = i64::from(sounding_quarter_tone)
+            - 2 * (i64::from(new_nominal.chromatic()) + 12 * new_octave);
+        let octave = i8::try_from(new_octave).ok()?;
+        let quarter_tones = i8::try_from(quarter_tones).ok()?;
+        let accidentals = if quarter_tones % 2 == 0 {
+            crate::prepass::accidental_ids(i32::from(quarter_tones / 2))
+        } else {
+            let written = match self.accidentals.as_slice() {
+                [only] => Some(only.as_str()),
+                _ => None,
+            };
+            vec![AccidentalId::new(crate::quarter_tone_accidental(
+                written,
+                quarter_tones,
+            )?)]
+        };
+        Some(PitchSpelling {
+            nominal: SpellingNominal::Cmn(new_nominal),
+            accidentals,
             octave,
             render_hints: self.render_hints,
         })
@@ -1622,6 +1692,65 @@ mod tests {
                 alteration: 0,
                 octave: 5,
             }
+        );
+    }
+
+    /// A quarter-tone's authored spelling moves with its pitch: the letter
+    /// by the interval's steps, the alteration counted in quarter-tones from
+    /// where the pitch sounds, the accidental keeping its kind; one frame for
+    /// both chromatic spaces, so a twelve-tone pitch's position is twice its
+    /// semitone.
+    #[test]
+    fn a_quarter_tone_spelling_moves_with_its_pitch_and_keeps_its_kind() {
+        let qt = |nominal, alteration, octave| cmn_in("cmn-24", nominal, alteration, octave);
+        assert_eq!(qt(CmnNominal::C, 0, 4).quarter_tone_position(), Some(96));
+        assert_eq!(
+            cmn_in("cmn-12", CmnNominal::C, 1, 4).quarter_tone_position(),
+            Some(98)
+        );
+        let spelt = |nominal, name: &str, octave| PitchSpelling {
+            nominal: SpellingNominal::Cmn(nominal),
+            accidentals: vec![AccidentalId::new(name)],
+            octave,
+            render_hints: SpellingRenderHints::default(),
+        };
+        // D quarter-sharp up a major second (four quarter-tones in cmn-24)
+        // is E quarter-sharp, Stein's.
+        let d = qt(CmnNominal::D, 1, 4);
+        let e = d.transposed(iv(1, 4)).expect("transposes");
+        let moved = spelt(CmnNominal::D, "quarter-sharp", 4)
+            .transposed_by_quarter_tones(iv(1, 4), e.quarter_tone_position().unwrap());
+        assert_eq!(moved, Some(spelt(CmnNominal::E, "quarter-sharp", 4)));
+        // An arrow keeps its direction: E flat-up (a quarter-tone below E)
+        // up a minor second is F flat-up.
+        let e_up = qt(CmnNominal::E, -1, 4).transposed(iv(1, 2)).unwrap();
+        let moved = spelt(CmnNominal::E, "flat-up", 4)
+            .transposed_by_quarter_tones(iv(1, 2), e_up.quarter_tone_position().unwrap());
+        assert_eq!(moved, Some(spelt(CmnNominal::F, "flat-up", 4)));
+        // Spelt a letter higher, the same pitch takes the accidental the
+        // kind has for the new alteration: E quarter-sharp, a semitone below
+        // F, is F quarter-flat.
+        let moved = spelt(CmnNominal::E, "quarter-sharp", 4).transposed_by_quarter_tones(
+            iv(1, 0),
+            qt(CmnNominal::E, 1, 4).quarter_tone_position().unwrap(),
+        );
+        assert_eq!(moved, Some(spelt(CmnNominal::F, "quarter-flat", 4)));
+        // A whole number of semitones takes the standard accidentals.
+        let moved = spelt(CmnNominal::D, "quarter-sharp", 4).transposed_by_quarter_tones(
+            iv(0, 1),
+            qt(CmnNominal::D, 2, 4).quarter_tone_position().unwrap(),
+        );
+        assert_eq!(
+            moved.map(|m| m.accidentals),
+            Some(vec![AccidentalId::new("sharp")])
+        );
+        // Past any quarter-tone accidental, none.
+        assert_eq!(
+            spelt(CmnNominal::D, "quarter-sharp", 4).transposed_by_quarter_tones(
+                iv(0, 6),
+                qt(CmnNominal::D, 7, 4).quarter_tone_position().unwrap()
+            ),
+            None
         );
     }
 
