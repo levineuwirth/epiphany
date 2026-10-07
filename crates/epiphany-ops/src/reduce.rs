@@ -6868,9 +6868,43 @@ impl<'a> Reducer<'a> {
         // reduction modes keep, so the two derive one set of incompatible
         // events: a metric event is incompatible with a proportional target,
         // and with any target when a `Reassign` leaves it unmapped.
-        for event in self.indexed_region_events(op.region) {
+        let region_events = self.indexed_region_events(op.region);
+        for event in region_events.iter().copied() {
             if proportional || mapped.as_ref().is_some_and(|m| !m.contains(&event)) {
                 incompatible_events.insert(event);
+            }
+        }
+        // A `Reassign` that would leave two events of one voice overlapping
+        // (invariant 3) makes both incompatible, read from the occupancy index
+        // both modes keep (reduction version 3: before it the migration
+        // applied and broke the invariant).
+        if let crate::payload::PositionRemapping::Reassign(remapping) = &op.remapping {
+            let moved: BTreeMap<EventId, &MusicalPosition> =
+                remapping.iter().map(|(event, at)| (*event, at)).collect();
+            for events in self.voice_occupancy.values() {
+                if !events.iter().any(|(_, _, e)| region_events.contains(e)) {
+                    continue;
+                }
+                let mut spans: Vec<(MusicalPosition, MusicalPosition, EventId)> = events
+                    .iter()
+                    .map(|(at, length, event)| {
+                        let at = moved.get(event).map_or(at, |to| *to).clone();
+                        (at.clone(), at + length.clone(), *event)
+                    })
+                    .collect();
+                spans.sort();
+                let mut reach: Option<(MusicalPosition, EventId)> = None;
+                for (start, end, event) in spans {
+                    if let Some((until, holder)) = &reach {
+                        if start < *until {
+                            incompatible_events.insert(*holder);
+                            incompatible_events.insert(event);
+                        }
+                    }
+                    if reach.as_ref().is_none_or(|(until, _)| end > *until) {
+                        reach = Some((end, event));
+                    }
+                }
             }
         }
         // The region's liveness: in both modes as the set leaves it

@@ -310,6 +310,10 @@ pub mod vectors;
 ///     applied; and it records each write to a pitch's spelling set, so an
 ///     undo of a respelling a later transpose superseded conflicts base-free,
 ///     where it was undone.
+///   - a `ChangeRegionTimeModel` whose `Reassign` would leave two events of
+///     one voice overlapping conflicts `TimeModelMigrationFailure`, naming
+///     both, read from the occupancy index both modes keep, where it applied
+///     and broke invariant 3.
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
@@ -326,7 +330,9 @@ pub mod vectors;
 ///   `an_unfollowable_authored_spelling_is_dropped_and_the_pitch_moves`
 ///   (which replaces `an_untransposable_authored_spelling_refuses_the_whole_operation`);
 ///   for undo, `a_second_undo_of_a_settings_transaction_conflicts_in_both_modes`
-///   and `an_undo_of_a_respelling_a_transpose_superseded_conflicts_in_both_modes`.
+///   and `an_undo_of_a_respelling_a_transpose_superseded_conflicts_in_both_modes`;
+///   for the reassignment,
+///   `a_reassignment_that_overlaps_a_voice_conflicts_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

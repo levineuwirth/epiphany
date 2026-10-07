@@ -1693,3 +1693,21 @@ fn a_second_undo_of_a_settings_transaction_conflicts_in_both_modes() {
         Some(OperationEffect::Conflicted { .. })
     ));
 }
+
+/// A migration that keeps the region metric but reassigns two quarters to one
+/// place would leave their voice overlapping (invariant 3): it conflicts,
+/// naming both, in both modes. Before reduction version 3 it applied and broke
+/// the invariant.
+#[test]
+fn a_reassignment_that_overlaps_a_voice_conflicts_in_both_modes() {
+    let m = Measure::new();
+    let migrate = m.op(A, 0, 1, &[], m.reassign(&[(0, 0), (1, 0), (2, 2), (3, 3)]));
+    let state = m.agree(
+        "an overlapping reassignment",
+        std::slice::from_ref(&migrate),
+    );
+    assert_eq!(
+        migration_failure(&state, migrate.id),
+        vec![TypedObjectId::Event(m.q(0)), TypedObjectId::Event(m.q(1))]
+    );
+}

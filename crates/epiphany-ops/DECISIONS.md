@@ -2640,3 +2640,13 @@ restores a set. Locked by
 `a_second_undo_of_a_settings_transaction_conflicts_in_both_modes` and
 `an_undo_of_a_respelling_a_transpose_superseded_conflicts_in_both_modes`
 (each fails with its half removed) and five committed histories.
+
+**A reassignment that would overlap a voice conflicts.** Review 3 of C3
+found a `ChangeRegionTimeModel` whose `Reassign` left two events of a voice
+overlapping, breaking invariant 3; the fuzz found it again. The migration now
+reads the remapped placements of each of the region's voices from
+`voice_occupancy`, which both modes keep, and counts every event that would
+overlap another among its incompatible events, so the existing
+`TimeModelMigrationFailure` conflict names them and nothing moves. Locked by
+`a_reassignment_that_overlaps_a_voice_conflicts_in_both_modes` (the check
+removed, it fails) and a committed history.
