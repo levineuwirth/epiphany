@@ -3494,6 +3494,9 @@ impl<'a> Reducer<'a> {
         if let Some(effect) = self.layout_region_slot(op.region) {
             return effect;
         }
+        if let Some(effect) = self.musical_slot(op.region, Some(&op.anchor)) {
+            return effect;
+        }
         if let Some(score) = self.graph.as_mut() {
             if let Some(region) = score.canvas.regions.iter_mut().find(|r| r.id == op.region) {
                 if let Some(content) = region.content.staff_based_mut() {
@@ -3529,6 +3532,35 @@ impl<'a> Reducer<'a> {
 
     /// `Some(NoOp)` when `region` cannot carry a metric grid or user break — it is
     /// missing, tombstoned, or FreeGraphic; `None` when it has a staff-based slot.
+    /// Whether `region` takes a musically-anchored layout write: its
+    /// coordinate discipline is musical, read from the index both modes keep
+    /// (reduction version 3: before it a break or grid written in musical
+    /// time into a proportional region applied, breaking `AnchorOffsetModel`).
+    fn musical_slot(
+        &self,
+        region: RegionId,
+        anchor: Option<&TimeAnchor>,
+    ) -> Option<OperationEffect> {
+        let musical_anchor = anchor.is_none_or(|a| {
+            matches!(
+                a,
+                TimeAnchor::Region {
+                    offset: AnchorOffset::Musical(_),
+                    ..
+                } | TimeAnchor::Measure { .. }
+            )
+        });
+        let musical_region = self
+            .region_disciplines
+            .get(&region)
+            .is_none_or(CoordinateDiscipline::admits_musical_offsets);
+        (musical_anchor && !musical_region).then_some(OperationEffect::NoOp {
+            reason: NoOpReason::PreconditionFailedUnderReduction {
+                reason: PreconditionFailureReason::WrongRegionTimeModel,
+            },
+        })
+    }
+
     fn layout_region_slot(&self, region: RegionId) -> Option<OperationEffect> {
         let live = matches!(
             self.objects.get(&TypedObjectId::Region(region)),
@@ -3705,6 +3737,9 @@ impl<'a> Reducer<'a> {
         op: &SetUserPageBreakOp,
     ) -> OperationEffect {
         if let Some(effect) = self.layout_region_slot(op.region) {
+            return effect;
+        }
+        if let Some(effect) = self.musical_slot(op.region, Some(&op.anchor)) {
             return effect;
         }
         if let Some(score) = self.graph.as_mut() {
@@ -6694,7 +6729,22 @@ impl<'a> Reducer<'a> {
             .region_instances
             .get(&op.region)
             .is_some_and(|s| !s.is_empty());
-        let minted_by = match self.delete_precondition(robj, env, has_instances) {
+        // A live tempo segment of another map anchored to the region holds it
+        // as its instances do: deleting the region would leave the segment's
+        // anchor naming nothing (`CrossCuttingRefsResolve`). Read from the
+        // tempo chains both modes keep (reduction version 3: before it the
+        // delete applied).
+        let anchors_here = |anchor: &TimeAnchor| matches!(anchor, TimeAnchor::Region { id, .. } if *id == op.region);
+        let tempo_anchored = self.tempo_segment_chain.iter().any(|((map, _), chain)| {
+            *map != Some(op.region)
+                && matches!(
+                    chain.current(),
+                    Some(Some(segment))
+                        if anchors_here(&segment.start)
+                            || segment.end.as_ref().is_some_and(anchors_here)
+                )
+        });
+        let minted_by = match self.delete_precondition(robj, env, has_instances || tempo_anchored) {
             Ok(minter) => minter,
             Err(effect) => return effect,
         };
@@ -7009,10 +7059,32 @@ impl<'a> Reducer<'a> {
             }
         }
 
-        if !incompatible_events.is_empty() {
+        // A target that admits no musical offset strands every measure of the
+        // region,
+        // anchored in musical time: each is incompatible, named beside the
+        // events, read from the measure values both modes keep (reduction
+        // version 3: before it the migration applied and left them anchored
+        // by musical offsets, `AnchorOffsetModel`).
+        let musical_target = op
+            .new_time_model
+            .coordinate_discipline()
+            .admits_musical_offsets();
+        let stranded_measures: Vec<TypedObjectId> = if musical_target {
+            Vec::new()
+        } else {
+            let instances = self.region_instances.get(&op.region);
+            self.measure_values
+                .iter()
+                .filter(|(_, (instance, _))| instances.is_some_and(|set| set.contains(instance)))
+                .map(|(id, _)| TypedObjectId::Measure(*id))
+                .filter(|m| matches!(self.objects.get(m), Some(ObjectState::Live)))
+                .collect()
+        };
+        if !incompatible_events.is_empty() || !stranded_measures.is_empty() {
             let incompatible: Vec<TypedObjectId> = incompatible_events
                 .into_iter()
                 .map(TypedObjectId::Event)
+                .chain(stranded_measures)
                 .collect();
             let mut affected = vec![TypedObjectId::Region(op.region)];
             affected.extend(incompatible.iter().copied());
@@ -7046,11 +7118,27 @@ impl<'a> Reducer<'a> {
         if let Some(discipline) = self.region_disciplines.get_mut(&op.region) {
             *discipline = op.new_time_model.coordinate_discipline();
         }
+        // A target that is not musical drops the region's system and page
+        // breaks, advisory layout written in musical time (reduction version 3:
+        // before it they stayed, anchored by musical offsets the region no
+        // longer has).
+        if !musical_target {
+            self.breaks.retain(|(region, _), _| *region != op.region);
+            self.page_breaks
+                .retain(|(region, _), _| *region != op.region);
+        }
         if let Some(region_index) = graph_region_index {
             let score = self
                 .graph
                 .as_mut()
                 .expect("a graph region index implies graph-aware reduction");
+            if !musical_target {
+                if let Some(content) = score.canvas.regions[region_index].content.staff_based_mut()
+                {
+                    content.user_system_breaks.clear();
+                    content.user_page_breaks.clear();
+                }
+            }
             if let crate::payload::PositionRemapping::Reassign(remapping) = &op.remapping {
                 for (event, position) in remapping {
                     if let Some(value) = score.events.get_mut(*event) {

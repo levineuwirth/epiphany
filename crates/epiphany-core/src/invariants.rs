@@ -3098,13 +3098,7 @@ fn offset_matches(offset: OffsetKind, disc: CoordinateDiscipline) -> bool {
     use crate::graph::AleatoricAnchoringDiscipline as A;
     match offset {
         OffsetKind::Zero => true,
-        OffsetKind::Musical => matches!(
-            disc,
-            CoordinateDiscipline::Musical
-                | CoordinateDiscipline::Aleatoric(A::Musical)
-                | CoordinateDiscipline::Aleatoric(A::EitherPerEvent)
-                | CoordinateDiscipline::Aleatoric(A::FreelyMixed)
-        ),
+        OffsetKind::Musical => disc.admits_musical_offsets(),
         OffsetKind::WallClock => matches!(
             disc,
             CoordinateDiscipline::WallClock

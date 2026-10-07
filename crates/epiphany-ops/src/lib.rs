@@ -321,6 +321,16 @@ pub mod vectors;
 ///     digest moves again, its stream's instances all naming one staff, and
 ///     test fixtures that made two instances of a staff in a region now give
 ///     the second a staff of its own.
+///   - a `DeleteRegion` of a region a live tempo segment of another map
+///     anchors to is refused `ContainerNotEmpty`, read from the tempo chains
+///     both modes keep, where it applied and left the anchor naming nothing
+///     (`CrossCuttingRefsResolve`).
+///   - a `ChangeRegionTimeModel` to a model admitting no musical offset
+///     (`CoordinateDiscipline::admits_musical_offsets`) conflicts, naming the
+///     region's live measures beside its events, where it left them anchored
+///     in musical time; applied, it drops the region's system and page breaks;
+///     and a `SetUserSystemBreak` or `SetUserPageBreak` in musical time into
+///     such a region is refused `WrongRegionTimeModel` (`AnchorOffsetModel`).
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
@@ -339,7 +349,11 @@ pub mod vectors;
 ///   for undo, `a_second_undo_of_a_settings_transaction_conflicts_in_both_modes`
 ///   and `an_undo_of_a_respelling_a_transpose_superseded_conflicts_in_both_modes`;
 ///   for the reassignment,
-///   `a_reassignment_that_overlaps_a_voice_conflicts_in_both_modes`.
+///   `a_reassignment_that_overlaps_a_voice_conflicts_in_both_modes`; for
+///   anchors in musical time,
+///   `a_region_out_of_musical_time_keeps_no_musical_break_in_both_modes` and
+///   `a_migration_finds_its_regions_events_in_both_modes`, whose proportional
+///   target now names the measure too.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

@@ -172,6 +172,18 @@ impl Measure {
         ))
     }
 
+    /// `region` migrated to `model`, positions kept.
+    fn migrate_region(&self, region: RegionId, model: RegionTimeModel) -> OperationPayload {
+        primitive(OperationKind::ChangeRegionTimeModel(
+            ChangeRegionTimeModelOp {
+                region,
+                new_time_model: model,
+                declared_incompatible: Vec::new(),
+                remapping: PositionRemapping::PreserveTime,
+            },
+        ))
+    }
+
     /// The region kept metric, each `(quarter, slot)` pair moving the quarter
     /// to where the import put quarter `slot`.
     fn reassign(&self, pairs: &[(usize, usize)]) -> OperationPayload {
@@ -904,9 +916,12 @@ fn a_migration_finds_its_regions_events_in_both_modes() {
         "the quarters against a proportional target",
         std::slice::from_ref(&proportional),
     );
-    let mut quarters: Vec<TypedObjectId> = (0..4).map(|i| TypedObjectId::Event(m.q(i))).collect();
-    quarters.sort();
-    assert_eq!(migration_failure(&state, proportional.id), quarters);
+    // The quarters, and since reduction version 3 the measure, anchored in
+    // musical time, which a proportional region does not admit.
+    let mut stranded: Vec<TypedObjectId> = (0..4).map(|i| TypedObjectId::Event(m.q(i))).collect();
+    stranded.sort();
+    stranded.push(TypedObjectId::Measure(m.import.ids.measures[0][0][0]));
+    assert_eq!(migration_failure(&state, proportional.id), stranded);
 }
 
 /// An insert reads the region's time model alike in both modes. A makes the
@@ -1710,4 +1725,66 @@ fn a_reassignment_that_overlaps_a_voice_conflicts_in_both_modes() {
         migration_failure(&state, migrate.id),
         vec![TypedObjectId::Event(m.q(0)), TypedObjectId::Event(m.q(1))]
     );
+}
+
+/// A region one author makes, breaks and then migrates to proportional time,
+/// while another, unaware of the migration, breaks it again in musical time:
+/// the migration drops the first break, written in musical time the region no
+/// longer has, and the second is refused, in both modes. Before reduction
+/// version 3 both stayed, anchored by musical offsets the region does not
+/// admit (`AnchorOffsetModel`).
+#[test]
+fn a_region_out_of_musical_time_keeps_no_musical_break_in_both_modes() {
+    use epiphany_ops::{CreateRegionOp, SetUserSystemBreakOp};
+    let m = Measure::new();
+    let region = RegionId::new(A, 900);
+    let break_at = |n: i64| SetUserSystemBreakOp {
+        region,
+        anchor: valuegen::region_start_anchor(
+            region,
+            MusicalPosition(RationalTime::new(n, 1).expect("a bar")),
+        ),
+        present: true,
+    };
+    let create = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::CreateRegion(CreateRegionOp {
+            region: valuegen::region(region),
+        })),
+    );
+    let first = m.op(
+        A,
+        1,
+        2,
+        &[create.id],
+        primitive(OperationKind::SetUserSystemBreak(break_at(0))),
+    );
+    let migrate = m.op(
+        A,
+        2,
+        3,
+        &[first.id],
+        m.migrate_region(region, valuegen::proportional_model()),
+    );
+    let second = m.op(
+        B,
+        0,
+        4,
+        &[create.id],
+        primitive(OperationKind::SetUserSystemBreak(break_at(1))),
+    );
+    let state = m.agree(
+        "breaks around a migration out of musical time",
+        &[create, first.clone(), migrate.clone(), second.clone()],
+    );
+    assert_eq!(effect(&state, first.id), Some(OperationEffect::Applied));
+    assert_eq!(effect(&state, migrate.id), Some(OperationEffect::Applied));
+    assert_eq!(
+        effect(&state, second.id),
+        refused(PreconditionFailureReason::WrongRegionTimeModel)
+    );
+    assert!(state.breaks.keys().all(|(r, _)| *r != region));
 }

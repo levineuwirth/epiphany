@@ -499,6 +499,21 @@ pub enum CoordinateDiscipline {
     Aleatoric(AleatoricAnchoringDiscipline),
 }
 
+impl CoordinateDiscipline {
+    /// Whether an anchor offset in musical time is valid in a region of this
+    /// discipline (graph invariant `AnchorOffsetModel`): a metric region's,
+    /// and an aleatoric region's anchored musically, either way per event, or
+    /// freely mixed.
+    pub fn admits_musical_offsets(&self) -> bool {
+        use AleatoricAnchoringDiscipline as A;
+        matches!(
+            self,
+            CoordinateDiscipline::Musical
+                | CoordinateDiscipline::Aleatoric(A::Musical | A::EitherPerEvent | A::FreelyMixed)
+        )
+    }
+}
+
 impl RegionTimeModel {
     /// The coordinate discipline this time model imposes on its events.
     pub fn coordinate_discipline(&self) -> CoordinateDiscipline {

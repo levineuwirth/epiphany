@@ -757,7 +757,13 @@ of one voice overlapping conflicts, naming both
 (Section~\ref{sec:k0:change-region-time-model}), where it applied. A
 \texttt{CreateStaffInstance} for a staff its region already manifests is
 refused with \texttt{ContainerNotEmpty}, where two concurrent creates both
-applied. One requirement label is added;
+applied. A \texttt{DeleteRegion} of a region another map's live tempo segment
+anchors to is refused with \texttt{ContainerNotEmpty}; a migration to a model
+admitting no musical offset conflicts on the region's measures as on its
+events, and applied drops the region's breaks; and a break written in musical
+time into such a region is refused with \texttt{WrongRegionTimeModel}, each
+where an anchor was left naming nothing or a time the region no longer has.
+One requirement label is added;
 no payload, discriminant or \texttt{PreconditionFailureReason} changes.
 Accordingly
 \texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION}
@@ -1454,7 +1460,10 @@ instances and voices (a voice promoted during reduction through the insert it
 was promoted for), and each is incompatible with a proportional target, and
 with any target when a \texttt{Reassign} leaves it unmapped, or would leave it
 overlapping another event of its voice (invariant~3; since version~0.19.0, the
-migration having applied before it). Graph-aware
+migration having applied before it). A target that admits no musical offset
+strands each of the region's live measures as well, named beside the events,
+and an applied such migration drops the region's system and page breaks
+(since version~0.19.0). Graph-aware
 reduction also judges, from the graph, the region's events the index does not
 hold (a base's events of another coordinate kind, which base-free reduction
 never has). A migration with incompatible events is refused as below; an

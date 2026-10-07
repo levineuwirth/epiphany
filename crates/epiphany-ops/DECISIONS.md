@@ -2660,3 +2660,24 @@ and `instance_staff`, which both modes keep. Several test fixtures made two
 instances of one staff in a region for convenience; they now give the second a
 staff of its own, minted where the test reduces graph-aware. The seeded digest
 moves again. Locked by a committed history.
+
+**Anchors stay resolvable across a region's delete and migration.** Two
+invariant classes, each of review 3 of C3's kind. A region deleted while
+another map's tempo segment anchored to it left the anchor naming nothing:
+`DeleteRegion` now counts such a live segment, read from `tempo_segment_chain`,
+as content, refusing `ContainerNotEmpty`. And a migration to proportional time
+left measures and breaks anchored by musical offsets the region no longer
+admits. Which disciplines admit them is now one core method,
+`CoordinateDiscipline::admits_musical_offsets`, which the invariant check
+uses too. A migration to a discipline that does not admit them conflicts on
+the region's live measures (from `measure_values`), named beside the events
+in the existing `TimeModelMigrationFailure`; applied, it drops the region's
+system and page breaks, advisory layout with no musical time left to stand at
+(the canonical `breaks` and `page_breaks` and the graph alike); and
+`musical_slot` refuses a break written in musical time into such a region,
+`WrongRegionTimeModel`, so a concurrent one cannot reintroduce it. A metric
+grid written into such a region is not yet refused; the fuzz writes only
+empty grids and has not reached it. Locked by
+`a_region_out_of_musical_time_keeps_no_musical_break_in_both_modes`,
+`a_migration_finds_its_regions_events_in_both_modes` (now naming the
+measure) and two committed histories, each part observed failing without it.
