@@ -4753,6 +4753,26 @@ impl<'a> Reducer<'a> {
                 },
             };
         }
+        // A region manifests a staff at most once (`StaffInstanceResolves`):
+        // the region's place for the staff is taken, so the create is refused,
+        // read from the indices both modes keep (reduction version 3: before
+        // it two concurrent creates both applied).
+        let taken = self
+            .region_instances
+            .get(&op.region)
+            .is_some_and(|instances| {
+                instances.iter().any(|other| {
+                    *other != op.instance_id()
+                        && self.instance_staff.get(other) == Some(&op.instance.staff)
+                        && matches!(
+                            self.objects.get(&TypedObjectId::StaffInstance(*other)),
+                            Some(ObjectState::Live)
+                        )
+                })
+            });
+        if taken {
+            return container_not_empty();
+        }
         self.graph_create_staff_instance(op.region, &op.instance);
         self.mint_container(env, iobj);
         self.region_instances
@@ -13892,7 +13912,9 @@ mod tests {
         // came to be (`referent_dead`), and this stream's inserts and creates
         // name many voices, staves and instances whose minting operation it
         // refused. Effects, objects and conflicts move; no value enters the
-        // base.
+        // base. Moved again, within version 3, when a second instance of a
+        // staff in one region became refused: this stream's instances all
+        // name one staff.
         let mut rng = epiphany_determinism::fuzz::SplitMix64::new(0xBA5E);
         let envelopes = crate::fuzz::gen_envelope_set(&mut rng, 200);
         let mut set = OperationSet::new();
@@ -13902,7 +13924,7 @@ mod tests {
         let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
             hex,
-            "75e5fcbd7ab4411d573ae27d0a1caee71f9393a2e3d7bd54d7a166447a37dce2"
+            "7be35b6853099eb346962c8570d35737dedcad107eacb76f7174cf0517f263b6"
         );
     }
 
@@ -19270,7 +19292,11 @@ mod tests {
             CausalContext::new(),
             OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
                 region,
-                instance: crate::valuegen::staff_instance(instance_b, staff),
+                // Another staff: a region manifests a staff once.
+                instance: crate::valuegen::staff_instance(
+                    instance_b,
+                    StaffId::new(ReplicaId(1), 5),
+                ),
             }),
         ));
 
@@ -21050,7 +21076,11 @@ mod tests {
                 CausalContext::new(),
                 OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
                     region,
-                    instance: crate::valuegen::staff_instance(*id, staff),
+                    // A staff of its own each: a region manifests a staff once.
+                    instance: crate::valuegen::staff_instance(
+                        *id,
+                        StaffId::new(ReplicaId(1), 100 + n as u64),
+                    ),
                 }),
             ));
         }
@@ -22968,7 +22998,15 @@ mod tests {
         fn m54_measure_values_surface_blocks_measure_undo() {
             let mut f = g3b_undo_fixture();
             let instance2 = StaffInstanceId::new(ReplicaId(1), 5);
-            let staff = StaffId::new(ReplicaId(1), 3);
+            // A second staff for the second instance: a region manifests a
+            // staff once.
+            let staff = StaffId::new(ReplicaId(1), 30);
+            f.push(
+                "CreateStaff 2",
+                OperationKind::CreateStaff(CreateStaffOp {
+                    staff: crate::valuegen::staff(staff, InstrumentId::new(ReplicaId(1), 4)),
+                }),
+            );
             let c = MeasureId::new(ReplicaId(1), 101);
             f.push(
                 "CreateStaffInstance 2",
@@ -23242,7 +23280,15 @@ mod tests {
         fn m61_same_transaction_teardown_exempts_measure_values() {
             let mut f = g3b_undo_fixture_prereqs_only();
             let instance2 = StaffInstanceId::new(ReplicaId(1), 5);
-            let staff = StaffId::new(ReplicaId(1), 3);
+            // A second staff for the second instance: a region manifests a
+            // staff once.
+            let staff = StaffId::new(ReplicaId(1), 30);
+            f.push(
+                "CreateStaff 2",
+                OperationKind::CreateStaff(CreateStaffOp {
+                    staff: crate::valuegen::staff(staff, InstrumentId::new(ReplicaId(1), 4)),
+                }),
+            );
             let c = MeasureId::new(ReplicaId(1), 101);
             f.push(
                 "CreateStaffInstance 2",
@@ -23494,7 +23540,15 @@ mod tests {
         fn m62_tombstoned_measure_referencer_does_not_block() {
             let mut f = g3b_undo_fixture();
             let instance2 = StaffInstanceId::new(ReplicaId(1), 5);
-            let staff = StaffId::new(ReplicaId(1), 3);
+            // A second staff for the second instance: a region manifests a
+            // staff once.
+            let staff = StaffId::new(ReplicaId(1), 30);
+            f.push(
+                "CreateStaff 2",
+                OperationKind::CreateStaff(CreateStaffOp {
+                    staff: crate::valuegen::staff(staff, InstrumentId::new(ReplicaId(1), 4)),
+                }),
+            );
             let c = MeasureId::new(ReplicaId(1), 101);
             let tx_c = TransactionId::new(ReplicaId(1), 901);
             f.push(

@@ -3235,7 +3235,6 @@ fn set_staff_layout_is_an_advisory_lww_with_tombstone_noop() {
     let base = epiphany_core::generators::valid_score(305);
     let region = base.canvas.regions[0].id;
     let instance = base.canvas.regions[0].staff_instances()[0].id;
-    let staff = base.canvas.regions[0].staff_instances()[0].staff;
     let instrument = base.instruments[0].id;
 
     // Two concurrent differing writes: advisory LWW — no conflict; the later
@@ -3301,17 +3300,22 @@ fn set_staff_layout_is_an_advisory_lww_with_tombstone_noop() {
     assert!(!materialized.visible);
     assert!(check_invariants(&result.score).is_empty());
 
-    // A tombstoned target is a no-op: mint an empty instance, delete it, then
-    // aim a layout write at it.
+    // A tombstoned target is a no-op: mint an empty instance, of a staff of
+    // its own (a region manifests a staff once), delete it, then aim a layout
+    // write at it.
     let fresh = StaffInstanceId::new(ReplicaId(67), 1);
+    let fresh_staff = StaffId::new(ReplicaId(67), 2);
     let envelopes = chain(
         67,
         10,
         None,
         vec![
+            OperationKind::CreateStaff(epiphany_ops::CreateStaffOp {
+                staff: valuegen::staff(fresh_staff, instrument),
+            }),
             OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
                 region,
-                instance: valuegen::staff_instance(fresh, staff),
+                instance: valuegen::staff_instance(fresh, fresh_staff),
             }),
             OperationKind::DeleteStaffInstance(DeleteStaffInstanceOp {
                 staff_instance: fresh,
@@ -3328,7 +3332,7 @@ fn set_staff_layout_is_an_advisory_lww_with_tombstone_noop() {
     set.accept_all(envelopes.clone());
     let result = set.reduce_onto(&base);
     assert_eq!(
-        effect_for(&result, envelopes[2].id),
+        effect_for(&result, envelopes[3].id),
         &OperationEffect::NoOp {
             reason: NoOpReason::TargetTombstoned,
         },

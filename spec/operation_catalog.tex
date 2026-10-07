@@ -754,8 +754,10 @@ every write to a pitch's spelling set
 (Requirement~\ref{req:opcat:spelling-set-chain}), where it recorded none. A
 \texttt{ChangeRegionTimeModel} whose \texttt{Reassign} would leave two events
 of one voice overlapping conflicts, naming both
-(Section~\ref{sec:k0:change-region-time-model}), where it applied. One
-requirement label is added;
+(Section~\ref{sec:k0:change-region-time-model}), where it applied. A
+\texttt{CreateStaffInstance} for a staff its region already manifests is
+refused with \texttt{ContainerNotEmpty}, where two concurrent creates both
+applied. One requirement label is added;
 no payload, discriminant or \texttt{PreconditionFailureReason} changes.
 Accordingly
 \texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION}
@@ -1557,7 +1559,11 @@ reference-resolution invariants.
 With staves mintable, \texttt{CreateStaffInstance}
 (Section~\ref{sec:k0:structural-containers}) preconditions that the
 instance's referenced \texttt{Staff} is live (previously the reference was
-satisfiable only from the seeded base, so the check was vacuous).
+satisfiable only from the seeded base, so the check was vacuous), and that no
+live instance of the region already manifests it: a region manifests a staff
+once (graph invariant \texttt{StaffInstanceResolves}), so a second is refused
+with \texttt{ContainerNotEmpty}, the region's place for the staff being taken
+(since version~0.19.0).
 
 \textbf{Membership maintenance (P13-S16, disposition A; supersedes genesis
 tranche G3a's disposition B).} \texttt{Staff.group} is the \textbf{sole

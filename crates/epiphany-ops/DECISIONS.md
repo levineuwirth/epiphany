@@ -2650,3 +2650,13 @@ overlap another among its incompatible events, so the existing
 `TimeModelMigrationFailure` conflict names them and nothing moves. Locked by
 `a_reassignment_that_overlaps_a_voice_conflicts_in_both_modes` (the check
 removed, it fails) and a committed history.
+
+**A region manifests a staff once.** Two authors adding the same staff to a
+region concurrently left two instances of it, breaking
+`StaffInstanceResolves`. `CreateStaffInstance` now refuses, with
+`ContainerNotEmpty` (the region's place for the staff is taken), a staff a
+live instance of the region already manifests, read from `region_instances`
+and `instance_staff`, which both modes keep. Several test fixtures made two
+instances of one staff in a region for convenience; they now give the second a
+staff of its own, minted where the test reduces graph-aware. The seeded digest
+moves again. Locked by a committed history.

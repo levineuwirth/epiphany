@@ -314,6 +314,13 @@ pub mod vectors;
 ///     one voice overlapping conflicts `TimeModelMigrationFailure`, naming
 ///     both, read from the occupancy index both modes keep, where it applied
 ///     and broke invariant 3.
+///   - a `CreateStaffInstance` for a staff a live instance of its region
+///     already manifests is refused `ContainerNotEmpty`, read from the
+///     region's instances and their staves both modes keep, where two
+///     concurrent creates both applied (`StaffInstanceResolves`). The seeded
+///     digest moves again, its stream's instances all naming one staff, and
+///     test fixtures that made two instances of a staff in a region now give
+///     the second a staff of its own.
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
