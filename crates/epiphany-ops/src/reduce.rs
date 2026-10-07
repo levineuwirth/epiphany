@@ -3393,6 +3393,16 @@ impl<'a> Reducer<'a> {
                 _ => {}
             }
         }
+        // A pitch the undo tombstones leaves its event too, as a deleted
+        // pitch does (a last pitch turning the note to a rest, its spelling
+        // attachments with it), where the event itself survives (reduction
+        // version 3: before it the graph kept the pitch in its event, both
+        // live and tombstoned, `UniqueIdentifiers`).
+        for target in targets {
+            if let TypedObjectId::Pitch(pitch) = target {
+                self.graph_delete_pitch(*pitch);
+            }
+        }
         repairs
     }
 

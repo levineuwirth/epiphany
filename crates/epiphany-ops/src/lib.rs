@@ -336,6 +336,9 @@ pub mod vectors;
 ///     (strict: conflicted; best effort: the measure kept), where it removed
 ///     the measure and left the next two bars from its predecessor
 ///     (`MeasureMeterConsistency`).
+///   - a pitch an undo tombstones leaves its surviving event in the graph, as
+///     a deleted pitch does, where it stayed both live and tombstoned
+///     (`UniqueIdentifiers`); a graph-state change only.
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,

@@ -2691,3 +2691,11 @@ later measure of the same instance, read from `measure_values` and ordered by
 and a best-effort one keeps the measure. Locked by
 `an_undo_of_a_measure_with_a_later_one_conflicts_in_both_modes` (the surface
 removed, it fails) and a committed history.
+
+**An undone pitch leaves its event.** Undoing an `InsertIdentifiedPitch`
+tombstoned the pitch but `materialize_graph_tombstones` only recorded it in
+`tombstoned_pitches`, leaving it in its surviving event, so the graph held it
+both live and tombstoned (`UniqueIdentifiers`). Each pitch the undo tombstones
+now also goes through `graph_delete_pitch`. Graph state only; no verdict
+moves. Locked by two committed histories (without the call they break the
+invariant again).
