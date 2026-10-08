@@ -2947,3 +2947,17 @@ operation now records the position it applied at (`applied_at`, set by
 stamps, so only such interleavings change. Locked by
 `a_transactions_grid_write_is_as_recent_as_it_applied_in_both_modes` (recency
 by stamp restored, it fails) and history `140`.
+
+**The deferred cause, named apart.** The fuzz reports each class of failure
+once, with its first history, so a class excepted by name would hide any other
+cause of the same invariant behind the deferred one. `RegionExtents` is now
+classed apart when its two overlapping regions were each created by an
+envelope of the history at one time extent, neither in the other's causal past
+(`modes::CONCURRENT_REGIONS`): the deferred cause; any other overlap keeps the
+plain class, which nothing excepts. History `110` takes the named class.
+Every `RegionExtents` finding of the million-history run, minimized, is two
+regions created concurrently at one extent. Locked by
+`a_region_overlap_its_author_saw_is_not_the_deferred_class`, which makes the
+second region's author have seen the first and requires the plain class (the
+concurrency test dropped from the classification, it fails); with the
+classification never naming the cause, it and the CI budget fail.

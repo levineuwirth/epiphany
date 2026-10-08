@@ -372,23 +372,72 @@ fn compare(
             }
         }
     }
-    out.extend(invariant_findings(&aware.score));
+    out.extend(invariant_findings(history, &aware.score));
     out
 }
 
-fn invariant_findings(score: &Score) -> Vec<Finding> {
+/// The class of a `RegionExtents` violation between two regions that two
+/// authors each created, neither having seen the other's create, at one time
+/// extent: a cause the owner has deferred (D48), so named apart from the
+/// invariant's other causes, which keep the plain class.
+pub const CONCURRENT_REGIONS: &str =
+    "invariant Invariant(RegionExtents: two regions created concurrently at one place";
+
+fn invariant_findings(history: &[OperationEnvelope], score: &Score) -> Vec<Finding> {
     let mut seen = BTreeSet::new();
     check_invariants(score)
         .into_iter()
         .filter_map(|violation| {
             let full = format!("{:?}", violation.kind);
-            let class = format!("invariant {}", full.trim_end_matches(')'));
+            let class = if matches!(
+                violation.kind,
+                epiphany_core::ViolationKind::Invariant(
+                    epiphany_core::GraphInvariant::RegionExtents
+                )
+            ) && concurrent_at_one_place(history, &violation.witness)
+            {
+                String::from(CONCURRENT_REGIONS)
+            } else {
+                format!("invariant {}", full.trim_end_matches(')'))
+            };
             seen.insert(class.clone()).then(|| Finding {
                 class,
                 detail: format!("{violation:?}"),
             })
         })
         .collect()
+}
+
+/// Whether the two regions a `RegionExtents` witness names were created by two
+/// envelopes of `history` at one time extent, neither in the other's causal
+/// past.
+fn concurrent_at_one_place(history: &[OperationEnvelope], witness: &str) -> bool {
+    let ids: Vec<RegionId> = witness
+        .match_indices("RegionId(")
+        .filter_map(|(at, tag)| {
+            let digits = witness.get(at + tag.len()..at + tag.len() + 33)?;
+            let (replica, counter) = digits.split_once(':')?;
+            Some(RegionId::new(
+                ReplicaId(u64::from_str_radix(replica, 16).ok()?),
+                u64::from_str_radix(counter, 16).ok()?,
+            ))
+        })
+        .collect();
+    let [a, b] = ids.as_slice() else {
+        return false;
+    };
+    let create = |id: RegionId| {
+        history.iter().find_map(|env| match &env.payload {
+            OperationPayload::Primitive(OperationKind::CreateRegion(op)) if op.region.id == id => {
+                Some((env, &op.region.time_extent))
+            }
+            _ => None,
+        })
+    };
+    let (Some((ea, xa)), Some((eb, xb))) = (create(*a), create(*b)) else {
+        return false;
+    };
+    xa == xb && !ea.causal_context.covers(eb.id) && !eb.causal_context.covers(ea.id)
 }
 
 /// Counts per operation kind over a run: authored, and applied (with or

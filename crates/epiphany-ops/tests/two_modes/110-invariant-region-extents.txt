@@ -1,4 +1,5 @@
-# class: invariant Invariant(RegionExtents
+# class: invariant Invariant(RegionExtents: two regions created concurrently at one place
+# was: invariant Invariant(RegionExtents, until the fuzz named its deferred cause apart from the invariant's others
 # expect: deferred
 # deferred: concurrent region creation at one place (D48); refusing the second needs region time extents resolved in base-free reduction
 # found: seed 0x4a003a, 24 authored; minimized from 57 to 7 envelopes

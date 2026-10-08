@@ -191,3 +191,46 @@ fn the_ci_budget_authors_and_applies_every_kind() {
     }
     assert!(missing.is_empty(), "{missing:#?}");
 }
+
+/// The deferred cause is named apart from the invariant's others, so the
+/// exception covers it alone: the deferred history, its second region's
+/// author made to have seen the first region's create, still overlaps them,
+/// and is classed `RegionExtents` plainly, which nothing excepts.
+#[test]
+fn a_region_overlap_its_author_saw_is_not_the_deferred_class() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/two_modes/110-invariant-region-extents.txt");
+    let text = std::fs::read_to_string(path).expect("readable");
+    let unaware =
+        "(stamp 37 0 #x00000000000000010000000000000003) (causal ((#x0000000000000001 2)) ())";
+    assert_eq!(
+        text.matches(unaware).count(),
+        1,
+        "the second region's create"
+    );
+    let aware = text.replace(
+        unaware,
+        "(stamp 37 0 #x00000000000000010000000000000003) \
+         (causal ((#x0000000000000001 2) (#x0000000000000002 0)) ())",
+    );
+    let history = modes::parse(&aware).expect("parses");
+    assert!(modes::valid(&history));
+    let classes: Vec<String> = modes::findings(&history)
+        .into_iter()
+        .map(|f| f.class)
+        .collect();
+    assert!(
+        classes
+            .iter()
+            .any(|c| c == "invariant Invariant(RegionExtents"),
+        "{classes:?}"
+    );
+    assert!(
+        classes.iter().all(|c| c != modes::CONCURRENT_REGIONS),
+        "{classes:?}"
+    );
+    let unchanged = modes::findings(&modes::parse(&text).expect("parses"));
+    assert!(unchanged
+        .iter()
+        .any(|f| f.class == modes::CONCURRENT_REGIONS));
+}
