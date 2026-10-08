@@ -3237,3 +3237,19 @@ six cases under both policies (the helper answering none, it fails; each
 arm's referents emptied, its own case fails; a break anchored to a removed
 measure breaks no invariant the core checks, and the test holds its conflict),
 and history `149`.
+
+**A third overlap cause, named apart and not deferred (found by this round's
+fuzz).** At 128 authored operations an author created a region in a
+transaction and undid the transaction, while another author, concurrently,
+filled the region; in the merged history the strand guard keeps the region
+against the undo, and the first author, its view holding no region there,
+created one in its place (`RegionExtents`). It is the deferred class's shape
+and needs its fix, refusing the create by region extents base-free reduction
+cannot yet resolve, but D50 put exactly two causes in that class and nothing
+else, so it is not excepted: the classifier names it apart
+(`REGION_SEEN_UNDONE`, a region created where its author's undo, blocked in
+the merged history, left none) so a run lists it beside the invariant's other
+causes, and its history is committed `split` (`150`) for the owner to rule.
+Locked by `a_region_created_where_its_authors_blocked_undo_left_none_is_not_deferred`
+and history `150` (with the undo's condition dropped, both fail); review 1's
+plant B3 still fails the CI budget.

@@ -310,12 +310,13 @@ fn a_region_created_where_its_authors_refused_delete_left_none_is_deferred() {
     assert!(plain(&found), "{found:?}");
 }
 
-/// An overlap from another cause keeps the plain class though its author's
-/// view did not hold the region: an author undoes the transaction that
-/// created a region, which another author has concurrently filled, so the
-/// merged history keeps the region (the undo blocked), and creates a region
-/// in its place. Only a delete the merged history refuses is the deferred
-/// class's second cause (D50).
+/// An overlap from another cause is not deferred though its author's view did
+/// not hold the region: an author undoes the transaction that created a
+/// region, which another author has concurrently filled, so the merged
+/// history keeps the region (the undo blocked), and creates a region in its
+/// place. Only a delete the merged history refuses is the deferred class's
+/// second cause (D50); this one is named apart, for the owner, and nothing
+/// excepts it.
 #[test]
 fn a_region_created_where_its_authors_blocked_undo_left_none_is_not_deferred() {
     use epiphany_core::{
@@ -450,6 +451,9 @@ fn a_region_created_where_its_authors_blocked_undo_left_none_is_not_deferred() {
         .into_iter()
         .map(|f| f.class)
         .collect();
-    assert!(found.iter().any(|c| plain_region_extents(c)), "{found:?}");
+    assert!(
+        found.iter().any(|c| c == modes::REGION_SEEN_UNDONE),
+        "{found:?}"
+    );
     assert!(found.iter().all(|c| !modes::deferred(c)), "{found:?}");
 }

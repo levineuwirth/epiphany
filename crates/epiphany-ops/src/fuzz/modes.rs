@@ -397,6 +397,13 @@ pub const REGION_NEVER_SEEN: &str = "invariant Invariant(RegionExtents: a region
 /// the region concurrently), and created a region in its place.
 pub const REGION_SEEN_DELETED: &str = "invariant Invariant(RegionExtents: a region created at the place of one its author's view did not hold live, seen deleted by a delete the merged history refuses";
 
+/// An overlap of the same family that is not deferred, named apart so a run
+/// lists it beside the invariant's other causes: an author undid the
+/// transaction that created a region, which the merged history keeps (a
+/// concurrent fill blocking the undo), and created a region in its place. A
+/// break that needs concurrent authors, outside D50's class, for the owner.
+pub const REGION_SEEN_UNDONE: &str = "invariant Invariant(RegionExtents: a region created at the place of one its author's undo removed, the undo blocked in the merged history";
+
 /// Whether `class` is one of the deferred class's causes.
 pub fn deferred(class: &str) -> bool {
     class == REGION_NEVER_SEEN || class == REGION_SEEN_DELETED
@@ -412,15 +419,15 @@ fn invariant_findings(
         .into_iter()
         .filter_map(|violation| {
             let full = format!("{:?}", violation.kind);
-            let deferred = matches!(
+            let named = matches!(
                 violation.kind,
                 epiphany_core::ViolationKind::Invariant(
                     epiphany_core::GraphInvariant::RegionExtents
                 )
             )
-            .then(|| deferred_region_cause(history, effects, &violation.witness))
+            .then(|| region_cause(history, effects, &violation.witness))
             .flatten();
-            let class = match deferred {
+            let class = match named {
                 Some(cause) => String::from(cause),
                 None => format!(
                     "invariant {}: {}",
@@ -512,13 +519,15 @@ fn collapse_lists(chars: &[char], at: &mut usize, close: Option<char>) -> String
     items.join(", ")
 }
 
-/// The deferred cause of a `RegionExtents` witness naming two regions, if it
-/// is one: both created by envelopes of `history` at one time extent, and
-/// either neither create in the other's causal past (never seen), or the
-/// later create's author having seen the earlier region and its delete, the
-/// delete refused in the merged history (`effects`) and the region not live in
-/// that author's view (seen deleted).
-fn deferred_region_cause(
+/// The named cause of a `RegionExtents` witness naming two regions, if it is
+/// one: both created by envelopes of `history` at one time extent, and either
+/// neither create in the other's causal past (never seen), or the later
+/// create's author having seen the earlier region and its delete, the delete
+/// refused in the merged history (`effects`) and the region not live in that
+/// author's view (seen deleted); or, not deferred, having seen an undo of the
+/// earlier region's transaction instead, the region again not live in its
+/// view (seen undone).
+fn region_cause(
     history: &[OperationEnvelope],
     effects: &BTreeMap<OperationId, OperationEffect>,
     witness: &str,
@@ -554,10 +563,11 @@ fn deferred_region_cause(
         eb.causal_context.covers(ea.id),
     ) {
         (false, false) => return Some(REGION_NEVER_SEEN),
-        (true, false) => (ea, *b),
-        (false, true) => (eb, *a),
+        (true, false) => (ea, (eb, *b)),
+        (false, true) => (eb, (ea, *a)),
         (true, true) => return None,
     };
+    let (made, earlier) = earlier;
     let refused_delete = history.iter().any(|env| {
         later.causal_context.covers(env.id)
             && matches!(&env.payload,
@@ -567,7 +577,13 @@ fn deferred_region_cause(
                 Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
             )
     });
-    if !refused_delete {
+    let undone = made.transaction.is_some_and(|tx| {
+        history.iter().any(|env| {
+            later.causal_context.covers(env.id)
+                && matches!(&env.payload, OperationPayload::UndoTransaction(undo) if undo.target == tx)
+        })
+    });
+    if !refused_delete && !undone {
         return None;
     }
     let mut view = OperationSet::new();
@@ -584,7 +600,11 @@ fn deferred_region_cause(
         .regions
         .iter()
         .any(|region| region.id == earlier);
-    (!held).then_some(REGION_SEEN_DELETED)
+    (!held).then_some(if refused_delete {
+        REGION_SEEN_DELETED
+    } else {
+        REGION_SEEN_UNDONE
+    })
 }
 
 /// Counts per operation kind over a run: authored, and applied (with or
