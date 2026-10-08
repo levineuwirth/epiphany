@@ -449,6 +449,11 @@ pub mod vectors;
 ///     the mints still going until it keeps none, where it kept a staff for
 ///     its live instance and removed the instrument the staff names, judging
 ///     the staff's reference as going with it (`CrossCuttingRefsResolve`).
+///   - an `InsertIdentifiedPitch` into an unpitched event makes it a note of
+///     the pitch, as one into a rest does, where the graph dropped the pitch
+///     the ledger minted (a concurrent whole-event modify writing the note
+///     as unpitched; `SpellingScopeResolves` once the pitch was spelt). Graph
+///     state only.
 ///   - a voice the promotion pre-pass makes is indexed under the staff
 ///     instance its insert names, as the graph holds it, so a
 ///     `DeleteStaffInstance` while it holds an event is refused
@@ -530,7 +535,9 @@ pub mod vectors;
 ///   restorations in musical time,
 ///   `an_undo_writes_nothing_in_musical_time_into_a_region_out_of_it_in_both_modes`;
 ///   for a tie held at its transaction's end,
-///   `a_tie_is_held_when_its_transaction_completes_in_both_modes`.
+///   `a_tie_is_held_when_its_transaction_completes_in_both_modes`; for a
+///   pitch into an unpitched event,
+///   `a_pitch_inserted_into_an_unpitched_event_makes_it_a_note_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

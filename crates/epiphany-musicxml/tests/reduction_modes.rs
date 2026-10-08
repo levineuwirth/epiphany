@@ -4279,3 +4279,77 @@ fn a_modify_counts_a_bases_pitch_as_seen() {
     );
     assert!(!free.objects.contains_key(&TypedObjectId::Pitch(base_pitch)));
 }
+
+/// A pitch inserted into an unpitched event makes it a note, as one inserted
+/// into a rest does, in both modes: one author writes a note as an unpitched
+/// event while another, concurrently, adds a pitch to the note and respells
+/// it. Before reduction version 3 the graph dropped the pitch the ledger
+/// minted, and its spelling attachment named nothing (`SpellingScopeResolves`).
+#[test]
+fn a_pitch_inserted_into_an_unpitched_event_makes_it_a_note_in_both_modes() {
+    use epiphany_core::{
+        IdentifiedPitch, PitchId, PitchSpelling, StaffPosition, UnpitchedEvent, UnpitchedMemberId,
+    };
+    use epiphany_ops::{InsertIdentifiedPitchOp, RespellPitchOp};
+    let m = Measure::new();
+    let unpitched = Event::Unpitched(UnpitchedEvent {
+        id: m.q(0),
+        voice: m.quarters[0].voice(),
+        position: m.quarters[0].position().clone(),
+        duration: m.quarters[0].duration().clone(),
+        staff_position: StaffPosition(-1),
+        instrument_member: UnpitchedMemberId(0),
+        articulations: Vec::new(),
+        dynamic: None,
+        stem: epiphany_core::StemConfiguration,
+        grace: None,
+    });
+    let written = m.op(
+        B,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::ModifyEvent(ModifyEventOp {
+            event: unpitched,
+        })),
+    );
+    let pitch = PitchId::new(A, 2400);
+    let value = valuegen::pitch_value_nth(4);
+    let added = m.op(
+        A,
+        0,
+        2,
+        &[],
+        primitive(OperationKind::InsertIdentifiedPitch(
+            InsertIdentifiedPitchOp {
+                event: m.q(0),
+                pitch: IdentifiedPitch {
+                    id: pitch,
+                    pitch: value,
+                },
+            },
+        )),
+    );
+    let respelt = m.op(
+        A,
+        1,
+        3,
+        &[added.id],
+        primitive(OperationKind::RespellPitch(RespellPitchOp {
+            pitch,
+            spelling: PitchSpelling::cmn(epiphany_core::CmnNominal::C, 4),
+        })),
+    );
+    let authored = [written.clone(), added.clone(), respelt];
+    let state = m.agree("a pitch added to a note written unpitched", &authored);
+    assert!(matches!(
+        effect(&state, written.id),
+        Some(OperationEffect::AppliedWithRepair { .. })
+    ));
+    assert_eq!(effect(&state, added.id), Some(OperationEffect::Applied));
+    assert!(live(&state, TypedObjectId::Pitch(pitch)));
+    assert!(
+        holds_with_spelling(&m, &authored, m.q(0), pitch),
+        "the unpitched event becomes a note of the added pitch, spelt"
+    );
+}

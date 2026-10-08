@@ -796,7 +796,8 @@ naming nothing. A whole-event write revives no pitch a delete removed, and a
 measure in musical time is refused in a region out of it. A region's whole grid
 and its meter changes compare by the order the reduction applied them. A
 best-effort undo that keeps a mint for what names it keeps what that mint
-names, where it removed the instrument of a staff it kept. A promoted voice
+names, where it removed the instrument of a staff it kept. A pitch inserted
+into an unpitched event makes it a note. A promoted voice
 holds its instance against a delete, as any voice does. An undo that is a
 member of the transaction it names is refused, and a migration out of musical
 time supersedes an undo's restoration of a value written in musical time into
@@ -1148,7 +1149,9 @@ under pitch add/remove} (normative): deleting the \emph{only} pitch of a
 single-pitch note degrades the event to a \texttt{Rest} of the same
 id/voice/position/duration rather than leaving an empty pitched event (Chapter~5
 forbids the empty chord, \texttt{ArenaError::EmptyPitchedEvent}); inserting a
-pitch into a rest is the dual, promoting it to a one-pitch note. This preserves
+pitch into a rest is the dual, promoting it to a one-pitch note, and so is
+inserting one into an unpitched event (since version~0.19.0, before which the
+graph dropped the pitch the bookkeeping minted). This preserves
 the delete-wins / mint disciplines and keeps the graph consistent with the
 bookkeeping, which tombstones or mints the pitch object either way.
 

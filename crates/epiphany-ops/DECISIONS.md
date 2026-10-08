@@ -3203,3 +3203,17 @@ length; the test binary took 37 s in a debug build here where it took 15, and
 the workspace tests run in one CI job of about two minutes. With B2 planted
 the CI test fails on the second chunk, and with the second chunk emptied it
 passes, as before.
+
+**A pitch inserted into an unpitched event makes it a note (found by this
+round's fuzz).** At 128 authored operations, an author wrote a chord as an
+unpitched event (observed-remove taking its pitches) while another,
+concurrently, added a pitch to it and respelt the pitch. The insert applied in
+the ledger, but `graph_insert_pitch` turned only a rest into a note and left
+an unpitched event as it was, so the graph dropped the pitch and its spelling
+attachment named nothing (`SpellingScopeResolves`). The fuzz's new
+kind-changing modify made it reachable; no generated history had changed an
+event's kind before. An unpitched event now becomes a note of the pitch, as a
+rest does, keeping its articulations, dynamic and grace. Its undo removes the
+pitch and leaves a rest, as for a note that was one. Locked by
+`a_pitch_inserted_into_an_unpitched_event_makes_it_a_note_in_both_modes` and
+history `148` (each fails with the unpitched branch writing nothing).

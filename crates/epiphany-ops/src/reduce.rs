@@ -10144,6 +10144,26 @@ impl<'a> Reducer<'a> {
                 grace: None,
             };
             *slot = Event::Pitched(replacement);
+            return;
+        }
+        // So does adding one to an unpitched event, which a concurrent
+        // whole-event modify can have made of the note the insert's author
+        // saw (reduction version 3: before it the graph dropped the pitch
+        // while the ledger minted it, `SpellingScopeResolves` once spelt).
+        if let Event::Unpitched(unpitched) = slot {
+            let replacement = epiphany_core::PitchedEvent {
+                id: unpitched.id,
+                voice: unpitched.voice,
+                position: unpitched.position.clone(),
+                duration: unpitched.duration.clone(),
+                pitches: vec![pitch.clone()],
+                articulations: unpitched.articulations.clone(),
+                dynamic: unpitched.dynamic.clone(),
+                ornaments: Vec::new(),
+                stem: epiphany_core::StemConfiguration,
+                grace: unpitched.grace.clone(),
+            };
+            *slot = Event::Pitched(replacement);
         }
     }
 
