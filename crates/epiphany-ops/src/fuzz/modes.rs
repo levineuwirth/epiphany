@@ -638,9 +638,9 @@ struct Simulation {
     history: Vec<OperationEnvelope>,
     replicas: Vec<Replica>,
     clock: i64,
-    /// The first invariant breach or mode split seen in a view, with the
-    /// view's history.
-    view_finding: Option<(Vec<OperationEnvelope>, Finding)>,
+    /// Every class of invariant breach or mode split any view showed, each
+    /// with the first view's history that showed it; every view is checked.
+    view_findings: BTreeMap<String, (Vec<OperationEnvelope>, Finding)>,
 }
 
 impl Simulation {
@@ -659,7 +659,7 @@ impl Simulation {
             history: Vec::new(),
             replicas,
             clock: 0,
-            view_finding: None,
+            view_findings: BTreeMap::new(),
         }
     }
 
@@ -730,11 +730,11 @@ impl Simulation {
         let mut set = OperationSet::new();
         set.accept_all(envelopes.iter().cloned());
         let reduced = set.reduce_onto(&empty_base());
-        if self.view_finding.is_none() {
-            let free = set.reduce();
-            if let Some(finding) = compare(&envelopes, &free, &reduced).into_iter().next() {
-                self.view_finding = Some((envelopes.clone(), finding));
-            }
+        let free = set.reduce();
+        for finding in compare(&envelopes, &free, &reduced) {
+            self.view_findings
+                .entry(finding.class.clone())
+                .or_insert_with(|| (envelopes.clone(), finding));
         }
         View { envelopes, reduced }
     }
@@ -2374,9 +2374,9 @@ pub struct Generated {
     pub history: Vec<OperationEnvelope>,
     /// How many of them, from the start, are the genesis.
     pub genesis: usize,
-    /// The first failure seen in a replica's view as the history grew, with
-    /// that view's history.
-    pub in_view: Option<(Vec<OperationEnvelope>, Finding)>,
+    /// Every class of failure seen in a replica's view as the history grew,
+    /// each with the first view's history that showed it.
+    pub in_view: BTreeMap<String, (Vec<OperationEnvelope>, Finding)>,
 }
 
 /// The history seeded by `seed`: a genesis and then `authored` operations of
@@ -2421,7 +2421,7 @@ pub fn generate(seed: u64, authored: usize) -> Generated {
     Generated {
         history: sim.history,
         genesis: genesis_len,
-        in_view: sim.view_finding,
+        in_view: sim.view_findings,
     }
 }
 
@@ -2453,11 +2453,8 @@ pub fn run(seed: u64, iterations: u64, authored: usize) -> Report {
                 .entry(finding.class.clone())
                 .or_insert((s, history.clone(), finding));
         }
-        if let Some((sub, finding)) = generated.in_view {
-            report
-                .findings
-                .entry(finding.class.clone())
-                .or_insert((s, sub, finding));
+        for (class, (sub, finding)) in generated.in_view {
+            report.findings.entry(class).or_insert((s, sub, finding));
         }
         report.iterations += 1;
     }
@@ -2840,5 +2837,41 @@ mod tests {
             witness_shape("anchor Region { id: RegionId(0000000000000001:0000000000000002), edge: Start } offset"),
             "anchor Region { id: RegionId, edge: Start } offset"
         );
+    }
+
+    /// Every view is checked and every class it shows kept (review 1's L2):
+    /// two views of one simulation, the first showing one deferred cause and
+    /// the second the other, both reach the history's findings.
+    #[test]
+    fn every_view_is_checked_and_every_class_kept() {
+        let never_seen = super::parse(include_str!(
+            "../../tests/two_modes/110-invariant-region-extents.txt"
+        ))
+        .expect("parses");
+        let seen_deleted = super::parse(include_str!(
+            "../../tests/two_modes/145-invariant-region-extents.txt"
+        ))
+        .expect("parses");
+        let mut sim = super::Simulation::new(0);
+        for history in [never_seen.clone(), seen_deleted] {
+            sim.replicas[0].seen = (0..history.len()).collect();
+            sim.history = history;
+            sim.view(0);
+        }
+        let classes: Vec<&String> = sim.view_findings.keys().collect();
+        let both = vec![super::REGION_NEVER_SEEN, super::REGION_SEEN_DELETED];
+        assert_eq!(classes, both, "two views");
+        // One view showing both: the second history's replicas renamed apart.
+        let renamed = include_str!("../../tests/two_modes/145-invariant-region-extents.txt")
+            .replace("#x0000000000000001", "#x0000000000000004")
+            .replace("#x0000000000000003", "#x0000000000000006");
+        let mut one_view = never_seen;
+        one_view.extend(super::parse(&renamed).expect("parses"));
+        let mut sim = super::Simulation::new(0);
+        sim.replicas[0].seen = (0..one_view.len()).collect();
+        sim.history = one_view;
+        sim.view(0);
+        let classes: Vec<&String> = sim.view_findings.keys().collect();
+        assert_eq!(classes, both, "one view");
     }
 }

@@ -3179,3 +3179,16 @@ naming either end of an anchor, say), which costs a line in a report, not a
 hidden cause. Locked by `a_witness_shape_names_its_cause_not_its_objects`
 (the shape empty, or lists not collapsed, it fails); with M1's and M4's fixes
 both reverted, their histories `141` and `143` are now two classes.
+
+**Every view is checked, and every class kept (L2).** The simulation checked
+the replicas' views only until a history's first finding, and kept only that
+view's first, so a cause shown only in a later view, or second in a view, went
+unreported. Every view is now reduced both ways and compared, and each class
+any view shows is kept with the first view's history that showed it
+(`Generated::in_view` is a map of classes). Over the handoff's first 400,000
+seeds review 1's instrumented copy found nothing the old reporting missed;
+here a run of 1,000 histories took about a sixth more CPU time. Locked by
+`every_view_is_checked_and_every_class_kept`, which drives two views of a
+simulation showing the two deferred causes in turn, and one view showing both
+(gated after the first finding, or keeping a view's first finding only, it
+fails).
