@@ -3011,3 +3011,19 @@ a promoted voice's instance through its losing insert, which stood in for the
 missing entry, goes. Locked by
 `an_instance_holding_a_promoted_voice_is_not_empty_in_both_modes` and history
 `142` (each fails with the entry left out).
+
+**An undo of its own transaction is refused (M4).** A transaction applies as
+one block, and an undo that is one of its members and names it ran while the
+transaction was still applying: it reversed whatever the members before it
+had written. One that undid another transaction's time signature and then
+undid itself restored the meter change the first undo had removed, naming the
+time signature that undo had tombstoned (`CrossCuttingRefsResolve`). No
+editor writes one; the fuzz did, and the catalog refused none. Two ways were
+open: reduce the pair consistently, which would need the self-undo to restore
+the objects the first undo removed (a resurrection the catalog defers), or
+refuse it. It is refused, from the envelope alone (its `transaction` is its
+target), with `TargetMissing`, the verdict for a transaction with nothing
+known to compensate; as a member's failure it conflicts the transaction
+holding it, whose other members then apply nothing. Locked by
+`an_undo_of_its_own_transaction_is_refused_in_both_modes`, under both policies
+(the check removed, it fails), and history `143`.

@@ -442,6 +442,11 @@ pub mod vectors;
 ///     `ContainerNotEmpty` in both modes, where the instance, its other voices
 ///     gone, looked empty and its delete applied, the promoted event naming a
 ///     voice the graph no longer held (`EventVoiceBacklink`).
+///   - an `UndoTransaction` that is a member of the transaction it names is
+///     refused `TargetMissing` in both modes, read from the envelope, and so
+///     fails that transaction, where it reversed the members before it, an
+///     earlier undo's restoration of a meter change among them, against a time
+///     signature that undo had removed (`CrossCuttingRefsResolve`).
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
@@ -495,7 +500,9 @@ pub mod vectors;
 ///   `a_transactions_grid_write_is_as_recent_as_it_applied_in_both_modes`;
 ///   for what a kept mint names,
 ///   `an_undo_keeps_what_a_kept_mint_names_in_both_modes`; for promoted
-///   voices, `an_instance_holding_a_promoted_voice_is_not_empty_in_both_modes`.
+///   voices, `an_instance_holding_a_promoted_voice_is_not_empty_in_both_modes`;
+///   for an undo of its own transaction,
+///   `an_undo_of_its_own_transaction_is_refused_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

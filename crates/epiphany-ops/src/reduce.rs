@@ -7560,6 +7560,19 @@ impl<'a> Reducer<'a> {
         env: &OperationEnvelope,
         op: &UndoTransactionPayload,
     ) -> OperationEffect {
+        // A transaction is undone once it is complete: an undo that is a
+        // member of the transaction it names, which is still applying, is
+        // refused, read from the envelope, and the transaction with it
+        // (reduction version 3: before it the undo reversed the members
+        // before it, an earlier undo's restorations among them, against
+        // objects that undo had removed, `CrossCuttingRefsResolve`).
+        if member_transaction(env) == Some(op.target) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            };
+        }
         let targets = self.tx_minted.get(&op.target).cloned().unwrap_or_default();
         let (restorations, superseded) = self.collect_restorations(op.target, &targets);
         if targets.is_empty() && restorations.is_empty() && superseded.is_empty() {

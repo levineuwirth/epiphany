@@ -3610,3 +3610,111 @@ fn an_instance_holding_a_promoted_voice_is_not_empty_in_both_modes() {
     );
     assert!(live(&state, TypedObjectId::StaffInstance(instance)));
 }
+
+/// A transaction is undone once it is complete, so an undo that is a member of
+/// the transaction it names is refused `TargetMissing` in both modes, and the
+/// transaction holding it conflicts as a whole: here one that undoes an
+/// earlier transaction's time signature and then undoes itself. Before
+/// reduction version 3 the self-undo reversed the first undo's restoration of
+/// the region's meter change, restoring a meter change naming the time
+/// signature that undo had removed (`CrossCuttingRefsResolve`).
+#[test]
+fn an_undo_of_its_own_transaction_is_refused_in_both_modes() {
+    use epiphany_core::TimeSignatureId;
+    use epiphany_ops::{ConflictKind, CreateRegionOp, SetTimeSignatureOp};
+    let m = Measure::new();
+    for (n, policy) in [UndoPolicy::StrictInverse, UndoPolicy::BestEffort]
+        .into_iter()
+        .enumerate()
+    {
+        let n = n as u64;
+        let region = RegionId::new(A, 2000 + 10 * n);
+        let first = TransactionId::new(A, 2001 + 10 * n);
+        let second = TransactionId::new(A, 2002 + 10 * n);
+        let signature = TimeSignatureId::new(A, 2003 + 10 * n);
+        let declare = |counter: u64, at: i64, seen: &[OperationId], tx: TransactionId| {
+            let mut declare = m.op(
+                A,
+                counter,
+                at,
+                seen,
+                primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                    id: tx,
+                    label: String::from("edit"),
+                    category: None,
+                })),
+            );
+            declare.transaction = Some(tx);
+            declare
+        };
+        let undo = |counter: u64, at: i64, seen: OperationId, target: TransactionId| {
+            let mut undo = m.op(
+                A,
+                counter,
+                at,
+                &[seen],
+                OperationPayload::UndoTransaction(UndoTransactionPayload { target, policy }),
+            );
+            undo.transaction = Some(second);
+            undo
+        };
+        let create = m.op(
+            A,
+            0,
+            1,
+            &[],
+            primitive(OperationKind::CreateRegion(CreateRegionOp {
+                region: valuegen::region(region),
+            })),
+        );
+        let open_first = declare(1, 2, &[create.id], first);
+        let mut set = m.op(
+            A,
+            2,
+            3,
+            &[open_first.id],
+            primitive(OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                region,
+                anchor: valuegen::region_start_anchor(
+                    region,
+                    MusicalPosition(RationalTime::new(1, 1).expect("a bar in")),
+                ),
+                time_signature: Some(valuegen::time_signature(signature, 4)),
+            })),
+        );
+        set.transaction = Some(first);
+        let open_second = declare(3, 4, &[set.id], second);
+        let undo_first = undo(4, 5, open_second.id, first);
+        let undo_itself = undo(5, 6, undo_first.id, second);
+        let state = m.agree(
+            &format!("a transaction undoing itself, {policy:?}"),
+            &[
+                create,
+                open_first,
+                set.clone(),
+                open_second,
+                undo_first.clone(),
+                undo_itself.clone(),
+            ],
+        );
+        assert_eq!(effect(&state, set.id), Some(OperationEffect::Applied));
+        for member in [&undo_first, &undo_itself] {
+            assert_eq!(
+                effect(&state, member.id),
+                Some(OperationEffect::NoOp {
+                    reason: NoOpReason::TransactionConflict
+                }),
+                "{policy:?}"
+            );
+        }
+        assert!(
+            state.conflicts.records().iter().any(|r| matches!(
+                &r.kind,
+                ConflictKind::TransactionConflict { transaction, failed_members }
+                    if *transaction == second && *failed_members == vec![undo_itself.id]
+            )),
+            "{policy:?}: the self-undo fails its transaction"
+        );
+        assert!(live(&state, TypedObjectId::TimeSignature(signature)));
+    }
+}
