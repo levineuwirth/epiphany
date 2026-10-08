@@ -2817,7 +2817,10 @@ since. A restoration now keeps every live pitch the value does not carry, the
 undone transaction's own having been tombstoned before restorations apply.
 A modify that omits a pitch its own author saw still dropped it from the graph
 alone here; the fuzz at a larger budget found one, and the rule became the
-whole-event write's (below). Graph state only. Locked
+whole-event write's (below), which kept it; the owner then ruled observed-remove
+(D49), under which a modify removes such a pitch with its attachments, and an
+undo's restoration brings back what its modifies removed (fix round 1, below).
+Add wins stands as observed-remove's other half. Graph state only. Locked
 by `a_modify_keeps_a_pitch_its_author_never_saw_in_both_modes` and history
 `126` (each fails with no unseen pitch kept) and
 `an_undo_of_a_modify_keeps_a_pitch_added_since_in_both_modes` (fails with the
@@ -2905,7 +2908,7 @@ by `an_undo_of_a_region_or_instrument_still_named_is_blocked_in_both_modes`,
 under both policies (each surface removed, and the region named twice, it
 fails), and histories `135` and `136`.
 
-**A whole-event write neither removes nor revives a pitch.** Two more causes
+**A whole-event write revives no pitch (and, until D49, removed none).** Two more causes
 at a million histories were whole-event writes. A modify whose author saw a
 pitch and left it out of its value (history `138`) dropped it from the graph while the ledger kept it live and its
 spelling attachment stayed (`SpellingScopeResolves`); and a modify carrying a
@@ -2916,8 +2919,12 @@ restoration's alike (`written_event`): the value's pitches that are tombstoned
 are left out, and every live pitch of the event the value does not carry is
 kept. Event pitch membership so changes only by pitch and event deletes, pitch
 inserts and undos of them, which the ledger records; `event_pitches` and the
-graph agree. Graph state only. Locked by
-`a_whole_event_modify_neither_removes_nor_revives_a_pitch_in_both_modes`
+graph agree. Graph state only. D49 narrowed the keeping half for a modify: a
+pitch its author saw and left out is now removed (observed-remove, fix round 1,
+below); the undo's restoration keeps it as written here, and delete wins
+stands. Locked by
+`a_whole_event_modify_neither_removes_nor_revives_a_pitch_in_both_modes` (now
+`a_whole_event_modify_removes_only_the_pitches_its_author_saw_in_both_modes`)
 (the tombstoned filter removed, it fails; the modify writing its raw value, it
 and `a_modify_keeps_a_pitch_its_author_never_saw_in_both_modes` fail) and
 histories `137` and `138`.
@@ -3072,3 +3079,52 @@ gesture, ninety after). Locked by
 `a_tie_is_held_when_its_transaction_completes_in_both_modes`: a mended tie
 stands, a broken one goes with its repair on the member that broke it, and,
 both ends moved apart, on the later member.
+
+**A whole-event modify follows observed-remove (O5, D49).** The checkpoint read
+D48's add wins as "a whole-event write removes no live pitch", which silently
+ignored a removal written by rewriting a chord: a rest written over a note
+reported `Applied` and left the note. The owner narrowed it: a modify removes
+the pitches its author saw and left out, and keeps the ones it never saw.
+`remove_observed_pitches` runs before the value is written: each live pitch of
+the event (`event_pitches`) the value does not carry is removed when its
+insert, the envelope that minted it (`minted_by`), is in the modify's causal
+past, or is the modify itself; the removal is `DeleteIdentifiedPitch`'s
+(tombstoned naming the modify, out of `event_pitches`, out of the graph with
+every spelling attachment scoped to it, the last pitch of a chord leaving a
+rest), and the modify's effect records a `CascadeDeleted` repair per pitch,
+its target the pitch: a spelling attachment has no id of its own, and a tie
+paired on the pitch gives way through the tie check with its own repair. A
+conflicted modify still materializes and so still removes; its effect carries
+no repair, the tombstone naming it, as for a tie. A pitch from a base has no
+minting envelope in the set; the base precedes every operation of the set, so
+every author has seen it and a modify that leaves it out removes it,
+graph-aware. Base-free reduction holds no base pitch (nor the base's event, so
+it refuses such a modify `TargetMissing`), and the modes agree over an empty
+base, as for every referent a base supplies. What remains to keep is what
+`written_event` already kept, so a rest or an unpitched event written over a
+note holding a pitch its author never saw becomes a note of that pitch (an
+unpitched value now follows the rest's rule; it had dropped the kept pitches).
+The undo, under the planning default the owner may overrule, reverts the
+modify's own effect and no more: an event's restoration first brings back the
+pitches a `ModifyEvent` member of the undone transaction removed
+(`revive_removed_pitches`), live again, at the value and with the attachments
+recorded at removal (`removed_pitches`, an index in the transaction snapshot,
+so a rolled-back modify leaves none), and then writes the restored value,
+which keeps every live pitch it does not carry (pitches added since stay) and
+revives none a delete removed. A pitch a later delete also targeted, finding it
+already removed by the modify, does not hold it against the undo; the undo
+revives only what its own modifies removed, tied to the event's restoration,
+so a superseded restoration (best effort) revives nothing. The fuzz gains two
+`ModifyEvent` arms: a chord written without one of its pitches, and an event
+written as another kind in its place (a rest or unpitched note over a note,
+each of those over the other); a rest written over a note by a modify that
+mints pitches is not generated, as before. The seeded canonical-base digest
+moves, its stream's modifies leaving out pitches their authors saw; with the
+removal disabled the previous digest returns. Locked by
+`a_whole_event_modify_removes_only_the_pitches_its_author_saw_in_both_modes`
+and `an_undo_of_a_modify_brings_back_the_pitch_it_removed_in_both_modes` (with
+no pitch removed, both fail), `a_modify_keeps_a_pitch_its_author_never_saw_in_both_modes`
+(every left-out pitch removed, it and the first fail), the undo test alone with
+revival disabled, and `a_modify_counts_a_bases_pitch_as_seen` with a base pitch
+read as unseen; histories `126`, `137` and `138` agree, `138`'s modify now
+removing its pitch with a repair.

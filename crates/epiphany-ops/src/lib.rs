@@ -382,11 +382,11 @@ pub mod vectors;
 ///     such a change each so remove it, where the tie stayed (`TiePairing`).
 ///   - a `ModifyEvent` keeps a live pitch of its event that its value does not
 ///     carry and whose insert its author never saw, at its current value and
-///     with its attachments (add wins, D48); and an undo restoring an event's
-///     value keeps every live pitch of the event the value does not carry, the
-///     undone transaction's own tombstoned first. Each dropped the pitch from
-///     the graph and left it live, its spelling naming nothing
-///     (`SpellingScopeResolves`). Graph state only; no verdict moves.
+///     with its attachments (add wins, D48; observed-remove, D49, below); and
+///     an undo restoring an event's value keeps every live pitch of the event
+///     the value does not carry, the undone transaction's own tombstoned
+///     first. Each dropped the pitch from the graph and left it live, its
+///     spelling naming nothing (`SpellingScopeResolves`).
 ///   - a `SetClef` or `SetKeySignature` into an instance whose region admits
 ///     no musical offset is refused `WrongRegionTimeModel`, as is a
 ///     `CreateStaffInstance` carrying a clef or key change anchored by a
@@ -407,13 +407,24 @@ pub mod vectors;
 ///     mints, is superseded by the tuplet's create (strict: conflicted; best
 ///     effort: the duration left), as a `ModifyEvent` changing it is refused,
 ///     where the restoration broke the tuplet's sum (`TupletSum`).
-///   - a whole-event write, a `ModifyEvent` or an undo's restored event value,
-///     also keeps a live pitch its author saw and left out, and leaves out a
-///     pitch it carries that a delete or undo tombstoned (delete wins): a
-///     pitch leaves an event only by a pitch or event delete or an undo of its
-///     insert. The first dropped the pitch from the graph and left it live
-///     (`SpellingScopeResolves`), the second brought a tombstoned pitch back
-///     into the graph (`UniqueIdentifiers`). Graph state only.
+///   - a `ModifyEvent` follows observed-remove (D49): a live pitch of its
+///     event its value leaves out and whose insert is in its causal past (or
+///     which a base holds, the base preceding every operation) is removed
+///     with its attachments, as `DeleteIdentifiedPitch` removes one, and the
+///     modify records a `CascadeDeleted` repair for it (a conflicted modify's
+///     effect carries none; the pitch's tombstone names it); so a rest or an
+///     unpitched event written over a note its author saw becomes that event,
+///     and over a note holding a pitch its author never saw, a note of that
+///     pitch. An undo restoring a modified event's value brings back, at
+///     their values and with their attachments, the pitches the undone
+///     transaction's modifies removed, and keeps every pitch added since
+///     (the planning default, not yet ruled). A whole-event write leaves out
+///     a pitch it carries that a delete or undo tombstoned (delete wins). The
+///     modify dropped a pitch it left out from the graph and left it live
+///     (`SpellingScopeResolves`); then, under the checkpoint's first reading of
+///     D48, it removed none, so a removal written as a whole event, a rest
+///     over a note among them, was ignored; and a carried tombstoned pitch came
+///     back into the graph (`UniqueIdentifiers`).
 ///   - a `CreateMeasure` whose start is anchored in musical time into a
 ///     region admitting no musical offset is refused `WrongRegionTimeModel`,
 ///     as a `SetTimeSignature` is, where it applied after a concurrent
@@ -504,7 +515,9 @@ pub mod vectors;
 ///   for regions and instruments still named,
 ///   `an_undo_of_a_region_or_instrument_still_named_is_blocked_in_both_modes`;
 ///   for whole-event writes,
-///   `a_whole_event_modify_neither_removes_nor_revives_a_pitch_in_both_modes`;
+///   `a_whole_event_modify_removes_only_the_pitches_its_author_saw_in_both_modes`,
+///   `an_undo_of_a_modify_brings_back_the_pitch_it_removed_in_both_modes` and,
+///   over a base, `a_modify_counts_a_bases_pitch_as_seen`;
 ///   for measures,
 ///   `a_measure_in_a_region_out_of_musical_time_is_refused_in_both_modes`;
 ///   for the grid's chains,

@@ -1,6 +1,6 @@
 # class: invariant Invariant(SpellingScopeResolves
 # expect: agree
-# agrees since: a whole-event modify keeps a pitch its author never saw
+# agrees since: a whole-event modify keeps a pitch its author never saw (observed-remove)
 # found: seed 0x4a030d, 24 authored; minimized from 39 to 9 envelopes
 (envelope #x00000000000000010000000000000000 #x00000000000000000000000000000001 (stamp 1 0 #x00000000000000010000000000000000) (causal () ()) () (primitive (create-instrument (instrument #x00000000000000010000000000000000 "instrument-0" () () #x () (clef g 2 0) (staff-line-configuration 5 #x000000000000f03f solid ()) ()))))
 (envelope #x00000000000000010000000000000001 #x00000000000000000000000000000001 (stamp 2 0 #x00000000000000010000000000000001) (causal ((#x0000000000000001 0)) ()) () (primitive (create-staff (staff #x00000000000000010000000000000001 "staff-1" () #x00000000000000010000000000000000 (staff-line-configuration 5 #x000000000000f03f solid ()) () (clef g 2 0)))))

@@ -21,7 +21,9 @@
 //! editor's gesture of several operations: a note replaced by a rest, a tie
 //! entered with the note it continues into, a quarter-tone with its spelling, a
 //! staff, voice or region added and taken away again, a tied pair moved one end
-//! at a time in one transaction.
+//! at a time in one transaction. A whole-event modify moves, resizes or
+//! revalues an event, writes a chord without a pitch its author sees, or
+//! writes an event as another kind in its place.
 //!
 //! Everything is seeded: [`generate`] is a function of its seed and length, so
 //! a finding reproduces from both. [`minimize`] shrinks a failing history to
@@ -1979,6 +1981,63 @@ fn make(
             sim.replicas[r].open = Some((tx, out.len() as u64));
             out
         }
+        49 => {
+            // ModifyEvent: a chord written without one of its pitches, which
+            // its author sees, so observed-remove takes it out.
+            let chords: Vec<&Event> = h
+                .events
+                .iter()
+                .copied()
+                .filter(|e| matches!(e, Event::Pitched(p) if p.pitches.len() >= 2))
+                .collect();
+            let mut value = (*sim.rng.pick(&chords)?).clone();
+            if let Event::Pitched(p) = &mut value {
+                let dropped = sim.rng.below(p.pitches.len() as u64) as usize;
+                p.pitches.remove(dropped);
+            }
+            vec![prim(OperationKind::ModifyEvent(ModifyEventOp {
+                event: value,
+            }))]
+        }
+        50 => {
+            // ModifyEvent: an event written as another kind in its place, a
+            // rest or an unpitched note over a note, and a rest and an
+            // unpitched note each over the other.
+            let event = rng_event(sim)?;
+            let (id, voice) = (event.id(), event.voice());
+            let (position, duration) = (event.position().clone(), event.duration().clone());
+            let to_rest = match event {
+                Event::Rest(_) => false,
+                Event::Pitched(_) => sim.rng.chance(2),
+                _ => true,
+            };
+            let value = if to_rest {
+                Event::Rest(Rest {
+                    id,
+                    voice,
+                    position,
+                    duration,
+                    vertical_position: None,
+                    visible: !sim.rng.chance(5),
+                })
+            } else {
+                Event::Unpitched(UnpitchedEvent {
+                    id,
+                    voice,
+                    position,
+                    duration,
+                    staff_position: StaffPosition(sim.rng.range(-4, 4) as i16),
+                    instrument_member: UnpitchedMemberId(0),
+                    articulations: Vec::new(),
+                    dynamic: None,
+                    stem: StemConfiguration,
+                    grace: None,
+                })
+            };
+            vec![prim(OperationKind::ModifyEvent(ModifyEventOp {
+                event: value,
+            }))]
+        }
         _ => return None,
     })
 }
@@ -2046,7 +2105,7 @@ fn tie_entry(
 /// Each arm of [`make`] and how often it is drawn: the editing of notes,
 /// pitches and their marks three times as often as the score's structure and
 /// settings, as an editor's history runs.
-const ARMS: [(u64, u64); 49] = [
+const ARMS: [(u64, u64); 51] = [
     (0, 4),
     (1, 3),
     (2, 3),
@@ -2096,6 +2155,8 @@ const ARMS: [(u64, u64); 49] = [
     (46, 1),
     (47, 3),
     (48, 2),
+    (49, 2),
+    (50, 2),
 ];
 
 fn draw_arm(rng: &mut Rng) -> u64 {

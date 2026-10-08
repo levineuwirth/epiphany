@@ -2580,11 +2580,12 @@ fn holds_with_spelling(
     held && spelt
 }
 
-/// A whole-event modify keeps a pitch a concurrent author added and it never
-/// saw, with the pitch's attachments (add wins, D48), in both modes. Before
-/// reduction version 3 the modify's value replaced the event's pitches, so the
-/// added pitch left the graph while it stayed live and its spelling attachment
-/// named nothing (`SpellingScopeResolves`).
+/// A whole-event modify follows observed-remove (D49), and so keeps a pitch a
+/// concurrent author added and it never saw, with the pitch's attachments
+/// (add wins, D48), in both modes. Before reduction version 3 the modify's
+/// value replaced the event's pitches, so the added pitch left the graph while
+/// it stayed live and its spelling attachment named nothing
+/// (`SpellingScopeResolves`).
 #[test]
 fn a_modify_keeps_a_pitch_its_author_never_saw_in_both_modes() {
     let m = Measure::new();
@@ -3103,28 +3104,112 @@ fn an_undo_of_a_region_or_instrument_still_named_is_blocked_in_both_modes() {
     }
 }
 
-/// A whole-event modify neither removes nor revives a pitch, in both modes:
-/// one its author saw and left out stays in the event with its attachments,
-/// and one it carries that an undo removed concurrently stays gone. Before
-/// reduction version 3 the first left the graph while it stayed live, its
-/// spelling naming nothing (`SpellingScopeResolves`), and the second came
-/// back into the graph while tombstoned (`UniqueIdentifiers`).
+/// A whole-event modify follows observed-remove (D49), in both modes: a pitch
+/// its author saw and left out is removed with its attachments, the modify
+/// recording a `CascadeDeleted` repair for it; a rest written over a note its
+/// author saw becomes the rest, and over a note holding a pitch its author
+/// never saw, a note of that pitch alone; and a pitch it carries that an undo
+/// removed concurrently stays gone. Before reduction version 3 the first left
+/// the graph while it stayed live, its spelling naming nothing
+/// (`SpellingScopeResolves`), and the last came back into the graph while
+/// tombstoned (`UniqueIdentifiers`); and, as the checkpoint first had it, a
+/// modify removed no live pitch, so a removal written as a whole event was
+/// ignored and the rest written over a note stayed a note.
 #[test]
-fn a_whole_event_modify_neither_removes_nor_revives_a_pitch_in_both_modes() {
-    use epiphany_core::{IdentifiedPitch, PitchId};
+fn a_whole_event_modify_removes_only_the_pitches_its_author_saw_in_both_modes() {
+    use epiphany_core::{IdentifiedPitch, PitchId, SpellingScope};
     use epiphany_ops::InsertIdentifiedPitchOp;
     let m = Measure::new();
+    let reduced = |authored: &[OperationEnvelope]| {
+        let mut set = OperationSet::new();
+        set.accept_all(m.import.envelopes.iter().chain(authored).cloned());
+        set.reduce_onto(&Score::empty(IdentityContext::new(m.import.replica)))
+            .score
+    };
+    let removed_with_repair = |state: &MaterializedState, id: OperationId, pitch: PitchId| {
+        tombstoned(state, TypedObjectId::Pitch(pitch))
+            && matches!(
+                effect(state, id),
+                Some(OperationEffect::AppliedWithRepair { repairs })
+                    if repairs.iter().any(|r| r.kind == RepairKind::CascadeDeleted
+                        && r.target == TypedObjectId::Pitch(pitch))
+            )
+    };
+    let as_rest = |i: usize| -> Event {
+        Event::Rest(Rest {
+            id: m.q(i),
+            voice: m.quarters[i].voice(),
+            position: m.quarters[i].position().clone(),
+            duration: m.quarters[i].duration().clone(),
+            vertical_position: None,
+            visible: true,
+        })
+    };
+    let own_pitch = |i: usize| m.import.ids.pitches[0][i][0];
 
-    // Left out by an author who saw it.
+    // Left out by an author who saw it: removed, its spelling with it.
     let (pitch, [insert, transpose]) = added_pitch(&m, 0, 1, &[]);
     let trim = m.op(A, 0, 3, &[transpose.id], primitive(m.trim(0, eighth())));
     let authored = [insert, transpose, trim.clone()];
     let state = m.agree("a trim leaving out a pitch it saw", &authored);
-    assert_eq!(effect(&state, trim.id), Some(OperationEffect::Applied));
     assert!(
-        holds_with_spelling(&m, &authored, m.q(0), pitch),
-        "the trimmed quarter keeps the pitch it left out, and its spelling"
+        removed_with_repair(&state, trim.id, pitch),
+        "{:?}",
+        effect(&state, trim.id)
     );
+    let score = reduced(&authored);
+    let Some(Event::Pitched(quarter)) = score.events.get(m.q(0)) else {
+        panic!("the first quarter");
+    };
+    assert!(quarter.pitches.iter().all(|ip| ip.id != pitch));
+    assert!(score
+        .spelling_attachments
+        .iter()
+        .all(|a| !matches!(&a.scope, SpellingScope::Pitch(p) if *p == pitch)));
+
+    // A rest written over a note its author saw becomes the rest.
+    let rest = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::ModifyEvent(ModifyEventOp {
+            event: as_rest(1),
+        })),
+    );
+    let state = m.agree(
+        "a rest over a note its author saw",
+        std::slice::from_ref(&rest),
+    );
+    assert!(removed_with_repair(&state, rest.id, own_pitch(1)));
+    assert!(matches!(
+        reduced(std::slice::from_ref(&rest)).events.get(m.q(1)),
+        Some(Event::Rest(_))
+    ));
+
+    // Over a note holding a pitch its author never saw: a note of that pitch.
+    let (unseen, [insert, transpose]) = added_pitch(&m, 0, 1, &[]);
+    let rest = m.op(
+        A,
+        0,
+        3,
+        &[],
+        primitive(OperationKind::ModifyEvent(ModifyEventOp {
+            event: as_rest(0),
+        })),
+    );
+    let authored = [insert, transpose, rest.clone()];
+    let state = m.agree("a rest over a note with an unseen pitch", &authored);
+    assert!(removed_with_repair(&state, rest.id, own_pitch(0)));
+    assert!(live(&state, TypedObjectId::Pitch(unseen)));
+    let Some(Event::Pitched(note)) = reduced(&authored).events.get(m.q(0)).cloned() else {
+        panic!("the unseen pitch keeps a note");
+    };
+    assert_eq!(
+        note.pitches.iter().map(|ip| ip.id).collect::<Vec<_>>(),
+        vec![unseen]
+    );
+    assert!(holds_with_spelling(&m, &authored, m.q(0), unseen));
 
     // Carried after an undo removed it.
     let tx = TransactionId::new(A, 1500);
@@ -3192,6 +3277,97 @@ fn a_whole_event_modify_neither_removes_nor_revives_a_pitch_in_both_modes() {
         Some(OperationEffect::AppliedWithRepair { .. })
     ));
     assert!(tombstoned(&state, TypedObjectId::Pitch(added)));
+    let Some(Event::Pitched(quarter)) = reduced(&authored).events.get(m.q(0)).cloned() else {
+        panic!("the first quarter");
+    };
+    assert!(
+        quarter.pitches.iter().all(|ip| ip.id != added),
+        "the removed pitch stays out of the event"
+    );
+}
+
+/// An undo of a whole-event modify reverts that modify's own effect and no
+/// more, in both modes (the planning default under observed-remove, D49): the
+/// pitch it removed comes back, at its value and with its spelling, and the
+/// event its earlier value; a pitch added since stays.
+#[test]
+fn an_undo_of_a_modify_brings_back_the_pitch_it_removed_in_both_modes() {
+    use epiphany_core::{IdentifiedPitch, PitchId};
+    use epiphany_ops::InsertIdentifiedPitchOp;
+    let m = Measure::new();
+    let (pitch, [insert, transpose]) = added_pitch(&m, 0, 1, &[]);
+    let tx = TransactionId::new(A, 2300);
+    let mut declare = m.op(
+        A,
+        0,
+        3,
+        &[transpose.id],
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("trim"),
+            category: None,
+        })),
+    );
+    declare.transaction = Some(tx);
+    // The context names its author's own declaration and the pitch's
+    // transpose, which it saw.
+    let mut trim = m.op(
+        A,
+        1,
+        4,
+        &[declare.id, transpose.id],
+        primitive(m.trim(0, eighth())),
+    );
+    trim.transaction = Some(tx);
+    let since = PitchId::new(B, 2301);
+    let added_since = m.op(
+        B,
+        2,
+        5,
+        &[trim.id],
+        primitive(OperationKind::InsertIdentifiedPitch(
+            InsertIdentifiedPitchOp {
+                event: m.q(0),
+                pitch: IdentifiedPitch {
+                    id: since,
+                    pitch: valuegen::pitch_value_nth(5),
+                },
+            },
+        )),
+    );
+    let undo = m.op(
+        A,
+        2,
+        6,
+        &[added_since.id, trim.id],
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::StrictInverse,
+        }),
+    );
+    let authored = [
+        insert,
+        transpose,
+        declare,
+        trim.clone(),
+        added_since,
+        undo.clone(),
+    ];
+    let state = m.agree("an undone trim that removed a pitch", &authored);
+    assert!(matches!(
+        effect(&state, trim.id),
+        Some(OperationEffect::AppliedWithRepair { .. })
+    ));
+    assert_eq!(effect(&state, undo.id), Some(OperationEffect::Applied));
+    assert!(live(&state, TypedObjectId::Pitch(pitch)), "it comes back");
+    assert!(
+        holds_with_spelling(&m, &authored, m.q(0), pitch),
+        "in the event, with its spelling"
+    );
+    assert!(
+        live(&state, TypedObjectId::Pitch(since)),
+        "the pitch added since stays"
+    );
     let mut set = OperationSet::new();
     set.accept_all(m.import.envelopes.iter().chain(&authored).cloned());
     let score = set
@@ -3200,10 +3376,12 @@ fn a_whole_event_modify_neither_removes_nor_revives_a_pitch_in_both_modes() {
     let Some(Event::Pitched(quarter)) = score.events.get(m.q(0)) else {
         panic!("the first quarter");
     };
-    assert!(
-        quarter.pitches.iter().all(|ip| ip.id != added),
-        "the removed pitch stays out of the event"
+    assert_eq!(
+        &quarter.duration,
+        m.quarters[0].duration(),
+        "the trim undone"
     );
+    assert!(quarter.pitches.iter().any(|ip| ip.id == since));
 }
 
 /// A measure starts in musical time, so a `CreateMeasure` into a staff
@@ -4043,4 +4221,61 @@ fn a_tie_is_held_when_its_transaction_completes_in_both_modes() {
         repaired(&state, members[2].id),
         "the last member to touch it"
     );
+}
+
+/// Observed-remove over a base (D49): a pitch a base holds was inserted by no
+/// envelope of the set, and the base precedes every operation, so a modify
+/// that leaves it out has seen it and removes it, graph-aware. Base-free
+/// reduction holds no base pitch and so removes none; the two modes agree
+/// over an empty base, as for every referent a base supplies.
+#[test]
+fn a_modify_counts_a_bases_pitch_as_seen() {
+    let m = Measure::new();
+    let mut imported = OperationSet::new();
+    imported.accept_all(m.import.envelopes.iter().cloned());
+    let base = imported
+        .reduce_onto(&Score::empty(IdentityContext::new(m.import.replica)))
+        .score;
+    let base_pitch = m.import.ids.pitches[0][0][0];
+    let rest = Event::Rest(Rest {
+        id: m.q(0),
+        voice: m.quarters[0].voice(),
+        position: m.quarters[0].position().clone(),
+        duration: m.quarters[0].duration().clone(),
+        vertical_position: None,
+        visible: true,
+    });
+    // An author who has seen only the base, which the set does not hold.
+    let mut modify = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::ModifyEvent(ModifyEventOp { event: rest })),
+    );
+    modify.causal_context = CausalContext::new();
+    let mut set = OperationSet::new();
+    set.accept_all([modify.clone()]);
+    let aware = set.reduce_onto(&base);
+    assert_eq!(
+        effect(&aware.state, modify.id),
+        Some(OperationEffect::AppliedWithRepair {
+            repairs: vec![epiphany_ops::RepairRecord {
+                kind: RepairKind::CascadeDeleted,
+                target: TypedObjectId::Pitch(base_pitch),
+            }]
+        })
+    );
+    assert!(matches!(
+        aware.score.events.get(m.q(0)),
+        Some(Event::Rest(_))
+    ));
+    assert!(check_invariants(&aware.score).is_empty());
+    // Base-free reduction knows neither the event nor its pitch.
+    let free = set.reduce();
+    assert_eq!(
+        effect(&free, modify.id),
+        refused(PreconditionFailureReason::TargetMissing)
+    );
+    assert!(!free.objects.contains_key(&TypedObjectId::Pitch(base_pitch)));
 }

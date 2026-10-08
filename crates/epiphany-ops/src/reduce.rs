@@ -1108,6 +1108,9 @@ struct Reducer<'a> {
     // Transient indices.
     minted_by: BTreeMap<TypedObjectId, OperationId>,
     event_pitches: BTreeMap<EventId, Vec<PitchId>>,
+    /// Each pitch a whole-event modify removed (observed-remove), as it stood:
+    /// an undo of the modify's transaction brings it back.
+    removed_pitches: BTreeMap<PitchId, RemovedPitch>,
     voice_occupancy: BTreeMap<VoiceId, Vec<(MusicalPosition, MusicalDuration, EventId)>>,
     // Per-key canonical-order write chains for every LWW overwrite family
     // (operation_catalog §UndoTransaction "Value restoration"). Each chain's
@@ -1334,6 +1337,7 @@ struct WorkingSnapshot {
     conflicts: ConflictRegistry,
     minted_by: BTreeMap<TypedObjectId, OperationId>,
     event_pitches: BTreeMap<EventId, Vec<PitchId>>,
+    removed_pitches: BTreeMap<PitchId, RemovedPitch>,
     voice_occupancy: BTreeMap<VoiceId, Vec<(MusicalPosition, MusicalDuration, EventId)>>,
     respell_chain: BTreeMap<PitchId, WriteChain<PitchSpelling>>,
     /// A pitch's engraved-layer, pitch-scoped, explicit spelling attachment
@@ -1479,6 +1483,15 @@ pub(crate) fn graph_voice_location(score: &Score, voice: VoiceId) -> Option<(usi
 /// Which ties an operation may break, for [`Reducer::ties_give_way`]: none,
 /// one it writes, those at (or beside) some events, or every live tie (an undo
 /// or a migration, which may move any event or value).
+/// A pitch a whole-event modify removed: its event, its value, and the spelling
+/// attachments the graph held for it (none base-free).
+#[derive(Clone)]
+struct RemovedPitch {
+    event: EventId,
+    value: Pitch,
+    attachments: Vec<SpellingAttachment>,
+}
+
 enum TieTouch {
     Nothing,
     Tie(TieId),
@@ -1777,6 +1790,7 @@ impl<'a> Reducer<'a> {
             anomalies: BTreeMap::new(),
             minted_by: BTreeMap::new(),
             event_pitches: BTreeMap::new(),
+            removed_pitches: BTreeMap::new(),
             voice_occupancy: BTreeMap::new(),
             respell_chain: BTreeMap::new(),
             engraved_spelling_chain: BTreeMap::new(),
@@ -8720,10 +8734,12 @@ impl<'a> Reducer<'a> {
             match restoration {
                 ValueRestoration::Event { event, value } => {
                     if let Some(value) = value {
-                        // The undo reverses its own transaction: a live pitch
-                        // another operation added since stays, and one deleted
-                        // since stays gone (reduction version 3), the
-                        // transaction's own pitches being tombstoned first.
+                        // The undo reverses its own transaction: the pitches
+                        // its modifies removed come back, a live pitch another
+                        // operation added since stays, and one deleted since
+                        // stays gone (reduction version 3), the transaction's
+                        // own pitches being tombstoned first.
+                        self.revive_removed_pitches(env, event);
                         self.apply_event_value(&self.written_event(&value));
                         self.event_modify_chain
                             .entry(event)
@@ -9180,24 +9196,159 @@ impl<'a> Reducer<'a> {
             .entry(event_id)
             .or_insert_with(WriteChain::new)
             .record(env.id, env.transaction, op.event.clone());
-        // A whole-event write neither revives nor removes a pitch (reduction
-        // version 3): a pitch another author added, which this author never
-        // saw, stays with its attachments (add wins, D48), as does one this
-        // author left out, and a carried pitch a delete or undo removed stays
-        // gone (delete wins). Before it the value's pitches replaced the
-        // event's in the graph alone.
+        // A whole-event write follows observed-remove (reduction version 3,
+        // D48 and D49): a live pitch of the event the value leaves out is
+        // removed with its attachments if its author saw it, and stays, at
+        // its current value and with its attachments, if not (add wins); a
+        // carried pitch a delete or undo removed stays gone (delete wins).
+        // Before it the value's pitches replaced the event's in the graph
+        // alone.
+        let removed = self.remove_observed_pitches(env, &op.event);
         let value = self.written_event(&op.event);
         self.apply_event_value(&value);
-        effect
+        with_repairs(
+            effect,
+            removed
+                .into_iter()
+                .map(|pitch| RepairRecord {
+                    kind: RepairKind::CascadeDeleted,
+                    target: TypedObjectId::Pitch(pitch),
+                })
+                .collect(),
+        )
+    }
+
+    /// Observed-remove for a whole-event modify: removes each live pitch of
+    /// the event that `value` does not carry and whose insert is in the
+    /// modify's causal past, as `DeleteIdentifiedPitch` removes one, its
+    /// attachments with it, recording it as it stood so an undo of the
+    /// modify's transaction can bring it back. A pitch from a base, which no
+    /// envelope of the set inserts, precedes every operation and so counts as
+    /// seen; base-free reduction holds no base pitch. Returns the removed
+    /// pitches in canonical order.
+    fn remove_observed_pitches(&mut self, env: &OperationEnvelope, value: &Event) -> Vec<PitchId> {
+        let event = value.id();
+        let mut carried = Vec::new();
+        value.collect_identified_pitches(&mut carried);
+        let mut removed: Vec<PitchId> = self
+            .event_pitches
+            .get(&event)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|p| !carried.iter().any(|ip| ip.id == *p))
+            .filter(|p| {
+                matches!(
+                    self.objects.get(&TypedObjectId::Pitch(*p)),
+                    Some(ObjectState::Live)
+                )
+            })
+            .filter(|p| match self.minted_by.get(&TypedObjectId::Pitch(*p)) {
+                Some(insert) => *insert == env.id || env.causal_context.covers(*insert),
+                None => true,
+            })
+            .collect();
+        removed.sort();
+        for pitch in &removed {
+            let p_obj = TypedObjectId::Pitch(*pitch);
+            let minted_by = self.minted_by.get(&p_obj).copied().unwrap_or(env.id);
+            if let Some(value) = self.event_pitch_value(event, *pitch) {
+                let attachments = self
+                    .graph
+                    .as_ref()
+                    .map(|score| {
+                        score
+                            .spelling_attachments
+                            .iter()
+                            .filter(|a| matches!(&a.scope, SpellingScope::Pitch(p) if p == pitch))
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                self.removed_pitches.insert(
+                    *pitch,
+                    RemovedPitch {
+                        event,
+                        value,
+                        attachments,
+                    },
+                );
+            }
+            self.objects.insert(
+                p_obj,
+                ObjectState::Tombstoned {
+                    deleted_by: env.id,
+                    minted_by,
+                },
+            );
+            for pitches in self.event_pitches.values_mut() {
+                pitches.retain(|p| p != pitch);
+            }
+            self.graph_delete_pitch(*pitch);
+        }
+        removed
+    }
+
+    /// Brings back, into `event`, each pitch a whole-event modify of the
+    /// transaction `env` undoes removed: live again, in the event at the value
+    /// it had, with the attachments the graph held for it (the planning
+    /// default for undo under observed-remove, D49: the undo reverts the
+    /// modify's own effect). Called before the event's restored value is
+    /// written, which then carries or keeps it.
+    fn revive_removed_pitches(&mut self, env: &OperationEnvelope, event: EventId) {
+        let OperationPayload::UndoTransaction(undo) = &env.payload else {
+            return;
+        };
+        let revived: Vec<PitchId> = self
+            .removed_pitches
+            .iter()
+            .filter(|(_, removed)| removed.event == event)
+            .filter(
+                |(pitch, _)| match self.objects.get(&TypedObjectId::Pitch(**pitch)) {
+                    Some(ObjectState::Tombstoned { deleted_by, .. }) => {
+                        self.env_of(*deleted_by).is_some_and(|by| {
+                            member_transaction(by) == Some(undo.target)
+                                && matches!(
+                                    by.payload,
+                                    OperationPayload::Primitive(OperationKind::ModifyEvent(_))
+                                )
+                        })
+                    }
+                    _ => false,
+                },
+            )
+            .map(|(pitch, _)| *pitch)
+            .collect();
+        for pitch in revived {
+            let removed = self
+                .removed_pitches
+                .remove(&pitch)
+                .expect("each revived pitch is recorded");
+            self.objects
+                .insert(TypedObjectId::Pitch(pitch), ObjectState::Live);
+            self.event_pitches.entry(event).or_default().push(pitch);
+            self.graph_insert_pitch(
+                event,
+                &epiphany_core::IdentifiedPitch {
+                    id: pitch,
+                    pitch: removed.value,
+                },
+            );
+            if let Some(score) = self.graph.as_mut() {
+                score.spelling_attachments.extend(removed.attachments);
+            }
+        }
     }
 
     /// The event a whole-event write (a modify's value, or an undo's restored
     /// one) leaves: `value` without the pitches it carries that a delete or an
     /// undo has tombstoned, and with each live pitch of its event
     /// (`event_pitches`) it does not carry, at the pitch's current value. A
-    /// pitch so leaves an event only by a pitch or event delete or an undo of
-    /// its insert, and comes back by none. A rest so kept becomes a note of
-    /// those pitches, as a pitch inserted into a rest makes it one.
+    /// modify has by then removed the pitches its author saw and left out
+    /// (`remove_observed_pitches`), so what this keeps are the pitches it never
+    /// saw, and for an undo every pitch added since. A rest or an unpitched
+    /// event so kept becomes a note of those pitches, as a pitch inserted into
+    /// a rest makes it one.
     fn written_event(&self, value: &Event) -> Event {
         let event = value.id();
         let tombstoned = |p: PitchId| {
@@ -9250,6 +9401,18 @@ impl<'a> Reducer<'a> {
                 ornaments: Vec::new(),
                 stem: epiphany_core::StemConfiguration,
                 grace: None,
+            }),
+            Event::Unpitched(unpitched) => Event::Pitched(epiphany_core::PitchedEvent {
+                id: unpitched.id,
+                voice: unpitched.voice,
+                position: unpitched.position.clone(),
+                duration: unpitched.duration.clone(),
+                pitches: kept,
+                articulations: unpitched.articulations.clone(),
+                dynamic: unpitched.dynamic.clone(),
+                ornaments: Vec::new(),
+                stem: unpitched.stem,
+                grace: unpitched.grace.clone(),
             }),
             other => other,
         }
@@ -11257,6 +11420,7 @@ impl<'a> Reducer<'a> {
             conflicts: self.conflicts.clone(),
             minted_by: self.minted_by.clone(),
             event_pitches: self.event_pitches.clone(),
+            removed_pitches: self.removed_pitches.clone(),
             voice_occupancy: self.voice_occupancy.clone(),
             respell_chain: self.respell_chain.clone(),
             engraved_spelling_chain: self.engraved_spelling_chain.clone(),
@@ -11308,6 +11472,7 @@ impl<'a> Reducer<'a> {
         self.conflicts = s.conflicts;
         self.minted_by = s.minted_by;
         self.event_pitches = s.event_pitches;
+        self.removed_pitches = s.removed_pitches;
         self.voice_occupancy = s.voice_occupancy;
         self.respell_chain = s.respell_chain;
         self.engraved_spelling_chain = s.engraved_spelling_chain;
@@ -14935,7 +15100,10 @@ mod tests {
         // staff in one region became refused: this stream's instances all
         // name one staff. Moved again when a tempo segment's anchors became
         // referents: this stream anchors its segments to regions it never
-        // made.
+        // made. Moved again when a whole-event modify came to follow
+        // observed-remove: this stream's modifies leave out pitches their
+        // authors saw, which they now remove (the removal disabled, the
+        // previous digest returns).
         let mut rng = epiphany_determinism::fuzz::SplitMix64::new(0xBA5E);
         let envelopes = crate::fuzz::gen_envelope_set(&mut rng, 200);
         let mut set = OperationSet::new();
@@ -14945,7 +15113,7 @@ mod tests {
         let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
             hex,
-            "a3cc0d5111c905abd5c92596962bd0aef9b65dd08239e6c3b85539bee9fd640f"
+            "a02f2ea62441ad61ddd66f1412883b56efa41ea4d30ef3ff1ff2d5444fbac737"
         );
     }
 
