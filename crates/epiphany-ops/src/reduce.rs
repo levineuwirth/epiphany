@@ -1054,6 +1054,19 @@ fn seed_staff_changes(clefs: &mut ClefChains, keys: &mut KeyChains, instance: &S
 
 /// The anchor `position` after `region`'s start, as the importer writes a
 /// staff instance's changes.
+/// The objects meter changes name: each one's time signature and its anchor's
+/// target.
+fn meter_referents<'a>(meters: impl IntoIterator<Item = &'a MeterChange>) -> Vec<TypedObjectId> {
+    meters
+        .into_iter()
+        .flat_map(|meter| {
+            let mut referents = anchor_object_refs([&meter.anchor]);
+            referents.push(TypedObjectId::TimeSignature(meter.time_signature));
+            referents
+        })
+        .collect()
+}
+
 /// Whether `anchor` places its target in musical time: a region anchor at a
 /// musical offset, or a measure anchor.
 fn anchored_in_musical_time(anchor: &TimeAnchor) -> bool {
@@ -3670,6 +3683,23 @@ impl<'a> Reducer<'a> {
         } else {
             self.region_migrator.get(&region).copied()
         }
+    }
+
+    /// The operation that tombstoned the first of `referents` no longer live:
+    /// a value an undo would restore naming it is superseded by that
+    /// operation, as a cross-cutting value naming a deleted endpoint is
+    /// (reduction version 3). An object the set never made live (from a base)
+    /// counts as live.
+    fn tombstoned_since(
+        &self,
+        referents: impl IntoIterator<Item = TypedObjectId>,
+    ) -> Option<OperationId> {
+        referents
+            .into_iter()
+            .find_map(|referent| match self.objects.get(&referent) {
+                Some(ObjectState::Tombstoned { deleted_by, .. }) => Some(*deleted_by),
+                _ => None,
+            })
     }
 
     fn layout_region_slot(&self, region: RegionId) -> Option<OperationEffect> {
@@ -8482,10 +8512,16 @@ impl<'a> Reducer<'a> {
                         Some(p) => p.into_value(),
                         None => None,
                     };
-                    // A grid is a meter in musical time.
+                    // A grid is a meter in musical time, naming its meter
+                    // changes' signatures and anchors.
                     if let Some(by) = value
                         .as_ref()
                         .and_then(|_| self.out_of_musical_time(*region))
+                        .or_else(|| {
+                            self.tombstoned_since(meter_referents(
+                                value.iter().flat_map(|grid| &grid.meter_sequence),
+                            ))
+                        })
                     {
                         superseded.push(by);
                         continue;
@@ -8509,10 +8545,12 @@ impl<'a> Reducer<'a> {
                         Some(p) => p.into_value(),
                         None => None,
                     };
-                    // A meter change stands in musical time.
+                    // A meter change stands in musical time, and names its
+                    // time signature and anchor.
                     if let Some(by) = value
                         .as_ref()
                         .and_then(|_| self.out_of_musical_time(*region))
+                        .or_else(|| self.tombstoned_since(meter_referents(value.as_slice())))
                     {
                         superseded.push(by);
                         continue;
@@ -8553,6 +8591,14 @@ impl<'a> Reducer<'a> {
                                 _ => None,
                             })
                     });
+                    // And its anchors name their targets.
+                    let stranded = stranded.or_else(|| {
+                        self.tombstoned_since(value.iter().flat_map(|segment| {
+                            anchor_object_refs(
+                                std::iter::once(&segment.start).chain(segment.end.as_ref()),
+                            )
+                        }))
+                    });
                     if let Some(by) = stranded {
                         superseded.push(by);
                         continue;
@@ -8573,9 +8619,19 @@ impl<'a> Reducer<'a> {
                 ChainUndoVerdict::NotWritten => {}
                 ChainUndoVerdict::Superseded { by } => superseded.push(by),
                 ChainUndoVerdict::Restore(predecessor) => {
+                    let value = predecessor.map(Predecessor::into_value);
+                    // An instrument override names its instrument.
+                    if let Some(by) = self.tombstoned_since(
+                        value
+                            .iter()
+                            .filter_map(|(over, _, _)| over.map(TypedObjectId::Instrument)),
+                    ) {
+                        superseded.push(by);
+                        continue;
+                    }
                     restorations.push(ValueRestoration::StaffLayout {
                         instance: *instance,
-                        value: predecessor.map(Predecessor::into_value),
+                        value,
                     })
                 }
             }
@@ -8641,15 +8697,22 @@ impl<'a> Reducer<'a> {
                 ChainUndoVerdict::Superseded { by } => superseded.push(by),
                 ChainUndoVerdict::Restore(predecessor) => {
                     // A break anchored in musical time; restoring absence
-                    // writes nothing.
-                    if let Some(by) = predecessor
-                        .as_ref()
-                        .filter(|p| match p {
-                            Predecessor::Write((anchor, _)) | Predecessor::Base((anchor, _)) => {
-                                anchored_in_musical_time(anchor)
-                            }
-                        })
+                    // writes nothing. A present break names its anchor's
+                    // target.
+                    let anchor = predecessor.as_ref().map(|p| match p {
+                        Predecessor::Write(value) | Predecessor::Base(value) => value,
+                    });
+                    if let Some(by) = anchor
+                        .filter(|(anchor, _)| anchored_in_musical_time(anchor))
                         .and_then(|_| self.out_of_musical_time(*region))
+                        .or_else(|| {
+                            self.tombstoned_since(
+                                anchor
+                                    .filter(|(_, present)| *present)
+                                    .into_iter()
+                                    .flat_map(|(anchor, _)| anchor_object_refs([anchor])),
+                            )
+                        })
                     {
                         superseded.push(by);
                         continue;
@@ -8671,15 +8734,22 @@ impl<'a> Reducer<'a> {
                 ChainUndoVerdict::Superseded { by } => superseded.push(by),
                 ChainUndoVerdict::Restore(predecessor) => {
                     // A break anchored in musical time; restoring absence
-                    // writes nothing.
-                    if let Some(by) = predecessor
-                        .as_ref()
-                        .filter(|p| match p {
-                            Predecessor::Write((anchor, _)) | Predecessor::Base((anchor, _)) => {
-                                anchored_in_musical_time(anchor)
-                            }
-                        })
+                    // writes nothing. A present break names its anchor's
+                    // target.
+                    let anchor = predecessor.as_ref().map(|p| match p {
+                        Predecessor::Write(value) | Predecessor::Base(value) => value,
+                    });
+                    if let Some(by) = anchor
+                        .filter(|(anchor, _)| anchored_in_musical_time(anchor))
                         .and_then(|_| self.out_of_musical_time(*region))
+                        .or_else(|| {
+                            self.tombstoned_since(
+                                anchor
+                                    .filter(|(_, present)| *present)
+                                    .into_iter()
+                                    .flat_map(|(anchor, _)| anchor_object_refs([anchor])),
+                            )
+                        })
                     {
                         superseded.push(by);
                         continue;

@@ -3217,3 +3217,23 @@ rest does, keeping its articulations, dynamic and grace. Its undo removes the
 pitch and leaves a rest, as for a note that was one. Locked by
 `a_pitch_inserted_into_an_unpitched_event_makes_it_a_note_in_both_modes` and
 history `148` (each fails with the unpitched branch writing nothing).
+
+**An undo restores nothing naming an object removed since (found by this
+round's fuzz).** At 128 authored operations a single author set a time
+signature in a transaction, undid it in a second transaction (the signature
+tombstoned, the meter change restored to absence), and undid the second
+transaction: the redo restored the meter change naming the tombstoned
+signature (`CrossCuttingRefsResolve`). M4's refusal covered the undo inside its
+own transaction, not this one, an ordinary undo then redo. Resurrecting the
+signature is the catalog's deferred case, so the restoration is superseded by
+the operation that tombstoned the object it names, as a cross-cutting value
+naming a deleted endpoint already was (`tombstoned_since`): strict undo
+conflicts naming it, best effort leaves the value out. Every restorable value
+that names an object is held so: a meter change's and a metric grid's time
+signatures and anchors, a tempo segment's anchors, an instrument override, and
+a present break's anchor. An object the set never made live counts as live.
+Locked by `a_redo_restores_nothing_naming_what_the_undo_removed_in_both_modes`,
+six cases under both policies (the helper answering none, it fails; each
+arm's referents emptied, its own case fails; a break anchored to a removed
+measure breaks no invariant the core checks, and the test holds its conflict),
+and history `149`.

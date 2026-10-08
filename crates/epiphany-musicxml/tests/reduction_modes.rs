@@ -4353,3 +4353,287 @@ fn a_pitch_inserted_into_an_unpitched_event_makes_it_a_note_in_both_modes() {
         "the unpitched event becomes a note of the added pitch, spelt"
     );
 }
+
+/// An undo of an undo (a redo) restores a value as the first undo found it,
+/// so a restored value naming an object the first undo removed is superseded
+/// by that undo, in both modes (strict: conflicted; best effort: the value
+/// left out), as a cross-cutting value naming a deleted endpoint is. Each case
+/// is a transaction that makes an object and writes a value naming it, a
+/// transaction undoing it, and an undo of that: a meter change naming its time
+/// signature, a metric grid naming one, a tempo segment anchored to a new
+/// region, a staff instance set to a new instrument, and a system and a page
+/// break at a new measure. Before reduction version 3 the redo restored the value naming
+/// the removed object (`CrossCuttingRefsResolve`, or an anchor naming
+/// nothing).
+#[test]
+fn a_redo_restores_nothing_naming_what_the_undo_removed_in_both_modes() {
+    use epiphany_core::{
+        AnchorOffset, InstrumentId, MeasureId, MeasurePosition, MeterChange, MetricGrid,
+        TimeAnchor, TimeSignatureId,
+    };
+    use epiphany_ops::{
+        CreateInstrumentOp, CreateMeasureOp, CreateRegionOp, SetMetricGridOp, SetStaffLayoutOp,
+        SetTempoSegmentOp, SetTimeSignatureOp, SetUserPageBreakOp, SetUserSystemBreakOp,
+    };
+    let m = Measure::new();
+    let at = |region: RegionId, bars: i64| {
+        valuegen::region_start_anchor(
+            region,
+            MusicalPosition(RationalTime::new(bars, 1).expect("bars")),
+        )
+    };
+    let signature_at = |region: RegionId, bars: i64, id: TimeSignatureId| {
+        primitive(OperationKind::SetTimeSignature(SetTimeSignatureOp {
+            region,
+            anchor: at(region, bars),
+            time_signature: Some(valuegen::time_signature(id, 3)),
+        }))
+    };
+    let make_region = |region: RegionId| {
+        primitive(OperationKind::CreateRegion(CreateRegionOp {
+            region: valuegen::region(region),
+        }))
+    };
+    // Each case: what it writes beforehand, the transaction's members, and
+    // the object they make.
+    type Case = (Vec<OperationPayload>, Vec<OperationPayload>, TypedObjectId);
+    let cases = |n: u64| -> Vec<(&'static str, Case)> {
+        let region = RegionId::new(A, 2500 + 10 * n);
+        let signature = TimeSignatureId::new(A, 2501 + 10 * n);
+        let other = RegionId::new(A, 2502 + 10 * n);
+        let instrument = InstrumentId::new(A, 2503 + 10 * n);
+        let measure = MeasureId::new(A, 2504 + 10 * n);
+        let page_measure = MeasureId::new(A, 2505 + 10 * n);
+        vec![
+            (
+                "a meter change",
+                (
+                    vec![make_region(region)],
+                    vec![signature_at(region, 1, signature)],
+                    TypedObjectId::TimeSignature(signature),
+                ),
+            ),
+            (
+                "a metric grid",
+                (
+                    vec![make_region(region)],
+                    vec![
+                        signature_at(region, 1, signature),
+                        primitive(OperationKind::SetMetricGrid(SetMetricGridOp {
+                            region,
+                            grid: Some(MetricGrid {
+                                meter_sequence: vec![MeterChange {
+                                    anchor: at(region, 1),
+                                    time_signature: signature,
+                                }],
+                            }),
+                        })),
+                    ],
+                    TypedObjectId::TimeSignature(signature),
+                ),
+            ),
+            (
+                "a tempo segment",
+                (
+                    Vec::new(),
+                    vec![
+                        primitive(OperationKind::CreateRegion(CreateRegionOp {
+                            region: valuegen::region(other),
+                        })),
+                        primitive(OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                            region: None,
+                            start: at(other, 0),
+                            segment: Some(valuegen::tempo_segment(
+                                other,
+                                MusicalPosition::origin(),
+                                96.0,
+                            )),
+                        })),
+                    ],
+                    TypedObjectId::Region(other),
+                ),
+            ),
+            (
+                "an instrument override",
+                (
+                    Vec::new(),
+                    vec![
+                        primitive(OperationKind::CreateInstrument(CreateInstrumentOp {
+                            instrument: valuegen::instrument(instrument),
+                        })),
+                        primitive(OperationKind::SetStaffLayout(SetStaffLayoutOp {
+                            staff_instance: m.import.ids.instances[0][0],
+                            instrument_override: Some(instrument),
+                            staff_lines_override: None,
+                            visible: true,
+                        })),
+                    ],
+                    TypedObjectId::Instrument(instrument),
+                ),
+            ),
+            (
+                // A break at the region's start beforehand, so the undo's
+                // restoration of it is a write the redo then reverses.
+                "a system break at a measure",
+                (
+                    vec![primitive(OperationKind::SetUserSystemBreak(
+                        SetUserSystemBreakOp {
+                            region: m.region,
+                            anchor: at(m.region, 0),
+                            present: true,
+                        },
+                    ))],
+                    vec![
+                        primitive(OperationKind::CreateMeasure(CreateMeasureOp {
+                            instance: m.import.ids.instances[0][0],
+                            measure: epiphany_core::Measure {
+                                id: measure,
+                                start: at(m.region, 1),
+                                time_signature: None,
+                                explicit_number: Some(2),
+                                number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+                            },
+                        })),
+                        primitive(OperationKind::SetUserSystemBreak(SetUserSystemBreakOp {
+                            region: m.region,
+                            anchor: TimeAnchor::Measure {
+                                id: measure,
+                                position: MeasurePosition::Start,
+                                offset: AnchorOffset::Zero,
+                            },
+                            present: true,
+                        })),
+                    ],
+                    TypedObjectId::Measure(measure),
+                ),
+            ),
+            (
+                // A page break, likewise.
+                "a page break at a measure",
+                (
+                    vec![primitive(OperationKind::SetUserPageBreak(
+                        SetUserPageBreakOp {
+                            region: m.region,
+                            anchor: at(m.region, 0),
+                            present: true,
+                        },
+                    ))],
+                    vec![
+                        primitive(OperationKind::CreateMeasure(CreateMeasureOp {
+                            instance: m.import.ids.instances[0][0],
+                            measure: epiphany_core::Measure {
+                                id: page_measure,
+                                start: at(m.region, 1),
+                                time_signature: None,
+                                explicit_number: Some(2),
+                                number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+                            },
+                        })),
+                        primitive(OperationKind::SetUserPageBreak(SetUserPageBreakOp {
+                            region: m.region,
+                            anchor: TimeAnchor::Measure {
+                                id: page_measure,
+                                position: MeasurePosition::Start,
+                                offset: AnchorOffset::Zero,
+                            },
+                            present: true,
+                        })),
+                    ],
+                    TypedObjectId::Measure(page_measure),
+                ),
+            ),
+        ]
+    };
+    let mut n = 0u64;
+    for policy in [UndoPolicy::StrictInverse, UndoPolicy::BestEffort] {
+        for (name, (before, members, made)) in cases(n) {
+            n += 1;
+            let made_tx = TransactionId::new(A, 2600 + 10 * n);
+            let undo_tx = TransactionId::new(A, 2601 + 10 * n);
+            let mut authored: Vec<OperationEnvelope> = Vec::new();
+            let mut counter = 0;
+            let mut push = |payload: OperationPayload, transaction: Option<TransactionId>| {
+                let seen: Vec<OperationId> = authored.last().map(|e| e.id).into_iter().collect();
+                let mut env = m.op(A, counter, counter as i64 + 1, &seen, payload);
+                env.transaction = transaction;
+                counter += 1;
+                authored.push(env.clone());
+                env
+            };
+            for payload in before {
+                push(payload, None);
+            }
+            let declare = |tx: TransactionId| {
+                primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                    id: tx,
+                    label: String::from("edit"),
+                    category: None,
+                }))
+            };
+            push(declare(made_tx), Some(made_tx));
+            let mut writes = Vec::new();
+            for member in members {
+                writes.push(push(member, Some(made_tx)));
+            }
+            push(declare(undo_tx), Some(undo_tx));
+            let undo = push(
+                OperationPayload::UndoTransaction(UndoTransactionPayload {
+                    target: made_tx,
+                    policy: UndoPolicy::StrictInverse,
+                }),
+                Some(undo_tx),
+            );
+            let redo = push(
+                OperationPayload::UndoTransaction(UndoTransactionPayload {
+                    target: undo_tx,
+                    policy,
+                }),
+                None,
+            );
+            let history = format!("{name} redone, {policy:?}");
+            let state = m.agree(&history, &authored);
+            for write in &writes {
+                assert!(
+                    matches!(
+                        effect(&state, write.id),
+                        Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
+                    ),
+                    "{history}: {:?}",
+                    effect(&state, write.id)
+                );
+            }
+            assert!(
+                matches!(
+                    effect(&state, undo.id),
+                    Some(OperationEffect::AppliedWithRepair { .. })
+                ),
+                "{history}: {:?}",
+                effect(&state, undo.id)
+            );
+            assert!(tombstoned(&state, made), "{history}: removed by the undo");
+            match policy {
+                UndoPolicy::StrictInverse => {
+                    let Some(OperationEffect::Conflicted { conflict }) = effect(&state, redo.id)
+                    else {
+                        panic!("{history}: {:?}", effect(&state, redo.id));
+                    };
+                    let record = state
+                        .conflicts
+                        .records()
+                        .iter()
+                        .find(|r| r.id == conflict)
+                        .expect("recorded");
+                    assert!(record.caused_by.contains(&undo.id), "{history}");
+                }
+                _ => assert!(
+                    matches!(
+                        effect(&state, redo.id),
+                        Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
+                    ),
+                    "{history}: {:?}",
+                    effect(&state, redo.id)
+                ),
+            }
+        }
+    }
+}

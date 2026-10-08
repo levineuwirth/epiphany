@@ -474,6 +474,14 @@ pub mod vectors;
 ///     restored the value anchored by a musical offset the region no longer
 ///     admits (`AnchorOffsetModel`; for the grid, a meter the migration had
 ///     dropped).
+///   - an undo's restoration of a value naming an object tombstoned since (a
+///     meter change's or a metric grid's time signature or anchor, a tempo
+///     segment's anchors, an instrument override, a present break's anchor)
+///     is superseded by the operation that tombstoned it, as a cross-cutting
+///     value naming a deleted endpoint is (strict: conflicted; best effort:
+///     the value left out), where an undo of an undo restored a meter change
+///     naming the time signature the first undo had removed
+///     (`CrossCuttingRefsResolve`) or a break anchored to its removed measure.
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
@@ -537,7 +545,9 @@ pub mod vectors;
 ///   for a tie held at its transaction's end,
 ///   `a_tie_is_held_when_its_transaction_completes_in_both_modes`; for a
 ///   pitch into an unpitched event,
-///   `a_pitch_inserted_into_an_unpitched_event_makes_it_a_note_in_both_modes`.
+///   `a_pitch_inserted_into_an_unpitched_event_makes_it_a_note_in_both_modes`;
+///   for restorations naming what an undo removed,
+///   `a_redo_restores_nothing_naming_what_the_undo_removed_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.
