@@ -242,7 +242,8 @@ struct View {
 pub struct Finding {
     /// What kind of failure, stable under shrinking: an effect split names the
     /// operation's kind and both effects' shapes; an invariant names the
-    /// invariant.
+    /// invariant and its witness's shape ([`witness_shape`]), or the deferred
+    /// cause it is ([`deferred`]).
     pub class: String,
     /// The particulars.
     pub detail: String,
@@ -421,7 +422,11 @@ fn invariant_findings(
             .flatten();
             let class = match deferred {
                 Some(cause) => String::from(cause),
-                None => format!("invariant {}", full.trim_end_matches(')')),
+                None => format!(
+                    "invariant {}: {}",
+                    full.trim_end_matches(')'),
+                    witness_shape(&violation.witness)
+                ),
             };
             seen.insert(class.clone()).then(|| Finding {
                 class,
@@ -429,6 +434,81 @@ fn invariant_findings(
             })
         })
         .collect()
+}
+
+/// The shape of an invariant's witness, which classes a finding with its
+/// invariant so that a run lists each cause once rather than each invariant
+/// once: the witness with each identifier reduced to its kind (`StaffId`),
+/// each number to `#`, and each list's runs of equal items to one, so two
+/// findings of one cause share a shape whatever objects and how many they
+/// name.
+pub fn witness_shape(witness: &str) -> String {
+    let chars: Vec<char> = witness.chars().collect();
+    let mut stripped = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c.is_ascii_digit() {
+            while i < chars.len() && chars[i].is_ascii_hexdigit() {
+                i += 1;
+            }
+            stripped.push('#');
+            continue;
+        }
+        if c.is_alphanumeric() || c == '_' {
+            let start = i;
+            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                i += 1;
+            }
+            let word: String = chars[start..i].iter().collect();
+            if word.ends_with("Id") && chars.get(i) == Some(&'(') {
+                if let Some(close) = chars[i..].iter().position(|c| *c == ')') {
+                    i += close + 1;
+                }
+            }
+            stripped.push_str(&word);
+            continue;
+        }
+        stripped.push(c);
+        i += 1;
+    }
+    let chars: Vec<char> = stripped.chars().collect();
+    collapse_lists(&chars, &mut 0, None)
+}
+
+/// `chars` from `*at` to the bracket closing `close` (or the end), each
+/// bracketed list's runs of equal items collapsed to one.
+fn collapse_lists(chars: &[char], at: &mut usize, close: Option<char>) -> String {
+    let list = close == Some(']');
+    let mut items: Vec<String> = vec![String::new()];
+    while *at < chars.len() {
+        let c = chars[*at];
+        *at += 1;
+        if Some(c) == close {
+            break;
+        }
+        let item = items.last_mut().expect("never empty");
+        match c {
+            '[' | '(' | '{' => {
+                let closing = match c {
+                    '[' => ']',
+                    '(' => ')',
+                    _ => '}',
+                };
+                let inner = collapse_lists(chars, at, Some(closing));
+                item.push(c);
+                item.push_str(&inner);
+                item.push(closing);
+            }
+            ',' if list && chars.get(*at) == Some(&' ') => {
+                *at += 1;
+                items.push(String::new());
+            }
+            _ => item.push(c),
+        }
+    }
+    items.dedup();
+    items.join(", ")
 }
 
 /// The deferred cause of a `RegionExtents` witness naming two regions, if it
@@ -2719,4 +2799,33 @@ pub fn parse(text: &str) -> Result<Vec<OperationEnvelope>, epiphany_core::textva
         .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
         .map(crate::parse_envelope)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::witness_shape;
+
+    #[test]
+    fn a_witness_shape_names_its_cause_not_its_objects() {
+        let staff = "staff StaffId(0000000000000001:0000000000000066) instrument \
+                     InstrumentId(0000000000000001:0000000000000065) is not declared";
+        let other_staff = "staff StaffId(0000000000000003:0000000000000002) instrument \
+                           InstrumentId(0000000000000002:0000000000000a07) is not declared";
+        let meter = "region RegionId(0000000000000001:0000000000000002) default-grid meter \
+                     change time signature TimeSignatureId(0000000000000003:0000000000000001) \
+                     is not declared";
+        assert_eq!(witness_shape(staff), witness_shape(other_staff));
+        assert_eq!(
+            witness_shape(staff),
+            "staff StaffId instrument InstrumentId is not declared"
+        );
+        assert_ne!(witness_shape(staff), witness_shape(meter));
+        // A list of one and of three objects, at other offsets, share a shape.
+        let one = "events [EventId(0000000000000001:0000000000000004)] overlap at 3/8";
+        let three = "events [EventId(0000000000000001:0000000000000004), \
+                     EventId(0000000000000002:0000000000000001), \
+                     EventId(0000000000000003:000000000000000c)] overlap at 1/2";
+        assert_eq!(witness_shape(one), witness_shape(three));
+        assert_eq!(witness_shape(one), "events [EventId] overlap at #/#");
+    }
 }

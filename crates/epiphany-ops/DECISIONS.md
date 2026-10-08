@@ -3163,3 +3163,18 @@ the CI budget. Mutations: the seen-deleted cause never named (its test and the
 committed suite fail), the view's check dropped (the fill-seen case fails), the
 refused-delete check dropped (the undo case fails), and the concurrency test
 dropped (every classifier test fails).
+
+**A finding is classed by its cause (L1).** A run keeps one history per class,
+and an invariant's class was its name alone, so one run showed one cause per
+invariant: `CrossCuttingRefsResolve` had two causes in review 1's runs (a staff
+naming an instrument an undo removed, a meter change naming a signature an
+undo removed), and each run showed one. An invariant finding is now classed by
+the invariant and its witness's shape (`witness_shape`): the witness with each
+identifier reduced to its kind, each number to `#` and each list's runs of
+equal items to one, so findings of one cause share a class whatever objects
+they name and two causes of one invariant are two classes. The deferred causes
+keep their names. A class may now be finer than a cause (one witness format
+naming either end of an anchor, say), which costs a line in a report, not a
+hidden cause. Locked by `a_witness_shape_names_its_cause_not_its_objects`
+(the shape empty, or lists not collapsed, it fails); with M1's and M4's fixes
+both reverted, their histories `141` and `143` are now two classes.

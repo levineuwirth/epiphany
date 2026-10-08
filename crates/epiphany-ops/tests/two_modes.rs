@@ -91,6 +91,12 @@ fn committed() -> Vec<Committed> {
         .collect()
 }
 
+/// Whether `class` is a `RegionExtents` finding of a cause other than the
+/// deferred ones: the invariant's class, with its witness's shape.
+fn plain_region_extents(class: &str) -> bool {
+    class.starts_with("invariant Invariant(RegionExtents: ") && !modes::deferred(class)
+}
+
 #[test]
 fn every_committed_history_reduces_as_it_declares() {
     let all = committed();
@@ -221,9 +227,7 @@ fn a_region_overlap_its_author_saw_is_not_the_deferred_class() {
         .map(|f| f.class)
         .collect();
     assert!(
-        classes
-            .iter()
-            .any(|c| c == "invariant Invariant(RegionExtents"),
+        classes.iter().any(|c| plain_region_extents(c)),
         "{classes:?}"
     );
     assert!(classes.iter().all(|c| !modes::deferred(c)), "{classes:?}");
@@ -252,10 +256,7 @@ fn a_region_created_where_its_authors_refused_delete_left_none_is_deferred() {
             .collect()
     };
     let plain = |found: &[String]| {
-        found
-            .iter()
-            .any(|c| c == "invariant Invariant(RegionExtents")
-            && found.iter().all(|c| !modes::deferred(c))
+        found.iter().any(|c| plain_region_extents(c)) && found.iter().all(|c| !modes::deferred(c))
     };
     let history = modes::parse(&text).expect("parses");
     let found = classes(&history);
@@ -434,11 +435,6 @@ fn a_region_created_where_its_authors_blocked_undo_left_none_is_not_deferred() {
         .into_iter()
         .map(|f| f.class)
         .collect();
-    assert!(
-        found
-            .iter()
-            .any(|c| c == "invariant Invariant(RegionExtents"),
-        "{found:?}"
-    );
+    assert!(found.iter().any(|c| plain_region_extents(c)), "{found:?}");
     assert!(found.iter().all(|c| !modes::deferred(c)), "{found:?}");
 }
