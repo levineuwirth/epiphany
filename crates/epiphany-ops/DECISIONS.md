@@ -2815,8 +2815,9 @@ idempotence compare what each author wrote. The same gap was open on undo,
 whose restored value is an earlier whole event: it dropped a pitch added
 since. A restoration now keeps every live pitch the value does not carry, the
 undone transaction's own having been tombstoned before restorations apply.
-A modify that omits a pitch its own author saw still drops it from the graph
-alone, as before; no generated history writes one. Graph state only. Locked
+A modify that omits a pitch its own author saw still dropped it from the graph
+alone here; the fuzz at a larger budget found one, and the rule became the
+whole-event write's (below). Graph state only. Locked
 by `a_modify_keeps_a_pitch_its_author_never_saw_in_both_modes` and history
 `126` (each fails with no unseen pitch kept) and
 `an_undo_of_a_modify_keeps_a_pitch_added_since_in_both_modes` (fails with the
