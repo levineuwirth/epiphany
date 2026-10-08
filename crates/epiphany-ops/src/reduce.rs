@@ -1054,6 +1054,18 @@ fn seed_staff_changes(clefs: &mut ClefChains, keys: &mut KeyChains, instance: &S
 
 /// The anchor `position` after `region`'s start, as the importer writes a
 /// staff instance's changes.
+/// Whether `anchor` places its target in musical time: a region anchor at a
+/// musical offset, or a measure anchor.
+fn anchored_in_musical_time(anchor: &TimeAnchor) -> bool {
+    matches!(
+        anchor,
+        TimeAnchor::Region {
+            offset: AnchorOffset::Musical(_),
+            ..
+        } | TimeAnchor::Measure { .. }
+    )
+}
+
 fn region_position_anchor(region: RegionId, position: &MusicalPosition) -> TimeAnchor {
     TimeAnchor::Region {
         id: region,
@@ -3598,15 +3610,7 @@ impl<'a> Reducer<'a> {
         region: RegionId,
         anchor: Option<&TimeAnchor>,
     ) -> Option<OperationEffect> {
-        let musical_anchor = anchor.is_none_or(|a| {
-            matches!(
-                a,
-                TimeAnchor::Region {
-                    offset: AnchorOffset::Musical(_),
-                    ..
-                } | TimeAnchor::Measure { .. }
-            )
-        });
+        let musical_anchor = anchor.is_none_or(anchored_in_musical_time);
         let musical_region = self
             .region_disciplines
             .get(&region)
@@ -3616,6 +3620,23 @@ impl<'a> Reducer<'a> {
                 reason: PreconditionFailureReason::WrongRegionTimeModel,
             },
         })
+    }
+
+    /// The migration that took `region` out of musical time, where it now
+    /// admits no musical offset: a value an undo would restore there in
+    /// musical time is superseded by it, as its setter is refused there
+    /// (reduction version 3). Read from the indices both modes keep; only an
+    /// applied migration makes a region so.
+    fn out_of_musical_time(&self, region: RegionId) -> Option<OperationId> {
+        let admits = self
+            .region_disciplines
+            .get(&region)
+            .is_none_or(CoordinateDiscipline::admits_musical_offsets);
+        if admits {
+            None
+        } else {
+            self.region_migrator.get(&region).copied()
+        }
     }
 
     fn layout_region_slot(&self, region: RegionId) -> Option<OperationEffect> {
@@ -8424,12 +8445,21 @@ impl<'a> Reducer<'a> {
                 ChainUndoVerdict::Restore(predecessor) => {
                     // Flattened: no predecessor and a cleared-grid predecessor
                     // both restore "no grid".
+                    let value = match predecessor {
+                        Some(p) => p.into_value(),
+                        None => None,
+                    };
+                    // A grid is a meter in musical time.
+                    if let Some(by) = value
+                        .as_ref()
+                        .and_then(|_| self.out_of_musical_time(*region))
+                    {
+                        superseded.push(by);
+                        continue;
+                    }
                     restorations.push(ValueRestoration::MetricGrid {
                         region: *region,
-                        value: match predecessor {
-                            Some(p) => p.into_value(),
-                            None => None,
-                        },
+                        value,
                     })
                 }
             }
@@ -8442,13 +8472,22 @@ impl<'a> Reducer<'a> {
                 ChainUndoVerdict::NotWritten => {}
                 ChainUndoVerdict::Superseded { by } => superseded.push(by),
                 ChainUndoVerdict::Restore(predecessor) => {
+                    let value = match predecessor {
+                        Some(p) => p.into_value(),
+                        None => None,
+                    };
+                    // A meter change stands in musical time.
+                    if let Some(by) = value
+                        .as_ref()
+                        .and_then(|_| self.out_of_musical_time(*region))
+                    {
+                        superseded.push(by);
+                        continue;
+                    }
                     restorations.push(ValueRestoration::MeterChange {
                         region: *region,
                         position: position.clone(),
-                        value: match predecessor {
-                            Some(p) => p.into_value(),
-                            None => None,
-                        },
+                        value,
                     })
                 }
             }
@@ -8463,13 +8502,32 @@ impl<'a> Reducer<'a> {
                 ChainUndoVerdict::NotWritten => {}
                 ChainUndoVerdict::Superseded { by } => superseded.push(by),
                 ChainUndoVerdict::Restore(predecessor) => {
+                    let value: Option<TempoSegment> = match predecessor {
+                        Some(p) => p.into_value(),
+                        None => None,
+                    };
+                    // A segment anchored by a musical offset in a region out
+                    // of musical time.
+                    let stranded = value.as_ref().and_then(|segment| {
+                        std::iter::once(&segment.start)
+                            .chain(segment.end.as_ref())
+                            .find_map(|anchor| match anchor {
+                                TimeAnchor::Region { id, .. }
+                                    if anchored_in_musical_time(anchor) =>
+                                {
+                                    self.out_of_musical_time(*id)
+                                }
+                                _ => None,
+                            })
+                    });
+                    if let Some(by) = stranded {
+                        superseded.push(by);
+                        continue;
+                    }
                     restorations.push(ValueRestoration::TempoSegment {
                         region: *scope,
                         position: position.clone(),
-                        value: match predecessor {
-                            Some(p) => p.into_value(),
-                            None => None,
-                        },
+                        value,
                     })
                 }
             }
@@ -8497,10 +8555,20 @@ impl<'a> Reducer<'a> {
                 ChainUndoVerdict::NotWritten => {}
                 ChainUndoVerdict::Superseded { by } => superseded.push(by),
                 ChainUndoVerdict::Restore(predecessor) => {
+                    let value = predecessor.and_then(Predecessor::into_value);
+                    // A clef change stands in musical time.
+                    if let Some(by) = value
+                        .as_ref()
+                        .and_then(|_| self.instance_region_of(*instance))
+                        .and_then(|region| self.out_of_musical_time(region))
+                    {
+                        superseded.push(by);
+                        continue;
+                    }
                     restorations.push(ValueRestoration::Clef {
                         instance: *instance,
                         position: position.clone(),
-                        value: predecessor.and_then(Predecessor::into_value),
+                        value,
                     })
                 }
             }
@@ -8513,10 +8581,20 @@ impl<'a> Reducer<'a> {
                 ChainUndoVerdict::NotWritten => {}
                 ChainUndoVerdict::Superseded { by } => superseded.push(by),
                 ChainUndoVerdict::Restore(predecessor) => {
+                    let value = predecessor.and_then(Predecessor::into_value);
+                    // A key change stands in musical time.
+                    if let Some(by) = value
+                        .as_ref()
+                        .and_then(|_| self.instance_region_of(*instance))
+                        .and_then(|region| self.out_of_musical_time(region))
+                    {
+                        superseded.push(by);
+                        continue;
+                    }
                     restorations.push(ValueRestoration::Key {
                         instance: *instance,
                         position: position.clone(),
-                        value: predecessor.and_then(Predecessor::into_value),
+                        value,
                     })
                 }
             }
@@ -8529,6 +8607,20 @@ impl<'a> Reducer<'a> {
                 ChainUndoVerdict::NotWritten => {}
                 ChainUndoVerdict::Superseded { by } => superseded.push(by),
                 ChainUndoVerdict::Restore(predecessor) => {
+                    // A break anchored in musical time; restoring absence
+                    // writes nothing.
+                    if let Some(by) = predecessor
+                        .as_ref()
+                        .filter(|p| match p {
+                            Predecessor::Write((anchor, _)) | Predecessor::Base((anchor, _)) => {
+                                anchored_in_musical_time(anchor)
+                            }
+                        })
+                        .and_then(|_| self.out_of_musical_time(*region))
+                    {
+                        superseded.push(by);
+                        continue;
+                    }
                     restorations.push(ValueRestoration::SystemBreak {
                         region: *region,
                         position: position.clone(),
@@ -8545,6 +8637,20 @@ impl<'a> Reducer<'a> {
                 ChainUndoVerdict::NotWritten => {}
                 ChainUndoVerdict::Superseded { by } => superseded.push(by),
                 ChainUndoVerdict::Restore(predecessor) => {
+                    // A break anchored in musical time; restoring absence
+                    // writes nothing.
+                    if let Some(by) = predecessor
+                        .as_ref()
+                        .filter(|p| match p {
+                            Predecessor::Write((anchor, _)) | Predecessor::Base((anchor, _)) => {
+                                anchored_in_musical_time(anchor)
+                            }
+                        })
+                        .and_then(|_| self.out_of_musical_time(*region))
+                    {
+                        superseded.push(by);
+                        continue;
+                    }
                     restorations.push(ValueRestoration::PageBreak {
                         region: *region,
                         position: position.clone(),

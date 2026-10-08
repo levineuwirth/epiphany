@@ -447,6 +447,15 @@ pub mod vectors;
 ///     fails that transaction, where it reversed the members before it, an
 ///     earlier undo's restoration of a meter change among them, against a time
 ///     signature that undo had removed (`CrossCuttingRefsResolve`).
+///   - an undo's restoration that would write in musical time into a region a
+///     migration has since taken out of it (a system or page break anchored
+///     by a musical offset, a meter change, a metric grid, a tempo segment
+///     anchored in the region, a clef or key change of its instance) is
+///     superseded by that migration in both modes (strict: conflicted; best
+///     effort: the value left out), as each setter is refused there, where it
+///     restored the value anchored by a musical offset the region no longer
+///     admits (`AnchorOffsetModel`; for the grid, a meter the migration had
+///     dropped).
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
@@ -502,7 +511,9 @@ pub mod vectors;
 ///   `an_undo_keeps_what_a_kept_mint_names_in_both_modes`; for promoted
 ///   voices, `an_instance_holding_a_promoted_voice_is_not_empty_in_both_modes`;
 ///   for an undo of its own transaction,
-///   `an_undo_of_its_own_transaction_is_refused_in_both_modes`.
+///   `an_undo_of_its_own_transaction_is_refused_in_both_modes`; for
+///   restorations in musical time,
+///   `an_undo_writes_nothing_in_musical_time_into_a_region_out_of_it_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

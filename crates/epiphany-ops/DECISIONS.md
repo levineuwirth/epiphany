@@ -3027,3 +3027,25 @@ known to compensate; as a member's failure it conflicts the transaction
 holding it, whose other members then apply nothing. Locked by
 `an_undo_of_its_own_transaction_is_refused_in_both_modes`, under both policies
 (the check removed, it fails), and history `143`.
+
+**An undo writes nothing in musical time where a migration took it away
+(M5).** A migration to a model admitting no musical offset is stranded by a
+live measure, event, clef or key change or tempo segment in musical time, and
+drops the region's breaks and grids; each setter writing in musical time is
+refused there. An undo's restorations were held to none of it: a transaction
+that took away a break, and was undone after another author migrated the
+region, restored the break at a musical offset the region no longer admitted
+(`AnchorOffsetModel`). The finding named the break; every restoration in
+musical time reaches the same state, and a probe of each, a value written, a
+transaction taking it away, a migration and the undo, broke the invariant for
+the page break, the meter change, the tempo segment and the clef and key
+changes too. The grid breaks no invariant the core checks, but its setter is
+refused there and the migration drops it, so it is held alike. Each such
+restoration is now superseded by the migration that took the region out of
+musical time (`out_of_musical_time`, read from the region's coordinate
+discipline and its last migrator, which both modes keep): strict undo
+conflicts naming it, best effort leaves the value out. A restoration to
+absence writes nothing and is kept. Locked by
+`an_undo_writes_nothing_in_musical_time_into_a_region_out_of_it_in_both_modes`,
+seven cases under both policies (the helper answering none, it fails; each
+arm's supersession removed, its own case fails), and history `144`.

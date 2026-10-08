@@ -3718,3 +3718,217 @@ fn an_undo_of_its_own_transaction_is_refused_in_both_modes() {
         assert!(live(&state, TypedObjectId::TimeSignature(signature)));
     }
 }
+
+/// An undo restores a value as its setter writes one, so a restoration that
+/// would write in musical time into a region a migration has since taken out
+/// of it is superseded by the migration, in both modes (strict: conflicted;
+/// best effort: the value left out), as each setter is refused there: a
+/// system or page break, a meter change, a metric grid, a tempo segment
+/// anchored in the region, and a clef or key change of its instance. Each case
+/// writes a value, a transaction takes it away, another author migrates the
+/// region to proportional time, and the transaction is undone. Before
+/// reduction version 3 the undo restored the value, anchored by a musical
+/// offset the region no longer admits (`AnchorOffsetModel`).
+#[test]
+fn an_undo_writes_nothing_in_musical_time_into_a_region_out_of_it_in_both_modes() {
+    use epiphany_core::{Clef, KeySignature, StaffInstanceId, TimeSignatureId};
+    use epiphany_ops::{
+        CreateRegionOp, CreateStaffInstanceOp, SetClefOp, SetKeySignatureOp, SetMetricGridOp,
+        SetTempoSegmentOp, SetTimeSignatureOp, SetUserPageBreakOp, SetUserSystemBreakOp,
+    };
+    let m = Measure::new();
+    let origin = MusicalPosition::origin();
+    type Write = Box<dyn Fn(RegionId, StaffInstanceId, bool) -> OperationKind>;
+    let cases: Vec<(&str, Write)> = vec![
+        (
+            "a system break",
+            Box::new(|region, _, on| {
+                OperationKind::SetUserSystemBreak(SetUserSystemBreakOp {
+                    region,
+                    anchor: valuegen::region_start_anchor(region, MusicalPosition::origin()),
+                    present: on,
+                })
+            }),
+        ),
+        (
+            "a page break",
+            Box::new(|region, _, on| {
+                OperationKind::SetUserPageBreak(SetUserPageBreakOp {
+                    region,
+                    anchor: valuegen::region_start_anchor(region, MusicalPosition::origin()),
+                    present: on,
+                })
+            }),
+        ),
+        (
+            "a meter change",
+            Box::new(|region, _, on| {
+                OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region,
+                    anchor: valuegen::region_start_anchor(region, MusicalPosition::origin()),
+                    time_signature: on.then(|| {
+                        valuegen::time_signature(TimeSignatureId::new(A, region.counter() + 5), 3)
+                    }),
+                })
+            }),
+        ),
+        (
+            "a metric grid",
+            Box::new(|region, _, on| {
+                OperationKind::SetMetricGrid(SetMetricGridOp {
+                    region,
+                    grid: on.then(valuegen::metric_grid),
+                })
+            }),
+        ),
+        (
+            "a tempo segment",
+            Box::new(|region, _, on| {
+                OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                    region: Some(region),
+                    start: valuegen::region_start_anchor(region, MusicalPosition::origin()),
+                    segment: on
+                        .then(|| valuegen::tempo_segment(region, MusicalPosition::origin(), 96.0)),
+                })
+            }),
+        ),
+        (
+            "a clef change",
+            Box::new(|_, instance, on| {
+                OperationKind::SetClef(SetClefOp {
+                    instance,
+                    offset: RationalTime::zero(),
+                    clef: on.then(Clef::bass),
+                })
+            }),
+        ),
+        (
+            "a key change",
+            Box::new(|_, instance, on| {
+                OperationKind::SetKeySignature(SetKeySignatureOp {
+                    instance,
+                    offset: RationalTime::zero(),
+                    key: on.then(|| KeySignature::new(2).expect("a key in range")),
+                })
+            }),
+        ),
+    ];
+    let _ = &origin;
+    let mut n = 0u64;
+    for (name, write) in &cases {
+        for policy in [UndoPolicy::StrictInverse, UndoPolicy::BestEffort] {
+            n += 1;
+            let region = RegionId::new(A, 2100 + 10 * n);
+            let instance = StaffInstanceId::new(A, 2101 + 10 * n);
+            let tx = TransactionId::new(A, 2102 + 10 * n);
+            let create = m.op(
+                A,
+                0,
+                1,
+                &[],
+                primitive(OperationKind::CreateRegion(CreateRegionOp {
+                    region: valuegen::region(region),
+                })),
+            );
+            let staff = m.op(
+                A,
+                1,
+                2,
+                &[create.id],
+                primitive(OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                    region,
+                    instance: valuegen::staff_instance(instance, m.import.ids.staves[0][0]),
+                })),
+            );
+            let written = m.op(
+                A,
+                2,
+                3,
+                &[staff.id],
+                primitive(write(region, instance, true)),
+            );
+            let mut declare = m.op(
+                A,
+                3,
+                4,
+                &[written.id],
+                primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                    id: tx,
+                    label: String::from("take it away"),
+                    category: None,
+                })),
+            );
+            declare.transaction = Some(tx);
+            let mut taken = m.op(
+                A,
+                4,
+                5,
+                &[declare.id],
+                primitive(write(region, instance, false)),
+            );
+            taken.transaction = Some(tx);
+            let migrate = m.op(
+                B,
+                0,
+                6,
+                &[taken.id],
+                m.migrate_region(region, valuegen::proportional_model()),
+            );
+            let undo = m.op(
+                A,
+                5,
+                7,
+                &[taken.id],
+                OperationPayload::UndoTransaction(UndoTransactionPayload { target: tx, policy }),
+            );
+            let history = format!("{name} restored after a migration, {policy:?}");
+            let state = m.agree(
+                &history,
+                &[
+                    create,
+                    staff,
+                    written.clone(),
+                    declare,
+                    taken.clone(),
+                    migrate.clone(),
+                    undo.clone(),
+                ],
+            );
+            for applied in [&written, &taken, &migrate] {
+                assert!(
+                    matches!(
+                        effect(&state, applied.id),
+                        Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
+                    ),
+                    "{history}: {:?}",
+                    effect(&state, applied.id)
+                );
+            }
+            match policy {
+                UndoPolicy::StrictInverse => {
+                    let Some(OperationEffect::Conflicted { conflict }) = effect(&state, undo.id)
+                    else {
+                        panic!("{history}: {:?}", effect(&state, undo.id));
+                    };
+                    let record = state
+                        .conflicts
+                        .records()
+                        .iter()
+                        .find(|r| r.id == conflict)
+                        .expect("recorded");
+                    assert!(record.caused_by.contains(&migrate.id), "{history}");
+                }
+                _ => assert_eq!(
+                    effect(&state, undo.id),
+                    Some(OperationEffect::Applied),
+                    "{history}"
+                ),
+            }
+            assert!(state.breaks.keys().all(|(r, _)| *r != region), "{history}");
+            assert!(
+                state.page_breaks.keys().all(|(r, _)| *r != region),
+                "{history}"
+            );
+        }
+    }
+}

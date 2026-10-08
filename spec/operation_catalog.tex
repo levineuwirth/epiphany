@@ -796,7 +796,9 @@ and its meter changes compare by the order the reduction applied them. A
 best-effort undo that keeps a mint for what names it keeps what that mint
 names, where it removed the instrument of a staff it kept. A promoted voice
 holds its instance against a delete, as any voice does. An undo that is a
-member of the transaction it names is refused.
+member of the transaction it names is refused, and a migration out of musical
+time supersedes an undo's restoration of a value written in musical time into
+its region.
 Two requirement labels are added;
 no payload, discriminant or \texttt{PreconditionFailureReason} changes.
 Accordingly
@@ -2737,7 +2739,13 @@ superseded the key, \texttt{StrictInverse} refuses the whole undo with a
 \texttt{TransactionConflict} conflict naming the undo and the superseding
 writer; a cross-cutting value whose restoration would name an endpoint deleted
 since is superseded by that delete (since version~0.19.0, before which the
-dangling value was restored); \texttt{BestEffort} restores the still-last-written keys and skips
+dangling value was restored); a value whose restoration would write in musical
+time into a region a migration has since taken out of it (a break anchored by
+a musical offset, a meter change, a metric grid, a tempo segment anchored in
+the region, a clef or key change of its staff instance) is superseded by that
+migration, as its setter is refused there (since version~0.19.0, before which
+it was restored at an offset the region no longer admits);
+\texttt{BestEffort} restores the still-last-written keys and skips
 the superseded ones. Restorations are expressed in the effect status (a fully
 clean compensation is \texttt{Applied}; a mixed one is
 \texttt{AppliedWithRepair} carrying only the tombstone repairs) --- no new
