@@ -2920,3 +2920,14 @@ graph agree. Graph state only. Locked by
 (the tombstoned filter removed, it fails; the modify writing its raw value, it
 and `a_modify_keeps_a_pitch_its_author_never_saw_in_both_modes` fail) and
 histories `137` and `138`.
+
+**A measure stands in musical time.** At a million histories an author
+created a measure in a region another author had concurrently migrated to
+proportional time (history `139`): the migration applied first, finding no
+measure to strand, and the measure applied after it, anchored by a musical
+offset the region no longer admitted (`AnchorOffsetModel`). `CreateMeasure`
+now reads its region (the start anchor's, or its instance's) through
+`musical_slot` and refuses `WrongRegionTimeModel`, as `SetTimeSignature`,
+`SetClef` and a musical break already do. Locked by
+`a_measure_in_a_region_out_of_musical_time_is_refused_in_both_modes` (the
+check removed, it fails) and history `139`.

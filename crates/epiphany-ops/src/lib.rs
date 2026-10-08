@@ -412,6 +412,10 @@ pub mod vectors;
 ///     insert. The first dropped the pitch from the graph and left it live
 ///     (`SpellingScopeResolves`), the second brought a tombstoned pitch back
 ///     into the graph (`UniqueIdentifiers`). Graph state only.
+///   - a `CreateMeasure` whose start is anchored in musical time into a
+///     region admitting no musical offset is refused `WrongRegionTimeModel`,
+///     as a `SetTimeSignature` is, where it applied after a concurrent
+///     migration out of musical time (`AnchorOffsetModel`).
 ///   - an undo that would tombstone a region a live tempo segment of another
 ///     map anchors to, or an instrument a live staff instance's override
 ///     names (each read as the undo leaves it), is blocked by it (strict:
@@ -464,7 +468,9 @@ pub mod vectors;
 ///   for regions and instruments still named,
 ///   `an_undo_of_a_region_or_instrument_still_named_is_blocked_in_both_modes`;
 ///   for whole-event writes,
-///   `a_whole_event_modify_neither_removes_nor_revives_a_pitch_in_both_modes`.
+///   `a_whole_event_modify_neither_removes_nor_revives_a_pitch_in_both_modes`;
+///   for measures,
+///   `a_measure_in_a_region_out_of_musical_time_is_refused_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

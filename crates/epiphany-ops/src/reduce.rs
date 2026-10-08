@@ -6169,6 +6169,20 @@ impl<'a> Reducer<'a> {
                     },
                 };
             }
+            // A measure starts in musical time, so its instance's region
+            // must admit a musical offset, as a time signature's must
+            // (reduction version 3: before it a measure created after a
+            // concurrent migration out of musical time applied there,
+            // `AnchorOffsetModel`).
+            let region = match &op.measure.start {
+                TimeAnchor::Region { id, .. } => Some(*id),
+                _ => self.instance_region_of(op.instance),
+            };
+            if let Some(effect) =
+                region.and_then(|region| self.musical_slot(region, Some(&op.measure.start)))
+            {
+                return effect;
+            }
         }
 
         let region = self.region_of_instance(op.instance);

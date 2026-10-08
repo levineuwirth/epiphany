@@ -3205,3 +3205,64 @@ fn a_whole_event_modify_neither_removes_nor_revives_a_pitch_in_both_modes() {
         "the removed pitch stays out of the event"
     );
 }
+
+/// A measure starts in musical time, so a `CreateMeasure` into a staff
+/// instance of a region out of musical time is refused `WrongRegionTimeModel`
+/// in both modes. Before reduction version 3 it applied, its start anchored by
+/// a musical offset the region does not admit (`AnchorOffsetModel`).
+#[test]
+fn a_measure_in_a_region_out_of_musical_time_is_refused_in_both_modes() {
+    use epiphany_core::{MeasureId, StaffInstanceId, TimeSignatureId};
+    use epiphany_ops::{CreateMeasureOp, CreateRegionOp, CreateStaffInstanceOp};
+    let m = Measure::new();
+    let region = RegionId::new(A, 1600);
+    let instance = StaffInstanceId::new(A, 1601);
+    let create = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::CreateRegion(CreateRegionOp {
+            region: valuegen::region(region),
+        })),
+    );
+    let staff = m.op(
+        A,
+        1,
+        2,
+        &[create.id],
+        primitive(OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+            region,
+            instance: valuegen::staff_instance(instance, m.import.ids.staves[0][0]),
+        })),
+    );
+    let migrated = m.op(
+        A,
+        2,
+        3,
+        &[staff.id],
+        m.migrate_region(region, valuegen::proportional_model()),
+    );
+    let mut measure = valuegen::measure(MeasureId::new(A, 1602), TimeSignatureId::new(A, 1603), 1);
+    measure.time_signature = None;
+    measure.start = valuegen::region_start_anchor(region, MusicalPosition::origin());
+    let made = m.op(
+        A,
+        3,
+        4,
+        &[migrated.id],
+        primitive(OperationKind::CreateMeasure(CreateMeasureOp {
+            instance,
+            measure,
+        })),
+    );
+    let state = m.agree(
+        "a measure in a proportional region",
+        &[create, staff, migrated.clone(), made.clone()],
+    );
+    assert_eq!(effect(&state, migrated.id), Some(OperationEffect::Applied));
+    assert_eq!(
+        effect(&state, made.id),
+        refused(PreconditionFailureReason::WrongRegionTimeModel)
+    );
+}
