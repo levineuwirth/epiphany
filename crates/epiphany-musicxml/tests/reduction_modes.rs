@@ -2800,3 +2800,133 @@ fn a_clef_or_key_in_a_region_out_of_musical_time_is_refused_in_both_modes() {
         );
     }
 }
+
+/// A staff named by a live part definition or spanner is not undone: an undo
+/// of the transaction that made it, after another author named it, conflicts
+/// in both modes, naming the referencer; and a spanner naming a staff an undo
+/// has removed is refused `TargetMissing` in both, its staves read as
+/// referents. Before reduction version 3 the undo removed the staff and the
+/// spanner applied, each leaving a reference to a staff the score does not
+/// declare (`CrossCuttingRefsResolve`).
+#[test]
+fn an_undo_of_a_staff_a_part_or_spanner_names_conflicts_in_both_modes() {
+    use epiphany_core::{PartDefinitionId, SpannerId, StaffId};
+    use epiphany_ops::{
+        ConflictKind, CreateCrossCuttingOp, CreatePartDefinitionOp, CreateStaffOp,
+        CrossCuttingValue,
+    };
+    let m = Measure::new();
+    let instrument = m.import.ids.instruments[0];
+    let make_staff = |tx: TransactionId, staff: StaffId| {
+        let mut declare = m.op(
+            A,
+            0,
+            1,
+            &[],
+            primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                id: tx,
+                label: String::from("a staff"),
+                category: None,
+            })),
+        );
+        declare.transaction = Some(tx);
+        let mut made = m.op(
+            A,
+            1,
+            2,
+            &[declare.id],
+            primitive(OperationKind::CreateStaff(CreateStaffOp {
+                staff: valuegen::staff(staff, instrument),
+            })),
+        );
+        made.transaction = Some(tx);
+        (declare, made)
+    };
+    let undo = |counter: u64, at: i64, seen: &[OperationId], tx: TransactionId| {
+        m.op(
+            A,
+            counter,
+            at,
+            seen,
+            OperationPayload::UndoTransaction(UndoTransactionPayload {
+                target: tx,
+                policy: UndoPolicy::StrictInverse,
+            }),
+        )
+    };
+    let part = |staff: StaffId| {
+        primitive(OperationKind::CreatePartDefinition(
+            CreatePartDefinitionOp {
+                part: valuegen::part_definition(PartDefinitionId::new(B, 1201), vec![staff]),
+            },
+        ))
+    };
+    let spanner = |staff: StaffId| {
+        primitive(OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+            structure: CrossCuttingValue::Spanner(epiphany_core::Spanner {
+                id: SpannerId::new(B, 1202),
+                start: valuegen::event_anchor(m.q(0)),
+                end: valuegen::event_anchor(m.q(1)),
+                staves: vec![staff],
+                kind: Default::default(),
+                style: Default::default(),
+            }),
+        }))
+    };
+
+    for (n, (name, named)) in [
+        ("a part", &part as &dyn Fn(StaffId) -> OperationPayload),
+        ("a spanner", &spanner),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let tx = TransactionId::new(A, 1210 + n as u64);
+        let staff = StaffId::new(A, 1220 + n as u64);
+        let (declare, made) = make_staff(tx, staff);
+        let naming = m.op(B, 0, 3, &[made.id], named(staff));
+        let undone = undo(2, 4, &[naming.id], tx);
+        let state = m.agree(
+            &format!("an undone staff {name} names"),
+            &[declare, made, naming.clone(), undone.clone()],
+        );
+        assert_eq!(effect(&state, naming.id), Some(OperationEffect::Applied));
+        let Some(OperationEffect::Conflicted { conflict }) = effect(&state, undone.id) else {
+            panic!("{name}: {:?}", effect(&state, undone.id));
+        };
+        let record = state
+            .conflicts
+            .records()
+            .iter()
+            .find(|r| r.id == conflict)
+            .expect("recorded");
+        assert!(matches!(
+            record.kind,
+            ConflictKind::TransactionConflict { .. }
+        ));
+        assert!(
+            live(&state, TypedObjectId::Staff(staff)),
+            "{name}: the staff stays"
+        );
+    }
+
+    // A spanner after the undo, its author unaware of it, names a dead staff.
+    let tx = TransactionId::new(A, 1230);
+    let staff = StaffId::new(A, 1231);
+    let (declare, made) = make_staff(tx, staff);
+    let undone = undo(2, 3, &[made.id], tx);
+    let late = m.op(B, 0, 4, &[made.id], spanner(staff));
+    let state = m.agree(
+        "a spanner naming an undone staff",
+        &[declare, made, undone.clone(), late.clone()],
+    );
+    assert!(tombstoned(&state, TypedObjectId::Staff(staff)));
+    assert!(matches!(
+        effect(&state, undone.id),
+        Some(OperationEffect::AppliedWithRepair { .. })
+    ));
+    assert_eq!(
+        effect(&state, late.id),
+        refused(PreconditionFailureReason::TargetMissing)
+    );
+}

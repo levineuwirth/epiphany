@@ -2842,3 +2842,19 @@ imported region to proportional time now names the instance too
 `a_clef_or_key_in_a_region_out_of_musical_time_is_refused_in_both_modes` (the
 refusal removed from the setters, from the instance's create, or the
 stranding removed, it fails) and history `132`.
+
+**A staff a part or spanner names.** An undo of the transaction that created
+a staff, after another author's part definition had named it (history `133`),
+tombstoned the staff and left the part naming a staff the score did not
+declare (`CrossCuttingRefsResolve`). The staff strand guard, which a live
+staff instance already blocked, gains two surfaces: a live part definition
+naming the staff (`part_definition_values`) and a live spanner naming it (its
+current value in `cross_cutting_modify_chain`), neither among the undo's own
+targets. A spanner names staves too, and the generated histories write them,
+so the same reference was reachable from the other side: a spanner created or
+modified to name a staff its history minted and lost applied. Its staves are
+now referents (`spanner_staves_slot`, through `referent_dead`), a dead one
+refusing it `TargetMissing` in both modes. Locked by
+`an_undo_of_a_staff_a_part_or_spanner_names_conflicts_in_both_modes` (each of
+the two surfaces and the referent check removed, it fails) and history `133`
+(fails with the part surface removed).

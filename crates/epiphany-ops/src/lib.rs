@@ -393,6 +393,13 @@ pub mod vectors;
 ///     model, which conflicts naming the instance. Each applied and left a
 ///     change anchored by a musical offset the region no longer admits
 ///     (`AnchorOffsetModel`).
+///   - an undo that would tombstone a staff a live part definition or spanner
+///     names is blocked by it, as by a live staff instance (strict:
+///     conflicted; best effort: the staff kept); and a `CreateCrossCutting` or
+///     `ModifyCrossCutting` of a spanner naming a dead staff is refused
+///     `TargetMissing`, its staves read as referents in both modes. Each left
+///     a reference to a staff the score does not declare
+///     (`CrossCuttingRefsResolve`).
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
@@ -432,7 +439,8 @@ pub mod vectors;
 ///   clefs and keys,
 ///   `a_clef_or_key_in_a_region_out_of_musical_time_is_refused_in_both_modes`
 ///   and `a_migration_finds_its_regions_events_in_both_modes`, whose
-///   proportional target now names the instance too.
+///   proportional target now names the instance too; for staves,
+///   `an_undo_of_a_staff_a_part_or_spanner_names_conflicts_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

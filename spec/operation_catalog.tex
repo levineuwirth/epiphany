@@ -782,7 +782,10 @@ since (Section~\ref{sec:k0:modify-event}), where each dropped the pitch from the
 graph and left it live. A clef or key change, written at a musical offset, is
 refused in a region out of musical time, whether set or carried by a new staff
 instance, and a live one strands its region's migration out of it, where each
-left a change anchored by a musical offset the region did not admit.
+left a change anchored by a musical offset the region did not admit. An undo
+cannot remove a staff a live part definition or spanner names, and a spanner's
+staves are read as referents, where each left a reference to a staff the score
+did not declare.
 Two requirement labels are added;
 no payload, discriminant or \texttt{PreconditionFailureReason} changes.
 Accordingly
@@ -1391,7 +1394,10 @@ length-framed canonical bytes of the structure value.
 
 \textbf{Reduction rule.} Set-union creation: the structure is minted live if its
 id is not already live and every referenced endpoint is live; a second create of
-a live id is idempotent. Graph-aware reduction materialises the structure with
+a live id is idempotent. A spanner's staves are referents, each checked in both
+modes as Requirement~\ref{req:catalog:base-free-referents} reads one (since
+version~0.19.0), a dead staff refusing the create, as it does a
+\texttt{ModifyCrossCutting}, with \texttt{TargetMissing}. Graph-aware reduction materialises the structure with
 its full fields.
 
 \textbf{Conflict cases.} None (all-or-nothing creation; union is deterministic).
@@ -1674,7 +1680,9 @@ re-create is a precondition gate, not a conflict).
 
 \textbf{Undo semantics.} Undo of a create tombstones the minted staff
 (Section~\ref{sec:k0:undo}); \texttt{StrictInverse} conflicts if a live staff
-instance references it (tombstoning it would strand the instance).
+instance references it (tombstoning it would strand the instance), and so, since
+version~0.19.0, if a live part definition or spanner names it, before which the
+undo removed the staff and left the part or spanner naming nothing.
 \textbf{Undo also strips the removed staff's id from every live group's
 \texttt{members} (P13-S16)}: the projection is maintained from
 \texttt{Staff.group}, so a staff leaving the graph \MUST{} leave the projection

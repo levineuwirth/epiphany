@@ -4296,6 +4296,9 @@ impl<'a> Reducer<'a> {
                 };
             }
         }
+        if let Some(effect) = self.spanner_staves_slot(&op.structure) {
+            return effect;
+        }
         if let Err(reason) = self.materialize_graph_cross_cutting(op) {
             return OperationEffect::NoOp {
                 reason: NoOpReason::PreconditionFailedUnderReduction { reason },
@@ -4312,6 +4315,25 @@ impl<'a> Reducer<'a> {
             .seed(op.structure.clone());
         self.structures.insert(sid, endpoints);
         OperationEffect::Applied
+    }
+
+    /// A spanner's staves are referents, read in both modes as
+    /// `req:catalog:base-free-referents` reads one: a dead staff refuses the
+    /// write `TargetMissing` (reduction version 3: before it a spanner could
+    /// name a staff its history minted and lost, `CrossCuttingRefsResolve`).
+    fn spanner_staves_slot(&self, structure: &CrossCuttingValue) -> Option<OperationEffect> {
+        let CrossCuttingValue::Spanner(spanner) = structure else {
+            return None;
+        };
+        spanner
+            .staves
+            .iter()
+            .any(|staff| self.referent_dead(TypedObjectId::Staff(*staff)))
+            .then_some(OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            })
     }
 
     fn delete_cross_cutting(
@@ -4607,6 +4629,9 @@ impl<'a> Reducer<'a> {
                     },
                 };
             }
+        }
+        if let Some(effect) = self.spanner_staves_slot(&op.structure) {
+            return effect;
         }
         // LWW field-overwrite, mirroring modify_event: the resolved value lives in
         // the graph; MaterializedState records only the effect and, on a
@@ -7713,14 +7738,40 @@ impl<'a> Reducer<'a> {
                 })
             }),
             TypedObjectId::Staff(staff) => {
+                let survives = |object: &TypedObjectId| {
+                    !targets.contains(object)
+                        && matches!(self.objects.get(object), Some(ObjectState::Live))
+                };
                 self.instance_staff
                     .iter()
                     .find_map(|(instance, manifested)| {
                         let iobj = TypedObjectId::StaffInstance(*instance);
-                        (manifested == staff
-                            && !targets.contains(&iobj)
-                            && matches!(self.objects.get(&iobj), Some(ObjectState::Live)))
-                        .then_some((*target, iobj))
+                        (manifested == staff && survives(&iobj)).then_some((*target, iobj))
+                    })
+                    // A live part definition or spanner naming the staff
+                    // (reduction version 3: before it the undo removed the
+                    // staff and left the part or spanner naming nothing,
+                    // `CrossCuttingRefsResolve`). Neither names it through a
+                    // value an undo could restore away: a part has no modify,
+                    // and a spanner's current value is the one it holds.
+                    .or_else(|| {
+                        self.part_definition_values.iter().find_map(|(id, part)| {
+                            let pobj = TypedObjectId::PartDefinition(*id);
+                            (part.staves.contains(staff) && survives(&pobj))
+                                .then_some((*target, pobj))
+                        })
+                    })
+                    .or_else(|| {
+                        self.cross_cutting_modify_chain
+                            .iter()
+                            .find_map(|(sid, chain)| match chain.current() {
+                                Some(CrossCuttingValue::Spanner(spanner))
+                                    if spanner.staves.contains(staff) && survives(sid) =>
+                                {
+                                    Some((*target, *sid))
+                                }
+                                _ => None,
+                            })
                     })
             }
             TypedObjectId::TimeSignature(id) => {
