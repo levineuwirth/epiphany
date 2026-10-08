@@ -369,6 +369,15 @@ pub mod vectors;
 ///     events leaves the voice in position order in the graph, as a move
 ///     does, where it kept the old order (`VoiceEventsSortedNonOverlap`); a
 ///     graph-state change only.
+///   - a tie gives way (D48, `req:opcat:tie-gives-way`): after an operation
+///     applies, a live tie it broke, its pairing or its class's placement no
+///     longer holding, is removed and the operation records a
+///     `CascadeDeleted` repair for it (a conflicted operation's effect
+///     carries none; the tie's tombstone names it), read from the indices both
+///     modes keep. An insert between a tie's ends, a move, a pitch edited,
+///     transposed, deleted or added to an implicitly paired end, a migration's
+///     remapping, an undo's restoration, and a tie created or rewritten over
+///     such a change each so remove it, where the tie stayed (`TiePairing`).
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
@@ -401,7 +410,8 @@ pub mod vectors;
 ///   which held its admission and now holds its refusal; for tempo,
 ///   `a_tempo_in_a_region_out_of_musical_time_is_refused_in_both_modes`; for
 ///   the reordering,
-///   `a_reassignment_that_reorders_a_voice_keeps_it_sorted_in_both_modes`.
+///   `a_reassignment_that_reorders_a_voice_keeps_it_sorted_in_both_modes`; for
+///   ties, `a_tie_gives_way_to_an_edit_that_breaks_it_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

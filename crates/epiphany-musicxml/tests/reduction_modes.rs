@@ -63,7 +63,11 @@ struct Measure {
 
 impl Measure {
     fn new() -> Self {
-        let import = import(MEASURE).expect("the measure imports");
+        Self::of(MEASURE)
+    }
+
+    fn of(xml: &str) -> Self {
+        let import = import(xml).expect("the measure imports");
         let mut set = OperationSet::new();
         set.accept_all(import.envelopes.clone());
         let score = set
@@ -2239,4 +2243,270 @@ fn a_tempo_in_a_region_out_of_musical_time_is_refused_in_both_modes() {
         MaterializedState::decode_canonical(&state.canonical_bytes()).as_ref(),
         Ok(&state)
     );
+}
+
+const REPEATED: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="4.0">
+  <part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>2</divisions><key><fifths>0</fifths></key>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+        <clef><sign>G</sign><line>2</line></clef></attributes>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>quarter</type></note>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>quarter</type></note>
+      <note><pitch><step>D</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>quarter</type></note>
+      <note><pitch><step>E</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>quarter</type></note>
+    </measure>
+  </part>
+</score-partwise>
+"#;
+
+/// A tie gives way (D48): every operation that moves a pitch or an event
+/// applies, and a tie whose pairing or adjacency it breaks is removed, the
+/// operation recording a `CascadeDeleted` repair for it, in both modes, the
+/// score keeping every invariant. An edit that leaves the tie whole keeps it.
+/// Before reduction version 3 every such edit applied and left the tie in
+/// place, breaking `TiePairing`.
+#[test]
+fn a_tie_gives_way_to_an_edit_that_breaks_it_in_both_modes() {
+    use epiphany_core::{
+        IdentifiedPitch, Pitch, PitchId, Tie, TieClass, TieId, TranspositionInterval,
+    };
+    use epiphany_ops::{
+        CreateCrossCuttingOp, CrossCuttingValue, DeleteIdentifiedPitchOp, InsertIdentifiedPitchOp,
+        ModifyCrossCuttingOp, ModifyIdentifiedPitchOp, TransposeIntervalOp, TransposeOp,
+    };
+    // C4 C4 D4 E4, the tie from the first C to the second.
+    let m = Measure::of(REPEATED);
+    let pitch = |i: usize| m.import.ids.pitches[0][i][0];
+    let value = |i: usize| -> Pitch {
+        match &m.quarters[i] {
+            Event::Pitched(e) => e.pitches[0].pitch.clone(),
+            other => panic!("a note, not {other:?}"),
+        }
+    };
+    let tie_id = TieId::new(A, 900);
+    let tied = TypedObjectId::Tie(tie_id);
+    let tie_value = |start: usize, end: usize, pairing: Pairing| {
+        CrossCuttingValue::Tie(Tie {
+            id: tie_id,
+            start_event: m.q(start),
+            end_event: m.q(end),
+            pitch_pairing: pairing,
+            class: TieClass::Standard,
+            style: Default::default(),
+        })
+    };
+    type Pairing = Option<Vec<(PitchId, PitchId)>>;
+    let explicit = || Some(vec![(pitch(0), pitch(1))]);
+    let tie = |pairing: Pairing| {
+        m.op(
+            A,
+            0,
+            1,
+            &[],
+            primitive(OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                structure: tie_value(0, 1, pairing),
+            })),
+        )
+    };
+    let tie_seen = OperationId::new(A, 0);
+    let up_a_second = |targets: &[usize]| {
+        primitive(OperationKind::TransposeInterval(TransposeIntervalOp {
+            targets: targets.iter().map(|i| pitch(*i)).collect(),
+            interval: TranspositionInterval {
+                diatonic_steps: 1,
+                chromatic_steps: 2,
+            },
+        }))
+    };
+    let set_pitch = |i: usize, to: Pitch| {
+        primitive(OperationKind::ModifyIdentifiedPitch(
+            ModifyIdentifiedPitchOp {
+                pitch: pitch(i),
+                value: to,
+            },
+        ))
+    };
+    let with_value = |i: usize, to: Pitch| {
+        let mut event = m.quarters[i].clone();
+        match &mut event {
+            Event::Pitched(e) => e.pitches[0].pitch = to,
+            other => panic!("a note, not {other:?}"),
+        }
+        primitive(OperationKind::ModifyEvent(ModifyEventOp { event }))
+    };
+    let added = |i: usize| {
+        primitive(OperationKind::InsertIdentifiedPitch(
+            InsertIdentifiedPitchOp {
+                event: m.q(i),
+                pitch: IdentifiedPitch {
+                    id: PitchId::new(A, 950),
+                    pitch: value(3),
+                },
+            },
+        ))
+    };
+    let gave_way = |state: &MaterializedState, id: OperationId| {
+        tombstoned(state, tied)
+            && matches!(
+                effect(state, id),
+                Some(OperationEffect::AppliedWithRepair { repairs })
+                    if repairs.iter().any(|r| r.kind == RepairKind::CascadeDeleted && r.target == tied)
+            )
+    };
+
+    // Each edit by A, after the tie: the edit applies and the tie gives way.
+    let edits: Vec<(&str, Pairing, OperationPayload)> = vec![
+        ("a transpose of one end", explicit(), up_a_second(&[1])),
+        (
+            "a replay transpose of one end",
+            explicit(),
+            primitive(OperationKind::Transpose(TransposeOp {
+                targets: vec![pitch(0)],
+                chromatic_steps: 1,
+            })),
+        ),
+        (
+            "a pitch edit of one end",
+            explicit(),
+            set_pitch(1, value(2)),
+        ),
+        (
+            "a whole-event edit of one end's pitch",
+            explicit(),
+            with_value(0, value(3)),
+        ),
+        (
+            "a delete of an end's pitch",
+            explicit(),
+            primitive(OperationKind::DeleteIdentifiedPitch(
+                DeleteIdentifiedPitchOp { pitch: pitch(1) },
+            )),
+        ),
+        ("a pitch added to an implicitly paired end", None, added(1)),
+        (
+            "its end moved past the next quarter",
+            explicit(),
+            m.reassign(&[(0, 0), (1, 2), (2, 1), (3, 3)]),
+        ),
+        (
+            "the tie rewritten onto a quarter not next",
+            explicit(),
+            primitive(OperationKind::ModifyCrossCutting(ModifyCrossCuttingOp {
+                structure: tie_value(0, 2, None),
+            })),
+        ),
+    ];
+    for (name, pairing, payload) in edits {
+        let tie = tie(pairing);
+        let edit = m.op(A, 1, 2, &[tie_seen], payload);
+        let state = m.agree(name, &[tie, edit.clone()]);
+        assert!(
+            gave_way(&state, edit.id),
+            "{name}: {:?}",
+            effect(&state, edit.id)
+        );
+    }
+
+    // An insert between the ends, into the time the start's trim freed.
+    let trim = m.op(A, 1, 2, &[tie_seen], primitive(m.trim(0, eighth())));
+    let mut rest = m.rest(960, 0, eighth());
+    rest.position = EventPosition::Musical(MusicalPosition(
+        RationalTime::new(1, 8).expect("an eighth in"),
+    ));
+    let insert = m.op(B, 0, 3, &[tie_seen, trim.id], m.insert(rest));
+    let state = m.agree(
+        "an insert between the ends",
+        &[tie(explicit()), trim.clone(), insert.clone()],
+    );
+    assert_eq!(
+        effect(&state, trim.id),
+        Some(OperationEffect::Applied),
+        "a trim keeps the tie"
+    );
+    assert!(
+        gave_way(&state, insert.id),
+        "{:?}",
+        effect(&state, insert.id)
+    );
+
+    // A tie created over a concurrent edit that breaks it gives way at once.
+    let edit = m.op(B, 0, 1, &[], set_pitch(1, value(2)));
+    let late = m.op(
+        A,
+        0,
+        2,
+        &[],
+        primitive(OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+            structure: tie_value(0, 1, explicit()),
+        })),
+    );
+    let state = m.agree("a tie over a concurrent pitch edit", &[edit, late.clone()]);
+    assert!(gave_way(&state, late.id), "{:?}", effect(&state, late.id));
+
+    // An undo restoring the pitch the tie was made for: the D made a C, tied
+    // from the C before it, then the edit undone.
+    let tx = TransactionId::new(A, 970);
+    let mut declare = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("edit"),
+            category: None,
+        })),
+    );
+    declare.transaction = Some(tx);
+    let mut make_c = m.op(A, 1, 2, &[declare.id], set_pitch(2, value(1)));
+    make_c.transaction = Some(tx);
+    let later_tie = m.op(
+        A,
+        2,
+        3,
+        &[make_c.id],
+        primitive(OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+            structure: tie_value(1, 2, None),
+        })),
+    );
+    let undo = m.op(
+        A,
+        3,
+        4,
+        &[later_tie.id],
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::StrictInverse,
+        }),
+    );
+    let state = m.agree(
+        "an undo restoring an end's pitch",
+        &[declare, make_c, later_tie.clone(), undo.clone()],
+    );
+    assert_eq!(effect(&state, later_tie.id), Some(OperationEffect::Applied));
+    assert!(gave_way(&state, undo.id), "{:?}", effect(&state, undo.id));
+
+    // Edits that leave the tie whole keep it: both ends transposed together,
+    // a pitch added to an explicitly paired end, the next quarter lengthened.
+    let keeps: Vec<(&str, OperationPayload)> = vec![
+        ("both ends transposed", up_a_second(&[0, 1])),
+        ("a pitch added beside an explicit pair", added(1)),
+        (
+            "the quarter after the tie trimmed",
+            primitive(m.trim(2, eighth())),
+        ),
+    ];
+    for (name, payload) in keeps {
+        let edit = m.op(A, 1, 2, &[tie_seen], payload);
+        let state = m.agree(name, &[tie(explicit()), edit.clone()]);
+        assert_eq!(
+            effect(&state, edit.id),
+            Some(OperationEffect::Applied),
+            "{name}"
+        );
+        assert!(live(&state, tied), "{name}: the tie stays");
+    }
 }

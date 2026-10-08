@@ -2773,3 +2773,27 @@ no verdict moves. The fuzz's remappings had not reordered a voice; the tie
 test below did. Locked by
 `a_reassignment_that_reorders_a_voice_keeps_it_sorted_in_both_modes` (the
 re-sort removed, it fails).
+
+**A tie gives way.** Reduction checked no tie's pairing or adjacency: a tie
+was accepted as written, and a concurrent insert between its ends (history
+`008`, the end promoted out of the start's voice) or a transpose of one end
+(`113`) left it breaking `TiePairing`. D48 rules that the edit applies and the
+tie is removed with a recorded repair. After any operation applies,
+`ties_give_way` holds each live tie the operation may have broken to the
+core's tie validation, read from what both modes keep (`tie_holds`: each
+event's voice and position from `voice_occupancy`, its live pitches from
+`event_pitches`, their values from the graph or `pitch_values`), and removes
+one that fails as `DeleteCrossCutting` would, recording `CascadeDeleted` on
+the operation's effect. Which ties: an insert's and a move's new neighbours
+and the event itself, a pitch operation's or transposition's events, every
+tie for a migration or an undo, the tie itself for its create or modify. A
+create over a concurrent break therefore applies and gives way at once,
+rather than being refused, so the history reads the same whichever of the two
+reduces first. A conflicted operation carries no repairs; the tie's tombstone,
+naming it, is the record. Ties are checked per operation, so a transaction
+that breaks a tie and mends it in a later member loses it. Locked by
+`a_tie_gives_way_to_an_edit_that_breaks_it_in_both_modes` (eleven breaking
+edits and three that keep the tie) and histories `008` and `113`; with every
+tie held, the test and both histories fail, and so does the CI budget, which
+finds `TiePairing`; with the neighbours dropped the insert's case fails; with
+undo checking no tie the undo's case fails.

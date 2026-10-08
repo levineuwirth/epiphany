@@ -41,10 +41,10 @@ use epiphany_core::{
     RegionEdge, RegionId, RegionTimeModel, RepeatStructure, RepeatStructureId, ReplicaId, Score,
     ScoreMetadata, SpellingAttachment, SpellingDirective, SpellingPrecedence, SpellingScope,
     SpellingSource, Staff, StaffGroup, StaffGroupId, StaffId, StaffInstance, StaffInstanceId,
-    StaffLineConfiguration, TempoMap, TempoSegment, TempoShape, TimeAnchor, TimeSignature,
-    TimeSignatureId, TransactionId, TransposeRefusal, TranspositionInterval, TuningContextSettings,
-    TupletId, TypedObjectId, ViewDefinition, ViewId, Voice, VoiceId, VoiceOrigin,
-    WallClockDuration,
+    StaffLineConfiguration, TempoMap, TempoSegment, TempoShape, Tie, TieClass, TieId, TimeAnchor,
+    TimeSignature, TimeSignatureId, TransactionId, TransposeRefusal, TranspositionInterval,
+    TuningContextSettings, TupletId, TypedObjectId, ViewDefinition, ViewId, Voice, VoiceId,
+    VoiceOrigin, WallClockDuration,
 };
 use epiphany_determinism::CanonicalEncode;
 
@@ -1450,6 +1450,16 @@ pub(crate) fn graph_voice_location(score: &Score, voice: VoiceId) -> Option<(usi
         }
     }
     None
+}
+
+/// Which ties an operation may break, for [`Reducer::ties_give_way`]: none,
+/// one it writes, those at or beside some events, or every live tie (an undo
+/// or a migration, which may move any event or value).
+enum TieTouch {
+    Nothing,
+    Tie(TypedObjectId),
+    Events(BTreeSet<EventId>),
+    All,
 }
 
 /// The verdict on a [`ModifyEvent`](OperationKind::ModifyEvent)'s placement: whether
@@ -3442,7 +3452,15 @@ impl<'a> Reducer<'a> {
 
     // --- Dispatch. ----------------------------------------------------------
 
+    /// Applies one operation, then lets every tie it broke give way
+    /// ([`Self::ties_give_way`]).
     fn apply(&mut self, env: &OperationEnvelope) -> OperationEffect {
+        let touch = self.tie_touch(env);
+        let effect = self.apply_operation(env);
+        self.ties_give_way(env, touch, effect)
+    }
+
+    fn apply_operation(&mut self, env: &OperationEnvelope) -> OperationEffect {
         match &env.payload {
             OperationPayload::Primitive(kind) => match kind {
                 OperationKind::InsertEvent(op) => self.insert_event(env, op),
@@ -9711,6 +9729,251 @@ impl<'a> Reducer<'a> {
             kind: RepairKind::CascadeDeleted,
             target: sid,
         });
+    }
+
+    // --- Ties give way (reduction version 3). --------------------------------
+
+    /// Which ties `env` may break, read before it applies (a pitch's event is
+    /// gone from `event_pitches` once a delete applies).
+    fn tie_touch(&self, env: &OperationEnvelope) -> TieTouch {
+        let OperationPayload::Primitive(kind) = &env.payload else {
+            return match &env.payload {
+                OperationPayload::UndoTransaction(_) => TieTouch::All,
+                _ => TieTouch::Nothing,
+            };
+        };
+        let events_of = |pitches: &mut dyn Iterator<Item = PitchId>| {
+            let pitches: BTreeSet<PitchId> = pitches.collect();
+            TieTouch::Events(
+                self.event_pitches
+                    .iter()
+                    .filter(|(_, held)| held.iter().any(|p| pitches.contains(p)))
+                    .map(|(event, _)| *event)
+                    .collect(),
+            )
+        };
+        match kind {
+            OperationKind::InsertEvent(op) => TieTouch::Events(BTreeSet::from([op.event_id()])),
+            OperationKind::ModifyEvent(op) => TieTouch::Events(BTreeSet::from([op.event_id()])),
+            OperationKind::InsertIdentifiedPitch(op) => {
+                TieTouch::Events(BTreeSet::from([op.event]))
+            }
+            OperationKind::DeleteIdentifiedPitch(op) => events_of(&mut std::iter::once(op.pitch)),
+            OperationKind::ModifyIdentifiedPitch(op) => events_of(&mut std::iter::once(op.pitch)),
+            OperationKind::Transpose(op) => events_of(&mut op.targets.iter().copied()),
+            OperationKind::TransposeInterval(op) => events_of(&mut op.targets.iter().copied()),
+            OperationKind::ChangeRegionTimeModel(_) => TieTouch::All,
+            OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                structure: CrossCuttingValue::Tie(tie),
+            })
+            | OperationKind::ModifyCrossCutting(ModifyCrossCuttingOp {
+                structure: CrossCuttingValue::Tie(tie),
+            }) => TieTouch::Tie(TypedObjectId::Tie(tie.id)),
+            _ => TieTouch::Nothing,
+        }
+    }
+
+    /// A tie gives way (D48; reduction version 3;
+    /// `req:opcat:tie-gives-way`). After an operation
+    /// applies, each live tie it may have broken is held to Chapter 5
+    /// §"Ties" (`req:graph:tie-class-validation`); one that no longer holds,
+    /// its pairing or its class's adjacency broken, is removed as a delete
+    /// removes it, the operation recording a `CascadeDeleted` repair for it.
+    /// A conflicted operation's effect carries no repairs, so there the
+    /// tie's tombstone, which names the operation, is the record. Before it
+    /// a tie was accepted as written, and an insert between its ends, a
+    /// transpose of one end or a tie created over a concurrent change left
+    /// the graph breaking `TiePairing`.
+    fn ties_give_way(
+        &mut self,
+        env: &OperationEnvelope,
+        touch: TieTouch,
+        effect: OperationEffect,
+    ) -> OperationEffect {
+        if matches!(touch, TieTouch::Nothing) || matches!(effect, OperationEffect::NoOp { .. }) {
+            return effect;
+        }
+        let live: Vec<(TypedObjectId, Tie)> = self
+            .structures
+            .range(
+                TypedObjectId::Tie(TieId::from_raw(0))
+                    ..=TypedObjectId::Tie(TieId::from_raw(u128::MAX)),
+            )
+            .map(|(sid, _)| *sid)
+            .filter(|sid| matches!(self.objects.get(sid), Some(ObjectState::Live)))
+            .filter_map(
+                |sid| match self.cross_cutting_modify_chain.get(&sid)?.current()? {
+                    CrossCuttingValue::Tie(tie) => Some((sid, tie.clone())),
+                    _ => None,
+                },
+            )
+            .collect();
+        if live.is_empty() {
+            return effect;
+        }
+        let checked: Vec<(TypedObjectId, Tie)> = match touch {
+            TieTouch::Nothing => Vec::new(),
+            TieTouch::All => live,
+            TieTouch::Tie(sid) => live.into_iter().filter(|(s, _)| *s == sid).collect(),
+            TieTouch::Events(events) => {
+                // The events themselves and, in their voices, the events now
+                // either side of them: an insert or a move lands between a
+                // tie's ends there.
+                let mut near = events.clone();
+                for event in &events {
+                    let Some((voice, position)) = self.event_placement(*event) else {
+                        continue;
+                    };
+                    let placements = &self.voice_occupancy[&voice];
+                    let before = placements
+                        .iter()
+                        .filter(|(p, _, _)| *p < position)
+                        .max_by(|a, b| a.0.cmp(&b.0));
+                    let after = placements
+                        .iter()
+                        .filter(|(p, _, _)| *p > position)
+                        .min_by(|a, b| a.0.cmp(&b.0));
+                    near.extend(before.into_iter().chain(after).map(|(_, _, e)| *e));
+                }
+                live.into_iter()
+                    .filter(|(_, tie)| {
+                        near.contains(&tie.start_event) || near.contains(&tie.end_event)
+                    })
+                    .collect()
+            }
+        };
+        let mut repairs = Vec::new();
+        for (sid, tie) in checked {
+            if self.tie_holds(&tie) {
+                continue;
+            }
+            self.cascade_structure(env, sid, &mut repairs);
+            self.structures.remove(&sid);
+            self.cross_cutting_modify_chain.remove(&sid);
+            self.graph_delete_cross_cutting(sid);
+        }
+        if repairs.is_empty() {
+            return effect;
+        }
+        match effect {
+            OperationEffect::Applied => OperationEffect::AppliedWithRepair { repairs },
+            OperationEffect::AppliedWithRepair { repairs: mut own } => {
+                own.extend(repairs);
+                OperationEffect::AppliedWithRepair { repairs: own }
+            }
+            other => other,
+        }
+    }
+
+    /// An event's voice and position, from `voice_occupancy`.
+    fn event_placement(&self, event: EventId) -> Option<(VoiceId, MusicalPosition)> {
+        self.voice_occupancy.iter().find_map(|(voice, placements)| {
+            placements
+                .iter()
+                .find(|(_, _, placed)| *placed == event)
+                .map(|(position, _, _)| (*voice, position.clone()))
+        })
+    }
+
+    /// The value of `pitch` in `event`: the graph's graph-aware, the index's
+    /// base-free.
+    fn event_pitch_value(&self, event: EventId, pitch: PitchId) -> Option<Pitch> {
+        match &self.graph {
+            Some(score) => match score.events.get(event) {
+                Some(Event::Pitched(pe)) => pe
+                    .pitches
+                    .iter()
+                    .find(|ip| ip.id == pitch)
+                    .map(|ip| ip.pitch.clone()),
+                _ => None,
+            },
+            None => self.pitch_values.get(&pitch).cloned(),
+        }
+    }
+
+    /// Whether `tie` holds as the core's `TiePairing` check reads it: its
+    /// pairing (each explicit pair a pitch of each end, chromatically
+    /// equivalent for the classes that require it; or, implicit, every start
+    /// pitch matched in id order to an equivalent end pitch) and its class's
+    /// placement (Standard: the next event of the start's voice; Editorial: a
+    /// later event of that voice; CrossVoice: an event of the same staff
+    /// instance, not before the start). Read from the indices both modes
+    /// keep: placements from `voice_occupancy`, pitches from
+    /// `event_pitches`, values through [`Self::event_pitch_value`].
+    fn tie_holds(&self, tie: &Tie) -> bool {
+        let pitches = |event: EventId| -> BTreeSet<PitchId> {
+            self.event_pitches
+                .get(&event)
+                .map(|held| {
+                    held.iter()
+                        .copied()
+                        .filter(|p| {
+                            matches!(
+                                self.objects.get(&TypedObjectId::Pitch(*p)),
+                                Some(ObjectState::Live)
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let (start_pitches, end_pitches) = (pitches(tie.start_event), pitches(tie.end_event));
+        let start_value = |p: PitchId| self.event_pitch_value(tie.start_event, p);
+        let end_value = |p: PitchId| self.event_pitch_value(tie.end_event, p);
+        let requires_enharmonic = matches!(
+            tie.class,
+            TieClass::Standard | TieClass::Editorial | TieClass::CrossVoice
+        );
+        let paired = match &tie.pitch_pairing {
+            Some(pairs) => pairs.iter().all(|(sp, ep)| {
+                start_pitches.contains(sp)
+                    && end_pitches.contains(ep)
+                    && (!requires_enharmonic
+                        || match (start_value(*sp), end_value(*ep)) {
+                            (Some(a), Some(b)) => a.chromatic_equivalent(&b),
+                            _ => true,
+                        })
+            }),
+            None => {
+                let mut used: BTreeSet<PitchId> = BTreeSet::new();
+                start_pitches.len() == end_pitches.len()
+                    && start_pitches.iter().all(|sp| {
+                        let a = start_value(*sp);
+                        let matched = end_pitches.iter().find(|ep| {
+                            !used.contains(*ep)
+                                && match (&a, end_value(**ep)) {
+                                    (Some(a), Some(b)) => a.chromatic_equivalent(&b),
+                                    _ => false,
+                                }
+                        });
+                        matched.is_some_and(|ep| used.insert(*ep))
+                    })
+            }
+        };
+        if !paired {
+            return false;
+        }
+        let index = |voice: VoiceId, position: &MusicalPosition| {
+            self.voice_occupancy[&voice]
+                .iter()
+                .filter(|(p, _, _)| p < position)
+                .count()
+        };
+        match (
+            self.event_placement(tie.start_event),
+            self.event_placement(tie.end_event),
+        ) {
+            (Some((sv, sp)), Some((ev, ep))) => match tie.class {
+                TieClass::Standard => sv == ev && index(ev, &ep) == index(sv, &sp) + 1,
+                TieClass::Editorial => sv == ev && index(ev, &ep) > index(sv, &sp),
+                TieClass::CrossVoice => {
+                    self.voice_instance(sv) == self.voice_instance(ev) && sp <= ep
+                }
+                TieClass::LaissezVibrer | TieClass::Registered(_) => true,
+            },
+            // An end the index does not place (the core's check skips it).
+            _ => true,
+        }
     }
 
     fn surviving_endpoints(&self, sid: TypedObjectId, just_tombstoned: TypedObjectId) -> usize {
