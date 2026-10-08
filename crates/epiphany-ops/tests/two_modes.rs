@@ -14,10 +14,10 @@
 //! one does, and is run by an ignored test, which requires it to agree, so
 //! `cargo test -- --ignored` shows it failing until the fix lands.
 //!
-//! The CI budget runs a small number of generated histories and requires
-//! that every failure it finds is a committed `split` or `deferred` class, and
-//! that every operation kind and payload is authored and applied. The local
-//! budget is the `fuzz_modes` example.
+//! The CI budget runs a small number of generated histories, in two chunks of
+//! different lengths, and requires that every failure it finds is a committed
+//! `split` or `deferred` class, and that every operation kind and payload is
+//! authored and applied. The local budget is the `fuzz_modes` example.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -25,16 +25,22 @@ use std::sync::OnceLock;
 
 use epiphany_ops::fuzz::modes;
 
-/// The CI budget: histories, their first seed, and the operations each
-/// authors after its genesis.
-const CI_HISTORIES: u64 = 96;
-const CI_SEED: u64 = 0x4A_0001;
-const CI_AUTHORED: usize = 24;
+/// The CI budget, in chunks: histories, their first seed, and the operations
+/// each authors after its genesis. The longer chunk reaches states the shorter
+/// does not within its histories (review 1's L4: a planted break the first
+/// chunk alone missed).
+const CI_BUDGET: [(u64, u64, usize); 2] = [(96, 0x4A_0001, 24), (64, 0x4A_0001, 64)];
 
-/// The CI budget's run, shared by the tests that read it.
-fn ci_run() -> &'static modes::Report {
-    static REPORT: OnceLock<modes::Report> = OnceLock::new();
-    REPORT.get_or_init(|| modes::run(CI_SEED, CI_HISTORIES, CI_AUTHORED))
+/// The CI budget's runs, one per chunk with its authored count, shared by the
+/// tests that read them.
+fn ci_run() -> &'static [(usize, modes::Report)] {
+    static REPORTS: OnceLock<Vec<(usize, modes::Report)>> = OnceLock::new();
+    REPORTS.get_or_init(|| {
+        CI_BUDGET
+            .iter()
+            .map(|&(histories, seed, authored)| (authored, modes::run(seed, histories, authored)))
+            .collect()
+    })
 }
 
 /// What a committed history declares.
@@ -168,15 +174,19 @@ fn the_ci_budget_finds_no_failure_that_is_not_committed() {
         .filter(|c| c.expect != Expect::Agree)
         .map(|c| c.class)
         .collect();
-    let report = ci_run();
-    let unknown: Vec<_> = report
-        .findings
+    let unknown: Vec<_> = ci_run()
         .iter()
-        .filter(|(class, _)| !known.contains(*class))
-        .map(|(class, (seed, history, finding))| {
+        .flat_map(|(authored, report)| {
+            report
+                .findings
+                .iter()
+                .map(move |finding| (authored, finding))
+        })
+        .filter(|(_, (class, _))| !known.contains(*class))
+        .map(|(authored, (class, (seed, history, finding)))| {
             format!(
-                "{class}\n  seed {seed:#x}, {} envelopes; minimize with the fuzz_modes \
-                 example and commit it\n  {}",
+                "{class}\n  seed {seed:#x}, {authored} authored, {} envelopes; minimize \
+                 with the fuzz_modes example and commit it\n  {}",
                 history.len(),
                 finding.detail
             )
@@ -187,11 +197,16 @@ fn the_ci_budget_finds_no_failure_that_is_not_committed() {
 
 #[test]
 fn the_ci_budget_authors_and_applies_every_kind() {
-    let report = ci_run();
     let mut missing = Vec::new();
     for kind in modes::Coverage::kinds() {
-        let authored = report.coverage.authored.get(&kind).copied().unwrap_or(0);
-        let applied = report.coverage.applied.get(&kind).copied().unwrap_or(0);
+        let count = |pick: fn(&modes::Coverage) -> &std::collections::BTreeMap<String, u64>| {
+            ci_run()
+                .iter()
+                .map(|(_, report)| pick(&report.coverage).get(&kind).copied().unwrap_or(0))
+                .sum::<u64>()
+        };
+        let authored = count(|c| &c.authored);
+        let applied = count(|c| &c.applied);
         if authored == 0 || applied == 0 {
             missing.push(format!("{kind}: authored {authored}, applied {applied}"));
         }

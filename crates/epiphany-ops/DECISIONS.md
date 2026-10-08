@@ -3192,3 +3192,14 @@ here a run of 1,000 histories took about a sixth more CPU time. Locked by
 simulation showing the two deferred causes in turn, and one view showing both
 (gated after the first finding, or keeping a view's first finding only, it
 fails).
+
+**The CI budget runs a second, longer chunk (L4).** Review 1's plant B2 (a move
+leaving the occupancy index behind, in both modes) was found locally at the
+127th history and passed every CI test, whose budget was 96 histories of 24
+authored operations. With this round's generator the plant first shows at the
+118th history of 24 and at the 49th of 64. The budget is now two chunks, 96
+histories of 24 and 64 of 64 from the same seed, reported by chunk with its
+length; the test binary took 37 s in a debug build here where it took 15, and
+the workspace tests run in one CI job of about two minutes. With B2 planted
+the CI test fails on the second chunk, and with the second chunk emptied it
+passes, as before.
