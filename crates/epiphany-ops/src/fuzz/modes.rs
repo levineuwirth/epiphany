@@ -476,10 +476,11 @@ pub fn witness_shape(witness: &str) -> String {
     collapse_lists(&chars, &mut 0, None)
 }
 
-/// `chars` from `*at` to the bracket closing `close` (or the end), each
-/// bracketed list's runs of equal items collapsed to one.
+/// `chars` from `*at` to the bracket closing `close` (or the end), the runs of
+/// equal comma-separated items in each bracket (a list, a set, a tuple; a
+/// struct's fields are never equal) collapsed to one.
 fn collapse_lists(chars: &[char], at: &mut usize, close: Option<char>) -> String {
-    let list = close == Some(']');
+    let list = close.is_some();
     let mut items: Vec<String> = vec![String::new()];
     while *at < chars.len() {
         let c = chars[*at];
@@ -2827,5 +2828,17 @@ mod tests {
                      EventId(0000000000000003:000000000000000c)] overlap at 1/2";
         assert_eq!(witness_shape(one), witness_shape(three));
         assert_eq!(witness_shape(one), "events [EventId] overlap at #/#");
+        // So do sets of any size.
+        let small = "region RegionId(0000000000000001:0000000000000002) staff_extent \
+                     {StaffId(0000000000000001:0000000000000003)} != manifested staves {}";
+        let large = "region RegionId(0000000000000001:0000000000000002) staff_extent \
+                     {StaffId(0000000000000001:0000000000000003), \
+                     StaffId(0000000000000001:0000000000000004)} != manifested staves {}";
+        assert_eq!(witness_shape(small), witness_shape(large));
+        // A struct keeps its fields.
+        assert_eq!(
+            witness_shape("anchor Region { id: RegionId(0000000000000001:0000000000000002), edge: Start } offset"),
+            "anchor Region { id: RegionId, edge: Start } offset"
+        );
     }
 }

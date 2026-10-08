@@ -3170,8 +3170,9 @@ invariant: `CrossCuttingRefsResolve` had two causes in review 1's runs (a staff
 naming an instrument an undo removed, a meter change naming a signature an
 undo removed), and each run showed one. An invariant finding is now classed by
 the invariant and its witness's shape (`witness_shape`): the witness with each
-identifier reduced to its kind, each number to `#` and each list's runs of
-equal items to one, so findings of one cause share a class whatever objects
+identifier reduced to its kind, each number to `#` and the runs of equal
+items in each list, set or tuple to one (a struct's fields are never equal),
+so findings of one cause share a class whatever objects
 they name and two causes of one invariant are two classes. The deferred causes
 keep their names. A class may now be finer than a cause (one witness format
 naming either end of an anchor, say), which costs a line in a report, not a
