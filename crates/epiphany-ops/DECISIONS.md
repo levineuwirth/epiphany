@@ -3049,3 +3049,26 @@ absence writes nothing and is kept. Locked by
 `an_undo_writes_nothing_in_musical_time_into_a_region_out_of_it_in_both_modes`,
 seven cases under both policies (the helper answering none, it fails; each
 arm's supersession removed, its own case fails), and history `144`.
+
+**A tie is held when its transaction completes (O6, D49).** The tie check ran
+after each operation, so a transaction moving a tied pair one note at a time
+lost its tie at the first move, though both ends finished on one pitch; a
+transaction is one edit from its author's view. Each member now reports the
+ties it may have broken, read once it has applied (`apply_member`), and the
+check runs once in `reduce_transaction_block`, over their union, when every
+member has applied and none failed; a lone operation is its own transaction
+(`apply`), so nothing outside a transaction changes. The repair goes on the
+effect of the last member that touched the tie: after it nothing in the
+transaction reached the tie, so that member's application is the one that
+left it broken, and an earlier member that broke it and a later one that
+mended it would otherwise both be candidates for a record of something that
+did not stand. A failed transaction rolls back before any check, as before.
+`tie_ends` stays outside the transaction snapshot: it only grows, a rolled
+back create leaving an entry the check reads through the tie's liveness. The
+fuzz gains a gesture that moves a tied pair one end at a time in a
+transaction, entering the pair first when its view holds no tie, ties being
+rare in generated views (eleven created in five hundred histories before the
+gesture, ninety after). Locked by
+`a_tie_is_held_when_its_transaction_completes_in_both_modes`: a mended tie
+stands, a broken one goes with its repair on the member that broke it, and,
+both ends moved apart, on the later member.

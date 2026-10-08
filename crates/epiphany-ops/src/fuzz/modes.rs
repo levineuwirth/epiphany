@@ -20,7 +20,8 @@
 //! replica makes one) an equivocation with its resolution. Some turns author an
 //! editor's gesture of several operations: a note replaced by a rest, a tie
 //! entered with the note it continues into, a quarter-tone with its spelling, a
-//! staff, voice or region added and taken away again.
+//! staff, voice or region added and taken away again, a tied pair moved one end
+//! at a time in one transaction.
 //!
 //! Everything is seeded: [`generate`] is a function of its seed and length, so
 //! a finding reproduces from both. [`minimize`] shrinks a failing history to
@@ -1160,53 +1161,7 @@ fn make(
             let (a, b) = (own[i].id(), own[j].id());
             let structure = match sim.rng.below(4) {
                 0 => CrossCuttingValue::Slur(valuegen::slur(sim.mint(r), a, b)),
-                1 => {
-                    // A tie needs its end to hold its start's pitches: the
-                    // continuation is entered first, after the start, where
-                    // the voice leaves room.
-                    let Event::Pitched(start) = own[i] else {
-                        return None;
-                    };
-                    let (_, end) = span(own[i])?;
-                    let length = duration(1, 8);
-                    let after = end.clone() + length.clone();
-                    if overlaps(&h.spans(voice), &end, &after) {
-                        return None;
-                    }
-                    let instance = *h.instance_of_voice.get(&voice)?;
-                    let id: EventId = sim.mint(r);
-                    let pitches = start
-                        .pitches
-                        .iter()
-                        .map(|ip| IdentifiedPitch {
-                            id: sim.mint(r),
-                            pitch: ip.pitch.clone(),
-                        })
-                        .collect();
-                    let continuation = Event::Pitched(PitchedEvent {
-                        id,
-                        voice,
-                        position: EventPosition::Musical(end),
-                        duration: EventDuration::Musical(length),
-                        pitches,
-                        articulations: Vec::new(),
-                        dynamic: None,
-                        ornaments: Vec::new(),
-                        stem: StemConfiguration,
-                        grace: None,
-                    });
-                    let mut tie = valuegen::tie(sim.mint(r), a, id);
-                    tie.class = epiphany_core::TieClass::Standard;
-                    return Some(vec![
-                        prim(OperationKind::InsertEvent(InsertEventOp {
-                            staff_instance: instance,
-                            event: continuation,
-                        })),
-                        prim(OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
-                            structure: CrossCuttingValue::Tie(tie),
-                        })),
-                    ]);
-                }
+                1 => return tie_entry(sim, r, h, own[i]).map(|(payloads, _)| payloads),
                 2 => CrossCuttingValue::Beam(valuegen::beam(
                     sim.mint(r),
                     own[i..=j].iter().map(|e| e.id()).collect(),
@@ -1963,14 +1918,135 @@ fn make(
             })));
             out
         }
+        48 => {
+            // A tied pair moved in one transaction, one end at a time: the
+            // first move breaks the tie and the second mends it. The pair is
+            // a tie the view holds, or one the gesture enters first.
+            if sim.replicas[r].open.is_some() {
+                return None;
+            }
+            let pitches_of = |event: &Event| -> Option<Vec<PitchId>> {
+                match event {
+                    Event::Pitched(p) => {
+                        let mut ids: Vec<PitchId> = p.pitches.iter().map(|ip| ip.id).collect();
+                        ids.sort();
+                        Some(ids)
+                    }
+                    _ => None,
+                }
+            };
+            let event_of = |id: EventId| h.events.iter().copied().find(|e| e.id() == id);
+            let existing = sim.rng.pick(&h.score.cross_cutting.ties).cloned();
+            let (mut out, mut first, mut second) = match existing {
+                Some(tie) if sim.rng.chance(2) => (
+                    Vec::new(),
+                    pitches_of(event_of(tie.start_event)?)?,
+                    pitches_of(event_of(tie.end_event)?)?,
+                ),
+                _ => {
+                    let pitched: Vec<&Event> = h
+                        .events
+                        .iter()
+                        .copied()
+                        .filter(|e| matches!(e, Event::Pitched(_)) && span(e).is_some())
+                        .collect();
+                    let start = *sim.rng.pick(&pitched)?;
+                    let (entry, continuation) = tie_entry(sim, r, h, start)?;
+                    (entry, pitches_of(start)?, continuation)
+                }
+            };
+            if sim.rng.chance(2) {
+                std::mem::swap(&mut first, &mut second);
+            }
+            let chromatic_steps = [-2, -1, 1, 2][sim.rng.below(4) as usize];
+            let tx: TransactionId = sim.mint(r);
+            out.insert(
+                0,
+                prim(OperationKind::DeclareTransaction(TransactionDescriptor {
+                    id: tx,
+                    label: String::from("move the tied notes"),
+                    category: None,
+                })),
+            );
+            out.push(prim(OperationKind::Transpose(TransposeOp {
+                targets: first,
+                chromatic_steps,
+            })));
+            out.push(prim(OperationKind::Transpose(TransposeOp {
+                targets: second,
+                chromatic_steps,
+            })));
+            sim.replicas[r].open = Some((tx, out.len() as u64));
+            out
+        }
         _ => return None,
     })
+}
+
+/// An editor's tie entry from `start`, a note: a continuation of its pitches
+/// entered after it, where its voice leaves room, and the tie, whose end must
+/// hold its start's pitches. The payloads, and the continuation's pitch ids
+/// in order.
+fn tie_entry(
+    sim: &mut Simulation,
+    r: usize,
+    h: &Holdings<'_>,
+    start: &Event,
+) -> Option<(Vec<OperationPayload>, Vec<PitchId>)> {
+    let Event::Pitched(pitched) = start else {
+        return None;
+    };
+    let voice = start.voice();
+    let (_, end) = span(start)?;
+    let length = duration(1, 8);
+    let after = end.clone() + length.clone();
+    if overlaps(&h.spans(voice), &end, &after) {
+        return None;
+    }
+    let instance = *h.instance_of_voice.get(&voice)?;
+    let id: EventId = sim.mint(r);
+    let pitches: Vec<IdentifiedPitch> = pitched
+        .pitches
+        .iter()
+        .map(|ip| IdentifiedPitch {
+            id: sim.mint(r),
+            pitch: ip.pitch.clone(),
+        })
+        .collect();
+    let mut ids: Vec<PitchId> = pitches.iter().map(|ip| ip.id).collect();
+    ids.sort();
+    let continuation = Event::Pitched(PitchedEvent {
+        id,
+        voice,
+        position: EventPosition::Musical(end),
+        duration: EventDuration::Musical(length),
+        pitches,
+        articulations: Vec::new(),
+        dynamic: None,
+        ornaments: Vec::new(),
+        stem: StemConfiguration,
+        grace: None,
+    });
+    let mut tie = valuegen::tie(sim.mint(r), start.id(), id);
+    tie.class = epiphany_core::TieClass::Standard;
+    Some((
+        vec![
+            OperationPayload::Primitive(OperationKind::InsertEvent(InsertEventOp {
+                staff_instance: instance,
+                event: continuation,
+            })),
+            OperationPayload::Primitive(OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                structure: CrossCuttingValue::Tie(tie),
+            })),
+        ],
+        ids,
+    ))
 }
 
 /// Each arm of [`make`] and how often it is drawn: the editing of notes,
 /// pitches and their marks three times as often as the score's structure and
 /// settings, as an editor's history runs.
-const ARMS: [(u64, u64); 48] = [
+const ARMS: [(u64, u64); 49] = [
     (0, 4),
     (1, 3),
     (2, 3),
@@ -2019,6 +2095,7 @@ const ARMS: [(u64, u64); 48] = [
     (45, 1),
     (46, 1),
     (47, 3),
+    (48, 2),
 ];
 
 fn draw_arm(rng: &mut Rng) -> u64 {

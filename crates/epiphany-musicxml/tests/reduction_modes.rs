@@ -3932,3 +3932,115 @@ fn an_undo_writes_nothing_in_musical_time_into_a_region_out_of_it_in_both_modes(
         }
     }
 }
+
+/// A tie gives way only if it is still broken when its transaction completes
+/// (D49), in both modes: a transaction moving each end of a tied pair up a
+/// second, one at a time, keeps the tie; one that moves one end and leaves it
+/// so removes it, the last member that touched the tie recording the
+/// `CascadeDeleted` repair. Before reduction version 3's amendment the tie was
+/// held after each member, so the first move removed it though the second
+/// mended the pairing.
+#[test]
+fn a_tie_is_held_when_its_transaction_completes_in_both_modes() {
+    use epiphany_core::{Tie, TieClass, TieId, TranspositionInterval};
+    use epiphany_ops::{CreateCrossCuttingOp, CrossCuttingValue, TransposeIntervalOp};
+    // C4 C4 D4 E4, the tie from the first C to the second.
+    let m = Measure::of(REPEATED);
+    let pitch = |i: usize| m.import.ids.pitches[0][i][0];
+    let tie_id = TieId::new(A, 2200);
+    let tied = TypedObjectId::Tie(tie_id);
+    let tie = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+            structure: CrossCuttingValue::Tie(Tie {
+                id: tie_id,
+                start_event: m.q(0),
+                end_event: m.q(1),
+                pitch_pairing: Some(vec![(pitch(0), pitch(1))]),
+                class: TieClass::Standard,
+                style: Default::default(),
+            }),
+        })),
+    );
+    let up = |i: usize, diatonic_steps: i32, chromatic_steps: i32| {
+        primitive(OperationKind::TransposeInterval(TransposeIntervalOp {
+            targets: [pitch(i)].into_iter().collect(),
+            interval: TranspositionInterval {
+                diatonic_steps,
+                chromatic_steps,
+            },
+        }))
+    };
+    let tx = TransactionId::new(A, 2201);
+    let in_transaction = |members: [OperationPayload; 2]| {
+        let mut declare = m.op(
+            A,
+            1,
+            2,
+            &[tie.id],
+            primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                id: tx,
+                label: String::from("move the notes"),
+                category: None,
+            })),
+        );
+        declare.transaction = Some(tx);
+        let mut seen = declare.id;
+        let mut out = vec![declare];
+        for (k, payload) in members.into_iter().enumerate() {
+            let mut member = m.op(A, 2 + k as u64, 3 + k as i64, &[seen], payload);
+            member.transaction = Some(tx);
+            seen = member.id;
+            out.push(member);
+        }
+        out
+    };
+    let repaired = |state: &MaterializedState, id: OperationId| {
+        matches!(
+            effect(state, id),
+            Some(OperationEffect::AppliedWithRepair { repairs })
+                if repairs.iter().any(|r| r.kind == RepairKind::CascadeDeleted && r.target == tied)
+        )
+    };
+
+    // Both ends up a second: broken after the first member, mended by the
+    // second.
+    let members = in_transaction([up(0, 1, 2), up(1, 1, 2)]);
+    let mut authored = vec![tie.clone()];
+    authored.extend(members.iter().cloned());
+    let state = m.agree("a tie broken and mended in one transaction", &authored);
+    for member in &members[1..] {
+        assert_eq!(effect(&state, member.id), Some(OperationEffect::Applied));
+    }
+    assert!(live(&state, tied), "the mended tie stays");
+
+    // One end moved and left so; the other member touches no tie.
+    let members = in_transaction([up(0, 1, 2), up(2, 1, 2)]);
+    let mut authored = vec![tie.clone()];
+    authored.extend(members.iter().cloned());
+    let state = m.agree("a tie left broken by its transaction", &authored);
+    assert!(tombstoned(&state, tied));
+    assert!(repaired(&state, members[1].id), "the member that broke it");
+    assert_eq!(
+        effect(&state, members[2].id),
+        Some(OperationEffect::Applied)
+    );
+
+    // Both ends moved, apart: the later member touched it last.
+    let members = in_transaction([up(0, 1, 2), up(1, 2, 4)]);
+    let mut authored = vec![tie.clone()];
+    authored.extend(members.iter().cloned());
+    let state = m.agree("a tie both members touch, left broken", &authored);
+    assert!(tombstoned(&state, tied));
+    assert_eq!(
+        effect(&state, members[1].id),
+        Some(OperationEffect::Applied)
+    );
+    assert!(
+        repaired(&state, members[2].id),
+        "the last member to touch it"
+    );
+}

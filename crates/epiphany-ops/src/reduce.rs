@@ -3485,12 +3485,31 @@ impl<'a> Reducer<'a> {
 
     /// Applies one operation, then lets every tie it broke give way
     /// ([`Self::ties_give_way`]).
+    /// Applies a lone operation, which is its own transaction: the ties it
+    /// may have broken give way once it has applied
+    /// (`req:opcat:tie-gives-way`).
     fn apply(&mut self, env: &OperationEnvelope) -> OperationEffect {
+        let (effect, touched) = self.apply_member(env);
+        let ties: BTreeMap<TieId, &OperationEnvelope> =
+            touched.into_iter().map(|tie| (tie, env)).collect();
+        let mut repairs = self.ties_give_way(&ties);
+        with_repairs(effect, repairs.remove(&env.id).unwrap_or_default())
+    }
+
+    /// Applies `env` alone or as a transaction's member, returning its effect
+    /// and the ties it may have broken, read once it has applied; the caller
+    /// holds them when the transaction completes.
+    fn apply_member(&mut self, env: &OperationEnvelope) -> (OperationEffect, BTreeSet<TieId>) {
         let position = self.applied_at.len() as u64 + 1;
         self.applied_at.entry(env.id).or_insert(position);
         let touch = self.tie_touch(env);
         let effect = self.apply_operation(env);
-        self.ties_give_way(env, touch, effect)
+        let touched = if matches!(effect, OperationEffect::NoOp { .. }) {
+            BTreeSet::new()
+        } else {
+            self.touched_ties(touch)
+        };
+        (effect, touched)
     }
 
     fn apply_operation(&mut self, env: &OperationEnvelope) -> OperationEffect {
@@ -10254,27 +10273,10 @@ impl<'a> Reducer<'a> {
         }
     }
 
-    /// A tie gives way (D48; reduction version 3;
-    /// `req:opcat:tie-gives-way`). After an operation
-    /// applies, each live tie it may have broken is held to Chapter 5
-    /// §"Ties" (`req:graph:tie-class-validation`); one that no longer holds,
-    /// its pairing or its class's adjacency broken, is removed as a delete
-    /// removes it, the operation recording a `CascadeDeleted` repair for it.
-    /// A conflicted operation's effect carries no repairs, so there the
-    /// tie's tombstone, which names the operation, is the record. Before it
-    /// a tie was accepted as written, and an insert between its ends, a
-    /// transpose of one end or a tie created over a concurrent change left
-    /// the graph breaking `TiePairing`.
-    fn ties_give_way(
-        &mut self,
-        env: &OperationEnvelope,
-        touch: TieTouch,
-        effect: OperationEffect,
-    ) -> OperationEffect {
-        if matches!(touch, TieTouch::Nothing) || matches!(effect, OperationEffect::NoOp { .. }) {
-            return effect;
-        }
-        let ties: BTreeSet<TieId> = match touch {
+    /// The ties an applied operation's `touch` reaches, read once it has
+    /// applied: an insert's or a move's new neighbours are where it landed.
+    fn touched_ties(&self, touch: TieTouch) -> BTreeSet<TieId> {
+        match touch {
             TieTouch::Nothing => BTreeSet::new(),
             TieTouch::Tie(id) => BTreeSet::from([id]),
             TieTouch::All => self.tie_ends.values().flatten().copied().collect(),
@@ -10306,40 +10308,49 @@ impl<'a> Reducer<'a> {
                     .copied()
                     .collect()
             }
-        };
+        }
+    }
+
+    /// A tie gives way (D48; reduction version 3;
+    /// `req:opcat:tie-gives-way`). When a transaction completes, a lone
+    /// operation being its own, each live tie its members may have broken is
+    /// held to Chapter 5 §"Ties" (`req:graph:tie-class-validation`); one that
+    /// no longer holds, its pairing or its class's adjacency broken, is
+    /// removed as a delete removes it, the member `ties` maps it to (the last
+    /// that touched it) recording a `CascadeDeleted` repair for it, returned
+    /// here by member. A conflicted operation's effect carries no repairs, so
+    /// there the tie's tombstone, which names the operation, is the record.
+    /// Before it a tie was accepted as written, and an insert between its
+    /// ends, a transpose of one end or a tie created over a concurrent change
+    /// left the graph breaking `TiePairing`; and, checked after each member,
+    /// a transaction that broke a tie and mended it lost it.
+    fn ties_give_way(
+        &mut self,
+        ties: &BTreeMap<TieId, &OperationEnvelope>,
+    ) -> BTreeMap<OperationId, Vec<RepairRecord>> {
+        let mut repairs: BTreeMap<OperationId, Vec<RepairRecord>> = BTreeMap::new();
         // The live ones, at their current values, in canonical order.
-        let checked: BTreeMap<TypedObjectId, Tie> = ties
-            .into_iter()
-            .map(TypedObjectId::Tie)
-            .filter(|sid| matches!(self.objects.get(sid), Some(ObjectState::Live)))
-            .filter_map(
-                |sid| match self.cross_cutting_modify_chain.get(&sid)?.current()? {
-                    CrossCuttingValue::Tie(tie) => Some((sid, tie.clone())),
+        let checked: Vec<(TypedObjectId, Tie, &OperationEnvelope)> = ties
+            .iter()
+            .map(|(id, env)| (TypedObjectId::Tie(*id), *env))
+            .filter(|(sid, _)| matches!(self.objects.get(sid), Some(ObjectState::Live)))
+            .filter_map(|(sid, env)| {
+                match self.cross_cutting_modify_chain.get(&sid)?.current()? {
+                    CrossCuttingValue::Tie(tie) => Some((sid, tie.clone(), env)),
                     _ => None,
-                },
-            )
+                }
+            })
             .collect();
-        let mut repairs = Vec::new();
-        for (sid, tie) in checked {
+        for (sid, tie, env) in checked {
             if self.tie_holds(&tie) {
                 continue;
             }
-            self.cascade_structure(env, sid, &mut repairs);
+            self.cascade_structure(env, sid, repairs.entry(env.id).or_default());
             self.structures.remove(&sid);
             self.cross_cutting_modify_chain.remove(&sid);
             self.graph_delete_cross_cutting(sid);
         }
-        if repairs.is_empty() {
-            return effect;
-        }
-        match effect {
-            OperationEffect::Applied => OperationEffect::AppliedWithRepair { repairs },
-            OperationEffect::AppliedWithRepair { repairs: mut own } => {
-                own.extend(repairs);
-                OperationEffect::AppliedWithRepair { repairs: own }
-            }
-            other => other,
-        }
+        repairs
     }
 
     /// An event's voice and position, from `voice_occupancy`.
@@ -11170,21 +11181,28 @@ impl<'a> Reducer<'a> {
         }
 
         // Atomic: apply members against a snapshot; if any fails, roll back.
+        // A tie is held when the transaction completes, so one a member
+        // breaks and a later member mends stands; the last member that
+        // touched a tie that gives way records it.
         let snapshot = self.snapshot();
         self.current_tx = Some(tx);
         let mut member_effects: Vec<(OperationId, OperationEffect)> = Vec::new();
         let mut failed_members: Vec<OperationId> = Vec::new();
+        let mut touched: BTreeMap<TieId, &OperationEnvelope> = BTreeMap::new();
         for m in &ordered {
-            let eff = self.apply(m);
+            let (eff, ties) = self.apply_member(m);
             if is_member_failure(&eff) {
                 failed_members.push(m.id);
             }
+            touched.extend(ties.into_iter().map(|tie| (tie, *m)));
             member_effects.push((m.id, eff));
         }
         self.current_tx = None;
 
         if failed_members.is_empty() {
+            let mut repairs = self.ties_give_way(&touched);
             for (id, eff) in member_effects {
+                let eff = with_repairs(eff, repairs.remove(&id).unwrap_or_default());
                 self.effects.push((id, eff));
             }
         } else {
@@ -11330,6 +11348,22 @@ impl<'a> Reducer<'a> {
         self.descriptors = s.descriptors;
         self.tx_minted = s.tx_minted;
         self.graph = s.graph;
+    }
+}
+
+/// `effect` with `repairs` appended, where it applied; a conflicted or no-op
+/// effect carries none.
+fn with_repairs(effect: OperationEffect, repairs: Vec<RepairRecord>) -> OperationEffect {
+    if repairs.is_empty() {
+        return effect;
+    }
+    match effect {
+        OperationEffect::Applied => OperationEffect::AppliedWithRepair { repairs },
+        OperationEffect::AppliedWithRepair { repairs: mut own } => {
+            own.extend(repairs);
+            OperationEffect::AppliedWithRepair { repairs: own }
+        }
+        other => other,
     }
 }
 

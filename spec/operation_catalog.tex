@@ -774,8 +774,9 @@ region's grids, as is an insert carrying a wall-clock position. A tempo
 segment's anchors are read as referents and held to their region's time model,
 and a segment anchored in musical time strands its region's migration out of
 it. A \texttt{Reassign} that reorders a voice leaves it in position order. A
-tie gives way to an operation that breaks it, removed with a recorded repair
-(Requirement~\ref{req:opcat:tie-gives-way}), where the graph kept it broken.
+tie still broken when its transaction completes gives way, removed with a
+recorded repair (Requirement~\ref{req:opcat:tie-gives-way}), where the graph
+kept it broken.
 A \texttt{ModifyEvent}, and an undo restoring an event's value, neither
 removes a pitch, keeping one a concurrent author added (add wins) or its own
 author left out, nor revives one a delete or undo removed
@@ -1438,18 +1439,20 @@ breaking one; the tie gives way.
 
 \begin{requirement}
   \label{req:opcat:tie-gives-way}
-  After an operation applies, each live tie it may have broken \MUST{} be held
-  to its class's validation, read in both modes from the indices both keep
-  (each event's voice and position, its live pitches and their values); one
-  that no longer holds \MUST{} be removed as a \texttt{DeleteCrossCutting}
-  removes it, and the operation's effect \MUST{} record a
-  \texttt{CascadeDeleted} repair targeting it. The operations so held are an
+  When a transaction completes, a lone operation being its own transaction,
+  each live tie its members may have broken \MUST{} be held to its class's
+  validation, read in both modes from the indices both keep (each event's
+  voice and position, its live pitches and their values); one that no longer
+  holds \MUST{} be removed as a \texttt{DeleteCrossCutting} removes it, and
+  the effect of the last member that touched it \MUST{} record a
+  \texttt{CascadeDeleted} repair targeting it. A tie one member breaks and a
+  later member of its transaction mends stands. The operations so held are an
   insert (its new neighbours), a whole-event modify (the event and its new
   neighbours), every pitch operation and transposition (the pitches' events),
   a migration and an undo (every live tie), and a create or modify of the tie
-  itself, which so gives way at once to a change it was concurrent with. A
-  conflicted operation's effect carries no repair, and there the tie's
-  tombstone, which names the operation, is the record.
+  itself, which so gives way, when its transaction completes, to a change it
+  was concurrent with. A conflicted operation's effect carries no repair, and
+  there the tie's tombstone, which names the operation, is the record.
 \end{requirement}
 
 \begin{rationale}
@@ -1457,7 +1460,9 @@ breaking one; the tie gives way.
   so a concurrent insert between its ends, or a transpose of one end, left the
   graph breaking \texttt{TiePairing}. Refusing such an edit would let a tie
   block every edit near it; a tie is notation of a pairing, and when the
-  pairing goes, so does the tie.
+  pairing goes, so does the tie. A transaction is one edit from its author's
+  view, so its tie is held when it completes, not after each member: moving
+  a tied pair one note at a time keeps the tie.
 \end{rationale}
 
 \textbf{Authoring advisory (ratified Pass~12, closing P12-K12).} The
