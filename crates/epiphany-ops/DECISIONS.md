@@ -2756,3 +2756,20 @@ list is now sorted as it is encoded and its affected objects name the region
 once, so the state decodes as written (the test decodes it; a duplicate region
 fails it). The seeded digest moves once more: its stream anchors segments to
 regions it never made, and with the referent check alone removed it returns.
+
+## X4a.2, continued — the breaks the fuzz committed failing (2026-10-08)
+
+The owner's ruling D48 settles the invariant breaks the fuzz committed as
+failing histories; each fix below is a further bullet of reduction version
+3's `Bumps` entry and of the catalog's 0.19.0 note.
+
+**A reassignment keeps its voice in order.** A `ChangeRegionTimeModel` whose
+`Reassign` swapped two events of a voice applied and moved both in the graph,
+but left the voice's event list in its old order, breaking
+`VoiceEventsSortedNonOverlap`; the occupancy index, kept as a set of
+placements, was right. Graph-aware reduction now re-sorts each voice whose
+events the remapping moved (`resort_voice`, as a move does). Graph state only;
+no verdict moves. The fuzz's remappings had not reordered a voice; the tie
+test below did. Locked by
+`a_reassignment_that_reorders_a_voice_keeps_it_sorted_in_both_modes` (the
+re-sort removed, it fails).

@@ -773,7 +773,7 @@ or metric grid set in a region admitting no musical offset is refused with
 region's grids, as is an insert carrying a wall-clock position. A tempo
 segment's anchors are read as referents and held to their region's time model,
 and a segment anchored in musical time strands its region's migration out of
-it.
+it. A \texttt{Reassign} that reorders a voice leaves it in position order.
 One requirement label is added;
 no payload, discriminant or \texttt{PreconditionFailureReason} changes.
 Accordingly
@@ -1485,7 +1485,10 @@ hold (a base's events of another coordinate kind, which base-free reduction
 never has). A migration with incompatible events is refused as below; an
 applied \texttt{Reassign} moves the occupancy index in both modes, and the
 region's new coordinate discipline is recorded in both, so a later insert, move
-or re-anchoring reads the same state in each. That the region is live is a
+or re-anchoring reads the same state in each. Graph-aware reduction keeps each
+voice whose events a \texttt{Reassign} moves in position order, as a
+\texttt{ModifyEvent} move does (since version~0.19.0, before which the voice
+kept its old order). That the region is live is a
 referential precondition, checked in both modes as
 Requirement~\ref{req:catalog:base-free-referents} reads a referent (since
 version~0.19.0; graph-aware only before it).

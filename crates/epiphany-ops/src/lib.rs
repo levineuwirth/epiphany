@@ -365,6 +365,10 @@ pub mod vectors;
 ///     segment so anchored strands a migration of its region to such a model,
 ///     which conflicts naming the region, where each applied
 ///     (`AnchorOffsetModel`).
+///   - an applied `ChangeRegionTimeModel` whose `Reassign` reorders a voice's
+///     events leaves the voice in position order in the graph, as a move
+///     does, where it kept the old order (`VoiceEventsSortedNonOverlap`); a
+///     graph-state change only.
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
@@ -395,7 +399,9 @@ pub mod vectors;
 ///   the wall-clock insert, `an_insert_at_a_wall_clock_position_is_refused_in_both_modes`
 ///   and `a_migration_judges_an_indexed_event_by_its_placement_in_both_modes`,
 ///   which held its admission and now holds its refusal; for tempo,
-///   `a_tempo_in_a_region_out_of_musical_time_is_refused_in_both_modes`.
+///   `a_tempo_in_a_region_out_of_musical_time_is_refused_in_both_modes`; for
+///   the reordering,
+///   `a_reassignment_that_reorders_a_voice_keeps_it_sorted_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

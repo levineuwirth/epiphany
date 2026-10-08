@@ -7212,6 +7212,7 @@ impl<'a> Reducer<'a> {
             self.page_breaks
                 .retain(|(region, _), _| *region != op.region);
         }
+        let mut reordered: BTreeSet<VoiceId> = BTreeSet::new();
         if let Some(region_index) = graph_region_index {
             let score = self
                 .graph
@@ -7233,6 +7234,7 @@ impl<'a> Reducer<'a> {
                 for (event, position) in remapping {
                     if let Some(value) = score.events.get_mut(*event) {
                         value.set_position(EventPosition::Musical(position.clone()));
+                        reordered.insert(value.voice());
                     }
                 }
             }
@@ -7241,6 +7243,12 @@ impl<'a> Reducer<'a> {
             // discriminator tag.
             let region = &mut score.canvas.regions[region_index];
             region.time_model = op.new_time_model.clone();
+        }
+        // A remapping that reorders a voice's events leaves the voice sorted by
+        // position, as a move does (reduction version 3: before it the graph
+        // kept the old order, `VoiceEventsSortedNonOverlap`).
+        for voice in reordered {
+            self.resort_voice(voice);
         }
         self.migrated_regions.insert(op.region);
         self.region_migrator.insert(op.region, env.id);

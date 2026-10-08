@@ -1727,6 +1727,18 @@ fn a_reassignment_that_overlaps_a_voice_conflicts_in_both_modes() {
     );
 }
 
+/// A reassignment that reorders a voice, the second and third quarters
+/// changing places, applies in both modes and leaves the voice in position
+/// order. Before reduction version 3 graph-aware reduction moved the events
+/// and kept the voice's old order, breaking `VoiceEventsSortedNonOverlap`.
+#[test]
+fn a_reassignment_that_reorders_a_voice_keeps_it_sorted_in_both_modes() {
+    let m = Measure::new();
+    let swap = m.op(A, 0, 1, &[], m.reassign(&[(0, 0), (1, 2), (2, 1), (3, 3)]));
+    let state = m.agree("two quarters swapped", std::slice::from_ref(&swap));
+    assert_eq!(effect(&state, swap.id), Some(OperationEffect::Applied));
+}
+
 /// A region one author makes, breaks and then migrates to proportional time,
 /// while another, unaware of the migration, breaks it again in musical time:
 /// the migration drops the first break, written in musical time the region no
