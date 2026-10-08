@@ -2975,3 +2975,24 @@ ties at its events alone, without placing them (a pitch change moves no
 neighbour), and an insert or a move the ties at it and its new neighbours. No verdict or state changes. The
 tie test fails with the neighbours dropped, with undo reading no tie, and with
 the empty-index shortcut inverted.
+
+## X4a fix round 1 — review 1's findings and the owner's (2026-10-08)
+
+Review 1 of C4a ran the fuzz on seeds and lengths the checkpoint had not, and
+found five invariant breaks (M1 to M5); the owner added two narrowings of
+D48's rules (O5, O6, D49) and ruled the second break into the deferred class
+(D50). Each is a further bullet of reduction version 3, which does not move
+again before X4a merges.
+
+**A kept mint holds what it names (M1).** A best-effort undo tombstones the
+live mints the strand guard does not block, and the guard reads a reference
+held by one of the undo's own mints as going with it. A transaction that made
+an instrument and a staff on it, undone after another author put an instance
+of the staff in a region, kept the staff for its instance and removed the
+instrument, judging the staff's reference by the full mint set although the
+staff was staying (`CrossCuttingRefsResolve`). The guard is now read against
+the mints still going, dropping each one it blocks, until it blocks none: the
+greatest set no member of which is held by what stays. Strict undo is
+unchanged, since it conflicts on any block. Locked by
+`an_undo_keeps_what_a_kept_mint_names_in_both_modes`, under both policies
+(read against the full set, the best-effort case fails), and history `141`.

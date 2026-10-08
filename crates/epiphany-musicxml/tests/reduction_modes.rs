@@ -3385,3 +3385,104 @@ fn a_transactions_grid_write_is_as_recent_as_it_applied_in_both_modes() {
         refused(PreconditionFailureReason::MeasureMeterMismatch)
     );
 }
+
+/// An undo that keeps one of its transaction's mints for what names it keeps
+/// what that mint names in turn, in both modes: a transaction makes an
+/// instrument and a staff on it, another author puts an instance of the staff
+/// in the region, and an undo of the transaction keeps the staff for its
+/// instance and so the instrument for the staff (strict: conflicted; best
+/// effort: both kept). Before reduction version 3 a best-effort undo kept the
+/// staff and removed the instrument, judging the staff's reference as going
+/// with it, and the staff named an instrument the score did not declare
+/// (`CrossCuttingRefsResolve`).
+#[test]
+fn an_undo_keeps_what_a_kept_mint_names_in_both_modes() {
+    use epiphany_core::{InstrumentId, StaffId, StaffInstanceId};
+    use epiphany_ops::{CreateInstrumentOp, CreateStaffInstanceOp, CreateStaffOp};
+    let m = Measure::new();
+    for (n, policy) in [UndoPolicy::StrictInverse, UndoPolicy::BestEffort]
+        .into_iter()
+        .enumerate()
+    {
+        let n = n as u64;
+        let tx = TransactionId::new(A, 1800 + 10 * n);
+        let instrument = InstrumentId::new(A, 1801 + 10 * n);
+        let staff = StaffId::new(A, 1802 + 10 * n);
+        let mut declare = m.op(
+            A,
+            0,
+            1,
+            &[],
+            primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                id: tx,
+                label: String::from("an instrument and its staff"),
+                category: None,
+            })),
+        );
+        declare.transaction = Some(tx);
+        let mut made_instrument = m.op(
+            A,
+            1,
+            2,
+            &[declare.id],
+            primitive(OperationKind::CreateInstrument(CreateInstrumentOp {
+                instrument: valuegen::instrument(instrument),
+            })),
+        );
+        made_instrument.transaction = Some(tx);
+        let mut made_staff = m.op(
+            A,
+            2,
+            3,
+            &[made_instrument.id],
+            primitive(OperationKind::CreateStaff(CreateStaffOp {
+                staff: valuegen::staff(staff, instrument),
+            })),
+        );
+        made_staff.transaction = Some(tx);
+        let instance = m.op(
+            B,
+            0,
+            4,
+            &[made_staff.id],
+            primitive(OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                region: m.region,
+                instance: valuegen::staff_instance(StaffInstanceId::new(B, 1803 + 10 * n), staff),
+            })),
+        );
+        let undo = m.op(
+            A,
+            3,
+            5,
+            &[instance.id],
+            OperationPayload::UndoTransaction(UndoTransactionPayload { target: tx, policy }),
+        );
+        let state = m.agree(
+            &format!("an undo of an instrument and its staff, {policy:?}"),
+            &[
+                declare,
+                made_instrument,
+                made_staff,
+                instance.clone(),
+                undo.clone(),
+            ],
+        );
+        assert_eq!(effect(&state, instance.id), Some(OperationEffect::Applied));
+        assert!(live(&state, TypedObjectId::Staff(staff)), "{policy:?}");
+        assert!(
+            live(&state, TypedObjectId::Instrument(instrument)),
+            "{policy:?}: the kept staff keeps its instrument"
+        );
+        match policy {
+            UndoPolicy::StrictInverse => assert!(
+                matches!(
+                    effect(&state, undo.id),
+                    Some(OperationEffect::Conflicted { .. })
+                ),
+                "{:?}",
+                effect(&state, undo.id)
+            ),
+            _ => assert_eq!(effect(&state, undo.id), Some(OperationEffect::Applied)),
+        }
+    }
+}

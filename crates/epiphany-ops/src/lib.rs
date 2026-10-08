@@ -431,6 +431,11 @@ pub mod vectors;
 ///     conflicted, the conflict naming the region once for a segment, which
 ///     has no id; best effort: the region or instrument kept), where the undo
 ///     left the anchor or override naming nothing (`CrossCuttingRefsResolve`).
+///   - a best-effort undo that keeps a mint of its transaction for what names
+///     it keeps what that mint names in turn, the strand guard read against
+///     the mints still going until it keeps none, where it kept a staff for
+///     its live instance and removed the instrument the staff names, judging
+///     the staff's reference as going with it (`CrossCuttingRefsResolve`).
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
@@ -481,7 +486,9 @@ pub mod vectors;
 ///   for measures,
 ///   `a_measure_in_a_region_out_of_musical_time_is_refused_in_both_modes`;
 ///   for the grid's chains,
-///   `a_transactions_grid_write_is_as_recent_as_it_applied_in_both_modes`.
+///   `a_transactions_grid_write_is_as_recent_as_it_applied_in_both_modes`;
+///   for what a kept mint names,
+///   `an_undo_keeps_what_a_kept_mint_names_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

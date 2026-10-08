@@ -792,7 +792,9 @@ undo cannot remove a region a tempo segment of another map anchors to, nor an
 instrument a staff instance's override names, where each left the reference
 naming nothing. A whole-event write neither removes nor revives a pitch, and a
 measure in musical time is refused in a region out of it. A region's whole grid
-and its meter changes compare by the order the reduction applied them.
+and its meter changes compare by the order the reduction applied them. A
+best-effort undo that keeps a mint for what names it keeps what that mint
+names, where it removed the instrument of a staff it kept.
 Two requirement labels are added;
 no payload, discriminant or \texttt{PreconditionFailureReason} changes.
 Accordingly
@@ -2736,7 +2738,11 @@ referenced by a live non-member (e.g., a staff whose instance survives outside
 the transaction) records \texttt{ConflictKind::TransactionConflict} --- the
 reuse is blessed: the strand-block \emph{is} a transaction-scoped conflict of
 the undo, and the conflict record's affected objects and description carry the
-strand detail. No dedicated undo conflict kind is added.
+strand detail. No dedicated undo conflict kind is added. A
+\texttt{BestEffort} undo keeps such an object instead, and keeps what a kept
+object names in turn: the strand-block is read against the objects still
+going until it keeps none (since version~0.19.0, before which a staff kept for
+its live instance lost the instrument it names, read as going with it).
 
 \emph{Idempotence asymmetry (ratified Pass~12, closing P12-K11).} An undo's
 value restorations enter the write chains as ordinary writes by the undo

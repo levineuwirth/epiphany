@@ -7655,13 +7655,31 @@ impl<'a> Reducer<'a> {
             }
             UndoPolicy::BestEffort => {
                 // Tombstone the still-live, non-stranding mints; restore the
-                // still-last-written keys; skip the rest.
-                let tombstonable: Vec<TypedObjectId> = targets
+                // still-last-written keys; skip the rest. A mint kept for
+                // what names it holds what it names in turn, so the guard is
+                // read against the mints still going, until none is kept
+                // (reduction version 3: before it a staff kept for its live
+                // instance lost the instrument it names, read as going with
+                // it, `CrossCuttingRefsResolve`).
+                let mut tombstonable: Vec<TypedObjectId> = targets
                     .iter()
                     .filter(|t| matches!(self.objects.get(t), Some(ObjectState::Live)))
-                    .filter(|t| self.undo_strand_block(t, &targets, &restorations).is_none())
                     .copied()
                     .collect();
+                loop {
+                    let kept: Vec<TypedObjectId> = tombstonable
+                        .iter()
+                        .filter(|t| {
+                            self.undo_strand_block(t, &tombstonable, &restorations)
+                                .is_some()
+                        })
+                        .copied()
+                        .collect();
+                    if kept.is_empty() {
+                        break;
+                    }
+                    tombstonable.retain(|t| !kept.contains(t));
+                }
                 let repairs = self.tombstone_undo_targets(env, &tombstonable);
                 // Contract pin 9c.3, `BestEffort`: the canonical-order
                 // greedy applies the MAXIMAL safe subset of grid/meter-
