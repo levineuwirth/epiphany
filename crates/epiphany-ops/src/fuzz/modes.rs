@@ -375,33 +375,53 @@ fn compare(
             }
         }
     }
-    out.extend(invariant_findings(history, &aware.score));
+    out.extend(invariant_findings(history, &aware_effects, &aware.score));
     out
 }
 
-/// The class of a `RegionExtents` violation between two regions that two
-/// authors each created, neither having seen the other's create, at one time
-/// extent: a cause the owner has deferred (D48), so named apart from the
-/// invariant's other causes, which keep the plain class.
-pub const CONCURRENT_REGIONS: &str =
-    "invariant Invariant(RegionExtents: two regions created concurrently at one place";
+/// The deferred class (D48, D50): a `RegionExtents` violation between two
+/// regions at one time extent where one was created at the place of the other
+/// while its author's view did not hold the other live. Refusing that create
+/// needs region time extents resolved in base-free reduction. Two causes, each
+/// named apart: [`REGION_NEVER_SEEN`] and [`REGION_SEEN_DELETED`]; any other
+/// overlap keeps the invariant's plain class, which nothing excepts.
+pub const DEFERRED_REGIONS: &str = "invariant Invariant(RegionExtents: a region created at the place of one its author's view did not hold live";
 
-fn invariant_findings(history: &[OperationEnvelope], score: &Score) -> Vec<Finding> {
+/// The deferred class's first cause (D48): two authors each created a region at
+/// one time extent, neither having seen the other's create.
+pub const REGION_NEVER_SEEN: &str = "invariant Invariant(RegionExtents: a region created at the place of one its author's view did not hold live, never seen";
+
+/// The deferred class's second cause (D50): an author saw a region and its
+/// own delete of it, which the merged history refuses (another author filled
+/// the region concurrently), and created a region in its place.
+pub const REGION_SEEN_DELETED: &str = "invariant Invariant(RegionExtents: a region created at the place of one its author's view did not hold live, seen deleted by a delete the merged history refuses";
+
+/// Whether `class` is one of the deferred class's causes.
+pub fn deferred(class: &str) -> bool {
+    class == REGION_NEVER_SEEN || class == REGION_SEEN_DELETED
+}
+
+fn invariant_findings(
+    history: &[OperationEnvelope],
+    effects: &BTreeMap<OperationId, OperationEffect>,
+    score: &Score,
+) -> Vec<Finding> {
     let mut seen = BTreeSet::new();
     check_invariants(score)
         .into_iter()
         .filter_map(|violation| {
             let full = format!("{:?}", violation.kind);
-            let class = if matches!(
+            let deferred = matches!(
                 violation.kind,
                 epiphany_core::ViolationKind::Invariant(
                     epiphany_core::GraphInvariant::RegionExtents
                 )
-            ) && concurrent_at_one_place(history, &violation.witness)
-            {
-                String::from(CONCURRENT_REGIONS)
-            } else {
-                format!("invariant {}", full.trim_end_matches(')'))
+            )
+            .then(|| deferred_region_cause(history, effects, &violation.witness))
+            .flatten();
+            let class = match deferred {
+                Some(cause) => String::from(cause),
+                None => format!("invariant {}", full.trim_end_matches(')')),
             };
             seen.insert(class.clone()).then(|| Finding {
                 class,
@@ -411,10 +431,17 @@ fn invariant_findings(history: &[OperationEnvelope], score: &Score) -> Vec<Findi
         .collect()
 }
 
-/// Whether the two regions a `RegionExtents` witness names were created by two
-/// envelopes of `history` at one time extent, neither in the other's causal
-/// past.
-fn concurrent_at_one_place(history: &[OperationEnvelope], witness: &str) -> bool {
+/// The deferred cause of a `RegionExtents` witness naming two regions, if it
+/// is one: both created by envelopes of `history` at one time extent, and
+/// either neither create in the other's causal past (never seen), or the
+/// later create's author having seen the earlier region and its delete, the
+/// delete refused in the merged history (`effects`) and the region not live in
+/// that author's view (seen deleted).
+fn deferred_region_cause(
+    history: &[OperationEnvelope],
+    effects: &BTreeMap<OperationId, OperationEffect>,
+    witness: &str,
+) -> Option<&'static str> {
     let ids: Vec<RegionId> = witness
         .match_indices("RegionId(")
         .filter_map(|(at, tag)| {
@@ -427,7 +454,7 @@ fn concurrent_at_one_place(history: &[OperationEnvelope], witness: &str) -> bool
         })
         .collect();
     let [a, b] = ids.as_slice() else {
-        return false;
+        return None;
     };
     let create = |id: RegionId| {
         history.iter().find_map(|env| match &env.payload {
@@ -437,10 +464,46 @@ fn concurrent_at_one_place(history: &[OperationEnvelope], witness: &str) -> bool
             _ => None,
         })
     };
-    let (Some((ea, xa)), Some((eb, xb))) = (create(*a), create(*b)) else {
-        return false;
+    let ((ea, xa), (eb, xb)) = (create(*a)?, create(*b)?);
+    if xa != xb {
+        return None;
+    }
+    let (later, earlier) = match (
+        ea.causal_context.covers(eb.id),
+        eb.causal_context.covers(ea.id),
+    ) {
+        (false, false) => return Some(REGION_NEVER_SEEN),
+        (true, false) => (ea, *b),
+        (false, true) => (eb, *a),
+        (true, true) => return None,
     };
-    xa == xb && !ea.causal_context.covers(eb.id) && !eb.causal_context.covers(ea.id)
+    let refused_delete = history.iter().any(|env| {
+        later.causal_context.covers(env.id)
+            && matches!(&env.payload,
+                OperationPayload::Primitive(OperationKind::DeleteRegion(op)) if op.region == earlier)
+            && !matches!(
+                effects.get(&env.id),
+                Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
+            )
+    });
+    if !refused_delete {
+        return None;
+    }
+    let mut view = OperationSet::new();
+    view.accept_all(
+        history
+            .iter()
+            .filter(|env| later.causal_context.covers(env.id))
+            .cloned(),
+    );
+    let held = view
+        .reduce_onto(&empty_base())
+        .score
+        .canvas
+        .regions
+        .iter()
+        .any(|region| region.id == earlier);
+    (!held).then_some(REGION_SEEN_DELETED)
 }
 
 /// Counts per operation kind over a run: authored, and applied (with or

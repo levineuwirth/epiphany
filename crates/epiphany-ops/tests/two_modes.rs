@@ -10,9 +10,9 @@
 //! from `split` to `agree`; a `split` history whose failure has gone fails
 //! here until it is flipped, so a fix cannot pass unrecorded. A failure the
 //! owner has deferred is `# expect: deferred`, with a `# deferred:` line
-//! giving the reason: its history is kept and run by an ignored test, which
-//! requires it to agree, so `cargo test -- --ignored` shows it failing until
-//! the fix lands.
+//! giving the reason: its history must still fail as its class, as a `split`
+//! one does, and is run by an ignored test, which requires it to agree, so
+//! `cargo test -- --ignored` shows it failing until the fix lands.
 //!
 //! The CI budget runs a small number of generated histories and requires
 //! that every failure it finds is a committed `split` or `deferred` class, and
@@ -102,10 +102,7 @@ fn every_committed_history_reduces_as_it_declares() {
             c.file
         );
         let found = modes::findings(&c.history);
-        if matches!(c.expect, Expect::Deferred(_)) {
-            continue;
-        }
-        if c.expect == Expect::Split {
+        if c.expect != Expect::Agree {
             assert!(
                 found.iter().any(|f| f.class == c.class),
                 "{}: declared to split as `{}`, but finds {:?}; if the fix is in, \
@@ -125,14 +122,18 @@ fn every_committed_history_reduces_as_it_declares() {
     }
 }
 
-/// Concurrent region creation at one place is deferred (owner's ruling D48):
-/// two authors each create a region over the same time and staves, and
-/// refusing the second needs the regions' time extents compared in both
-/// modes, which needs anchors resolved in base-free reduction. Wanted when
-/// collaboration arrives; until then the history is kept and run here.
+/// A region created at the place of one its author's view did not hold live
+/// is deferred (owner's rulings D48 and D50): two authors each create a
+/// region over the same time and staves, neither having seen the other's, or
+/// an author creates one where its own delete of a region, refused in the
+/// merged history for a concurrent fill, left none in its view. Refusing the
+/// create needs the regions' time extents compared in both modes, which needs
+/// anchors resolved in base-free reduction. Wanted when collaboration
+/// arrives; until then the histories are kept and run here.
 #[test]
-#[ignore = "concurrent region creation at one place is deferred (D48): refusing \
-            the second needs region time extents resolved in base-free reduction"]
+#[ignore = "a region created at the place of one its author's view did not hold \
+            live is deferred (D48, D50): refusing it needs region time extents \
+            resolved in base-free reduction"]
 fn every_deferred_history_reduces_alike() {
     let deferred: Vec<Committed> = committed()
         .into_iter()
@@ -192,8 +193,8 @@ fn the_ci_budget_authors_and_applies_every_kind() {
     assert!(missing.is_empty(), "{missing:#?}");
 }
 
-/// The deferred cause is named apart from the invariant's others, so the
-/// exception covers it alone: the deferred history, its second region's
+/// The deferred class is named apart from the invariant's others, so the
+/// exception covers it alone: the never-seen history, its second region's
 /// author made to have seen the first region's create, still overlaps them,
 /// and is classed `RegionExtents` plainly, which nothing excepts.
 #[test]
@@ -225,12 +226,219 @@ fn a_region_overlap_its_author_saw_is_not_the_deferred_class() {
             .any(|c| c == "invariant Invariant(RegionExtents"),
         "{classes:?}"
     );
-    assert!(
-        classes.iter().all(|c| c != modes::CONCURRENT_REGIONS),
-        "{classes:?}"
-    );
+    assert!(classes.iter().all(|c| !modes::deferred(c)), "{classes:?}");
     let unchanged = modes::findings(&modes::parse(&text).expect("parses"));
     assert!(unchanged
         .iter()
-        .any(|f| f.class == modes::CONCURRENT_REGIONS));
+        .any(|f| f.class == modes::REGION_NEVER_SEEN));
+}
+
+/// The deferred class's second cause (D50) is named apart too, and holds only
+/// where its author's view did not hold the region live because of its own
+/// delete, which the merged history refuses: the committed history is so
+/// classed; with the second create's author having also seen the concurrent
+/// fill, so that its view refused the delete too and held the region, or
+/// with the delete gone, the overlap is classed plainly.
+#[test]
+fn a_region_created_where_its_authors_refused_delete_left_none_is_deferred() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/two_modes/145-invariant-region-extents.txt");
+    let text = std::fs::read_to_string(path).expect("readable");
+    let classes = |history: &[epiphany_ops::OperationEnvelope]| -> Vec<String> {
+        assert!(modes::valid(history));
+        modes::findings(history)
+            .into_iter()
+            .map(|f| f.class)
+            .collect()
+    };
+    let plain = |found: &[String]| {
+        found
+            .iter()
+            .any(|c| c == "invariant Invariant(RegionExtents")
+            && found.iter().all(|c| !modes::deferred(c))
+    };
+    let history = modes::parse(&text).expect("parses");
+    let found = classes(&history);
+    assert!(
+        found.iter().any(|c| c == modes::REGION_SEEN_DELETED),
+        "{found:?}"
+    );
+
+    // The second create's author saw the fill as well.
+    let blind =
+        "(stamp 63 0 #x00000000000000010000000000000004) (causal ((#x0000000000000001 3)) ())";
+    assert_eq!(text.matches(blind).count(), 1, "the second region's create");
+    let saw_fill = text.replace(
+        blind,
+        "(stamp 63 0 #x00000000000000010000000000000004) \
+         (causal ((#x0000000000000001 3) (#x0000000000000003 0)) ())",
+    );
+    let found = classes(&modes::parse(&saw_fill).expect("parses"));
+    assert!(plain(&found), "{found:?}");
+
+    // No delete: the author saw the region live.
+    let without: Vec<_> = history
+        .iter()
+        .filter(|env| {
+            !matches!(
+                env.payload,
+                epiphany_ops::OperationPayload::Primitive(
+                    epiphany_ops::OperationKind::DeleteRegion(_)
+                )
+            )
+        })
+        .cloned()
+        .collect();
+    assert_eq!(without.len() + 1, history.len());
+    let found = classes(&modes::compact(&without));
+    assert!(plain(&found), "{found:?}");
+}
+
+/// An overlap from another cause keeps the plain class though its author's
+/// view did not hold the region: an author undoes the transaction that
+/// created a region, which another author has concurrently filled, so the
+/// merged history keeps the region (the undo blocked), and creates a region
+/// in its place. Only a delete the merged history refuses is the deferred
+/// class's second cause (D50).
+#[test]
+fn a_region_created_where_its_authors_blocked_undo_left_none_is_not_deferred() {
+    use epiphany_core::{
+        InstrumentId, OperationId, RegionId, ReplicaId, StaffId, StaffInstanceId, TimeAnchor,
+        TimeExtent, TransactionId, WallClockTime,
+    };
+    use epiphany_ops::{
+        valuegen, AuthorId, CausalContext, CreateInstrumentOp, CreateRegionOp,
+        CreateStaffInstanceOp, CreateStaffOp, HybridLogicalClock, OperationEnvelope, OperationKind,
+        OperationPayload, OperationStamp, TransactionDescriptor, UndoPolicy,
+        UndoTransactionPayload,
+    };
+    let (one, three) = (ReplicaId(1), ReplicaId(3));
+    let mut history: Vec<OperationEnvelope> = Vec::new();
+    let mut op = |replica: ReplicaId,
+                  counter: u64,
+                  seen: &[(ReplicaId, u64)],
+                  transaction: Option<TransactionId>,
+                  payload: OperationPayload| {
+        let id = OperationId::new(replica, counter);
+        let causal_context = seen
+            .iter()
+            .fold(CausalContext::new(), |c, (r, n)| c.with_seen(*r, *n));
+        let clock = history.len() as i64 + 1;
+        history.push(OperationEnvelope {
+            id,
+            author: AuthorId(u128::from(replica.0)),
+            stamp: OperationStamp::new(HybridLogicalClock::new(WallClockTime(clock), 0), id),
+            causal_context,
+            transaction,
+            payload,
+        });
+    };
+    let prim = OperationPayload::Primitive;
+    let instrument = InstrumentId::new(one, 100);
+    let staff = StaffId::new(one, 101);
+    let tx = TransactionId::new(one, 102);
+    let first = RegionId::new(one, 103);
+    let second = RegionId::new(one, 104);
+    let region = |id| {
+        let mut region = valuegen::region(id);
+        region.time_extent = TimeExtent {
+            start: TimeAnchor::WallClock {
+                time: WallClockTime(1),
+            },
+            end: TimeAnchor::WallClock {
+                time: WallClockTime(1001),
+            },
+        };
+        region
+    };
+    op(
+        one,
+        0,
+        &[],
+        None,
+        prim(OperationKind::CreateInstrument(CreateInstrumentOp {
+            instrument: valuegen::instrument(instrument),
+        })),
+    );
+    op(
+        one,
+        1,
+        &[(one, 0)],
+        None,
+        prim(OperationKind::CreateStaff(CreateStaffOp {
+            staff: valuegen::staff(staff, instrument),
+        })),
+    );
+    op(
+        one,
+        2,
+        &[(one, 1)],
+        Some(tx),
+        prim(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("a region"),
+            category: None,
+        })),
+    );
+    op(
+        one,
+        3,
+        &[(one, 2)],
+        Some(tx),
+        prim(OperationKind::CreateRegion(CreateRegionOp {
+            region: region(first),
+        })),
+    );
+    // Another author fills it, unseen by the first.
+    op(
+        three,
+        0,
+        &[(one, 3)],
+        None,
+        prim(OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+            region: first,
+            instance: valuegen::staff_instance(StaffInstanceId::new(three, 105), staff),
+        })),
+    );
+    op(
+        one,
+        4,
+        &[(one, 3)],
+        None,
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::BestEffort,
+        }),
+    );
+    op(
+        one,
+        5,
+        &[(one, 4)],
+        None,
+        prim(OperationKind::CreateRegion(CreateRegionOp {
+            region: region(second),
+        })),
+    );
+    op(
+        one,
+        6,
+        &[(one, 5)],
+        None,
+        prim(OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+            region: second,
+            instance: valuegen::staff_instance(StaffInstanceId::new(one, 106), staff),
+        })),
+    );
+    assert!(modes::valid(&history));
+    let found: Vec<String> = modes::findings(&history)
+        .into_iter()
+        .map(|f| f.class)
+        .collect();
+    assert!(
+        found
+            .iter()
+            .any(|c| c == "invariant Invariant(RegionExtents"),
+        "{found:?}"
+    );
+    assert!(found.iter().all(|c| !modes::deferred(c)), "{found:?}");
 }

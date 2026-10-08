@@ -2961,7 +2961,7 @@ once, with its first history, so a class excepted by name would hide any other
 cause of the same invariant behind the deferred one. `RegionExtents` is now
 classed apart when its two overlapping regions were each created by an
 envelope of the history at one time extent, neither in the other's causal past
-(`modes::CONCURRENT_REGIONS`): the deferred cause; any other overlap keeps the
+(`modes::CONCURRENT_REGIONS`, now `REGION_NEVER_SEEN`, below): the deferred cause; any other overlap keeps the
 plain class, which nothing excepts. History `110` takes the named class.
 Every `RegionExtents` finding of the million-history run, minimized, is two
 regions created concurrently at one extent. Locked by
@@ -3128,3 +3128,38 @@ no pitch removed, both fail), `a_modify_keeps_a_pitch_its_author_never_saw_in_bo
 revival disabled, and `a_modify_counts_a_bases_pitch_as_seen` with a base pitch
 read as unseen; histories `126`, `137` and `138` agree, `138`'s modify now
 removing its pitch with a repair.
+
+**The deferred class widens by name (M2, D50).** Review 1 found a second way
+to place a region where one stands: an author deletes a region another author
+is concurrently filling, so the merged history refuses the delete
+(`ContainerNotEmpty`), and, its view holding no region there, creates one in
+its place. One author made both regions, so the concurrency test classed the
+overlap plainly. Its fix is the deferred one, refusing the create by region
+extents base-free reduction cannot yet resolve, and the owner widened the
+class by name to a region created at the place of one its author's view did
+not hold live, with two causes the classifier names apart: never seen
+(`REGION_NEVER_SEEN`, D48's concurrent creation) and seen deleted by a delete
+the merged history refuses (`REGION_SEEN_DELETED`). The second holds when the
+later create's author saw the earlier region's create and a `DeleteRegion` of
+it, that delete is not applied in the merged history, and the author's view,
+the graph-aware reduction of the create's causal past, holds no such region;
+both creates are at one time extent, as for the first. No reducer changes.
+History `110` takes the first cause's name; review 1's two seeds and a third,
+regenerated at the checkpoint's generator and minimized against the new class
+(the minimizer had dropped the delete against the plain one), are `145` to
+`147`, deferred. A deferred history must now still fail as its class, as a
+`split` one does, so the classifier is held by the committed suite and not
+only by the ignored test. Nothing else falls in the class: an overlap whose
+author saw the region live keeps the plain class
+(`a_region_overlap_its_author_saw_is_not_the_deferred_class`, and with the
+delete gone or the fill seen, `a_region_created_where_its_authors_refused_delete_left_none_is_deferred`),
+as does a region created where its author's undo of the region's
+transaction, blocked in the merged history by a concurrent fill, left none
+(`a_region_created_where_its_authors_blocked_undo_left_none_is_not_deferred`):
+a third cause in the same family, which the owner has not ruled into the
+class, so it is not excepted. Review 1's plant B3, an overlap from a
+`DeleteStaffInstance` leaving its staff in the region's extent, still fails
+the CI budget. Mutations: the seen-deleted cause never named (its test and the
+committed suite fail), the view's check dropped (the fill-seen case fails), the
+refused-delete check dropped (the undo case fails), and the concurrency test
+dropped (every classifier test fails).
