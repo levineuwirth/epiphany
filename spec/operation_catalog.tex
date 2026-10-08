@@ -776,10 +776,11 @@ and a segment anchored in musical time strands its region's migration out of
 it. A \texttt{Reassign} that reorders a voice leaves it in position order. A
 tie gives way to an operation that breaks it, removed with a recorded repair
 (Requirement~\ref{req:opcat:tie-gives-way}), where the graph kept it broken.
-A \texttt{ModifyEvent} keeps a pitch a concurrent author added that its own
-author never saw, and an undo restoring an event's value keeps a pitch added
-since (Section~\ref{sec:k0:modify-event}), where each dropped the pitch from the
-graph and left it live. A clef or key change, written at a musical offset, is
+A \texttt{ModifyEvent}, and an undo restoring an event's value, neither
+removes a pitch, keeping one a concurrent author added (add wins) or its own
+author left out, nor revives one a delete or undo removed
+(Section~\ref{sec:k0:modify-event}), where each dropped the pitch from the
+graph and left it live, or brought a tombstoned one back. A clef or key change, written at a musical offset, is
 refused in a region out of musical time, whether set or carried by a new staff
 instance, and a live one strands its region's migration out of it, where each
 left a change anchored by a musical offset the region did not admit. An undo
@@ -1065,11 +1066,15 @@ so a later insert sees the freed or changed span. A placement change of a
 graph (re-sorting a non-metric voice is a deferred refinement); a malformed
 (empty pitched) replacement is likewise recorded but not materialised;
 same-placement field edits apply in place, preserving voice membership. Partial
-trimming of a tuplet member remains a later refinement. A live pitch of the
-event that the value does not carry, and whose insert the modification's author
-had not seen, is kept, at its current value and with its attachments: add wins
-(since version~0.19.0, before which the value's pitches replaced the event's,
-leaving such a pitch live and outside the graph).
+trimming of a tuplet member remains a later refinement. The value sets the
+event's fields and its pitches' values, but neither removes nor revives a pitch
+(since version~0.19.0, before which the value's pitches replaced the event's in
+the graph alone): a live pitch of the event the value does not carry is kept,
+at its current value and with its attachments, whether its author never saw it
+(add wins) or left it out; and a pitch the value carries that a delete or undo
+has tombstoned stays out of the event (delete wins). A pitch leaves an event
+only by \texttt{DeleteIdentifiedPitch}, \texttt{DeleteEvent} or an undo of
+its insert.
 
 \emph{System-derived content immutability (ratified Pass~12, closing
 P12-K3).} A modification that would rewrite the \emph{intrinsic content} of a
@@ -1089,8 +1094,9 @@ replacement pitch.
 \textbf{Undo semantics.} Value-restoring (Section~\ref{sec:k0:undo}): undoing
 the enclosing transaction restores the event's chain-predecessor value,
 conflicting (\texttt{StrictInverse}) or skipping (\texttt{BestEffort}) when a
-later modification has superseded it. The restored value keeps every live pitch
-of the event it does not carry, the undone transaction's own pitches being
+later modification has superseded it. The restored value is written as a
+modification's is, keeping every live pitch of the event it does not carry
+and reviving none a delete removed, the undone transaction's own pitches being
 tombstoned first, so a pitch another operation added since stays (since
 version~0.19.0).
 

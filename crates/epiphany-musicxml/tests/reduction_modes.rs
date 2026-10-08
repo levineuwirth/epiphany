@@ -3102,3 +3102,106 @@ fn an_undo_of_a_region_or_instrument_still_named_is_blocked_in_both_modes() {
         }
     }
 }
+
+/// A whole-event modify neither removes nor revives a pitch, in both modes:
+/// one its author saw and left out stays in the event with its attachments,
+/// and one it carries that an undo removed concurrently stays gone. Before
+/// reduction version 3 the first left the graph while it stayed live, its
+/// spelling naming nothing (`SpellingScopeResolves`), and the second came
+/// back into the graph while tombstoned (`UniqueIdentifiers`).
+#[test]
+fn a_whole_event_modify_neither_removes_nor_revives_a_pitch_in_both_modes() {
+    use epiphany_core::{IdentifiedPitch, PitchId};
+    use epiphany_ops::InsertIdentifiedPitchOp;
+    let m = Measure::new();
+
+    // Left out by an author who saw it.
+    let (pitch, [insert, transpose]) = added_pitch(&m, 0, 1, &[]);
+    let trim = m.op(A, 0, 3, &[transpose.id], primitive(m.trim(0, eighth())));
+    let authored = [insert, transpose, trim.clone()];
+    let state = m.agree("a trim leaving out a pitch it saw", &authored);
+    assert_eq!(effect(&state, trim.id), Some(OperationEffect::Applied));
+    assert!(
+        holds_with_spelling(&m, &authored, m.q(0), pitch),
+        "the trimmed quarter keeps the pitch it left out, and its spelling"
+    );
+
+    // Carried after an undo removed it.
+    let tx = TransactionId::new(A, 1500);
+    let added = PitchId::new(A, 1501);
+    let mut declare = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("add"),
+            category: None,
+        })),
+    );
+    declare.transaction = Some(tx);
+    let mut add = m.op(
+        A,
+        1,
+        2,
+        &[declare.id],
+        primitive(OperationKind::InsertIdentifiedPitch(
+            InsertIdentifiedPitchOp {
+                event: m.q(0),
+                pitch: IdentifiedPitch {
+                    id: added,
+                    pitch: valuegen::pitch_value_nth(4),
+                },
+            },
+        )),
+    );
+    add.transaction = Some(tx);
+    let undo = m.op(
+        B,
+        0,
+        3,
+        &[add.id],
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::StrictInverse,
+        }),
+    );
+    let mut chord = m.quarters[0].clone();
+    match &mut chord {
+        Event::Pitched(e) => {
+            e.duration = eighth();
+            e.pitches.push(IdentifiedPitch {
+                id: added,
+                pitch: valuegen::pitch_value_nth(4),
+            });
+        }
+        other => panic!("a note, not {other:?}"),
+    }
+    let carried = m.op(
+        A,
+        2,
+        4,
+        &[add.id],
+        primitive(OperationKind::ModifyEvent(ModifyEventOp { event: chord })),
+    );
+    let authored = [declare, add, undo.clone(), carried.clone()];
+    let state = m.agree("a trim carrying a pitch an undo removed", &authored);
+    assert!(matches!(
+        effect(&state, undo.id),
+        Some(OperationEffect::AppliedWithRepair { .. })
+    ));
+    assert!(tombstoned(&state, TypedObjectId::Pitch(added)));
+    let mut set = OperationSet::new();
+    set.accept_all(m.import.envelopes.iter().chain(&authored).cloned());
+    let score = set
+        .reduce_onto(&Score::empty(IdentityContext::new(m.import.replica)))
+        .score;
+    let Some(Event::Pitched(quarter)) = score.events.get(m.q(0)) else {
+        panic!("the first quarter");
+    };
+    assert!(
+        quarter.pitches.iter().all(|ip| ip.id != added),
+        "the removed pitch stays out of the event"
+    );
+}

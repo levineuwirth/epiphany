@@ -2903,3 +2903,20 @@ instance whose override, as the undo leaves it, names the instrument. Locked
 by `an_undo_of_a_region_or_instrument_still_named_is_blocked_in_both_modes`,
 under both policies (each surface removed, and the region named twice, it
 fails), and histories `135` and `136`.
+
+**A whole-event write neither removes nor revives a pitch.** Two more causes
+at a million histories were whole-event writes. A modify whose author saw a
+pitch and left it out of its value (history `138`) dropped it from the graph while the ledger kept it live and its
+spelling attachment stayed (`SpellingScopeResolves`); and a modify carrying a
+pitch that a concurrent undo of its insert had tombstoned put it back into the
+graph (`137`, `UniqueIdentifiers`). Add wins already kept a pitch the author
+never saw; the rule is now the whole-event write's, a modify's and an undo
+restoration's alike (`written_event`): the value's pitches that are tombstoned
+are left out, and every live pitch of the event the value does not carry is
+kept. Event pitch membership so changes only by pitch and event deletes, pitch
+inserts and undos of them, which the ledger records; `event_pitches` and the
+graph agree. Graph state only. Locked by
+`a_whole_event_modify_neither_removes_nor_revives_a_pitch_in_both_modes`
+(the tombstoned filter removed, it fails; the modify writing its raw value, it
+and `a_modify_keeps_a_pitch_its_author_never_saw_in_both_modes` fail) and
+histories `137` and `138`.

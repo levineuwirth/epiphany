@@ -405,6 +405,13 @@ pub mod vectors;
 ///     mints, is superseded by the tuplet's create (strict: conflicted; best
 ///     effort: the duration left), as a `ModifyEvent` changing it is refused,
 ///     where the restoration broke the tuplet's sum (`TupletSum`).
+///   - a whole-event write, a `ModifyEvent` or an undo's restored event value,
+///     also keeps a live pitch its author saw and left out, and leaves out a
+///     pitch it carries that a delete or undo tombstoned (delete wins): a
+///     pitch leaves an event only by a pitch or event delete or an undo of its
+///     insert. The first dropped the pitch from the graph and left it live
+///     (`SpellingScopeResolves`), the second brought a tombstoned pitch back
+///     into the graph (`UniqueIdentifiers`). Graph state only.
 ///   - an undo that would tombstone a region a live tempo segment of another
 ///     map anchors to, or an instrument a live staff instance's override
 ///     names (each read as the undo leaves it), is blocked by it (strict:
@@ -455,7 +462,9 @@ pub mod vectors;
 ///   tuplet members,
 ///   `an_undo_restoring_a_tuplet_members_duration_is_superseded_in_both_modes`;
 ///   for regions and instruments still named,
-///   `an_undo_of_a_region_or_instrument_still_named_is_blocked_in_both_modes`.
+///   `an_undo_of_a_region_or_instrument_still_named_is_blocked_in_both_modes`;
+///   for whole-event writes,
+///   `a_whole_event_modify_neither_removes_nor_revives_a_pitch_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

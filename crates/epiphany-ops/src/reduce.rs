@@ -8515,9 +8515,10 @@ impl<'a> Reducer<'a> {
                 ValueRestoration::Event { event, value } => {
                     if let Some(value) = value {
                         // The undo reverses its own transaction: a live pitch
-                        // another operation added since stays (reduction
-                        // version 3), the transaction's own being tombstoned.
-                        self.apply_event_value(&self.with_kept_pitches(&value, |_| true));
+                        // another operation added since stays, and one deleted
+                        // since stays gone (reduction version 3), the
+                        // transaction's own pitches being tombstoned first.
+                        self.apply_event_value(&self.written_event(&value));
                         self.event_modify_chain
                             .entry(event)
                             .or_insert_with(WriteChain::new)
@@ -8973,23 +8974,36 @@ impl<'a> Reducer<'a> {
             .entry(event_id)
             .or_insert_with(WriteChain::new)
             .record(env.id, env.transaction, op.event.clone());
-        // Add wins (D48; reduction version 3): a pitch another author added to
-        // the event, which this author never saw, stays in it with its
-        // attachments, where the whole-event write dropped it from the graph
-        // and left it live and its spelling naming nothing.
-        let unseen = |minter: OperationId| minter != env.id && !env.causal_context.covers(minter);
-        let value = self.with_kept_pitches(&op.event, unseen);
+        // A whole-event write neither revives nor removes a pitch (reduction
+        // version 3): a pitch another author added, which this author never
+        // saw, stays with its attachments (add wins, D48), as does one this
+        // author left out, and a carried pitch a delete or undo removed stays
+        // gone (delete wins). Before it the value's pitches replaced the
+        // event's in the graph alone.
+        let value = self.written_event(&op.event);
         self.apply_event_value(&value);
         effect
     }
 
-    /// `value` with each live pitch of its event (`event_pitches`) that it
-    /// does not carry and whose minting operation `keep` names, at the
-    /// pitch's current value: what a whole-event write leaves of pitch
-    /// operations it did not mean to undo. A rest so kept becomes a note of
+    /// The event a whole-event write (a modify's value, or an undo's restored
+    /// one) leaves: `value` without the pitches it carries that a delete or an
+    /// undo has tombstoned, and with each live pitch of its event
+    /// (`event_pitches`) it does not carry, at the pitch's current value. A
+    /// pitch so leaves an event only by a pitch or event delete or an undo of
+    /// its insert, and comes back by none. A rest so kept becomes a note of
     /// those pitches, as a pitch inserted into a rest makes it one.
-    fn with_kept_pitches(&self, value: &Event, keep: impl Fn(OperationId) -> bool) -> Event {
+    fn written_event(&self, value: &Event) -> Event {
         let event = value.id();
+        let tombstoned = |p: PitchId| {
+            matches!(
+                self.objects.get(&TypedObjectId::Pitch(p)),
+                Some(ObjectState::Tombstoned { .. })
+            )
+        };
+        let mut value = value.clone();
+        if let Event::Pitched(pe) = &mut value {
+            pe.pitches.retain(|ip| !tombstoned(ip.id));
+        }
         let mut carried = Vec::new();
         value.collect_identified_pitches(&mut carried);
         let kept: Vec<epiphany_core::IdentifiedPitch> = self
@@ -8999,9 +9013,10 @@ impl<'a> Reducer<'a> {
             .flatten()
             .filter(|p| !carried.iter().any(|ip| ip.id == **p))
             .filter(|p| {
-                let pobj = TypedObjectId::Pitch(**p);
-                matches!(self.objects.get(&pobj), Some(ObjectState::Live))
-                    && self.minted_by.get(&pobj).is_some_and(|m| keep(*m))
+                matches!(
+                    self.objects.get(&TypedObjectId::Pitch(**p)),
+                    Some(ObjectState::Live)
+                )
             })
             .filter_map(|p| {
                 Some(epiphany_core::IdentifiedPitch {
@@ -9011,11 +9026,10 @@ impl<'a> Reducer<'a> {
             })
             .collect();
         if kept.is_empty() {
-            return value.clone();
+            return value;
         }
         match value {
-            Event::Pitched(pe) => {
-                let mut pe = pe.clone();
+            Event::Pitched(mut pe) => {
                 pe.pitches.extend(kept);
                 Event::Pitched(pe)
             }
@@ -9031,7 +9045,7 @@ impl<'a> Reducer<'a> {
                 stem: epiphany_core::StemConfiguration,
                 grace: None,
             }),
-            other => other.clone(),
+            other => other,
         }
     }
 
