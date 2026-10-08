@@ -8314,7 +8314,10 @@ impl<'a> Reducer<'a> {
             match restoration {
                 ValueRestoration::Event { event, value } => {
                     if let Some(value) = value {
-                        self.apply_event_value(&value);
+                        // The undo reverses its own transaction: a live pitch
+                        // another operation added since stays (reduction
+                        // version 3), the transaction's own being tombstoned.
+                        self.apply_event_value(&self.with_kept_pitches(&value, |_| true));
                         self.event_modify_chain
                             .entry(event)
                             .or_insert_with(WriteChain::new)
@@ -8770,8 +8773,66 @@ impl<'a> Reducer<'a> {
             .entry(event_id)
             .or_insert_with(WriteChain::new)
             .record(env.id, env.transaction, op.event.clone());
-        self.apply_event_value(&op.event);
+        // Add wins (D48; reduction version 3): a pitch another author added to
+        // the event, which this author never saw, stays in it with its
+        // attachments, where the whole-event write dropped it from the graph
+        // and left it live and its spelling naming nothing.
+        let unseen = |minter: OperationId| minter != env.id && !env.causal_context.covers(minter);
+        let value = self.with_kept_pitches(&op.event, unseen);
+        self.apply_event_value(&value);
         effect
+    }
+
+    /// `value` with each live pitch of its event (`event_pitches`) that it
+    /// does not carry and whose minting operation `keep` names, at the
+    /// pitch's current value: what a whole-event write leaves of pitch
+    /// operations it did not mean to undo. A rest so kept becomes a note of
+    /// those pitches, as a pitch inserted into a rest makes it one.
+    fn with_kept_pitches(&self, value: &Event, keep: impl Fn(OperationId) -> bool) -> Event {
+        let event = value.id();
+        let mut carried = Vec::new();
+        value.collect_identified_pitches(&mut carried);
+        let kept: Vec<epiphany_core::IdentifiedPitch> = self
+            .event_pitches
+            .get(&event)
+            .into_iter()
+            .flatten()
+            .filter(|p| !carried.iter().any(|ip| ip.id == **p))
+            .filter(|p| {
+                let pobj = TypedObjectId::Pitch(**p);
+                matches!(self.objects.get(&pobj), Some(ObjectState::Live))
+                    && self.minted_by.get(&pobj).is_some_and(|m| keep(*m))
+            })
+            .filter_map(|p| {
+                Some(epiphany_core::IdentifiedPitch {
+                    id: *p,
+                    pitch: self.event_pitch_value(event, *p)?,
+                })
+            })
+            .collect();
+        if kept.is_empty() {
+            return value.clone();
+        }
+        match value {
+            Event::Pitched(pe) => {
+                let mut pe = pe.clone();
+                pe.pitches.extend(kept);
+                Event::Pitched(pe)
+            }
+            Event::Rest(rest) => Event::Pitched(epiphany_core::PitchedEvent {
+                id: rest.id,
+                voice: rest.voice,
+                position: rest.position.clone(),
+                duration: rest.duration.clone(),
+                pitches: kept,
+                articulations: Vec::new(),
+                dynamic: None,
+                ornaments: Vec::new(),
+                stem: epiphany_core::StemConfiguration,
+                grace: None,
+            }),
+            other => other.clone(),
+        }
     }
 
     /// Applies an event *value* (a modify's replacement, or an undo's restored

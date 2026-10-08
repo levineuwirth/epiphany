@@ -2510,3 +2510,132 @@ fn a_tie_gives_way_to_an_edit_that_breaks_it_in_both_modes() {
         assert!(live(&state, tied), "{name}: the tie stays");
     }
 }
+
+/// The pitch one author adds to the first quarter and transposes, which
+/// leaves it a propagated spelling: its insert and its transpose.
+fn added_pitch(
+    m: &Measure,
+    counter: u64,
+    at: i64,
+    seen: &[OperationId],
+) -> (epiphany_core::PitchId, [OperationEnvelope; 2]) {
+    use epiphany_core::{IdentifiedPitch, PitchId, TranspositionInterval};
+    use epiphany_ops::{InsertIdentifiedPitchOp, TransposeIntervalOp};
+    let pitch = PitchId::new(B, 600);
+    let insert = m.op(
+        B,
+        counter,
+        at,
+        seen,
+        primitive(OperationKind::InsertIdentifiedPitch(
+            InsertIdentifiedPitchOp {
+                event: m.q(0),
+                pitch: IdentifiedPitch {
+                    id: pitch,
+                    pitch: valuegen::pitch_value_nth(4),
+                },
+            },
+        )),
+    );
+    let mut after = seen.to_vec();
+    after.push(insert.id);
+    let transpose = m.op(
+        B,
+        counter + 1,
+        at + 1,
+        &after,
+        primitive(OperationKind::TransposeInterval(TransposeIntervalOp {
+            targets: [pitch].into_iter().collect(),
+            interval: TranspositionInterval {
+                diatonic_steps: 1,
+                chromatic_steps: 2,
+            },
+        })),
+    );
+    (pitch, [insert, transpose])
+}
+
+/// Whether the graph-aware score's event holds `pitch`, with a spelling
+/// attachment scoped to it.
+fn holds_with_spelling(
+    m: &Measure,
+    authored: &[OperationEnvelope],
+    event: EventId,
+    pitch: epiphany_core::PitchId,
+) -> bool {
+    use epiphany_core::SpellingScope;
+    let mut set = OperationSet::new();
+    set.accept_all(m.import.envelopes.iter().chain(authored).cloned());
+    let score = set
+        .reduce_onto(&Score::empty(IdentityContext::new(m.import.replica)))
+        .score;
+    let held = matches!(score.events.get(event), Some(Event::Pitched(e))
+        if e.pitches.iter().any(|ip| ip.id == pitch));
+    let spelt = score
+        .spelling_attachments
+        .iter()
+        .any(|a| matches!(&a.scope, SpellingScope::Pitch(p) if *p == pitch));
+    held && spelt
+}
+
+/// A whole-event modify keeps a pitch a concurrent author added and it never
+/// saw, with the pitch's attachments (add wins, D48), in both modes. Before
+/// reduction version 3 the modify's value replaced the event's pitches, so the
+/// added pitch left the graph while it stayed live and its spelling attachment
+/// named nothing (`SpellingScopeResolves`).
+#[test]
+fn a_modify_keeps_a_pitch_its_author_never_saw_in_both_modes() {
+    let m = Measure::new();
+    let (pitch, [insert, transpose]) = added_pitch(&m, 0, 1, &[]);
+    let trim = m.op(A, 0, 3, &[], primitive(m.trim(0, eighth())));
+    let authored = [insert.clone(), transpose, trim.clone()];
+    let state = m.agree("a trim beside an unseen pitch", &authored);
+    assert_eq!(effect(&state, trim.id), Some(OperationEffect::Applied));
+    assert!(live(&state, TypedObjectId::Pitch(pitch)));
+    assert!(
+        holds_with_spelling(&m, &authored, m.q(0), pitch),
+        "the trimmed quarter keeps the added pitch and its spelling"
+    );
+}
+
+/// An undo of a modify keeps a pitch another author added to the event
+/// since, with its attachments: the undo reverses its own transaction, not
+/// the pitch's insert. Before reduction version 3 the restored value replaced
+/// the event's pitches, dropping the added one from the graph.
+#[test]
+fn an_undo_of_a_modify_keeps_a_pitch_added_since_in_both_modes() {
+    let m = Measure::new();
+    let tx = TransactionId::new(A, 650);
+    let mut declare = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("trim"),
+            category: None,
+        })),
+    );
+    declare.transaction = Some(tx);
+    let mut trim = m.op(A, 1, 2, &[declare.id], primitive(m.trim(0, eighth())));
+    trim.transaction = Some(tx);
+    let (pitch, [insert, transpose]) = added_pitch(&m, 0, 3, &[trim.id]);
+    let undo = m.op(
+        A,
+        2,
+        5,
+        &[transpose.id],
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::StrictInverse,
+        }),
+    );
+    let authored = [declare, trim, insert, transpose, undo.clone()];
+    let state = m.agree("an undone trim beside a pitch added since", &authored);
+    assert_eq!(effect(&state, undo.id), Some(OperationEffect::Applied));
+    assert!(
+        holds_with_spelling(&m, &authored, m.q(0), pitch),
+        "the restored quarter keeps the added pitch and its spelling"
+    );
+}

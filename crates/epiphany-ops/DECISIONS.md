@@ -2797,3 +2797,27 @@ edits and three that keep the tie) and histories `008` and `113`; with every
 tie held, the test and both histories fail, and so does the CI budget, which
 finds `TiePairing`; with the neighbours dropped the insert's case fails; with
 undo checking no tie the undo's case fails.
+
+**A whole-event write keeps pitches it did not mean to remove.** A
+`ModifyEvent` carries the whole event, and its value's pitches replaced the
+event's in the graph. When another author had concurrently added a pitch to
+the event (history `126`, the pitch then transposed, which gave it a
+propagated spelling), the modify's author never saw it, so the write dropped
+it from the graph while the ledger kept it live and its spelling attachment
+named nothing (`SpellingScopeResolves`). D48 rules add wins: the modify keeps
+such a pitch with its attachments. `with_kept_pitches` adds to the written
+value each live pitch of the event (`event_pitches`) that the value does not
+carry and whose minting operation the modify's causal context does not cover,
+at its current value (graph-aware from the graph, base-free from
+`pitch_values`); a rest so kept becomes a note, as an inserted pitch makes
+one. The chain still records the operation's own value, so concurrency and
+idempotence compare what each author wrote. The same gap was open on undo,
+whose restored value is an earlier whole event: it dropped a pitch added
+since. A restoration now keeps every live pitch the value does not carry, the
+undone transaction's own having been tombstoned before restorations apply.
+A modify that omits a pitch its own author saw still drops it from the graph
+alone, as before; no generated history writes one. Graph state only. Locked
+by `a_modify_keeps_a_pitch_its_author_never_saw_in_both_modes` and history
+`126` (each fails with no unseen pitch kept) and
+`an_undo_of_a_modify_keeps_a_pitch_added_since_in_both_modes` (fails with the
+restoration keeping none).

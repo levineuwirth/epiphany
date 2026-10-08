@@ -776,6 +776,10 @@ and a segment anchored in musical time strands its region's migration out of
 it. A \texttt{Reassign} that reorders a voice leaves it in position order. A
 tie gives way to an operation that breaks it, removed with a recorded repair
 (Requirement~\ref{req:opcat:tie-gives-way}), where the graph kept it broken.
+A \texttt{ModifyEvent} keeps a pitch a concurrent author added that its own
+author never saw, and an undo restoring an event's value keeps a pitch added
+since (Section~\ref{sec:k0:modify-event}), where each dropped the pitch from the
+graph and left it live.
 Two requirement labels are added;
 no payload, discriminant or \texttt{PreconditionFailureReason} changes.
 Accordingly
@@ -1051,7 +1055,11 @@ so a later insert sees the freed or changed span. A placement change of a
 graph (re-sorting a non-metric voice is a deferred refinement); a malformed
 (empty pitched) replacement is likewise recorded but not materialised;
 same-placement field edits apply in place, preserving voice membership. Partial
-trimming of a tuplet member remains a later refinement.
+trimming of a tuplet member remains a later refinement. A live pitch of the
+event that the value does not carry, and whose insert the modification's author
+had not seen, is kept, at its current value and with its attachments: add wins
+(since version~0.19.0, before which the value's pitches replaced the event's,
+leaving such a pitch live and outside the graph).
 
 \emph{System-derived content immutability (ratified Pass~12, closing
 P12-K3).} A modification that would rewrite the \emph{intrinsic content} of a
@@ -1071,7 +1079,10 @@ replacement pitch.
 \textbf{Undo semantics.} Value-restoring (Section~\ref{sec:k0:undo}): undoing
 the enclosing transaction restores the event's chain-predecessor value,
 conflicting (\texttt{StrictInverse}) or skipping (\texttt{BestEffort}) when a
-later modification has superseded it.
+later modification has superseded it. The restored value keeps every live pitch
+of the event it does not carry, the undone transaction's own pitches being
+tombstoned first, so a pitch another operation added since stays (since
+version~0.19.0).
 
 \textbf{Re-anchoring.} If the target event is tombstoned, the modification is a
 no-op (\texttt{TargetTombstoned}/\texttt{TargetMissing}).

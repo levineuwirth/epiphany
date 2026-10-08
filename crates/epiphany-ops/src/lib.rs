@@ -378,6 +378,13 @@ pub mod vectors;
 ///     transposed, deleted or added to an implicitly paired end, a migration's
 ///     remapping, an undo's restoration, and a tie created or rewritten over
 ///     such a change each so remove it, where the tie stayed (`TiePairing`).
+///   - a `ModifyEvent` keeps a live pitch of its event that its value does not
+///     carry and whose insert its author never saw, at its current value and
+///     with its attachments (add wins, D48); and an undo restoring an event's
+///     value keeps every live pitch of the event the value does not carry, the
+///     undone transaction's own tombstoned first. Each dropped the pitch from
+///     the graph and left it live, its spelling naming nothing
+///     (`SpellingScopeResolves`). Graph state only; no verdict moves.
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
@@ -411,7 +418,9 @@ pub mod vectors;
 ///   `a_tempo_in_a_region_out_of_musical_time_is_refused_in_both_modes`; for
 ///   the reordering,
 ///   `a_reassignment_that_reorders_a_voice_keeps_it_sorted_in_both_modes`; for
-///   ties, `a_tie_gives_way_to_an_edit_that_breaks_it_in_both_modes`.
+///   ties, `a_tie_gives_way_to_an_edit_that_breaks_it_in_both_modes`; for
+///   kept pitches, `a_modify_keeps_a_pitch_its_author_never_saw_in_both_modes`
+///   and `an_undo_of_a_modify_keeps_a_pitch_added_since_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.
