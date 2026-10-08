@@ -3266,3 +3266,122 @@ fn a_measure_in_a_region_out_of_musical_time_is_refused_in_both_modes() {
         refused(PreconditionFailureReason::WrongRegionTimeModel)
     );
 }
+
+/// Two chains written independently, a region's whole grid and one of its
+/// meter changes, compare by which was written later as the reduction applies
+/// them. A transaction applies where its first member falls, so a grid write
+/// it stamps after another author's concurrent time signature is applied
+/// before it, and the signature governs the grid the next measure is placed
+/// by: a measure a bar too far is refused `MeasureMeterMismatch` in both
+/// modes. Before reduction version 3 the comparison read the stamps, took the
+/// grid write for the later, placed the measure by no signature and applied
+/// it, a bar too far under the signature the graph held
+/// (`MeasureMeterConsistency`).
+#[test]
+fn a_transactions_grid_write_is_as_recent_as_it_applied_in_both_modes() {
+    use epiphany_core::{MeasureId, StaffInstanceId, TimeSignatureId};
+    use epiphany_ops::{
+        CreateMeasureOp, CreateRegionOp, CreateStaffInstanceOp, SetMetricGridOp, SetTimeSignatureOp,
+    };
+    let m = Measure::new();
+    let region = RegionId::new(A, 1700);
+    let instance = StaffInstanceId::new(A, 1701);
+    let at = |offset: i64| {
+        valuegen::region_start_anchor(
+            region,
+            MusicalPosition(RationalTime::new(offset, 1).expect("whole notes")),
+        )
+    };
+    let measure = |id: u64, offset: i64| {
+        let mut measure = valuegen::measure(MeasureId::new(A, id), TimeSignatureId::new(A, 0), 1);
+        measure.time_signature = None;
+        measure.start = at(offset);
+        primitive(OperationKind::CreateMeasure(CreateMeasureOp {
+            instance,
+            measure,
+        }))
+    };
+    let create = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::CreateRegion(CreateRegionOp {
+            region: valuegen::region(region),
+        })),
+    );
+    let staff = m.op(
+        A,
+        1,
+        2,
+        &[create.id],
+        primitive(OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+            region,
+            instance: valuegen::staff_instance(instance, m.import.ids.staves[0][0]),
+        })),
+    );
+    let first = m.op(A, 2, 3, &[staff.id], measure(1702, 1));
+    // A's transaction: its first grid write before B's signature, its second
+    // after; the block applies where its first member falls.
+    let tx = TransactionId::new(A, 1703);
+    let mut declare = m.op(
+        A,
+        3,
+        4,
+        &[first.id],
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("grid"),
+            category: None,
+        })),
+    );
+    declare.transaction = Some(tx);
+    let clear = |counter: u64, at: i64, seen: OperationId| {
+        let mut write = m.op(
+            A,
+            counter,
+            at,
+            &[seen],
+            primitive(OperationKind::SetMetricGrid(SetMetricGridOp {
+                region,
+                grid: None,
+            })),
+        );
+        write.transaction = Some(tx);
+        write
+    };
+    let early = clear(4, 5, declare.id);
+    let signature = m.op(
+        B,
+        0,
+        6,
+        &[first.id],
+        primitive(OperationKind::SetTimeSignature(SetTimeSignatureOp {
+            region,
+            anchor: at(1),
+            time_signature: Some(valuegen::time_signature(TimeSignatureId::new(B, 1704), 2)),
+        })),
+    );
+    let grid = clear(5, 7, early.id);
+    // A bar of 2/4 after the first measure is a half; this is a whole.
+    let second = m.op(A, 6, 8, &[grid.id, signature.id], measure(1705, 2));
+    let state = m.agree(
+        "a measure placed by the grid as it applied",
+        &[
+            create,
+            staff,
+            first,
+            declare,
+            early,
+            signature.clone(),
+            grid.clone(),
+            second.clone(),
+        ],
+    );
+    assert_eq!(effect(&state, signature.id), Some(OperationEffect::Applied));
+    assert_eq!(effect(&state, grid.id), Some(OperationEffect::Applied));
+    assert_eq!(
+        effect(&state, second.id),
+        refused(PreconditionFailureReason::MeasureMeterMismatch)
+    );
+}

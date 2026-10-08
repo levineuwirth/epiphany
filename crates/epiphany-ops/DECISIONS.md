@@ -2931,3 +2931,19 @@ now reads its region (the start anchor's, or its instance's) through
 `SetClef` and a musical break already do. Locked by
 `a_measure_in_a_region_out_of_musical_time_is_refused_in_both_modes` (the
 check removed, it fails) and history `139`.
+
+**Two chains compare by the order their writes applied.** The effective grid
+layers a region's whole-grid writes (`metric_grid_chain`) and its per-key
+meter changes (`meter_change_chain`), and at each key the chain written more
+recently governs (`chain_recency`). Recency was the writing operation's stamp.
+But a transaction's members apply together where its first member falls in
+the walk, so a grid write a transaction stamped after another author's
+concurrent `SetTimeSignature` applied before it: the graph held the signature,
+the oracle took the grid write for the later and read no signature, and a
+`CreateMeasure` placed by it applied a bar out (history `140`, the undo of the
+transaction being one of its own members; `MeasureMeterConsistency`). Each
+operation now records the position it applied at (`applied_at`, set by
+`apply`), and recency reads that. Outside a transaction the walk follows the
+stamps, so only such interleavings change. Locked by
+`a_transactions_grid_write_is_as_recent_as_it_applied_in_both_modes` (recency
+by stamp restored, it fails) and history `140`.

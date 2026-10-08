@@ -416,6 +416,15 @@ pub mod vectors;
 ///     region admitting no musical offset is refused `WrongRegionTimeModel`,
 ///     as a `SetTimeSignature` is, where it applied after a concurrent
 ///     migration out of musical time (`AnchorOffsetModel`).
+///   - the effective grid's two independent chains, a region's whole-grid
+///     writes and its per-key meter changes, compare by the position each
+///     write's operation applied at in the walk (`applied_at`), where they
+///     compared by stamp: a transaction's members apply together where its
+///     first member falls, so its later-stamped grid write was taken for more
+///     recent than a concurrent time signature the graph applied after it,
+///     and a `CreateMeasure` placed by a grid the graph did not hold applied
+///     a bar out (`MeasureMeterConsistency`); it is now refused
+///     `MeasureMeterMismatch`.
 ///   - an undo that would tombstone a region a live tempo segment of another
 ///     map anchors to, or an instrument a live staff instance's override
 ///     names (each read as the undo leaves it), is blocked by it (strict:
@@ -470,7 +479,9 @@ pub mod vectors;
 ///   for whole-event writes,
 ///   `a_whole_event_modify_neither_removes_nor_revives_a_pitch_in_both_modes`;
 ///   for measures,
-///   `a_measure_in_a_region_out_of_musical_time_is_refused_in_both_modes`.
+///   `a_measure_in_a_region_out_of_musical_time_is_refused_in_both_modes`;
+///   for the grid's chains,
+///   `a_transactions_grid_write_is_as_recent_as_it_applied_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

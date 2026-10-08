@@ -829,9 +829,11 @@ impl<V> Predecessor<V> {
 enum Recency {
     /// No recorded operational write — only a seeded base, or nothing.
     Base,
-    /// A recorded write, keyed by its authoring operation's canonical
-    /// position.
-    Write(crate::stamp::StampTuple),
+    /// A recorded write, keyed by the position its operation applied at in
+    /// the reduction's walk (reduction version 3: before it, by the
+    /// operation's stamp, which a transaction's members do not follow, the
+    /// block applying where its first member falls).
+    Write(u64),
     /// An in-flight, not-yet-applied prospective write (pin 6c, M31a) —
     /// always the most recent.
     Prospective,
@@ -1274,6 +1276,12 @@ struct Reducer<'a> {
     // envelope mints may still come from a base, and stays unchecked
     // (`referent_dead`, reduction version 3). Fixed for the run.
     history_mints: BTreeSet<TypedObjectId>,
+    // The position each operation applied at in the walk, from 1, so two
+    // independent write chains compare by which was written later as the
+    // graph saw it (`chain_recency`; reduction version 3). A transaction's
+    // members apply together where its first member falls, which their
+    // stamps do not say.
+    applied_at: BTreeMap<OperationId, u64>,
 }
 
 /// A score's always-valued settings, which seed the score-level write chains.
@@ -1798,6 +1806,7 @@ impl<'a> Reducer<'a> {
             graph: None,
             from_empty_base: false,
             history_mints: BTreeSet::new(),
+            applied_at: BTreeMap::new(),
         }
     }
 
@@ -3455,6 +3464,8 @@ impl<'a> Reducer<'a> {
     /// Applies one operation, then lets every tie it broke give way
     /// ([`Self::ties_give_way`]).
     fn apply(&mut self, env: &OperationEnvelope) -> OperationEffect {
+        let position = self.applied_at.len() as u64 + 1;
+        self.applied_at.entry(env.id).or_insert(position);
         let touch = self.tie_touch(env);
         let effect = self.apply_operation(env);
         self.ties_give_way(env, touch, effect)
@@ -5743,7 +5754,7 @@ impl<'a> Reducer<'a> {
         match chain.and_then(|c| c.last_write()) {
             Some(write) => self
                 .env_of(write.op)
-                .map(|env| Recency::Write(env.stamp.reduction_tuple()))
+                .map(|env| Recency::Write(self.applied_at.get(&env.id).copied().unwrap_or(0)))
                 .unwrap_or(Recency::Base),
             None => Recency::Base,
         }

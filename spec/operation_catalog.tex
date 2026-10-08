@@ -791,7 +791,8 @@ member's earlier duration, where the restoration broke the tuplet's sum. An
 undo cannot remove a region a tempo segment of another map anchors to, nor an
 instrument a staff instance's override names, where each left the reference
 naming nothing. A whole-event write neither removes nor revives a pitch, and a
-measure in musical time is refused in a region out of it.
+measure in musical time is refused in a region out of it. A region's whole grid
+and its meter changes compare by the order the reduction applied them.
 Two requirement labels are added;
 no payload, discriminant or \texttt{PreconditionFailureReason} changes.
 Accordingly
@@ -2171,9 +2172,14 @@ agreement check, not the boundary-distance check above.
 \textbf{The effective grid} is \texttt{StaffInstance.local\_metric\_grid} when
 present, else the enclosing region's default metric grid, reconstructed from
 the same operational write chains (\texttt{SetMetricGrid}'s whole-grid writes
-layered under \texttt{SetTimeSignature}'s per-key changes, in canonical write
-order, folding in any prospective undo restoration) in both graph-aware and
-base-free reduction, so the two modes never disagree.
+layered under \texttt{SetTimeSignature}'s per-key changes, in the order the
+reduction applies the writes, folding in any prospective undo restoration) in
+both graph-aware and base-free reduction, so the two modes never disagree.
+Since version~0.19.0 the order is the walk's, in which a transaction's members
+apply together where its first member falls; before it, the writes' stamps
+ordered them, so a transaction's later-stamped grid write was taken for more
+recent than another author's concurrent time signature that the graph applied
+after it, and a measure was placed by a grid the graph did not hold.
 
 \textbf{Conflict cases.} None at reduction time (set-union; the differing-value
 re-create is a precondition gate, not a conflict).
