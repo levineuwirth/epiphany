@@ -4526,6 +4526,31 @@ impl<'a> Reducer<'a> {
 
     /// The live tuplets whose members include `event`, from the referent
     /// index, which holds them in both reduction modes.
+    /// The operation that minted a live tuplet holding `event`, not among an
+    /// undo's own `targets`, when `value` would give the event a duration
+    /// other than the one the occupancy index holds.
+    fn tuplet_fixing_duration(
+        &self,
+        event: EventId,
+        value: &Event,
+        targets: &[TypedObjectId],
+    ) -> Option<OperationId> {
+        let current = self
+            .voice_occupancy
+            .values()
+            .flatten()
+            .find(|(_, _, placed)| *placed == event)
+            .map(|(_, duration, _)| EventDuration::Musical(duration.clone()))?;
+        if current == *value.duration() {
+            return None;
+        }
+        self.containing_tuplets(event)
+            .into_iter()
+            .map(TypedObjectId::Tuplet)
+            .filter(|tuplet| !targets.contains(tuplet))
+            .find_map(|tuplet| self.minted_by.get(&tuplet).copied())
+    }
+
     fn containing_tuplets(&self, event: EventId) -> BTreeSet<TupletId> {
         let member = TypedObjectId::Event(event);
         self.structures
@@ -8101,9 +8126,23 @@ impl<'a> Reducer<'a> {
                 ChainUndoVerdict::NotWritten => {}
                 ChainUndoVerdict::Superseded { by } => superseded.push(by),
                 ChainUndoVerdict::Restore(predecessor) => {
+                    let value = predecessor.map(Predecessor::into_value);
+                    // A live tuplet holding the event fixed its duration, which
+                    // only a tuplet-aware edit may change (a `ModifyEvent`'s
+                    // rule): it supersedes a restoration that would change it
+                    // (reduction version 3: before it the undo restored the
+                    // earlier duration and broke the tuplet's sum,
+                    // `TupletSum`).
+                    if let Some(by) = value
+                        .as_ref()
+                        .and_then(|value| self.tuplet_fixing_duration(*event, value, targets))
+                    {
+                        superseded.push(by);
+                        continue;
+                    }
                     restorations.push(ValueRestoration::Event {
                         event: *event,
-                        value: predecessor.map(Predecessor::into_value),
+                        value,
                     })
                 }
             }

@@ -400,6 +400,11 @@ pub mod vectors;
 ///     `TargetMissing`, its staves read as referents in both modes. Each left
 ///     a reference to a staff the score does not declare
 ///     (`CrossCuttingRefsResolve`).
+///   - an undo whose restoration of an event's value would change the
+///     duration of a live tuplet's member, the tuplet not among the undo's own
+///     mints, is superseded by the tuplet's create (strict: conflicted; best
+///     effort: the duration left), as a `ModifyEvent` changing it is refused,
+///     where the restoration broke the tuplet's sum (`TupletSum`).
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
@@ -440,7 +445,9 @@ pub mod vectors;
 ///   `a_clef_or_key_in_a_region_out_of_musical_time_is_refused_in_both_modes`
 ///   and `a_migration_finds_its_regions_events_in_both_modes`, whose
 ///   proportional target now names the instance too; for staves,
-///   `an_undo_of_a_staff_a_part_or_spanner_names_conflicts_in_both_modes`.
+///   `an_undo_of_a_staff_a_part_or_spanner_names_conflicts_in_both_modes`; for
+///   tuplet members,
+///   `an_undo_restoring_a_tuplet_members_duration_is_superseded_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

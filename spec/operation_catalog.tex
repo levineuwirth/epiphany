@@ -785,7 +785,8 @@ instance, and a live one strands its region's migration out of it, where each
 left a change anchored by a musical offset the region did not admit. An undo
 cannot remove a staff a live part definition or spanner names, and a spanner's
 staves are read as referents, where each left a reference to a staff the score
-did not declare.
+did not declare. A live tuplet supersedes an undo's restoration of its
+member's earlier duration, where the restoration broke the tuplet's sum.
 Two requirement labels are added;
 no payload, discriminant or \texttt{PreconditionFailureReason} changes.
 Accordingly
@@ -2250,7 +2251,12 @@ removes it from the registry, with any decomposition attachment naming it
 (its reference would otherwise dangle). A member tombstoned by an undo of the
 transaction that inserted it declares no compensation; the tuplet it leaves
 can no longer fill its total, so it cascade-deletes, in the index and the
-graph alike, as \texttt{CascadeDeleteTuplets} would have.
+graph alike, as \texttt{CascadeDeleteTuplets} would have. An undo whose
+restoration of an event's value would change the duration of a live tuplet's
+member, the tuplet not among the undo's own mints, is superseded by the
+tuplet's create, as a later write supersedes it: \texttt{StrictInverse}
+conflicts and \texttt{BestEffort} leaves the duration (since
+version~0.19.0, before which the restoration broke the tuplet's sum).
 
 \textbf{Re-anchoring.} The tuplet references its members; the rule table's
 ``Tuplet / Member event'' row governs a member's delete. Nesting is

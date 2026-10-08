@@ -2930,3 +2930,72 @@ fn an_undo_of_a_staff_a_part_or_spanner_names_conflicts_in_both_modes() {
         refused(PreconditionFailureReason::TargetMissing)
     );
 }
+
+/// A tuplet another author made over an event fixes its duration, so an undo
+/// of the transaction that trimmed the event, which would restore its earlier
+/// duration, is superseded by the tuplet in both modes: a strict undo
+/// conflicts and a best-effort one leaves the duration, the tuplet's members
+/// still filling its total. Before reduction version 3 the undo restored the
+/// duration and broke the tuplet's sum (`TupletSum`).
+#[test]
+fn an_undo_restoring_a_tuplet_members_duration_is_superseded_in_both_modes() {
+    for policy in [UndoPolicy::StrictInverse, UndoPolicy::BestEffort] {
+        let m = Measure::new();
+        let tx = TransactionId::new(A, 1300);
+        let mut declare = m.op(
+            A,
+            0,
+            1,
+            &[],
+            primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                id: tx,
+                label: String::from("trim"),
+                category: None,
+            })),
+        );
+        declare.transaction = Some(tx);
+        let mut trim = m.op(A, 1, 2, &[declare.id], primitive(m.trim(1, eighth())));
+        trim.transaction = Some(tx);
+        let tuplet = m.op(
+            B,
+            0,
+            3,
+            &[trim.id],
+            primitive(OperationKind::CreateTuplet(CreateTupletOp {
+                tuplet: Tuplet {
+                    id: TupletId::new(B, 1301),
+                    ratio: TupletRatio::new(3, 2).expect("not degenerate"),
+                    members: vec![m.q(0), m.q(1)],
+                    parent: None,
+                    required_total: musical(m.quarters[0].duration()) + musical(&eighth()),
+                    display: Default::default(),
+                },
+            })),
+        );
+        let undo = m.op(
+            A,
+            2,
+            4,
+            &[tuplet.id],
+            OperationPayload::UndoTransaction(UndoTransactionPayload { target: tx, policy }),
+        );
+        let state = m.agree(
+            &format!("an undone trim of a tuplet member, {policy:?}"),
+            &[declare, trim, tuplet.clone(), undo.clone()],
+        );
+        assert_eq!(effect(&state, tuplet.id), Some(OperationEffect::Applied));
+        match policy {
+            UndoPolicy::BestEffort => {
+                assert_eq!(effect(&state, undo.id), Some(OperationEffect::Applied))
+            }
+            _ => assert!(
+                matches!(
+                    effect(&state, undo.id),
+                    Some(OperationEffect::Conflicted { .. })
+                ),
+                "{:?}",
+                effect(&state, undo.id)
+            ),
+        }
+    }
+}

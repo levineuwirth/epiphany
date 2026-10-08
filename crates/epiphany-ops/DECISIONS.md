@@ -2858,3 +2858,18 @@ refusing it `TargetMissing` in both modes. Locked by
 `an_undo_of_a_staff_a_part_or_spanner_names_conflicts_in_both_modes` (each of
 the two surfaces and the referent check removed, it fails) and history `133`
 (fails with the part surface removed).
+
+**A tuplet fixes its members' durations against undo.** A transaction
+shortened a rest; another author, having seen it, made a tuplet over the rest
+and its neighbours, totalling the rest's new duration; an undo of the
+transaction, concurrent with the tuplet, restored the rest's earlier duration
+(history `134`) and the members no longer filled the total (`TupletSum`). A
+`ModifyEvent` changing a member's duration is already refused, so a
+restoration doing the same is now superseded by the tuplet:
+`collect_restorations` asks `tuplet_fixing_duration` whether a live tuplet
+holding the event, not among the undo's own targets, would see the restored
+value's duration differ from the indexed one, and if so records the tuplet's
+minting operation as the superseding writer. A strict undo conflicts naming
+it; a best-effort one skips the restoration. Locked by
+`an_undo_restoring_a_tuplet_members_duration_is_superseded_in_both_modes`,
+under both policies, and history `134`; each fails with the check removed.
