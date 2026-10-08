@@ -2999,3 +2999,106 @@ fn an_undo_restoring_a_tuplet_members_duration_is_superseded_in_both_modes() {
         }
     }
 }
+
+/// An undo of the transaction that made a region, after a tempo segment was
+/// anchored to it, or of the one that made an instrument, after a staff
+/// instance was set to it, is blocked in both modes: a strict undo conflicts,
+/// a best-effort one keeps the region or instrument. Before reduction version
+/// 3 each undo removed it and left the anchor or the override naming nothing
+/// (`CrossCuttingRefsResolve`).
+#[test]
+fn an_undo_of_a_region_or_instrument_still_named_is_blocked_in_both_modes() {
+    use epiphany_core::InstrumentId;
+    use epiphany_ops::{CreateInstrumentOp, CreateRegionOp, SetStaffLayoutOp, SetTempoSegmentOp};
+    let m = Measure::new();
+    let made = |tx: TransactionId, payload: OperationPayload| {
+        let mut declare = m.op(
+            A,
+            0,
+            1,
+            &[],
+            primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                id: tx,
+                label: String::from("make"),
+                category: None,
+            })),
+        );
+        declare.transaction = Some(tx);
+        let mut make = m.op(A, 1, 2, &[declare.id], payload);
+        make.transaction = Some(tx);
+        (declare, make)
+    };
+    let region = RegionId::new(A, 1400);
+    let instrument = InstrumentId::new(A, 1401);
+    let cases: [(&str, OperationPayload, OperationPayload, TypedObjectId); 2] = [
+        (
+            "a region a tempo segment anchors to",
+            primitive(OperationKind::CreateRegion(CreateRegionOp {
+                region: valuegen::region(region),
+            })),
+            primitive(OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                region: None,
+                start: valuegen::region_start_anchor(region, MusicalPosition::origin()),
+                segment: Some(valuegen::tempo_segment(
+                    region,
+                    MusicalPosition::origin(),
+                    96.0,
+                )),
+            })),
+            TypedObjectId::Region(region),
+        ),
+        (
+            "an instrument a staff instance is set to",
+            primitive(OperationKind::CreateInstrument(CreateInstrumentOp {
+                instrument: valuegen::instrument(instrument),
+            })),
+            primitive(OperationKind::SetStaffLayout(SetStaffLayoutOp {
+                staff_instance: m.import.ids.instances[0][0],
+                instrument_override: Some(instrument),
+                staff_lines_override: None,
+                visible: true,
+            })),
+            TypedObjectId::Instrument(instrument),
+        ),
+    ];
+    for (n, (name, make, naming, object)) in cases.into_iter().enumerate() {
+        for policy in [UndoPolicy::StrictInverse, UndoPolicy::BestEffort] {
+            let tx = TransactionId::new(A, 1410 + n as u64);
+            let (declare, make) = made(tx, make.clone());
+            let named = m.op(B, 0, 3, &[make.id], naming.clone());
+            let undo = m.op(
+                A,
+                2,
+                4,
+                &[named.id],
+                OperationPayload::UndoTransaction(UndoTransactionPayload { target: tx, policy }),
+            );
+            let state = m.agree(
+                &format!("an undo of {name}, {policy:?}"),
+                &[declare, make, named.clone(), undo.clone()],
+            );
+            assert_eq!(
+                effect(&state, named.id),
+                Some(OperationEffect::Applied),
+                "{name}"
+            );
+            assert!(live(&state, object), "{name}, {policy:?}: kept");
+            if policy == UndoPolicy::StrictInverse {
+                assert!(
+                    matches!(
+                        effect(&state, undo.id),
+                        Some(OperationEffect::Conflicted { .. })
+                    ),
+                    "{name}: {:?}",
+                    effect(&state, undo.id)
+                );
+                // The conflict names the region once, so the state decodes as
+                // written.
+                assert_eq!(
+                    MaterializedState::decode_canonical(&state.canonical_bytes()).as_ref(),
+                    Ok(&state)
+                );
+            }
+        }
+    }
+}

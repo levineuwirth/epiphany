@@ -2886,3 +2886,20 @@ ignored `every_deferred_history_reduces_alike` requires it to agree (so
 `cargo test -- --ignored` shows it failing), and the CI budget counts its class
 as known, by name. Counting only `split` classes as known fails the CI budget,
 whose fifty-eighth history (seed `0x4a003a`) finds it. No reduction verdict or state changes.
+
+**A million histories: an undo of a region or instrument still named.** The
+fuzz at 1,000,000 histories (ten chunks of 100,000 from `0x4A0001`) found
+more causes behind classes already committed, each class having been reported
+once for its first cause. Two are undos of a creation the score still names:
+a region a score-level tempo segment anchors to (history `135`), which
+`DeleteRegion` already refuses, and an instrument a staff instance's
+`SetStaffLayout` override names (`136`). The region's strand guard gains the
+tempo surface `DeleteRegion` reads, a live segment of another map anchored to
+it, read as the undo leaves the segment (a restoration of the undone
+transaction's own write applies first); the segment has no id, so the
+conflict names the region once (its affected objects are a set, and a
+duplicate would not decode as written). The instrument's gains a live staff
+instance whose override, as the undo leaves it, names the instrument. Locked
+by `an_undo_of_a_region_or_instrument_still_named_is_blocked_in_both_modes`,
+under both policies (each surface removed, and the region named twice, it
+fails), and histories `135` and `136`.

@@ -405,6 +405,12 @@ pub mod vectors;
 ///     mints, is superseded by the tuplet's create (strict: conflicted; best
 ///     effort: the duration left), as a `ModifyEvent` changing it is refused,
 ///     where the restoration broke the tuplet's sum (`TupletSum`).
+///   - an undo that would tombstone a region a live tempo segment of another
+///     map anchors to, or an instrument a live staff instance's override
+///     names (each read as the undo leaves it), is blocked by it (strict:
+///     conflicted, the conflict naming the region once for a segment, which
+///     has no id; best effort: the region or instrument kept), where the undo
+///     left the anchor or override naming nothing (`CrossCuttingRefsResolve`).
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
@@ -447,7 +453,9 @@ pub mod vectors;
 ///   proportional target now names the instance too; for staves,
 ///   `an_undo_of_a_staff_a_part_or_spanner_names_conflicts_in_both_modes`; for
 ///   tuplet members,
-///   `an_undo_restoring_a_tuplet_members_duration_is_superseded_in_both_modes`.
+///   `an_undo_restoring_a_tuplet_members_duration_is_superseded_in_both_modes`;
+///   for regions and instruments still named,
+///   `an_undo_of_a_region_or_instrument_still_named_is_blocked_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

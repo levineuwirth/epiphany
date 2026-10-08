@@ -7551,13 +7551,19 @@ impl<'a> Reducer<'a> {
                     .iter()
                     .find_map(|t| self.undo_strand_block(t, &targets, &restorations))
                 {
+                    // The blocked object once, a referencer with no id of its
+                    // own (a tempo segment) naming the blocked one.
+                    let mut affected = vec![blocked];
+                    if referencer != blocked {
+                        affected.push(referencer);
+                    }
                     let conflict = ConflictRecord::new(
                         ConflictKind::TransactionConflict {
                             transaction: op.target,
                             failed_members: vec![env.id],
                         },
                         vec![env.id],
-                        vec![blocked, referencer],
+                        affected,
                     );
                     let cid = conflict.id;
                     self.conflicts.insert(conflict);
@@ -7734,8 +7740,10 @@ impl<'a> Reducer<'a> {
             // (reduction version 3: before it the undo tombstoned the
             // container and the graph kept it, both live and tombstoned or
             // naming a removed parent).
-            TypedObjectId::Region(region) => {
-                self.region_instances.get(region).and_then(|instances| {
+            TypedObjectId::Region(region) => self
+                .region_instances
+                .get(region)
+                .and_then(|instances| {
                     instances.iter().find_map(|instance| {
                         let iobj = TypedObjectId::StaffInstance(*instance);
                         (!targets.contains(&iobj)
@@ -7743,7 +7751,37 @@ impl<'a> Reducer<'a> {
                         .then_some((*target, iobj))
                     })
                 })
-            }
+                // A live tempo segment of another map anchored to the region,
+                // as it holds the region against a delete; the segment has no
+                // id, so the region names itself (reduction version 3: before
+                // it the undo left the anchor naming nothing,
+                // `CrossCuttingRefsResolve`). Read as the undo leaves it: a
+                // segment the undone transaction wrote is restored away.
+                .or_else(|| {
+                    let here = |anchor: &TimeAnchor| {
+                        matches!(anchor, TimeAnchor::Region { id, .. } if id == region)
+                    };
+                    self.tempo_segment_chain
+                        .iter()
+                        .filter(|((map, _), _)| *map != Some(*region))
+                        .any(|((map, position), chain)| {
+                            let prospective: Option<TempoSegment> = restorations
+                                .iter()
+                                .find_map(|restoration| match restoration {
+                                    ValueRestoration::TempoSegment {
+                                        region: r,
+                                        position: p,
+                                        value,
+                                    } if r == map && p == position => Some(value.clone()),
+                                    _ => None,
+                                })
+                                .unwrap_or_else(|| chain.current().cloned().flatten());
+                            prospective.is_some_and(|segment| {
+                                here(&segment.start) || segment.end.as_ref().is_some_and(here)
+                            })
+                        })
+                        .then_some((*target, *target))
+                }),
             TypedObjectId::StaffInstance(instance) => {
                 self.instance_voices.get(instance).and_then(|voices| {
                     voices.iter().find_map(|voice| {
@@ -7871,13 +7909,38 @@ impl<'a> Reducer<'a> {
                 })
             }
             TypedObjectId::Instrument(instrument) => {
-                self.staff_values.iter().find_map(|(staff_id, staff)| {
-                    let sobj = TypedObjectId::Staff(*staff_id);
-                    (staff.instrument == *instrument
-                        && !targets.contains(&sobj)
-                        && matches!(self.objects.get(&sobj), Some(ObjectState::Live)))
-                    .then_some((*target, sobj))
-                })
+                self.staff_values
+                    .iter()
+                    .find_map(|(staff_id, staff)| {
+                        let sobj = TypedObjectId::Staff(*staff_id);
+                        (staff.instrument == *instrument
+                            && !targets.contains(&sobj)
+                            && matches!(self.objects.get(&sobj), Some(ObjectState::Live)))
+                        .then_some((*target, sobj))
+                    })
+                    // A live staff instance overriding its staff's instrument
+                    // with this one, read as the undo leaves the override
+                    // (reduction version 3: before it the undo left the
+                    // override naming nothing, `CrossCuttingRefsResolve`).
+                    .or_else(|| {
+                        self.staff_layout_chain.iter().find_map(|(instance, chain)| {
+                            let iobj = TypedObjectId::StaffInstance(*instance);
+                            let prospective = restorations
+                                .iter()
+                                .find_map(|restoration| match restoration {
+                                    ValueRestoration::StaffLayout {
+                                        instance: i,
+                                        value,
+                                    } if i == instance => Some(value.clone()),
+                                    _ => None,
+                                })
+                                .unwrap_or_else(|| chain.current().cloned());
+                            (prospective.is_some_and(|(over, _, _)| over == Some(*instrument))
+                                && !targets.contains(&iobj)
+                                && matches!(self.objects.get(&iobj), Some(ObjectState::Live)))
+                            .then_some((*target, iobj))
+                        })
+                    })
             }
             // Genesis tranche G3b (`spec/CONTRACT_GENESIS_G3B_MEASURE.md` pin
             // 10.2/10.5): the Measure strand guard, across all SEVEN inbound

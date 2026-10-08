@@ -1,0 +1,8 @@
+# class: invariant Invariant(CrossCuttingRefsResolve
+# expect: agree
+# agrees since: an undo keeps a region a tempo segment anchors to, and an instrument an instance is set to
+# found: seed 0x4f0253, 24 authored; minimized from 84 to 4 envelopes
+(envelope #x00000000000000020000000000000000 #x00000000000000000000000000000002 (stamp 66 0 #x00000000000000020000000000000000) (causal () ()) (some #x00000000000000020000000000000001) (primitive (declare-transaction #x00000000000000020000000000000001 "edit" ())))
+(envelope #x00000000000000020000000000000001 #x00000000000000000000000000000002 (stamp 69 0 #x00000000000000020000000000000001) (causal ((#x0000000000000002 0)) ()) (some #x00000000000000020000000000000001) (primitive (create-region (region #x00000000000000020000000000000002 (metric (metric-time-model () tempo-map-reference)) (staff-based (staff-based-content () () () () ())) (time-extent (wall-clock 1) (wall-clock 1001)) (staff-extent ()) () false))))
+(envelope #x00000000000000020000000000000002 #x00000000000000000000000000000002 (stamp 74 0 #x00000000000000020000000000000002) (causal ((#x0000000000000002 1)) ()) () (primitive (set-tempo-segment () (region #x00000000000000020000000000000002 start (musical (ratio 1 1))) (some (tempo-segment (region #x00000000000000020000000000000002 start (musical (ratio 1 1))) () (tempo #x0000000000005e40 (ratio 1 4)) () constant)))))
+(envelope #x00000000000000020000000000000003 #x00000000000000000000000000000002 (stamp 80 0 #x00000000000000020000000000000003) (causal ((#x0000000000000002 2)) ()) () (undo #x00000000000000020000000000000001 cascade))
