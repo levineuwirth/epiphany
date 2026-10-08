@@ -4970,3 +4970,118 @@ fn a_key_change_is_drawn_with_its_cancellation() {
     }
     assert_eq!(rests_before, fifths.len());
 }
+
+/// A slur passes over the accidentals of its staff it would meet: one rising
+/// to a flat, and a two-note one falling to a flat, lift their ends over it;
+/// one above raises its arc over an interior flat. No point of any curve
+/// stands inside an accidental's box. Before `ENGRAVER_VERSION` 44 each of
+/// the three measures had a slur run through its flat.
+#[test]
+fn a_slur_clears_the_accidentals_under_it() {
+    let note = |step: &str, alter: i8, octave: u8, slur: &str| {
+        let alter_el = if alter == 0 {
+            String::new()
+        } else {
+            format!("<alter>{alter}</alter>")
+        };
+        let accidental = if alter == -1 {
+            "<accidental>flat</accidental>"
+        } else {
+            ""
+        };
+        let slur = match slur {
+            "" => String::new(),
+            kind => format!("<notations><slur type=\"{kind}\" number=\"1\"/></notations>"),
+        };
+        format!(
+            "<note><pitch><step>{step}</step>{alter_el}<octave>{octave}</octave></pitch>\
+             <duration>1</duration><voice>1</voice><type>quarter</type>{accidental}{slur}</note>"
+        )
+    };
+    let measures = [
+        // Up from C5 to A-flat 5.
+        [
+            note("C", 0, 5, "start"),
+            note("D", 0, 5, ""),
+            note("E", 0, 5, ""),
+            note("A", -1, 5, "stop"),
+        ],
+        // D5 to E-flat 5, then C5 to B-flat 4.
+        [
+            note("D", 0, 5, "start"),
+            note("E", -1, 5, "stop"),
+            note("C", 0, 5, "start"),
+            note("B", -1, 4, "stop"),
+        ],
+        // Stems down, the slur above, over A-flat 5.
+        [
+            note("E", 0, 5, "start"),
+            note("A", -1, 5, ""),
+            note("G", 0, 5, ""),
+            note("F", 0, 5, "stop"),
+        ],
+    ];
+    let body: String = measures
+        .iter()
+        .enumerate()
+        .map(|(m, notes)| {
+            let opening = if m == 0 {
+                "<attributes><divisions>1</divisions><key><fifths>0</fifths></key>\
+                 <time><beats>4</beats><beat-type>4</beat-type></time>\
+                 <clef><sign>G</sign><line>2</line></clef></attributes>"
+            } else {
+                ""
+            };
+            format!(
+                "<measure number=\"{}\">{opening}{}</measure>",
+                m + 1,
+                notes.concat()
+            )
+        })
+        .collect();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\">{body}</part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("slurs_over_accidentals.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = engrave(&loaded.reduced.score).layout;
+
+    let accidentals: Vec<_> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("accidental"))
+        .map(|g| {
+            let b = g.bounding_box;
+            (
+                g.position.x.0 + b.left.0,
+                g.position.x.0 + b.right.0,
+                g.position.y.0 + b.bottom.0,
+                g.position.y.0 + b.top.0,
+            )
+        })
+        .collect();
+    assert_eq!(accidentals.len(), 4, "four flats");
+    assert_eq!(layout.curves.len(), 4, "four slurs");
+    for (c, curve) in layout.curves.iter().enumerate() {
+        let [p0, p1, p2, p3] = [curve.p0, curve.p1, curve.p2, curve.p3];
+        let at = |a: f32, b: f32, c: f32, d: f32, t: f32| {
+            let u = 1.0 - t;
+            u * u * u * a + 3.0 * u * u * t * b + 3.0 * u * t * t * c + t * t * t * d
+        };
+        for k in 0..=400 {
+            let t = k as f32 / 400.0;
+            let (x, y) = (
+                at(p0.x.0, p1.x.0, p2.x.0, p3.x.0, t),
+                at(p0.y.0, p1.y.0, p2.y.0, p3.y.0, t),
+            );
+            for (left, right, bottom, top) in &accidentals {
+                assert!(
+                    !(x > *left && x < *right && y > *bottom && y < *top),
+                    "slur {c} runs through an accidental at ({x:.2}, {y:.2})"
+                );
+            }
+        }
+    }
+}

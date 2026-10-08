@@ -1673,3 +1673,28 @@ no other barline moves. A change inside a measure takes a barline column of
 its own with no barline, which is never a break. A restatement draws nothing.
 Locked by `a_key_change_is_drawn_with_its_cancellation` and
 `a_staff_has_no_key_before_its_first` (`epiphany-cli`).
+
+## ENGRAVER_VERSION 43 → 44: a slur or tie clears the accidentals under it (X4a.6, 2026-10-08)
+
+A slur was shaped over the heads and stems of the columns it spans, and a tie
+between its heads, but neither looked at an accidental away from the tie's own
+ends, so a slur ending on a note with an accidental ran through it, and one
+passing a note whose accidental reached past its head ran through that (D42).
+The constrained pass shapes curves where columns stand closer than spacing
+will set them, and an accidental keeps its distance from its head while the
+curve stretches, so the clearance is taken after spacing, in the frame the
+page is drawn in (`clearance::clear_accidentals`, from `curves`): each
+accidental glyph of the curve's band that the curve stands past the near edge
+of, and short of the far edge plus `ACCIDENTAL_CLEARANCE` (0.2), is passed on
+the side the curve arcs to, the worst first. In the curve's middle the arc
+rises, both inner control points moving off the chord alike, up to a third of
+the span and at most four spaces; within a fifth of a slur's end, where the
+arc rises too slowly, or past that bound, the slur lifts that end, its inner
+points moving with the chord. A tie's ends stay at its heads, so a tie only
+raises its arc, to at most 1.5 spaces off its chord, and a tie that cannot
+pass every accidental it meets within that is left as it was rather than half
+raised: a long tie under another voice's notes, which MuseScore draws
+through them as well, keeps its shape. Key-signature glyphs are accidentals
+too, so a curve across a key change passes them. Locked by the module's unit
+tests and `a_slur_clears_the_accidentals_under_it` (`epiphany-cli`); no golden
+draws a curve through an accidental, so none changed.

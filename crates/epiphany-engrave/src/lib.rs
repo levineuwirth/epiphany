@@ -73,6 +73,7 @@
 //! [`epiphany-render-svg`]: ../epiphany_render_svg/index.html
 
 pub mod casting;
+mod clearance;
 mod quality;
 mod spacing;
 
@@ -314,8 +315,11 @@ pub struct Engraver {
 /// where it had been read in that key from its start, and to `43` when a key
 /// change began drawing after its barline with the naturals that cancel what
 /// the new key drops, a change at a system break ending the system before as
-/// a courtesy, where a key change inside a system had drawn nothing.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(43);
+/// a courtesy, where a key change inside a system had drawn nothing, and to
+/// `44` when a slur or tie began passing over the accidentals of its staff
+/// it would meet, after spacing: a slur by raising its arc or, near an end,
+/// lifting that end, a tie by raising its arc within bounds.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(44);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -673,10 +677,13 @@ impl HorizontalRemap {
 
     /// Re-maps each curve's four control-point x's through the same coordinate
     /// map as a spanning stroke's endpoints (a slur is never rigid-width), so
-    /// the arc stretches with the spacing between its endpoint columns. Each
-    /// control point's y is preserved verbatim.
+    /// the arc stretches with the spacing between its endpoint columns, then
+    /// passes it over the accidentals of its staff it would meet
+    /// ([`clearance::clear_accidentals`]): a slur by its arc or, near an end,
+    /// by lifting that end, a tie by its arc alone. Its y is otherwise kept.
     fn curves(&self, input: &ConstrainedLayoutIR) -> Vec<Curve> {
         let anchors = span_anchors(input);
+        let accidentals = self.accidentals(input);
         input
             .curves
             .iter()
@@ -684,11 +691,21 @@ impl HorizontalRemap {
                 let anchored = anchors.get(&c.id()).and_then(|(start, end)| {
                     Some((*self.slot_delta.get(start)?, *self.slot_delta.get(end)?))
                 });
-                let [p0, p1, p2, p3] = match anchored {
+                let spaced = match anchored {
                     Some((start, end)) => anchored_curve(c.control_points(), start, end),
                     None => c
                         .control_points()
                         .map(|point| Point::new(self.map(point.x.0), point.y.0)),
+                };
+                let [p0, p1, p2, p3] = match c.provenance.source {
+                    TypedObjectId::Slur(_) | TypedObjectId::Tie(_) => clearance::clear_accidentals(
+                        spaced,
+                        accidentals
+                            .get(&c.vertical_band)
+                            .map_or(&[][..], Vec::as_slice),
+                        matches!(c.provenance.source, TypedObjectId::Tie(_)),
+                    ),
+                    _ => spaced,
                 };
                 Curve {
                     provenance: c.provenance.clone(),
@@ -704,6 +721,36 @@ impl HorizontalRemap {
                 }
             })
             .collect()
+    }
+}
+
+impl HorizontalRemap {
+    /// Every accidental glyph's ink where the spacing sets it, by its band.
+    fn accidentals(
+        &self,
+        input: &ConstrainedLayoutIR,
+    ) -> BTreeMap<epiphany_layout_ir::VerticalBandId, Vec<clearance::InkRect>> {
+        let mut by_band: BTreeMap<_, Vec<clearance::InkRect>> = BTreeMap::new();
+        for g in &input.glyphs {
+            if !g.glyph.as_str().starts_with("accidental") {
+                continue;
+            }
+            let x = match self.slot_delta.get(&g.horizontal_slot) {
+                Some(delta) => g.baseline.x.0 + delta,
+                None => self.map(g.baseline.x.0),
+            };
+            let b = g.bounding_box;
+            by_band
+                .entry(g.vertical_band)
+                .or_default()
+                .push(clearance::InkRect {
+                    left: x + b.left.0,
+                    right: x + b.right.0,
+                    bottom: g.baseline.y.0 + b.bottom.0,
+                    top: g.baseline.y.0 + b.top.0,
+                });
+        }
+        by_band
     }
 }
 
