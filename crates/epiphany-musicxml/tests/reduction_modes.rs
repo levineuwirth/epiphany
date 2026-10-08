@@ -3486,3 +3486,127 @@ fn an_undo_keeps_what_a_kept_mint_names_in_both_modes() {
         }
     }
 }
+
+/// A voice the reduction promotes stands in its instance's index as any voice
+/// does, so the instance is not empty while the promoted voice holds an event,
+/// in both modes: two authors insert overlapping rests into one voice of a new
+/// instance, the later promoted to a voice of its own, while a third, aware of
+/// neither, deletes the voice and then its instance. The voice's delete
+/// applies between the two inserts, the retained insert finds its voice gone,
+/// and the instance's delete is refused `ContainerNotEmpty`. Before reduction
+/// version 3 the instance looked empty, its delete applied, and the promoted
+/// event named a voice the graph no longer held (`EventVoiceBacklink`).
+#[test]
+fn an_instance_holding_a_promoted_voice_is_not_empty_in_both_modes() {
+    use epiphany_core::{StaffId, StaffInstanceId, VoiceId};
+    use epiphany_ops::{
+        CreateStaffInstanceOp, CreateStaffOp, CreateVoiceOp, DeleteStaffInstanceOp,
+    };
+    const C: ReplicaId = ReplicaId(23);
+    let m = Measure::new();
+    let staff = StaffId::new(A, 1900);
+    let instance = StaffInstanceId::new(A, 1901);
+    let voice = VoiceId::new(A, 1902);
+    let made_staff = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::CreateStaff(CreateStaffOp {
+            staff: valuegen::staff(staff, m.import.ids.instruments[0]),
+        })),
+    );
+    let made_instance = m.op(
+        A,
+        1,
+        2,
+        &[made_staff.id],
+        primitive(OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+            region: m.region,
+            instance: valuegen::staff_instance(instance, staff),
+        })),
+    );
+    let made_voice = m.op(
+        A,
+        2,
+        3,
+        &[made_instance.id],
+        primitive(OperationKind::CreateVoice(CreateVoiceOp {
+            staff_instance: instance,
+            voice: valuegen::voice(voice),
+        })),
+    );
+    let rest = |id: EventId, quarters: i64| {
+        primitive(OperationKind::InsertEvent(InsertEventOp {
+            staff_instance: instance,
+            event: Event::Rest(Rest {
+                id,
+                voice,
+                position: EventPosition::Musical(MusicalPosition(
+                    RationalTime::new(quarters, 4).expect("quarters"),
+                )),
+                duration: EventDuration::Musical(MusicalDuration(
+                    RationalTime::new(1, 2).expect("a half"),
+                )),
+                vertical_position: None,
+                visible: true,
+            }),
+        }))
+    };
+    let setup = [
+        made_staff.clone(),
+        made_instance.clone(),
+        made_voice.clone(),
+    ];
+    let seen_setup = [made_voice.id];
+    // B's insert, the greater id, is promoted; it applies first, then C's
+    // voice delete, then A's retained insert, then C's instance delete.
+    let promoted = m.op(B, 0, 4, &seen_setup, rest(EventId::new(B, 1903), 1));
+    let delete_voice = m.op(
+        C,
+        0,
+        5,
+        &seen_setup,
+        primitive(OperationKind::DeleteVoice(DeleteVoiceOp { voice })),
+    );
+    let retained = m.op(A, 3, 6, &seen_setup, rest(EventId::new(A, 1904), 0));
+    let delete_instance = m.op(
+        C,
+        1,
+        7,
+        &[delete_voice.id],
+        primitive(OperationKind::DeleteStaffInstance(DeleteStaffInstanceOp {
+            staff_instance: instance,
+        })),
+    );
+    let mut authored = setup.to_vec();
+    authored.extend([
+        promoted.clone(),
+        delete_voice.clone(),
+        retained.clone(),
+        delete_instance.clone(),
+    ]);
+    let state = m.agree("a promoted voice's instance deleted", &authored);
+    assert!(
+        matches!(
+            effect(&state, promoted.id),
+            Some(OperationEffect::AppliedWithRepair { ref repairs })
+                if repairs.iter().any(|r| matches!(r.kind, RepairKind::VoicePromoted { .. }))
+        ),
+        "{:?}",
+        effect(&state, promoted.id)
+    );
+    assert_eq!(
+        effect(&state, delete_voice.id),
+        Some(OperationEffect::Applied)
+    );
+    assert_eq!(
+        effect(&state, retained.id),
+        refused(PreconditionFailureReason::VoiceMissing)
+    );
+    assert_eq!(
+        effect(&state, delete_instance.id),
+        refused(PreconditionFailureReason::ContainerNotEmpty)
+    );
+    assert!(live(&state, TypedObjectId::StaffInstance(instance)));
+}

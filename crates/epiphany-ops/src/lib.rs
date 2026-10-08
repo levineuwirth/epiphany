@@ -436,6 +436,12 @@ pub mod vectors;
 ///     the mints still going until it keeps none, where it kept a staff for
 ///     its live instance and removed the instrument the staff names, judging
 ///     the staff's reference as going with it (`CrossCuttingRefsResolve`).
+///   - a voice the promotion pre-pass makes is indexed under the staff
+///     instance its insert names, as the graph holds it, so a
+///     `DeleteStaffInstance` while it holds an event is refused
+///     `ContainerNotEmpty` in both modes, where the instance, its other voices
+///     gone, looked empty and its delete applied, the promoted event naming a
+///     voice the graph no longer held (`EventVoiceBacklink`).
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
@@ -488,7 +494,8 @@ pub mod vectors;
 ///   for the grid's chains,
 ///   `a_transactions_grid_write_is_as_recent_as_it_applied_in_both_modes`;
 ///   for what a kept mint names,
-///   `an_undo_keeps_what_a_kept_mint_names_in_both_modes`.
+///   `an_undo_keeps_what_a_kept_mint_names_in_both_modes`; for promoted
+///   voices, `an_instance_holding_a_promoted_voice_is_not_empty_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

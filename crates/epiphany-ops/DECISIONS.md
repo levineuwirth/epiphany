@@ -2996,3 +2996,18 @@ greatest set no member of which is held by what stays. Strict undo is
 unchanged, since it conflicts on any block. Locked by
 `an_undo_keeps_what_a_kept_mint_names_in_both_modes`, under both policies
 (read against the full set, the best-effort case fails), and history `141`.
+
+**A promoted voice is its instance's (M3).** The promotion pre-pass makes a
+system voice for each overlapping concurrent insert it does not retain, and
+the graph puts it in the instance the insert names; the reducer's index of an
+instance's voices, which `DeleteStaffInstance` reads to refuse a filled
+instance and the strand guard reads for an undo, never held it. Two authors'
+overlapping inserts into one voice, one promoted, while a third deleted the
+voice and then its instance: the instance looked empty, its delete applied,
+and the promoted event named a voice the graph no longer held
+(`EventVoiceBacklink`). The promoted voice now enters the index with its
+event, so the delete is refused `ContainerNotEmpty`. The migration's lookup of
+a promoted voice's instance through its losing insert, which stood in for the
+missing entry, goes. Locked by
+`an_instance_holding_a_promoted_voice_is_not_empty_in_both_modes` and history
+`142` (each fails with the entry left out).

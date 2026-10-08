@@ -3936,6 +3936,15 @@ impl<'a> Reducer<'a> {
             self.objects.entry(pv).or_insert(ObjectState::Live);
             self.minted_by.entry(pv).or_insert(env.id);
             self.note_minted(env, pv);
+            // Under its instance, as the graph holds it, so the instance's
+            // delete and an undo of it find the voice and its event
+            // (reduction version 3: before it a delete of the instance, its
+            // other voices gone, applied and left the event naming a voice
+            // the graph no longer held, `EventVoiceBacklink`).
+            self.instance_voices
+                .entry(op.staff_instance)
+                .or_default()
+                .insert(promoted);
             repairs.push(RepairRecord {
                 kind: RepairKind::VoicePromoted {
                     from: orig_voice,
@@ -10380,24 +10389,11 @@ impl<'a> Reducer<'a> {
     }
 
     /// The region a voice's placements lie in, from the base-free ledger
-    /// indices. A voice this reduction promoted is not among its instance's
-    /// voices there, so its instance is the one its losing insert named,
-    /// which is where the graph puts it.
+    /// indices. A voice this reduction promoted is among its instance's
+    /// voices there, under the instance its losing insert named, which is
+    /// where the graph puts it.
     fn indexed_voice_region(&self, voice: VoiceId) -> Option<RegionId> {
-        let instance = self.voice_instance(voice).or_else(|| {
-            self.promotion.iter().find_map(|(losing, (promoted, _))| {
-                if *promoted != voice {
-                    return None;
-                }
-                match &self.env_of(*losing)?.payload {
-                    OperationPayload::Primitive(OperationKind::InsertEvent(op)) => {
-                        Some(op.staff_instance)
-                    }
-                    _ => None,
-                }
-            })
-        })?;
-        self.instance_region_of(instance)
+        self.instance_region_of(self.voice_instance(voice)?)
     }
 
     /// The live events with a metric placement in `region`, from the

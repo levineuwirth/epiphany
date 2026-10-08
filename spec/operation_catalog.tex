@@ -794,7 +794,8 @@ naming nothing. A whole-event write neither removes nor revives a pitch, and a
 measure in musical time is refused in a region out of it. A region's whole grid
 and its meter changes compare by the order the reduction applied them. A
 best-effort undo that keeps a mint for what names it keeps what that mint
-names, where it removed the instrument of a staff it kept.
+names, where it removed the instrument of a staff it kept. A promoted voice
+holds its instance against a delete, as any voice does.
 Two requirement labels are added;
 no payload, discriminant or \texttt{PreconditionFailureReason} changes.
 Accordingly
@@ -947,7 +948,11 @@ version~0.19.0): the lower-\texttt{OperationId} insert is retained in the
 original voice, and each overlapping loser is promoted to the deterministic
 system voice
 \texttt{derive\_promoted\_voice\_id(staff\_instance, voice, winner, loser)} and
-tagged \texttt{VoicePromoted}.
+tagged \texttt{VoicePromoted}. A promoted voice is a voice of the staff
+instance the insert names, in the reducer's index as in the graph, so the
+instance's delete is refused with \texttt{ContainerNotEmpty} while it holds an
+event (since version~0.19.0, before which the index left it out and the
+instance's delete applied over it).
 
 \textbf{Conflict cases.} None at reduction time; promotion is a deterministic
 repair, not a conflict.
