@@ -1282,6 +1282,10 @@ struct Reducer<'a> {
     // members apply together where its first member falls, which their
     // stamps do not say.
     applied_at: BTreeMap<OperationId, u64>,
+    // Each event's ties, live or not, by either end: written when a tie is
+    // seeded, created or rewritten and never pruned, so a reader checks a
+    // tie's liveness and current value (`ties_give_way`).
+    tie_ends: BTreeMap<EventId, BTreeSet<TieId>>,
 }
 
 /// A score's always-valued settings, which seed the score-level write chains.
@@ -1461,12 +1465,14 @@ pub(crate) fn graph_voice_location(score: &Score, voice: VoiceId) -> Option<(usi
 }
 
 /// Which ties an operation may break, for [`Reducer::ties_give_way`]: none,
-/// one it writes, those at or beside some events, or every live tie (an undo
+/// one it writes, those at (or beside) some events, or every live tie (an undo
 /// or a migration, which may move any event or value).
 enum TieTouch {
     Nothing,
-    Tie(TypedObjectId),
-    Events(BTreeSet<EventId>),
+    Tie(TieId),
+    /// Some events, and with `true` the events either side of each in its
+    /// voice, where an insert or a move lands between a tie's ends.
+    Events(BTreeSet<EventId>, bool),
     All,
 }
 
@@ -1807,6 +1813,7 @@ impl<'a> Reducer<'a> {
             from_empty_base: false,
             history_mints: BTreeSet::new(),
             applied_at: BTreeMap::new(),
+            tie_ends: BTreeMap::new(),
         }
     }
 
@@ -2145,6 +2152,9 @@ impl<'a> Reducer<'a> {
         }
         for tie in &score.cross_cutting.ties {
             let id = TypedObjectId::Tie(tie.id);
+            for event in [tie.start_event, tie.end_event] {
+                self.tie_ends.entry(event).or_default().insert(tie.id);
+            }
             self.objects.insert(id, ObjectState::Live);
             self.cross_cutting_modify_chain
                 .entry(id)
@@ -4318,6 +4328,9 @@ impl<'a> Reducer<'a> {
         self.objects.insert(sid, ObjectState::Live);
         self.minted_by.insert(sid, env.id);
         self.note_minted(env, sid);
+        if let CrossCuttingValue::Tie(tie) = &op.structure {
+            self.note_tie_ends(tie);
+        }
         // Seed the write chain with the minted value, so a later modify's
         // chain-predecessor is the created state.
         self.cross_cutting_modify_chain
@@ -4704,6 +4717,9 @@ impl<'a> Reducer<'a> {
             .or_insert_with(WriteChain::new)
             .record(env.id, env.transaction, op.structure.clone());
         self.structures.insert(sid, endpoints);
+        if let CrossCuttingValue::Tie(tie) = &op.structure {
+            self.note_tie_ends(tie);
+        }
         self.graph_modify_cross_cutting(&op.structure);
         effect
     }
@@ -10038,10 +10054,23 @@ impl<'a> Reducer<'a> {
     fn tie_touch(&self, env: &OperationEnvelope) -> TieTouch {
         let OperationPayload::Primitive(kind) = &env.payload else {
             return match &env.payload {
-                OperationPayload::UndoTransaction(_) => TieTouch::All,
+                OperationPayload::UndoTransaction(_) if !self.tie_ends.is_empty() => TieTouch::All,
                 _ => TieTouch::Nothing,
             };
         };
+        if let OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+            structure: CrossCuttingValue::Tie(tie),
+        })
+        | OperationKind::ModifyCrossCutting(ModifyCrossCuttingOp {
+            structure: CrossCuttingValue::Tie(tie),
+        }) = kind
+        {
+            return TieTouch::Tie(tie.id);
+        }
+        // No tie has ever stood: nothing to break.
+        if self.tie_ends.is_empty() {
+            return TieTouch::Nothing;
+        }
         let events_of = |pitches: &mut dyn Iterator<Item = PitchId>| {
             let pitches: BTreeSet<PitchId> = pitches.collect();
             TieTouch::Events(
@@ -10050,26 +10079,32 @@ impl<'a> Reducer<'a> {
                     .filter(|(_, held)| held.iter().any(|p| pitches.contains(p)))
                     .map(|(event, _)| *event)
                     .collect(),
+                false,
             )
         };
         match kind {
-            OperationKind::InsertEvent(op) => TieTouch::Events(BTreeSet::from([op.event_id()])),
-            OperationKind::ModifyEvent(op) => TieTouch::Events(BTreeSet::from([op.event_id()])),
+            OperationKind::InsertEvent(op) => {
+                TieTouch::Events(BTreeSet::from([op.event_id()]), true)
+            }
+            OperationKind::ModifyEvent(op) => {
+                TieTouch::Events(BTreeSet::from([op.event_id()]), true)
+            }
             OperationKind::InsertIdentifiedPitch(op) => {
-                TieTouch::Events(BTreeSet::from([op.event]))
+                TieTouch::Events(BTreeSet::from([op.event]), false)
             }
             OperationKind::DeleteIdentifiedPitch(op) => events_of(&mut std::iter::once(op.pitch)),
             OperationKind::ModifyIdentifiedPitch(op) => events_of(&mut std::iter::once(op.pitch)),
             OperationKind::Transpose(op) => events_of(&mut op.targets.iter().copied()),
             OperationKind::TransposeInterval(op) => events_of(&mut op.targets.iter().copied()),
             OperationKind::ChangeRegionTimeModel(_) => TieTouch::All,
-            OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
-                structure: CrossCuttingValue::Tie(tie),
-            })
-            | OperationKind::ModifyCrossCutting(ModifyCrossCuttingOp {
-                structure: CrossCuttingValue::Tie(tie),
-            }) => TieTouch::Tie(TypedObjectId::Tie(tie.id)),
             _ => TieTouch::Nothing,
+        }
+    }
+
+    /// Notes a tie under both its ends in `tie_ends`.
+    fn note_tie_ends(&mut self, tie: &Tie) {
+        for event in [tie.start_event, tie.end_event] {
+            self.tie_ends.entry(event).or_default().insert(tie.id);
         }
     }
 
@@ -10093,13 +10128,43 @@ impl<'a> Reducer<'a> {
         if matches!(touch, TieTouch::Nothing) || matches!(effect, OperationEffect::NoOp { .. }) {
             return effect;
         }
-        let live: Vec<(TypedObjectId, Tie)> = self
-            .structures
-            .range(
-                TypedObjectId::Tie(TieId::from_raw(0))
-                    ..=TypedObjectId::Tie(TieId::from_raw(u128::MAX)),
-            )
-            .map(|(sid, _)| *sid)
+        let ties: BTreeSet<TieId> = match touch {
+            TieTouch::Nothing => BTreeSet::new(),
+            TieTouch::Tie(id) => BTreeSet::from([id]),
+            TieTouch::All => self.tie_ends.values().flatten().copied().collect(),
+            TieTouch::Events(events, beside) => {
+                // The events themselves and, for an insert or a move, the
+                // events now either side of them in their voices: an insert or
+                // a move lands between a tie's ends there.
+                let mut near = events.clone();
+                if beside {
+                    for event in &events {
+                        let Some((voice, position)) = self.event_placement(*event) else {
+                            continue;
+                        };
+                        let placements = &self.voice_occupancy[&voice];
+                        let before = placements
+                            .iter()
+                            .filter(|(p, _, _)| *p < position)
+                            .max_by(|a, b| a.0.cmp(&b.0));
+                        let after = placements
+                            .iter()
+                            .filter(|(p, _, _)| *p > position)
+                            .min_by(|a, b| a.0.cmp(&b.0));
+                        near.extend(before.into_iter().chain(after).map(|(_, _, e)| *e));
+                    }
+                }
+                near.iter()
+                    .filter_map(|event| self.tie_ends.get(event))
+                    .flatten()
+                    .copied()
+                    .collect()
+            }
+        };
+        // The live ones, at their current values, in canonical order.
+        let checked: BTreeMap<TypedObjectId, Tie> = ties
+            .into_iter()
+            .map(TypedObjectId::Tie)
             .filter(|sid| matches!(self.objects.get(sid), Some(ObjectState::Live)))
             .filter_map(
                 |sid| match self.cross_cutting_modify_chain.get(&sid)?.current()? {
@@ -10108,40 +10173,6 @@ impl<'a> Reducer<'a> {
                 },
             )
             .collect();
-        if live.is_empty() {
-            return effect;
-        }
-        let checked: Vec<(TypedObjectId, Tie)> = match touch {
-            TieTouch::Nothing => Vec::new(),
-            TieTouch::All => live,
-            TieTouch::Tie(sid) => live.into_iter().filter(|(s, _)| *s == sid).collect(),
-            TieTouch::Events(events) => {
-                // The events themselves and, in their voices, the events now
-                // either side of them: an insert or a move lands between a
-                // tie's ends there.
-                let mut near = events.clone();
-                for event in &events {
-                    let Some((voice, position)) = self.event_placement(*event) else {
-                        continue;
-                    };
-                    let placements = &self.voice_occupancy[&voice];
-                    let before = placements
-                        .iter()
-                        .filter(|(p, _, _)| *p < position)
-                        .max_by(|a, b| a.0.cmp(&b.0));
-                    let after = placements
-                        .iter()
-                        .filter(|(p, _, _)| *p > position)
-                        .min_by(|a, b| a.0.cmp(&b.0));
-                    near.extend(before.into_iter().chain(after).map(|(_, _, e)| *e));
-                }
-                live.into_iter()
-                    .filter(|(_, tie)| {
-                        near.contains(&tie.start_event) || near.contains(&tie.end_event)
-                    })
-                    .collect()
-            }
-        };
         let mut repairs = Vec::new();
         for (sid, tie) in checked {
             if self.tie_holds(&tie) {

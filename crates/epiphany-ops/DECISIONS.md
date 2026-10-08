@@ -2961,3 +2961,15 @@ regions created concurrently at one extent. Locked by
 second region's author have seen the first and requires the plain class (the
 concurrency test dropped from the classification, it fails); with the
 classification never naming the cause, it and the CI budget fail.
+
+**Ties are found by their ends.** The tie check first read every live tie on
+every operation and, for a pitch operation, scanned every event's pitches,
+whether or not any tie stood; on the edit-latency bench (a log of transposes
+over a fixture with no tie) reduction took about half as long again at a
+thousand edits. `tie_ends` now indexes each tie under its two ends when it is
+seeded, created or rewritten (never pruned; a reader checks liveness), an
+operation touches nothing while no tie has stood, a pitch operation reads the
+ties at its events alone (a pitch change moves no neighbour), and an insert or
+a move the ties at it and its new neighbours. No verdict or state changes. The
+tie test fails with the neighbours dropped, with undo reading no tie, and with
+the empty-index shortcut inverted.
