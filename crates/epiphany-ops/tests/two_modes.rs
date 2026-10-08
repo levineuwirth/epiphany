@@ -8,12 +8,16 @@
 //! whether the history must now reduce alike (`agree`) or still shows that
 //! failure (`split`), for a failure not yet fixed. A fix flips its histories
 //! from `split` to `agree`; a `split` history whose failure has gone fails
-//! here until it is flipped, so a fix cannot pass unrecorded.
+//! here until it is flipped, so a fix cannot pass unrecorded. A failure the
+//! owner has deferred is `# expect: deferred`, with a `# deferred:` line
+//! giving the reason: its history is kept and run by an ignored test, which
+//! requires it to agree, so `cargo test -- --ignored` shows it failing until
+//! the fix lands.
 //!
 //! The CI budget runs a small number of generated histories and requires
-//! that every failure it finds is a committed `split` class, and that every
-//! operation kind and payload is authored and applied. The local budget is
-//! the `fuzz_modes` example.
+//! that every failure it finds is a committed `split` or `deferred` class, and
+//! that every operation kind and payload is authored and applied. The local
+//! budget is the `fuzz_modes` example.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -33,10 +37,19 @@ fn ci_run() -> &'static modes::Report {
     REPORT.get_or_init(|| modes::run(CI_SEED, CI_HISTORIES, CI_AUTHORED))
 }
 
+/// What a committed history declares.
+#[derive(PartialEq)]
+enum Expect {
+    Agree,
+    Split,
+    /// Deferred by the owner, with the reason.
+    Deferred(String),
+}
+
 struct Committed {
     file: String,
     class: String,
-    split: bool,
+    expect: Expect,
     history: Vec<epiphany_ops::OperationEnvelope>,
 }
 
@@ -60,17 +73,18 @@ fn committed() -> Vec<Committed> {
                     .to_owned()
             };
             let class = header("class");
-            let split = match header("expect").as_str() {
-                "split" => true,
-                "agree" => false,
-                other => panic!("{file}: `# expect: {other}` is neither split nor agree"),
+            let expect = match header("expect").as_str() {
+                "split" => Expect::Split,
+                "agree" => Expect::Agree,
+                "deferred" => Expect::Deferred(header("deferred")),
+                other => panic!("{file}: `# expect: {other}` is not split, agree or deferred"),
             };
             let history = modes::parse(&text).unwrap_or_else(|e| panic!("{file}: {e:?}"));
             assert!(!history.is_empty(), "{file} holds no envelope");
             Committed {
                 file,
                 class,
-                split,
+                expect,
                 history,
             }
         })
@@ -88,7 +102,10 @@ fn every_committed_history_reduces_as_it_declares() {
             c.file
         );
         let found = modes::findings(&c.history);
-        if c.split {
+        if matches!(c.expect, Expect::Deferred(_)) {
+            continue;
+        }
+        if c.expect == Expect::Split {
             assert!(
                 found.iter().any(|f| f.class == c.class),
                 "{}: declared to split as `{}`, but finds {:?}; if the fix is in, \
@@ -108,11 +125,40 @@ fn every_committed_history_reduces_as_it_declares() {
     }
 }
 
+/// Concurrent region creation at one place is deferred (owner's ruling D48):
+/// two authors each create a region over the same time and staves, and
+/// refusing the second needs the regions' time extents compared in both
+/// modes, which needs anchors resolved in base-free reduction. Wanted when
+/// collaboration arrives; until then the history is kept and run here.
+#[test]
+#[ignore = "concurrent region creation at one place is deferred (D48): refusing \
+            the second needs region time extents resolved in base-free reduction"]
+fn every_deferred_history_reduces_alike() {
+    let deferred: Vec<Committed> = committed()
+        .into_iter()
+        .filter(|c| matches!(c.expect, Expect::Deferred(_)))
+        .collect();
+    assert!(!deferred.is_empty(), "no deferred history was read");
+    for c in &deferred {
+        let found = modes::findings(&c.history);
+        assert!(
+            found.is_empty(),
+            "{} (deferred: {}): finds {:#?}",
+            c.file,
+            match &c.expect {
+                Expect::Deferred(reason) => reason.as_str(),
+                _ => unreachable!(),
+            },
+            found
+        );
+    }
+}
+
 #[test]
 fn the_ci_budget_finds_no_failure_that_is_not_committed() {
     let known: BTreeSet<String> = committed()
         .into_iter()
-        .filter(|c| c.split)
+        .filter(|c| c.expect != Expect::Agree)
         .map(|c| c.class)
         .collect();
     let report = ci_run();

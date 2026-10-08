@@ -2873,3 +2873,16 @@ minting operation as the superseding writer. A strict undo conflicts naming
 it; a best-effort one skips the restoration. Locked by
 `an_undo_restoring_a_tuplet_members_duration_is_superseded_in_both_modes`,
 under both policies, and history `134`; each fails with the check removed.
+
+**Concurrent region creation at one place is deferred.** Two authors each
+create a region over the same time, and each adds a staff instance of one
+staff (history `110`): the regions overlap in time and staff extent
+(`RegionExtents`). Refusing the second needs the two regions' time extents
+compared in both modes, and base-free reduction resolves no anchor. D48
+defers it to when collaboration arrives (the roadmap's decide-list). Its
+history is kept as `# expect: deferred`, with a `# deferred:` line giving the
+reason; `every_committed_history_reduces_as_it_declares` skips it, the
+ignored `every_deferred_history_reduces_alike` requires it to agree (so
+`cargo test -- --ignored` shows it failing), and the CI budget counts its class
+as known, by name. Counting only `split` classes as known fails the CI budget,
+whose fifty-eighth history (seed `0x4a003a`) finds it. No reduction verdict or state changes.
