@@ -2821,3 +2821,24 @@ by `a_modify_keeps_a_pitch_its_author_never_saw_in_both_modes` and history
 `126` (each fails with no unseen pitch kept) and
 `an_undo_of_a_modify_keeps_a_pitch_added_since_in_both_modes` (fails with the
 restoration keeping none).
+
+**A clef or key change stands in musical time.** A clef set in a metric
+region survived a migration of the region to proportional time (history
+`132`), anchored by a musical offset the region no longer admitted
+(`AnchorOffsetModel`). The tempo segment's fix applies: `SetClef` and
+`SetKeySignature`, which write at a musical offset, read the instance's
+region (`instance_region_of`) through `musical_slot` and refuse
+`WrongRegionTimeModel` there (`staff_change_slot`); a `CreateStaffInstance`
+carrying a change anchored by a musical offset into such a region is refused
+the same way; and a migration to a model admitting no musical offset is
+stranded by each live instance of the region holding a clef or key change,
+named among the incompatible objects. The chains key every change by its
+musical position (`resolved_anchor_position`), a change anchored otherwise
+included, so the check reads any live change of the instance as standing in
+musical time; every change the importer and the editors write does. Since the
+importer gives every instance its opening clef and key, a migration of an
+imported region to proportional time now names the instance too
+(`a_migration_finds_its_regions_events_in_both_modes`). Locked by
+`a_clef_or_key_in_a_region_out_of_musical_time_is_refused_in_both_modes` (the
+refusal removed from the setters, from the instance's create, or the
+stranding removed, it fails) and history `132`.

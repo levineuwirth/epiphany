@@ -779,7 +779,10 @@ tie gives way to an operation that breaks it, removed with a recorded repair
 A \texttt{ModifyEvent} keeps a pitch a concurrent author added that its own
 author never saw, and an undo restoring an event's value keeps a pitch added
 since (Section~\ref{sec:k0:modify-event}), where each dropped the pitch from the
-graph and left it live.
+graph and left it live. A clef or key change, written at a musical offset, is
+refused in a region out of musical time, whether set or carried by a new staff
+instance, and a live one strands its region's migration out of it, where each
+left a change anchored by a musical offset the region did not admit.
 Two requirement labels are added;
 no payload, discriminant or \texttt{PreconditionFailureReason} changes.
 Accordingly
@@ -1521,6 +1524,8 @@ migration having applied before it). A target that admits no musical offset
 strands each of the region's live measures as well, named beside the events,
 and a live tempo segment of any map anchored to the region by a musical offset
 strands the region itself, named among them, the segment having no identifier,
+and a live staff instance of the region holding a clef or key change, which
+stands at a musical offset, strands that instance, named among them,
 and an applied such migration drops the region's system and page breaks and
 its default and local metric grids (since version~0.19.0). Graph-aware
 reduction also judges, from the graph, the region's events the index does not
@@ -2277,7 +2282,15 @@ position; a change already there, from the base or the instance's creation,
 is the key's predecessor. The instance must be live: missing, the operation
 is a precondition no-op with \texttt{TargetMissing}; tombstoned, with
 \texttt{TargetTombstoned}. The check reads the graph-independent object
-index, so both reduction modes agree.
+index, so both reduction modes agree. A change is written at a musical offset,
+so the instance's region must admit one: a region out of musical time refuses
+it with \texttt{WrongRegionTimeModel}, read from the coordinate discipline
+both modes record (since version~0.19.0). For the same reason a
+\texttt{CreateStaffInstance} carrying a change anchored by a musical offset
+into a region admitting none is refused with \texttt{WrongRegionTimeModel},
+and a live instance holding a change strands a
+\texttt{ChangeRegionTimeModel} of its region to such a model
+(Section~\ref{sec:k0:change-region-time-model}).
 
 \textbf{Conflict cases.} A write concurrent with the key's last write and
 carrying a different value records a \texttt{StructuralFieldCollision} on

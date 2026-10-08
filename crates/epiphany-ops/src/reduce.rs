@@ -4860,6 +4860,25 @@ impl<'a> Reducer<'a> {
         if taken {
             return container_not_empty();
         }
+        // Its clef and key changes are anchors like any other: one anchored by
+        // a musical offset into a region admitting none is refused (reduction
+        // version 3: before it the instance carried it there,
+        // `AnchorOffsetModel`).
+        let anchors = op
+            .instance
+            .clef_sequence
+            .iter()
+            .map(|c| &c.anchor)
+            .chain(op.instance.key_sequence.iter().map(|k| &k.anchor));
+        for anchor in anchors {
+            let region = match anchor {
+                TimeAnchor::Region { id, .. } => *id,
+                _ => op.region,
+            };
+            if let Some(effect) = self.musical_slot(region, Some(anchor)) {
+                return effect;
+            }
+        }
         self.graph_create_staff_instance(op.region, &op.instance);
         self.mint_container(env, iobj);
         self.region_instances
@@ -6608,6 +6627,17 @@ impl<'a> Reducer<'a> {
         }
     }
 
+    /// The slot of a clef or key change, written at a musical position: a live
+    /// staff instance whose region admits musical offsets, a region out of
+    /// musical time refusing it `WrongRegionTimeModel` (reduction version 3:
+    /// before it the change applied there, `AnchorOffsetModel`).
+    fn staff_change_slot(&self, instance: StaffInstanceId) -> Option<OperationEffect> {
+        self.staff_instance_slot(instance).or_else(|| {
+            self.instance_region_of(instance)
+                .and_then(|region| self.musical_slot(region, None))
+        })
+    }
+
     /// The effect of a structural LWW write against its key's last write
     /// (the meter change's discipline): applied, or a
     /// `StructuralFieldCollision` the later write wins when the two are
@@ -6649,7 +6679,7 @@ impl<'a> Reducer<'a> {
     /// change at a musical offset in a live staff instance's region, a
     /// structural LWW register keyed by `(instance, position)`.
     fn set_clef(&mut self, env: &OperationEnvelope, op: &SetClefOp) -> OperationEffect {
-        if let Some(effect) = self.staff_instance_slot(op.instance) {
+        if let Some(effect) = self.staff_change_slot(op.instance) {
             return effect;
         }
         let key = (op.instance, op.position());
@@ -6683,7 +6713,7 @@ impl<'a> Reducer<'a> {
         env: &OperationEnvelope,
         op: &SetKeySignatureOp,
     ) -> OperationEffect {
-        if let Some(effect) = self.staff_instance_slot(op.instance) {
+        if let Some(effect) = self.staff_change_slot(op.instance) {
             return effect;
         }
         let key = (op.instance, op.position());
@@ -7165,11 +7195,28 @@ impl<'a> Reducer<'a> {
                             || segment.end.as_ref().is_some_and(musical_here)
                 )
             });
+            // A live staff instance of the region holding a clef or key change,
+            // which the chains key by musical position, strands itself
+            // (reduction version 3: before it the change stayed, anchored by a
+            // musical offset the region no longer admits).
+            let changes_stranded = instances.into_iter().flatten().filter(|instance| {
+                let holds_clef = self.clef_chain.iter().any(|((owner, _), chain)| {
+                    owner == *instance && matches!(chain.current(), Some(Some(_)))
+                });
+                let holds_key = self.key_chain.iter().any(|((owner, _), chain)| {
+                    owner == *instance && matches!(chain.current(), Some(Some(_)))
+                });
+                matches!(
+                    self.objects.get(&TypedObjectId::StaffInstance(**instance)),
+                    Some(ObjectState::Live)
+                ) && (holds_clef || holds_key)
+            });
             self.measure_values
                 .iter()
                 .filter(|(_, (instance, _))| instances.is_some_and(|set| set.contains(instance)))
                 .map(|(id, _)| TypedObjectId::Measure(*id))
                 .filter(|m| matches!(self.objects.get(m), Some(ObjectState::Live)))
+                .chain(changes_stranded.map(|i| TypedObjectId::StaffInstance(*i)))
                 .chain(tempo_stranded.then_some(TypedObjectId::Region(op.region)))
                 .collect()
         };

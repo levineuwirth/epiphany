@@ -385,6 +385,14 @@ pub mod vectors;
 ///     undone transaction's own tombstoned first. Each dropped the pitch from
 ///     the graph and left it live, its spelling naming nothing
 ///     (`SpellingScopeResolves`). Graph state only; no verdict moves.
+///   - a `SetClef` or `SetKeySignature` into an instance whose region admits
+///     no musical offset is refused `WrongRegionTimeModel`, as is a
+///     `CreateStaffInstance` carrying a clef or key change anchored by a
+///     musical offset into such a region; and a live instance of a region
+///     holding a clef or key change strands the region's migration to such a
+///     model, which conflicts naming the instance. Each applied and left a
+///     change anchored by a musical offset the region no longer admits
+///     (`AnchorOffsetModel`).
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
@@ -420,7 +428,11 @@ pub mod vectors;
 ///   `a_reassignment_that_reorders_a_voice_keeps_it_sorted_in_both_modes`; for
 ///   ties, `a_tie_gives_way_to_an_edit_that_breaks_it_in_both_modes`; for
 ///   kept pitches, `a_modify_keeps_a_pitch_its_author_never_saw_in_both_modes`
-///   and `an_undo_of_a_modify_keeps_a_pitch_added_since_in_both_modes`.
+///   and `an_undo_of_a_modify_keeps_a_pitch_added_since_in_both_modes`; for
+///   clefs and keys,
+///   `a_clef_or_key_in_a_region_out_of_musical_time_is_refused_in_both_modes`
+///   and `a_migration_finds_its_regions_events_in_both_modes`, whose
+///   proportional target now names the instance too.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

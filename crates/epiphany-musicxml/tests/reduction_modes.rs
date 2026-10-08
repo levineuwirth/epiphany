@@ -920,11 +920,13 @@ fn a_migration_finds_its_regions_events_in_both_modes() {
         "the quarters against a proportional target",
         std::slice::from_ref(&proportional),
     );
-    // The quarters, and since reduction version 3 the measure, anchored in
-    // musical time, which a proportional region does not admit.
+    // The quarters, and since reduction version 3 the measure and the staff
+    // instance with its clef and key, anchored in musical time, which a
+    // proportional region does not admit.
     let mut stranded: Vec<TypedObjectId> = (0..4).map(|i| TypedObjectId::Event(m.q(i))).collect();
-    stranded.sort();
+    stranded.push(TypedObjectId::StaffInstance(m.import.ids.instances[0][0]));
     stranded.push(TypedObjectId::Measure(m.import.ids.measures[0][0][0]));
+    stranded.sort();
     assert_eq!(migration_failure(&state, proportional.id), stranded);
 }
 
@@ -2638,4 +2640,163 @@ fn an_undo_of_a_modify_keeps_a_pitch_added_since_in_both_modes() {
         holds_with_spelling(&m, &authored, m.q(0), pitch),
         "the restored quarter keeps the added pitch and its spelling"
     );
+}
+
+/// A clef or key change is written at a musical position, so a region out of
+/// musical time takes none: `SetClef` and `SetKeySignature` there, and a
+/// `CreateStaffInstance` carrying such a change, are refused
+/// `WrongRegionTimeModel`, and a live change strands a migration of its
+/// region out of musical time, which conflicts naming the instance, in both
+/// modes. Before reduction version 3 each applied and left a change anchored
+/// by a musical offset the region no longer admits (`AnchorOffsetModel`).
+#[test]
+fn a_clef_or_key_in_a_region_out_of_musical_time_is_refused_in_both_modes() {
+    use epiphany_core::{Clef, ClefChange, ClefShape, KeySignature, StaffInstanceId, TimeAnchor};
+    use epiphany_ops::{CreateRegionOp, CreateStaffInstanceOp, SetClefOp, SetKeySignatureOp};
+    let m = Measure::new();
+    let staff = m.import.ids.staves[0][0];
+    let alto = Clef {
+        shape: ClefShape::C,
+        line: 3,
+        octave_shift: 0,
+    };
+    let made = |counter: u64, region: RegionId| {
+        m.op(
+            A,
+            counter,
+            counter as i64 + 1,
+            &[],
+            primitive(OperationKind::CreateRegion(CreateRegionOp {
+                region: valuegen::region(region),
+            })),
+        )
+    };
+    let instance_op = |counter: u64, seen: &[OperationId], region, instance, clefs| {
+        let mut value = valuegen::staff_instance(instance, staff);
+        value.clef_sequence = clefs;
+        m.op(
+            A,
+            counter,
+            counter as i64 + 1,
+            seen,
+            primitive(OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                region,
+                instance: value,
+            })),
+        )
+    };
+    let clef = |instance| {
+        primitive(OperationKind::SetClef(SetClefOp {
+            instance,
+            offset: RationalTime::zero(),
+            clef: Some(alto),
+        }))
+    };
+    let key = |instance| {
+        primitive(OperationKind::SetKeySignature(SetKeySignatureOp {
+            instance,
+            offset: RationalTime::zero(),
+            key: KeySignature::new(2),
+        }))
+    };
+
+    // After the migration: a clef, a key and an instance carrying a clef in
+    // musical time are refused.
+    let region = RegionId::new(A, 1100);
+    let instance = StaffInstanceId::new(A, 1101);
+    let create = made(0, region);
+    let quiet = instance_op(1, &[create.id], region, instance, Vec::new());
+    let migrated = m.op(
+        A,
+        2,
+        3,
+        &[quiet.id],
+        m.migrate_region(region, valuegen::proportional_model()),
+    );
+    let set_clef = m.op(A, 3, 4, &[migrated.id], clef(instance));
+    let set_key = m.op(A, 4, 5, &[migrated.id], key(instance));
+    // The carrying instance goes into a second region, the first already
+    // manifesting the staff.
+    let other = RegionId::new(A, 1103);
+    let create_other = m.op(
+        A,
+        5,
+        6,
+        &[set_key.id],
+        primitive(OperationKind::CreateRegion(CreateRegionOp {
+            region: valuegen::region(other),
+        })),
+    );
+    let migrated_other = m.op(
+        A,
+        6,
+        7,
+        &[create_other.id],
+        m.migrate_region(other, valuegen::proportional_model()),
+    );
+    let carried = vec![ClefChange {
+        anchor: TimeAnchor::Region {
+            id: other,
+            edge: epiphany_core::RegionEdge::Start,
+            offset: epiphany_core::AnchorOffset::Musical(MusicalDuration::zero()),
+        },
+        clef: alto,
+    }];
+    let second = instance_op(
+        7,
+        &[migrated_other.id],
+        other,
+        StaffInstanceId::new(A, 1102),
+        carried,
+    );
+    let state = m.agree(
+        "a clef, a key and an instance in a proportional region",
+        &[
+            create,
+            quiet,
+            migrated.clone(),
+            set_clef.clone(),
+            set_key.clone(),
+            create_other,
+            migrated_other.clone(),
+            second.clone(),
+        ],
+    );
+    assert_eq!(effect(&state, migrated.id), Some(OperationEffect::Applied));
+    assert_eq!(
+        effect(&state, migrated_other.id),
+        Some(OperationEffect::Applied)
+    );
+    for op in [&set_clef, &set_key, &second] {
+        assert_eq!(
+            effect(&state, op.id),
+            refused(PreconditionFailureReason::WrongRegionTimeModel)
+        );
+    }
+
+    // Before the migration: a live clef, or key, strands it.
+    let changes: [&dyn Fn(StaffInstanceId) -> OperationPayload; 2] = [&clef, &key];
+    for (n, change) in changes.into_iter().enumerate() {
+        let region = RegionId::new(A, 1110 + n as u64);
+        let instance = StaffInstanceId::new(A, 1120 + n as u64);
+        let create = made(0, region);
+        let quiet = instance_op(1, &[create.id], region, instance, Vec::new());
+        let set = m.op(A, 2, 3, &[quiet.id], change(instance));
+        let migrated = m.op(
+            A,
+            3,
+            4,
+            &[set.id],
+            m.migrate_region(region, valuegen::proportional_model()),
+        );
+        let state = m.agree(
+            "a migration a clef or key strands",
+            &[create, quiet, set.clone(), migrated.clone()],
+        );
+        assert_eq!(effect(&state, set.id), Some(OperationEffect::Applied));
+        assert_eq!(
+            migration_failure(&state, migrated.id),
+            vec![TypedObjectId::StaffInstance(instance)]
+        );
+    }
 }
