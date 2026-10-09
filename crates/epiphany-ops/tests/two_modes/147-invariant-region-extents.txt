@@ -1,6 +1,6 @@
 # class: invariant Invariant(RegionExtents: a region created at the place of one its author's view did not hold live, seen deleted by a delete the merged history refuses
 # expect: deferred
-# deferred: a region created where its author's own delete left none, the delete refused for a concurrent fill (D50); refusing the create needs region time extents resolved in base-free reduction
+# deferred: a region created where its author's own delete left none, the delete refused for a concurrent fill (D50); refusing the create needs region time extents resolved in base-free reduction, which X5 brings, closing the class (D52)
 # found: seed 0xc4a39aba, 64 authored, at the checkpoint's generator; minimized from 106 to 7 envelopes
 (envelope #x00000000000000010000000000000000 #x00000000000000000000000000000001 (stamp 3 0 #x00000000000000010000000000000000) (causal () ()) () (primitive (create-instrument (instrument #x00000000000000010000000000000001 "instrument-1" () () #x () (clef g 2 0) (staff-line-configuration 5 #x000000000000f03f solid ()) ()))))
 (envelope #x00000000000000010000000000000001 #x00000000000000000000000000000001 (stamp 4 0 #x00000000000000010000000000000001) (causal ((#x0000000000000001 0)) ()) () (primitive (create-staff (staff #x00000000000000010000000000000002 "staff-2" () #x00000000000000010000000000000001 (staff-line-configuration 5 #x000000000000f03f solid ()) () (clef g 2 0)))))

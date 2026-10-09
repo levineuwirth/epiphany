@@ -395,13 +395,18 @@ fn compare(
     out
 }
 
-/// The deferred class (D48, D50, D51): a `RegionExtents` violation between
-/// two regions at one time extent where one was created at the place of the
-/// other while its author's view did not hold the other live. Refusing that
-/// create needs region time extents resolved in base-free reduction. Three
-/// causes, each named apart: [`REGION_NEVER_SEEN`], [`REGION_SEEN_DELETED`]
-/// and [`REGION_SEEN_UNDONE`]; any other overlap keeps the invariant's plain
-/// class, which nothing excepts.
+/// The deferred class (D48, D50 to D52) is every `RegionExtents` overlap made
+/// by creating or filling regions, whatever its cause and however many
+/// authors: read from the graph, two regions whose time extents overlap, each
+/// holding a live instance of a common staff (`overlap_made_by_regions`).
+/// Refusing a region's creation or fill where it would overlap one the merged
+/// history keeps needs region extents compared in both modes; X5 does so and
+/// closes the class. The causes the classifier knows are named apart
+/// ([`REGION_NEVER_SEEN`], [`REGION_SEEN_DELETED`], [`REGION_SEEN_UNDONE`]),
+/// the rest under one general name ([`REGION_OVERLAP`]). An overlap of
+/// another making (a region's staff extent naming a staff it holds no live
+/// instance of) keeps the invariant's plain class, which nothing excepts.
+/// This constant is the prefix the three named causes share.
 pub const DEFERRED_REGIONS: &str = "invariant Invariant(RegionExtents: a region created at the place of one its author's view did not hold live";
 
 /// The deferred class's first cause (D48): two authors each created a region at
@@ -419,9 +424,18 @@ pub const REGION_SEEN_DELETED: &str = "invariant Invariant(RegionExtents: a regi
 /// its place.
 pub const REGION_SEEN_UNDONE: &str = "invariant Invariant(RegionExtents: a region created at the place of one its author's view did not hold live, seen undone by an undo the merged history blocks";
 
-/// Whether `class` is one of the deferred class's causes.
+/// The deferred class's general name (D52): an overlap made by creating or
+/// filling regions of a cause the classifier does not name, one author's
+/// direct overlap among them.
+pub const REGION_OVERLAP: &str = "invariant Invariant(RegionExtents: two regions created or filled to overlap in time and staff, by a cause not named";
+
+/// Whether `class` is the deferred class, by one of its names; it is closed
+/// by X5 (D52).
 pub fn deferred(class: &str) -> bool {
-    class == REGION_NEVER_SEEN || class == REGION_SEEN_DELETED || class == REGION_SEEN_UNDONE
+    class == REGION_NEVER_SEEN
+        || class == REGION_SEEN_DELETED
+        || class == REGION_SEEN_UNDONE
+        || class == REGION_OVERLAP
 }
 
 fn invariant_findings(
@@ -440,7 +454,7 @@ fn invariant_findings(
                     epiphany_core::GraphInvariant::RegionExtents
                 )
             )
-            .then(|| region_cause(history, effects, &violation.witness))
+            .then(|| deferred_region_cause(history, effects, score, &violation.witness))
             .flatten();
             let class = match named {
                 Some(cause) => String::from(cause),
@@ -534,6 +548,63 @@ fn collapse_lists(chars: &[char], at: &mut usize, close: Option<char>) -> String
     items.join(", ")
 }
 
+/// The regions a `RegionExtents` witness names, in order.
+fn witness_regions(witness: &str) -> Vec<RegionId> {
+    witness
+        .match_indices("RegionId(")
+        .filter_map(|(at, tag)| {
+            let digits = witness.get(at + tag.len()..at + tag.len() + 33)?;
+            let (replica, counter) = digits.split_once(':')?;
+            Some(RegionId::new(
+                ReplicaId(u64::from_str_radix(replica, 16).ok()?),
+                u64::from_str_radix(counter, 16).ok()?,
+            ))
+        })
+        .collect()
+}
+
+/// Whether a `RegionExtents` witness is an overlap made by creating or
+/// filling regions (D52), read from the graph: it names two regions, both in
+/// `score`, whose time extents overlap (where both are wall-clock; the
+/// invariant has judged any other), each holding a live staff instance of a
+/// common staff. A staff extent naming a staff of no live instance is another
+/// making.
+fn overlap_made_by_regions(score: &Score, witness: &str) -> bool {
+    let [a, b] = witness_regions(witness)[..] else {
+        return false;
+    };
+    let region = |id: RegionId| score.canvas.regions.iter().find(|r| r.id == id);
+    let (Some(a), Some(b)) = (region(a), region(b)) else {
+        return false;
+    };
+    let wall = |anchor: &epiphany_core::TimeAnchor| match anchor {
+        epiphany_core::TimeAnchor::WallClock { time } => Some(time.0),
+        _ => None,
+    };
+    let times = |r: &Region| Some((wall(&r.time_extent.start)?, wall(&r.time_extent.end)?));
+    if let (Some((a0, a1)), Some((b0, b1))) = (times(a), times(b)) {
+        if !(a0 < b1 && b0 < a1) {
+            return false;
+        }
+    }
+    let staves =
+        |r: &Region| -> BTreeSet<StaffId> { r.staff_instances().iter().map(|i| i.staff).collect() };
+    !staves(a).is_disjoint(&staves(b))
+}
+
+/// The deferred class's name for a `RegionExtents` witness, if it is in the
+/// class (`overlap_made_by_regions`): the cause the classifier knows
+/// ([`region_cause`]), or the general name.
+fn deferred_region_cause(
+    history: &[OperationEnvelope],
+    effects: &BTreeMap<OperationId, OperationEffect>,
+    score: &Score,
+    witness: &str,
+) -> Option<&'static str> {
+    overlap_made_by_regions(score, witness)
+        .then(|| region_cause(history, effects, witness).unwrap_or(REGION_OVERLAP))
+}
+
 /// The named cause of a `RegionExtents` witness naming two regions, if it is
 /// one: both created by envelopes of `history` at one time extent, and either
 /// neither create in the other's causal past (never seen), or the later
@@ -547,17 +618,7 @@ fn region_cause(
     effects: &BTreeMap<OperationId, OperationEffect>,
     witness: &str,
 ) -> Option<&'static str> {
-    let ids: Vec<RegionId> = witness
-        .match_indices("RegionId(")
-        .filter_map(|(at, tag)| {
-            let digits = witness.get(at + tag.len()..at + tag.len() + 33)?;
-            let (replica, counter) = digits.split_once(':')?;
-            Some(RegionId::new(
-                ReplicaId(u64::from_str_radix(replica, 16).ok()?),
-                u64::from_str_radix(counter, 16).ok()?,
-            ))
-        })
-        .collect();
+    let ids = witness_regions(witness);
     let [a, b] = ids.as_slice() else {
         return None;
     };
@@ -3069,6 +3130,53 @@ mod tests {
             witness_shape("anchor Region { id: RegionId(0000000000000001:0000000000000002), edge: Start } offset"),
             "anchor Region { id: RegionId, edge: Start } offset"
         );
+    }
+
+    /// An overlap of another making stays out of the deferred class (D52): the
+    /// never-seen history's graph, its first region's staff instance taken
+    /// out while its staff extent still names the staff (as review 1's plant
+    /// B3 left one), overlaps the second region by a staff it holds no live
+    /// instance of, and every `RegionExtents` finding is the invariant's plain
+    /// class, which nothing excepts. The graph as reduced is the class.
+    #[test]
+    fn an_overlap_of_another_making_is_not_the_deferred_class() {
+        use super::{deferred, empty_base, invariant_findings, OperationSet, RegionContent};
+        let history = super::parse(include_str!(
+            "../../tests/two_modes/110-invariant-region-extents.txt"
+        ))
+        .expect("parses");
+        let mut set = OperationSet::new();
+        set.accept_all(history.iter().cloned());
+        let aware = set.reduce_onto(&empty_base());
+        let effects = aware.state.effects.iter().cloned().collect();
+        let reduced: Vec<String> = invariant_findings(&history, &effects, &aware.score)
+            .into_iter()
+            .map(|f| f.class)
+            .collect();
+        assert_eq!(reduced, vec![super::REGION_NEVER_SEEN]);
+        let mut score = aware.score.clone();
+        let first = score
+            .canvas
+            .regions
+            .iter_mut()
+            .find(|region| !region.staff_instances().is_empty())
+            .expect("a filled region");
+        match &mut first.content {
+            RegionContent::StaffBased(content) => content.staff_instances.clear(),
+            other => panic!("a staff-based region, not {other:?}"),
+        }
+        assert!(!first.staff_extent.staves.is_empty(), "the stale extent");
+        let classes: Vec<String> = invariant_findings(&history, &effects, &score)
+            .into_iter()
+            .map(|f| f.class)
+            .collect();
+        assert!(
+            classes
+                .iter()
+                .any(|c| c.starts_with("invariant Invariant(RegionExtents: ")),
+            "{classes:?}"
+        );
+        assert!(classes.iter().all(|c| !deferred(c)), "{classes:?}");
     }
 
     /// Every view is checked and every class it shows kept (review 1's L2):

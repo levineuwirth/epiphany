@@ -2883,7 +2883,9 @@ create a region over the same time, and each adds a staff instance of one
 staff (history `110`): the regions overlap in time and staff extent
 (`RegionExtents`). Refusing the second needs the two regions' time extents
 compared in both modes, and base-free reduction resolves no anchor. D48
-defers it to when collaboration arrives (the roadmap's decide-list). Its
+deferred it to when collaboration arrives (the roadmap's decide-list); D52
+has since made the class every overlap made by creating or filling regions,
+closed by X5 (below). Its
 history is kept as `# expect: deferred`, with a `# deferred:` line giving the
 reason; `every_committed_history_reduces_as_it_declares` skips it, the
 ignored `every_deferred_history_reduces_alike` requires it to agree (so
@@ -2962,10 +2964,12 @@ cause of the same invariant behind the deferred one. `RegionExtents` is now
 classed apart when its two overlapping regions were each created by an
 envelope of the history at one time extent, neither in the other's causal past
 (`modes::CONCURRENT_REGIONS`, now `REGION_NEVER_SEEN`, below): the deferred cause; any other overlap keeps the
-plain class, which nothing excepts. History `110` takes the named class.
+plain class, which nothing excepts (until D52 read the class by its
+mechanism, closed by X5, below). History `110` takes the named class.
 Every `RegionExtents` finding of the million-history run, minimized, is two
 regions created concurrently at one extent. Locked by
-`a_region_overlap_its_author_saw_is_not_the_deferred_class`, which makes the
+`a_region_overlap_its_author_saw_is_not_the_deferred_class` (since D52
+`…_is_the_deferred_class`, below), which makes the
 second region's author have seen the first and requires the plain class (the
 concurrency test dropped from the classification, it fails); with the
 classification never naming the cause, it and the CI budget fail.
@@ -3159,7 +3163,9 @@ as does a region created where its author's undo of the region's
 transaction, blocked in the merged history by a concurrent fill, left none
 (`a_region_created_where_its_authors_blocked_undo_left_none_is_not_deferred`,
 now `…_is_deferred`): a third cause in the same family, which the owner had
-not then ruled into the class, so it was not excepted (D51 has since, below).
+not then ruled into the class, so it was not excepted (D51 has since, below;
+and D52 has made the class every overlap made by creating or filling regions,
+the seen-live overlap among them, closed by X5).
 Review 1's plant B3, an overlap from a `DeleteStaffInstance` leaving its
 staff in the region's extent, still fails the CI budget. Mutations: the
 seen-deleted cause never named (its test and the
@@ -3268,7 +3274,8 @@ concurrent fill. It needs concurrent authors and the deferred fix, refusing
 the create by region extents base-free reduction cannot yet resolve, so the
 class now holds three causes, never seen (`REGION_NEVER_SEEN`), seen deleted
 (`REGION_SEEN_DELETED`) and seen undone (`REGION_SEEN_UNDONE`), and nothing
-else. `modes::deferred` names the third as it names the other two, and its
+else (until D52, below: the class is now every overlap made by creating or
+filling regions, closed by X5). `modes::deferred` names the third as it names the other two, and its
 class takes the class's name like theirs (`… did not hold live, seen undone
 by an undo the merged history blocks`). History `150` is `# expect: deferred`
 with its reason, so it must still fail as its class in the committed suite,
@@ -3455,3 +3462,40 @@ tie check's value read for a note alone (and `159` splits), the in-place write
 for a note alone (likewise), the delete leaving the trajectory, the
 whole-event write keeping a deleted pitch, the base-free record for a note
 alone, and `graph_pitch_value` for a note alone.
+
+**The deferred region class, by its mechanism (D52).** The class had been a
+list of causes, each ruled in by name (D48, D50, D51), and review 2 found the
+list could not hold: the classifier's later causes test no concurrency, so one
+author's interleaved transaction falls in them (its L1); the reducer refuses no
+overlapping region, so one author can place a region where its view holds one
+and fill both (L2); and a delete an equivocation resolved away is another
+route to the same overlap, which it named for the collaboration ledger. Each
+waits on one fix, refusing a region's creation or fill where it would overlap
+a region the merged history keeps, by extents compared in both modes. The
+owner ruled the class to be every overlap made by creating or filling
+regions, whatever its cause and however many authors, and moved its fix from
+"when collaboration arrives" to X5, which closes the class. The classifier now
+reads it from the graph (`overlap_made_by_regions`): a `RegionExtents`
+witness naming two regions whose time extents overlap (compared where both are
+wall-clock; the invariant has judged any other), each holding a live staff
+instance of a common staff. Within the class it still names the causes it
+knows (`region_cause`: never seen, seen deleted, seen undone) and puts the
+rest under one general name (`REGION_OVERLAP`); `modes::deferred` reads all
+four. An overlap of another making, a region's staff extent naming a staff it
+holds no live instance of (review 1's plant B3 leaves one), keeps the plain
+class and fails the CI budget. No reduction verdict or state changes, so
+version 3 takes no bullet. Committed deferred, each with a reason naming D52:
+review 2's ledger history, minimized by hand to its cause with the twin chosen
+(`160`, the general name), a single author's direct overlap (`161`, the
+general name), and L1's two single-author histories (`162`, seen deleted;
+`163`, seen undone). The seen-live test takes its positive form
+(`a_region_overlap_its_author_saw_is_the_deferred_class`, the general name),
+and the two cause tests' fill-seen and cause-gone cases, which were plain, are
+the general name. The cost until X5: the fuzz cannot see a region overlap made
+by creating or filling regions, whatever its cause. Locked by those tests, by
+`an_overlap_of_another_making_is_not_the_deferred_class` (the never-seen
+history's graph with one region's instance taken out and its staff extent
+kept: every `RegionExtents` finding plain) and by the committed suite.
+Mutations: every `RegionExtents` class deferred (the another-making test
+fails), and the general name dropped, only the named causes deferred (the
+single author's history `161` fails the committed suite).

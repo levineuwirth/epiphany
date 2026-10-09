@@ -98,12 +98,6 @@ fn committed() -> Vec<Committed> {
         .collect()
 }
 
-/// Whether `class` is a `RegionExtents` finding of a cause other than the
-/// deferred ones: the invariant's class, with its witness's shape.
-fn plain_region_extents(class: &str) -> bool {
-    class.starts_with("invariant Invariant(RegionExtents: ") && !modes::deferred(class)
-}
-
 #[test]
 fn every_committed_history_reduces_as_it_declares() {
     let all = committed();
@@ -143,20 +137,20 @@ fn every_committed_history_reduces_as_it_declares() {
     }
 }
 
-/// A region created at the place of one its author's view did not hold live
-/// is deferred (owner's rulings D48, D50 and D51): two authors each create a
-/// region over the same time and staves, neither having seen the other's, or
-/// an author creates one where its own delete of a region, refused in the
-/// merged history for a concurrent fill, or its own undo of the region's
-/// transaction, blocked in the merged history for a concurrent fill, left
-/// none in its view. Refusing the create needs the regions' time extents
-/// compared in both modes, which needs anchors resolved in base-free
-/// reduction. Wanted when collaboration arrives; until then the histories are
-/// kept and run here.
+/// Every region overlap made by creating or filling regions is deferred
+/// (owner's rulings D48 and D50 to D52), whatever its cause and however many
+/// authors: two authors each creating a region over the same time and staves,
+/// neither having seen the other's; an author creating one where its own
+/// delete of a region, refused in the merged history, or its own undo of the
+/// region's transaction, blocked there, left none in its view; or an author
+/// placing one where its view holds one. Refusing a region's creation or fill
+/// where it would overlap one the merged history keeps needs region extents
+/// compared in both modes, which X5 brings, closing the class; until then the
+/// histories are kept and run here.
 #[test]
-#[ignore = "a region created at the place of one its author's view did not hold \
-            live is deferred (D48, D50, D51): refusing it needs region time \
-            extents resolved in base-free reduction"]
+#[ignore = "every region overlap made by creating or filling regions is deferred \
+            (D48, D50 to D52) until X5 refuses it by region extents compared in \
+            both modes"]
 fn every_deferred_history_reduces_alike() {
     let deferred: Vec<Committed> = committed()
         .into_iter()
@@ -225,12 +219,13 @@ fn the_ci_budget_authors_and_applies_every_kind() {
     assert!(missing.is_empty(), "{missing:#?}");
 }
 
-/// The deferred class is named apart from the invariant's others, so the
-/// exception covers it alone: the never-seen history, its second region's
-/// author made to have seen the first region's create, still overlaps them,
-/// and is classed `RegionExtents` plainly, which nothing excepts.
+/// The deferred class is read by its mechanism (D52), not its authors: the
+/// never-seen history, its second region's author made to have seen the
+/// first region's create, still overlaps them, an overlap one author makes
+/// directly, and is in the class under its general name, the cause being none
+/// the classifier names.
 #[test]
-fn a_region_overlap_its_author_saw_is_not_the_deferred_class() {
+fn a_region_overlap_its_author_saw_is_the_deferred_class() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/two_modes/110-invariant-region-extents.txt");
     let text = std::fs::read_to_string(path).expect("readable");
@@ -252,23 +247,21 @@ fn a_region_overlap_its_author_saw_is_not_the_deferred_class() {
         .into_iter()
         .map(|f| f.class)
         .collect();
-    assert!(
-        classes.iter().any(|c| plain_region_extents(c)),
-        "{classes:?}"
-    );
-    assert!(classes.iter().all(|c| !modes::deferred(c)), "{classes:?}");
+    assert_eq!(classes, vec![modes::REGION_OVERLAP], "{classes:?}");
+    assert!(modes::deferred(modes::REGION_OVERLAP));
     let unchanged = modes::findings(&modes::parse(&text).expect("parses"));
     assert!(unchanged
         .iter()
         .any(|f| f.class == modes::REGION_NEVER_SEEN));
 }
 
-/// The deferred class's second cause (D50) is named apart too, and holds only
+/// The deferred class's second cause (D50) is named apart, and holds only
 /// where its author's view did not hold the region live because of its own
 /// delete, which the merged history refuses: the committed history is so
 /// classed; with the second create's author having also seen the concurrent
 /// fill, so that its view refused the delete too and held the region, or
-/// with the delete gone, the overlap is classed plainly.
+/// with the delete gone, the overlap is in the class under its general name
+/// (D52).
 #[test]
 fn a_region_created_where_its_authors_refused_delete_left_none_is_deferred() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -281,9 +274,7 @@ fn a_region_created_where_its_authors_refused_delete_left_none_is_deferred() {
             .map(|f| f.class)
             .collect()
     };
-    let plain = |found: &[String]| {
-        found.iter().any(|c| plain_region_extents(c)) && found.iter().all(|c| !modes::deferred(c))
-    };
+    let general = |found: &[String]| found == [modes::REGION_OVERLAP];
     let history = modes::parse(&text).expect("parses");
     let found = classes(&history);
     assert!(
@@ -301,7 +292,7 @@ fn a_region_created_where_its_authors_refused_delete_left_none_is_deferred() {
          (causal ((#x0000000000000001 3) (#x0000000000000003 0)) ())",
     );
     let found = classes(&modes::parse(&saw_fill).expect("parses"));
-    assert!(plain(&found), "{found:?}");
+    assert!(general(&found), "{found:?}");
 
     // No delete: the author saw the region live.
     let without: Vec<_> = history
@@ -318,17 +309,17 @@ fn a_region_created_where_its_authors_refused_delete_left_none_is_deferred() {
         .collect();
     assert_eq!(without.len() + 1, history.len());
     let found = classes(&modes::compact(&without));
-    assert!(plain(&found), "{found:?}");
+    assert!(general(&found), "{found:?}");
 }
 
-/// The deferred class's third cause (D51) is named apart too, and holds only
+/// The deferred class's third cause (D51) is named apart, and holds only
 /// where its author's view did not hold the region live because of its own
 /// undo of the region's transaction, which the merged history blocks: an
 /// author undoes the transaction that created a region another author has
 /// concurrently filled, so the merged history keeps the region, and creates a
 /// region in its place. With the second create's author having also seen the
 /// fill, so that its view blocked the undo too and held the region, or with
-/// the undo gone, the overlap is classed plainly.
+/// the undo gone, the overlap is in the class under its general name (D52).
 #[test]
 fn a_region_created_where_its_authors_blocked_undo_left_none_is_deferred() {
     use epiphany_core::{
@@ -465,9 +456,7 @@ fn a_region_created_where_its_authors_blocked_undo_left_none_is_deferred() {
             .map(|f| f.class)
             .collect()
     };
-    let plain = |found: &[String]| {
-        found.iter().any(|c| plain_region_extents(c)) && found.iter().all(|c| !modes::deferred(c))
-    };
+    let general = |found: &[String]| found == [modes::REGION_OVERLAP];
     let found = classes(&history);
     assert!(
         found.iter().any(|c| c == modes::REGION_SEEN_UNDONE),
@@ -487,7 +476,7 @@ fn a_region_created_where_its_authors_blocked_undo_left_none_is_deferred() {
         })
         .collect();
     let found = classes(&saw_fill);
-    assert!(plain(&found), "{found:?}");
+    assert!(general(&found), "{found:?}");
 
     // No undo: the author saw the region live.
     let without: Vec<OperationEnvelope> = history
@@ -497,5 +486,5 @@ fn a_region_created_where_its_authors_blocked_undo_left_none_is_deferred() {
         .collect();
     assert_eq!(without.len() + 1, history.len());
     let found = classes(&modes::compact(&without));
-    assert!(plain(&found), "{found:?}");
+    assert!(general(&found), "{found:?}");
 }
