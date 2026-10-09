@@ -5202,3 +5202,185 @@ fn a_migration_admits_an_event_as_its_targets_discipline_does_in_both_modes() {
         }
     }
 }
+
+/// A whole-event modify mints each pitch its value carries that no operation
+/// has minted, in both modes, as an insert mints its event's pitches: the
+/// pitch is live, operations naming it apply, the tie check reads it, and an
+/// undo of the modify's transaction removes it. One author each time: a
+/// quarter written as a chord with a new pitch, which is then respelt,
+/// transposed and deleted; a tie whose end a modify gives a new pitch, which
+/// gives way; and a chord written with a new pitch in a transaction, undone.
+/// Before reduction version 3's mint the pitch reached the graph alone, every
+/// operation naming it was refused, and the tie stood while its ends' pitches
+/// no longer paired (`TiePairing`).
+#[test]
+fn a_modify_mints_the_pitches_it_carries_in_both_modes() {
+    use epiphany_core::{IdentifiedPitch, PitchId, PitchSpelling, TieClass, TieId};
+    use epiphany_ops::{
+        CreateCrossCuttingOp, CrossCuttingValue, DeleteIdentifiedPitchOp, RespellPitchOp,
+        TransposeOp,
+    };
+    let m = Measure::new();
+    let pitches_of = |i: usize| match &m.quarters[i] {
+        Event::Pitched(e) => e.pitches.clone(),
+        other => panic!("a note, not {other:?}"),
+    };
+    let with_pitch = |i: usize, extra: IdentifiedPitch| {
+        let Event::Pitched(mut note) = m.quarters[i].clone() else {
+            unreachable!("a note");
+        };
+        note.pitches.push(extra);
+        primitive(OperationKind::ModifyEvent(ModifyEventOp {
+            event: Event::Pitched(note),
+        }))
+    };
+    let serial = |payloads: Vec<(OperationPayload, Option<TransactionId>)>| {
+        let mut authored: Vec<OperationEnvelope> = Vec::new();
+        for (counter, (payload, transaction)) in payloads.into_iter().enumerate() {
+            let seen: Vec<OperationId> = authored.last().map(|e| e.id).into_iter().collect();
+            let mut env = m.op(A, counter as u64, counter as i64 + 1, &seen, payload);
+            env.transaction = transaction;
+            authored.push(env);
+        }
+        authored
+    };
+
+    // A chord written with a new pitch, the pitch then edited and deleted.
+    let new = PitchId::new(A, 3100);
+    let authored = serial(vec![
+        (
+            with_pitch(
+                0,
+                IdentifiedPitch {
+                    id: new,
+                    pitch: valuegen::pitch_value_nth(4),
+                },
+            ),
+            None,
+        ),
+        (
+            primitive(OperationKind::RespellPitch(RespellPitchOp {
+                pitch: new,
+                spelling: PitchSpelling::cmn(epiphany_core::CmnNominal::C, 4),
+            })),
+            None,
+        ),
+        (
+            primitive(OperationKind::Transpose(TransposeOp {
+                targets: vec![new],
+                chromatic_steps: 2,
+            })),
+            None,
+        ),
+        (
+            primitive(OperationKind::DeleteIdentifiedPitch(
+                DeleteIdentifiedPitchOp { pitch: new },
+            )),
+            None,
+        ),
+    ]);
+    let state = m.agree("a minted pitch edited", &authored);
+    for op in &authored {
+        assert!(
+            matches!(
+                effect(&state, op.id),
+                Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
+            ),
+            "{:?}: {:?}",
+            op.id,
+            effect(&state, op.id)
+        );
+    }
+    assert!(tombstoned(&state, TypedObjectId::Pitch(new)));
+
+    // A tie whose end a modify gives a new pitch gives way.
+    let tie = TieId::new(A, 3110);
+    let gained = PitchId::new(A, 3111);
+    let start = pitches_of(0)[0].clone();
+    let Event::Pitched(mut unison) = m.quarters[1].clone() else {
+        unreachable!("a note");
+    };
+    unison.pitches[0].pitch = start.pitch.clone();
+    let mut value = valuegen::tie(tie, m.q(0), m.q(1));
+    value.class = TieClass::Standard;
+    let authored = serial(vec![
+        (
+            primitive(OperationKind::ModifyEvent(ModifyEventOp {
+                event: Event::Pitched(unison),
+            })),
+            None,
+        ),
+        (
+            primitive(OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                structure: CrossCuttingValue::Tie(value),
+            })),
+            None,
+        ),
+        (
+            with_pitch(
+                1,
+                IdentifiedPitch {
+                    id: gained,
+                    pitch: valuegen::pitch_value_nth(5),
+                },
+            ),
+            None,
+        ),
+    ]);
+    let state = m.agree("a tie's end given a minted pitch", &authored);
+    assert_eq!(
+        effect(&state, authored[1].id),
+        Some(OperationEffect::Applied)
+    );
+    let Some(OperationEffect::AppliedWithRepair { repairs }) = effect(&state, authored[2].id)
+    else {
+        panic!("{:?}", effect(&state, authored[2].id));
+    };
+    assert!(repairs
+        .iter()
+        .any(|r| r.kind == RepairKind::CascadeDeleted && r.target == TypedObjectId::Tie(tie)));
+    assert!(live(&state, TypedObjectId::Pitch(gained)));
+
+    // A chord written with a new pitch in a transaction, undone.
+    let tx = TransactionId::new(A, 3120);
+    let undone = PitchId::new(A, 3121);
+    let authored = serial(vec![
+        (
+            primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                id: tx,
+                label: String::from("a chord"),
+                category: None,
+            })),
+            Some(tx),
+        ),
+        (
+            with_pitch(
+                2,
+                IdentifiedPitch {
+                    id: undone,
+                    pitch: valuegen::pitch_value_nth(6),
+                },
+            ),
+            Some(tx),
+        ),
+        (
+            OperationPayload::UndoTransaction(UndoTransactionPayload {
+                target: tx,
+                policy: UndoPolicy::StrictInverse,
+            }),
+            None,
+        ),
+    ]);
+    let state = m.agree("a minted pitch undone", &authored);
+    assert!(matches!(
+        effect(&state, authored[2].id),
+        Some(OperationEffect::AppliedWithRepair { .. })
+    ));
+    assert!(tombstoned(&state, TypedObjectId::Pitch(undone)));
+    let mut set = OperationSet::new();
+    set.accept_all(m.import.envelopes.iter().chain(&authored).cloned());
+    let score = set
+        .reduce_onto(&Score::empty(IdentityContext::new(m.import.replica)))
+        .score;
+    assert_eq!(score.events.get(m.q(2)), Some(&m.quarters[2]));
+}

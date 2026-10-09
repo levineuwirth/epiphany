@@ -504,6 +504,12 @@ pub mod vectors;
 ///     anchoring does not admit it, where every aleatoric target was taken to
 ///     admit every event and the migration applied, leaving events in
 ///     coordinates the region no longer admitted (`EventCoordinateModel`).
+///   - a `ModifyEvent` mints each pitch its value carries that no operation
+///     has minted, as an insert mints its event's pitches (live, at its value
+///     in both modes, under the modify's transaction for an undo), where the
+///     pitch reached the graph alone, every operation naming it was refused
+///     `TargetMissing`, and the tie check, reading the ledger, kept a tie
+///     whose end it had joined (`TiePairing`).
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
@@ -576,7 +582,9 @@ pub mod vectors;
 ///   `a_pitch_an_event_of_any_kind_comes_to_hold_makes_it_a_note_in_both_modes`;
 ///   for a migration's target discipline,
 ///   `a_migration_admits_an_event_as_its_targets_discipline_does_in_both_modes`
-///   and, over a base, `migration_judges_a_bases_events_by_each_aleatoric_discipline`.
+///   and, over a base, `migration_judges_a_bases_events_by_each_aleatoric_discipline`;
+///   for a modify's new pitches,
+///   `a_modify_mints_the_pitches_it_carries_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

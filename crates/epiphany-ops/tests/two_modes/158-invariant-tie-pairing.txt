@@ -1,5 +1,6 @@
 # class: invariant Invariant(TiePairing: tie TieId (implicit pairing): # start vs # end pitches
-# expect: split
+# expect: agree
+# agrees since: a modify mints the pitches it carries
 # found: seed 0x4a000a, 64 authored (the CI budget's second chunk); minimized from 114 to 10 envelopes
 (envelope #x00000000000000010000000000000000 #x00000000000000000000000000000001 (stamp 1 0 #x00000000000000010000000000000000) (causal () ()) () (primitive (create-staff-group (staff-group #x00000000000000010000000000000000 (some "staff-group-0") grand-staff ()))))
 (envelope #x00000000000000010000000000000001 #x00000000000000000000000000000001 (stamp 4 0 #x00000000000000010000000000000001) (causal ((#x0000000000000001 0)) ()) () (primitive (create-instrument (instrument #x00000000000000010000000000000003 "instrument-3" () () #x () (clef g 2 0) (staff-line-configuration 5 #x000000000000f03f solid ()) ()))))

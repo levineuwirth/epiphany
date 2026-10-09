@@ -9330,6 +9330,7 @@ impl<'a> Reducer<'a> {
         // Before it the value's pitches replaced the event's in the graph
         // alone.
         let removed = self.remove_observed_pitches(env, &op.event);
+        self.mint_carried_pitches(env, &op.event);
         let value = self.written_event(&op.event);
         self.apply_event_value(&value);
         with_repairs(
@@ -9342,6 +9343,37 @@ impl<'a> Reducer<'a> {
                 })
                 .collect(),
         )
+    }
+
+    /// A whole-event modify mints each pitch its value carries that no
+    /// operation has minted, as an insert mints its event's pitches: live, in
+    /// the event's pitch index, at its value in both modes and under the
+    /// modify's transaction for an undo (reduction version 3: before it the
+    /// pitch reached the graph alone, which the ledger never held, so no
+    /// operation could name it and the tie check could not read it,
+    /// `TiePairing`). A pitch a base holds is live already; a system-derived
+    /// one was refused above.
+    fn mint_carried_pitches(&mut self, env: &OperationEnvelope, value: &Event) {
+        let event = value.id();
+        let mut carried = Vec::new();
+        value.collect_identified_pitches(&mut carried);
+        for ip in carried {
+            let p_obj = TypedObjectId::Pitch(ip.id);
+            if self.objects.contains_key(&p_obj) {
+                continue;
+            }
+            self.objects.insert(p_obj, ObjectState::Live);
+            self.minted_by.insert(p_obj, env.id);
+            self.note_minted(env, p_obj);
+            self.pitch_modify_chain
+                .entry(ip.id)
+                .or_insert_with(WriteChain::new)
+                .seed(ip.pitch.clone());
+            if self.graph.is_none() {
+                self.pitch_values.insert(ip.id, ip.pitch.clone());
+            }
+            self.event_pitches.entry(event).or_default().push(ip.id);
+        }
     }
 
     /// Observed-remove for a whole-event modify: removes each live pitch of
@@ -15179,7 +15211,10 @@ mod tests {
         // made. Moved again when a whole-event modify came to follow
         // observed-remove: this stream's modifies leave out pitches their
         // authors saw, which they now remove (the removal disabled, the
-        // previous digest returns).
+        // previous digest returns). Moved again when a whole-event modify
+        // came to mint the pitches it carries that nothing minted: this
+        // stream's modifies carry such pitches, now live (the mint disabled,
+        // the previous digest returns).
         let mut rng = epiphany_determinism::fuzz::SplitMix64::new(0xBA5E);
         let envelopes = crate::fuzz::gen_envelope_set(&mut rng, 200);
         let mut set = OperationSet::new();
@@ -15189,7 +15224,7 @@ mod tests {
         let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
             hex,
-            "a02f2ea62441ad61ddd66f1412883b56efa41ea4d30ef3ff1ff2d5444fbac737"
+            "ad881d02f3aeaecaedebd6277a3bc0b1af80373c8659962f3b0412da4fa47841"
         );
     }
 

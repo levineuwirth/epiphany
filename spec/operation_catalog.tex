@@ -805,7 +805,8 @@ time supersedes an undo's restoration of a value written in musical time into
 its region. An undo's restoration naming an object tombstoned since is
 superseded by its tombstoning, as one naming a deleted endpoint was, a
 cross-cutting value's staves and measure or region anchors included. A
-migration judges each of its region's events against the target's coordinate
+whole-event modification mints a pitch it carries that nothing minted, where
+the pitch reached the graph alone. A migration judges each of its region's events against the target's coordinate
 discipline as invariant~4 does, so an aleatoric target anchored in wall-clock
 time conflicts on an event in musical time, where it applied and left the
 event in coordinates the region no longer admitted.
@@ -1105,7 +1106,11 @@ over a note holding a pitch its author never saw becomes a note of that pitch,
 a trajectory's own pitches first (for every kind but a rest and an unpitched
 event since version~0.19.0, before which the graph dropped the kept pitch). A pitch the
 value carries that a delete or undo has tombstoned stays out of the event
-(delete wins). A pitch leaves an event only by \texttt{DeleteIdentifiedPitch},
+(delete wins). A pitch the value carries that no operation has minted is
+minted by the modification, as an insert mints its event's pitches: live, its
+value held in both modes, and under the modification's transaction, so an
+undo of it removes the pitch (since version~0.19.0, before which the pitch
+reached the graph alone and every operation naming it was refused). A pitch leaves an event only by \texttt{DeleteIdentifiedPitch},
 \texttt{DeleteEvent}, a modification whose author saw it, or an undo of its
 insert.
 

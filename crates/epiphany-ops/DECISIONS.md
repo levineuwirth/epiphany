@@ -3405,3 +3405,25 @@ graph held and the ledger never minted, so the tie check could not see it
 history `158`); and a tie on a chord a concurrent author wrote as a
 trajectory, whose pitches base-free reduction read and wrote and the graph
 did not (an effect split, seed `0x7e240b63` at 24 authored, history `159`).
+
+**A whole-event modify mints the pitches it carries (found by the new arms).**
+A `ModifyEvent` carrying a pitch id no operation had minted put the pitch in
+the graph alone, as the previous rounds disclosed: the ledger never held it,
+so every operation naming it was refused `TargetMissing` in both modes, an
+undo did not know it, and the tie check, which reads the ledger's pitches,
+could not see it. The new minting arm found the break at once, one author's:
+a tie, then a modify giving the tie's end a new pitch, after which the graph's
+ends no longer paired and the tie stood (`TiePairing`, history `158`). The
+modify now mints each such pitch as an insert mints its event's pitches
+(`mint_carried_pitches`): live, minted by the modify, in the event's pitch
+index, its write chain seeded and its value held base-free, and recorded under
+the modify's transaction, so an undo of it removes the pitch with the event's
+earlier value. A pitch a base holds is live already and is not minted again;
+a system-derived one is refused before, as P13-K1 ruled. The tie check then
+sees the new pitch and the tie gives way with its repair. The seeded
+canonical-base digest moves: that stream's modifies carry such pitches, now
+live (with the mint disabled the previous digest returns). Locked by
+`a_modify_mints_the_pitches_it_carries_in_both_modes` (a minted pitch respelt,
+transposed and deleted; a tie's end given one; one undone) and history `158`.
+Mutation: the mint skipped (the test fails, `158` splits, and the digest
+returns to its previous pin).
