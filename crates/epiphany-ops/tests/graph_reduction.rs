@@ -480,6 +480,86 @@ fn migration_judges_a_bases_wall_clock_events_from_the_graph() {
     assert_eq!(migration_failure(&result.state, id), events);
 }
 
+/// A base's wall-clock events are judged from the graph against each
+/// aleatoric target's anchoring discipline, as invariant 4 judges them: their
+/// proportional region migrated to an aleatoric model anchored musically
+/// conflicts, naming each, and one anchored in wall-clock time, either way per
+/// event, or freely mixed applies. Before reduction version 3's reading of the
+/// discipline every aleatoric target applied, leaving wall-clock events in a
+/// region anchored musically (`EventCoordinateModel`).
+#[test]
+fn migration_judges_a_bases_events_by_each_aleatoric_discipline() {
+    use epiphany_core::{AleatoricAnchoringDiscipline, AleatoricTimeModel, EventOrderingDAG};
+    let base = epiphany_core::generators::valid_score_rich(110);
+    let region = base
+        .canvas
+        .regions
+        .iter()
+        .find(|region| matches!(region.time_model, RegionTimeModel::Proportional(_)))
+        .expect("the rich score holds a proportional region");
+    let mut events: Vec<TypedObjectId> = region
+        .staff_instances()
+        .iter()
+        .flat_map(|instance| &instance.voices)
+        .flat_map(|voice| voice.events.iter().copied().map(TypedObjectId::Event))
+        .collect();
+    events.sort();
+    assert!(!events.is_empty());
+    for anchoring in [
+        AleatoricAnchoringDiscipline::Musical,
+        AleatoricAnchoringDiscipline::WallClock,
+        AleatoricAnchoringDiscipline::EitherPerEvent,
+        AleatoricAnchoringDiscipline::FreelyMixed,
+    ] {
+        let operation = envelope(
+            61,
+            0,
+            10,
+            CausalContext::new(),
+            None,
+            OperationPayload::Primitive(OperationKind::ChangeRegionTimeModel(
+                ChangeRegionTimeModelOp {
+                    region: region.id,
+                    new_time_model: RegionTimeModel::Aleatoric(AleatoricTimeModel {
+                        ordering: EventOrderingDAG::default(),
+                        anchoring,
+                        bounds: Default::default(),
+                        duration_hint: epiphany_core::WallClockDuration(1),
+                    }),
+                    declared_incompatible: Vec::new(),
+                    remapping: PositionRemapping::PreserveTime,
+                },
+            )),
+        );
+        let id = operation.id;
+        let mut set = OperationSet::new();
+        set.accept(operation);
+
+        let result = set.reduce_onto(&base);
+
+        if anchoring == AleatoricAnchoringDiscipline::Musical {
+            assert_eq!(result.score, base, "{anchoring:?}");
+            assert_eq!(
+                migration_failure(&result.state, id),
+                events,
+                "{anchoring:?}"
+            );
+        } else {
+            assert_eq!(
+                result
+                    .state
+                    .effects
+                    .iter()
+                    .find(|(op, _)| *op == id)
+                    .map(|(_, e)| e),
+                Some(&OperationEffect::Applied),
+                "{anchoring:?}"
+            );
+            assert!(check_invariants(&result.score).is_empty(), "{anchoring:?}");
+        }
+    }
+}
+
 /// A voice promoted during reduction is not among its staff instance's
 /// voices in the ledger index, yet its event lies in the region: a migration
 /// whose remapping misses it and its winner, concurrent with both inserts,

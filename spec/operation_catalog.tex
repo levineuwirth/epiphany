@@ -804,7 +804,11 @@ member of the transaction it names is refused, and a migration out of musical
 time supersedes an undo's restoration of a value written in musical time into
 its region. An undo's restoration naming an object tombstoned since is
 superseded by its tombstoning, as one naming a deleted endpoint was, a
-cross-cutting value's staves and measure or region anchors included.
+cross-cutting value's staves and measure or region anchors included. A
+migration judges each of its region's events against the target's coordinate
+discipline as invariant~4 does, so an aleatoric target anchored in wall-clock
+time conflicts on an event in musical time, where it applied and left the
+event in coordinates the region no longer admitted.
 Two requirement labels are added;
 no payload, discriminant or \texttt{PreconditionFailureReason} changes.
 Accordingly
@@ -1572,8 +1576,11 @@ model. Both reduction modes derive the coordinate-kind incompatibilities from
 the reducer's graph-independent indices, so they agree: the region's events are
 those with a metric placement in the occupancy index, found through its staff
 instances and voices (a voice promoted during reduction through the insert it
-was promoted for), and each is incompatible with a proportional target, and
-with any target when a \texttt{Reassign} leaves it unmapped, or would leave it
+was promoted for), and each is incompatible with a target whose coordinate
+discipline does not admit an event in musical time, read as invariant~4 reads
+an event's coordinates (a proportional target, or an aleatoric one anchored in
+wall-clock time; since version~0.19.0, before which only a proportional target
+was), and with any target when a \texttt{Reassign} leaves it unmapped, or would leave it
 overlapping another event of its voice (invariant~3; since version~0.19.0, the
 migration having applied before it). A target that admits no musical offset
 strands each of the region's live measures as well, named beside the events,
@@ -1585,7 +1592,9 @@ and an applied such migration drops the region's system and page breaks and
 its default and local metric grids (since version~0.19.0). Graph-aware
 reduction also judges, from the graph, the region's events the index does not
 hold (a base's events of another coordinate kind, which base-free reduction
-never has). A migration with incompatible events is refused as below; an
+never has), against the target's discipline as invariant~4 does (an aleatoric
+target by its anchoring discipline since version~0.19.0, before which it was
+taken to admit every event). A migration with incompatible events is refused as below; an
 applied \texttt{Reassign} moves the occupancy index in both modes, and the
 region's new coordinate discipline is recorded in both, so a later insert, move
 or re-anchoring reads the same state in each. Graph-aware reduction keeps each

@@ -38,9 +38,9 @@ use epiphany_core::{
     GestureAnchoring, Instrument, InstrumentId, KeySignature, KeySignatureChange, Measure,
     MeasureId, MeasurePosition, MeterChange, MetricGrid, MusicalDuration, MusicalPosition,
     OperationId, PartDefinition, PartDefinitionId, Pitch, PitchId, PitchSpelling, RationalTime,
-    RegionEdge, RegionId, RegionTimeModel, RepeatStructure, RepeatStructureId, ReplicaId, Score,
-    ScoreMetadata, SpellingAttachment, SpellingDirective, SpellingPrecedence, SpellingScope,
-    SpellingSource, Staff, StaffGroup, StaffGroupId, StaffId, StaffInstance, StaffInstanceId,
+    RegionEdge, RegionId, RepeatStructure, RepeatStructureId, ReplicaId, Score, ScoreMetadata,
+    SpellingAttachment, SpellingDirective, SpellingPrecedence, SpellingScope, SpellingSource,
+    Staff, StaffGroup, StaffGroupId, StaffId, StaffInstance, StaffInstanceId,
     StaffLineConfiguration, TempoMap, TempoSegment, TempoShape, Tie, TieClass, TieId, TimeAnchor,
     TimeSignature, TimeSignatureId, TransactionId, TransposeRefusal, TranspositionInterval,
     TuningContextSettings, TupletId, TypedObjectId, ViewDefinition, ViewId, Voice, VoiceId,
@@ -7282,14 +7282,26 @@ impl<'a> Reducer<'a> {
             }
             crate::payload::PositionRemapping::PreserveTime => None,
         };
-        let proportional = matches!(op.new_time_model, RegionTimeModel::Proportional(_));
+        // The target's coordinate discipline, read as invariant 4 reads an
+        // event's coordinates (`admits_event`): a metric event, at a musical
+        // position for a musical duration, is admitted by a metric target
+        // and by an aleatoric one anchored musically, either way per event
+        // or freely mixed, and by no other.
+        let target = op.new_time_model.coordinate_discipline();
+        let admits_metric = target.admits_event(
+            &EventPosition::Musical(MusicalPosition::origin()),
+            &EventDuration::Musical(MusicalDuration::zero()),
+        );
         // The region's events with a metric placement, from the indices both
         // reduction modes keep, so the two derive one set of incompatible
-        // events: a metric event is incompatible with a proportional target,
-        // and with any target when a `Reassign` leaves it unmapped.
+        // events: a metric event is incompatible with a target that does not
+        // admit it (reduction version 3: before it only a proportional
+        // target, so an aleatoric target anchored in wall-clock time left
+        // the region's events in musical time, `EventCoordinateModel`), and
+        // with any target when a `Reassign` leaves it unmapped.
         let region_events = self.indexed_region_events(op.region);
         for event in region_events.iter().copied() {
-            if proportional || mapped.as_ref().is_some_and(|m| !m.contains(&event)) {
+            if !admits_metric || mapped.as_ref().is_some_and(|m| !m.contains(&event)) {
                 incompatible_events.insert(event);
             }
         }
@@ -7376,18 +7388,7 @@ impl<'a> Reducer<'a> {
                     incompatible_events.insert(*event_id);
                     continue;
                 };
-                let compatible = match &op.new_time_model {
-                    RegionTimeModel::Metric(_) => matches!(
-                        (event.position(), event.duration()),
-                        (EventPosition::Musical(_), EventDuration::Musical(_))
-                    ),
-                    RegionTimeModel::Proportional(_) => matches!(
-                        (event.position(), event.duration()),
-                        (EventPosition::WallClock(_), EventDuration::WallClock(_))
-                    ),
-                    RegionTimeModel::Aleatoric(_) => true,
-                };
-                if !compatible {
+                if !target.admits_event(event.position(), event.duration()) {
                     incompatible_events.insert(*event_id);
                 }
             }
@@ -7399,10 +7400,10 @@ impl<'a> Reducer<'a> {
                         .filter(|event| !mapped.contains(event))
                         .copied(),
                 );
-                if proportional {
+                if !admits_metric {
                     // Reassign carries musical positions in the current
-                    // prototype schema, so it cannot satisfy a proportional
-                    // region's wall-clock coordinate discipline.
+                    // prototype schema, so it cannot satisfy a discipline
+                    // that admits no metric event.
                     incompatible_events.extend(event_ids);
                 }
             }

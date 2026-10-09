@@ -5107,3 +5107,98 @@ fn a_pitch_an_event_of_any_kind_comes_to_hold_makes_it_a_note_in_both_modes() {
         vec![own[0], own[1], pitch]
     );
 }
+
+/// A migration judges a metric event against its target's coordinate
+/// discipline as invariant 4 does, in both modes: a region holding a rest and
+/// no measure, migrated to an aleatoric model of each anchoring discipline,
+/// applies where the discipline admits an event in musical time (anchored
+/// musically, either way per event, or freely mixed) and conflicts naming the
+/// rest where it does not (anchored in wall-clock time). Before reduction
+/// version 3's reading of the discipline every aleatoric target was taken to
+/// admit every event, and one anchored in wall-clock time left the rest in
+/// musical time (`EventCoordinateModel`).
+#[test]
+fn a_migration_admits_an_event_as_its_targets_discipline_does_in_both_modes() {
+    use epiphany_core::{
+        AleatoricAnchoringDiscipline, AleatoricTimeModel, EventOrderingDAG, StaffInstanceId,
+        VoiceId,
+    };
+    use epiphany_ops::{CreateRegionOp, CreateStaffInstanceOp, CreateVoiceOp};
+    let m = Measure::new();
+    for (n, anchoring) in [
+        AleatoricAnchoringDiscipline::Musical,
+        AleatoricAnchoringDiscipline::WallClock,
+        AleatoricAnchoringDiscipline::EitherPerEvent,
+        AleatoricAnchoringDiscipline::FreelyMixed,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let n = n as u64;
+        let region = RegionId::new(A, 3000 + 10 * n);
+        let instance = StaffInstanceId::new(A, 3001 + 10 * n);
+        let voice = VoiceId::new(A, 3002 + 10 * n);
+        let rest = EventId::new(A, 3003 + 10 * n);
+        let mut authored: Vec<OperationEnvelope> = Vec::new();
+        let mut push = |payload: OperationPayload| {
+            let seen: Vec<OperationId> = authored.last().map(|e| e.id).into_iter().collect();
+            let counter = authored.len() as u64;
+            let env = m.op(A, counter, counter as i64 + 1, &seen, payload);
+            authored.push(env.clone());
+            env
+        };
+        push(primitive(OperationKind::CreateRegion(CreateRegionOp {
+            region: valuegen::region(region),
+        })));
+        push(primitive(OperationKind::CreateStaffInstance(
+            CreateStaffInstanceOp {
+                region,
+                instance: valuegen::staff_instance(instance, m.import.ids.staves[0][0]),
+            },
+        )));
+        push(primitive(OperationKind::CreateVoice(CreateVoiceOp {
+            staff_instance: instance,
+            voice: valuegen::voice(voice),
+        })));
+        let entered = push(primitive(OperationKind::InsertEvent(InsertEventOp {
+            staff_instance: instance,
+            event: Event::Rest(Rest {
+                id: rest,
+                voice,
+                position: EventPosition::Musical(MusicalPosition::origin()),
+                duration: m.quarters[0].duration().clone(),
+                vertical_position: None,
+                visible: true,
+            }),
+        })));
+        let migration = push(m.migrate_region(
+            region,
+            RegionTimeModel::Aleatoric(AleatoricTimeModel {
+                ordering: EventOrderingDAG::default(),
+                anchoring,
+                bounds: Default::default(),
+                duration_hint: WallClockDuration(1),
+            }),
+        ));
+        let history = format!("a rest migrated to an aleatoric model anchored {anchoring:?}");
+        let state = m.agree(&history, &authored);
+        assert_eq!(
+            effect(&state, entered.id),
+            Some(OperationEffect::Applied),
+            "{history}"
+        );
+        if anchoring == AleatoricAnchoringDiscipline::WallClock {
+            assert_eq!(
+                migration_failure(&state, migration.id),
+                vec![TypedObjectId::Event(rest)],
+                "{history}"
+            );
+        } else {
+            assert_eq!(
+                effect(&state, migration.id),
+                Some(OperationEffect::Applied),
+                "{history}"
+            );
+        }
+    }
+}

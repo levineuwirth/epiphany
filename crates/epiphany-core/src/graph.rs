@@ -512,6 +512,18 @@ impl CoordinateDiscipline {
                 | CoordinateDiscipline::Aleatoric(A::Musical | A::EitherPerEvent | A::FreelyMixed)
         )
     }
+
+    /// Whether an event placed at `position` for `duration` keeps invariant 4
+    /// (`EventCoordinateModel`) in a region of this discipline: the
+    /// invariant's own reading, shared with reduction, so a migration judges
+    /// an event as the invariant will.
+    pub fn admits_event(
+        &self,
+        position: &crate::time::EventPosition,
+        duration: &crate::time::EventDuration,
+    ) -> bool {
+        crate::invariants::coordinates_ok(position, duration, *self)
+    }
 }
 
 impl RegionTimeModel {

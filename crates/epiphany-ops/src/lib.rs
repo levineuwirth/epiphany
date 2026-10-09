@@ -495,6 +495,15 @@ pub mod vectors;
 ///     indeterminate, trajectory, graphic or cue event kept its kind and the
 ///     graph dropped the pitch the ledger held live (`SpellingScopeResolves`
 ///     once the pitch was spelt). Graph state only.
+///   - a `ChangeRegionTimeModel` judges each of its region's events against
+///     the target's coordinate discipline as invariant 4 does
+///     (`CoordinateDiscipline::admits_event`, shared with the invariant
+///     check): a metric event the index holds is incompatible with an
+///     aleatoric target anchored in wall-clock time as with a proportional
+///     one, and an event only the graph holds with an aleatoric target whose
+///     anchoring does not admit it, where every aleatoric target was taken to
+///     admit every event and the migration applied, leaving events in
+///     coordinates the region no longer admitted (`EventCoordinateModel`).
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
@@ -564,7 +573,10 @@ pub mod vectors;
 ///   for a cross-cutting value's every referent,
 ///   `an_undo_restores_no_spanner_naming_an_object_removed_since_in_both_modes`;
 ///   for a pitch in an event of any kind,
-///   `a_pitch_an_event_of_any_kind_comes_to_hold_makes_it_a_note_in_both_modes`.
+///   `a_pitch_an_event_of_any_kind_comes_to_hold_makes_it_a_note_in_both_modes`;
+///   for a migration's target discipline,
+///   `a_migration_admits_an_event_as_its_targets_discipline_does_in_both_modes`
+///   and, over a base, `migration_judges_a_bases_events_by_each_aleatoric_discipline`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

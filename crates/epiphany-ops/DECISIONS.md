@@ -3353,3 +3353,28 @@ concurrent with the pitch first; and a trajectory holding pitches of its own)
 and histories `153` to `156`. Mutations: the insert path keeping the old kinds
 only (the one-author case fails, and `153`), the write path likewise (the
 pitch-first case), and a trajectory's own pitches left out (its case).
+
+**A migration admits an event as invariant 4 does (M3).** A migration marked
+a region's metric event incompatible only with a proportional target (or one
+a `Reassign` left unmapped or overlapping), and judged the graph's other
+events compatible with any aleatoric target (`RegionTimeModel::Aleatoric(_) =>
+true`). An aleatoric model anchored in wall-clock time admits no event in
+musical time, so one author's migration of a region holding a rest and no
+measure (a measure would have stranded it) applied and left the rest in
+musical time (`EventCoordinateModel`); the catalog's sentence said the same.
+The migration now judges every event against the target's coordinate
+discipline by invariant 4's own reading, which the core exposes as
+`CoordinateDiscipline::admits_event` (the invariant check calls it too, so the
+two cannot part): an indexed event, at a musical position for a musical
+duration in both modes, is incompatible with a target that does not admit
+such an event, and an event only the graph holds (a base's) by its own
+coordinates. A `Reassign` into a target admitting no event in musical time
+makes the graph's events incompatible, as it did for a proportional target. A
+metric, musically anchored, either-way or freely mixed target changes nothing.
+Locked by `a_migration_admits_an_event_as_its_targets_discipline_does_in_both_modes`
+(each of the four anchoring disciplines, both modes), by
+`migration_judges_a_bases_events_by_each_aleatoric_discipline` (a base's
+wall-clock events against each, graph-aware) and history `157`. Mutations: the
+indexed events judged by a proportional target alone (the wall-clock case
+fails, and `157`), and the graph's events taken as admitted by any aleatoric
+target (the base test's musical case).
