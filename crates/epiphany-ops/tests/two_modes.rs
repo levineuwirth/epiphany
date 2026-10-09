@@ -8,11 +8,12 @@
 //! whether the history must now reduce alike (`agree`) or still shows that
 //! failure (`split`), for a failure not yet fixed. A fix flips its histories
 //! from `split` to `agree`; a `split` history whose failure has gone fails
-//! here until it is flipped, so a fix cannot pass unrecorded. A failure the
+//! here until it is flipped, so a fix cannot pass unrecorded, and one that
+//! shows a second failure beside its own fails too. A failure the
 //! owner has deferred is `# expect: deferred`, with a `# deferred:` line
 //! giving the reason: its class must be a cause the owner deferred by name
-//! (`modes::deferred`), its history must still fail as its class, as a
-//! `split` one does, and it is run by an ignored test, which requires it to
+//! (`modes::deferred`), its history must still fail as its class alone, as
+//! a `split` one does, and it is run by an ignored test, which requires it to
 //! agree, so `cargo test -- --ignored` shows it failing until the fix lands.
 //!
 //! The CI budget runs a small number of generated histories, in two chunks of
@@ -98,6 +99,13 @@ fn committed() -> Vec<Committed> {
         .collect()
 }
 
+/// Whether `found` shows `class` and nothing else: a history declared to
+/// split or deferred must show exactly its declared failure, so a second
+/// break joining it does not pass unseen (review 2's L5).
+fn shows_only(found: &[modes::Finding], class: &str) -> bool {
+    !found.is_empty() && found.iter().all(|f| f.class == class)
+}
+
 #[test]
 fn every_committed_history_reduces_as_it_declares() {
     let all = committed();
@@ -119,8 +127,8 @@ fn every_committed_history_reduces_as_it_declares() {
         let found = modes::findings(&c.history);
         if c.expect != Expect::Agree {
             assert!(
-                found.iter().any(|f| f.class == c.class),
-                "{}: declared to split as `{}`, but finds {:?}; if the fix is in, \
+                shows_only(&found, &c.class),
+                "{}: declared to split as `{}` alone, but finds {:?}; if the fix is in, \
                  flip it to `# expect: agree`",
                 c.file,
                 c.class,
@@ -135,6 +143,33 @@ fn every_committed_history_reduces_as_it_declares() {
             );
         }
     }
+}
+
+/// A history showing its declared class and another fails its declaration:
+/// the never-seen and seen-deleted histories, their replicas renamed apart and
+/// run as one history, show both classes, so neither alone is what the
+/// history shows, while each history by itself shows its own.
+#[test]
+fn a_history_showing_a_second_class_fails_its_declaration() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/two_modes");
+    let read = |file: &str| std::fs::read_to_string(dir.join(file)).expect("readable");
+    let never_seen = read("110-invariant-region-extents.txt");
+    let seen_deleted = read("145-invariant-region-extents.txt")
+        .replace("#x0000000000000001", "#x0000000000000004")
+        .replace("#x0000000000000003", "#x0000000000000006");
+    let alone = |text: &str| modes::findings(&modes::parse(text).expect("parses"));
+    assert!(shows_only(&alone(&never_seen), modes::REGION_NEVER_SEEN));
+    assert!(shows_only(
+        &alone(&seen_deleted),
+        modes::REGION_SEEN_DELETED
+    ));
+    let mut both = modes::parse(&never_seen).expect("parses");
+    both.extend(modes::parse(&seen_deleted).expect("parses"));
+    let found = modes::findings(&both);
+    assert!(found.iter().any(|f| f.class == modes::REGION_NEVER_SEEN));
+    assert!(found.iter().any(|f| f.class == modes::REGION_SEEN_DELETED));
+    assert!(!shows_only(&found, modes::REGION_NEVER_SEEN));
+    assert!(!shows_only(&found, modes::REGION_SEEN_DELETED));
 }
 
 /// Every region overlap made by creating or filling regions is deferred

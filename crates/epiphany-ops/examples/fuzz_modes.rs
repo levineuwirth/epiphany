@@ -110,7 +110,8 @@ fn recheck(files: &[String]) {
             .lines()
             .any(|l| l == "# expect: split" || l == "# expect: deferred");
         let found = modes::findings(&modes::parse(&text).expect("parses"));
-        let now = if found.iter().any(|f| f.class == class) {
+        // A failing history shows its class and nothing else.
+        let now = if !found.is_empty() && found.iter().all(|f| f.class == class) {
             "split"
         } else if found.is_empty() {
             "agree"

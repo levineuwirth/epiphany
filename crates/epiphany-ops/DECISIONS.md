@@ -3517,3 +3517,15 @@ region case), and histories `164` and `165`, the two probes, which record the
 verdict and agree before and after the fix (both modes shared it), so the
 test, not the committed suite, holds it. Mutations: the voice left in the
 index, and the instance left in it, each failing its case.
+
+**A failing history shows its class alone (L5).** The committed suite passed a
+`split` or `deferred` history when its declared class was among its findings,
+and `fuzz_modes --recheck` printed `split` on the same test, so a second break
+joining a committed history (a regression adding one to a deferred history,
+say) would pass both, seen only by the ignored test. Both now require the
+history's findings to be exactly its declared class (`shows_only`), at least
+one and nothing else. Every committed failing history meets it. Locked by
+`a_history_showing_a_second_class_fails_its_declaration` (the never-seen and
+seen-deleted histories run as one show both classes, which neither
+declaration admits; each alone shows its own). Mutation: the predicate back to
+"among its findings" (the test fails).
