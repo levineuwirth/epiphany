@@ -802,7 +802,8 @@ holds its instance against a delete, as any voice does. An undo that is a
 member of the transaction it names is refused, and a migration out of musical
 time supersedes an undo's restoration of a value written in musical time into
 its region. An undo's restoration naming an object tombstoned since is
-superseded by its tombstoning, as one naming a deleted endpoint was.
+superseded by its tombstoning, as one naming a deleted endpoint was, a
+cross-cutting value's staves and measure or region anchors included.
 Two requirement labels are added;
 no payload, discriminant or \texttt{PreconditionFailureReason} changes.
 Accordingly
@@ -2756,9 +2757,10 @@ value is a pure function of the operation set: permutation-invariant by
 construction. When a causally-later or canonically-later write has
 superseded the key, \texttt{StrictInverse} refuses the whole undo with a
 \texttt{TransactionConflict} conflict naming the undo and the superseding
-writer; a cross-cutting value whose restoration would name an endpoint deleted
-since is superseded by that delete (since version~0.19.0, before which the
-dangling value was restored); a value whose restoration would write in musical
+writer; a cross-cutting value whose restoration would name an object
+tombstoned since (an endpoint event, a spanner's measure or region anchor, a
+staff it spans) is superseded by that tombstoning (since version~0.19.0, before
+which the dangling value was restored); a value whose restoration would write in musical
 time into a region a migration has since taken out of it (a break anchored by
 a musical offset, a meter change, a metric grid, a tempo segment anchored in
 the region, a clef or key change of its staff instance) is superseded by that

@@ -4637,3 +4637,237 @@ fn a_redo_restores_nothing_naming_what_the_undo_removed_in_both_modes() {
         }
     }
 }
+
+/// An undo's restoration of a cross-cutting value is superseded by the
+/// tombstoning of any object the value names, not only an endpoint event, in
+/// both modes (strict: conflicted; best effort: the value left out). Each case
+/// is one author's: a transaction makes an object, a spanner is rewritten to
+/// name it and then, in a second transaction, rewritten away from it; an undo
+/// of the first transaction removes the object, which the spanner's current
+/// value no longer names, and an undo of the second would restore the value
+/// naming it. The object is a staff the spanner spans, a measure its start is
+/// anchored to, and a region its end is anchored to. Before reduction version
+/// 3's reading of every referent the undo restored the spanner naming the
+/// removed object (`CrossCuttingRefsResolve`).
+#[test]
+fn an_undo_restores_no_spanner_naming_an_object_removed_since_in_both_modes() {
+    use epiphany_core::{
+        AnchorOffset, MeasureId, MeasurePosition, Spanner, SpannerId, StaffId, TimeAnchor,
+    };
+    use epiphany_ops::{
+        CreateCrossCuttingOp, CreateMeasureOp, CreateRegionOp, CreateStaffOp, CrossCuttingValue,
+        ModifyCrossCuttingOp,
+    };
+    let m = Measure::new();
+    let at = |region: RegionId, bars: i64| {
+        valuegen::region_start_anchor(
+            region,
+            MusicalPosition(RationalTime::new(bars, 1).expect("bars")),
+        )
+    };
+    let staff = m.import.ids.staves[0][0];
+    let spanner = |id: SpannerId, start: TimeAnchor, end: TimeAnchor, staves: Vec<StaffId>| {
+        CrossCuttingValue::Spanner(Spanner {
+            id,
+            start,
+            end,
+            staves,
+            kind: Default::default(),
+            style: Default::default(),
+        })
+    };
+    // Each case: the transaction's member making the object, the object, and
+    // the spanner's value naming it, beside its value naming the import alone.
+    type Case = (
+        OperationPayload,
+        TypedObjectId,
+        CrossCuttingValue,
+        CrossCuttingValue,
+    );
+    let cases = |n: u64| -> Vec<(&'static str, Case)> {
+        let id = SpannerId::new(A, 2700 + 10 * n);
+        let plain = spanner(
+            id,
+            valuegen::event_anchor(m.q(0)),
+            valuegen::event_anchor(m.q(1)),
+            vec![staff],
+        );
+        let new_staff = StaffId::new(A, 2701 + 10 * n);
+        let measure = MeasureId::new(A, 2702 + 10 * n);
+        let region = RegionId::new(A, 2703 + 10 * n);
+        vec![
+            (
+                "a staff it spans",
+                (
+                    primitive(OperationKind::CreateStaff(CreateStaffOp {
+                        staff: valuegen::staff(new_staff, m.import.ids.instruments[0]),
+                    })),
+                    TypedObjectId::Staff(new_staff),
+                    spanner(
+                        id,
+                        valuegen::event_anchor(m.q(0)),
+                        valuegen::event_anchor(m.q(1)),
+                        vec![new_staff],
+                    ),
+                    plain.clone(),
+                ),
+            ),
+            (
+                "a measure its start is anchored to",
+                (
+                    primitive(OperationKind::CreateMeasure(CreateMeasureOp {
+                        instance: m.import.ids.instances[0][0],
+                        measure: epiphany_core::Measure {
+                            id: measure,
+                            start: at(m.region, 1),
+                            time_signature: None,
+                            explicit_number: Some(2),
+                            number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+                        },
+                    })),
+                    TypedObjectId::Measure(measure),
+                    spanner(
+                        id,
+                        TimeAnchor::Measure {
+                            id: measure,
+                            position: MeasurePosition::Start,
+                            offset: AnchorOffset::Zero,
+                        },
+                        valuegen::event_anchor(m.q(1)),
+                        vec![staff],
+                    ),
+                    plain.clone(),
+                ),
+            ),
+            (
+                "a region its end is anchored to",
+                (
+                    primitive(OperationKind::CreateRegion(CreateRegionOp {
+                        region: valuegen::region(region),
+                    })),
+                    TypedObjectId::Region(region),
+                    spanner(
+                        id,
+                        valuegen::event_anchor(m.q(0)),
+                        at(region, 0),
+                        vec![staff],
+                    ),
+                    plain,
+                ),
+            ),
+        ]
+    };
+    let mut n = 0u64;
+    for policy in [UndoPolicy::StrictInverse, UndoPolicy::BestEffort] {
+        for (name, (make, made, naming, away)) in cases(n) {
+            n += 1;
+            let made_tx = TransactionId::new(A, 2800 + 10 * n);
+            let away_tx = TransactionId::new(A, 2801 + 10 * n);
+            let mut authored: Vec<OperationEnvelope> = Vec::new();
+            let mut counter = 0;
+            let mut push = |payload: OperationPayload, transaction: Option<TransactionId>| {
+                let seen: Vec<OperationId> = authored.last().map(|e| e.id).into_iter().collect();
+                let mut env = m.op(A, counter, counter as i64 + 1, &seen, payload);
+                env.transaction = transaction;
+                counter += 1;
+                authored.push(env.clone());
+                env
+            };
+            let declare = |tx: TransactionId| {
+                primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                    id: tx,
+                    label: String::from("edit"),
+                    category: None,
+                }))
+            };
+            push(declare(made_tx), Some(made_tx));
+            push(make, Some(made_tx));
+            let created = push(
+                primitive(OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                    structure: away.clone(),
+                })),
+                None,
+            );
+            let renamed = push(
+                primitive(OperationKind::ModifyCrossCutting(ModifyCrossCuttingOp {
+                    structure: naming,
+                })),
+                None,
+            );
+            push(declare(away_tx), Some(away_tx));
+            let moved = push(
+                primitive(OperationKind::ModifyCrossCutting(ModifyCrossCuttingOp {
+                    structure: away.clone(),
+                })),
+                Some(away_tx),
+            );
+            let undo = push(
+                OperationPayload::UndoTransaction(UndoTransactionPayload {
+                    target: made_tx,
+                    policy: UndoPolicy::StrictInverse,
+                }),
+                None,
+            );
+            let second = push(
+                OperationPayload::UndoTransaction(UndoTransactionPayload {
+                    target: away_tx,
+                    policy,
+                }),
+                None,
+            );
+            let history = format!("{name}, {policy:?}");
+            let state = m.agree(&history, &authored);
+            for write in [&created, &renamed, &moved] {
+                assert_eq!(
+                    effect(&state, write.id),
+                    Some(OperationEffect::Applied),
+                    "{history}"
+                );
+            }
+            assert!(
+                matches!(
+                    effect(&state, undo.id),
+                    Some(OperationEffect::AppliedWithRepair { .. })
+                ),
+                "{history}: {:?}",
+                effect(&state, undo.id)
+            );
+            assert!(tombstoned(&state, made), "{history}: removed by the undo");
+            match policy {
+                UndoPolicy::StrictInverse => {
+                    let Some(OperationEffect::Conflicted { conflict }) = effect(&state, second.id)
+                    else {
+                        panic!("{history}: {:?}", effect(&state, second.id));
+                    };
+                    let record = state
+                        .conflicts
+                        .records()
+                        .iter()
+                        .find(|r| r.id == conflict)
+                        .expect("recorded");
+                    assert!(record.caused_by.contains(&undo.id), "{history}");
+                }
+                _ => assert!(
+                    matches!(
+                        effect(&state, second.id),
+                        Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
+                    ),
+                    "{history}: {:?}",
+                    effect(&state, second.id)
+                ),
+            }
+            // The spanner keeps the value naming the import alone.
+            let mut set = OperationSet::new();
+            set.accept_all(m.import.envelopes.iter().chain(&authored).cloned());
+            let aware = set.reduce_onto(&Score::empty(IdentityContext::new(m.import.replica)));
+            let CrossCuttingValue::Spanner(expected) = &away else {
+                unreachable!("a spanner");
+            };
+            assert_eq!(
+                aware.score.cross_cutting.spanners.as_slice(),
+                std::slice::from_ref(expected),
+                "{history}"
+            );
+        }
+    }
+}

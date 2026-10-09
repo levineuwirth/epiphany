@@ -482,6 +482,11 @@ pub mod vectors;
 ///     the value left out), where an undo of an undo restored a meter change
 ///     naming the time signature the first undo had removed
 ///     (`CrossCuttingRefsResolve`) or a break anchored to its removed measure.
+///   - an undo's restoration of a cross-cutting value is superseded by the
+///     tombstoning of any object the value names, a spanner's staves and its
+///     measure or region anchors as well as an endpoint event, where it read
+///     the endpoints alone and restored a spanner naming a staff, measure or
+///     region an undo had removed since (`CrossCuttingRefsResolve`).
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
@@ -547,7 +552,9 @@ pub mod vectors;
 ///   pitch into an unpitched event,
 ///   `a_pitch_inserted_into_an_unpitched_event_makes_it_a_note_in_both_modes`;
 ///   for restorations naming what an undo removed,
-///   `a_redo_restores_nothing_naming_what_the_undo_removed_in_both_modes`.
+///   `a_redo_restores_nothing_naming_what_the_undo_removed_in_both_modes`;
+///   for a cross-cutting value's every referent,
+///   `an_undo_restores_no_spanner_naming_an_object_removed_since_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

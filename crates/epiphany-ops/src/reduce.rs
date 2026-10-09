@@ -1673,6 +1673,18 @@ fn anchor_object_refs<'a>(anchors: impl IntoIterator<Item = &'a TimeAnchor>) -> 
         .collect()
 }
 
+/// Every object a cross-cutting value names: its anchors' objects
+/// ([`CrossCuttingValue::anchor_object_refs`]) and, for a spanner, its staves.
+/// An undo's restoration of the value is superseded by the tombstoning of any
+/// of them.
+fn cross_cutting_referents(value: &CrossCuttingValue) -> Vec<TypedObjectId> {
+    let mut referents = value.anchor_object_refs();
+    if let CrossCuttingValue::Spanner(spanner) = value {
+        referents.extend(spanner.staves.iter().copied().map(TypedObjectId::Staff));
+    }
+    referents
+}
+
 /// Genesis tranche G3b (`spec/CONTRACT_GENESIS_G3B_MEASURE.md` pin 10.5):
 /// whether a write-chain key's prospective POST-UNDO value references the
 /// strand guard's target. Shared by every restoration-capable surface of
@@ -3687,9 +3699,8 @@ impl<'a> Reducer<'a> {
 
     /// The operation that tombstoned the first of `referents` no longer live:
     /// a value an undo would restore naming it is superseded by that
-    /// operation, as a cross-cutting value naming a deleted endpoint is
-    /// (reduction version 3). An object the set never made live (from a base)
-    /// counts as live.
+    /// operation (reduction version 3), a cross-cutting value's included. An
+    /// object the set never made live (from a base) counts as live.
     fn tombstoned_since(
         &self,
         referents: impl IntoIterator<Item = TypedObjectId>,
@@ -7979,9 +7990,11 @@ impl<'a> Reducer<'a> {
                     // A live part definition or spanner naming the staff
                     // (reduction version 3: before it the undo removed the
                     // staff and left the part or spanner naming nothing,
-                    // `CrossCuttingRefsResolve`). Neither names it through a
-                    // value an undo could restore away: a part has no modify,
-                    // and a spanner's current value is the one it holds.
+                    // `CrossCuttingRefsResolve`). A part has no modify; a
+                    // spanner is read at its current value, and an earlier
+                    // value a later undo would restore naming the staff is
+                    // superseded by the staff's tombstoning
+                    // (`collect_restorations`).
                     .or_else(|| {
                         self.part_definition_values.iter().find_map(|(id, part)| {
                             let pobj = TypedObjectId::PartDefinition(*id);
@@ -8436,20 +8449,15 @@ impl<'a> Reducer<'a> {
                 ChainUndoVerdict::Superseded { by } => superseded.push(by),
                 ChainUndoVerdict::Restore(predecessor) => {
                     let value = predecessor.map(Predecessor::into_value);
-                    // A restored value naming an endpoint deleted since is
-                    // superseded by that delete: restoring it would reinstate a
-                    // dangling reference (`CrossCuttingRefsResolve`; reduction
-                    // version 3, before which it was restored).
-                    let deleted = value.as_ref().and_then(|value| {
-                        value.endpoints().iter().find_map(|endpoint| {
-                            match self.objects.get(endpoint) {
-                                Some(ObjectState::Tombstoned { deleted_by, .. }) => {
-                                    Some(*deleted_by)
-                                }
-                                _ => None,
-                            }
-                        })
-                    });
+                    // A restored value naming a referent tombstoned since (an
+                    // endpoint, a spanner's measure or region anchor, a
+                    // spanner's staff) is superseded by its tombstoning:
+                    // restoring it would reinstate a dangling reference
+                    // (`CrossCuttingRefsResolve`; reduction version 3, before
+                    // which it was restored).
+                    let deleted = value
+                        .as_ref()
+                        .and_then(|value| self.tombstoned_since(cross_cutting_referents(value)));
                     match deleted {
                         Some(by) => superseded.push(by),
                         None => {

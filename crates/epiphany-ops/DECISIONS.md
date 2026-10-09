@@ -3289,3 +3289,33 @@ showing all three). Mutations: the third cause dropped from `deferred` (its
 test fails, and the committed suite on `150`), and every `RegionExtents` class
 deferred (the seen-live test fails, and both cause tests at their fill-seen
 case).
+
+## X4a fix round 2 — review 2's findings (2026-10-09)
+
+Review 2 of C4a found three invariant breaks one author reaches in payload
+shapes the fuzz never wrote (M1 to M3). The owner ruled D52: each is fixed in
+its own commit, the fuzz's generator gains an arm for each shape, and the
+deferred region class is read by its mechanism rather than by a list of
+causes. Each fix is a further bullet of reduction version 3, which does not
+move again before X4a merges.
+
+**An undo restores no cross-cutting value naming an object removed since
+(M1).** The rule the previous round wrote into the catalog, that an undo's
+restoration naming an object tombstoned since is superseded by its
+tombstoning, held for every restorable value but the cross-cutting one, whose
+arm read only its endpoint events (`CrossCuttingValue::endpoints`, event-only
+by design). One author created a staff in a transaction, rewrote a spanner
+onto it and, in a second transaction, back; a strict undo of the first
+transaction removed the staff, which the spanner no longer named, and an
+undo of the second, strict or best effort, restored the spanner naming it
+(`CrossCuttingRefsResolve`). The arm now reads every object the value names
+(`cross_cutting_referents`: the anchors' objects, as the create's precondition
+reads them, and a spanner's staves) through `tombstoned_since`, as the other
+arms do. A measure or region anchor restored after its object was removed
+broke the same invariant, so both are held too. Locked by
+`an_undo_restores_no_spanner_naming_an_object_removed_since_in_both_modes`,
+three cases (a staff, a measure anchor, a region anchor) under both policies,
+and histories `151` and `152` (the probe, strict and best effort). Mutations:
+the endpoints alone (the staff case fails, and `151` and `152` split), the
+staves dropped (the staff case), the anchors read as endpoints (the measure
+case), a region anchor dropped (the region case).
