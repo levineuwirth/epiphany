@@ -3611,3 +3611,18 @@ repair of its own, as the delete records none. Locked by
 policies: the pitch tombstoned with the rest, a step and an interval
 transposition of it refused alike) and history `167`. Mutation: the pitches
 left live (the test fails).
+
+**The aleatoric arm reaches its shape at the final generator.** At the arms
+commit's generator, M3's break (a region holding a note and no measure
+migrated to an aleatoric model anchored in wall-clock time) showed within
+10,000 histories of 128 authored operations with M3's fix reverted (seed
+`0x52c8005f`). The gestures added since thinned its chain, which needs a new
+region filled and never measured: with the fix reverted the final generator
+found it in none of 40,000 histories of 128. A further gesture writes the
+editing that reaches it: an unmeasured passage, a region added after every
+region the view holds, a staff in it with a voice and a note or rest, and the
+region migrated to an aleatoric model of any anchoring discipline, its notes
+kept where they stand. With M3's fix reverted the fuzz finds its break at the
+fifth of 10,000 histories of 64 authored (seed `0x62640004`); at the tip the
+gesture's wall-clock migration conflicts naming the note and the others
+apply.

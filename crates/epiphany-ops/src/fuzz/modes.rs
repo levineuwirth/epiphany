@@ -25,11 +25,13 @@
 //! moved one end at a time in one transaction, a pitch entered with its
 //! spelling, a spanner moved to another staff as a command of its own (onto a
 //! staff added for it, onto one the view holds, or onto an added one and back
-//! again as two commands), an undo and its redo, and the author's two latest
-//! commands reverted, the older first. A whole-event modify moves, resizes or
-//! revalues an event, writes a chord without a pitch its author sees, writes an
-//! event as another kind in its place, or mints a pitch, a chord written with a
-//! new one or another kind written as a note of one.
+//! again as two commands), an undo and its redo, the author's two latest
+//! commands reverted, the older first, and an unmeasured passage (a region, a
+//! staff, a voice and a note) set in free time by any anchoring discipline. A
+//! whole-event modify moves, resizes or revalues an event, writes a chord
+//! without a pitch its author sees, writes an event as another kind in its
+//! place, or mints a pitch, a chord written with a new one or another kind
+//! written as a note of one.
 //!
 //! Every event kind is written: notes, rests and unpitched notes, and
 //! indeterminate, graphic, cue and trajectory events, entered or written over
@@ -2587,6 +2589,68 @@ fn make(
                 }),
             ]
         }
+        55 => {
+            // An unmeasured passage set in free time: a region added after
+            // every region the view holds, a staff in it with a voice and a
+            // note or rest, and the region migrated to an aleatoric model of
+            // any anchoring discipline, its notes kept where they stand.
+            let mut out = make(sim, r, 15, h)?;
+            let Some(OperationPayload::Primitive(OperationKind::CreateRegion(op))) =
+                out.first_mut()
+            else {
+                return None;
+            };
+            op.region.time_model = valuegen::metric_model();
+            let region = op.region.id;
+            let staff = sim.rng.pick(&h.score.staves)?.id;
+            let instance: StaffInstanceId = sim.mint(r);
+            let voice: VoiceId = sim.mint(r);
+            let event: EventId = sim.mint(r);
+            let mut quarter_tones = Vec::new();
+            let length = random_duration(&mut sim.rng);
+            let value = event_value(
+                sim,
+                r,
+                event,
+                voice,
+                MusicalPosition::origin(),
+                length,
+                &mut quarter_tones,
+            );
+            out.push(prim(OperationKind::CreateStaffInstance(
+                CreateStaffInstanceOp {
+                    region,
+                    instance: valuegen::staff_instance(instance, staff),
+                },
+            )));
+            out.push(prim(OperationKind::CreateVoice(CreateVoiceOp {
+                staff_instance: instance,
+                voice: valuegen::voice(voice),
+            })));
+            out.push(prim(OperationKind::InsertEvent(InsertEventOp {
+                staff_instance: instance,
+                event: value,
+            })));
+            out.push(prim(OperationKind::ChangeRegionTimeModel(
+                ChangeRegionTimeModelOp {
+                    region,
+                    new_time_model: RegionTimeModel::Aleatoric(AleatoricTimeModel {
+                        ordering: EventOrderingDAG::default(),
+                        anchoring: match sim.rng.below(4) {
+                            0 => AleatoricAnchoringDiscipline::Musical,
+                            1 => AleatoricAnchoringDiscipline::WallClock,
+                            2 => AleatoricAnchoringDiscipline::EitherPerEvent,
+                            _ => AleatoricAnchoringDiscipline::FreelyMixed,
+                        },
+                        bounds: BTreeMap::new(),
+                        duration_hint: WallClockDuration(1),
+                    }),
+                    declared_incompatible: Vec::new(),
+                    remapping: PositionRemapping::PreserveTime,
+                },
+            )));
+            out
+        }
         _ => return None,
     })
 }
@@ -2680,7 +2744,7 @@ fn tie_entry(
 /// Each arm of [`make`] and how often it is drawn: the editing of notes,
 /// pitches and their marks three times as often as the score's structure and
 /// settings, as an editor's history runs.
-const ARMS: [(u64, u64); 55] = [
+const ARMS: [(u64, u64); 56] = [
     (0, 4),
     (1, 3),
     (2, 3),
@@ -2736,6 +2800,7 @@ const ARMS: [(u64, u64); 55] = [
     (52, 2),
     (53, 1),
     (54, 1),
+    (55, 1),
 ];
 
 fn draw_arm(rng: &mut Rng) -> u64 {
