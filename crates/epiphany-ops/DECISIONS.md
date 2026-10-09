@@ -3319,3 +3319,37 @@ and histories `151` and `152` (the probe, strict and best effort). Mutations:
 the endpoints alone (the staff case fails, and `151` and `152` split), the
 staves dropped (the staff case), the anchors read as endpoints (the measure
 case), a region anchor dropped (the region case).
+
+**A pitch makes a note of an event of any kind (M2).** `81821a6` made a pitch
+inserted into an unpitched event a note, as one inserted into a rest had been
+since June, and left the other kinds without a pitch list as they were: a
+pitch inserted into an indeterminate, trajectory, graphic or cue event was
+minted live by the ledger and dropped by the graph, so its respelling named
+nothing (`SpellingScopeResolves`), one author alone or in `81821a6`'s
+concurrent shape. The same state had a second way in: a whole-event write of
+such a kind over a note holding a pitch its author never saw keeps the pitch
+(add wins), and `written_event` dropped it for any kind but a rest or an
+unpitched event. The owner left the rule to this round, one rule for every
+kind: refuse the insert, or make the event a note. It becomes a note, by one
+helper both paths call (`with_pitches`): a note's list takes the pitch, and
+any other kind becomes a note of its own pitches (a trajectory's explicit and
+stepwise ones, so none is dropped either) and the new one, an unpitched
+event's articulations, dynamic, stem and grace kept as before. Why not
+refusal: a note and a rest are already one slot under pitch add and remove,
+normatively, and `81821a6` extended that to unpitched events, so a note is the
+one rule with no list of exceptions; it changes no verdict (the insert applied
+in both modes before and still does; only the graph now holds what the ledger
+does), where refusal would need both modes to read the event's current kind,
+which base-free reduction holds only through the write chains a pitch insert
+or a last-pitch delete does not write, and would refuse under a reason that
+misnames it (`TargetMissing`) or a new one, a wire change; and the whole-event
+write cannot be refused for a pitch its
+author never saw without undoing add wins. The cost is that a concurrent
+pitch insert overrides another author's choice of kind, as it already did for
+a rest and an unpitched event. Locked by
+`a_pitch_an_event_of_any_kind_comes_to_hold_makes_it_a_note_in_both_modes`
+(each of the four kinds, one author, concurrent with the kind first, and
+concurrent with the pitch first; and a trajectory holding pitches of its own)
+and histories `153` to `156`. Mutations: the insert path keeping the old kinds
+only (the one-author case fails, and `153`), the write path likewise (the
+pitch-first case), and a trajectory's own pitches left out (its case).

@@ -797,7 +797,8 @@ measure in musical time is refused in a region out of it. A region's whole grid
 and its meter changes compare by the order the reduction applied them. A
 best-effort undo that keeps a mint for what names it keeps what that mint
 names, where it removed the instrument of a staff it kept. A pitch inserted
-into an unpitched event makes it a note. A promoted voice
+into an event of any kind without a pitch list, or kept by a whole-event
+write on one, makes it a note. A promoted voice
 holds its instance against a delete, as any voice does. An undo that is a
 member of the transaction it names is refused, and a migration out of musical
 time supersedes an undo's restoration of a value written in musical time into
@@ -1093,9 +1094,12 @@ modification's causal past, and the effect records a \texttt{CascadeDeleted}
 repair for it; it is kept, at its current value and with its attachments, if
 its author never saw it (add wins). A pitch a base holds was inserted by no
 envelope of the set and the base precedes every operation, so it counts as
-seen (base-free reduction holds no base pitch). A rest or an unpitched event
-written over a note its author saw so becomes that event, and over a note
-holding a pitch its author never saw becomes a note of that pitch. A pitch the
+seen (base-free reduction holds no base pitch). An event of any kind without
+a pitch list (a rest, an unpitched, indeterminate, graphic or cue event, a
+trajectory) written over a note its author saw so becomes that event, and
+over a note holding a pitch its author never saw becomes a note of that pitch,
+a trajectory's own pitches first (for every kind but a rest and an unpitched
+event since version~0.19.0, before which the graph dropped the kept pitch). A pitch the
 value carries that a delete or undo has tombstoned stays out of the event
 (delete wins). A pitch leaves an event only by \texttt{DeleteIdentifiedPitch},
 \texttt{DeleteEvent}, a modification whose author saw it, or an undo of its
@@ -1152,8 +1156,11 @@ single-pitch note degrades the event to a \texttt{Rest} of the same
 id/voice/position/duration rather than leaving an empty pitched event (Chapter~5
 forbids the empty chord, \texttt{ArenaError::EmptyPitchedEvent}); inserting a
 pitch into a rest is the dual, promoting it to a one-pitch note, and so is
-inserting one into an unpitched event (since version~0.19.0, before which the
-graph dropped the pitch the bookkeeping minted). This preserves
+inserting one into an event of any other kind without a pitch list, an
+unpitched, indeterminate, graphic or cue event or a trajectory, which becomes a
+note of its own pitches (a trajectory's) and the new one (since
+version~0.19.0, before which the graph dropped the pitch the bookkeeping minted
+for every kind but a rest). This preserves
 the delete-wins / mint disciplines and keeps the graph consistent with the
 bookkeeping, which tombstones or mints the pitch object either way.
 

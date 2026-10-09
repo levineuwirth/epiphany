@@ -4871,3 +4871,239 @@ fn an_undo_restores_no_spanner_naming_an_object_removed_since_in_both_modes() {
         }
     }
 }
+
+/// A pitch an event without a pitch list comes to hold makes it a note of the
+/// pitch, whatever the event's kind, as one inserted into a rest or an
+/// unpitched event does, in both modes. For a graphic, a cue, an indeterminate
+/// and a trajectory event: one author writes a note as that kind and then adds
+/// a pitch to it and respells the pitch; two authors do the same concurrently,
+/// the kind written first in canonical order (the pitch inserted into the
+/// written event, `81821a6`'s shape); and concurrently with the pitch first
+/// (the write keeping the pitch its author never saw). Before reduction
+/// version 3 the graph dropped the pitch the ledger held live, and its
+/// spelling attachment named nothing (`SpellingScopeResolves`).
+#[test]
+fn a_pitch_an_event_of_any_kind_comes_to_hold_makes_it_a_note_in_both_modes() {
+    use epiphany_core::{
+        CueEvent, CueRendering, GraphicEvent, IdentifiedPitch, IndeterminacyHints,
+        IndeterminacyKind, IndeterminateEvent, PitchId, PitchSpelling, TrajectoryDisplay,
+        TrajectoryEndpoint, TrajectoryEvent, TrajectoryShape,
+    };
+    use epiphany_ops::{InsertIdentifiedPitchOp, RespellPitchOp};
+    let m = Measure::new();
+    let pitch_of = |i: usize| match &m.quarters[i] {
+        Event::Pitched(e) => e.pitches[0].id,
+        other => panic!("a note, not {other:?}"),
+    };
+    let quarter = &m.quarters[0];
+    let (id, voice) = (quarter.id(), quarter.voice());
+    let (position, duration) = (quarter.position().clone(), quarter.duration().clone());
+    let kinds: [(&str, Event); 4] = [
+        (
+            "a graphic event",
+            Event::Graphic(GraphicEvent {
+                id,
+                voice,
+                position: position.clone(),
+                duration: duration.clone(),
+                graphics: Vec::new(),
+                playback_bindings: Vec::new(),
+            }),
+        ),
+        (
+            "a cue event",
+            Event::Cue(CueEvent {
+                id,
+                voice,
+                position: position.clone(),
+                duration: duration.clone(),
+                source: vec![m.q(1)],
+                rendering: CueRendering,
+            }),
+        ),
+        (
+            "an indeterminate event",
+            Event::Indeterminate(IndeterminateEvent {
+                id,
+                voice,
+                position: position.clone(),
+                duration: duration.clone(),
+                indeterminacy: IndeterminacyKind::Pitch,
+                hints: IndeterminacyHints::default(),
+            }),
+        ),
+        (
+            "a trajectory event",
+            Event::Trajectory(TrajectoryEvent {
+                id,
+                voice,
+                position,
+                duration,
+                start: TrajectoryEndpoint::EventPitch(pitch_of(1)),
+                end: TrajectoryEndpoint::EventPitch(pitch_of(2)),
+                shape: TrajectoryShape::Linear,
+                display: TrajectoryDisplay,
+            }),
+        ),
+    ];
+    for (n, (kind, value)) in kinds.into_iter().enumerate() {
+        for shape in ["one author", "the kind first", "the pitch first"] {
+            let pitch = PitchId::new(A, 2900 + n as u64);
+            let write = |counter, at, seen: &[OperationId]| {
+                m.op(
+                    B,
+                    counter,
+                    at,
+                    seen,
+                    primitive(OperationKind::ModifyEvent(ModifyEventOp {
+                        event: value.clone(),
+                    })),
+                )
+            };
+            let add = |author, counter, at, seen: &[OperationId]| {
+                m.op(
+                    author,
+                    counter,
+                    at,
+                    seen,
+                    primitive(OperationKind::InsertIdentifiedPitch(
+                        InsertIdentifiedPitchOp {
+                            event: id,
+                            pitch: IdentifiedPitch {
+                                id: pitch,
+                                pitch: valuegen::pitch_value_nth(4),
+                            },
+                        },
+                    )),
+                )
+            };
+            let respell = |author, counter, at, seen: &[OperationId]| {
+                m.op(
+                    author,
+                    counter,
+                    at,
+                    seen,
+                    primitive(OperationKind::RespellPitch(RespellPitchOp {
+                        pitch,
+                        spelling: PitchSpelling::cmn(epiphany_core::CmnNominal::C, 4),
+                    })),
+                )
+            };
+            let (written, added, respelt) = match shape {
+                "one author" => {
+                    let written = write(0, 1, &[]);
+                    let added = add(B, 1, 2, &[written.id]);
+                    let respelt = respell(B, 2, 3, &[added.id]);
+                    (written, added, respelt)
+                }
+                "the kind first" => {
+                    let written = write(0, 1, &[]);
+                    let added = add(A, 0, 2, &[]);
+                    let respelt = respell(A, 1, 3, &[added.id]);
+                    (written, added, respelt)
+                }
+                _ => {
+                    let added = add(A, 0, 1, &[]);
+                    let respelt = respell(A, 1, 2, &[added.id]);
+                    let written = write(0, 3, &[]);
+                    (written, added, respelt)
+                }
+            };
+            let history = format!("a pitch and {kind}, {shape}");
+            let authored = [written.clone(), added.clone(), respelt.clone()];
+            let state = m.agree(&history, &authored);
+            // The write removes the quarter's own pitch, which its author saw.
+            assert!(
+                matches!(
+                    effect(&state, written.id),
+                    Some(OperationEffect::AppliedWithRepair { .. })
+                ),
+                "{history}: {:?}",
+                effect(&state, written.id)
+            );
+            for op in [&added, &respelt] {
+                assert_eq!(
+                    effect(&state, op.id),
+                    Some(OperationEffect::Applied),
+                    "{history}"
+                );
+            }
+            assert!(live(&state, TypedObjectId::Pitch(pitch)), "{history}");
+            assert!(
+                holds_with_spelling(&m, &authored, id, pitch),
+                "{history}: the event becomes a note of the added pitch, spelt"
+            );
+        }
+    }
+
+    // A trajectory holding pitches of its own, entered in the fourth
+    // quarter's place, becomes a note of its pitches and the added one.
+    let own = [PitchId::new(B, 2950), PitchId::new(B, 2951)];
+    let pitch = PitchId::new(A, 2952);
+    let freed = m.op(
+        B,
+        0,
+        1,
+        &[],
+        delete(m.q(3), epiphany_ops::TupletCompensation::NotInTuplet),
+    );
+    let trajectory = EventId::new(B, 2953);
+    let entered = m.op(
+        B,
+        1,
+        2,
+        &[freed.id],
+        primitive(OperationKind::InsertEvent(InsertEventOp {
+            staff_instance: m.import.ids.instances[0][0],
+            event: Event::Trajectory(TrajectoryEvent {
+                id: trajectory,
+                voice: m.quarters[3].voice(),
+                position: m.quarters[3].position().clone(),
+                duration: m.quarters[3].duration().clone(),
+                start: TrajectoryEndpoint::ExplicitPitch(IdentifiedPitch {
+                    id: own[0],
+                    pitch: valuegen::pitch_value_nth(1),
+                }),
+                end: TrajectoryEndpoint::ExplicitPitch(IdentifiedPitch {
+                    id: own[1],
+                    pitch: valuegen::pitch_value_nth(2),
+                }),
+                shape: TrajectoryShape::Linear,
+                display: TrajectoryDisplay,
+            }),
+        })),
+    );
+    let added = m.op(
+        A,
+        0,
+        3,
+        &[entered.id],
+        primitive(OperationKind::InsertIdentifiedPitch(
+            InsertIdentifiedPitchOp {
+                event: trajectory,
+                pitch: IdentifiedPitch {
+                    id: pitch,
+                    pitch: valuegen::pitch_value_nth(4),
+                },
+            },
+        )),
+    );
+    let authored = [freed, entered, added.clone()];
+    let state = m.agree(
+        "a pitch added to a trajectory of its own pitches",
+        &authored,
+    );
+    assert_eq!(effect(&state, added.id), Some(OperationEffect::Applied));
+    let mut set = OperationSet::new();
+    set.accept_all(m.import.envelopes.iter().chain(&authored).cloned());
+    let score = set
+        .reduce_onto(&Score::empty(IdentityContext::new(m.import.replica)))
+        .score;
+    let Some(Event::Pitched(note)) = score.events.get(trajectory) else {
+        panic!("{:?}", score.events.get(trajectory));
+    };
+    assert_eq!(
+        note.pitches.iter().map(|ip| ip.id).collect::<Vec<_>>(),
+        vec![own[0], own[1], pitch]
+    );
+}

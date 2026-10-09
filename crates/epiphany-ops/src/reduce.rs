@@ -1561,6 +1561,53 @@ struct ReferentContext {
 /// staff instance are excluded from "nearest".
 const PROXIMITY_SAME_STAFF_INSTANCE: u8 = 1;
 
+/// `event` holding `added` as well: a note's pitch list takes them, and any
+/// other kind, having no pitch list, becomes a note of its own pitches (a
+/// trajectory's) and `added` in its place, keeping an unpitched event's
+/// articulations, dynamic, stem and grace, as a pitch inserted into a rest
+/// makes it a note (reduction version 3: before it every kind but a rest, and
+/// later an unpitched event, kept its kind and the graph dropped the pitch the
+/// ledger held live, `SpellingScopeResolves` once spelt).
+fn with_pitches(event: Event, added: Vec<epiphany_core::IdentifiedPitch>) -> Event {
+    let mut pitches: Vec<epiphany_core::IdentifiedPitch> = Vec::new();
+    let mut own = Vec::new();
+    event.collect_identified_pitches(&mut own);
+    for pitch in own.into_iter().cloned().chain(added) {
+        if !pitches.iter().any(|ip| ip.id == pitch.id) {
+            pitches.push(pitch);
+        }
+    }
+    let mut note = match event {
+        Event::Pitched(pe) => pe,
+        Event::Unpitched(e) => epiphany_core::PitchedEvent {
+            id: e.id,
+            voice: e.voice,
+            position: e.position,
+            duration: e.duration,
+            pitches: Vec::new(),
+            articulations: e.articulations,
+            dynamic: e.dynamic,
+            ornaments: Vec::new(),
+            stem: e.stem,
+            grace: e.grace,
+        },
+        other => epiphany_core::PitchedEvent {
+            id: other.id(),
+            voice: other.voice(),
+            position: other.position().clone(),
+            duration: other.duration().clone(),
+            pitches: Vec::new(),
+            articulations: Vec::new(),
+            dynamic: None,
+            ornaments: Vec::new(),
+            stem: epiphany_core::StemConfiguration,
+            grace: None,
+        },
+    };
+    note.pitches = pitches;
+    Event::Pitched(note)
+}
+
 /// Maps an *established* containment-proximity rank (k1 of the "nearest"
 /// ordering) to the ratified [`ReanchorReason`] vocabulary. Rank 4 (same
 /// canvas) records the appended `SameCanvasNearer` (Pass 12, P12-C4; wire
@@ -9424,9 +9471,9 @@ impl<'a> Reducer<'a> {
     /// (`event_pitches`) it does not carry, at the pitch's current value. A
     /// modify has by then removed the pitches its author saw and left out
     /// (`remove_observed_pitches`), so what this keeps are the pitches it never
-    /// saw, and for an undo every pitch added since. A rest or an unpitched
-    /// event so kept becomes a note of those pitches, as a pitch inserted into
-    /// a rest makes it one.
+    /// saw, and for an undo every pitch added since. An event of any kind
+    /// without a pitch list so kept becomes a note of those pitches, as a
+    /// pitch inserted into it makes it one ([`with_pitches`]).
     fn written_event(&self, value: &Event) -> Event {
         let event = value.id();
         let tombstoned = |p: PitchId| {
@@ -9463,37 +9510,7 @@ impl<'a> Reducer<'a> {
         if kept.is_empty() {
             return value;
         }
-        match value {
-            Event::Pitched(mut pe) => {
-                pe.pitches.extend(kept);
-                Event::Pitched(pe)
-            }
-            Event::Rest(rest) => Event::Pitched(epiphany_core::PitchedEvent {
-                id: rest.id,
-                voice: rest.voice,
-                position: rest.position.clone(),
-                duration: rest.duration.clone(),
-                pitches: kept,
-                articulations: Vec::new(),
-                dynamic: None,
-                ornaments: Vec::new(),
-                stem: epiphany_core::StemConfiguration,
-                grace: None,
-            }),
-            Event::Unpitched(unpitched) => Event::Pitched(epiphany_core::PitchedEvent {
-                id: unpitched.id,
-                voice: unpitched.voice,
-                position: unpitched.position.clone(),
-                duration: unpitched.duration.clone(),
-                pitches: kept,
-                articulations: unpitched.articulations.clone(),
-                dynamic: unpitched.dynamic.clone(),
-                ornaments: Vec::new(),
-                stem: unpitched.stem,
-                grace: unpitched.grace.clone(),
-            }),
-            other => other,
-        }
+        with_pitches(value, kept)
     }
 
     /// Applies an event *value* (a modify's replacement, or an undo's restored
@@ -10198,51 +10215,11 @@ impl<'a> Reducer<'a> {
         let Some(slot) = score.events.get_mut(event) else {
             return;
         };
-        if let Event::Pitched(pe) = slot {
-            if !pe.pitches.iter().any(|ip| ip.id == pitch.id) {
-                pe.pitches.push(pitch.clone());
-            }
-            return;
-        }
-        // Adding a pitch to a rest turns the rest into a note — the dual of a
-        // last-pitch delete (below). Without this, the bookkeeping mints the
-        // pitch live while the graph silently drops it (a non-pitched slot has
-        // no pitch list), so the two would diverge.
-        if let Event::Rest(rest) = slot {
-            let replacement = epiphany_core::PitchedEvent {
-                id: rest.id,
-                voice: rest.voice,
-                position: rest.position.clone(),
-                duration: rest.duration.clone(),
-                pitches: vec![pitch.clone()],
-                articulations: Vec::new(),
-                dynamic: None,
-                ornaments: Vec::new(),
-                stem: epiphany_core::StemConfiguration,
-                grace: None,
-            };
-            *slot = Event::Pitched(replacement);
-            return;
-        }
-        // So does adding one to an unpitched event, which a concurrent
-        // whole-event modify can have made of the note the insert's author
-        // saw (reduction version 3: before it the graph dropped the pitch
-        // while the ledger minted it, `SpellingScopeResolves` once spelt).
-        if let Event::Unpitched(unpitched) = slot {
-            let replacement = epiphany_core::PitchedEvent {
-                id: unpitched.id,
-                voice: unpitched.voice,
-                position: unpitched.position.clone(),
-                duration: unpitched.duration.clone(),
-                pitches: vec![pitch.clone()],
-                articulations: unpitched.articulations.clone(),
-                dynamic: unpitched.dynamic.clone(),
-                ornaments: Vec::new(),
-                stem: epiphany_core::StemConfiguration,
-                grace: unpitched.grace.clone(),
-            };
-            *slot = Event::Pitched(replacement);
-        }
+        // Adding a pitch to an event without a pitch list turns it into a
+        // note, the dual of a last-pitch delete (below), whatever its kind.
+        // Without this, the bookkeeping mints the pitch live while the graph
+        // silently drops it, so the two would diverge.
+        *slot = with_pitches(slot.clone(), vec![pitch.clone()]);
     }
 
     fn graph_delete_pitch(&mut self, pitch: PitchId) {

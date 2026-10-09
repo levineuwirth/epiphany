@@ -488,6 +488,14 @@ pub mod vectors;
 ///     the endpoints alone and restored a spanner naming a staff, measure or
 ///     region an undo had removed since (`CrossCuttingRefsResolve`).
 ///
+///   - a pitch an event without a pitch list comes to hold, by an
+///     `InsertIdentifiedPitch` or kept by a whole-event write, makes it a note
+///     of its own pitches (a trajectory's) and that pitch, whatever its kind,
+///     as one did a rest and, above, an unpitched event, where an
+///     indeterminate, trajectory, graphic or cue event kept its kind and the
+///     graph dropped the pitch the ledger held live (`SpellingScopeResolves`
+///     once the pitch was spelt). Graph state only.
+///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
 ///   `two_replacements_of_one_quarter_promote_alike_in_both_modes`
@@ -554,7 +562,9 @@ pub mod vectors;
 ///   for restorations naming what an undo removed,
 ///   `a_redo_restores_nothing_naming_what_the_undo_removed_in_both_modes`;
 ///   for a cross-cutting value's every referent,
-///   `an_undo_restores_no_spanner_naming_an_object_removed_since_in_both_modes`.
+///   `an_undo_restores_no_spanner_naming_an_object_removed_since_in_both_modes`;
+///   for a pitch in an event of any kind,
+///   `a_pitch_an_event_of_any_kind_comes_to_hold_makes_it_a_note_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.
