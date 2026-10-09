@@ -893,6 +893,7 @@ struct ResolvedTranspose {
     authored: Vec<(usize, Option<PitchSpelling>)>,
 }
 
+#[derive(Clone)]
 enum ValueRestoration {
     Event {
         event: EventId,
@@ -6327,6 +6328,54 @@ impl<'a> Reducer<'a> {
         out
     }
 
+    /// The time signatures named by the current value of each grid or
+    /// meter-change key whose restoration `restorations` holds and `safe`
+    /// does not: the values a best-effort undo leaves in place.
+    fn signatures_dropped_restorations_name(
+        &self,
+        restorations: &[ValueRestoration],
+        safe: &[ValueRestoration],
+    ) -> Vec<TypedObjectId> {
+        let admitted_grid = |r: &RegionId| {
+            safe.iter()
+                .any(|s| matches!(s, ValueRestoration::MetricGrid { region, .. } if region == r))
+        };
+        let admitted_meter = |r: &RegionId, p: &MusicalPosition| {
+            safe.iter().any(|s| {
+                matches!(s, ValueRestoration::MeterChange { region, position, .. }
+                    if region == r && position == p)
+            })
+        };
+        let mut named = Vec::new();
+        for restoration in restorations {
+            match restoration {
+                ValueRestoration::MetricGrid { region, .. } if !admitted_grid(region) => {
+                    let current = self
+                        .metric_grid_chain
+                        .get(region)
+                        .and_then(|chain| chain.current().cloned())
+                        .flatten();
+                    named.extend(meter_referents(
+                        current.iter().flat_map(|grid| &grid.meter_sequence),
+                    ));
+                }
+                ValueRestoration::MeterChange {
+                    region, position, ..
+                } if !admitted_meter(region, position) => {
+                    let current = self
+                        .meter_change_chain
+                        .get(&(*region, position.clone()))
+                        .and_then(|chain| chain.current().cloned())
+                        .flatten();
+                    named.extend(meter_referents(current.as_slice()));
+                }
+                _ => {}
+            }
+        }
+        named.retain(|t| matches!(t, TypedObjectId::TimeSignature(_)));
+        named
+    }
+
     fn graph_create_measure(&mut self, instance: StaffInstanceId, measure: &Measure) {
         let Some(score) = self.graph.as_mut() else {
             return;
@@ -7921,18 +7970,48 @@ impl<'a> Reducer<'a> {
                     }
                     tombstonable.retain(|t| !kept.contains(t));
                 }
-                let repairs = self.tombstone_undo_targets(env, &tombstonable);
-                // Contract pin 9c.3, `BestEffort`: the canonical-order
-                // greedy applies the MAXIMAL safe subset of grid/meter-
-                // change restorations (never a naive per-restoration
-                // filter evaluated independently of the others already
-                // admitted) — see `select_invariant20_safe_restorations`.
-                let safe_restorations = self.select_invariant20_safe_restorations(restorations);
-                self.apply_restorations(env, safe_restorations);
-                if repairs.is_empty() {
-                    OperationEffect::Applied
-                } else {
-                    OperationEffect::AppliedWithRepair { repairs }
+                // The guard reads a time signature's meter changes as the
+                // restorations leave them, but best effort applies only the
+                // invariant-20-safe subset of them, chosen once the mints are
+                // gone: a restoration it drops leaves its key's value, which
+                // may still name a signature the undo removed. Such a
+                // signature stays, and the undo is taken again without it
+                // (reduction version 3: before it the signature was removed
+                // and the meter change named nothing,
+                // `CrossCuttingRefsResolve`). Read only when the undo removes
+                // a signature.
+                loop {
+                    let signatures = tombstonable
+                        .iter()
+                        .any(|t| matches!(t, TypedObjectId::TimeSignature(_)));
+                    let saved = signatures.then(|| self.snapshot());
+                    let repairs = self.tombstone_undo_targets(env, &tombstonable);
+                    // Contract pin 9c.3, `BestEffort`: the canonical-order
+                    // greedy applies the MAXIMAL safe subset of grid/meter-
+                    // change restorations (never a naive per-restoration
+                    // filter evaluated independently of the others already
+                    // admitted) — see `select_invariant20_safe_restorations`.
+                    let safe_restorations =
+                        self.select_invariant20_safe_restorations(restorations.clone());
+                    let still_named: Vec<TypedObjectId> = match saved {
+                        Some(_) => self
+                            .signatures_dropped_restorations_name(&restorations, &safe_restorations)
+                            .into_iter()
+                            .filter(|t| tombstonable.contains(t))
+                            .collect(),
+                        None => Vec::new(),
+                    };
+                    if let (Some(saved), false) = (saved, still_named.is_empty()) {
+                        self.restore(saved);
+                        tombstonable.retain(|t| !still_named.contains(t));
+                        continue;
+                    }
+                    self.apply_restorations(env, safe_restorations);
+                    break if repairs.is_empty() {
+                        OperationEffect::Applied
+                    } else {
+                        OperationEffect::AppliedWithRepair { repairs }
+                    };
                 }
             }
         }

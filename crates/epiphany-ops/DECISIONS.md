@@ -3543,3 +3543,29 @@ resolution's `chosen` at its renumbered candidate. Locked by
 `compact_carries_an_equivocations_choice` (the ledger history, `160`, with its
 first envelope taken out: the chosen twin is rehashed and the resolution
 follows it). Mutation: `chosen` kept as it was (the test fails).
+
+**A best-effort undo keeps a signature a dropped restoration leaves named
+(found by this round's arm demonstration at the tip).** Review 2 left one
+path unprobed: a best-effort undo reads its strand guard for a time signature
+against every restoration (`undo_strand_block`'s `TimeSignature` arm, the
+prospective post-undo meter change), but applies only the invariant-20-safe
+subset of its grid and meter-change restorations
+(`select_invariant20_safe_restorations`), chosen after its mints are
+tombstoned. A 10,000-history run at 128 authored operations (seed
+`0x52c8257e`) found it, and one author reaches it (the minimized history,
+serialized, still breaks): measures a bar apart, a 2/4 signature at the
+first, a default grid set, a 4/4 signature at the same bar in a transaction,
+and that transaction undone best effort. The 2/4 restoration would leave the
+measures a whole bar apart under a half-bar meter, so the subset drops it, the
+meter change keeps naming the 4/4 signature, and the guard, having read the
+restoration, had removed it (`CrossCuttingRefsResolve`). The subset depends on
+what the undo tombstones (measures, instances, a signature's liveness), so it
+cannot be chosen before the guard; instead the undo is taken under the
+transaction snapshot, and when a restoration the subset drops leaves a value
+naming a signature the undo removed, the state is restored and the undo taken
+again with that signature kept, until none is (a signature names nothing, so
+keeping one keeps nothing else). Only an undo removing a time signature takes
+the snapshot. `ValueRestoration` gains `Clone` for the second pass. Locked by
+`a_best_effort_undo_keeps_a_signature_its_dropped_restoration_leaves_named_in_both_modes`
+and history `166`. Mutation: the dropped values never read (the test fails,
+and `166`).

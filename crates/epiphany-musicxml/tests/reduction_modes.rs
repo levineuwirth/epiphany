@@ -5752,3 +5752,124 @@ fn a_container_an_undo_emptied_reads_empty_in_both_modes() {
     );
     assert!(tombstoned(&state, TypedObjectId::Region(region)));
 }
+
+/// A best-effort undo keeps a time signature a meter change still names
+/// after the undo, in both modes. The undo restores what the meter change
+/// named before only where invariant 20 allows (the measures must still fit
+/// the meter), so its restoration can be dropped, leaving the meter change
+/// naming the signature the undone transaction made. One author: a region
+/// with measures at its second and third bars, a 2/4 signature at the
+/// second, a default grid set in one transaction, a 4/4 signature at the
+/// second bar in another, and that transaction undone best effort: the 2/4
+/// restoration would leave the measures a bar apart under a half-bar meter,
+/// so it is dropped and the 4/4 signature stays. Before reduction version 3's
+/// rule the undo removed the signature the meter change still named
+/// (`CrossCuttingRefsResolve`).
+#[test]
+fn a_best_effort_undo_keeps_a_signature_its_dropped_restoration_leaves_named_in_both_modes() {
+    use epiphany_core::{MeasureId, MetricGrid, StaffInstanceId, TimeSignatureId};
+    use epiphany_ops::{
+        CreateMeasureOp, CreateRegionOp, CreateStaffInstanceOp, SetMetricGridOp, SetTimeSignatureOp,
+    };
+    let m = Measure::new();
+    let region = RegionId::new(A, 3400);
+    let instance = StaffInstanceId::new(A, 3401);
+    let (half, whole) = (TimeSignatureId::new(A, 3402), TimeSignatureId::new(A, 3403));
+    let (grid_tx, meter_tx) = (TransactionId::new(A, 3404), TransactionId::new(A, 3405));
+    let at = |bars: i64| {
+        valuegen::region_start_anchor(
+            region,
+            MusicalPosition(RationalTime::new(bars, 1).expect("bars")),
+        )
+    };
+    let measure = |id: u64, bar: i64| {
+        primitive(OperationKind::CreateMeasure(CreateMeasureOp {
+            instance,
+            measure: epiphany_core::Measure {
+                id: MeasureId::new(A, id),
+                start: at(bar),
+                time_signature: None,
+                explicit_number: Some(bar as u32 + 1),
+                number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+            },
+        }))
+    };
+    let signature = |id: TimeSignatureId, beats: u16| {
+        primitive(OperationKind::SetTimeSignature(SetTimeSignatureOp {
+            region,
+            anchor: at(1),
+            time_signature: Some(valuegen::time_signature(id, beats)),
+        }))
+    };
+    let declare = |tx: TransactionId| {
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("edit"),
+            category: None,
+        }))
+    };
+    let payloads = vec![
+        (
+            primitive(OperationKind::CreateRegion(CreateRegionOp {
+                region: valuegen::region(region),
+            })),
+            None,
+        ),
+        (
+            primitive(OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                region,
+                instance: valuegen::staff_instance(instance, m.import.ids.staves[0][0]),
+            })),
+            None,
+        ),
+        (measure(3406, 1), None),
+        (signature(half, 2), None),
+        (declare(grid_tx), Some(grid_tx)),
+        (
+            primitive(OperationKind::SetMetricGrid(SetMetricGridOp {
+                region,
+                grid: Some(MetricGrid {
+                    meter_sequence: Vec::new(),
+                }),
+            })),
+            Some(grid_tx),
+        ),
+        (measure(3407, 2), None),
+        (declare(meter_tx), Some(meter_tx)),
+        (signature(whole, 4), Some(meter_tx)),
+        (
+            OperationPayload::UndoTransaction(UndoTransactionPayload {
+                target: meter_tx,
+                policy: UndoPolicy::BestEffort,
+            }),
+            None,
+        ),
+    ];
+    let mut authored: Vec<OperationEnvelope> = Vec::new();
+    for (counter, (payload, transaction)) in payloads.into_iter().enumerate() {
+        let seen: Vec<OperationId> = authored.last().map(|e| e.id).into_iter().collect();
+        let mut env = m.op(A, counter as u64, counter as i64 + 1, &seen, payload);
+        env.transaction = transaction;
+        authored.push(env);
+    }
+    let state = m.agree(
+        "a best-effort undo of a signature its meter change keeps",
+        &authored,
+    );
+    for env in &authored {
+        assert!(
+            matches!(
+                effect(&state, env.id),
+                Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
+            ),
+            "{:?}: {:?}",
+            env.id,
+            effect(&state, env.id)
+        );
+    }
+    assert!(
+        live(&state, TypedObjectId::TimeSignature(whole)),
+        "the 4/4 stays"
+    );
+    assert!(live(&state, TypedObjectId::TimeSignature(half)));
+}

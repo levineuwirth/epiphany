@@ -527,6 +527,13 @@ pub mod vectors;
 ///     `DeleteStaffInstance` or `DeleteRegion` of the container the undo
 ///     emptied applies, where it was refused `ContainerNotEmpty` with nothing
 ///     live in the container.
+///   - a best-effort undo keeps a time signature that a meter change or
+///     grid it leaves in place still names: its strand guard reads every
+///     meter restoration, but it applies only the invariant-20-safe subset,
+///     chosen once its mints are gone, so a restoration that subset drops
+///     leaves its key's value; the undo is taken again with such a signature
+///     kept, where it removed the signature the meter change still named
+///     (`CrossCuttingRefsResolve`).
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
@@ -605,7 +612,9 @@ pub mod vectors;
 ///   pitches,
 ///   `a_trajectorys_own_pitches_are_read_and_written_as_a_notes_in_both_modes`;
 ///   for an emptied container,
-///   `a_container_an_undo_emptied_reads_empty_in_both_modes`.
+///   `a_container_an_undo_emptied_reads_empty_in_both_modes`; for a dropped
+///   meter restoration,
+///   `a_best_effort_undo_keeps_a_signature_its_dropped_restoration_leaves_named_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.
