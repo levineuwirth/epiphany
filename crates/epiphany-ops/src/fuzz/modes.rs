@@ -2997,7 +2997,10 @@ pub fn valid(history: &[OperationEnvelope]) -> bool {
 /// Renumbers each replica's operations to run from `0` without a gap, in
 /// their order, and rewrites every causal context, stamp and operation
 /// reference to match: a context that had seen a replica up to a counter has
-/// seen it up to the last operation still present at or below it.
+/// seen it up to the last operation still present at or below it. An
+/// equivocation's resolution chooses the renumbered candidate it chose, by
+/// that candidate's new hash (review 2's L7: it had kept the old hash, which
+/// no candidate then had, so a shrunk history lost its resolution).
 pub fn compact(history: &[OperationEnvelope]) -> Vec<OperationEnvelope> {
     let mut counters: BTreeMap<ReplicaId, Vec<u64>> = BTreeMap::new();
     for envelope in history {
@@ -3020,7 +3023,7 @@ pub fn compact(history: &[OperationEnvelope]) -> Vec<OperationEnvelope> {
         let below = list.partition_point(|c| *c <= counter);
         below.checked_sub(1).map(|i| i as u64)
     };
-    history
+    let renumbered: Vec<OperationEnvelope> = history
         .iter()
         .map(|envelope| {
             let id = renumber(envelope.id).expect("every envelope's own id is counted");
@@ -3062,6 +3065,23 @@ pub fn compact(history: &[OperationEnvelope]) -> Vec<OperationEnvelope> {
                 transaction: envelope.transaction,
                 payload,
             }
+        })
+        .collect();
+    // Each envelope's hash, before and after, for the resolutions.
+    let rehashed: BTreeMap<_, _> = history
+        .iter()
+        .zip(&renumbered)
+        .map(|(before, after)| (before.envelope_hash(), after.envelope_hash()))
+        .collect();
+    renumbered
+        .into_iter()
+        .map(|mut envelope| {
+            if let OperationPayload::ResolveEquivocation(p) = &mut envelope.payload {
+                if let Some(chosen) = rehashed.get(&p.chosen) {
+                    p.chosen = *chosen;
+                }
+            }
+            envelope
         })
         .collect()
 }
@@ -3130,6 +3150,41 @@ mod tests {
             witness_shape("anchor Region { id: RegionId(0000000000000001:0000000000000002), edge: Start } offset"),
             "anchor Region { id: RegionId, edge: Start } offset"
         );
+    }
+
+    /// `compact` carries an equivocation's choice to the renumbered candidate
+    /// (review 2's L7): the ledger history with its first envelope taken out,
+    /// so that every candidate's context and hash change, resolves to its
+    /// twin's new hash, as it chose the twin before.
+    #[test]
+    fn compact_carries_an_equivocations_choice() {
+        use super::{compact, OperationPayload};
+        let history = super::parse(include_str!(
+            "../../tests/two_modes/160-invariant-region-extents.txt"
+        ))
+        .expect("parses");
+        let resolution = |history: &[super::OperationEnvelope]| {
+            history
+                .iter()
+                .find_map(|env| match &env.payload {
+                    OperationPayload::ResolveEquivocation(p) => Some((p.target, p.chosen)),
+                    _ => None,
+                })
+                .expect("a resolution")
+        };
+        let (target, chosen) = resolution(&history);
+        let twin = history
+            .iter()
+            .position(|env| env.id == target && env.envelope_hash() == chosen)
+            .expect("the chosen candidate");
+        let compacted = compact(&history[1..]);
+        let (_, now) = resolution(&compacted);
+        assert_ne!(
+            compacted[twin - 1].envelope_hash(),
+            chosen,
+            "the candidate is rehashed"
+        );
+        assert_eq!(now, compacted[twin - 1].envelope_hash());
     }
 
     /// An overlap of another making stays out of the deferred class (D52): the

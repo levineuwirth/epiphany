@@ -3529,3 +3529,17 @@ one and nothing else. Every committed failing history meets it. Locked by
 seen-deleted histories run as one show both classes, which neither
 declaration admits; each alone shows its own). Mutation: the predicate back to
 "among its findings" (the test fails).
+
+**`compact` keeps an equivocation's choice (L7).** After a removal the
+minimizer renumbers the history (`compact`), which rewrites every candidate's
+id, context and stamp, and so its hash; a `ResolveEquivocation` kept its
+`chosen` hash, which no renumbered candidate then had, so a shrunk history no
+longer resolved the slot as it had, and every removal that renumbered the
+candidates changed the reduction. The minimizer could then keep only removals
+that dropped the equivocation altogether, and review 2's ledger history
+shrank to six envelopes that had lost the cause. `compact` now maps each
+envelope's hash before renumbering to its hash after, and points each
+resolution's `chosen` at its renumbered candidate. Locked by
+`compact_carries_an_equivocations_choice` (the ledger history, `160`, with its
+first envelope taken out: the chosen twin is rehashed and the resolution
+follows it). Mutation: `chosen` kept as it was (the test fails).
