@@ -418,7 +418,7 @@ pub mod vectors;
 ///     pitch. An undo restoring a modified event's value brings back, at
 ///     their values and with their attachments, the pitches the undone
 ///     transaction's modifies removed, and keeps every pitch added since
-///     (the planning default, not yet ruled). A whole-event write leaves out
+///     (the owner's ruling, D51). A whole-event write leaves out
 ///     a pitch it carries that a delete or undo tombstoned (delete wins). The
 ///     modify dropped a pitch it left out from the graph and left it live
 ///     (`SpellingScopeResolves`); then, under the checkpoint's first reading of

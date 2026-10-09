@@ -3287,9 +3287,9 @@ fn a_whole_event_modify_removes_only_the_pitches_its_author_saw_in_both_modes() 
 }
 
 /// An undo of a whole-event modify reverts that modify's own effect and no
-/// more, in both modes (the planning default under observed-remove, D49): the
-/// pitch it removed comes back, at its value and with its spelling, and the
-/// event its earlier value; a pitch added since stays.
+/// more, in both modes (observed-remove, D49, and the owner's ruling for its
+/// undo, D51): the pitch it removed comes back, at its value and with its
+/// spelling, and the event its earlier value; a pitch added since stays.
 #[test]
 fn an_undo_of_a_modify_brings_back_the_pitch_it_removed_in_both_modes() {
     use epiphany_core::{IdentifiedPitch, PitchId};

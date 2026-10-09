@@ -380,12 +380,13 @@ fn compare(
     out
 }
 
-/// The deferred class (D48, D50): a `RegionExtents` violation between two
-/// regions at one time extent where one was created at the place of the other
-/// while its author's view did not hold the other live. Refusing that create
-/// needs region time extents resolved in base-free reduction. Two causes, each
-/// named apart: [`REGION_NEVER_SEEN`] and [`REGION_SEEN_DELETED`]; any other
-/// overlap keeps the invariant's plain class, which nothing excepts.
+/// The deferred class (D48, D50, D51): a `RegionExtents` violation between
+/// two regions at one time extent where one was created at the place of the
+/// other while its author's view did not hold the other live. Refusing that
+/// create needs region time extents resolved in base-free reduction. Three
+/// causes, each named apart: [`REGION_NEVER_SEEN`], [`REGION_SEEN_DELETED`]
+/// and [`REGION_SEEN_UNDONE`]; any other overlap keeps the invariant's plain
+/// class, which nothing excepts.
 pub const DEFERRED_REGIONS: &str = "invariant Invariant(RegionExtents: a region created at the place of one its author's view did not hold live";
 
 /// The deferred class's first cause (D48): two authors each created a region at
@@ -397,16 +398,15 @@ pub const REGION_NEVER_SEEN: &str = "invariant Invariant(RegionExtents: a region
 /// the region concurrently), and created a region in its place.
 pub const REGION_SEEN_DELETED: &str = "invariant Invariant(RegionExtents: a region created at the place of one its author's view did not hold live, seen deleted by a delete the merged history refuses";
 
-/// An overlap of the same family that is not deferred, named apart so a run
-/// lists it beside the invariant's other causes: an author undid the
-/// transaction that created a region, which the merged history keeps (a
-/// concurrent fill blocking the undo), and created a region in its place. A
-/// break that needs concurrent authors, outside D50's class, for the owner.
-pub const REGION_SEEN_UNDONE: &str = "invariant Invariant(RegionExtents: a region created at the place of one its author's undo removed, the undo blocked in the merged history";
+/// The deferred class's third cause (D51): an author saw a region and its own
+/// undo of the transaction that created it, which the merged history blocks
+/// (another author filled the region concurrently), and created a region in
+/// its place.
+pub const REGION_SEEN_UNDONE: &str = "invariant Invariant(RegionExtents: a region created at the place of one its author's view did not hold live, seen undone by an undo the merged history blocks";
 
 /// Whether `class` is one of the deferred class's causes.
 pub fn deferred(class: &str) -> bool {
-    class == REGION_NEVER_SEEN || class == REGION_SEEN_DELETED
+    class == REGION_NEVER_SEEN || class == REGION_SEEN_DELETED || class == REGION_SEEN_UNDONE
 }
 
 fn invariant_findings(
@@ -524,9 +524,9 @@ fn collapse_lists(chars: &[char], at: &mut usize, close: Option<char>) -> String
 /// neither create in the other's causal past (never seen), or the later
 /// create's author having seen the earlier region and its delete, the delete
 /// refused in the merged history (`effects`) and the region not live in that
-/// author's view (seen deleted); or, not deferred, having seen an undo of the
-/// earlier region's transaction instead, the region again not live in its
-/// view (seen undone).
+/// author's view (seen deleted); or having seen an undo of the earlier
+/// region's transaction instead, the region again not live in its view (seen
+/// undone).
 fn region_cause(
     history: &[OperationEnvelope],
     effects: &BTreeMap<OperationId, OperationEffect>,
@@ -2860,8 +2860,8 @@ mod tests {
     }
 
     /// Every view is checked and every class it shows kept (review 1's L2):
-    /// two views of one simulation, the first showing one deferred cause and
-    /// the second the other, both reach the history's findings.
+    /// three views of one simulation, each showing one deferred cause, all
+    /// reach the history's findings.
     #[test]
     fn every_view_is_checked_and_every_class_kept() {
         let never_seen = super::parse(include_str!(
@@ -2872,26 +2872,40 @@ mod tests {
             "../../tests/two_modes/145-invariant-region-extents.txt"
         ))
         .expect("parses");
+        let seen_undone = super::parse(include_str!(
+            "../../tests/two_modes/150-invariant-region-extents.txt"
+        ))
+        .expect("parses");
         let mut sim = super::Simulation::new(0);
-        for history in [never_seen.clone(), seen_deleted] {
+        for history in [never_seen.clone(), seen_deleted, seen_undone] {
             sim.replicas[0].seen = (0..history.len()).collect();
             sim.history = history;
             sim.view(0);
         }
         let classes: Vec<&String> = sim.view_findings.keys().collect();
-        let both = vec![super::REGION_NEVER_SEEN, super::REGION_SEEN_DELETED];
-        assert_eq!(classes, both, "two views");
-        // One view showing both: the second history's replicas renamed apart.
+        let all = vec![
+            super::REGION_NEVER_SEEN,
+            super::REGION_SEEN_DELETED,
+            super::REGION_SEEN_UNDONE,
+        ];
+        assert_eq!(classes, all, "three views");
+        // One view showing all three: the later histories' replicas renamed
+        // apart.
         let renamed = include_str!("../../tests/two_modes/145-invariant-region-extents.txt")
             .replace("#x0000000000000001", "#x0000000000000004")
             .replace("#x0000000000000003", "#x0000000000000006");
+        let renamed_undone = include_str!("../../tests/two_modes/150-invariant-region-extents.txt")
+            .replace("#x0000000000000001", "#x0000000000000007")
+            .replace("#x0000000000000002", "#x0000000000000008")
+            .replace("#x0000000000000003", "#x0000000000000009");
         let mut one_view = never_seen;
         one_view.extend(super::parse(&renamed).expect("parses"));
+        one_view.extend(super::parse(&renamed_undone).expect("parses"));
         let mut sim = super::Simulation::new(0);
         sim.replicas[0].seen = (0..one_view.len()).collect();
         sim.history = one_view;
         sim.view(0);
         let classes: Vec<&String> = sim.view_findings.keys().collect();
-        assert_eq!(classes, both, "one view");
+        assert_eq!(classes, all, "one view");
     }
 }

@@ -10,9 +10,10 @@
 //! from `split` to `agree`; a `split` history whose failure has gone fails
 //! here until it is flipped, so a fix cannot pass unrecorded. A failure the
 //! owner has deferred is `# expect: deferred`, with a `# deferred:` line
-//! giving the reason: its history must still fail as its class, as a `split`
-//! one does, and is run by an ignored test, which requires it to agree, so
-//! `cargo test -- --ignored` shows it failing until the fix lands.
+//! giving the reason: its class must be a cause the owner deferred by name
+//! (`modes::deferred`), its history must still fail as its class, as a
+//! `split` one does, and it is run by an ignored test, which requires it to
+//! agree, so `cargo test -- --ignored` shows it failing until the fix lands.
 //!
 //! The CI budget runs a small number of generated histories, in two chunks of
 //! different lengths, and requires that every failure it finds is a committed
@@ -113,6 +114,14 @@ fn every_committed_history_reduces_as_it_declares() {
             "{}: names an object no operation its author saw minted",
             c.file
         );
+        if matches!(c.expect, Expect::Deferred(_)) {
+            assert!(
+                modes::deferred(&c.class),
+                "{}: declared deferred, but `{}` is no cause the owner deferred",
+                c.file,
+                c.class
+            );
+        }
         let found = modes::findings(&c.history);
         if c.expect != Expect::Agree {
             assert!(
@@ -135,17 +144,19 @@ fn every_committed_history_reduces_as_it_declares() {
 }
 
 /// A region created at the place of one its author's view did not hold live
-/// is deferred (owner's rulings D48 and D50): two authors each create a
+/// is deferred (owner's rulings D48, D50 and D51): two authors each create a
 /// region over the same time and staves, neither having seen the other's, or
 /// an author creates one where its own delete of a region, refused in the
-/// merged history for a concurrent fill, left none in its view. Refusing the
-/// create needs the regions' time extents compared in both modes, which needs
-/// anchors resolved in base-free reduction. Wanted when collaboration
-/// arrives; until then the histories are kept and run here.
+/// merged history for a concurrent fill, or its own undo of the region's
+/// transaction, blocked in the merged history for a concurrent fill, left
+/// none in its view. Refusing the create needs the regions' time extents
+/// compared in both modes, which needs anchors resolved in base-free
+/// reduction. Wanted when collaboration arrives; until then the histories are
+/// kept and run here.
 #[test]
 #[ignore = "a region created at the place of one its author's view did not hold \
-            live is deferred (D48, D50): refusing it needs region time extents \
-            resolved in base-free reduction"]
+            live is deferred (D48, D50, D51): refusing it needs region time \
+            extents resolved in base-free reduction"]
 fn every_deferred_history_reduces_alike() {
     let deferred: Vec<Committed> = committed()
         .into_iter()
@@ -310,15 +321,16 @@ fn a_region_created_where_its_authors_refused_delete_left_none_is_deferred() {
     assert!(plain(&found), "{found:?}");
 }
 
-/// An overlap from another cause is not deferred though its author's view did
-/// not hold the region: an author undoes the transaction that created a
-/// region, which another author has concurrently filled, so the merged
-/// history keeps the region (the undo blocked), and creates a region in its
-/// place. Only a delete the merged history refuses is the deferred class's
-/// second cause (D50); this one is named apart, for the owner, and nothing
-/// excepts it.
+/// The deferred class's third cause (D51) is named apart too, and holds only
+/// where its author's view did not hold the region live because of its own
+/// undo of the region's transaction, which the merged history blocks: an
+/// author undoes the transaction that created a region another author has
+/// concurrently filled, so the merged history keeps the region, and creates a
+/// region in its place. With the second create's author having also seen the
+/// fill, so that its view blocked the undo too and held the region, or with
+/// the undo gone, the overlap is classed plainly.
 #[test]
-fn a_region_created_where_its_authors_blocked_undo_left_none_is_not_deferred() {
+fn a_region_created_where_its_authors_blocked_undo_left_none_is_deferred() {
     use epiphany_core::{
         InstrumentId, OperationId, RegionId, ReplicaId, StaffId, StaffInstanceId, TimeAnchor,
         TimeExtent, TransactionId, WallClockTime,
@@ -446,14 +458,44 @@ fn a_region_created_where_its_authors_blocked_undo_left_none_is_not_deferred() {
             instance: valuegen::staff_instance(StaffInstanceId::new(one, 106), staff),
         })),
     );
-    assert!(modes::valid(&history));
-    let found: Vec<String> = modes::findings(&history)
-        .into_iter()
-        .map(|f| f.class)
-        .collect();
+    let classes = |history: &[OperationEnvelope]| -> Vec<String> {
+        assert!(modes::valid(history));
+        modes::findings(history)
+            .into_iter()
+            .map(|f| f.class)
+            .collect()
+    };
+    let plain = |found: &[String]| {
+        found.iter().any(|c| plain_region_extents(c)) && found.iter().all(|c| !modes::deferred(c))
+    };
+    let found = classes(&history);
     assert!(
         found.iter().any(|c| c == modes::REGION_SEEN_UNDONE),
         "{found:?}"
     );
-    assert!(found.iter().all(|c| !modes::deferred(c)), "{found:?}");
+    assert!(modes::deferred(modes::REGION_SEEN_UNDONE));
+
+    // The second create's author saw the fill as well.
+    let saw_fill: Vec<OperationEnvelope> = history
+        .iter()
+        .cloned()
+        .map(|mut env| {
+            if env.id == OperationId::new(one, 5) {
+                env.causal_context = env.causal_context.with_seen(three, 0);
+            }
+            env
+        })
+        .collect();
+    let found = classes(&saw_fill);
+    assert!(plain(&found), "{found:?}");
+
+    // No undo: the author saw the region live.
+    let without: Vec<OperationEnvelope> = history
+        .iter()
+        .filter(|env| !matches!(env.payload, OperationPayload::UndoTransaction(_)))
+        .cloned()
+        .collect();
+    assert_eq!(without.len() + 1, history.len());
+    let found = classes(&modes::compact(&without));
+    assert!(plain(&found), "{found:?}");
 }

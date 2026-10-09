@@ -1,6 +1,7 @@
-# class: invariant Invariant(RegionExtents: a region created at the place of one its author's undo removed, the undo blocked in the merged history
-# expect: split
-# named: for the owner, outside D50's deferred class; refusing the create needs region time extents resolved in base-free reduction
+# class: invariant Invariant(RegionExtents: a region created at the place of one its author's view did not hold live, seen undone by an undo the merged history blocks
+# was: invariant Invariant(RegionExtents: a region created at the place of one its author's undo removed, the undo blocked in the merged history, named apart until the owner ruled it into the deferred class (D51)
+# expect: deferred
+# deferred: a region created where its author's own undo left none, the undo blocked for a concurrent fill (D51); refusing the create needs region time extents resolved in base-free reduction
 # found: seed 0xf1c8179d, 128 authored; minimized from 163 to 10 envelopes
 (envelope #x00000000000000010000000000000000 #x00000000000000000000000000000001 (stamp 1 0 #x00000000000000010000000000000000) (causal () ()) () (primitive (create-staff-group (staff-group #x00000000000000010000000000000000 (some "staff-group-0") grand-staff ()))))
 (envelope #x00000000000000010000000000000001 #x00000000000000000000000000000001 (stamp 2 0 #x00000000000000010000000000000001) (causal ((#x0000000000000001 0)) ()) () (primitive (create-instrument (instrument #x00000000000000010000000000000001 "instrument-1" () () #x () (clef g 2 0) (staff-line-configuration 5 #x000000000000f03f solid ()) ()))))

@@ -3104,10 +3104,11 @@ base, as for every referent a base supplies. What remains to keep is what
 `written_event` already kept, so a rest or an unpitched event written over a
 note holding a pitch its author never saw becomes a note of that pitch (an
 unpitched value now follows the rest's rule; it had dropped the kept pitches).
-The undo, under the planning default the owner may overrule, reverts the
-modify's own effect and no more: an event's restoration first brings back the
-pitches a `ModifyEvent` member of the undone transaction removed
-(`revive_removed_pitches`), live again, at the value and with the attachments
+The undo, implemented as a planning default and since ruled so by the owner
+(D51), reverts the modify's own effect and no more: an event's restoration
+first brings back the pitches a `ModifyEvent` member of the undone
+transaction removed (`revive_removed_pitches`), live again, at the value and
+with the attachments
 recorded at removal (`removed_pitches`, an index in the transaction snapshot,
 so a rolled-back modify leaves none), and then writes the restored value,
 which keeps every live pitch it does not carry (pitches added since stay) and
@@ -3137,7 +3138,8 @@ its place. One author made both regions, so the concurrency test classed the
 overlap plainly. Its fix is the deferred one, refusing the create by region
 extents base-free reduction cannot yet resolve, and the owner widened the
 class by name to a region created at the place of one its author's view did
-not hold live, with two causes the classifier names apart: never seen
+not hold live, with two causes the classifier names apart (D51 adds a third,
+below): never seen
 (`REGION_NEVER_SEEN`, D48's concurrent creation) and seen deleted by a delete
 the merged history refuses (`REGION_SEEN_DELETED`). The second holds when the
 later create's author saw the earlier region's create and a `DeleteRegion` of
@@ -3155,11 +3157,12 @@ author saw the region live keeps the plain class
 delete gone or the fill seen, `a_region_created_where_its_authors_refused_delete_left_none_is_deferred`),
 as does a region created where its author's undo of the region's
 transaction, blocked in the merged history by a concurrent fill, left none
-(`a_region_created_where_its_authors_blocked_undo_left_none_is_not_deferred`):
-a third cause in the same family, which the owner has not ruled into the
-class, so it is not excepted. Review 1's plant B3, an overlap from a
-`DeleteStaffInstance` leaving its staff in the region's extent, still fails
-the CI budget. Mutations: the seen-deleted cause never named (its test and the
+(`a_region_created_where_its_authors_blocked_undo_left_none_is_not_deferred`,
+now `…_is_deferred`): a third cause in the same family, which the owner had
+not then ruled into the class, so it was not excepted (D51 has since, below).
+Review 1's plant B3, an overlap from a `DeleteStaffInstance` leaving its
+staff in the region's extent, still fails the CI budget. Mutations: the
+seen-deleted cause never named (its test and the
 committed suite fail), the view's check dropped (the fill-seen case fails), the
 refused-delete check dropped (the undo case fails), and the concurrency test
 dropped (every classifier test fails).
@@ -3191,7 +3194,7 @@ here a run of 1,000 histories took about a sixth more CPU time. Locked by
 `every_view_is_checked_and_every_class_kept`, which drives two views of a
 simulation showing the two deferred causes in turn, and one view showing both
 (gated after the first finding, or keeping a view's first finding only, it
-fails).
+fails); since D51, three views and the three causes, below.
 
 **The CI budget runs a second, longer chunk (L4).** Review 1's plant B2 (a move
 leaving the occupancy index behind, in both modes) was found locally at the
@@ -3239,17 +3242,50 @@ measure breaks no invariant the core checks, and the test holds its conflict),
 and history `149`.
 
 **A third overlap cause, named apart and not deferred (found by this round's
-fuzz).** At 128 authored operations an author created a region in a
-transaction and undid the transaction, while another author, concurrently,
-filled the region; in the merged history the strand guard keeps the region
+fuzz; deferred since D51, below).** At 128 authored operations an author
+created a region in a transaction and undid the transaction, while another
+author, concurrently, filled the region; in the merged history the strand
+guard keeps the region
 against the undo, and the first author, its view holding no region there,
 created one in its place (`RegionExtents`). It is the deferred class's shape
 and needs its fix, refusing the create by region extents base-free reduction
 cannot yet resolve, but D50 put exactly two causes in that class and nothing
-else, so it is not excepted: the classifier names it apart
-(`REGION_SEEN_UNDONE`, a region created where its author's undo, blocked in
-the merged history, left none) so a run lists it beside the invariant's other
+else (D51 has since made it three, below), so it was not excepted: the
+classifier names it apart (`REGION_SEEN_UNDONE`, a region created where its
+author's undo, blocked in the merged history, left none) so a run lists it
+beside the invariant's other
 causes, and its history is committed `split` (`150`) for the owner to rule.
 Locked by `a_region_created_where_its_authors_blocked_undo_left_none_is_not_deferred`
-and history `150` (with the undo's condition dropped, both fail); review 1's
-plant B3 still fails the CI budget.
+(now `…_is_deferred`) and history `150` (with the undo's condition dropped,
+both fail); review 1's plant B3 still fails the CI budget.
+
+## X4a fix round 1, continued — the third cause deferred (2026-10-09)
+
+**The deferred class holds three causes (D51).** The owner ruled the third
+overlap cause into the deferred class by name: a region created at the place
+of one its author's undo removed, the undo blocked in the merged history by a
+concurrent fill. It needs concurrent authors and the deferred fix, refusing
+the create by region extents base-free reduction cannot yet resolve, so the
+class now holds three causes, never seen (`REGION_NEVER_SEEN`), seen deleted
+(`REGION_SEEN_DELETED`) and seen undone (`REGION_SEEN_UNDONE`), and nothing
+else. `modes::deferred` names the third as it names the other two, and its
+class takes the class's name like theirs (`… did not hold live, seen undone
+by an undo the merged history blocks`). History `150` is `# expect: deferred`
+with its reason, so it must still fail as its class in the committed suite,
+the ignored `every_deferred_history_reduces_alike` requires it to agree, and
+the CI budget counts its class as known, by name. A history declared deferred
+must now be of a cause `modes::deferred` names, so none is excepted outside
+the class by its header alone. Nothing else falls in the class: an overlap
+whose author saw the region live keeps the plain class, as does the undo case
+with the fill seen or the undo gone, and review 1's plant B3 still fails the
+CI budget. The owner also ruled that O5's undo, implemented
+as a planning default, stands: an undo of a modify reverts that modify's own
+effect and no more. No reduction verdict or state changes, so version 3 takes
+no bullet. Locked by
+`a_region_created_where_its_authors_blocked_undo_left_none_is_deferred` (the
+third cause named, with the fill seen or the undo gone the class plain) and
+`every_view_is_checked_and_every_class_kept` (three views, and one view
+showing all three). Mutations: the third cause dropped from `deferred` (its
+test fails, and the committed suite on `150`), and every `RegionExtents` class
+deferred (the seen-live test fails, and both cause tests at their fill-seen
+case).
