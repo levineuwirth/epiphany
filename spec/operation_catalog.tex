@@ -798,7 +798,8 @@ and its meter changes compare by the order the reduction applied them. A
 best-effort undo that keeps a mint for what names it keeps what that mint
 names, where it removed the instrument of a staff it kept. A pitch inserted
 into an event of any kind without a pitch list, or kept by a whole-event
-write on one, makes it a note. A promoted voice
+write on one, makes it a note. A region or staff instance an undo emptied
+is empty to a later delete. A promoted voice
 holds its instance against a delete, as any voice does. An undo that is a
 member of the transaction it names is refused, and a migration out of musical
 time supersedes an undo's restoration of a value written in musical time into
@@ -1677,7 +1678,11 @@ instance, an instance's voice, a voice's event), which it would leave naming
 nothing, or a live tempo segment of another map is anchored to a region it
 would remove, as a \texttt{DeleteRegion} is refused (the conflict naming the
 region, the segment having no identifier). An undone region or staff instance leaves the graph-aware score, as a
-deleted one does. A
+deleted one does, and an undone staff instance or voice leaves its container's
+place in the reducer's indices, so a region or instance the undo emptied is
+empty to a later \texttt{DeleteRegion} or \texttt{DeleteStaffInstance}
+(since version~0.19.0, before which the delete was refused
+\texttt{ContainerNotEmpty}). A
 \emph{delete} mints nothing, so the prototype's minted-object undo does not
 re-introduce it (P11-C8).
 

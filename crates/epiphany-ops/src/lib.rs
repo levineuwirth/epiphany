@@ -521,6 +521,12 @@ pub mod vectors;
 ///     graph-aware reduction read and wrote a note's pitches alone, a tie on
 ///     a trajectory gave way there alone (an effect split) and the graph kept
 ///     a trajectory's pitch the ledger had removed.
+///   - a voice or staff instance an undo tombstones leaves the reducer's
+///     container indices, as a deleted one does (a voice its instance's and
+///     its occupancy, an instance its region's), so a later
+///     `DeleteStaffInstance` or `DeleteRegion` of the container the undo
+///     emptied applies, where it was refused `ContainerNotEmpty` with nothing
+///     live in the container.
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
@@ -597,7 +603,9 @@ pub mod vectors;
 ///   for a modify's new pitches,
 ///   `a_modify_mints_the_pitches_it_carries_in_both_modes`; for a trajectory's
 ///   pitches,
-///   `a_trajectorys_own_pitches_are_read_and_written_as_a_notes_in_both_modes`.
+///   `a_trajectorys_own_pitches_are_read_and_written_as_a_notes_in_both_modes`;
+///   for an emptied container,
+///   `a_container_an_undo_emptied_reads_empty_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

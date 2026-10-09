@@ -8002,6 +8002,28 @@ impl<'a> Reducer<'a> {
         for (ev, voice) in event_voices {
             self.reanchor_for_tombstone(env, ev, &mut repairs, voice);
         }
+        // The ledger's container indices forget what the undo removed, as a
+        // delete's do, so a container it emptied reads empty: a voice leaves
+        // its instance's index and its occupancy, an instance its region's
+        // (reduction version 3: before it the index kept them, and a delete
+        // of the emptied instance or region was refused `ContainerNotEmpty`).
+        for t in targets {
+            match t {
+                TypedObjectId::Voice(voice) => {
+                    self.voice_occupancy.remove(voice);
+                    for set in self.instance_voices.values_mut() {
+                        set.remove(voice);
+                    }
+                }
+                TypedObjectId::StaffInstance(instance) => {
+                    self.instance_voices.remove(instance);
+                    for set in self.region_instances.values_mut() {
+                        set.remove(instance);
+                    }
+                }
+                _ => {}
+            }
+        }
         repairs
     }
 

@@ -3499,3 +3499,21 @@ kept: every `RegionExtents` finding plain) and by the committed suite.
 Mutations: every `RegionExtents` class deferred (the another-making test
 fails), and the general name dropped, only the named causes deferred (the
 single author's history `161` fails the committed suite).
+
+**A container an undo emptied reads empty (L4).** `tombstone_undo_targets`
+tombstoned a voice or staff instance an undo removed but left it in the
+reducer's container indices, which a delete's precondition reads: an instance
+whose only voice was undone refused `DeleteStaffInstance` `ContainerNotEmpty`
+with no voice in it (review 2's P4), older than `286fbea`, which only made a
+promoted voice enter the index. The review named the voice; the region's index
+held an undone instance the same way, so a region whose only instance was
+undone refused `DeleteRegion` alike, and both are fixed (resume §2: guard every
+path a caller can reach). The undo now removes what it tombstones from the
+indices as the deletes do: a voice from its instance's set and its occupancy,
+an instance from its region's set and its own voice set. Both modes keep the
+indices, so they agree as before; only the verdict moves. Locked by
+`a_container_an_undo_emptied_reads_empty_in_both_modes` (the instance and the
+region case), and histories `164` and `165`, the two probes, which record the
+verdict and agree before and after the fix (both modes shared it), so the
+test, not the committed suite, holds it. Mutations: the voice left in the
+index, and the instance left in it, each failing its case.

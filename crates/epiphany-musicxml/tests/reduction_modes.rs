@@ -5645,3 +5645,110 @@ fn a_trajectorys_own_pitches_are_read_and_written_as_a_notes_in_both_modes() {
     };
     assert_eq!(left.pitches, vec![fourth]);
 }
+
+/// A container an undo emptied reads empty, in both modes: the ledger's
+/// indices forget the voice or staff instance the undo removed, as a delete's
+/// do. One author makes a region and an instance in it, adds a voice to the
+/// instance in a transaction and undoes it, then deletes the instance; and
+/// makes a region, adds an instance to it in a transaction, undoes it and
+/// deletes the region. Each delete applies. Before reduction version 3 the
+/// index kept the removed voice or instance, and the delete was refused
+/// `ContainerNotEmpty` with nothing in the container.
+#[test]
+fn a_container_an_undo_emptied_reads_empty_in_both_modes() {
+    use epiphany_core::{StaffInstanceId, VoiceId};
+    use epiphany_ops::{
+        CreateRegionOp, CreateStaffInstanceOp, CreateVoiceOp, DeleteRegionOp, DeleteStaffInstanceOp,
+    };
+    let m = Measure::new();
+    let staff = m.import.ids.staves[0][0];
+    let serial = |payloads: Vec<(OperationPayload, Option<TransactionId>)>| {
+        let mut authored: Vec<OperationEnvelope> = Vec::new();
+        for (counter, (payload, transaction)) in payloads.into_iter().enumerate() {
+            let seen: Vec<OperationId> = authored.last().map(|e| e.id).into_iter().collect();
+            let mut env = m.op(A, counter as u64, counter as i64 + 1, &seen, payload);
+            env.transaction = transaction;
+            authored.push(env);
+        }
+        authored
+    };
+    let declare = |tx: TransactionId| {
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("edit"),
+            category: None,
+        }))
+    };
+    let undo = |tx: TransactionId| {
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::StrictInverse,
+        })
+    };
+    let make_region = |region: RegionId| {
+        primitive(OperationKind::CreateRegion(CreateRegionOp {
+            region: valuegen::region(region),
+        }))
+    };
+    let make_instance = |region: RegionId, instance: StaffInstanceId| {
+        primitive(OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+            region,
+            instance: valuegen::staff_instance(instance, staff),
+        }))
+    };
+
+    // A voice undone, its instance deleted.
+    let (region, instance, voice) = (
+        RegionId::new(A, 3300),
+        StaffInstanceId::new(A, 3301),
+        VoiceId::new(A, 3302),
+    );
+    let tx = TransactionId::new(A, 3303);
+    let authored = serial(vec![
+        (make_region(region), None),
+        (make_instance(region, instance), None),
+        (declare(tx), Some(tx)),
+        (
+            primitive(OperationKind::CreateVoice(CreateVoiceOp {
+                staff_instance: instance,
+                voice: valuegen::voice(voice),
+            })),
+            Some(tx),
+        ),
+        (undo(tx), None),
+        (
+            primitive(OperationKind::DeleteStaffInstance(DeleteStaffInstanceOp {
+                staff_instance: instance,
+            })),
+            None,
+        ),
+    ]);
+    let state = m.agree("an instance whose voice was undone, deleted", &authored);
+    assert!(tombstoned(&state, TypedObjectId::Voice(voice)));
+    assert_eq!(
+        effect(&state, authored[5].id),
+        Some(OperationEffect::Applied)
+    );
+    assert!(tombstoned(&state, TypedObjectId::StaffInstance(instance)));
+
+    // An instance undone, its region deleted.
+    let (region, instance) = (RegionId::new(A, 3310), StaffInstanceId::new(A, 3311));
+    let tx = TransactionId::new(A, 3312);
+    let authored = serial(vec![
+        (make_region(region), None),
+        (declare(tx), Some(tx)),
+        (make_instance(region, instance), Some(tx)),
+        (undo(tx), None),
+        (
+            primitive(OperationKind::DeleteRegion(DeleteRegionOp { region })),
+            None,
+        ),
+    ]);
+    let state = m.agree("a region whose instance was undone, deleted", &authored);
+    assert!(tombstoned(&state, TypedObjectId::StaffInstance(instance)));
+    assert_eq!(
+        effect(&state, authored[4].id),
+        Some(OperationEffect::Applied)
+    );
+    assert!(tombstoned(&state, TypedObjectId::Region(region)));
+}
