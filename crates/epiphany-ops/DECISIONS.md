@@ -3569,3 +3569,29 @@ the snapshot. `ValueRestoration` gains `Clone` for the second pass. Locked by
 `a_best_effort_undo_keeps_a_signature_its_dropped_restoration_leaves_named_in_both_modes`
 and history `166`. Mutation: the dropped values never read (the test fails,
 and `166`).
+
+**The spanner arm reaches its shape (a follow-up to L6's arms).** The arms
+commit rewrote a spanner's staves, but M1's break needs more than the payload:
+a staff made in a transaction, a spanner written onto it and then away from
+it in another, the first transaction undone (best effort, since its spanner
+write is superseded) and then the second, whose restoration names the removed
+staff. With M1's fix reverted, the generator found none of it at 10,000
+histories of 64 and of 128 authored operations; counted over 1,500 histories
+of 64, two move commands on one spanner by one author, then undone in that
+order, came to a few in a million. The undo arms also picked any transaction
+the view declared, where an editor's undo history offers its author's latest.
+Three gestures and one bias now write the editing that reaches it: a spanner
+moved to another staff as a command of its own (onto a staff added for it,
+onto one the view holds, or onto an added one and back again as two
+commands, a gesture's later transaction queued and opened when its
+declaration is authored); an undo and its redo (an undo in a transaction of
+its own, then undone); the author's two latest commands reverted, the older
+first; and an undo naming one of its author's three latest transactions half
+the time. With M1's fix reverted the fuzz then finds its break
+(`CrossCuttingRefsResolve: spanner SpannerId staff StaffId not declared`,
+seed `0x5b6401bc`, the 445th of 10,000 histories of 64 authored). An earlier
+form of the bias found a split at 64 authored (seed `0x596584da`): an event an
+undo removes left a pitch another author had added to it live in the ledger
+while the graph dropped it, so a later interval transposition was refused
+base-free and applied graph-aware. Its history is committed `split` here as
+`167` and fixed in the next commit.

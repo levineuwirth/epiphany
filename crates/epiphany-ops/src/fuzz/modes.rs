@@ -15,27 +15,31 @@
 //! is valid; concurrency makes some of its references stale by the time the
 //! whole history is reduced, which is where the two modes can part. Every
 //! [`OperationKind`] is drawn, the editing of notes and pitches most often, and
-//! the three other payloads besides: undo of a transaction the view holds,
-//! resolution of a conflict it records, and (rarely, since only a faulty
-//! replica makes one) an equivocation with its resolution. Some turns author an
-//! editor's gesture of several operations: a note replaced by a rest, a tie
-//! entered with the note it continues into, a quarter-tone with its spelling, a
-//! staff, voice or region added and taken away again, a tied pair moved one end
-//! at a time in one transaction, a pitch entered with its spelling. A
-//! whole-event modify moves, resizes or revalues an event, writes a chord
-//! without a pitch its author sees, writes an event as another kind in its
-//! place, or mints a pitch, a chord written with a new one or another kind
-//! written as a note of one.
+//! the three other payloads besides: undo of a transaction the view holds (half
+//! the time one of its author's three latest, as an editor's undo history
+//! offers), resolution of a conflict it records, and (rarely, since only a
+//! faulty replica makes one) an equivocation with its resolution. Some turns
+//! author an editor's gesture of several operations: a note replaced by a rest,
+//! a tie entered with the note it continues into, a quarter-tone with its
+//! spelling, a staff, voice or region added and taken away again, a tied pair
+//! moved one end at a time in one transaction, a pitch entered with its
+//! spelling, a spanner moved to another staff as a command of its own (onto a
+//! staff added for it, onto one the view holds, or onto an added one and back
+//! again as two commands), an undo and its redo, and the author's two latest
+//! commands reverted, the older first. A whole-event modify moves, resizes or
+//! revalues an event, writes a chord without a pitch its author sees, writes an
+//! event as another kind in its place, or mints a pitch, a chord written with a
+//! new one or another kind written as a note of one.
 //!
 //! Every event kind is written: notes, rests and unpitched notes, and
 //! indeterminate, graphic, cue and trajectory events, entered or written over
-//! another, a trajectory holding pitches of its own; none names another
-//! object (a cue's sources, an indeterminate event's alternatives, a graphic
-//! event's objects, a trajectory endpoint naming another event's pitch). A
-//! pitch is entered into an event of any kind. A spanner's staves are
-//! rewritten, and a migration's aleatoric target takes every anchoring
-//! discipline. A spanner is anchored to events only: one anchored to a region
-//! a delete or undo removes is a class the owner has parked (P13-D3).
+//! another, a trajectory holding pitches of its own; none names another object
+//! (a cue's sources, an indeterminate event's alternatives, a graphic event's
+//! objects, a trajectory endpoint naming another event's pitch). A pitch is
+//! entered into an event of any kind. A spanner's staves are rewritten, and a
+//! migration's aleatoric target takes every anchoring discipline. A spanner is
+//! anchored to events only: one anchored to a region a delete or undo removes
+//! is a class the owner has parked (P13-D3).
 //!
 //! Everything is seeded: [`generate`] is a function of its seed and length, so
 //! a finding reproduces from both. [`minimize`] shrinks a failing history to
@@ -243,6 +247,9 @@ struct Replica {
     /// An open transaction and how many more of this replica's operations it
     /// takes.
     open: Option<(TransactionId, u64)>,
+    /// A gesture's later transactions, each opened when its declaration is
+    /// authored, with how many operations it takes.
+    queued: Vec<(TransactionId, u64)>,
 }
 
 /// A replica's view: the graph-aware reduction of what it has seen.
@@ -748,6 +755,7 @@ impl Simulation {
                 identity: IdentityContext::new(ReplicaId(r)),
                 seen: BTreeSet::new(),
                 open: None,
+                queued: Vec::new(),
             })
             .collect();
         Simulation {
@@ -772,8 +780,15 @@ impl Simulation {
             })
     }
 
-    /// Authors `payload` on replica `r`, in its open transaction if any.
+    /// Authors `payload` on replica `r`, in its open transaction if any; the
+    /// declaration of a gesture's queued transaction opens it.
     fn author(&mut self, r: usize, payload: OperationPayload) -> OperationId {
+        if let OperationPayload::Primitive(OperationKind::DeclareTransaction(d)) = &payload {
+            let replica = &mut self.replicas[r];
+            if replica.open.is_none() && replica.queued.first().is_some_and(|(tx, _)| *tx == d.id) {
+                replica.open = Some(replica.queued.remove(0));
+            }
+        }
         let transaction = match &mut self.replicas[r].open {
             Some((tx, left)) => {
                 let tx = *tx;
@@ -2200,15 +2215,7 @@ fn make(
         }
         43 | 45 => {
             // UndoTransaction of a transaction the view declares.
-            let declared: Vec<TransactionId> = h
-                .envelopes
-                .iter()
-                .filter_map(|e| match &e.payload {
-                    OperationPayload::Primitive(OperationKind::DeclareTransaction(d)) => Some(d.id),
-                    _ => None,
-                })
-                .collect();
-            let target = *sim.rng.pick(&declared)?;
+            let target = undo_target(sim, r, h)?;
             let policy = match sim.rng.below(3) {
                 0 => UndoPolicy::StrictInverse,
                 1 => UndoPolicy::BestEffort,
@@ -2450,8 +2457,164 @@ fn make(
             }));
             out
         }
+        52 => {
+            // A spanner moved to another staff as one command, in its own
+            // transaction: onto a staff added for it (the staff created and
+            // the spanner's staves rewritten to it), or onto a staff the view
+            // holds.
+            if sim.replicas[r].open.is_some() {
+                return None;
+            }
+            let spanner = sim.rng.pick(&h.score.cross_cutting.spanners)?.clone();
+            let tx: TransactionId = sim.mint(r);
+            let declare = |id: TransactionId| {
+                prim(OperationKind::DeclareTransaction(TransactionDescriptor {
+                    id,
+                    label: String::from("move the line to another staff"),
+                    category: None,
+                }))
+            };
+            let mut out = vec![declare(tx)];
+            if sim.rng.chance(3) {
+                // Onto a staff added for it, and back again: two commands.
+                let instrument = sim.rng.pick(&h.score.instruments)?.id;
+                let staff: StaffId = sim.mint(r);
+                let back: TransactionId = sim.mint(r);
+                out.push(prim(OperationKind::CreateStaff(CreateStaffOp {
+                    staff: valuegen::staff(staff, instrument),
+                })));
+                out.push(prim(OperationKind::ModifyCrossCutting(
+                    ModifyCrossCuttingOp {
+                        structure: CrossCuttingValue::Spanner(epiphany_core::Spanner {
+                            staves: vec![staff],
+                            ..spanner.clone()
+                        }),
+                    },
+                )));
+                sim.replicas[r].open = Some((tx, out.len() as u64));
+                sim.replicas[r].queued.push((back, 2));
+                out.push(declare(back));
+                out.push(prim(OperationKind::ModifyCrossCutting(
+                    ModifyCrossCuttingOp {
+                        structure: CrossCuttingValue::Spanner(spanner),
+                    },
+                )));
+                return Some(out);
+            }
+            let staff = if sim.rng.chance(2) {
+                let instrument = sim.rng.pick(&h.score.instruments)?.id;
+                let staff: StaffId = sim.mint(r);
+                out.push(prim(OperationKind::CreateStaff(CreateStaffOp {
+                    staff: valuegen::staff(staff, instrument),
+                })));
+                staff
+            } else {
+                sim.rng.pick(&h.score.staves)?.id
+            };
+            out.push(prim(OperationKind::ModifyCrossCutting(
+                ModifyCrossCuttingOp {
+                    structure: CrossCuttingValue::Spanner(epiphany_core::Spanner {
+                        staves: vec![staff],
+                        ..spanner
+                    }),
+                },
+            )));
+            sim.replicas[r].open = Some((tx, out.len() as u64));
+            out
+        }
+        53 => {
+            // An undo and its redo: a transaction the view declares undone in
+            // a transaction of its own, which is then undone in turn.
+            if sim.replicas[r].open.is_some() {
+                return None;
+            }
+            let target = undo_target(sim, r, h)?;
+            let mut policy = || match sim.rng.below(3) {
+                0 => UndoPolicy::StrictInverse,
+                1 => UndoPolicy::BestEffort,
+                _ => UndoPolicy::Cascade,
+            };
+            let (undo_policy, redo_policy) = (policy(), policy());
+            let tx: TransactionId = sim.mint(r);
+            sim.replicas[r].open = Some((tx, 2));
+            vec![
+                prim(OperationKind::DeclareTransaction(TransactionDescriptor {
+                    id: tx,
+                    label: String::from("undo"),
+                    category: None,
+                })),
+                OperationPayload::UndoTransaction(UndoTransactionPayload {
+                    target,
+                    policy: undo_policy,
+                }),
+                OperationPayload::UndoTransaction(UndoTransactionPayload {
+                    target: tx,
+                    policy: redo_policy,
+                }),
+            ]
+        }
+        54 => {
+            // Its author's two latest commands reverted from the undo history,
+            // the older first.
+            if sim.replicas[r].open.is_some() {
+                return None;
+            }
+            let own: Vec<TransactionId> = h
+                .envelopes
+                .iter()
+                .filter(|e| e.id.replica == sim.replicas[r].id)
+                .filter_map(|e| match &e.payload {
+                    OperationPayload::Primitive(OperationKind::DeclareTransaction(d)) => Some(d.id),
+                    _ => None,
+                })
+                .collect();
+            let [older, newer] = own[own.len().checked_sub(2)?..] else {
+                return None;
+            };
+            let mut policy = || match sim.rng.below(3) {
+                0 => UndoPolicy::StrictInverse,
+                1 => UndoPolicy::BestEffort,
+                _ => UndoPolicy::Cascade,
+            };
+            vec![
+                OperationPayload::UndoTransaction(UndoTransactionPayload {
+                    target: older,
+                    policy: policy(),
+                }),
+                OperationPayload::UndoTransaction(UndoTransactionPayload {
+                    target: newer,
+                    policy: policy(),
+                }),
+            ]
+        }
         _ => return None,
     })
+}
+
+/// The transaction an undo names: half the time one of its author's three
+/// latest the view holds, as an editor's undo history offers, and otherwise
+/// any the view declares.
+fn undo_target(sim: &mut Simulation, r: usize, h: &Holdings<'_>) -> Option<TransactionId> {
+    let declared: Vec<(ReplicaId, TransactionId)> = h
+        .envelopes
+        .iter()
+        .filter_map(|e| match &e.payload {
+            OperationPayload::Primitive(OperationKind::DeclareTransaction(d)) => {
+                Some((e.id.replica, d.id))
+            }
+            _ => None,
+        })
+        .collect();
+    let own: Vec<TransactionId> = declared
+        .iter()
+        .filter(|(replica, _)| *replica == sim.replicas[r].id)
+        .map(|(_, tx)| *tx)
+        .collect();
+    let latest = &own[own.len().saturating_sub(3)..];
+    match sim.rng.pick(latest) {
+        Some(tx) if sim.rng.chance(2) => Some(*tx),
+        _ => sim.rng.pick(&declared).map(|(_, tx)| *tx),
+    }
 }
 
 /// An editor's tie entry from `start`, a note: a continuation of its pitches
@@ -2517,7 +2680,7 @@ fn tie_entry(
 /// Each arm of [`make`] and how often it is drawn: the editing of notes,
 /// pitches and their marks three times as often as the score's structure and
 /// settings, as an editor's history runs.
-const ARMS: [(u64, u64); 52] = [
+const ARMS: [(u64, u64); 55] = [
     (0, 4),
     (1, 3),
     (2, 3),
@@ -2570,6 +2733,9 @@ const ARMS: [(u64, u64); 52] = [
     (49, 2),
     (50, 2),
     (51, 2),
+    (52, 2),
+    (53, 1),
+    (54, 1),
 ];
 
 fn draw_arm(rng: &mut Rng) -> u64 {
