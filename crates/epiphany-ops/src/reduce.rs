@@ -1608,6 +1608,82 @@ fn with_pitches(event: Event, added: Vec<epiphany_core::IdentifiedPitch>) -> Eve
     Event::Pitched(note)
 }
 
+/// `event` without the pitches `gone` names, read as `with_pitches` adds one:
+/// a note's list loses them, a last pitch leaving a rest of its placement;
+/// any other kind holding one (a trajectory's endpoint or step) becomes a
+/// note of the pitches it still holds, or a rest when none remain (reduction
+/// version 3: before it the graph kept a trajectory's pitch the ledger
+/// removed).
+fn without_pitches(event: Event, gone: impl Fn(PitchId) -> bool) -> Event {
+    let mut held = Vec::new();
+    event.collect_identified_pitches(&mut held);
+    if !held.iter().any(|ip| gone(ip.id)) {
+        return event;
+    }
+    let left: Vec<epiphany_core::IdentifiedPitch> = held
+        .into_iter()
+        .filter(|ip| !gone(ip.id))
+        .cloned()
+        .collect();
+    if left.is_empty() {
+        return Event::Rest(epiphany_core::Rest {
+            id: event.id(),
+            voice: event.voice(),
+            position: event.position().clone(),
+            duration: event.duration().clone(),
+            vertical_position: None,
+            visible: true,
+        });
+    }
+    match event {
+        Event::Pitched(mut pe) => {
+            pe.pitches = left;
+            Event::Pitched(pe)
+        }
+        other => with_pitches(
+            Event::Rest(epiphany_core::Rest {
+                id: other.id(),
+                voice: other.voice(),
+                position: other.position().clone(),
+                duration: other.duration().clone(),
+                vertical_position: None,
+                visible: true,
+            }),
+            left,
+        ),
+    }
+}
+
+/// The pitch `pitch` an event holds, of any kind (a note's, a trajectory's
+/// endpoint or step), to write in place.
+fn held_pitch_mut(
+    event: &mut Event,
+    pitch: PitchId,
+) -> Option<&mut epiphany_core::IdentifiedPitch> {
+    match event {
+        Event::Pitched(pe) => pe.pitches.iter_mut().find(|ip| ip.id == pitch),
+        Event::Trajectory(te) => {
+            if let epiphany_core::TrajectoryEndpoint::ExplicitPitch(ip) = &mut te.start {
+                if ip.id == pitch {
+                    return Some(ip);
+                }
+            }
+            if let epiphany_core::TrajectoryEndpoint::ExplicitPitch(ip) = &mut te.end {
+                if ip.id == pitch {
+                    return Some(ip);
+                }
+            }
+            match &mut te.shape {
+                epiphany_core::TrajectoryShape::Stepwise(steps) => {
+                    steps.iter_mut().find(|ip| ip.id == pitch)
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Maps an *established* containment-proximity rank (k1 of the "nearest"
 /// ordering) to the ratified [`ReanchorReason`] vocabulary. Rank 4 (same
 /// canvas) records the appended `SameCanvasNearer` (Pass 12, P12-C4; wire
@@ -9518,6 +9594,10 @@ impl<'a> Reducer<'a> {
         let mut value = value.clone();
         if let Event::Pitched(pe) = &mut value {
             pe.pitches.retain(|ip| !tombstoned(ip.id));
+        } else {
+            // Any other kind carrying one, a trajectory, as a delete of it
+            // leaves the event (`without_pitches`).
+            value = without_pitches(value, tombstoned);
         }
         let mut carried = Vec::new();
         value.collect_identified_pitches(&mut carried);
@@ -9951,14 +10031,14 @@ impl<'a> Reducer<'a> {
     fn graph_pitch_value(&self, pitch: PitchId) -> Option<Pitch> {
         let score = self.graph.as_ref()?;
         let event = Self::graph_event_of_pitch(score, pitch)?;
-        match score.events.get(event) {
-            Some(Event::Pitched(pe)) => pe
-                .pitches
-                .iter()
-                .find(|ip| ip.id == pitch)
-                .map(|ip| ip.pitch.clone()),
-            _ => None,
-        }
+        let mut held = Vec::new();
+        score
+            .events
+            .get(event)?
+            .collect_identified_pitches(&mut held);
+        held.into_iter()
+            .find(|ip| ip.id == pitch)
+            .map(|ip| ip.pitch.clone())
     }
 
     /// Records the spelling a transposition determined
@@ -10175,24 +10255,28 @@ impl<'a> Reducer<'a> {
             // gate: a well-formed event whose placement stands, or whose move
             // is sanctioned (`voice_occupancy` holds its placement until the
             // caller moves it).
-            if let Event::Pitched(pe) = new_event {
-                let standing = self
-                    .voice_occupancy
-                    .values()
-                    .flatten()
-                    .find(|(_, _, event)| *event == pe.id)
-                    .map(|(position, duration, _)| (position.clone(), duration.clone()));
-                let placement = match (&pe.position, &pe.duration) {
-                    (EventPosition::Musical(p), EventDuration::Musical(d)) => {
-                        Some((p.clone(), d.clone()))
-                    }
-                    _ => None,
-                };
-                let placement_changed = standing.is_none() || standing != placement;
-                if pe.is_well_formed() && (!placement_changed || materialize_move) {
-                    for ip in &pe.pitches {
-                        self.pitch_values.insert(ip.id, ip.pitch.clone());
-                    }
+            // Every pitch the value holds, of any kind (reduction version 3:
+            // before it a note's alone, so a trajectory's carried values
+            // stood in the graph alone).
+            let standing = self
+                .voice_occupancy
+                .values()
+                .flatten()
+                .find(|(_, _, event)| *event == new_event.id())
+                .map(|(position, duration, _)| (position.clone(), duration.clone()));
+            let placement = match (new_event.position(), new_event.duration()) {
+                (EventPosition::Musical(p), EventDuration::Musical(d)) => {
+                    Some((p.clone(), d.clone()))
+                }
+                _ => None,
+            };
+            let placement_changed = standing.is_none() || standing != placement;
+            let well_formed = !matches!(new_event, Event::Pitched(pe) if !pe.is_well_formed());
+            if well_formed && (!placement_changed || materialize_move) {
+                let mut held = Vec::new();
+                new_event.collect_identified_pitches(&mut held);
+                for ip in held {
+                    self.pitch_values.insert(ip.id, ip.pitch.clone());
                 }
             }
             return;
@@ -10296,7 +10380,11 @@ impl<'a> Reducer<'a> {
             } else {
                 pe.pitches.retain(|ip| ip.id != pitch);
             }
+            return;
         }
+        // Any other kind holding it, a trajectory's endpoint or step, becomes
+        // a note of the pitches it still holds, a rest when none remain.
+        *slot = without_pitches(slot.clone(), |p| p == pitch);
     }
 
     fn graph_modify_pitch(&mut self, pitch: PitchId, value: &Pitch) {
@@ -10307,10 +10395,14 @@ impl<'a> Reducer<'a> {
         let Some(event) = Self::graph_event_of_pitch(score, pitch) else {
             return;
         };
-        if let Some(Event::Pitched(pe)) = score.events.get_mut(event) {
-            if let Some(ip) = pe.pitches.iter_mut().find(|ip| ip.id == pitch) {
-                ip.pitch = value.clone();
-            }
+        // Wherever the event holds it, a trajectory's endpoint or step as a
+        // note's pitch (reduction version 3: before it a note's alone).
+        if let Some(ip) = score
+            .events
+            .get_mut(event)
+            .and_then(|held| held_pitch_mut(held, pitch))
+        {
+            ip.pitch = value.clone();
         }
     }
 
@@ -10329,18 +10421,21 @@ impl<'a> Reducer<'a> {
         let Some(event) = Self::graph_event_of_pitch(score, pitch) else {
             return;
         };
-        if let Some(Event::Pitched(pe)) = score.events.get_mut(event) {
-            if let Some(ip) = pe.pitches.iter_mut().find(|ip| ip.id == pitch) {
-                // Minimal interval: shift the CMN alteration, saturating at the
-                // `i8` bound (a lossy stand-in — an extreme transpose clamps
-                // rather than renormalizing nominal/octave). Full interval
-                // algebra (Chapter 4 tuning) is deferred — P12-K2.
-                if let epiphany_core::PitchSpacePosition::Cmn { alteration, .. } =
-                    &mut ip.pitch.scale_position.position
-                {
-                    let shifted = (*alteration as i32).saturating_add(chromatic_steps);
-                    *alteration = shifted.clamp(i8::MIN as i32, i8::MAX as i32) as i8;
-                }
+        // Wherever the event holds it, as `graph_modify_pitch` writes.
+        if let Some(ip) = score
+            .events
+            .get_mut(event)
+            .and_then(|held| held_pitch_mut(held, pitch))
+        {
+            // Minimal interval: shift the CMN alteration, saturating at the
+            // `i8` bound (a lossy stand-in — an extreme transpose clamps
+            // rather than renormalizing nominal/octave). Full interval
+            // algebra (Chapter 4 tuning) is deferred — P12-K2.
+            if let epiphany_core::PitchSpacePosition::Cmn { alteration, .. } =
+                &mut ip.pitch.scale_position.position
+            {
+                let shifted = (*alteration as i32).saturating_add(chromatic_steps);
+                *alteration = shifted.clamp(i8::MIN as i32, i8::MAX as i32) as i8;
             }
         }
     }
@@ -10638,14 +10733,19 @@ impl<'a> Reducer<'a> {
     /// base-free.
     fn event_pitch_value(&self, event: EventId, pitch: PitchId) -> Option<Pitch> {
         match &self.graph {
-            Some(score) => match score.events.get(event) {
-                Some(Event::Pitched(pe)) => pe
-                    .pitches
-                    .iter()
+            // Every pitch the event holds, of any kind (a trajectory's too),
+            // as the core indexes an event's pitches and as base-free
+            // reduction holds their values (reduction version 3: before it a
+            // note's alone, so a tie on a trajectory read no value graph-aware
+            // and gave way there alone).
+            Some(score) => score.events.get(event).and_then(|held| {
+                let mut pitches = Vec::new();
+                held.collect_identified_pitches(&mut pitches);
+                pitches
+                    .into_iter()
                     .find(|ip| ip.id == pitch)
-                    .map(|ip| ip.pitch.clone()),
-                _ => None,
-            },
+                    .map(|ip| ip.pitch.clone())
+            }),
             None => self.pitch_values.get(&pitch).cloned(),
         }
     }

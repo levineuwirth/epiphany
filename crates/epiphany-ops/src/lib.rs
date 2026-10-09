@@ -510,6 +510,17 @@ pub mod vectors;
 ///     pitch reached the graph alone, every operation naming it was refused
 ///     `TargetMissing`, and the tie check, reading the ledger, kept a tie
 ///     whose end it had joined (`TiePairing`).
+///   - every pitch an event holds, whatever its kind (a trajectory's
+///     endpoints and steps), is read and written graph-aware as a note's is,
+///     as the core indexes it and base-free reduction holds its value: its
+///     value read by the tie check and an interval's transposition, written
+///     by a pitch's modify and transposition, and recorded base-free from a
+///     whole-event write of any kind; and a trajectory that loses one of its
+///     pitches, by a delete or a whole-event write carrying one a delete
+///     removed, becomes a note of the others, a rest when none remain. Where
+///     graph-aware reduction read and wrote a note's pitches alone, a tie on
+///     a trajectory gave way there alone (an effect split) and the graph kept
+///     a trajectory's pitch the ledger had removed.
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
@@ -584,7 +595,9 @@ pub mod vectors;
 ///   `a_migration_admits_an_event_as_its_targets_discipline_does_in_both_modes`
 ///   and, over a base, `migration_judges_a_bases_events_by_each_aleatoric_discipline`;
 ///   for a modify's new pitches,
-///   `a_modify_mints_the_pitches_it_carries_in_both_modes`.
+///   `a_modify_mints_the_pitches_it_carries_in_both_modes`; for a trajectory's
+///   pitches,
+///   `a_trajectorys_own_pitches_are_read_and_written_as_a_notes_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

@@ -3427,3 +3427,31 @@ live (with the mint disabled the previous digest returns). Locked by
 transposed and deleted; a tie's end given one; one undone) and history `158`.
 Mutation: the mint skipped (the test fails, `158` splits, and the digest
 returns to its previous pin).
+
+**A trajectory's own pitches are a note's (found by the new arms).** The core
+indexes every pitch an event holds, of any kind (`collect_identified_pitches`:
+a note's, and a trajectory's explicit endpoints and stepwise pitches), and
+the ledger mints and tombstones a trajectory's pitches as it does a note's;
+base-free reduction holds their values. Graph-aware reduction read and wrote
+a note's pitches alone: `event_pitch_value` and `graph_pitch_value` read none
+of a trajectory's, `graph_modify_pitch` and `graph_transpose_pitch` wrote none,
+`graph_delete_pitch` left a deleted one in place, a whole-event write of a
+trajectory carrying a deleted pitch kept it, and base-free reduction recorded
+a whole-event write's values for a note alone. Once the generator wrote
+trajectories, a tie on a chord a concurrent author rewrote as a trajectory,
+both ends then moved in a transaction, gave way graph-aware alone (an effect
+split, history `159`); one author reaches it too, writing the chord as a
+trajectory itself. Each path now reads and writes the pitch wherever the
+event holds it (`held_pitch_mut`), and a trajectory that loses one of its own
+pitches becomes a note of the others, a rest when none remain
+(`without_pitches`), the dual of `with_pitches` and of a last-pitch delete:
+refusing the delete would need the event's kind in both modes, which base-free
+reduction does not hold. Locked by
+`a_trajectorys_own_pitches_are_read_and_written_as_a_notes_in_both_modes` (a
+tie on a trajectory moved with its chord, and broken by a written value; an
+endpoint transposed by an interval; endpoints deleted; a trajectory written
+over a deleted pitch) and history `159`. Mutations, each failing the test: the
+tie check's value read for a note alone (and `159` splits), the in-place write
+for a note alone (likewise), the delete leaving the trajectory, the
+whole-event write keeping a deleted pitch, the base-free record for a note
+alone, and `graph_pitch_value` for a note alone.

@@ -806,7 +806,9 @@ its region. An undo's restoration naming an object tombstoned since is
 superseded by its tombstoning, as one naming a deleted endpoint was, a
 cross-cutting value's staves and measure or region anchors included. A
 whole-event modification mints a pitch it carries that nothing minted, where
-the pitch reached the graph alone. A migration judges each of its region's events against the target's coordinate
+the pitch reached the graph alone, and a trajectory's own pitches are read and
+written as a note's, where a tie on one gave way graph-aware alone. A
+migration judges each of its region's events against the target's coordinate
 discipline as invariant~4 does, so an aleatoric target anchored in wall-clock
 time conflicts on an event in musical time, where it applied and left the
 event in coordinates the region no longer admitted.
@@ -1106,7 +1108,8 @@ over a note holding a pitch its author never saw becomes a note of that pitch,
 a trajectory's own pitches first (for every kind but a rest and an unpitched
 event since version~0.19.0, before which the graph dropped the kept pitch). A pitch the
 value carries that a delete or undo has tombstoned stays out of the event
-(delete wins). A pitch the value carries that no operation has minted is
+(delete wins), a trajectory carrying one becoming a note of its other pitches,
+as a delete of it would leave it. A pitch the value carries that no operation has minted is
 minted by the modification, as an insert mints its event's pitches: live, its
 value held in both modes, and under the modification's transaction, so an
 undo of it removes the pitch (since version~0.19.0, before which the pitch
@@ -1169,7 +1172,12 @@ inserting one into an event of any other kind without a pitch list, an
 unpitched, indeterminate, graphic or cue event or a trajectory, which becomes a
 note of its own pitches (a trajectory's) and the new one (since
 version~0.19.0, before which the graph dropped the pitch the bookkeeping minted
-for every kind but a rest). This preserves
+for every kind but a rest). Every pitch an event holds, whatever its kind (a
+trajectory's endpoints and steps), is read and written as a note's: a
+modification, transposition or deletion reaches it there, and a trajectory
+that loses one of its pitches becomes a note of the others, or a rest when
+none remain (since version~0.19.0, before which graph-aware reduction read and
+wrote a note's pitches alone). This preserves
 the delete-wins / mint disciplines and keeps the graph consistent with the
 bookkeeping, which tombstones or mints the pitch object either way.
 

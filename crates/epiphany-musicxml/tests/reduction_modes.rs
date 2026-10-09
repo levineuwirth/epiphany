@@ -5384,3 +5384,264 @@ fn a_modify_mints_the_pitches_it_carries_in_both_modes() {
         .score;
     assert_eq!(score.events.get(m.q(2)), Some(&m.quarters[2]));
 }
+
+/// A trajectory's own pitches are read and written as a note's, in both
+/// modes, as the core indexes them. One author ties a chord to the next
+/// chord, writes the first as a trajectory between its pitches and moves both
+/// ends a whole tone in a transaction: the tie holds in both modes and the
+/// trajectory's endpoints take the new values. A trajectory written with a
+/// pitch at another value breaks the tie in both. Deleting a trajectory's
+/// endpoint leaves a note of the pitch it still holds, and a rest after the
+/// last; and a trajectory written over a pitch another author deleted
+/// concurrently becomes a note of the pitch left, as a delete of it would
+/// leave it. Before reduction version 3 graph-aware reduction read and wrote
+/// a note's pitches alone, so the tie gave way there alone (an effect split)
+/// and the graph kept a deleted endpoint.
+#[test]
+fn a_trajectorys_own_pitches_are_read_and_written_as_a_notes_in_both_modes() {
+    use epiphany_core::{
+        IdentifiedPitch, PitchId, TieClass, TieId, TrajectoryDisplay, TrajectoryEndpoint,
+        TrajectoryEvent, TrajectoryShape,
+    };
+    use epiphany_ops::{
+        CreateCrossCuttingOp, CrossCuttingValue, DeleteIdentifiedPitchOp, InsertIdentifiedPitchOp,
+        TransposeOp,
+    };
+    let m = Measure::new();
+    let own = |i: usize| match &m.quarters[i] {
+        Event::Pitched(e) => e.pitches[0].clone(),
+        other => panic!("a note, not {other:?}"),
+    };
+    let trajectory = |i: usize, start: IdentifiedPitch, end: IdentifiedPitch| {
+        Event::Trajectory(TrajectoryEvent {
+            id: m.q(i),
+            voice: m.quarters[i].voice(),
+            position: m.quarters[i].position().clone(),
+            duration: m.quarters[i].duration().clone(),
+            start: TrajectoryEndpoint::ExplicitPitch(start),
+            end: TrajectoryEndpoint::ExplicitPitch(end),
+            shape: TrajectoryShape::Linear,
+            display: TrajectoryDisplay,
+        })
+    };
+    let modify = |event: Event| primitive(OperationKind::ModifyEvent(ModifyEventOp { event }));
+    let add = |i: usize, pitch: IdentifiedPitch| {
+        primitive(OperationKind::InsertIdentifiedPitch(
+            InsertIdentifiedPitchOp {
+                event: m.q(i),
+                pitch,
+            },
+        ))
+    };
+    let declare = |tx: TransactionId| {
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("move the tied notes"),
+            category: None,
+        }))
+    };
+    let serial = |payloads: Vec<(OperationPayload, Option<TransactionId>)>| {
+        let mut authored: Vec<OperationEnvelope> = Vec::new();
+        for (counter, (payload, transaction)) in payloads.into_iter().enumerate() {
+            let seen: Vec<OperationId> = authored.last().map(|e| e.id).into_iter().collect();
+            let mut env = m.op(A, counter as u64, counter as i64 + 1, &seen, payload);
+            env.transaction = transaction;
+            authored.push(env);
+        }
+        authored
+    };
+    let graph = |authored: &[OperationEnvelope]| {
+        let mut set = OperationSet::new();
+        set.accept_all(m.import.envelopes.iter().chain(authored).cloned());
+        set.reduce_onto(&Score::empty(IdentityContext::new(m.import.replica)))
+            .score
+    };
+    let pitch = |id: PitchId, nth: u8| IdentifiedPitch {
+        id,
+        pitch: valuegen::pitch_value_nth(nth),
+    };
+    // The first chord: the first quarter's pitch and an added one; the
+    // second the same two values, under its own pitch and a minted one.
+    let (upper, upper2) = (PitchId::new(A, 3200), PitchId::new(A, 3202));
+    let first = own(0);
+    let added = pitch(upper, 4);
+    let mut second_lower = own(1);
+    second_lower.pitch = first.pitch.clone();
+    let second_upper = IdentifiedPitch {
+        id: upper2,
+        pitch: added.pitch.clone(),
+    };
+    let Event::Pitched(mut second) = m.quarters[1].clone() else {
+        unreachable!("a note");
+    };
+    second.pitches = vec![second_lower.clone(), second_upper.clone()];
+    let tie = TieId::new(A, 3203);
+    let mut tie_value = valuegen::tie(tie, m.q(0), m.q(1));
+    tie_value.class = TieClass::Standard;
+    let chords = vec![
+        (add(0, added.clone()), None),
+        (modify(Event::Pitched(second)), None),
+        (
+            primitive(OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                structure: CrossCuttingValue::Tie(tie_value),
+            })),
+            None,
+        ),
+    ];
+
+    // Written as a trajectory and moved with its tied chord: the tie holds.
+    let tx = TransactionId::new(A, 3204);
+    let mut moved = chords.clone();
+    moved.extend([
+        (modify(trajectory(0, first.clone(), added.clone())), None),
+        (declare(tx), Some(tx)),
+        (
+            primitive(OperationKind::Transpose(TransposeOp {
+                targets: vec![first.id, upper],
+                chromatic_steps: 2,
+            })),
+            Some(tx),
+        ),
+        (
+            primitive(OperationKind::Transpose(TransposeOp {
+                targets: vec![second_lower.id, upper2],
+                chromatic_steps: 2,
+            })),
+            Some(tx),
+        ),
+    ]);
+    let authored = serial(moved);
+    let state = m.agree("a trajectory moved with its tied chord", &authored);
+    for op in &authored {
+        assert!(
+            matches!(
+                effect(&state, op.id),
+                Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
+            ),
+            "{:?}: {:?}",
+            op.id,
+            effect(&state, op.id)
+        );
+    }
+    assert!(live(&state, TypedObjectId::Tie(tie)), "the tie holds");
+    let Some(Event::Trajectory(held)) = graph(&authored).events.get(m.q(0)).cloned() else {
+        panic!("a trajectory");
+    };
+    let TrajectoryEndpoint::ExplicitPitch(start) = held.start else {
+        panic!("its own pitch");
+    };
+    assert_ne!(start.pitch, first.pitch, "the endpoint moved");
+
+    // Written as a trajectory with a pitch at another value: the tie breaks.
+    let mut retuned = chords.clone();
+    retuned.push((
+        modify(trajectory(
+            0,
+            IdentifiedPitch {
+                id: first.id,
+                pitch: valuegen::pitch_value_nth(6),
+            },
+            added.clone(),
+        )),
+        None,
+    ));
+    let authored = serial(retuned);
+    let state = m.agree("a trajectory written at another value", &authored);
+    let Some(OperationEffect::AppliedWithRepair { repairs }) = effect(&state, authored[3].id)
+    else {
+        panic!("{:?}", effect(&state, authored[3].id));
+    };
+    assert!(repairs
+        .iter()
+        .any(|r| r.kind == RepairKind::CascadeDeleted && r.target == TypedObjectId::Tie(tie)));
+
+    // An endpoint transposed by an interval.
+    let third = own(2);
+    let third_upper = pitch(PitchId::new(A, 3210), 5);
+    let authored = serial(vec![
+        (add(2, third_upper.clone()), None),
+        (
+            modify(trajectory(2, third.clone(), third_upper.clone())),
+            None,
+        ),
+        (
+            primitive(OperationKind::TransposeInterval(
+                epiphany_ops::TransposeIntervalOp {
+                    targets: [third_upper.id].into_iter().collect(),
+                    interval: epiphany_core::TranspositionInterval {
+                        diatonic_steps: 1,
+                        chromatic_steps: 2,
+                    },
+                },
+            )),
+            None,
+        ),
+    ]);
+    let state = m.agree("a trajectory's endpoint transposed", &authored);
+    assert_eq!(
+        effect(&state, authored[2].id),
+        Some(OperationEffect::Applied)
+    );
+    let Some(Event::Trajectory(held)) = graph(&authored).events.get(m.q(2)).cloned() else {
+        panic!("a trajectory");
+    };
+    let TrajectoryEndpoint::ExplicitPitch(end) = held.end else {
+        panic!("its own pitch");
+    };
+    assert_ne!(end.pitch, third_upper.pitch, "the endpoint moved");
+
+    // An endpoint deleted, then the other.
+    let delete_pitch = |id: PitchId| {
+        primitive(OperationKind::DeleteIdentifiedPitch(
+            DeleteIdentifiedPitchOp { pitch: id },
+        ))
+    };
+    let authored = serial(vec![
+        (add(2, third_upper.clone()), None),
+        (
+            modify(trajectory(2, third.clone(), third_upper.clone())),
+            None,
+        ),
+        (delete_pitch(third_upper.id), None),
+    ]);
+    m.agree("a trajectory's endpoint deleted", &authored);
+    let Some(Event::Pitched(left)) = graph(&authored).events.get(m.q(2)).cloned() else {
+        panic!("a note");
+    };
+    assert_eq!(left.pitches, vec![third.clone()]);
+    let authored = serial(vec![
+        (add(2, third_upper.clone()), None),
+        (
+            modify(trajectory(2, third.clone(), third_upper.clone())),
+            None,
+        ),
+        (delete_pitch(third_upper.id), None),
+        (delete_pitch(third.id), None),
+    ]);
+    m.agree("both endpoints deleted", &authored);
+    assert!(matches!(
+        graph(&authored).events.get(m.q(2)),
+        Some(Event::Rest(_))
+    ));
+
+    // A trajectory written over a pitch another author deleted.
+    let fourth = own(3);
+    let fourth_upper = pitch(PitchId::new(A, 3220), 5);
+    let inserted = m.op(A, 0, 1, &[], add(3, fourth_upper.clone()));
+    let deleted = m.op(B, 0, 2, &[inserted.id], delete_pitch(fourth_upper.id));
+    let written = m.op(
+        A,
+        1,
+        3,
+        &[inserted.id],
+        modify(trajectory(3, fourth.clone(), fourth_upper.clone())),
+    );
+    let authored = [inserted, deleted.clone(), written.clone()];
+    let state = m.agree("a trajectory over a deleted pitch", &authored);
+    assert_eq!(effect(&state, deleted.id), Some(OperationEffect::Applied));
+    assert!(tombstoned(&state, TypedObjectId::Pitch(fourth_upper.id)));
+    let Some(Event::Pitched(left)) = graph(&authored).events.get(m.q(3)).cloned() else {
+        panic!("a note");
+    };
+    assert_eq!(left.pitches, vec![fourth]);
+}
