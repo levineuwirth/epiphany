@@ -3378,3 +3378,30 @@ wall-clock events against each, graph-aware) and history `157`. Mutations: the
 indexed events judged by a proportional target alone (the wall-clock case
 fails, and `157`), and the graph's events taken as admitted by any aleatoric
 target (the base test's musical case).
+
+**The fuzz writes the shapes it could not (L6).** M1 to M3 sat in payload
+shapes the generator never wrote, so its clean budgets said nothing about
+them. It now writes each, as an editor would: a spanner's staves rewritten
+(half of its spanner modifies); every event kind, an indeterminate, graphic,
+cue or trajectory event entered one time in six an insert is drawn, and any
+kind written over another by the kind-changing modify, a trajectory holding
+its first and last pitches as its own; a pitch entered into an event of any
+kind, spelt half the time; a migration's aleatoric target anchored by each of
+the four disciplines; and a whole-event modify that mints a pitch, a chord
+written with a new one or another kind written as a note of one, spelt half
+the time. A modify mints the pitch ids it carries that nothing else mints, so
+`valid` counts them as its mints. None of the new kinds names another object:
+a cue's sources, an indeterminate event's alternatives, a graphic event's
+objects and a trajectory endpoint naming another event's pitch are not
+written, since each dangles today when its target goes, a single author's
+`CrossCuttingRefsResolve` that needs a rule for every way the target can go
+(a delete, an undo, a modify removing the pitch) and so more than one
+contained commit; that class is named for the owner. A spanner anchored to a
+region is not written either: the owner parked that class (P13-D3). The arms
+found two breaks at once, each committed `split` here and fixed in its own
+commit after this one: a modify minting a pitch onto a tie's end, which the
+graph held and the ledger never minted, so the tie check could not see it
+(`TiePairing`, seed `0x4a000a` at 64 authored, the CI budget's second chunk,
+history `158`); and a tie on a chord a concurrent author wrote as a
+trajectory, whose pitches base-free reduction read and wrote and the graph
+did not (an effect split, seed `0x7e240b63` at 24 authored, history `159`).

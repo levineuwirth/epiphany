@@ -21,9 +21,21 @@
 //! editor's gesture of several operations: a note replaced by a rest, a tie
 //! entered with the note it continues into, a quarter-tone with its spelling, a
 //! staff, voice or region added and taken away again, a tied pair moved one end
-//! at a time in one transaction. A whole-event modify moves, resizes or
-//! revalues an event, writes a chord without a pitch its author sees, or
-//! writes an event as another kind in its place.
+//! at a time in one transaction, a pitch entered with its spelling. A
+//! whole-event modify moves, resizes or revalues an event, writes a chord
+//! without a pitch its author sees, writes an event as another kind in its
+//! place, or mints a pitch, a chord written with a new one or another kind
+//! written as a note of one.
+//!
+//! Every event kind is written: notes, rests and unpitched notes, and
+//! indeterminate, graphic, cue and trajectory events, entered or written over
+//! another, a trajectory holding pitches of its own; none names another
+//! object (a cue's sources, an indeterminate event's alternatives, a graphic
+//! event's objects, a trajectory endpoint naming another event's pitch). A
+//! pitch is entered into an event of any kind. A spanner's staves are
+//! rewritten, and a migration's aleatoric target takes every anchoring
+//! discipline. A spanner is anchored to events only: one anchored to a region
+//! a delete or undo removes is a class the owner has parked (P13-D3).
 //!
 //! Everything is seeded: [`generate`] is a function of its seed and length, so
 //! a finding reproduces from both. [`minimize`] shrinks a failing history to
@@ -32,14 +44,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::{
-    check_invariants, AnalysisLayerId, Clef, CmnNominal, Event, EventDuration, EventId,
-    EventPosition, IdentifiedPitch, IdentityContext, InstrumentId, KeySignature, MeasureId,
-    MusicalDuration, MusicalPosition, OperationId, PartDefinitionId, Pitch, PitchId, PitchSpaceId,
+    check_invariants, AleatoricAnchoringDiscipline, AleatoricTimeModel, AnalysisLayerId, Clef,
+    CmnNominal, CueEvent, CueRendering, Event, EventDuration, EventId, EventOrderingDAG,
+    EventPosition, GraphicEvent, IdentifiedPitch, IdentityContext, IndeterminacyHints,
+    IndeterminacyKind, IndeterminateEvent, InstrumentId, KeySignature, MeasureId, MusicalDuration,
+    MusicalPosition, OperationId, PartDefinitionId, Pitch, PitchId, PitchSpaceId,
     PitchSpacePosition, PitchSpelling, PitchedEvent, RationalTime, Region, RegionContent, RegionId,
     RegionTimeModel, RepeatStructureId, ReplicaId, Rest, Score, StaffGroupId, StaffId,
     StaffInstance, StaffInstanceId, StaffPosition, StemConfiguration, StemDirection,
-    TimeSignatureId, TransactionId, TranspositionInterval, Tuplet, TupletDisplay, TupletId,
-    TupletRatio, TypedObjectId, UnpitchedEvent, UnpitchedMemberId, ViewId, Voice, VoiceId,
+    TimeSignatureId, TrajectoryDisplay, TrajectoryEndpoint, TrajectoryEvent, TrajectoryShape,
+    TransactionId, TranspositionInterval, Tuplet, TupletDisplay, TupletId, TupletRatio,
+    TypedObjectId, UnpitchedEvent, UnpitchedMemberId, ViewId, Voice, VoiceId, WallClockDuration,
     WallClockTime,
 };
 use epiphany_determinism::fuzz::SplitMix64;
@@ -960,6 +975,67 @@ fn event_value(
     }
 }
 
+/// An event of a kind without a pitch list other than a rest or an unpitched
+/// note, at `id`'s place in `voice`: an indeterminate, graphic or cue event,
+/// or, given two pitches or more, a trajectory between the first and the
+/// last, which it holds as its own. None names another object: a cue's
+/// sources, an indeterminate event's alternatives, a graphic event's objects
+/// and a trajectory endpoint naming another event's pitch are not written.
+fn other_kind(
+    sim: &mut Simulation,
+    id: EventId,
+    voice: VoiceId,
+    position: EventPosition,
+    duration: EventDuration,
+    pitches: &[IdentifiedPitch],
+) -> Event {
+    let kinds = if pitches.len() >= 2 { 4 } else { 3 };
+    match sim.rng.below(kinds) {
+        0 => Event::Indeterminate(IndeterminateEvent {
+            id,
+            voice,
+            position,
+            duration,
+            indeterminacy: match sim.rng.below(3) {
+                0 => IndeterminacyKind::Pitch,
+                1 => IndeterminacyKind::Duration,
+                _ => IndeterminacyKind::Choice,
+            },
+            hints: IndeterminacyHints::default(),
+        }),
+        1 => Event::Graphic(GraphicEvent {
+            id,
+            voice,
+            position,
+            duration,
+            graphics: Vec::new(),
+            playback_bindings: Vec::new(),
+        }),
+        2 => Event::Cue(CueEvent {
+            id,
+            voice,
+            position,
+            duration,
+            source: Vec::new(),
+            rendering: CueRendering,
+        }),
+        _ => Event::Trajectory(TrajectoryEvent {
+            id,
+            voice,
+            position,
+            duration,
+            start: TrajectoryEndpoint::ExplicitPitch(pitches[0].clone()),
+            end: TrajectoryEndpoint::ExplicitPitch(pitches[pitches.len() - 1].clone()),
+            shape: if sim.rng.chance(2) {
+                TrajectoryShape::Linear
+            } else {
+                TrajectoryShape::Exponential
+            },
+            display: TrajectoryDisplay,
+        }),
+    }
+}
+
 /// Builds the genesis: a small score of one or two instruments, each with one
 /// or two staves, in one metric region of two to three 4/4 measures, every
 /// voice holding a few notes, rests and chords; then a tuplet, slurs, a tie
@@ -1249,7 +1325,26 @@ fn make(
             let (at, length) = chosen?;
             let id: EventId = sim.mint(r);
             let mut quarter_tones = Vec::new();
-            let event = event_value(sim, r, id, voice, at, length, &mut quarter_tones);
+            let event = if sim.rng.chance(6) {
+                // An event of another kind, a trajectory between two pitches
+                // the insert mints.
+                let pitches: Vec<IdentifiedPitch> = (0..2)
+                    .map(|_| IdentifiedPitch {
+                        id: sim.mint(r),
+                        pitch: random_pitch(&mut sim.rng, 1000),
+                    })
+                    .collect();
+                other_kind(
+                    sim,
+                    id,
+                    voice,
+                    EventPosition::Musical(at),
+                    EventDuration::Musical(length),
+                    &pitches,
+                )
+            } else {
+                event_value(sim, r, id, voice, at, length, &mut quarter_tones)
+            };
             let mut out = vec![prim(OperationKind::InsertEvent(InsertEventOp {
                 staff_instance: instance,
                 event,
@@ -1385,7 +1480,20 @@ fn make(
                     valuegen::proportional_model(),
                     PositionRemapping::PreserveTime,
                 ),
-                1 => (valuegen::aleatoric_model(), PositionRemapping::PreserveTime),
+                1 => (
+                    RegionTimeModel::Aleatoric(AleatoricTimeModel {
+                        ordering: EventOrderingDAG::default(),
+                        anchoring: match sim.rng.below(4) {
+                            0 => AleatoricAnchoringDiscipline::Musical,
+                            1 => AleatoricAnchoringDiscipline::WallClock,
+                            2 => AleatoricAnchoringDiscipline::EitherPerEvent,
+                            _ => AleatoricAnchoringDiscipline::FreelyMixed,
+                        },
+                        bounds: BTreeMap::new(),
+                        duration_hint: WallClockDuration(1),
+                    }),
+                    PositionRemapping::PreserveTime,
+                ),
                 2 => (valuegen::metric_model(), PositionRemapping::PreserveTime),
                 _ => {
                     let mut pairs: Vec<(EventId, MusicalPosition)> = Vec::new();
@@ -1524,21 +1632,38 @@ fn make(
             }
         }
         10 => {
-            let event = h
+            // InsertIdentifiedPitch: into an event of any kind, mostly a
+            // note, and spelt half the time, as an editor enters a pitch.
+            let notes = h
                 .events
                 .iter()
                 .copied()
                 .filter(|e| matches!(e, Event::Pitched(_)))
                 .collect::<Vec<_>>();
-            let event = *sim.rng.pick(&event)?;
+            let event = match sim.rng.pick(&notes) {
+                Some(note) if !sim.rng.chance(3) => *note,
+                _ => rng_event(sim)?,
+            };
             let id: PitchId = sim.mint(r);
             let pitch = random_pitch(&mut sim.rng, 6);
-            vec![prim(OperationKind::InsertIdentifiedPitch(
+            let spelling = sim
+                .rng
+                .chance(2)
+                .then(|| spelling_for(&mut sim.rng, &pitch))
+                .flatten();
+            let mut out = vec![prim(OperationKind::InsertIdentifiedPitch(
                 InsertIdentifiedPitchOp {
                     event: event.id(),
                     pitch: IdentifiedPitch { id, pitch },
                 },
-            ))]
+            ))];
+            out.extend(spelling.map(|spelling| {
+                prim(OperationKind::RespellPitch(RespellPitchOp {
+                    pitch: id,
+                    spelling,
+                }))
+            }));
+            out
         }
         11 => {
             let &(_, ip) = sim.rng.pick(&h.pitches)?;
@@ -1612,7 +1737,20 @@ fn make(
                         CrossCuttingValue::Beam(b)
                     }
                     CrossCuttingValue::Spanner(mut s) => {
-                        s.end = valuegen::event_anchor(other);
+                        if sim.rng.chance(2) {
+                            s.end = valuegen::event_anchor(other);
+                        } else {
+                            // Its staves rewritten: one or two the view holds.
+                            let mut staves: Vec<StaffId> = (0..1 + sim.rng.below(2))
+                                .filter_map(|_| sim.rng.pick(&h.score.staves).map(|s| s.id))
+                                .collect();
+                            staves.sort();
+                            staves.dedup();
+                            if staves.is_empty() {
+                                return None;
+                            }
+                            s.staves = staves;
+                        }
                         CrossCuttingValue::Spanner(s)
                     }
                 };
@@ -2164,43 +2302,92 @@ fn make(
             }))]
         }
         50 => {
-            // ModifyEvent: an event written as another kind in its place, a
-            // rest or an unpitched note over a note, and a rest and an
-            // unpitched note each over the other.
+            // ModifyEvent: an event written as another kind in its place: a
+            // rest, an unpitched note, an indeterminate, graphic or cue
+            // event, or, over a chord, a trajectory between its first and
+            // last pitches, which it carries.
             let event = rng_event(sim)?;
             let (id, voice) = (event.id(), event.voice());
             let (position, duration) = (event.position().clone(), event.duration().clone());
-            let to_rest = match event {
-                Event::Rest(_) => false,
-                Event::Pitched(_) => sim.rng.chance(2),
-                _ => true,
+            let mut own = Vec::new();
+            event.collect_identified_pitches(&mut own);
+            let own: Vec<IdentifiedPitch> = own.into_iter().cloned().collect();
+            let mut written = None;
+            for _ in 0..8 {
+                let value = match sim.rng.below(3) {
+                    0 => Event::Rest(Rest {
+                        id,
+                        voice,
+                        position: position.clone(),
+                        duration: duration.clone(),
+                        vertical_position: None,
+                        visible: !sim.rng.chance(5),
+                    }),
+                    1 => Event::Unpitched(UnpitchedEvent {
+                        id,
+                        voice,
+                        position: position.clone(),
+                        duration: duration.clone(),
+                        staff_position: StaffPosition(sim.rng.range(-4, 4) as i16),
+                        instrument_member: UnpitchedMemberId(0),
+                        articulations: Vec::new(),
+                        dynamic: None,
+                        stem: StemConfiguration,
+                        grace: None,
+                    }),
+                    _ => other_kind(sim, id, voice, position.clone(), duration.clone(), &own),
+                };
+                if std::mem::discriminant(&value) != std::mem::discriminant(event) {
+                    written = Some(value);
+                    break;
+                }
+            }
+            vec![prim(OperationKind::ModifyEvent(ModifyEventOp {
+                event: written?,
+            }))]
+        }
+        51 => {
+            // ModifyEvent minting a pitch: a chord written with a new pitch
+            // added, or an event of another kind written as a note of a new
+            // pitch in its place; the pitch spelt half the time.
+            let event = rng_event(sim)?;
+            let pitch = IdentifiedPitch {
+                id: sim.mint(r),
+                pitch: random_pitch(&mut sim.rng, 6),
             };
-            let value = if to_rest {
-                Event::Rest(Rest {
-                    id,
-                    voice,
-                    position,
-                    duration,
-                    vertical_position: None,
-                    visible: !sim.rng.chance(5),
-                })
-            } else {
-                Event::Unpitched(UnpitchedEvent {
-                    id,
-                    voice,
-                    position,
-                    duration,
-                    staff_position: StaffPosition(sim.rng.range(-4, 4) as i16),
-                    instrument_member: UnpitchedMemberId(0),
+            let value = match event.clone() {
+                Event::Pitched(mut note) => {
+                    note.pitches.push(pitch.clone());
+                    Event::Pitched(note)
+                }
+                other => Event::Pitched(PitchedEvent {
+                    id: other.id(),
+                    voice: other.voice(),
+                    position: other.position().clone(),
+                    duration: other.duration().clone(),
+                    pitches: vec![pitch.clone()],
                     articulations: Vec::new(),
                     dynamic: None,
+                    ornaments: Vec::new(),
                     stem: StemConfiguration,
                     grace: None,
-                })
+                }),
             };
-            vec![prim(OperationKind::ModifyEvent(ModifyEventOp {
+            let spelling = sim
+                .rng
+                .chance(2)
+                .then(|| spelling_for(&mut sim.rng, &pitch.pitch))
+                .flatten();
+            let mut out = vec![prim(OperationKind::ModifyEvent(ModifyEventOp {
                 event: value,
-            }))]
+            }))];
+            out.extend(spelling.map(|spelling| {
+                prim(OperationKind::RespellPitch(RespellPitchOp {
+                    pitch: pitch.id,
+                    spelling,
+                }))
+            }));
+            out
         }
         _ => return None,
     })
@@ -2269,7 +2456,7 @@ fn tie_entry(
 /// Each arm of [`make`] and how often it is drawn: the editing of notes,
 /// pitches and their marks three times as often as the score's structure and
 /// settings, as an editor's history runs.
-const ARMS: [(u64, u64); 51] = [
+const ARMS: [(u64, u64); 52] = [
     (0, 4),
     (1, 3),
     (2, 3),
@@ -2321,6 +2508,7 @@ const ARMS: [(u64, u64); 51] = [
     (48, 2),
     (49, 2),
     (50, 2),
+    (51, 2),
 ];
 
 fn draw_arm(rng: &mut Rng) -> u64 {
@@ -2341,7 +2529,10 @@ fn set_position(event: &mut Event, at: MusicalPosition) {
         Event::Pitched(e) => e.position = p,
         Event::Unpitched(e) => e.position = p,
         Event::Rest(e) => e.position = p,
-        _ => {}
+        Event::Indeterminate(e) => e.position = p,
+        Event::Trajectory(e) => e.position = p,
+        Event::Graphic(e) => e.position = p,
+        Event::Cue(e) => e.position = p,
     }
 }
 
@@ -2351,7 +2542,10 @@ fn set_duration(event: &mut Event, length: MusicalDuration) {
         Event::Pitched(e) => e.duration = d,
         Event::Unpitched(e) => e.duration = d,
         Event::Rest(e) => e.duration = d,
-        _ => {}
+        Event::Indeterminate(e) => e.duration = d,
+        Event::Trajectory(e) => e.duration = d,
+        Event::Graphic(e) => e.duration = d,
+        Event::Cue(e) => e.duration = d,
     }
 }
 
@@ -2532,9 +2726,9 @@ fn mints_and_refs(payload: &OperationPayload) -> (Vec<TypedObjectId>, Vec<TypedO
     fn event_refs(e: &Event, mints: &mut Vec<TypedObjectId>, refs: &mut Vec<TypedObjectId>) {
         mints.push(T::Event(e.id()));
         refs.push(T::Voice(e.voice()));
-        if let Event::Pitched(p) = e {
-            mints.extend(p.pitches.iter().map(|ip| T::Pitch(ip.id)));
-        }
+        let mut own = Vec::new();
+        e.collect_identified_pitches(&mut own);
+        mints.extend(own.iter().map(|ip| T::Pitch(ip.id)));
     }
     let (mut mints, mut refs) = (Vec::new(), Vec::new());
     let OperationPayload::Primitive(kind) = payload else {
@@ -2609,9 +2803,7 @@ fn mints_and_refs(payload: &OperationPayload) -> (Vec<TypedObjectId>, Vec<TypedO
         OperationKind::ModifyEvent(op) => {
             refs.push(T::Event(op.event.id()));
             refs.push(T::Voice(op.event.voice()));
-            if let Event::Pitched(p) = &op.event {
-                refs.extend(p.pitches.iter().map(|ip| T::Pitch(ip.id)));
-            }
+            refs.extend(modify_pitches(op));
         }
         OperationKind::Transpose(op) => refs.extend(op.targets.iter().map(|p| T::Pitch(*p))),
         OperationKind::TransposeInterval(op) => {
@@ -2698,15 +2890,35 @@ fn mints_and_refs(payload: &OperationPayload) -> (Vec<TypedObjectId>, Vec<TypedO
     (mints, refs)
 }
 
+/// The pitches a whole-event modify's value carries, its own or a
+/// trajectory's.
+fn modify_pitches(op: &ModifyEventOp) -> Vec<TypedObjectId> {
+    let mut carried = Vec::new();
+    op.event.collect_identified_pitches(&mut carried);
+    carried
+        .iter()
+        .map(|ip| TypedObjectId::Pitch(ip.id))
+        .collect()
+}
+
 /// Whether every object an operation of `history` names was minted by an
 /// operation its author had seen, or by itself. A system-derived id (a
 /// promoted voice) is minted by a promotion, not a payload, and an author
 /// names one only from a view whose reduction made it, so it is not checked.
+/// A whole-event modify mints a pitch it carries that no other operation
+/// mints.
 pub fn valid(history: &[OperationEnvelope]) -> bool {
     let mut minted_by: BTreeMap<TypedObjectId, OperationId> = BTreeMap::new();
     for envelope in history {
         for object in mints_and_refs(&envelope.payload).0 {
             minted_by.entry(object).or_insert(envelope.id);
+        }
+    }
+    for envelope in history {
+        if let OperationPayload::Primitive(OperationKind::ModifyEvent(op)) = &envelope.payload {
+            for object in modify_pitches(op) {
+                minted_by.entry(object).or_insert(envelope.id);
+            }
         }
     }
     history.iter().all(|envelope| {
