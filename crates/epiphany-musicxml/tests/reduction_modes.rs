@@ -5873,3 +5873,103 @@ fn a_best_effort_undo_keeps_a_signature_its_dropped_restoration_leaves_named_in_
     );
     assert!(live(&state, TypedObjectId::TimeSignature(half)));
 }
+
+/// An event an undo removes takes every pitch it holds with it, as a delete
+/// does, a pitch another operation added since among them, in both modes.
+/// One author replaces the first quarter with a rest in a transaction, gives
+/// the rest a pitch, undoes the transaction (under each policy) and then
+/// transposes the pitch by steps and by an interval: the pitch went with its
+/// event, so each transposition is refused alike. Before reduction version 3
+/// the pitch stayed live while the graph dropped it with the rest, so
+/// base-free reduction alone held its value and the interval's verdict split
+/// the modes.
+#[test]
+fn an_event_an_undo_removes_takes_its_pitches_in_both_modes() {
+    use epiphany_core::{IdentifiedPitch, PitchId, TranspositionInterval};
+    use epiphany_ops::{InsertIdentifiedPitchOp, TransposeIntervalOp, TransposeOp};
+    let m = Measure::new();
+    for (n, policy) in [UndoPolicy::StrictInverse, UndoPolicy::BestEffort]
+        .into_iter()
+        .enumerate()
+    {
+        let n = n as u64;
+        let tx = TransactionId::new(A, 3500 + 10 * n);
+        let pitch = PitchId::new(A, 3501 + 10 * n);
+        let rest = m.rest(3502 + 10 * n, 0, m.quarters[0].duration().clone());
+        let rest_id = rest.id;
+        let payloads = vec![
+            (
+                primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                    id: tx,
+                    label: String::from("replace with a rest"),
+                    category: None,
+                })),
+                Some(tx),
+            ),
+            (delete(m.q(0), TupletCompensation::NotInTuplet), Some(tx)),
+            (m.insert(rest), Some(tx)),
+            (
+                primitive(OperationKind::InsertIdentifiedPitch(
+                    InsertIdentifiedPitchOp {
+                        event: rest_id,
+                        pitch: IdentifiedPitch {
+                            id: pitch,
+                            pitch: valuegen::pitch_value_nth(4),
+                        },
+                    },
+                )),
+                None,
+            ),
+            (
+                OperationPayload::UndoTransaction(UndoTransactionPayload { target: tx, policy }),
+                None,
+            ),
+            (
+                primitive(OperationKind::Transpose(TransposeOp {
+                    targets: vec![pitch],
+                    chromatic_steps: 3,
+                })),
+                None,
+            ),
+            (
+                primitive(OperationKind::TransposeInterval(TransposeIntervalOp {
+                    targets: [pitch].into_iter().collect(),
+                    interval: TranspositionInterval {
+                        diatonic_steps: -1,
+                        chromatic_steps: -2,
+                    },
+                })),
+                None,
+            ),
+        ];
+        let mut authored: Vec<OperationEnvelope> = Vec::new();
+        for (counter, (payload, transaction)) in payloads.into_iter().enumerate() {
+            let seen: Vec<OperationId> = authored.last().map(|e| e.id).into_iter().collect();
+            let mut env = m.op(A, counter as u64, counter as i64 + 1, &seen, payload);
+            env.transaction = transaction;
+            authored.push(env);
+        }
+        let history = format!("a pitch in an undone rest, {policy:?}");
+        let state = m.agree(&history, &authored);
+        assert!(
+            matches!(
+                effect(&state, authored[4].id),
+                Some(OperationEffect::AppliedWithRepair { .. })
+            ),
+            "{history}: {:?}",
+            effect(&state, authored[4].id)
+        );
+        assert!(
+            tombstoned(&state, TypedObjectId::Event(rest_id)),
+            "{history}"
+        );
+        assert!(tombstoned(&state, TypedObjectId::Pitch(pitch)), "{history}");
+        for op in &authored[5..] {
+            assert!(
+                matches!(effect(&state, op.id), Some(OperationEffect::NoOp { .. })),
+                "{history}: {:?}",
+                effect(&state, op.id)
+            );
+        }
+    }
+}

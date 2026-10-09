@@ -800,7 +800,8 @@ names, where it removed the instrument of a staff it kept. A pitch inserted
 into an event of any kind without a pitch list, or kept by a whole-event
 write on one, makes it a note. A region or staff instance an undo emptied
 is empty to a later delete. A best-effort undo keeps a time signature a meter change it
-leaves in place still names. A promoted voice
+leaves in place still names, and an event an undo removes takes every pitch
+it holds, as a delete does. A promoted voice
 holds its instance against a delete, as any voice does. An undo that is a
 member of the transaction it names is refused, and a migration out of musical
 time supersedes an undo's restoration of a value written in musical time into
@@ -979,7 +980,10 @@ repair, not a conflict.
 event, its pitches, and any promoted voice. \texttt{StrictInverse} conflicts if
 any was already tombstoned or modified; \texttt{BestEffort} tombstones the
 survivors; \texttt{Cascade} is \texttt{StrictInverse} over the same minted set
-(dependent-closure undo is a Phase-3 refinement).
+(dependent-closure undo is a Phase-3 refinement). The event takes every pitch
+it then holds with it, as a \texttt{DeleteEvent} does, a pitch another
+operation added since among them (since version~0.19.0, before which such a
+pitch stayed live while the graph dropped it with its event).
 
 \textbf{Re-anchoring.} Not applicable (the operation mints, it does not
 reference a pre-existing object that could be tombstoned).

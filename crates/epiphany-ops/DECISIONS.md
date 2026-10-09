@@ -3595,3 +3595,19 @@ undo removes left a pitch another author had added to it live in the ledger
 while the graph dropped it, so a later interval transposition was refused
 base-free and applied graph-aware. Its history is committed `split` here as
 `167` and fixed in the next commit.
+
+**An event an undo removes takes its pitches (found by the bias's fuzz).** A
+`DeleteEvent` tombstones every pitch its event holds; an undo tombstoned only
+its transaction's own mints. An author replaced a note with a rest in a
+transaction, another gave the rest a pitch, and a third undid the transaction
+best effort: the rest went, the pitch stayed live in the ledger with its value
+held base-free while the graph dropped it with the rest, and a later
+`TransposeInterval` of it was refused `TranspositionOutOfRange` base-free and
+applied graph-aware (an effect split, seed `0x596584da` at 64 authored,
+history `167`). One author reaches it too. `tombstone_undo_targets` now
+tombstones each live pitch an undone event holds, as the delete does, with no
+repair of its own, as the delete records none. Locked by
+`an_event_an_undo_removes_takes_its_pitches_in_both_modes` (one author, both
+policies: the pitch tombstoned with the rest, a step and an interval
+transposition of it refused alike) and history `167`. Mutation: the pitches
+left live (the test fails).

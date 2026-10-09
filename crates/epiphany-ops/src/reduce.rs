@@ -8064,6 +8064,29 @@ impl<'a> Reducer<'a> {
                 target: *t,
             });
         }
+        // An event the undo removes takes every pitch it holds with it, as a
+        // delete does, a pitch another operation added since among them
+        // (reduction version 3: before it such a pitch stayed live while the
+        // graph dropped it with its event, so base-free reduction alone held
+        // its value and a later transposition of it split the modes).
+        for t in targets {
+            let TypedObjectId::Event(event) = t else {
+                continue;
+            };
+            for pitch in self.event_pitches.get(event).cloned().unwrap_or_default() {
+                let p_obj = TypedObjectId::Pitch(pitch);
+                if matches!(self.objects.get(&p_obj), Some(ObjectState::Live)) {
+                    let minted_by = self.minted_by.get(&p_obj).copied().unwrap_or(env.id);
+                    self.objects.insert(
+                        p_obj,
+                        ObjectState::Tombstoned {
+                            deleted_by: env.id,
+                            minted_by,
+                        },
+                    );
+                }
+            }
+        }
         repairs.extend(self.materialize_graph_tombstones(env, targets));
         // P13-D1: mirror the graph re-anchoring in the LEDGER. The graph side
         // (`materialize_graph_delete`, run above) silently re-anchors or

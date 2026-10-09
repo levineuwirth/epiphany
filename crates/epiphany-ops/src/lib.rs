@@ -534,6 +534,12 @@ pub mod vectors;
 ///     leaves its key's value; the undo is taken again with such a signature
 ///     kept, where it removed the signature the meter change still named
 ///     (`CrossCuttingRefsResolve`).
+///   - an event an undo removes takes every pitch it holds with it, as a
+///     `DeleteEvent` does, a pitch another operation added since among
+///     them, where such a pitch stayed live while the graph dropped it with
+///     its event, so base-free reduction alone held its value and a later
+///     interval transposition of it was refused there and applied
+///     graph-aware.
 ///
 ///   Locked by the committed histories of `tests/two_modes/` (each declares
 ///   whether it reduces alike) and, for the promotion,
@@ -614,7 +620,9 @@ pub mod vectors;
 ///   for an emptied container,
 ///   `a_container_an_undo_emptied_reads_empty_in_both_modes`; for a dropped
 ///   meter restoration,
-///   `a_best_effort_undo_keeps_a_signature_its_dropped_restoration_leaves_named_in_both_modes`.
+///   `a_best_effort_undo_keeps_a_signature_its_dropped_restoration_leaves_named_in_both_modes`;
+///   for an undone event's pitches,
+///   `an_event_an_undo_removes_takes_its_pitches_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.
