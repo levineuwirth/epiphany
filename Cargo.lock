@@ -1226,9 +1226,12 @@ dependencies = [
 name = "epiphany-editor-core"
 version = "0.0.0"
 dependencies = [
+ "epiphany-bundle",
  "epiphany-core",
+ "epiphany-determinism",
  "epiphany-layout-ir",
  "epiphany-ops",
+ "getrandom 0.2.17",
 ]
 
 [[package]]

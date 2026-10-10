@@ -160,6 +160,19 @@ impl FileStore {
         Ok(FileStore { file, len: 0 })
     }
 
+    /// Creates a bundle file at `path`, refusing with
+    /// [`io::ErrorKind::AlreadyExists`] when a file is already there: creating a
+    /// document never truncates another (`spec/PLAN_EDITOR_APP.md` §Ruling B,
+    /// "creation uses `create_new`"). [`FileStore::create`] truncates.
+    pub fn create_new(path: impl AsRef<std::path::Path>) -> io::Result<Self> {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(path)?;
+        Ok(FileStore { file, len: 0 })
+    }
+
     /// Opens an existing bundle file for read/write.
     pub fn open(path: impl AsRef<std::path::Path>) -> io::Result<Self> {
         let file = std::fs::OpenOptions::new()

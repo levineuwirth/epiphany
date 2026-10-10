@@ -15,6 +15,12 @@ epiphany-ops.workspace = true
 # The layout pipeline, the ConstraintSolver interface (held as a trait object so
 # the editor is solver-agnostic), the RenderIR, and the hit-test contract.
 epiphany-layout-ir.workspace = true
+# The document layer (`EditorDocument`): the bundle a document is saved in, the
+# canonical encoding its operation blocks carry, and the entropy a new document's
+# identities and a lease's fresh replica draw on.
+epiphany-bundle.workspace = true
+epiphany-determinism.workspace = true
+getrandom.workspace = true
 
 [dev-dependencies]
 # Tests drive the editor from real score fixtures.

@@ -45,9 +45,13 @@
 //! produces a [`RenderIR`]; turning that into pixels is the renderer's job.
 
 mod barriers;
+mod document;
 mod fragment;
 
 pub use barriers::ActiveExtension;
+pub use document::{
+    DocumentError, EditorDocument, ReadOnlyReason, Reconciled, Saved, ScoreSetup, StaffSetup,
+};
 pub use fragment::{
     FragmentError, MAX_FRAGMENT_BYTES, MAX_FRAGMENT_EVENTS, MAX_FRAGMENT_NESTING_DEPTH,
 };
@@ -76,9 +80,8 @@ use epiphany_ops::{
     advisory_violations, AcceptOutcome, AuthorId, CausalContext, CreateCrossCuttingOp,
     CrossCuttingValue, DeleteEventOp, DeleteIdentifiedPitchOp, HybridLogicalClock, InsertEventOp,
     InsertIdentifiedPitchOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationEnvelope,
-    OperationKind, OperationKindTag, OperationPayload, OperationSet, OperationStamp,
-    RespellPitchOp, TransactionCategory, TransactionDescriptor, TransposeIntervalOp,
-    TupletCompensation,
+    OperationKind, OperationKindTag, OperationPayload, OperationStamp, RespellPitchOp,
+    TransactionCategory, TransactionDescriptor, TransposeIntervalOp, TupletCompensation,
 };
 
 /// The current selection: the score-graph object to act on, plus the stable layout
@@ -601,13 +604,29 @@ pub struct EditorSession {
     caret: Option<Caret>,
     // Operation-minting identity. A real client supplies its own replica/author.
     // Minted operations form this replica's monotonic local history; the next op's
-    // counter is `authored.len()` (never reused across undo), so a failed apply consumes
-    // no id. The causal context covers the active prefix, not a fixed counter range, so a
-    // fork (undo + new edit) does not strand a later op pending behind a removed unit.
+    // counter is `op_floor + authored.len()` (never reused across undo), so a failed
+    // apply consumes no id. The causal context covers the active prefix, not a fixed
+    // counter range, so a fork (undo + new edit) does not strand a later op pending
+    // behind a removed unit.
     replica: ReplicaId,
     author: AuthorId,
+    // The first counter this session mints under `replica`: one past the committed
+    // partition's highest counter for that replica, or 0 when it holds none (always
+    // so for a fresh replica). A session resuming a replica the document already
+    // holds therefore never re-mints one of its operation ids.
+    op_floor: u64,
+    // The document's committed partition (`spec/PLAN_EDITOR_APP.md` §Ruling B): the
+    // envelopes a save has made durable, immutable to the session. Every
+    // materialization reduces it together with `applied` onto `base`, and undo never
+    // reaches into it. Empty for a session opened on a bare score (probe mode).
+    committed: document::Committed,
+    // The lease a document granted this session, which `EditorDocument::save`
+    // validates. `None` for a probe-mode session, which nothing can save.
+    lease: Option<document::Lease>,
     // The currently-applied envelopes, in order — the log the session re-reduces onto
-    // `base` to materialize `score`. One user action appends one unit (a primitive is
+    // `base`, after the committed partition, to materialize `score`. A save promotes
+    // every applied unit into `committed`, emptying this. One user action appends one
+    // unit (a primitive is
     // one envelope; a transaction is its descriptor plus members). Undo moves the last
     // unit to `redo_stack` and re-reduces the shorter prefix; a new edit clears the redo
     // stack. (A delete tombstones permanently in the CRDT, so undo cannot invert it —
@@ -624,9 +643,10 @@ pub struct EditorSession {
     // undone, and forked-away. It never shrinks, so it is the monotonic high-water source
     // for new operation, event, pitch, and transaction ids: undoing an edit must not let
     // a later edit re-mint its ids (which would equivocate a streamed op or collide an
-    // entity id). A new op's counter is `authored.len()`; minting scans this, not the
-    // active prefix. (`applied` is always a — possibly non-contiguous, after a fork —
-    // subsequence of `authored`.)
+    // entity id). A new op's counter is `op_floor + authored.len()`; minting scans
+    // this, not the active prefix. (`applied` is always a — possibly non-contiguous,
+    // after a fork — subsequence of `authored`.) A save promotes the applied units
+    // into `committed` and leaves this record whole.
     authored: Vec<OperationEnvelope>,
     // The active extension declarations whose edit barriers gate edits (Chapter 8
     // §"Behavior Under Unknown Extensions"). Injected via `set_active_extensions`
@@ -655,10 +675,35 @@ impl EditorSession {
     /// Opens a session on `score` with `solver`, rendering immediately. Errors with
     /// [`EditorError::NotRenderable`] if the initial layout is diagnostic-only.
     pub fn open(score: Score, solver: Box<dyn ConstraintSolver>) -> Result<Self, EditorError> {
+        Self::open_over(
+            score.clone(),
+            score,
+            document::Committed::default(),
+            solver,
+            ReplicaId(1),
+            None,
+        )
+    }
+
+    /// Opens a session whose materialization reduces `committed` and its own edits
+    /// onto `base`, starting from `score`, the reduction of `committed` onto `base`
+    /// the caller has already made: the shared constructor of a probe-mode session
+    /// ([`Self::open`], whose partition is empty) and of one a document leases or
+    /// views ([`EditorDocument::lease`], [`EditorDocument::view`]), which passes the
+    /// committed partition it owns, a fresh replica and the lease it grants, if any.
+    pub(crate) fn open_over(
+        base: Score,
+        score: Score,
+        committed: document::Committed,
+        solver: Box<dyn ConstraintSolver>,
+        replica: ReplicaId,
+        lease: Option<document::Lease>,
+    ) -> Result<Self, EditorError> {
         let (start_clefs, resolved, render, map) =
             render_score(&score, solver.as_ref()).ok_or(EditorError::NotRenderable)?;
+        let op_floor = committed.next_counter(replica);
         Ok(EditorSession {
-            base: score.clone(),
+            base,
             score,
             solver,
             resolved,
@@ -667,8 +712,11 @@ impl EditorSession {
             start_clefs,
             selection: SelectionSet::default(),
             caret: None,
-            replica: ReplicaId(1),
+            replica,
             author: AuthorId(0),
+            op_floor,
+            committed,
+            lease,
             applied: Vec::new(),
             undo_units: Vec::new(),
             redo_stack: Vec::new(),
@@ -679,14 +727,16 @@ impl EditorSession {
     }
 
     /// Overrides the replica/author the session mints operations under (a GUI sets
-    /// these to the local editing identity). Defaults to `ReplicaId(1)` / author 0.
+    /// these to the local editing identity). Defaults to `ReplicaId(1)` / author 0 for
+    /// a probe-mode session, and to a fresh random replica for one a document leases.
     ///
     /// **Pre-edit only** — panics if called after any edit (including ones since undone).
     /// A session's op ids are one replica's monotonic history; switching identity
     /// mid-stream would continue the counter under a new replica, leaving a
     /// `(new_replica, 0)` hole that the missing-predecessor rule would hold pending. The
     /// guard is on the **authored** history (every id ever minted), not the active
-    /// prefix, so undoing back to an empty prefix does not reopen it.
+    /// prefix, so undoing back to an empty prefix does not reopen it. A replica the
+    /// committed partition already holds resumes one past its highest counter there.
     pub fn with_identity(mut self, replica: ReplicaId, author: AuthorId) -> Self {
         assert!(
             self.authored.is_empty(),
@@ -695,7 +745,34 @@ impl EditorSession {
         );
         self.replica = replica;
         self.author = author;
+        self.op_floor = self.committed.next_counter(replica);
         self
+    }
+
+    /// The replica this session mints operations under.
+    pub fn replica(&self) -> ReplicaId {
+        self.replica
+    }
+
+    /// The committed partition: every envelope a save has made durable in the
+    /// document this session was leased from, in commit order. Empty for a session
+    /// opened on a bare score. The materialized score is the reduction of these
+    /// together with [`Self::applied_operations`].
+    pub fn committed_operations(&self) -> &[OperationEnvelope] {
+        self.committed.envelopes()
+    }
+
+    /// Whether the session holds applied edits a save has not made durable: the
+    /// dirty state, which lives with the session, not the document (Ruling B). A
+    /// redo after a save makes the session dirty again; undoing back to the save
+    /// makes it clean.
+    pub fn is_dirty(&self) -> bool {
+        !self.applied.is_empty()
+    }
+
+    /// The counter the next minted operation takes.
+    fn next_counter(&self) -> u64 {
+        self.op_floor + self.authored.len() as u64
     }
 
     /// The current document.
@@ -1115,6 +1192,35 @@ impl EditorSession {
         Ok(caret)
     }
 
+    /// Places the caret at a musical `position` in `voice`, entering with
+    /// `entry_duration` — the caret [`Self::set_caret_at`] would place from a click,
+    /// named directly (a new document's first entry point, or a keyboard command
+    /// that moves to a measure). Errors with [`EditorError::InvalidDuration`] for a
+    /// non-positive duration, and [`EditorError::NoInsertTarget`] when `voice` is
+    /// not in a metric region or `position` is before the region's origin.
+    pub fn set_caret(
+        &mut self,
+        voice: VoiceId,
+        position: MusicalPosition,
+        entry_duration: MusicalDuration,
+    ) -> Result<Caret, EditorError> {
+        if !entry_duration.is_positive() {
+            return Err(EditorError::InvalidDuration);
+        }
+        if self.metric_staff_instance_of_voice(voice).is_none()
+            || position < MusicalPosition::origin()
+        {
+            return Err(EditorError::NoInsertTarget);
+        }
+        let caret = Caret {
+            voice,
+            position,
+            entry_duration,
+        };
+        self.caret = Some(caret.clone());
+        Ok(caret)
+    }
+
     /// Sets the caret's entry duration — the written value
     /// [`Self::enter_nominal`]/[`Self::enter_pitch`]/[`Self::enter_rest`] insert,
     /// and the step [`Self::advance`]/[`Self::retreat`] move by. The duration is
@@ -1379,10 +1485,12 @@ impl EditorSession {
     /// otherwise leave the new op held pending behind a missing predecessor. Empty when
     /// nothing is applied (a root op). The compact contiguous form is preserved while
     /// the active prefix has no holes (the common case); a fork records the active tail
-    /// as dots (see [`extend_context`]).
+    /// as dots (see [`extend_context`]). With nothing applied it is the committed
+    /// partition's frontier (Ruling B: the first edit after an open or a save extends
+    /// the stored frontier), which is empty for a session over a bare score.
     fn active_prior_context(&self) -> CausalContext {
         match self.applied.last() {
-            None => CausalContext::new(),
+            None => self.committed.frontier().clone(),
             Some(head) => extend_context(head.causal_context.clone(), head.id),
         }
     }
@@ -1476,6 +1584,19 @@ impl EditorSession {
         })
     }
 
+    /// Moves every applied unit into the committed partition once a save has made
+    /// it durable (Ruling B's promotion): a partition move, never a re-reduction,
+    /// since the operation set is unchanged, so the score, layout, selection and
+    /// caret stand. Undo stops at the save. The redo stack survives it: each undone
+    /// unit's causal predecessors are the applied prefix it was undone from, which
+    /// the save committed, so a redo still reduces with every predecessor present.
+    pub(crate) fn promote(&mut self, committed: document::Committed, lease: document::Lease) {
+        self.committed = committed;
+        self.applied.clear();
+        self.undo_units.clear();
+        self.lease = Some(lease);
+    }
+
     /// Whether there is an applied edit to [`undo`](Self::undo).
     pub fn can_undo(&self) -> bool {
         !self.undo_units.is_empty()
@@ -1492,7 +1613,9 @@ impl EditorSession {
     /// back as a conflict yet still returns a score), or [`EditorError::NotRenderable`]
     /// for a diagnostic-only layout.
     fn materialize(&self, log: &[OperationEnvelope]) -> Result<Materialization, EditorError> {
-        let mut set = OperationSet::new();
+        // The committed partition, already accepted once (its envelopes hashed and
+        // checked), then the session's own log on top.
+        let mut set = self.committed.set().clone();
         for env in log {
             if !matches!(set.accept(env.clone()), AcceptOutcome::Accepted) {
                 return Err(EditorError::RejectedOperation);
@@ -1583,7 +1706,7 @@ impl EditorSession {
         }
         // The next id is one past every id ever minted (monotonic across undo), and the
         // context covers the currently-applied ops.
-        let counter = self.authored.len() as u64;
+        let counter = self.next_counter();
         let envelope = self.envelope_at(
             counter,
             OperationPayload::Primitive(kind),
@@ -1721,7 +1844,7 @@ impl EditorSession {
         category: Option<TransactionCategory>,
         kinds: Vec<OperationKind>,
     ) -> Vec<OperationEnvelope> {
-        let base = self.authored.len() as u64;
+        let base = self.next_counter();
         let tx_id = self.mint_transaction_id();
         let descriptor = TransactionDescriptor {
             id: tx_id,
@@ -1755,14 +1878,16 @@ impl EditorSession {
     }
 
     /// Mints a fresh [`TransactionId`] in the session's replica namespace, one past the
-    /// highest transaction counter declared in this session's **authored** history
-    /// (so an undone transaction's id is never reused). Transaction ids live only in the
-    /// op stream — the materialized score retains no trace — so the log is the sole
-    /// source.
+    /// highest transaction counter declared in the committed partition and this
+    /// session's **authored** history (so an undone transaction's id is never reused).
+    /// Transaction ids live only in the op stream — the materialized score retains no
+    /// trace — so the log is the sole source.
     fn mint_transaction_id(&self) -> TransactionId {
         let next = self
-            .authored
+            .committed
+            .envelopes()
             .iter()
+            .chain(&self.authored)
             .filter_map(declared_transaction_id)
             .filter(|t| t.replica() == self.replica)
             .map(|t| t.counter())
@@ -3167,9 +3292,10 @@ impl EditorSession {
     }
 
     /// Mints a fresh [`EventId`] in the session's replica namespace, on the same
-    /// three-source high-water-mark basis as [`Self::mint_pitch_id`]: the pristine
-    /// `base`, the current score (each live or tombstoned), and this session's
-    /// **authored** history (so an id from an undone insert is never reused).
+    /// high-water-mark basis as [`Self::mint_pitch_id`]: the pristine `base`, the
+    /// current score (each live or tombstoned), the committed partition and this
+    /// session's **authored** history (so an id from an undone insert is never
+    /// reused).
     fn mint_event_id(&self) -> EventId {
         let ids = self
             .base
@@ -3179,7 +3305,7 @@ impl EditorSession {
             .chain(self.base.tombstoned_events.iter().copied())
             .chain(self.score.events.iter().map(Event::id))
             .chain(self.score.tombstoned_events.iter().copied())
-            .chain(self.authored.iter().flat_map(inserted_event_ids));
+            .chain(self.committed_and_authored().flat_map(inserted_event_ids));
         let next = ids
             .filter(|e| e.replica() == self.replica)
             .map(|e| e.counter())
@@ -3214,10 +3340,11 @@ impl EditorSession {
     /// highest pitch counter this replica has ever named. A pitch can leave the
     /// *current* score without being recorded anywhere in it — `DeleteIdentifiedPitch`
     /// tombstones only reducer state, never `Score.tombstoned_pitches` — so the
-    /// high-water mark is taken over three sources: the pristine open-time `base`
+    /// high-water mark is taken over four sources: the pristine open-time `base`
     /// (catches an opened pitch since deleted), the current score (catches anything a
-    /// future reducer change records), and this session's **authored** history (catches
-    /// a session-inserted pitch since deleted *or undone*). Reusing an id would make a
+    /// future reducer change records), the committed partition (catches a saved pitch
+    /// since deleted), and this session's **authored** history (catches a
+    /// session-inserted pitch since deleted *or undone*). Reusing an id would make a
     /// later insert no-op against a tombstone under whole-log reduction. Pitches authored
     /// by other replicas occupy disjoint namespaces and do not constrain it.
     fn mint_pitch_id(&self) -> PitchId {
@@ -3228,7 +3355,7 @@ impl EditorSession {
             .chain(self.base.tombstoned_pitches.iter().copied())
             .chain(self.score.live_pitch_ids())
             .chain(self.score.tombstoned_pitches.iter().copied())
-            .chain(self.authored.iter().flat_map(inserted_pitch_ids));
+            .chain(self.committed_and_authored().flat_map(inserted_pitch_ids));
         let next = ids
             .filter(|p| p.replica() == self.replica)
             .map(|p| p.counter())
@@ -3255,7 +3382,7 @@ impl EditorSession {
             .iter()
             .map(|s| s.id)
             .chain(self.score.cross_cutting.slurs.iter().map(|s| s.id))
-            .chain(self.authored.iter().flat_map(inserted_slur_ids));
+            .chain(self.committed_and_authored().flat_map(inserted_slur_ids));
         let next = ids
             .filter(|s| s.replica() == self.replica)
             .map(|s| s.counter())
@@ -3276,7 +3403,7 @@ impl EditorSession {
             .iter()
             .map(|t| t.id)
             .chain(self.score.cross_cutting.ties.iter().map(|t| t.id))
-            .chain(self.authored.iter().flat_map(inserted_tie_ids));
+            .chain(self.committed_and_authored().flat_map(inserted_tie_ids));
         let next = ids
             .filter(|t| t.replica() == self.replica)
             .map(|t| t.counter())
@@ -3285,6 +3412,14 @@ impl EditorSession {
                 c.checked_add(1).expect("tie id counter overflowed u64")
             });
         TieId::new(self.replica, next)
+    }
+
+    /// The committed partition followed by this session's authored history: every
+    /// envelope whose ids a new mint must stay clear of. Under a fresh replica the
+    /// committed partition holds none of the session's namespace; a session that
+    /// resumes a replica the document holds needs it.
+    fn committed_and_authored(&self) -> impl Iterator<Item = &OperationEnvelope> {
+        self.committed.envelopes().iter().chain(&self.authored)
     }
 
     /// Re-resolves the whole selection set against the current layout — see
@@ -4131,7 +4266,7 @@ mod tests {
         ConstrainedLayoutIR, HitShape, InvalidationSet, SolveReport, SolveStatus, SolverState,
         SolverTier, SolverVersion, StubSolver,
     };
-    use epiphany_ops::TransposeOp;
+    use epiphany_ops::{OperationSet, TransposeOp};
 
     fn open_rich(seed: u64) -> EditorSession {
         EditorSession::open(valid_score_rich(seed), Box::new(StubSolver)).expect("rich renders")
