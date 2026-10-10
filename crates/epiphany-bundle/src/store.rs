@@ -47,6 +47,27 @@ pub trait BlockStore {
     fn flush(&mut self) -> io::Result<()>;
 }
 
+/// A boxed store is a store, so one owner can hold a file-backed or in-memory
+/// bundle behind one type (an editor window holding either a saved document or
+/// an import not yet saved).
+impl<S: BlockStore + ?Sized> BlockStore for Box<S> {
+    fn len(&self) -> u64 {
+        (**self).len()
+    }
+
+    fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        (**self).read_exact_at(offset, buf)
+    }
+
+    fn write_at(&mut self, offset: u64, data: &[u8]) -> io::Result<()> {
+        (**self).write_at(offset, data)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        (**self).flush()
+    }
+}
+
 /// Reads exactly `len` bytes at `offset` into a fresh `Vec`.
 pub(crate) fn read_vec(store: &dyn BlockStore, offset: u64, len: u64) -> io::Result<Vec<u8>> {
     let mut buf = vec![0u8; len as usize];

@@ -1243,10 +1243,13 @@ name = "epiphany-editor-gui"
 version = "0.0.0"
 dependencies = [
  "eframe",
+ "epiphany-bundle",
+ "epiphany-cli",
  "epiphany-core",
  "epiphany-editor-core",
  "epiphany-engrave",
  "epiphany-layout-ir",
+ "epiphany-musicxml",
  "epiphany-ops",
  "epiphany-render-svg",
  "epiphany-testkit",

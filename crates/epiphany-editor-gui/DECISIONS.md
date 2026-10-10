@@ -469,3 +469,29 @@ headless way in this crate to synthesize an `egui::Context` frame or drive
 `ctx.input`/painter calls. `cargo test -p epiphany-editor-gui` green
 (25/25, including all five golden tests) is this packet's regression gate
 for that untested surface.
+
+## The window on a file (2026-10-10, X5a.6)
+
+The window edits an `EditorDocument` (the `file` module) instead of the
+built-in fixture: a saved document opened from its path, a MusicXML file
+imported into a new document held in memory (`Box<dyn BlockStore>` holds
+either store), or, with no path, a new score of one staff. The goldens still
+open the fixture directly, so they are unchanged.
+
+**Save as writes the document's bytes.** Saving as commits the session's
+edits, copies the bundle's bytes to a new file (never over an existing one:
+`FileStore::create_new`) and opens that file under a fresh lease. The undo
+history goes with the old lease, which a save ends anyway; the redo stack and
+the selection do not carry over.
+
+**One window writes a file.** Opening a saved document takes an advisory lock
+on its file (`File::try_lock`, which this crate may use: it is outside the
+MSRV floor). A window that cannot take it opens the document read-only. The
+lock is advisory, so it binds cooperating windows only.
+
+**Keys.** Ctrl/Cmd+S saves. Enter toggles a line break after the selected
+note's measure and Ctrl/Cmd+Enter a page break, as in MuseScore. No shortcut
+fires while the file bar's path has the keyboard.
+
+**Concert pitch.** A transposed MusicXML file opened here is drawn at
+concert pitch: whether a score is shown transposed is not yet stored in it.

@@ -18,6 +18,12 @@
 //! panel shows the selection and the last applied op. The GUI is the thing meant to
 //! surface the next real core gaps.
 //!
+//! It edits **files** (the `file` module): `epiphany-editor-gui [path]` opens a saved
+//! document or a MusicXML file (imported into a new document held in memory until it
+//! is saved as a file), or a new score with no path; the file bar opens, saves, saves
+//! as and exports every page as SVG and PDF. Ctrl/Cmd+S saves; Enter and
+//! Ctrl/Cmd+Enter toggle a line or page break after the selected note's measure.
+//!
 //! It is a demo binary; there is no headless way to assert its rendering here, so the
 //! one piece of nontrivial logic — the screen↔world coordinate map a click depends on
 //! — is a pure [`ViewMap`] with a round-trip unit test.
@@ -25,18 +31,20 @@
 use eframe::egui;
 
 use epiphany_core::{CmnNominal, NoteValue, TypedObjectId};
-use epiphany_editor_core::{Caret, EditOutcome, EditorError, EditorSession, GridResolution};
-use epiphany_engrave::Engraver;
+use epiphany_editor_core::{
+    Caret, EditOutcome, EditorError, EditorSession, GridResolution, LayoutBreak,
+};
 use epiphany_layout_ir::{BoundingBox, HitShape, LayoutObjectId, Point};
 use epiphany_ops::{OperationKind, OperationPayload};
 use epiphany_render_svg::{render, RenderOptions};
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions::default();
+    let path = std::env::args().nth(1).map(std::path::PathBuf::from);
     eframe::run_native(
         "Epiphany editor (demo)",
         options,
-        Box::new(|_cc| Ok(Box::new(EditorApp::new()))),
+        Box::new(|_cc| Ok(Box::new(EditorApp::new(path)))),
     )
 }
 
@@ -388,6 +396,10 @@ fn rasterize(svg: &str) -> Option<(egui::ColorImage, egui::Vec2)> {
 
 struct EditorApp {
     session: EditorSession,
+    /// The document the session edits, and the file it lives in, if any.
+    opened: file::Opened,
+    /// The path the file bar's buttons act on.
+    path_text: String,
     texture: Option<egui::TextureHandle>,
     /// `[min_x, min_y, width, height]` of the last render, in staff spaces.
     view_box: [f32; 4],
@@ -422,12 +434,32 @@ struct EditorApp {
 }
 
 impl EditorApp {
-    fn new() -> Self {
-        let score = epiphany_testkit::fixtures::ten_measure_single_staff(0);
-        let session = EditorSession::open(score, Box::new(Engraver::default()))
-            .expect("the ten-measure fixture renders under the real engraver");
+    /// A window on `path` (a saved document or a MusicXML file), or on a new
+    /// score when there is none or it does not open.
+    fn new(path: Option<std::path::PathBuf>) -> Self {
+        let (opened, session, status) = match path.as_deref().map(file::open) {
+            Some(Ok((opened, session))) => {
+                let status = format!("opened {}", path.as_deref().unwrap().display());
+                (opened, session, status)
+            }
+            Some(Err(e)) => {
+                let (opened, session) = file::new_score().expect("a new score opens");
+                (
+                    opened,
+                    session,
+                    format!("could not open: {e}; a new score instead"),
+                )
+            }
+            None => {
+                let (opened, session) = file::new_score().expect("a new score opens");
+                (opened, session, "new score".to_string())
+            }
+        };
+        let path_text = path.map(|p| p.display().to_string()).unwrap_or_default();
         EditorApp {
             session,
+            opened,
+            path_text,
             texture: None,
             view_box: [0.0, 0.0, 1.0, 1.0],
             logical_size: egui::vec2(1.0, 1.0),
@@ -437,8 +469,121 @@ impl EditorApp {
             entry_mode: false,
             rubber_band: None,
             last_paste_text: None,
-            status: "opened ten_measure_single_staff".to_string(),
+            status,
         }
+    }
+
+    /// Replaces the window's document and session with `next`, clearing what
+    /// belonged to the old session's view.
+    fn install(&mut self, next: (file::Opened, EditorSession)) {
+        (self.opened, self.session) = next;
+        self.rubber_band = None;
+        self.needs_render = true;
+    }
+
+    fn do_open(&mut self) {
+        let path = std::path::PathBuf::from(self.path_text.trim());
+        match file::open(&path) {
+            Ok(next) => {
+                self.install(next);
+                self.status = format!(
+                    "opened {}{}",
+                    path.display(),
+                    if self.opened.writable {
+                        ""
+                    } else {
+                        " read-only"
+                    }
+                );
+            }
+            Err(e) => self.status = format!("open: {e}"),
+        }
+    }
+
+    fn do_save(&mut self) {
+        self.status = match self.opened.save(&mut self.session) {
+            Ok(message) => message,
+            Err(e) => format!("save: {e}"),
+        };
+    }
+
+    fn do_save_as(&mut self) {
+        let path = std::path::PathBuf::from(self.path_text.trim());
+        match file::save_as(&mut self.opened, &mut self.session, &path) {
+            Ok(()) => {
+                self.rubber_band = None;
+                self.needs_render = true;
+                self.status = format!("saved as {}", path.display());
+            }
+            Err(e) => self.status = format!("save as: {e}"),
+        }
+    }
+
+    fn do_export(&mut self) {
+        let prefix = std::path::PathBuf::from(self.path_text.trim());
+        self.status = match file::export_pages(&self.opened, &self.session, &prefix) {
+            Ok(message) => message,
+            Err(e) => format!("export: {e}"),
+        };
+    }
+
+    fn do_new(&mut self) {
+        match file::new_score() {
+            Ok(next) => {
+                self.install(next);
+                self.status = "new score".to_string();
+            }
+            Err(e) => self.status = format!("new: {e}"),
+        }
+    }
+
+    /// The file bar: a path, and what to do with it.
+    fn file_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label("File:");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.path_text)
+                    .hint_text("a .musc document, a MusicXML file, or an export prefix")
+                    .desired_width(420.0),
+            );
+            if ui.button("Open").clicked() {
+                self.do_open();
+            }
+            if ui
+                .add_enabled(
+                    self.opened.writable && self.opened.path.is_some(),
+                    egui::Button::new("Save"),
+                )
+                .clicked()
+            {
+                self.do_save();
+            }
+            if ui.button("Save as").clicked() {
+                self.do_save_as();
+            }
+            if ui.button("Export SVG + PDF").clicked() {
+                self.do_export();
+            }
+            if ui.button("New").clicked() {
+                self.do_new();
+            }
+            ui.separator();
+            ui.label(
+                match (
+                    &self.opened.path,
+                    self.opened.writable,
+                    self.session.is_dirty(),
+                ) {
+                    (Some(path), true, dirty) => format!(
+                        "{}{}",
+                        path.display(),
+                        if dirty { " (unsaved edits)" } else { "" }
+                    ),
+                    (Some(path), false, _) => format!("{} (read-only)", path.display()),
+                    (None, _, _) => "not saved yet".to_string(),
+                },
+            );
+        });
     }
 
     /// Runs an intent, recording its outcome (or error) in the status line and
@@ -812,6 +957,10 @@ impl EditorApp {
     }
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
+        // Typing in the file bar's path is not a command.
+        if ctx.wants_keyboard_input() {
+            return;
+        }
         const LETTER_KEYS: [(egui::Key, CmnNominal); 7] = [
             (egui::Key::A, CmnNominal::A),
             (egui::Key::B, CmnNominal::B),
@@ -856,7 +1005,23 @@ impl EditorApp {
             // actual text needs `egui::Event::Paste`'s payload, which a bare
             // key-press check cannot provide (see `handle_clipboard_events`).
             copy: i.modifiers.command && i.key_pressed(egui::Key::C),
+            save: i.modifiers.command && i.key_pressed(egui::Key::S),
+            line_break: !i.modifiers.command && i.key_pressed(egui::Key::Enter),
+            page_break: i.modifiers.command && i.key_pressed(egui::Key::Enter),
         });
+        if k.save {
+            self.do_save();
+        }
+        if k.line_break {
+            self.run("line break", |s| {
+                s.toggle_break_after_selection(LayoutBreak::System)
+            });
+        }
+        if k.page_break {
+            self.run("page break", |s| {
+                s.toggle_break_after_selection(LayoutBreak::Page)
+            });
+        }
         if k.undo {
             self.run_history("undo", |s| s.undo());
         }
@@ -1123,6 +1288,12 @@ struct Keys {
     /// N, toggles note-entry mode.
     entry_toggle: bool,
     copy: bool,
+    /// Ctrl/Cmd+S, saves the document.
+    save: bool,
+    /// Enter, toggles a line break after the selected note's measure.
+    line_break: bool,
+    /// Ctrl/Cmd+Enter, toggles a page break there.
+    page_break: bool,
 }
 
 impl eframe::App for EditorApp {
@@ -1130,6 +1301,7 @@ impl eframe::App for EditorApp {
         self.handle_keys(ctx);
         self.handle_clipboard_events(ctx);
 
+        egui::TopBottomPanel::top("file").show(ctx, |ui| self.file_bar(ui));
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| self.toolbar(ui));
         egui::SidePanel::right("debug")
             .default_width(280.0)
@@ -1145,6 +1317,8 @@ impl eframe::App for EditorApp {
         });
     }
 }
+
+mod file;
 
 // The pixel-golden comparator, bless machinery, and the four golden-state tests
 // (T1a); see `goldens.rs`'s module doc. Test-only: never compiled into the
