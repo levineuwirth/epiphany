@@ -1625,3 +1625,76 @@ alone, for the same reason, and is raised further where its number would
 meet the upper staff's ink. Locked by
 `a_tuplet_number_across_two_staves_stands_clear_of_heads` (`epiphany-cli`),
 over a hand-written fixture of falling groups, some far below each staff.
+
+## ENGRAVER_VERSION 40 → 41: a shared beam's number over its own notes (X4a.0, 2026-10-07)
+
+Version 40 moved a cross-staff tuplet's number along the beam to the clear
+place nearest its notes' middle, anywhere within the beam's span. On a beam
+two tuplets share, a number that found no clear place over its own notes
+could therefore settle over its neighbour's, reading as theirs. Its search
+now runs over its own notes' span alone; where nothing there is clear, it
+stands at its middle above the upper staff's ink, as it already did where
+the whole beam had no clear place. A tuplet that is exactly its beam is
+placed as before, its notes' span being the beam's.
+Locked by `a_shared_beam_number_stays_over_its_own_notes`
+(`epiphany-layout-ir`), which plants ink over the first group's notes on
+both sides of the beam and none over the second's.
+
+## ENGRAVER_VERSION 41 → 42: no key before a staff's first (X4a.3, 2026-10-07)
+
+The key in force at a time was the latest change at or before it, else the
+staff's earliest change, so a staff whose first key signature comes after
+its start was read in that key from its start: its lead drew it and its
+notes were spelt against it. The importer now holds an open key
+(`<mode>none</mode>`) where no key is in force as no key signature, which
+made such staves common in exported scores, so the key before a staff's first
+is now none. A staff whose first key stands at its start, every one the
+importer made before, is unchanged, and so is one whose open key the
+importer held as C before. Locked by
+`a_staff_has_no_key_before_its_first` (`epiphany-cli`).
+
+## ENGRAVER_VERSION 42 → 43: key changes drawn, with their cancellation (X4a.4, 2026-10-07)
+
+A key change showed only in a later system's lead, which reads the key in
+force at its start; one inside a system drew nothing, though its notes were
+spelt against it (D33). It now draws in its barline's column, after the
+barline's ink (a repeat sign's included) and the key gap: first a natural at
+the place of each accidental of the old key the new one does not keep, then
+the new key's accidentals, all `KEY_ACC_X` apart. A new key on the same side
+keeps the old one's first accidentals, so only those past its count are
+cancelled; a change of side, or to no key, cancels them all; a larger key on
+the same side cancels none. Placing it in the barline's column rather than a
+column after it means a change a system break falls at ends the system before,
+after its closing barline, as a courtesy, the staff lines running under it,
+while the new system's lead shows the new key alone, with no change repeated
+at its start. The column after clears the change as it clears a clef change,
+and the barline column reserves its ink only where a change stands in it, so
+no other barline moves. A change inside a measure takes a barline column of
+its own with no barline, which is never a break. A restatement draws nothing.
+Locked by `a_key_change_is_drawn_with_its_cancellation` and
+`a_staff_has_no_key_before_its_first` (`epiphany-cli`).
+
+## ENGRAVER_VERSION 43 → 44: a slur or tie clears the accidentals under it (X4a.6, 2026-10-08)
+
+A slur was shaped over the heads and stems of the columns it spans, and a tie
+between its heads, but neither looked at an accidental away from the tie's own
+ends, so a slur ending on a note with an accidental ran through it, and one
+passing a note whose accidental reached past its head ran through that (D42).
+The constrained pass shapes curves where columns stand closer than spacing
+will set them, and an accidental keeps its distance from its head while the
+curve stretches, so the clearance is taken after spacing, in the frame the
+page is drawn in (`clearance::clear_accidentals`, from `curves`): each
+accidental glyph of the curve's band that the curve stands past the near edge
+of, and short of the far edge plus `ACCIDENTAL_CLEARANCE` (0.2), is passed on
+the side the curve arcs to, the worst first. In the curve's middle the arc
+rises, both inner control points moving off the chord alike, up to a third of
+the span and at most four spaces; within a fifth of a slur's end, where the
+arc rises too slowly, or past that bound, the slur lifts that end, its inner
+points moving with the chord. A tie's ends stay at its heads, so a tie only
+raises its arc, to at most 1.5 spaces off its chord, and a tie that cannot
+pass every accidental it meets within that is left as it was rather than half
+raised: a long tie under another voice's notes, which MuseScore draws
+through them as well, keeps its shape. Key-signature glyphs are accidentals
+too, so a curve across a key change passes them. Locked by the module's unit
+tests and `a_slur_clears_the_accidentals_under_it` (`epiphany-cli`); no golden
+draws a curve through an accidental, so none changed.

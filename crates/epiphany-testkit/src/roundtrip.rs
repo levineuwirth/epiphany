@@ -774,7 +774,9 @@ mod tests {
 
     #[test]
     fn a_create_tuplet_block_stamps_4_13_and_reopens_read_write() {
-        use epiphany_core::{EventId, OperationId, ReplicaId, TupletId, WallClockTime};
+        use epiphany_core::{
+            EventId, OperationId, ReplicaId, Tuplet, TupletDisplay, TupletId, WallClockTime,
+        };
         use epiphany_ops::{
             valuegen, AuthorId, CausalContext, CreateTupletOp, HybridLogicalClock,
             OperationEnvelope, OperationKind, OperationPayload, OperationStamp,
@@ -788,14 +790,17 @@ mod tests {
             causal_context: CausalContext::new(),
             transaction: None,
             payload: OperationPayload::Primitive(OperationKind::CreateTuplet(CreateTupletOp {
-                tuplet: valuegen::tuplet(
-                    TupletId::new(ReplicaId(1), 1),
-                    vec![EventId::new(ReplicaId(1), 1), EventId::new(ReplicaId(1), 2)],
-                ),
+                tuplet: Tuplet {
+                    display: TupletDisplay::HIDDEN,
+                    ..valuegen::tuplet(
+                        TupletId::new(ReplicaId(1), 1),
+                        vec![EventId::new(ReplicaId(1), 1), EventId::new(ReplicaId(1), 2)],
+                    )
+                },
             })),
         };
 
-        let staged = crate::bundle_harness::stage_operation_block(&[env]);
+        let staged = crate::bundle_harness::stage_operation_block(std::slice::from_ref(&env));
         assert_eq!(
             staged.schema_version,
             SchemaVersion::new(4, 13),
@@ -808,6 +813,16 @@ mod tests {
             !reopened.is_read_only(),
             "major 4 is inside the raised op-block accept-set [0, 4], so the \
              bundle must open read-write"
+        );
+        // Read back through the accept-set gate and decoded: the envelope,
+        // its tuplet's display included, is the one written.
+        let blocks = reopened
+            .read_operation_block(&reopened.manifest().operation_roots[0])
+            .expect("a major-4 op block is admitted by the accept-set");
+        assert_eq!(blocks, vec![env.to_canonical_bytes()]);
+        assert_eq!(
+            epiphany_ops::decode_envelope(&blocks[0]).expect("the envelope decodes"),
+            env
         );
     }
 
@@ -908,14 +923,14 @@ mod tests {
     ///
     /// # Two provably independent operands
     ///
-    /// The fixture is built with `synthetic_for_fixture(2)` and commits a base
-    /// carrying the **literal** `ReductionAlgorithmVersion(2)`; the reopen then
+    /// The fixture is built with `synthetic_for_fixture(3)` and commits a base
+    /// carrying the **literal** `ReductionAlgorithmVersion(3)`; the reopen then
     /// supplies `production_caps()`, which wraps the real constant. One operand
     /// is a literal written into a fixture, the other is the authority read at
     /// the reopen — neither derived from the other.
     ///
     /// **The literals track the constant's value by hand.** P13-S16 moved the
-    /// authority `0` → `1`, and X3.1 `1` → `2`, so every literal below moved
+    /// authority `0` → `1`, X3.1 `1` → `2` and X4a `2` → `3`, so every literal below moved
     /// with it — by editing, never by referencing
     /// `CURRENT_REDUCTION_ALGORITHM_VERSION`. That this
     /// test must be edited whenever the authority moves is the **point**, not
@@ -946,7 +961,7 @@ mod tests {
             MemStore::new(),
             FileUuid([0x5E; 16]),
             Manifest::empty(DocumentId([0x5E; 16])),
-            BundleCapabilities::synthetic_for_fixture(2),
+            BundleCapabilities::synthetic_for_fixture(3),
         )
         .expect("fixture bundle creates");
 
@@ -963,7 +978,7 @@ mod tests {
                     snapshot_id: SnapshotId([0x5E; 16]),
                     covers_causal_frontier: FrontierBytes::empty(),
                     // A deliberate LITERAL — not the constant. See above.
-                    reduction_algorithm_version: ReductionAlgorithmVersion(2),
+                    reduction_algorithm_version: ReductionAlgorithmVersion(3),
                     profile_id: ProfileId::Full,
                     hash: root.hash,
                     root,
@@ -986,13 +1001,13 @@ mod tests {
                         .as_ref()
                         .unwrap()
                         .reduction_algorithm_version,
-                    ReductionAlgorithmVersion(2)
+                    ReductionAlgorithmVersion(3)
                 );
             }
             Err(BundleError::CanonicalBaseRequiresRebuild { base, current }) => {
                 // Reached only under M5b. Assert both fields, then fail loudly
                 // quoting them — that is the mutation's required observation.
-                assert_eq!(base, ReductionAlgorithmVersion(2));
+                assert_eq!(base, ReductionAlgorithmVersion(3));
                 panic!(
                     "M5b observation: base={} current={} — the authority is load-bearing here",
                     base.0, current.0

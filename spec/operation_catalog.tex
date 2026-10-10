@@ -231,7 +231,7 @@
   {\Large\scshape\color{epiphanyslate}Operation Catalog}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.18.0 --- A tuplet's display, and its schema major}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.19.0 --- The two reduction modes agree}\\[4pt]
   {\small\color{epiphanyslate}Normative for the operation kinds it defines}
   \vfill
 \end{titlepage}
@@ -720,6 +720,107 @@ not move: the display enters no verdict and no canonical reduced state, so
 every history reduces as before, and only the graph-aware score holds the
 display.
 
+\noindent\textbf{Version 0.19.0 (X4a.2, the two reduction modes agree).}
+Base-free reduction and graph-aware reduction onto an empty base are held to
+each other, in every effect, the objects and the canonical bytes, over
+concurrent histories that editors write, each operation naming only what its
+author has seen; each verdict on which they parted is settled here, in the
+mode that disagreed. \texttt{InsertEvent}'s promotion pre-pass takes every
+concurrent insert into a voice, whatever its preconditions
+(Section~\ref{sec:k0:insert-event}): graph-aware reduction took only inserts
+whose voice its graph held before anything applied, so over an empty base it
+promoted none, refusing as an overlap the insert base-free reduction promoted.
+\texttt{TransposeInterval} moves an authored spelling on a quarter-tone
+(Section~\ref{sec:k0:transpose-interval}): it refused any authored spelling
+on a \texttt{cmn-24} pitch, which every quarter-tone the importer reads
+carries, graph-aware, where base-free reduction, holding no spelling, applied
+the transpose. And base-free reduction reads a referent its set mints as the
+set leaves it (Section~\ref{sec:framework:modes},
+Requirement~\ref{req:catalog:base-free-referents}): each referential
+precondition, checked graph-aware only before, is checked in both modes, an
+object no envelope mints still taken as live. Base-free reduction also holds
+each pitch it minted at its current value, so a \texttt{TransposeInterval}
+writes its targets' values in both modes: its concurrency with a
+\texttt{ModifyIdentifiedPitch} of the same pitch, and an undo of it, reduce
+alike (Section~\ref{sec:k0:transpose-interval}), where base-free reduction
+recorded no write and so applied the edit and refused the undo. A
+transposition refuses a value no accidental stack writes, from the value in
+both modes, and drops an authored spelling it cannot move rather than refusing
+on it; a deleted pitch takes every spelling attachment scoped to it, a
+transposition's propagated one included. An undo reads the same write
+chains in both modes: base-free reduction seeds the score-level settings
+with an empty score's values, where it restored them to absence, and records
+every write to a pitch's spelling set
+(Requirement~\ref{req:opcat:spelling-set-chain}), where it recorded none. A
+\texttt{ChangeRegionTimeModel} whose \texttt{Reassign} would leave two events
+of one voice overlapping conflicts, naming both
+(Section~\ref{sec:k0:change-region-time-model}), where it applied. A
+\texttt{CreateStaffInstance} for a staff its region already manifests is
+refused with \texttt{ContainerNotEmpty}, where two concurrent creates both
+applied. A \texttt{DeleteRegion} of a region another map's live tempo segment
+anchors to is refused with \texttt{ContainerNotEmpty}; a migration to a model
+admitting no musical offset conflicts on the region's measures as on its
+events, and applied drops the region's breaks; and a break written in musical
+time into such a region is refused with \texttt{WrongRegionTimeModel}, each
+where an anchor was left naming nothing or a time the region no longer has. An
+undo cannot remove a measure a later measure of its instance follows, which
+would leave that measure two bars from its predecessor, nor a region, staff
+instance or voice another transaction has filled, and an undone region or
+instance leaves the graph; an undo restoring a cross-cutting value whose
+endpoint was deleted since is superseded by the delete; and a time signature
+or metric grid set in a region admitting no musical offset is refused with
+\texttt{WrongRegionTimeModel}, a migration into such a model dropping the
+region's grids, as is an insert carrying a wall-clock position. A tempo
+segment's anchors are read as referents and held to their region's time model,
+and a segment anchored in musical time strands its region's migration out of
+it. A \texttt{Reassign} that reorders a voice leaves it in position order. A
+tie still broken when its transaction completes gives way, removed with a
+recorded repair (Requirement~\ref{req:opcat:tie-gives-way}), where the graph
+kept it broken.
+A \texttt{ModifyEvent} follows observed-remove, removing with a recorded
+repair a pitch its author saw and left out and keeping one a concurrent author
+added (add wins), and an undo restoring an event's value brings back the
+pitches the undone modifications removed; neither revives one a delete or undo
+removed (Section~\ref{sec:k0:modify-event}), where each dropped the pitch from
+the graph and left it live, or brought a tombstoned one back. A clef or key change, written at a musical offset, is
+refused in a region out of musical time, whether set or carried by a new staff
+instance, and a live one strands its region's migration out of it, where each
+left a change anchored by a musical offset the region did not admit. An undo
+cannot remove a staff a live part definition or spanner names, and a spanner's
+staves are read as referents, where each left a reference to a staff the score
+did not declare. A live tuplet supersedes an undo's restoration of its
+member's earlier duration, where the restoration broke the tuplet's sum. An
+undo cannot remove a region a tempo segment of another map anchors to, nor an
+instrument a staff instance's override names, where each left the reference
+naming nothing. A whole-event write revives no pitch a delete removed, and a
+measure in musical time is refused in a region out of it. A region's whole grid
+and its meter changes compare by the order the reduction applied them. A
+best-effort undo that keeps a mint for what names it keeps what that mint
+names, where it removed the instrument of a staff it kept. A pitch inserted
+into an event of any kind without a pitch list, or kept by a whole-event
+write on one, makes it a note. A region or staff instance an undo emptied
+is empty to a later delete. A best-effort undo keeps a time signature a meter change it
+leaves in place still names, and an event an undo removes takes every pitch
+it holds, as a delete does. A promoted voice
+holds its instance against a delete, as any voice does. An undo that is a
+member of the transaction it names is refused, and a migration out of musical
+time supersedes an undo's restoration of a value written in musical time into
+its region. An undo's restoration naming an object tombstoned since is
+superseded by its tombstoning, as one naming a deleted endpoint was, a
+cross-cutting value's staves and measure or region anchors included. A
+whole-event modification mints a pitch it carries that nothing minted, where
+the pitch reached the graph alone, and a trajectory's own pitches are read and
+written as a note's, where a tie on one gave way graph-aware alone. A
+migration judges each of its region's events against the target's coordinate
+discipline as invariant~4 does, so an aleatoric target anchored in wall-clock
+time conflicts on an event in musical time, where it applied and left the
+event in coordinates the region no longer admitted.
+Two requirement labels are added;
+no payload, discriminant or \texttt{PreconditionFailureReason} changes.
+Accordingly
+\texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION}
+moves \texttt{2}~$\rightarrow$~\texttt{3}.
+
 % ===========================================================================
 \chapter{The Catalog Framework}
 \label{ch:framework}
@@ -791,6 +892,39 @@ descriptor precedence; and the two meta-operations (conflict resolution and
 forward undo). A primitive added later that reuses one of these disciplines
 inherits its reduction, conflict, undo, and re-anchoring treatment.
 
+\section{The Two Reduction Modes}
+\label{sec:framework:modes}
+
+An operation set is reduced either \emph{graph-aware}, onto a canonical base
+whose objects are all known, or \emph{base-free}, with no base and so no
+universe of objects beyond what the set itself shows. A history whose every
+operation names only what its author had seen, reduced from an empty base, is
+\emph{valid}; on a valid history the two modes \MUST{} agree in every effect,
+in object existence and in the canonical bytes (since version~0.19.0).
+
+\begin{requirement}
+  \label{req:catalog:base-free-referents}
+  Base-free reduction \MUST{} read a referent an operation names as follows:
+  one that no envelope of the set mints may come from a base, and is taken as
+  live; one that an envelope of the set mints is live only if an operation of
+  the reduction made it live and none has since tombstoned it, a losing
+  candidate's mints and a refused operation's included among those minted; and
+  a system-promoted voice is live only if a promotion of the reduction made
+  it.
+  Each referential precondition this catalog states (that a named staff,
+  instrument, group, analysis layer, time signature, voice or region is live)
+  is checked in both modes on that reading.
+\end{requirement}
+
+\begin{rationale}
+  Before version~0.19.0 these preconditions were checked graph-aware only, so
+  an operation naming an object its history minted and lost (deleted
+  concurrently, or minted by a transaction that failed, or by an
+  equivocation's losing candidate) applied base-free and was refused
+  graph-aware, on a valid history. Base-free reduction still has no universe:
+  an object no envelope mints is never refused for being unknown.
+\end{rationale}
+
 % ===========================================================================
 \chapter{K0 --- Representative Primitives}
 \label{ch:k0}
@@ -815,19 +949,29 @@ derivation is total without a containment walk.
 canonical bytes of \texttt{event}.
 
 \textbf{Reduction rule.} A position-keyed insert. Preconditions: the event's
-duration is positive; the event id is neither live nor tombstoned; the region of
+duration is positive; its position is musical, a wall-clock one refused with
+\texttt{WrongRegionTimeModel} in both modes (since version~0.19.0, before which
+it was admitted into a metric region at the region's origin); the event id is
+neither live nor tombstoned; the region of
 the event's staff instance is metric, read in graph-aware reduction from the
 graph and base-free from the reducer's index of each region's coordinate
 discipline, which \texttt{CreateRegion} sets and an applied
 \texttt{ChangeRegionTimeModel} moves, so the two modes agree after a migration;
-in graph-aware reduction the target voice exists in that region and the event's
+the target voice exists in that region (graph-aware, from the graph; base-free,
+as Requirement~\ref{req:catalog:base-free-referents} reads it) and the event's
 pitch ids are fresh. The event and its pitches are minted live; the voice is created on
 first use. Concurrent inserts whose half-open duration intervals overlap in the
-same voice are resolved by an order-independent promotion pre-pass: the
-lower-\texttt{OperationId} insert is retained in the original voice, and each
-overlapping loser is promoted to the deterministic system voice
+same voice are resolved by an order-independent promotion pre-pass, which
+takes every such insert whatever its preconditions, in both modes (since
+version~0.19.0): the lower-\texttt{OperationId} insert is retained in the
+original voice, and each overlapping loser is promoted to the deterministic
+system voice
 \texttt{derive\_promoted\_voice\_id(staff\_instance, voice, winner, loser)} and
-tagged \texttt{VoicePromoted}.
+tagged \texttt{VoicePromoted}. A promoted voice is a voice of the staff
+instance the insert names, in the reducer's index as in the graph, so the
+instance's delete is refused with \texttt{ContainerNotEmpty} while it holds an
+event (since version~0.19.0, before which the index left it out and the
+instance's delete applied over it).
 
 \textbf{Conflict cases.} None at reduction time; promotion is a deterministic
 repair, not a conflict.
@@ -836,7 +980,10 @@ repair, not a conflict.
 event, its pitches, and any promoted voice. \texttt{StrictInverse} conflicts if
 any was already tombstoned or modified; \texttt{BestEffort} tombstones the
 survivors; \texttt{Cascade} is \texttt{StrictInverse} over the same minted set
-(dependent-closure undo is a Phase-3 refinement).
+(dependent-closure undo is a Phase-3 refinement). The event takes every pitch
+it then holds with it, as a \texttt{DeleteEvent} does, a pitch another
+operation added since among them (since version~0.19.0, before which such a
+pitch stayed live while the graph dropped it with its event).
 
 \textbf{Re-anchoring.} Not applicable (the operation mints, it does not
 reference a pre-existing object that could be tombstoned).
@@ -950,7 +1097,31 @@ so a later insert sees the freed or changed span. A placement change of a
 graph (re-sorting a non-metric voice is a deferred refinement); a malformed
 (empty pitched) replacement is likewise recorded but not materialised;
 same-placement field edits apply in place, preserving voice membership. Partial
-trimming of a tuplet member remains a later refinement.
+trimming of a tuplet member remains a later refinement. The value sets the
+event's fields and its pitches' values, and its pitches follow
+\emph{observed-remove} (since version~0.19.0, before which the value's pitches
+replaced the event's in the graph alone): a live pitch of the event the value
+does not carry is removed, as \texttt{DeleteIdentifiedPitch} removes one and
+with its attachments, if its author saw it, its insert being in the
+modification's causal past, and the effect records a \texttt{CascadeDeleted}
+repair for it; it is kept, at its current value and with its attachments, if
+its author never saw it (add wins). A pitch a base holds was inserted by no
+envelope of the set and the base precedes every operation, so it counts as
+seen (base-free reduction holds no base pitch). An event of any kind without
+a pitch list (a rest, an unpitched, indeterminate, graphic or cue event, a
+trajectory) written over a note its author saw so becomes that event, and
+over a note holding a pitch its author never saw becomes a note of that pitch,
+a trajectory's own pitches first (for every kind but a rest and an unpitched
+event since version~0.19.0, before which the graph dropped the kept pitch). A pitch the
+value carries that a delete or undo has tombstoned stays out of the event
+(delete wins), a trajectory carrying one becoming a note of its other pitches,
+as a delete of it would leave it. A pitch the value carries that no operation has minted is
+minted by the modification, as an insert mints its event's pitches: live, its
+value held in both modes, and under the modification's transaction, so an
+undo of it removes the pitch (since version~0.19.0, before which the pitch
+reached the graph alone and every operation naming it was refused). A pitch leaves an event only by \texttt{DeleteIdentifiedPitch},
+\texttt{DeleteEvent}, a modification whose author saw it, or an undo of its
+insert.
 
 \emph{System-derived content immutability (ratified Pass~12, closing
 P12-K3).} A modification that would rewrite the \emph{intrinsic content} of a
@@ -970,7 +1141,12 @@ replacement pitch.
 \textbf{Undo semantics.} Value-restoring (Section~\ref{sec:k0:undo}): undoing
 the enclosing transaction restores the event's chain-predecessor value,
 conflicting (\texttt{StrictInverse}) or skipping (\texttt{BestEffort}) when a
-later modification has superseded it.
+later modification has superseded it. The restored value reverts the undone
+transaction's modifications and no more (since version~0.19.0): the pitches
+they removed come back, at the values they had and with their attachments;
+every live pitch of the event the value does not carry is kept, so a pitch
+another operation added since stays; and none a delete removed is revived, the
+undone transaction's own pitches being tombstoned first.
 
 \textbf{Re-anchoring.} If the target event is tombstoned, the modification is a
 no-op (\texttt{TargetTombstoned}/\texttt{TargetMissing}).
@@ -997,7 +1173,17 @@ under pitch add/remove} (normative): deleting the \emph{only} pitch of a
 single-pitch note degrades the event to a \texttt{Rest} of the same
 id/voice/position/duration rather than leaving an empty pitched event (Chapter~5
 forbids the empty chord, \texttt{ArenaError::EmptyPitchedEvent}); inserting a
-pitch into a rest is the dual, promoting it to a one-pitch note. This preserves
+pitch into a rest is the dual, promoting it to a one-pitch note, and so is
+inserting one into an event of any other kind without a pitch list, an
+unpitched, indeterminate, graphic or cue event or a trajectory, which becomes a
+note of its own pitches (a trajectory's) and the new one (since
+version~0.19.0, before which the graph dropped the pitch the bookkeeping minted
+for every kind but a rest). Every pitch an event holds, whatever its kind (a
+trajectory's endpoints and steps), is read and written as a note's: a
+modification, transposition or deletion reaches it there, and a trajectory
+that loses one of its pitches becomes a note of the others, or a rest when
+none remain (since version~0.19.0, before which graph-aware reduction read and
+wrote a note's pitches alone). This preserves
 the delete-wins / mint disciplines and keeps the graph consistent with the
 bookkeeping, which tombstones or mints the pitch object either way.
 
@@ -1161,9 +1347,22 @@ is transposed by \texttt{interval}.
   that is not itself \texttt{Propagated}, preserving each attachment's
   \texttt{source}, \texttt{priority}, and \texttt{layer}. A spelling is moved
   by transposing its \emph{nominal} diatonically and taking whatever accidental
-  the transposed pitch then requires at that staff position. If any such
-  attachment cannot be written at the transposed position, the operation
-  \MUST{} refuse, atomically, with \texttt{TranspositionOutOfRange}.
+  the transposed pitch then requires at that staff position. A quarter-tone's
+  spelling (a pitch in \texttt{cmn-24}) takes it in quarter-tones: a whole
+  number of semitones takes the standard accidentals, and an odd number of
+  quarter-tones the quarter-tone accidental of the spelling's own kind, an
+  arrowed accidental keeping its arrow and Stein's staying Stein's where it has
+  one for the alteration (since version~0.19.0; before it, any authored
+  spelling on a \texttt{cmn-24} pitch refused). An attachment that cannot be
+  written at the transposed position (an octave out of range, or an
+  alteration only a repeated accidental would write) \MUST{} be removed, the
+  pitch then taking the spelling the transposition propagates; before
+  version~0.19.0 the operation refused instead, which only graph-aware
+  reduction could see. A transposition whose transposed \emph{value} no
+  well-formed accidental stack writes --- past a triple sharp or flat, or in
+  \texttt{cmn-24} an odd alteration past five quarter-tones --- \MUST{}
+  refuse, atomically, with \texttt{TranspositionOutOfRange}, in both modes,
+  each reading the value.
 \end{requirement}
 
 \begin{rationale}
@@ -1199,7 +1398,10 @@ is transposed by \texttt{interval}.
 and that pitch's resulting \emph{engraved spelling set} into the spelling-set
 chain, so that value-restoring undo recovers the pre-transpose pitch \emph{and}
 its pre-transpose spelling. Restoring the pitch alone would leave a notehead
-spelled for a pitch that no longer exists. This is where
+spelled for a pitch that no longer exists. The value chain is written in both
+reduction modes, base-free reduction reading each pitch its operation set
+minted at the value it holds (since version~0.19.0; before it, base-free
+reduction, holding no pitch values, recorded nothing). This is where
 \texttt{TransposeInterval} departs from the frozen \texttt{Transpose}, which
 records nothing and is therefore not undoable.
 
@@ -1260,7 +1462,10 @@ length-framed canonical bytes of the structure value.
 
 \textbf{Reduction rule.} Set-union creation: the structure is minted live if its
 id is not already live and every referenced endpoint is live; a second create of
-a live id is idempotent. Graph-aware reduction materialises the structure with
+a live id is idempotent. A spanner's staves are referents, each checked in both
+modes as Requirement~\ref{req:catalog:base-free-referents} reads one (since
+version~0.19.0), a dead staff refusing the create, as it does a
+\texttt{ModifyCrossCutting}, with \texttt{TargetMissing}. Graph-aware reduction materialises the structure with
 its full fields.
 
 \textbf{Conflict cases.} None (all-or-nothing creation; union is deterministic).
@@ -1270,6 +1475,40 @@ policy.
 
 \textbf{Re-anchoring.} The structure participates in the re-anchoring rule table
 when one of its endpoints is later tombstoned (see DeleteEvent).
+
+\textbf{A tie gives way (since version~0.19.0).} A tie holds only while its
+class's validation holds (core specification,
+\texttt{req:graph:tie-class-validation}): its pairing, and its ends' places in
+their voices. An operation that moves a pitch or an event is not refused for
+breaking one; the tie gives way.
+
+\begin{requirement}
+  \label{req:opcat:tie-gives-way}
+  When a transaction completes, a lone operation being its own transaction,
+  each live tie its members may have broken \MUST{} be held to its class's
+  validation, read in both modes from the indices both keep (each event's
+  voice and position, its live pitches and their values); one that no longer
+  holds \MUST{} be removed as a \texttt{DeleteCrossCutting} removes it, and
+  the effect of the last member that touched it \MUST{} record a
+  \texttt{CascadeDeleted} repair targeting it. A tie one member breaks and a
+  later member of its transaction mends stands. The operations so held are an
+  insert (its new neighbours), a whole-event modify (the event and its new
+  neighbours), every pitch operation and transposition (the pitches' events),
+  a migration and an undo (every live tie), and a create or modify of the tie
+  itself, which so gives way, when its transaction completes, to a change it
+  was concurrent with. A conflicted operation's effect carries no repair, and
+  there the tie's tombstone, which names the operation, is the record.
+\end{requirement}
+
+\begin{rationale}
+  Before version~0.19.0 a tie was accepted as written and never read again,
+  so a concurrent insert between its ends, or a transpose of one end, left the
+  graph breaking \texttt{TiePairing}. Refusing such an edit would let a tie
+  block every edit near it; a tie is notation of a pairing, and when the
+  pairing goes, so does the tie. A transaction is one edit from its author's
+  view, so its tie is held when it completes, not after each member: moving
+  a tied pair one note at a time keeps the tie.
+\end{rationale}
 
 \textbf{Authoring advisory (ratified Pass~12, closing P12-K12).} The
 slur-spanning advisory reads
@@ -1356,15 +1595,34 @@ model. Both reduction modes derive the coordinate-kind incompatibilities from
 the reducer's graph-independent indices, so they agree: the region's events are
 those with a metric placement in the occupancy index, found through its staff
 instances and voices (a voice promoted during reduction through the insert it
-was promoted for), and each is incompatible with a proportional target, and
-with any target when a \texttt{Reassign} leaves it unmapped. Graph-aware
+was promoted for), and each is incompatible with a target whose coordinate
+discipline does not admit an event in musical time, read as invariant~4 reads
+an event's coordinates (a proportional target, or an aleatoric one anchored in
+wall-clock time; since version~0.19.0, before which only a proportional target
+was), and with any target when a \texttt{Reassign} leaves it unmapped, or would leave it
+overlapping another event of its voice (invariant~3; since version~0.19.0, the
+migration having applied before it). A target that admits no musical offset
+strands each of the region's live measures as well, named beside the events,
+and a live tempo segment of any map anchored to the region by a musical offset
+strands the region itself, named among them, the segment having no identifier,
+and a live staff instance of the region holding a clef or key change, which
+stands at a musical offset, strands that instance, named among them,
+and an applied such migration drops the region's system and page breaks and
+its default and local metric grids (since version~0.19.0). Graph-aware
 reduction also judges, from the graph, the region's events the index does not
 hold (a base's events of another coordinate kind, which base-free reduction
-never has). A migration with incompatible events is refused as below; an
+never has), against the target's discipline as invariant~4 does (an aleatoric
+target by its anchoring discipline since version~0.19.0, before which it was
+taken to admit every event). A migration with incompatible events is refused as below; an
 applied \texttt{Reassign} moves the occupancy index in both modes, and the
 region's new coordinate discipline is recorded in both, so a later insert, move
-or re-anchoring reads the same state in each. That the region is live is a
-referential precondition, checked graph-aware only.
+or re-anchoring reads the same state in each. Graph-aware reduction keeps each
+voice whose events a \texttt{Reassign} moves in position order, as a
+\texttt{ModifyEvent} move does (since version~0.19.0, before which the voice
+kept its old order). That the region is live is a
+referential precondition, checked in both modes as
+Requirement~\ref{req:catalog:base-free-referents} reads a referent (since
+version~0.19.0; graph-aware only before it).
 
 \textbf{Conflict cases.} Concurrent same-region migrations produce a
 \texttt{StructuralFieldCollision} on the field \texttt{time\_model}; a migration
@@ -1419,7 +1677,17 @@ gate, not a conflict.
 
 \textbf{Undo semantics.} Undo of a \emph{create} tombstones the minted container
 (Section~\ref{sec:k0:undo}); \texttt{StrictInverse} conflicts if it was
-concurrently mutated, with the policy treatment as for InsertEvent. A
+concurrently mutated, with the policy treatment as for InsertEvent, and, since
+version~0.19.0, if a live child the undo leaves is in it (a region's staff
+instance, an instance's voice, a voice's event), which it would leave naming
+nothing, or a live tempo segment of another map is anchored to a region it
+would remove, as a \texttt{DeleteRegion} is refused (the conflict naming the
+region, the segment having no identifier). An undone region or staff instance leaves the graph-aware score, as a
+deleted one does, and an undone staff instance or voice leaves its container's
+place in the reducer's indices, so a region or instance the undo emptied is
+empty to a later \texttt{DeleteRegion} or \texttt{DeleteStaffInstance}
+(since version~0.19.0, before which the delete was refused
+\texttt{ContainerNotEmpty}). A
 \emph{delete} mints nothing, so the prototype's minted-object undo does not
 re-introduce it (P11-C8).
 
@@ -1460,7 +1728,11 @@ reference-resolution invariants.
 With staves mintable, \texttt{CreateStaffInstance}
 (Section~\ref{sec:k0:structural-containers}) preconditions that the
 instance's referenced \texttt{Staff} is live (previously the reference was
-satisfiable only from the seeded base, so the check was vacuous).
+satisfiable only from the seeded base, so the check was vacuous), and that no
+live instance of the region already manifests it: a region manifests a staff
+once (graph invariant \texttt{StaffInstanceResolves}), so a second is refused
+with \texttt{ContainerNotEmpty}, the region's place for the staff being taken
+(since version~0.19.0).
 
 \textbf{Membership maintenance (P13-S16, disposition A; supersedes genesis
 tranche G3a's disposition B).} \texttt{Staff.group} is the \textbf{sole
@@ -1491,7 +1763,9 @@ re-create is a precondition gate, not a conflict).
 
 \textbf{Undo semantics.} Undo of a create tombstones the minted staff
 (Section~\ref{sec:k0:undo}); \texttt{StrictInverse} conflicts if a live staff
-instance references it (tombstoning it would strand the instance).
+instance references it (tombstoning it would strand the instance), and so, since
+version~0.19.0, if a live part definition or spanner names it, before which the
+undo removed the staff and left the part or spanner naming nothing.
 \textbf{Undo also strips the removed staff's id from every live group's
 \texttt{members} (P13-S16)}: the projection is maintained from
 \texttt{Staff.group}, so a staff leaving the graph \MUST{} leave the projection
@@ -1560,7 +1834,8 @@ differing-value re-create is a precondition gate, not a conflict).
 
 \textbf{Undo semantics.} Undo of a create tombstones the minted instrument;
 \texttt{StrictInverse} conflicts if a live staff references it (tombstoning
-it would strand the staff).
+it would strand the staff), and, since version~0.19.0, if a live staff
+instance's instrument override names it.
 
 \textbf{Re-anchoring.} Not applicable, for the same reason as
 \texttt{CreateStaff}: an instrument mint references no tombstonable anchor.
@@ -1929,10 +2204,16 @@ precondition no-op with \texttt{TargetTombstoned}.
 Referential preconditions: the parent \texttt{StaffInstance} must be live
 (ungated --- checked graph-aware and base-free alike, mirroring
 \texttt{CreateStaffInstance}'s own region check: a mint into a non-existent
-parent has nowhere to go even base-free); graph-aware only, a resolving
+parent has nowhere to go even base-free); and, in both modes as
+Requirement~\ref{req:catalog:base-free-referents} reads a referent (graph-aware
+only before version~0.19.0), a resolving
 \texttt{measure.time\_signature} must name a live \texttt{TimeSignature}, and
 every non-\texttt{WallClock} referent of \texttt{measure.start} (an
 \texttt{Event}, another \texttt{Measure}, or a \texttt{Region}) must resolve.
+A measure stands in musical time: one whose start is anchored in musical time
+into a region admitting no musical offset is refused with
+\texttt{WrongRegionTimeModel}, as a time signature is (since version~0.19.0,
+before which it applied after a concurrent migration out of musical time).
 
 \textbf{Ordering and boundary-distance preconditions (core specification
 \sectionsc{Graph Invariants}, invariant 20).} Graph-aware, against the current
@@ -1960,9 +2241,14 @@ agreement check, not the boundary-distance check above.
 \textbf{The effective grid} is \texttt{StaffInstance.local\_metric\_grid} when
 present, else the enclosing region's default metric grid, reconstructed from
 the same operational write chains (\texttt{SetMetricGrid}'s whole-grid writes
-layered under \texttt{SetTimeSignature}'s per-key changes, in canonical write
-order, folding in any prospective undo restoration) in both graph-aware and
-base-free reduction, so the two modes never disagree.
+layered under \texttt{SetTimeSignature}'s per-key changes, in the order the
+reduction applies the writes, folding in any prospective undo restoration) in
+both graph-aware and base-free reduction, so the two modes never disagree.
+Since version~0.19.0 the order is the walk's, in which a transaction's members
+apply together where its first member falls; before it, the writes' stamps
+ordered them, so a transaction's later-stamped grid write was taken for more
+recent than another author's concurrent time signature that the graph applied
+after it, and a measure was placed by a grid the graph did not hold.
 
 \textbf{Conflict cases.} None at reduction time (set-union; the differing-value
 re-create is a precondition gate, not a conflict).
@@ -1973,7 +2259,10 @@ removes it from the owning instance's \texttt{measures} vector
 reference would be stranded, across \textbf{seven} inbound surface classes: a
 spanner endpoint, a repeat structure's anchor sites, another measure's
 \texttt{start}, a meter change, a system-break advisory, a page-break
-advisory, or a tempo segment's \texttt{start} or optional \texttt{end}. Six of
+advisory, or a tempo segment's \texttt{start} or optional \texttt{end}; and,
+since version~0.19.0, by a live later measure of the same instance, which
+removing any measure but the last would leave two bars from its predecessor
+(owned by that measure, an immutable value map). Six of
 the seven surfaces are owned (the referencing object must be live and not
 itself part of the transaction being undone); a score-level
 (\texttt{region: None}) tempo segment has no owning object and blocks on the
@@ -2054,7 +2343,12 @@ removes it from the registry, with any decomposition attachment naming it
 (its reference would otherwise dangle). A member tombstoned by an undo of the
 transaction that inserted it declares no compensation; the tuplet it leaves
 can no longer fill its total, so it cascade-deletes, in the index and the
-graph alike, as \texttt{CascadeDeleteTuplets} would have.
+graph alike, as \texttt{CascadeDeleteTuplets} would have. An undo whose
+restoration of an event's value would change the duration of a live tuplet's
+member, the tuplet not among the undo's own mints, is superseded by the
+tuplet's create, as a later write supersedes it: \texttt{StrictInverse}
+conflicts and \texttt{BestEffort} leaves the duration (since
+version~0.19.0, before which the restoration broke the tuplet's sum).
 
 \textbf{Re-anchoring.} The tuplet references its members; the rule table's
 ``Tuplet / Member event'' row governs a member's delete. Nesting is
@@ -2094,7 +2388,15 @@ position; a change already there, from the base or the instance's creation,
 is the key's predecessor. The instance must be live: missing, the operation
 is a precondition no-op with \texttt{TargetMissing}; tombstoned, with
 \texttt{TargetTombstoned}. The check reads the graph-independent object
-index, so both reduction modes agree.
+index, so both reduction modes agree. A change is written at a musical offset,
+so the instance's region must admit one: a region out of musical time refuses
+it with \texttt{WrongRegionTimeModel}, read from the coordinate discipline
+both modes record (since version~0.19.0). For the same reason a
+\texttt{CreateStaffInstance} carrying a change anchored by a musical offset
+into a region admitting none is refused with \texttt{WrongRegionTimeModel},
+and a live instance holding a change strands a
+\texttt{ChangeRegionTimeModel} of its region to such a model
+(Section~\ref{sec:k0:change-region-time-model}).
 
 \textbf{Conflict cases.} A write concurrent with the key's last write and
 carrying a different value records a \texttt{StructuralFieldCollision} on
@@ -2227,7 +2529,9 @@ singleton). \emph{SetMetricGrid} is a \textbf{structural} field overwrite keyed
 by region: precondition the region is live and staff-based (a FreeGraphic region
 has no metric-grid slot --- the op is a no-op there), and reject a grid whose
 meter sequence names a time signature that is not live (the Chapter~5 invariant
-forbids installing such a grid). \emph{SetUserPageBreak} is a canonical LWW
+forbids installing such a grid); a grid set in a region whose time model admits
+no musical offset is refused with \texttt{WrongRegionTimeModel} in both modes
+(since version~0.19.0; clearing it still applies). \emph{SetUserPageBreak} is a canonical LWW
 advisory keyed by the anchor's resolved musical position, with the same
 staff-based precondition. Graph-aware reduction overwrites the metadata singleton,
 sets the region's default metric grid, or adds/removes the page-break anchor
@@ -2280,9 +2584,19 @@ reduction. A tempo-segment write preconditions that the \emph{resulting} map
 is well-formed (segments ordered and non-overlapping; a non-constant shape
 carries its end data; the carried segment's own start equals the operation's
 \texttt{start} key) --- a write that would malform the map is refused as a
-precondition no-op (\texttt{TempoMapMalformed}). Graph-aware reduction applies
+precondition no-op (\texttt{TempoMapMalformed}). A time signature written in a
+region whose time model admits no musical offset is refused with
+\texttt{WrongRegionTimeModel} in both modes (since version~0.19.0, before which
+it applied and left a meter in musical time). Graph-aware reduction applies
 the meter change to \texttt{default\_metric\_grid.meter\_sequence} and the
 segment to the scoped tempo map.
+
+A tempo segment whose start or end anchor names a region that is not live is
+refused with \texttt{TargetMissing}, the region read as a referent in both
+modes (Requirement~\ref{req:catalog:base-free-referents}), and one anchored by
+a musical offset to a region admitting none with \texttt{WrongRegionTimeModel}
+(both since version~0.19.0, before which a score-level segment's anchors were
+not read).
 
 \textbf{Conflict cases.} Two concurrent differing writes of one key produce a
 \texttt{StructuralFieldCollision} on the field \texttt{meter\_sequence} or
@@ -2456,7 +2770,12 @@ policy: UndoPolicy \}}, with \texttt{UndoPolicy} one of \texttt{StrictInverse},
 
 \textbf{Reduction rule.} A forward compensating edit computed against the
 materialised state at the undo's canonical position (never literal time
-travel). The compensation has two parts.
+travel). A transaction is undone once it is complete: an undo that is a member
+of the transaction it names is refused with \texttt{TargetMissing}, read from
+the envelope, and so fails the transaction holding it (since
+version~0.19.0, before which it reversed the members before it, an earlier
+undo's restorations among them, against objects that undo had removed). The
+compensation has two parts.
 
 \emph{Minted-object tombstoning} (as before): every object the target
 transaction minted is tombstoned. \texttt{StrictInverse} conflicts
@@ -2477,7 +2796,21 @@ value is a pure function of the operation set: permutation-invariant by
 construction. When a causally-later or canonically-later write has
 superseded the key, \texttt{StrictInverse} refuses the whole undo with a
 \texttt{TransactionConflict} conflict naming the undo and the superseding
-writer; \texttt{BestEffort} restores the still-last-written keys and skips
+writer; a cross-cutting value whose restoration would name an object
+tombstoned since (an endpoint event, a spanner's measure or region anchor, a
+staff it spans) is superseded by that tombstoning (since version~0.19.0, before
+which the dangling value was restored); a value whose restoration would write in musical
+time into a region a migration has since taken out of it (a break anchored by
+a musical offset, a meter change, a metric grid, a tempo segment anchored in
+the region, a clef or key change of its staff instance) is superseded by that
+migration, as its setter is refused there (since version~0.19.0, before which
+it was restored at an offset the region no longer admits); and a value whose
+restoration would name an object tombstoned since (a meter change's or metric
+grid's time signature or anchor, a tempo segment's anchors, an instrument
+override, a break's anchor) is superseded by the operation that tombstoned it,
+so an undo of an undo restores no value naming what the first undo removed
+(since version~0.19.0, before which it restored the dangling reference);
+\texttt{BestEffort} restores the still-last-written keys and skips
 the superseded ones. Restorations are expressed in the effect status (a fully
 clean compensation is \texttt{Applied}; a mixed one is
 \texttt{AppliedWithRepair} carrying only the tombstone repairs) --- no new
@@ -2489,7 +2822,17 @@ referenced by a live non-member (e.g., a staff whose instance survives outside
 the transaction) records \texttt{ConflictKind::TransactionConflict} --- the
 reuse is blessed: the strand-block \emph{is} a transaction-scoped conflict of
 the undo, and the conflict record's affected objects and description carry the
-strand detail. No dedicated undo conflict kind is added.
+strand detail. No dedicated undo conflict kind is added. A
+\texttt{BestEffort} undo keeps such an object instead, and keeps what a kept
+object names in turn: the strand-block is read against the objects still
+going until it keeps none (since version~0.19.0, before which a staff kept for
+its live instance lost the instrument it names, read as going with it). It
+also keeps a time signature that a meter change or grid it leaves in place
+still names: best effort applies only the invariant-20-safe subset of its
+meter restorations, chosen once its mints are gone, so a restoration it drops
+leaves its key's value, and a signature that value names stays, the undo
+taken again without it (since version~0.19.0, before which the signature was
+removed and the meter change named nothing).
 
 \emph{Idempotence asymmetry (ratified Pass~12, closing P12-K11).} An undo's
 value restorations enter the write chains as ordinary writes by the undo

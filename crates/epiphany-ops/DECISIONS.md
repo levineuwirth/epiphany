@@ -2481,3 +2481,1148 @@ display. `a_tuplets_display_changes_no_verdict_or_canonical_state`
 (`epiphany-musicxml`'s `reduction_modes`) holds one history shown and hidden
 to that in both modes. The fuzz streams hide the tuplet whose drawn id
 counter is 1, from the same draw, so no pinned stream moves.
+
+## X4a.1 — the two-mode fuzz (2026-10-07)
+
+`fuzz::modes` generates concurrent histories and reduces each base-free and
+graph-aware onto an empty base, holding the two to each other in every
+effect, the objects and the canonical bytes, and the graph-aware score to
+every invariant, in each replica's view as the history grows as well as at its
+end. The earlier fuzz streams (`gen_envelope_set`) name ids no operation mints,
+which base-free reduction deliberately admits and graph-aware reduction
+refuses, so they compare nothing; these histories are written by simulated
+editors instead. Replica 1 authors a genesis the way the importer builds a
+score, which every replica has seen; then replicas take turns, merging another
+replica's history or authoring against the graph-aware reduction of their own.
+An operation names only what its author's view holds, so the history is
+valid, and the comparison is the one the operation catalog asks of the two
+modes. Every operation kind is drawn, with undo, conflict resolution and,
+rarely, an equivocation and its resolution.
+
+**Minimized and committed.** `minimize` removes runs of envelopes while the
+failure keeps its class, renumbering each replica's operations after every
+removal (`compact`), since a gap in a replica's counters would leave every
+later context waiting, and keeping a candidate only while every object an
+operation names is minted in its author's causal past (`valid`), since a
+history that loses a referent's mint shows the deliberate base-free admission,
+not a split. Each finding is committed under `tests/two_modes/` in the
+envelope text form, its class and whether it still splits in its header;
+`tests/two_modes.rs` reduces each as it declares, and runs a CI budget that
+must find no class not committed and must author and apply every kind. The
+`fuzz_modes` example runs a local budget and minimizes what it finds.
+
+## X4a.2 — reduction version 3: the two modes agree (2026-10-07)
+
+Each split the two-mode fuzz finds is settled in the mode that disagreed,
+under one reduction version, `3`, whose `Bumps` entry names every change;
+the catalog's version 0.19.0 note names them too.
+
+**The promotion pre-pass takes every insert.** `compute_promotions` skipped
+an insert that failed `graph_insert_precondition` before anything applied.
+Base-free that check passes every insert, its index being empty then;
+graph-aware it reads the graph as the base left it, so over an empty base
+every voice the history made is missing and nothing was promoted. The
+catalog's rule (and the core specification's) buckets the concurrent inserts
+into a voice with no such filter, so the filter goes, and the later of two
+overlapping concurrent inserts is promoted in both modes. An insert that fails
+its own preconditions when it applies still fails them; it may meanwhile have
+promoted a loser it overlaps, as base-free reduction always allowed. Locked by
+`two_replacements_of_one_quarter_promote_alike_in_both_modes` and 43 committed
+histories that now agree; with the filter restored both fail.
+
+**An authored quarter-tone spelling moves with its transpose.**
+`resolve_transposed_spellings` rewrote an authored spelling from the
+transposed pitch's 12-TET semitone, which a `cmn-24` pitch lacks, so any
+authored spelling on a quarter-tone refused the transpose graph-aware, and
+base-free reduction, holding no spelling, applied it. The importer authors a
+spelling for every quarter-tone, so every imported quarter-tone's transpose
+split the modes (D42). A `cmn-24` pitch's spelling now moves by quarter-tones
+(`PitchSpelling::transposed_by_quarter_tones` in the core): the letter by the
+interval's steps, the alteration counted from where the pitch sounds, a whole
+number of semitones taking the standard accidentals and an odd number of
+quarter-tones the accidental of the spelling's own kind, by the chooser the
+importer already used, now the core's (`quarter_tone_accidental`, with its
+two tables). A spelling no accidental names at the new pitch still refuses.
+Locked by `an_imported_quarter_tone_transposes_alike_in_both_modes`,
+`cmn_24_with_an_authored_spelling_moves_it` (which replaces
+`cmn_24_with_an_authored_spelling_still_refuses`) and 36 committed histories
+that now agree; with the twelve-tone rewrite restored the first two fail.
+An interval's chromatic steps count in the pitch's own space, so one
+interval over a selection holding both a twelve-tone pitch and a quarter-tone
+moves them by different amounts; that is the operation's definition, not a
+split, and is left as it stands.
+
+**Base-free reduction reads a referent its set mints.** The catalog checked
+every referential precondition (a named staff, instrument, group, layer, time
+signature, voice or region is live) graph-aware only, base-free reduction
+having no universe. But on a valid history every referent's mint is in the
+set, and the fuzz found base-free reduction applying an operation that named
+an object its history minted and lost: deleted concurrently, minted by a
+transaction that failed, or by an equivocation's losing candidate. The
+reducer now collects, before it walks, every object any envelope of the set
+mints (`history_mints`, by `minted_objects`, over every slot's candidates),
+and `referent_dead` reads a referent base-free as the set leaves it: live if
+an operation made it so and none tombstoned it, dead if minted by the set
+and not live, and live, as before, if no envelope mints it, since it may come
+from a base. Each graph-gated referential check now runs in both modes
+through it, and base-free `InsertEvent` no longer creates on first use a
+voice the set mints. `req:catalog:base-free-referents` states the reading. The
+earlier fuzz streams name such referents freely, so the seeded
+canonical-base digest is re-pinned and the decode corpus draws its spellings
+from a `fuzz::modes` history as well. Locked by
+`a_region_the_history_made_and_deleted_is_missing_in_both_modes` (the
+migration's guard removed, it fails) and
+`an_instrument_minted_by_a_failed_transaction_is_missing_in_both_modes` (the
+set's mints ignored, it fails), and seven committed histories.
+
+**Base-free reduction holds its pitches' values.** A `TransposeInterval`
+resolved each target's new value from the graph and skipped base-free, so
+base-free reduction recorded no write in the pitch's chain: a concurrent
+`ModifyIdentifiedPitch` of the pitch conflicted graph-aware and applied
+base-free, and an undo of the transpose restored the pitch graph-aware and
+found nothing to restore base-free. The reducer now keeps, base-free only, each
+minted pitch's current value (`pitch_values`), written wherever the graph
+writes one (`graph_modify_pitch`, `graph_transpose_pitch`, `graph_insert_pitch`,
+and `graph_replace_event` under the graph's own placement gate, read from
+`voice_occupancy`) and snapshotted with a transaction, and the transpose reads
+values through `pitch_value`, the graph's graph-aware and the index's
+base-free. A base's pitch is still unknown base-free. Authored spellings stay
+graph-only: a transpose a spelling cannot follow is still refused graph-aware
+alone, and none the fuzz draws is such. Locked by
+`a_transpose_and_a_concurrent_pitch_edit_conflict_in_both_modes` and
+`an_undone_transpose_restores_its_pitch_in_both_modes` (both fail with the
+graph-only read restored) and 17 committed histories.
+
+**A transposition refuses by its value and drops a spelling it cannot move.**
+Two classes of the fuzz's invariant findings came from transposing. A
+transposed value past a triple accidental was written by a spelling of
+repeated double accidentals (`accidental_ids` stacks them), which
+`SpellingScopeResolves` forbids, and an authored spelling the transposition
+could not move refused the whole operation, graph-aware alone. Now
+`alteration_writable` refuses a value no well-formed stack writes, in both
+modes since both hold the value; the core's `PitchSpelling::transposed` and
+`transposed_by_quarter_tones` return nothing for a stack that would repeat;
+and an authored spelling that cannot follow is removed, the pitch taking the
+propagated spelling, so no verdict reads a graph-only spelling. The catalog's
+requirement that such a spelling refuse is withdrawn; it read state base-free
+reduction cannot hold. Separately, `graph_delete_pitch` removed only the
+user-chosen attachment, and a transposition's propagated one outlived the
+pitch; it now removes every attachment scoped to it. Locked by
+`a_transpose_past_a_triple_accidental_refuses`,
+`an_unfollowable_authored_spelling_is_dropped_and_the_pitch_moves` and three
+committed histories (restoring the narrow removal fails one of them).
+
+**Two referents the first reading missed.** A larger budget found an author
+inserting into a system-promoted voice its view held, which the whole
+history's reduction never promotes: base-free reduction, the id being
+system-derived and so minted by no payload, created it on first use; it is
+now missing in both modes. And an undo tombstones a region it minted while
+the graph keeps the region, so graph-aware migration applied to it where
+base-free reduction, reading the tombstone, refused: the migration now reads
+the region's liveness through `referent_dead` in both modes. Locked by four
+committed histories, `118` to `121`.
+
+**Undo reads the same chains in both modes.** Two undo splits remained, both
+in bookkeeping only graph-aware reduction kept. Graph-aware reduction seeds
+each score-level settings chain from its base (`seed_from_graph`), and an
+empty base has values for these always-valued fields, so undoing a settings
+transaction restores them by a write of the undo's own and a second undo of
+it finds that write and conflicts; base-free reduction seeded nothing,
+restored to absence without a write, and applied the second undo. It now
+seeds the same chains with an empty score's settings (`seed_score_settings`,
+shared with `seed_from_graph`, over `ScoreSettings` so no base is cloned to
+read them). And `record_engraved_spellings` was a no-op base-free, so a
+respelling a later transpose superseded on the pitch's spelling set (a key
+both operations write, `req:opcat:spelling-set-chain`) was undone base-free
+and conflicted graph-aware; base-free reduction now records the write with
+an empty set, since undo reads only the chain's writers and only the graph
+restores a set. Locked by
+`a_second_undo_of_a_settings_transaction_conflicts_in_both_modes` and
+`an_undo_of_a_respelling_a_transpose_superseded_conflicts_in_both_modes`
+(each fails with its half removed) and five committed histories.
+
+**A reassignment that would overlap a voice conflicts.** Review 3 of C3
+found a `ChangeRegionTimeModel` whose `Reassign` left two events of a voice
+overlapping, breaking invariant 3; the fuzz found it again. The migration now
+reads the remapped placements of each of the region's voices from
+`voice_occupancy`, which both modes keep, and counts every event that would
+overlap another among its incompatible events, so the existing
+`TimeModelMigrationFailure` conflict names them and nothing moves. Locked by
+`a_reassignment_that_overlaps_a_voice_conflicts_in_both_modes` (the check
+removed, it fails) and a committed history.
+
+**A region manifests a staff once.** Two authors adding the same staff to a
+region concurrently left two instances of it, breaking
+`StaffInstanceResolves`. `CreateStaffInstance` now refuses, with
+`ContainerNotEmpty` (the region's place for the staff is taken), a staff a
+live instance of the region already manifests, read from `region_instances`
+and `instance_staff`, which both modes keep. Several test fixtures made two
+instances of one staff in a region for convenience; they now give the second a
+staff of its own, minted where the test reduces graph-aware. The seeded digest
+moves again. Locked by a committed history.
+
+**Anchors stay resolvable across a region's delete and migration.** Two
+invariant classes, each of review 3 of C3's kind. A region deleted while
+another map's tempo segment anchored to it left the anchor naming nothing:
+`DeleteRegion` now counts such a live segment, read from `tempo_segment_chain`,
+as content, refusing `ContainerNotEmpty`. And a migration to proportional time
+left measures and breaks anchored by musical offsets the region no longer
+admits. Which disciplines admit them is now one core method,
+`CoordinateDiscipline::admits_musical_offsets`, which the invariant check
+uses too. A migration to a discipline that does not admit them conflicts on
+the region's live measures (from `measure_values`), named beside the events
+in the existing `TimeModelMigrationFailure`; applied, it drops the region's
+system and page breaks, advisory layout with no musical time left to stand at
+(the canonical `breaks` and `page_breaks` and the graph alike); and
+`musical_slot` refuses a break written in musical time into such a region,
+`WrongRegionTimeModel`, so a concurrent one cannot reintroduce it (meters
+follow, below). Locked by
+`a_region_out_of_musical_time_keeps_no_musical_break_in_both_modes`,
+`a_migration_finds_its_regions_events_in_both_modes` (now naming the
+measure) and two committed histories, each part observed failing without it.
+
+**A measure with a later one is not undone.** Undoing the transaction that
+created a measure, after another author had added the next one, removed the
+measure and left its successor two bars from its predecessor
+(`MeasureMeterConsistency`). The measure strand guard gains a surface: a live
+later measure of the same instance, read from `measure_values` and ordered by
+`anchors_comparable_order`, owned by that measure, so a strict undo conflicts
+and a best-effort one keeps the measure. Locked by
+`an_undo_of_a_measure_with_a_later_one_conflicts_in_both_modes` (the surface
+removed, it fails) and a committed history.
+
+**An undone pitch leaves its event.** Undoing an `InsertIdentifiedPitch`
+tombstoned the pitch but `materialize_graph_tombstones` only recorded it in
+`tombstoned_pitches`, leaving it in its surviving event, so the graph held it
+both live and tombstoned (`UniqueIdentifiers`). Each pitch the undo tombstones
+now also goes through `graph_delete_pitch`. Graph state only; no verdict
+moves. Locked by two committed histories (without the call they break the
+invariant again).
+
+**Containers, dangling restorations and meters.** A budget of 20000 at the
+fuzz's region fix found three invariant classes, none splitting the modes.
+An undo tombstoned a region, staff instance or voice it minted while another
+author's instance, voice or event lived in it, and the graph kept the
+container, so its child named a tombstone or, removed, nothing
+(`StaffInstanceResolves`). The strand guard gains those three containers,
+each blocked by a live child the undo leaves (read from `region_instances`,
+`instance_voices` and `voice_occupancy`), and an instance or region the undo
+does tombstone leaves the graph through `graph_delete_staff_instance` and
+`graph_delete_region`, as a pitch already did. An undo restoring a
+cross-cutting value whose endpoint a later operation deleted reinstated the
+dangling reference (`CrossCuttingRefsResolve`); the delete now supersedes the
+restoration, so a strict undo conflicts and a best-effort one skips the key.
+And a time signature set in a region out of musical time, or one a migration
+left in the region's grid, kept a meter at a musical offset the region no
+longer admits (`AnchorOffsetModel`): `SetTimeSignature`, and a
+`SetMetricGrid` that sets a grid, now read `musical_slot` and refuse
+`WrongRegionTimeModel`, and such a migration drops the region's default and
+local grids with its breaks. Locked by
+`an_undo_of_a_container_another_author_filled_conflicts_in_both_modes` (each
+guard removed, its own case fails), `an_undone_region_leaves_the_graph`,
+`a_meter_in_a_region_out_of_musical_time_is_refused_in_both_modes` (each check
+removed, it fails) and three committed histories, `127` to `129`, each
+observed failing with its part removed.
+
+**An insert places its event in musical time.** The third invariant break
+review 3 of C3 found, an insert carrying a wall-clock position into a metric
+region, was admitted: X3's note above left refusing it outside that change,
+and the fuzz never authors one. Only a metric region admits an insert, so a
+wall-clock position can never stand; `insert_event` now refuses it,
+`WrongRegionTimeModel`, from the value, in both modes, before anything reads
+its placement. `a_migration_judges_an_indexed_event_by_its_placement_in_both_modes`,
+which held the admission and its `EventCoordinateModel` violation, now holds
+the refusal and a graph keeping every invariant. Locked by
+`an_insert_at_a_wall_clock_position_is_refused_in_both_modes` (the check
+removed, it fails).
+
+**A tempo segment's anchors.** A budget of 50000 at `cabdd6f` found no split
+and five invariant classes, two of them new causes of earlier classes, both
+in `SetTempoSegment`, which checked only that its map's region was live. A
+score-level segment anchored to a region an equivocation's losing candidate
+minted named nothing (`CrossCuttingRefsResolve`): each region a segment's
+start or end anchor names is now a referent, read through `referent_dead`, and
+a dead one refuses `TargetMissing`. And a segment anchored by a musical offset
+kept that anchor through a migration of its region to proportional time
+(`AnchorOffsetModel`): such a segment, written after the migration, is refused
+by `musical_slot`, and a live one strands the migration, which conflicts in
+the existing `TimeModelMigrationFailure`, naming the region itself since the
+segment has no id. Locked by
+`a_tempo_in_a_region_out_of_musical_time_is_refused_in_both_modes` (each half
+removed, it fails) and histories `130` and `131` (each failing with its check
+removed). `131` keeps 35 envelopes: its referents need their authors' whole
+causal past, so the minimizer cannot shorten it. The conflict's incompatible
+list is now sorted as it is encoded and its affected objects name the region
+once, so the state decodes as written (the test decodes it; a duplicate region
+fails it). The seeded digest moves once more: its stream anchors segments to
+regions it never made, and with the referent check alone removed it returns.
+
+## X4a.2, continued — the breaks the fuzz committed failing (2026-10-08)
+
+The owner's ruling D48 settles the invariant breaks the fuzz committed as
+failing histories; each fix below is a further bullet of reduction version
+3's `Bumps` entry and of the catalog's 0.19.0 note.
+
+**A reassignment keeps its voice in order.** A `ChangeRegionTimeModel` whose
+`Reassign` swapped two events of a voice applied and moved both in the graph,
+but left the voice's event list in its old order, breaking
+`VoiceEventsSortedNonOverlap`; the occupancy index, kept as a set of
+placements, was right. Graph-aware reduction now re-sorts each voice whose
+events the remapping moved (`resort_voice`, as a move does). Graph state only;
+no verdict moves. The fuzz's remappings had not reordered a voice; the tie
+test below did. Locked by
+`a_reassignment_that_reorders_a_voice_keeps_it_sorted_in_both_modes` (the
+re-sort removed, it fails).
+
+**A tie gives way.** Reduction checked no tie's pairing or adjacency: a tie
+was accepted as written, and a concurrent insert between its ends (history
+`008`, the end promoted out of the start's voice) or a transpose of one end
+(`113`) left it breaking `TiePairing`. D48 rules that the edit applies and the
+tie is removed with a recorded repair. After any operation applies,
+`ties_give_way` holds each live tie the operation may have broken to the
+core's tie validation, read from what both modes keep (`tie_holds`: each
+event's voice and position from `voice_occupancy`, its live pitches from
+`event_pitches`, their values from the graph or `pitch_values`), and removes
+one that fails as `DeleteCrossCutting` would, recording `CascadeDeleted` on
+the operation's effect. Which ties: an insert's and a move's new neighbours
+and the event itself, a pitch operation's or transposition's events, every
+tie for a migration or an undo, the tie itself for its create or modify. A
+create over a concurrent break therefore applies and gives way at once,
+rather than being refused, so the history reads the same whichever of the two
+reduces first. A conflicted operation carries no repairs; the tie's tombstone,
+naming it, is the record. Ties are checked per operation, so a transaction
+that breaks a tie and mends it in a later member loses it. Locked by
+`a_tie_gives_way_to_an_edit_that_breaks_it_in_both_modes` (eleven breaking
+edits and three that keep the tie) and histories `008` and `113`; with every
+tie held, the test and both histories fail, and so does the CI budget, which
+finds `TiePairing`; with the neighbours dropped the insert's case fails; with
+undo checking no tie the undo's case fails.
+
+**A whole-event write keeps pitches it did not mean to remove.** A
+`ModifyEvent` carries the whole event, and its value's pitches replaced the
+event's in the graph. When another author had concurrently added a pitch to
+the event (history `126`, the pitch then transposed, which gave it a
+propagated spelling), the modify's author never saw it, so the write dropped
+it from the graph while the ledger kept it live and its spelling attachment
+named nothing (`SpellingScopeResolves`). D48 rules add wins: the modify keeps
+such a pitch with its attachments. `with_kept_pitches` adds to the written
+value each live pitch of the event (`event_pitches`) that the value does not
+carry and whose minting operation the modify's causal context does not cover,
+at its current value (graph-aware from the graph, base-free from
+`pitch_values`); a rest so kept becomes a note, as an inserted pitch makes
+one. The chain still records the operation's own value, so concurrency and
+idempotence compare what each author wrote. The same gap was open on undo,
+whose restored value is an earlier whole event: it dropped a pitch added
+since. A restoration now keeps every live pitch the value does not carry, the
+undone transaction's own having been tombstoned before restorations apply.
+A modify that omits a pitch its own author saw still dropped it from the graph
+alone here; the fuzz at a larger budget found one, and the rule became the
+whole-event write's (below), which kept it; the owner then ruled observed-remove
+(D49), under which a modify removes such a pitch with its attachments, and an
+undo's restoration brings back what its modifies removed (fix round 1, below).
+Add wins stands as observed-remove's other half. Graph state only. Locked
+by `a_modify_keeps_a_pitch_its_author_never_saw_in_both_modes` and history
+`126` (each fails with no unseen pitch kept) and
+`an_undo_of_a_modify_keeps_a_pitch_added_since_in_both_modes` (fails with the
+restoration keeping none).
+
+**A clef or key change stands in musical time.** A clef set in a metric
+region survived a migration of the region to proportional time (history
+`132`), anchored by a musical offset the region no longer admitted
+(`AnchorOffsetModel`). The tempo segment's fix applies: `SetClef` and
+`SetKeySignature`, which write at a musical offset, read the instance's
+region (`instance_region_of`) through `musical_slot` and refuse
+`WrongRegionTimeModel` there (`staff_change_slot`); a `CreateStaffInstance`
+carrying a change anchored by a musical offset into such a region is refused
+the same way; and a migration to a model admitting no musical offset is
+stranded by each live instance of the region holding a clef or key change,
+named among the incompatible objects. The chains key every change by its
+musical position (`resolved_anchor_position`), a change anchored otherwise
+included, so the check reads any live change of the instance as standing in
+musical time; every change the importer and the editors write does. Since the
+importer gives every instance its opening clef and key, a migration of an
+imported region to proportional time now names the instance too
+(`a_migration_finds_its_regions_events_in_both_modes`). Locked by
+`a_clef_or_key_in_a_region_out_of_musical_time_is_refused_in_both_modes` (the
+refusal removed from the setters, from the instance's create, or the
+stranding removed, it fails) and history `132`.
+
+**A staff a part or spanner names.** An undo of the transaction that created
+a staff, after another author's part definition had named it (history `133`),
+tombstoned the staff and left the part naming a staff the score did not
+declare (`CrossCuttingRefsResolve`). The staff strand guard, which a live
+staff instance already blocked, gains two surfaces: a live part definition
+naming the staff (`part_definition_values`) and a live spanner naming it (its
+current value in `cross_cutting_modify_chain`), neither among the undo's own
+targets. A spanner names staves too, and the generated histories write them,
+so the same reference was reachable from the other side: a spanner created or
+modified to name a staff its history minted and lost applied. Its staves are
+now referents (`spanner_staves_slot`, through `referent_dead`), a dead one
+refusing it `TargetMissing` in both modes. Locked by
+`an_undo_of_a_staff_a_part_or_spanner_names_conflicts_in_both_modes` (each of
+the two surfaces and the referent check removed, it fails) and history `133`
+(fails with the part surface removed).
+
+**A tuplet fixes its members' durations against undo.** A transaction
+shortened a rest; another author, having seen it, made a tuplet over the rest
+and its neighbours, totalling the rest's new duration; an undo of the
+transaction, concurrent with the tuplet, restored the rest's earlier duration
+(history `134`) and the members no longer filled the total (`TupletSum`). A
+`ModifyEvent` changing a member's duration is already refused, so a
+restoration doing the same is now superseded by the tuplet:
+`collect_restorations` asks `tuplet_fixing_duration` whether a live tuplet
+holding the event, not among the undo's own targets, would see the restored
+value's duration differ from the indexed one, and if so records the tuplet's
+minting operation as the superseding writer. A strict undo conflicts naming
+it; a best-effort one skips the restoration. Locked by
+`an_undo_restoring_a_tuplet_members_duration_is_superseded_in_both_modes`,
+under both policies, and history `134`; each fails with the check removed.
+
+**Concurrent region creation at one place is deferred.** Two authors each
+create a region over the same time, and each adds a staff instance of one
+staff (history `110`): the regions overlap in time and staff extent
+(`RegionExtents`). Refusing the second needs the two regions' time extents
+compared in both modes, and base-free reduction resolves no anchor. D48
+deferred it to when collaboration arrives (the roadmap's decide-list); D52
+has since made the class every overlap made by creating or filling regions,
+closed by X5 (below). Its
+history is kept as `# expect: deferred`, with a `# deferred:` line giving the
+reason; `every_committed_history_reduces_as_it_declares` skips it, the
+ignored `every_deferred_history_reduces_alike` requires it to agree (so
+`cargo test -- --ignored` shows it failing), and the CI budget counts its class
+as known, by name. Counting only `split` classes as known fails the CI budget,
+whose fifty-eighth history (seed `0x4a003a`) finds it. No reduction verdict or state changes.
+
+**A million histories: an undo of a region or instrument still named.** The
+fuzz at 1,000,000 histories (ten chunks of 100,000 from `0x4A0001`) found
+more causes behind classes already committed, each class having been reported
+once for its first cause. Two are undos of a creation the score still names:
+a region a score-level tempo segment anchors to (history `135`), which
+`DeleteRegion` already refuses, and an instrument a staff instance's
+`SetStaffLayout` override names (`136`). The region's strand guard gains the
+tempo surface `DeleteRegion` reads, a live segment of another map anchored to
+it, read as the undo leaves the segment (a restoration of the undone
+transaction's own write applies first); the segment has no id, so the
+conflict names the region once (its affected objects are a set, and a
+duplicate would not decode as written). The instrument's gains a live staff
+instance whose override, as the undo leaves it, names the instrument. Locked
+by `an_undo_of_a_region_or_instrument_still_named_is_blocked_in_both_modes`,
+under both policies (each surface removed, and the region named twice, it
+fails), and histories `135` and `136`.
+
+**A whole-event write revives no pitch (and, until D49, removed none).** Two more causes
+at a million histories were whole-event writes. A modify whose author saw a
+pitch and left it out of its value (history `138`) dropped it from the graph while the ledger kept it live and its
+spelling attachment stayed (`SpellingScopeResolves`); and a modify carrying a
+pitch that a concurrent undo of its insert had tombstoned put it back into the
+graph (`137`, `UniqueIdentifiers`). Add wins already kept a pitch the author
+never saw; the rule is now the whole-event write's, a modify's and an undo
+restoration's alike (`written_event`): the value's pitches that are tombstoned
+are left out, and every live pitch of the event the value does not carry is
+kept. Event pitch membership so changes only by pitch and event deletes, pitch
+inserts and undos of them, which the ledger records; `event_pitches` and the
+graph agree. Graph state only. D49 narrowed the keeping half for a modify: a
+pitch its author saw and left out is now removed (observed-remove, fix round 1,
+below); the undo's restoration keeps it as written here, and delete wins
+stands. Locked by
+`a_whole_event_modify_neither_removes_nor_revives_a_pitch_in_both_modes` (now
+`a_whole_event_modify_removes_only_the_pitches_its_author_saw_in_both_modes`)
+(the tombstoned filter removed, it fails; the modify writing its raw value, it
+and `a_modify_keeps_a_pitch_its_author_never_saw_in_both_modes` fail) and
+histories `137` and `138`.
+
+**A measure stands in musical time.** At a million histories an author
+created a measure in a region another author had concurrently migrated to
+proportional time (history `139`): the migration applied first, finding no
+measure to strand, and the measure applied after it, anchored by a musical
+offset the region no longer admitted (`AnchorOffsetModel`). `CreateMeasure`
+now reads its region (the start anchor's, or its instance's) through
+`musical_slot` and refuses `WrongRegionTimeModel`, as `SetTimeSignature`,
+`SetClef` and a musical break already do. Locked by
+`a_measure_in_a_region_out_of_musical_time_is_refused_in_both_modes` (the
+check removed, it fails) and history `139`.
+
+**Two chains compare by the order their writes applied.** The effective grid
+layers a region's whole-grid writes (`metric_grid_chain`) and its per-key
+meter changes (`meter_change_chain`), and at each key the chain written more
+recently governs (`chain_recency`). Recency was the writing operation's stamp.
+But a transaction's members apply together where its first member falls in
+the walk, so a grid write a transaction stamped after another author's
+concurrent `SetTimeSignature` applied before it: the graph held the signature,
+the oracle took the grid write for the later and read no signature, and a
+`CreateMeasure` placed by it applied a bar out (history `140`, the undo of the
+transaction being one of its own members; `MeasureMeterConsistency`). Each
+operation now records the position it applied at (`applied_at`, set by
+`apply`), and recency reads that. Outside a transaction the walk follows the
+stamps, so only such interleavings change. Locked by
+`a_transactions_grid_write_is_as_recent_as_it_applied_in_both_modes` (recency
+by stamp restored, it fails) and history `140`.
+
+**The deferred cause, named apart.** The fuzz reports each class of failure
+once, with its first history, so a class excepted by name would hide any other
+cause of the same invariant behind the deferred one. `RegionExtents` is now
+classed apart when its two overlapping regions were each created by an
+envelope of the history at one time extent, neither in the other's causal past
+(`modes::CONCURRENT_REGIONS`, now `REGION_NEVER_SEEN`, below): the deferred cause; any other overlap keeps the
+plain class, which nothing excepts (until D52 read the class by its
+mechanism, closed by X5, below). History `110` takes the named class.
+Every `RegionExtents` finding of the million-history run, minimized, is two
+regions created concurrently at one extent. Locked by
+`a_region_overlap_its_author_saw_is_not_the_deferred_class` (since D52
+`…_is_the_deferred_class`, below), which makes the
+second region's author have seen the first and requires the plain class (the
+concurrency test dropped from the classification, it fails); with the
+classification never naming the cause, it and the CI budget fail.
+
+**Ties are found by their ends.** The tie check first read every live tie on
+every operation and, for a pitch operation, scanned every event's pitches and
+then placed each event it touched in its voice, by a scan of the occupancy
+index, to find its neighbours; on the edit-latency bench (a log of transposes
+over a fixture holding one tie) reduction took about half as long again at a
+thousand edits. `tie_ends` now indexes each tie under its two ends when it is
+seeded, created or rewritten (never pruned; a reader checks liveness), an
+operation touches nothing while no tie has stood, a pitch operation reads the
+ties at its events alone, without placing them (a pitch change moves no
+neighbour), and an insert or a move the ties at it and its new neighbours. No verdict or state changes. The
+tie test fails with the neighbours dropped, with undo reading no tie, and with
+the empty-index shortcut inverted.
+
+## X4a fix round 1 — review 1's findings and the owner's (2026-10-08)
+
+Review 1 of C4a ran the fuzz on seeds and lengths the checkpoint had not, and
+found five invariant breaks (M1 to M5); the owner added two narrowings of
+D48's rules (O5, O6, D49) and ruled the second break into the deferred class
+(D50). Each is a further bullet of reduction version 3, which does not move
+again before X4a merges.
+
+**A kept mint holds what it names (M1).** A best-effort undo tombstones the
+live mints the strand guard does not block, and the guard reads a reference
+held by one of the undo's own mints as going with it. A transaction that made
+an instrument and a staff on it, undone after another author put an instance
+of the staff in a region, kept the staff for its instance and removed the
+instrument, judging the staff's reference by the full mint set although the
+staff was staying (`CrossCuttingRefsResolve`). The guard is now read against
+the mints still going, dropping each one it blocks, until it blocks none: the
+greatest set no member of which is held by what stays. Strict undo is
+unchanged, since it conflicts on any block. Locked by
+`an_undo_keeps_what_a_kept_mint_names_in_both_modes`, under both policies
+(read against the full set, the best-effort case fails), and history `141`.
+
+**A promoted voice is its instance's (M3).** The promotion pre-pass makes a
+system voice for each overlapping concurrent insert it does not retain, and
+the graph puts it in the instance the insert names; the reducer's index of an
+instance's voices, which `DeleteStaffInstance` reads to refuse a filled
+instance and the strand guard reads for an undo, never held it. Two authors'
+overlapping inserts into one voice, one promoted, while a third deleted the
+voice and then its instance: the instance looked empty, its delete applied,
+and the promoted event named a voice the graph no longer held
+(`EventVoiceBacklink`). The promoted voice now enters the index with its
+event, so the delete is refused `ContainerNotEmpty`. The migration's lookup of
+a promoted voice's instance through its losing insert, which stood in for the
+missing entry, goes. Locked by
+`an_instance_holding_a_promoted_voice_is_not_empty_in_both_modes` and history
+`142` (each fails with the entry left out).
+
+**An undo of its own transaction is refused (M4).** A transaction applies as
+one block, and an undo that is one of its members and names it ran while the
+transaction was still applying: it reversed whatever the members before it
+had written. One that undid another transaction's time signature and then
+undid itself restored the meter change the first undo had removed, naming the
+time signature that undo had tombstoned (`CrossCuttingRefsResolve`). No
+editor writes one; the fuzz did, and the catalog refused none. Two ways were
+open: reduce the pair consistently, which would need the self-undo to restore
+the objects the first undo removed (a resurrection the catalog defers), or
+refuse it. It is refused, from the envelope alone (its `transaction` is its
+target), with `TargetMissing`, the verdict for a transaction with nothing
+known to compensate; as a member's failure it conflicts the transaction
+holding it, whose other members then apply nothing. Locked by
+`an_undo_of_its_own_transaction_is_refused_in_both_modes`, under both policies
+(the check removed, it fails), and history `143`.
+
+**An undo writes nothing in musical time where a migration took it away
+(M5).** A migration to a model admitting no musical offset is stranded by a
+live measure, event, clef or key change or tempo segment in musical time, and
+drops the region's breaks and grids; each setter writing in musical time is
+refused there. An undo's restorations were held to none of it: a transaction
+that took away a break, and was undone after another author migrated the
+region, restored the break at a musical offset the region no longer admitted
+(`AnchorOffsetModel`). The finding named the break; every restoration in
+musical time reaches the same state, and a probe of each, a value written, a
+transaction taking it away, a migration and the undo, broke the invariant for
+the page break, the meter change, the tempo segment and the clef and key
+changes too. The grid breaks no invariant the core checks, but its setter is
+refused there and the migration drops it, so it is held alike. Each such
+restoration is now superseded by the migration that took the region out of
+musical time (`out_of_musical_time`, read from the region's coordinate
+discipline and its last migrator, which both modes keep): strict undo
+conflicts naming it, best effort leaves the value out. A restoration to
+absence writes nothing and is kept. Locked by
+`an_undo_writes_nothing_in_musical_time_into_a_region_out_of_it_in_both_modes`,
+seven cases under both policies (the helper answering none, it fails; each
+arm's supersession removed, its own case fails), and history `144`.
+
+**A tie is held when its transaction completes (O6, D49).** The tie check ran
+after each operation, so a transaction moving a tied pair one note at a time
+lost its tie at the first move, though both ends finished on one pitch; a
+transaction is one edit from its author's view. Each member now reports the
+ties it may have broken, read once it has applied (`apply_member`), and the
+check runs once in `reduce_transaction_block`, over their union, when every
+member has applied and none failed; a lone operation is its own transaction
+(`apply`), so nothing outside a transaction changes. The repair goes on the
+effect of the last member that touched the tie: after it nothing in the
+transaction reached the tie, so that member's application is the one that
+left it broken, and an earlier member that broke it and a later one that
+mended it would otherwise both be candidates for a record of something that
+did not stand. A failed transaction rolls back before any check, as before.
+`tie_ends` stays outside the transaction snapshot: it only grows, a rolled
+back create leaving an entry the check reads through the tie's liveness. The
+fuzz gains a gesture that moves a tied pair one end at a time in a
+transaction, entering the pair first when its view holds no tie, ties being
+rare in generated views (eleven created in five hundred histories before the
+gesture, ninety after). Locked by
+`a_tie_is_held_when_its_transaction_completes_in_both_modes`: a mended tie
+stands, a broken one goes with its repair on the member that broke it, and,
+both ends moved apart, on the later member.
+
+**A whole-event modify follows observed-remove (O5, D49).** The checkpoint read
+D48's add wins as "a whole-event write removes no live pitch", which silently
+ignored a removal written by rewriting a chord: a rest written over a note
+reported `Applied` and left the note. The owner narrowed it: a modify removes
+the pitches its author saw and left out, and keeps the ones it never saw.
+`remove_observed_pitches` runs before the value is written: each live pitch of
+the event (`event_pitches`) the value does not carry is removed when its
+insert, the envelope that minted it (`minted_by`), is in the modify's causal
+past, or is the modify itself; the removal is `DeleteIdentifiedPitch`'s
+(tombstoned naming the modify, out of `event_pitches`, out of the graph with
+every spelling attachment scoped to it, the last pitch of a chord leaving a
+rest), and the modify's effect records a `CascadeDeleted` repair per pitch,
+its target the pitch: a spelling attachment has no id of its own, and a tie
+paired on the pitch gives way through the tie check with its own repair. A
+conflicted modify still materializes and so still removes; its effect carries
+no repair, the tombstone naming it, as for a tie. A pitch from a base has no
+minting envelope in the set; the base precedes every operation of the set, so
+every author has seen it and a modify that leaves it out removes it,
+graph-aware. Base-free reduction holds no base pitch (nor the base's event, so
+it refuses such a modify `TargetMissing`), and the modes agree over an empty
+base, as for every referent a base supplies. What remains to keep is what
+`written_event` already kept, so a rest or an unpitched event written over a
+note holding a pitch its author never saw becomes a note of that pitch (an
+unpitched value now follows the rest's rule; it had dropped the kept pitches).
+The undo, implemented as a planning default and since ruled so by the owner
+(D51), reverts the modify's own effect and no more: an event's restoration
+first brings back the pitches a `ModifyEvent` member of the undone
+transaction removed (`revive_removed_pitches`), live again, at the value and
+with the attachments
+recorded at removal (`removed_pitches`, an index in the transaction snapshot,
+so a rolled-back modify leaves none), and then writes the restored value,
+which keeps every live pitch it does not carry (pitches added since stay) and
+revives none a delete removed. A pitch a later delete also targeted, finding it
+already removed by the modify, does not hold it against the undo; the undo
+revives only what its own modifies removed, tied to the event's restoration,
+so a superseded restoration (best effort) revives nothing. The fuzz gains two
+`ModifyEvent` arms: a chord written without one of its pitches, and an event
+written as another kind in its place (a rest or unpitched note over a note,
+each of those over the other); a rest written over a note by a modify that
+mints pitches is not generated, as before. The seeded canonical-base digest
+moves, its stream's modifies leaving out pitches their authors saw; with the
+removal disabled the previous digest returns. Locked by
+`a_whole_event_modify_removes_only_the_pitches_its_author_saw_in_both_modes`
+and `an_undo_of_a_modify_brings_back_the_pitch_it_removed_in_both_modes` (with
+no pitch removed, both fail), `a_modify_keeps_a_pitch_its_author_never_saw_in_both_modes`
+(every left-out pitch removed, it and the first fail), the undo test alone with
+revival disabled, and `a_modify_counts_a_bases_pitch_as_seen` with a base pitch
+read as unseen; histories `126`, `137` and `138` agree, `138`'s modify now
+removing its pitch with a repair.
+
+**The deferred class widens by name (M2, D50).** Review 1 found a second way
+to place a region where one stands: an author deletes a region another author
+is concurrently filling, so the merged history refuses the delete
+(`ContainerNotEmpty`), and, its view holding no region there, creates one in
+its place. One author made both regions, so the concurrency test classed the
+overlap plainly. Its fix is the deferred one, refusing the create by region
+extents base-free reduction cannot yet resolve, and the owner widened the
+class by name to a region created at the place of one its author's view did
+not hold live, with two causes the classifier names apart (D51 adds a third,
+below): never seen
+(`REGION_NEVER_SEEN`, D48's concurrent creation) and seen deleted by a delete
+the merged history refuses (`REGION_SEEN_DELETED`). The second holds when the
+later create's author saw the earlier region's create and a `DeleteRegion` of
+it, that delete is not applied in the merged history, and the author's view,
+the graph-aware reduction of the create's causal past, holds no such region;
+both creates are at one time extent, as for the first. No reducer changes.
+History `110` takes the first cause's name; review 1's two seeds and a third,
+regenerated at the checkpoint's generator and minimized against the new class
+(the minimizer had dropped the delete against the plain one), are `145` to
+`147`, deferred. A deferred history must now still fail as its class, as a
+`split` one does, so the classifier is held by the committed suite and not
+only by the ignored test. Nothing else falls in the class: an overlap whose
+author saw the region live keeps the plain class
+(`a_region_overlap_its_author_saw_is_not_the_deferred_class`, and with the
+delete gone or the fill seen, `a_region_created_where_its_authors_refused_delete_left_none_is_deferred`),
+as does a region created where its author's undo of the region's
+transaction, blocked in the merged history by a concurrent fill, left none
+(`a_region_created_where_its_authors_blocked_undo_left_none_is_not_deferred`,
+now `…_is_deferred`): a third cause in the same family, which the owner had
+not then ruled into the class, so it was not excepted (D51 has since, below;
+and D52 has made the class every overlap made by creating or filling regions,
+the seen-live overlap among them, closed by X5).
+Review 1's plant B3, an overlap from a `DeleteStaffInstance` leaving its
+staff in the region's extent, still fails the CI budget. Mutations: the
+seen-deleted cause never named (its test and the
+committed suite fail), the view's check dropped (the fill-seen case fails), the
+refused-delete check dropped (the undo case fails), and the concurrency test
+dropped (every classifier test fails).
+
+**A finding is classed by its cause (L1).** A run keeps one history per class,
+and an invariant's class was its name alone, so one run showed one cause per
+invariant: `CrossCuttingRefsResolve` had two causes in review 1's runs (a staff
+naming an instrument an undo removed, a meter change naming a signature an
+undo removed), and each run showed one. An invariant finding is now classed by
+the invariant and its witness's shape (`witness_shape`): the witness with each
+identifier reduced to its kind, each number to `#` and the runs of equal
+items in each list, set or tuple to one (a struct's fields are never equal),
+so findings of one cause share a class whatever objects
+they name and two causes of one invariant are two classes. The deferred causes
+keep their names. A class may now be finer than a cause (one witness format
+naming either end of an anchor, say), which costs a line in a report, not a
+hidden cause. Locked by `a_witness_shape_names_its_cause_not_its_objects`
+(the shape empty, or lists not collapsed, it fails); with M1's and M4's fixes
+both reverted, their histories `141` and `143` are now two classes.
+
+**Every view is checked, and every class kept (L2).** The simulation checked
+the replicas' views only until a history's first finding, and kept only that
+view's first, so a cause shown only in a later view, or second in a view, went
+unreported. Every view is now reduced both ways and compared, and each class
+any view shows is kept with the first view's history that showed it
+(`Generated::in_view` is a map of classes). Over the handoff's first 400,000
+seeds review 1's instrumented copy found nothing the old reporting missed;
+here a run of 1,000 histories took about a sixth more CPU time. Locked by
+`every_view_is_checked_and_every_class_kept`, which drives two views of a
+simulation showing the two deferred causes in turn, and one view showing both
+(gated after the first finding, or keeping a view's first finding only, it
+fails); since D51, three views and the three causes, below.
+
+**The CI budget runs a second, longer chunk (L4).** Review 1's plant B2 (a move
+leaving the occupancy index behind, in both modes) was found locally at the
+127th history and passed every CI test, whose budget was 96 histories of 24
+authored operations. With this round's generator the plant first shows at the
+118th history of 24 and at the 49th of 64. The budget is now two chunks, 96
+histories of 24 and 64 of 64 from the same seed, reported by chunk with its
+length; the test binary took 37 s in a debug build here where it took 15, and
+the workspace tests run in one CI job of about two minutes. With B2 planted
+the CI test fails on the second chunk, and with the second chunk emptied it
+passes, as before.
+
+**A pitch inserted into an unpitched event makes it a note (found by this
+round's fuzz).** At 128 authored operations, an author wrote a chord as an
+unpitched event (observed-remove taking its pitches) while another,
+concurrently, added a pitch to it and respelt the pitch. The insert applied in
+the ledger, but `graph_insert_pitch` turned only a rest into a note and left
+an unpitched event as it was, so the graph dropped the pitch and its spelling
+attachment named nothing (`SpellingScopeResolves`). The fuzz's new
+kind-changing modify made it reachable; no generated history had changed an
+event's kind before. An unpitched event now becomes a note of the pitch, as a
+rest does, keeping its articulations, dynamic and grace. Its undo removes the
+pitch and leaves a rest, as for a note that was one. Locked by
+`a_pitch_inserted_into_an_unpitched_event_makes_it_a_note_in_both_modes` and
+history `148` (each fails with the unpitched branch writing nothing).
+
+**An undo restores nothing naming an object removed since (found by this
+round's fuzz).** At 128 authored operations a single author set a time
+signature in a transaction, undid it in a second transaction (the signature
+tombstoned, the meter change restored to absence), and undid the second
+transaction: the redo restored the meter change naming the tombstoned
+signature (`CrossCuttingRefsResolve`). M4's refusal covered the undo inside its
+own transaction, not this one, an ordinary undo then redo. Resurrecting the
+signature is the catalog's deferred case, so the restoration is superseded by
+the operation that tombstoned the object it names, as a cross-cutting value
+naming a deleted endpoint already was (`tombstoned_since`): strict undo
+conflicts naming it, best effort leaves the value out. Every restorable value
+that names an object is held so: a meter change's and a metric grid's time
+signatures and anchors, a tempo segment's anchors, an instrument override, and
+a present break's anchor. An object the set never made live counts as live.
+Locked by `a_redo_restores_nothing_naming_what_the_undo_removed_in_both_modes`,
+six cases under both policies (the helper answering none, it fails; each
+arm's referents emptied, its own case fails; a break anchored to a removed
+measure breaks no invariant the core checks, and the test holds its conflict),
+and history `149`.
+
+**A third overlap cause, named apart and not deferred (found by this round's
+fuzz; deferred since D51, below).** At 128 authored operations an author
+created a region in a transaction and undid the transaction, while another
+author, concurrently, filled the region; in the merged history the strand
+guard keeps the region
+against the undo, and the first author, its view holding no region there,
+created one in its place (`RegionExtents`). It is the deferred class's shape
+and needs its fix, refusing the create by region extents base-free reduction
+cannot yet resolve, but D50 put exactly two causes in that class and nothing
+else (D51 has since made it three, below), so it was not excepted: the
+classifier names it apart (`REGION_SEEN_UNDONE`, a region created where its
+author's undo, blocked in the merged history, left none) so a run lists it
+beside the invariant's other
+causes, and its history is committed `split` (`150`) for the owner to rule.
+Locked by `a_region_created_where_its_authors_blocked_undo_left_none_is_not_deferred`
+(now `…_is_deferred`) and history `150` (with the undo's condition dropped,
+both fail); review 1's plant B3 still fails the CI budget.
+
+## X4a fix round 1, continued — the third cause deferred (2026-10-09)
+
+**The deferred class holds three causes (D51).** The owner ruled the third
+overlap cause into the deferred class by name: a region created at the place
+of one its author's undo removed, the undo blocked in the merged history by a
+concurrent fill. It needs concurrent authors and the deferred fix, refusing
+the create by region extents base-free reduction cannot yet resolve, so the
+class now holds three causes, never seen (`REGION_NEVER_SEEN`), seen deleted
+(`REGION_SEEN_DELETED`) and seen undone (`REGION_SEEN_UNDONE`), and nothing
+else (until D52, below: the class is now every overlap made by creating or
+filling regions, closed by X5). `modes::deferred` names the third as it names the other two, and its
+class takes the class's name like theirs (`… did not hold live, seen undone
+by an undo the merged history blocks`). History `150` is `# expect: deferred`
+with its reason, so it must still fail as its class in the committed suite,
+the ignored `every_deferred_history_reduces_alike` requires it to agree, and
+the CI budget counts its class as known, by name. A history declared deferred
+must now be of a cause `modes::deferred` names, so none is excepted outside
+the class by its header alone. Nothing else falls in the class: an overlap
+whose author saw the region live keeps the plain class, as does the undo case
+with the fill seen or the undo gone, and review 1's plant B3 still fails the
+CI budget. The owner also ruled that O5's undo, implemented
+as a planning default, stands: an undo of a modify reverts that modify's own
+effect and no more. No reduction verdict or state changes, so version 3 takes
+no bullet. Locked by
+`a_region_created_where_its_authors_blocked_undo_left_none_is_deferred` (the
+third cause named, with the fill seen or the undo gone the class plain) and
+`every_view_is_checked_and_every_class_kept` (three views, and one view
+showing all three). Mutations: the third cause dropped from `deferred` (its
+test fails, and the committed suite on `150`), and every `RegionExtents` class
+deferred (the seen-live test fails, and both cause tests at their fill-seen
+case).
+
+## X4a fix round 2 — review 2's findings (2026-10-09)
+
+Review 2 of C4a found three invariant breaks one author reaches in payload
+shapes the fuzz never wrote (M1 to M3). The owner ruled D52: each is fixed in
+its own commit, the fuzz's generator gains an arm for each shape, and the
+deferred region class is read by its mechanism rather than by a list of
+causes. Each fix is a further bullet of reduction version 3, which does not
+move again before X4a merges.
+
+**An undo restores no cross-cutting value naming an object removed since
+(M1).** The rule the previous round wrote into the catalog, that an undo's
+restoration naming an object tombstoned since is superseded by its
+tombstoning, held for every restorable value but the cross-cutting one, whose
+arm read only its endpoint events (`CrossCuttingValue::endpoints`, event-only
+by design). One author created a staff in a transaction, rewrote a spanner
+onto it and, in a second transaction, back; a strict undo of the first
+transaction removed the staff, which the spanner no longer named, and an
+undo of the second, strict or best effort, restored the spanner naming it
+(`CrossCuttingRefsResolve`). The arm now reads every object the value names
+(`cross_cutting_referents`: the anchors' objects, as the create's precondition
+reads them, and a spanner's staves) through `tombstoned_since`, as the other
+arms do. A measure or region anchor restored after its object was removed
+broke the same invariant, so both are held too. Locked by
+`an_undo_restores_no_spanner_naming_an_object_removed_since_in_both_modes`,
+three cases (a staff, a measure anchor, a region anchor) under both policies,
+and histories `151` and `152` (the probe, strict and best effort). Mutations:
+the endpoints alone (the staff case fails, and `151` and `152` split), the
+staves dropped (the staff case), the anchors read as endpoints (the measure
+case), a region anchor dropped (the region case).
+
+**A pitch makes a note of an event of any kind (M2).** `81821a6` made a pitch
+inserted into an unpitched event a note, as one inserted into a rest had been
+since June, and left the other kinds without a pitch list as they were: a
+pitch inserted into an indeterminate, trajectory, graphic or cue event was
+minted live by the ledger and dropped by the graph, so its respelling named
+nothing (`SpellingScopeResolves`), one author alone or in `81821a6`'s
+concurrent shape. The same state had a second way in: a whole-event write of
+such a kind over a note holding a pitch its author never saw keeps the pitch
+(add wins), and `written_event` dropped it for any kind but a rest or an
+unpitched event. The owner left the rule to this round, one rule for every
+kind: refuse the insert, or make the event a note. It becomes a note, by one
+helper both paths call (`with_pitches`): a note's list takes the pitch, and
+any other kind becomes a note of its own pitches (a trajectory's explicit and
+stepwise ones, so none is dropped either) and the new one, an unpitched
+event's articulations, dynamic, stem and grace kept as before. Why not
+refusal: a note and a rest are already one slot under pitch add and remove,
+normatively, and `81821a6` extended that to unpitched events, so a note is the
+one rule with no list of exceptions; it changes no verdict (the insert applied
+in both modes before and still does; only the graph now holds what the ledger
+does), where refusal would need both modes to read the event's current kind,
+which base-free reduction holds only through the write chains a pitch insert
+or a last-pitch delete does not write, and would refuse under a reason that
+misnames it (`TargetMissing`) or a new one, a wire change; and the whole-event
+write cannot be refused for a pitch its
+author never saw without undoing add wins. The cost is that a concurrent
+pitch insert overrides another author's choice of kind, as it already did for
+a rest and an unpitched event. Locked by
+`a_pitch_an_event_of_any_kind_comes_to_hold_makes_it_a_note_in_both_modes`
+(each of the four kinds, one author, concurrent with the kind first, and
+concurrent with the pitch first; and a trajectory holding pitches of its own)
+and histories `153` to `156`. Mutations: the insert path keeping the old kinds
+only (the one-author case fails, and `153`), the write path likewise (the
+pitch-first case), and a trajectory's own pitches left out (its case).
+
+**A migration admits an event as invariant 4 does (M3).** A migration marked
+a region's metric event incompatible only with a proportional target (or one
+a `Reassign` left unmapped or overlapping), and judged the graph's other
+events compatible with any aleatoric target (`RegionTimeModel::Aleatoric(_) =>
+true`). An aleatoric model anchored in wall-clock time admits no event in
+musical time, so one author's migration of a region holding a rest and no
+measure (a measure would have stranded it) applied and left the rest in
+musical time (`EventCoordinateModel`); the catalog's sentence said the same.
+The migration now judges every event against the target's coordinate
+discipline by invariant 4's own reading, which the core exposes as
+`CoordinateDiscipline::admits_event` (the invariant check calls it too, so the
+two cannot part): an indexed event, at a musical position for a musical
+duration in both modes, is incompatible with a target that does not admit
+such an event, and an event only the graph holds (a base's) by its own
+coordinates. A `Reassign` into a target admitting no event in musical time
+makes the graph's events incompatible, as it did for a proportional target. A
+metric, musically anchored, either-way or freely mixed target changes nothing.
+Locked by `a_migration_admits_an_event_as_its_targets_discipline_does_in_both_modes`
+(each of the four anchoring disciplines, both modes), by
+`migration_judges_a_bases_events_by_each_aleatoric_discipline` (a base's
+wall-clock events against each, graph-aware) and history `157`. Mutations: the
+indexed events judged by a proportional target alone (the wall-clock case
+fails, and `157`), and the graph's events taken as admitted by any aleatoric
+target (the base test's musical case).
+
+**The fuzz writes the shapes it could not (L6).** M1 to M3 sat in payload
+shapes the generator never wrote, so its clean budgets said nothing about
+them. It now writes each, as an editor would: a spanner's staves rewritten
+(half of its spanner modifies); every event kind, an indeterminate, graphic,
+cue or trajectory event entered one time in six an insert is drawn, and any
+kind written over another by the kind-changing modify, a trajectory holding
+its first and last pitches as its own; a pitch entered into an event of any
+kind, spelt half the time; a migration's aleatoric target anchored by each of
+the four disciplines; and a whole-event modify that mints a pitch, a chord
+written with a new one or another kind written as a note of one, spelt half
+the time. A modify mints the pitch ids it carries that nothing else mints, so
+`valid` counts them as its mints. None of the new kinds names another object:
+a cue's sources, an indeterminate event's alternatives, a graphic event's
+objects and a trajectory endpoint naming another event's pitch are not
+written, since each dangles today when its target goes, a single author's
+`CrossCuttingRefsResolve` that needs a rule for every way the target can go
+(a delete, an undo, a modify removing the pitch) and so more than one
+contained commit; that class is named for the owner. A spanner anchored to a
+region is not written either: the owner parked that class (P13-D3). The arms
+found two breaks at once, each committed `split` here and fixed in its own
+commit after this one: a modify minting a pitch onto a tie's end, which the
+graph held and the ledger never minted, so the tie check could not see it
+(`TiePairing`, seed `0x4a000a` at 64 authored, the CI budget's second chunk,
+history `158`); and a tie on a chord a concurrent author wrote as a
+trajectory, whose pitches base-free reduction read and wrote and the graph
+did not (an effect split, seed `0x7e240b63` at 24 authored, history `159`).
+
+**A whole-event modify mints the pitches it carries (found by the new arms).**
+A `ModifyEvent` carrying a pitch id no operation had minted put the pitch in
+the graph alone, as the previous rounds disclosed: the ledger never held it,
+so every operation naming it was refused `TargetMissing` in both modes, an
+undo did not know it, and the tie check, which reads the ledger's pitches,
+could not see it. The new minting arm found the break at once, one author's:
+a tie, then a modify giving the tie's end a new pitch, after which the graph's
+ends no longer paired and the tie stood (`TiePairing`, history `158`). The
+modify now mints each such pitch as an insert mints its event's pitches
+(`mint_carried_pitches`): live, minted by the modify, in the event's pitch
+index, its write chain seeded and its value held base-free, and recorded under
+the modify's transaction, so an undo of it removes the pitch with the event's
+earlier value. A pitch a base holds is live already and is not minted again;
+a system-derived one is refused before, as P13-K1 ruled. The tie check then
+sees the new pitch and the tie gives way with its repair. The seeded
+canonical-base digest moves: that stream's modifies carry such pitches, now
+live (with the mint disabled the previous digest returns). Locked by
+`a_modify_mints_the_pitches_it_carries_in_both_modes` (a minted pitch respelt,
+transposed and deleted; a tie's end given one; one undone) and history `158`.
+Mutation: the mint skipped (the test fails, `158` splits, and the digest
+returns to its previous pin).
+
+**A trajectory's own pitches are a note's (found by the new arms).** The core
+indexes every pitch an event holds, of any kind (`collect_identified_pitches`:
+a note's, and a trajectory's explicit endpoints and stepwise pitches), and
+the ledger mints and tombstones a trajectory's pitches as it does a note's;
+base-free reduction holds their values. Graph-aware reduction read and wrote
+a note's pitches alone: `event_pitch_value` and `graph_pitch_value` read none
+of a trajectory's, `graph_modify_pitch` and `graph_transpose_pitch` wrote none,
+`graph_delete_pitch` left a deleted one in place, a whole-event write of a
+trajectory carrying a deleted pitch kept it, and base-free reduction recorded
+a whole-event write's values for a note alone. Once the generator wrote
+trajectories, a tie on a chord a concurrent author rewrote as a trajectory,
+both ends then moved in a transaction, gave way graph-aware alone (an effect
+split, history `159`); one author reaches it too, writing the chord as a
+trajectory itself. Each path now reads and writes the pitch wherever the
+event holds it (`held_pitch_mut`), and a trajectory that loses one of its own
+pitches becomes a note of the others, a rest when none remain
+(`without_pitches`), the dual of `with_pitches` and of a last-pitch delete:
+refusing the delete would need the event's kind in both modes, which base-free
+reduction does not hold. Locked by
+`a_trajectorys_own_pitches_are_read_and_written_as_a_notes_in_both_modes` (a
+tie on a trajectory moved with its chord, and broken by a written value; an
+endpoint transposed by an interval; endpoints deleted; a trajectory written
+over a deleted pitch) and history `159`. Mutations, each failing the test: the
+tie check's value read for a note alone (and `159` splits), the in-place write
+for a note alone (likewise), the delete leaving the trajectory, the
+whole-event write keeping a deleted pitch, the base-free record for a note
+alone, and `graph_pitch_value` for a note alone.
+
+**The deferred region class, by its mechanism (D52).** The class had been a
+list of causes, each ruled in by name (D48, D50, D51), and review 2 found the
+list could not hold: the classifier's later causes test no concurrency, so one
+author's interleaved transaction falls in them (its L1); the reducer refuses no
+overlapping region, so one author can place a region where its view holds one
+and fill both (L2); and a delete an equivocation resolved away is another
+route to the same overlap, which it named for the collaboration ledger. Each
+waits on one fix, refusing a region's creation or fill where it would overlap
+a region the merged history keeps, by extents compared in both modes. The
+owner ruled the class to be every overlap made by creating or filling
+regions, whatever its cause and however many authors, and moved its fix from
+"when collaboration arrives" to X5, which closes the class. The classifier now
+reads it from the graph (`overlap_made_by_regions`): a `RegionExtents`
+witness naming two regions whose time extents overlap (compared where both are
+wall-clock; the invariant has judged any other), each holding a live staff
+instance of a common staff. Within the class it still names the causes it
+knows (`region_cause`: never seen, seen deleted, seen undone) and puts the
+rest under one general name (`REGION_OVERLAP`); `modes::deferred` reads all
+four. An overlap of another making, a region's staff extent naming a staff it
+holds no live instance of (review 1's plant B3 leaves one), keeps the plain
+class and fails the CI budget. No reduction verdict or state changes, so
+version 3 takes no bullet. Committed deferred, each with a reason naming D52:
+review 2's ledger history, minimized by hand to its cause with the twin chosen
+(`160`, the general name), a single author's direct overlap (`161`, the
+general name), and L1's two single-author histories (`162`, seen deleted;
+`163`, seen undone). The seen-live test takes its positive form
+(`a_region_overlap_its_author_saw_is_the_deferred_class`, the general name),
+and the two cause tests' fill-seen and cause-gone cases, which were plain, are
+the general name. The cost until X5: the fuzz cannot see a region overlap made
+by creating or filling regions, whatever its cause. Locked by those tests, by
+`an_overlap_of_another_making_is_not_the_deferred_class` (the never-seen
+history's graph with one region's instance taken out and its staff extent
+kept: every `RegionExtents` finding plain) and by the committed suite.
+Mutations: every `RegionExtents` class deferred (the another-making test
+fails), and the general name dropped, only the named causes deferred (the
+single author's history `161` fails the committed suite).
+
+**A container an undo emptied reads empty (L4).** `tombstone_undo_targets`
+tombstoned a voice or staff instance an undo removed but left it in the
+reducer's container indices, which a delete's precondition reads: an instance
+whose only voice was undone refused `DeleteStaffInstance` `ContainerNotEmpty`
+with no voice in it (review 2's P4), older than `286fbea`, which only made a
+promoted voice enter the index. The review named the voice; the region's index
+held an undone instance the same way, so a region whose only instance was
+undone refused `DeleteRegion` alike, and both are fixed (resume §2: guard every
+path a caller can reach). The undo now removes what it tombstones from the
+indices as the deletes do: a voice from its instance's set and its occupancy,
+an instance from its region's set and its own voice set. Both modes keep the
+indices, so they agree as before; only the verdict moves. Locked by
+`a_container_an_undo_emptied_reads_empty_in_both_modes` (the instance and the
+region case), and histories `164` and `165`, the two probes, which record the
+verdict and agree before and after the fix (both modes shared it), so the
+test, not the committed suite, holds it. Mutations: the voice left in the
+index, and the instance left in it, each failing its case.
+
+**A failing history shows its class alone (L5).** The committed suite passed a
+`split` or `deferred` history when its declared class was among its findings,
+and `fuzz_modes --recheck` printed `split` on the same test, so a second break
+joining a committed history (a regression adding one to a deferred history,
+say) would pass both, seen only by the ignored test. Both now require the
+history's findings to be exactly its declared class (`shows_only`), at least
+one and nothing else. Every committed failing history meets it. Locked by
+`a_history_showing_a_second_class_fails_its_declaration` (the never-seen and
+seen-deleted histories run as one show both classes, which neither
+declaration admits; each alone shows its own). Mutation: the predicate back to
+"among its findings" (the test fails).
+
+**`compact` keeps an equivocation's choice (L7).** After a removal the
+minimizer renumbers the history (`compact`), which rewrites every candidate's
+id, context and stamp, and so its hash; a `ResolveEquivocation` kept its
+`chosen` hash, which no renumbered candidate then had, so a shrunk history no
+longer resolved the slot as it had, and every removal that renumbered the
+candidates changed the reduction. The minimizer could then keep only removals
+that dropped the equivocation altogether, and review 2's ledger history
+shrank to six envelopes that had lost the cause. `compact` now maps each
+envelope's hash before renumbering to its hash after, and points each
+resolution's `chosen` at its renumbered candidate. Locked by
+`compact_carries_an_equivocations_choice` (the ledger history, `160`, with its
+first envelope taken out: the chosen twin is rehashed and the resolution
+follows it). Mutation: `chosen` kept as it was (the test fails).
+
+**A best-effort undo keeps a signature a dropped restoration leaves named
+(found by this round's arm demonstration at the tip).** Review 2 left one
+path unprobed: a best-effort undo reads its strand guard for a time signature
+against every restoration (`undo_strand_block`'s `TimeSignature` arm, the
+prospective post-undo meter change), but applies only the invariant-20-safe
+subset of its grid and meter-change restorations
+(`select_invariant20_safe_restorations`), chosen after its mints are
+tombstoned. A 10,000-history run at 128 authored operations (seed
+`0x52c8257e`) found it, and one author reaches it (the minimized history,
+serialized, still breaks): measures a bar apart, a 2/4 signature at the
+first, a default grid set, a 4/4 signature at the same bar in a transaction,
+and that transaction undone best effort. The 2/4 restoration would leave the
+measures a whole bar apart under a half-bar meter, so the subset drops it, the
+meter change keeps naming the 4/4 signature, and the guard, having read the
+restoration, had removed it (`CrossCuttingRefsResolve`). The subset depends on
+what the undo tombstones (measures, instances, a signature's liveness), so it
+cannot be chosen before the guard; instead the undo is taken under the
+transaction snapshot, and when a restoration the subset drops leaves a value
+naming a signature the undo removed, the state is restored and the undo taken
+again with that signature kept, until none is (a signature names nothing, so
+keeping one keeps nothing else). Only an undo removing a time signature takes
+the snapshot. `ValueRestoration` gains `Clone` for the second pass. Locked by
+`a_best_effort_undo_keeps_a_signature_its_dropped_restoration_leaves_named_in_both_modes`
+and history `166`. Mutation: the dropped values never read (the test fails,
+and `166`).
+
+**The spanner arm reaches its shape (a follow-up to L6's arms).** The arms
+commit rewrote a spanner's staves, but M1's break needs more than the payload:
+a staff made in a transaction, a spanner written onto it and then away from
+it in another, the first transaction undone (best effort, since its spanner
+write is superseded) and then the second, whose restoration names the removed
+staff. With M1's fix reverted, the generator found none of it at 10,000
+histories of 64 and of 128 authored operations; counted over 1,500 histories
+of 64, two move commands on one spanner by one author, then undone in that
+order, came to a few in a million. The undo arms also picked any transaction
+the view declared, where an editor's undo history offers its author's latest.
+Three gestures and one bias now write the editing that reaches it: a spanner
+moved to another staff as a command of its own (onto a staff added for it,
+onto one the view holds, or onto an added one and back again as two
+commands, a gesture's later transaction queued and opened when its
+declaration is authored); an undo and its redo (an undo in a transaction of
+its own, then undone); the author's two latest commands reverted, the older
+first; and an undo naming one of its author's three latest transactions half
+the time. With M1's fix reverted the fuzz then finds its break
+(`CrossCuttingRefsResolve: spanner SpannerId staff StaffId not declared`,
+seed `0x5b6401bc`, the 445th of 10,000 histories of 64 authored). An earlier
+form of the bias found a split at 64 authored (seed `0x596584da`): an event an
+undo removes left a pitch another author had added to it live in the ledger
+while the graph dropped it, so a later interval transposition was refused
+base-free and applied graph-aware. Its history is committed `split` here as
+`167` and fixed in the next commit.
+
+**An event an undo removes takes its pitches (found by the bias's fuzz).** A
+`DeleteEvent` tombstones every pitch its event holds; an undo tombstoned only
+its transaction's own mints. An author replaced a note with a rest in a
+transaction, another gave the rest a pitch, and a third undid the transaction
+best effort: the rest went, the pitch stayed live in the ledger with its value
+held base-free while the graph dropped it with the rest, and a later
+`TransposeInterval` of it was refused `TranspositionOutOfRange` base-free and
+applied graph-aware (an effect split, seed `0x596584da` at 64 authored,
+history `167`). One author reaches it too. `tombstone_undo_targets` now
+tombstones each live pitch an undone event holds, as the delete does, with no
+repair of its own, as the delete records none. Locked by
+`an_event_an_undo_removes_takes_its_pitches_in_both_modes` (one author, both
+policies: the pitch tombstoned with the rest, a step and an interval
+transposition of it refused alike) and history `167`. Mutation: the pitches
+left live (the test fails).
+
+**The aleatoric arm reaches its shape at the final generator.** At the arms
+commit's generator, M3's break (a region holding a note and no measure
+migrated to an aleatoric model anchored in wall-clock time) showed within
+10,000 histories of 128 authored operations with M3's fix reverted (seed
+`0x52c8005f`). The gestures added since thinned its chain, which needs a new
+region filled and never measured: with the fix reverted the final generator
+found it in none of 40,000 histories of 128. A further gesture writes the
+editing that reaches it: an unmeasured passage, a region added after every
+region the view holds, a staff in it with a voice and a note or rest, and the
+region migrated to an aleatoric model of any anchoring discipline, its notes
+kept where they stand. With M3's fix reverted the fuzz finds its break at the
+fifth of 10,000 histories of 64 authored (seed `0x62640004`); at the tip the
+gesture's wall-clock migration conflicts naming the note and the others
+apply.

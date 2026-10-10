@@ -1022,3 +1022,34 @@ while positioning stays correct; attribute a continuation to its source
 segment's system instead of the system it splits into; encode the ownership
 lists in `encode_canonical`) — each reverted by hand after observing the
 real failure, never `git checkout`.
+
+## A transposed score drawn written: `written_view` (X4a.3, 2026-10-07)
+
+The model holds every pitch and key at concert pitch: the importer moves a
+transposed file's written pitches by its `transpose` element, and now its
+written keys by the same interval's fifths (`7` per semitone less `12` per
+diatonic step), an open key (`<mode>none</mode>`) staying unmoved. A file is
+either a concert score or a transposed one, and it is drawn as it is set.
+`written_view(score)` returns the score as a transposed score shows it: each
+staff whose instrument transposes has its pitches, their explicit spellings
+and its keys moved back by the inverse interval, a `cmn-24` pitch counting
+two steps per semitone as the importer does. It is a score to project, not a
+change to the projection, so `to_logical` and the engraver are untouched and
+`ENGRAVER_VERSION` stays at 41. `epiphany-cli`'s `engrave_loaded` projects it
+for a file that is not a concert score. Drawn so, a transposed export reads
+as the file writes it; before, its transposing parts stood at sounding pitch
+under clefs written for their written pitch (D34's L4).
+
+Two things stay outside it. The setting lives on the import's source, not in
+the model, so a score saved from an import and reopened is drawn at concert
+pitch; a score setting would take a wire change. And the model has no open
+key: an open key where none is in force is no key signature, but one after a
+key signature is held as C and recorded, so a written view moves it. A key
+the move would take past seven accidentals is written twelve fifths nearer.
+A staff with no key signature before its first is read so: the key in force
+before it is none (`ENGRAVER_VERSION` 42, in `epiphany-engrave`'s log).
+Locked by `a_transposed_scores_keys_are_held_at_concert_pitch_and_drawn_written`
+and `a_transposed_parts_quarter_tone_is_drawn_with_its_written_spelling`
+(`epiphany-musicxml`) and
+`a_transposed_file_is_drawn_at_written_pitch_and_a_concert_one_at_concert_pitch`
+(`epiphany-cli`), each failing with its part removed.

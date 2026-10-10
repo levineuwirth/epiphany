@@ -757,7 +757,7 @@ impl<'a> GraphIndex<'a> {
             let Some(disc) = self.region_discipline.get(region) else {
                 continue;
             };
-            if !coordinate_ok(e, *disc) {
+            if !disc.admits_event(e.position(), e.duration()) {
                 out.push(WellFormednessViolation::invariant(
                     GraphInvariant::EventCoordinateModel,
                     format!(
@@ -3017,27 +3017,37 @@ fn apply_offset(base: i64, offset: &AnchorOffset) -> Option<i64> {
 
 /// Whether an event's coordinate kinds satisfy a region's discipline
 /// (invariant 4).
-fn coordinate_ok(e: &Event, disc: CoordinateDiscipline) -> bool {
+/// Invariant 4's reading of an event's coordinates under a region's
+/// discipline; [`CoordinateDiscipline::admits_event`] shares it with
+/// reduction.
+pub(crate) fn coordinates_ok(
+    position: &crate::time::EventPosition,
+    duration: &EventDuration,
+    disc: CoordinateDiscipline,
+) -> bool {
     use crate::time::CoordinateKind::*;
-    let pos = e.position().kind();
-    let dur = e.duration();
+    let pos = position.kind();
     match disc {
         CoordinateDiscipline::Musical => {
-            matches!(pos, Musical) && matches!(dur, EventDuration::Musical(_))
+            matches!(pos, Musical) && matches!(duration, EventDuration::Musical(_))
         }
         CoordinateDiscipline::WallClock => {
-            matches!(pos, WallClock) && matches!(dur, EventDuration::WallClock(_))
+            matches!(pos, WallClock) && matches!(duration, EventDuration::WallClock(_))
         }
-        CoordinateDiscipline::Aleatoric(a) => aleatoric_ok(e, a),
+        CoordinateDiscipline::Aleatoric(a) => aleatoric_ok(position, duration, a),
     }
 }
 
-fn aleatoric_ok(e: &Event, a: crate::graph::AleatoricAnchoringDiscipline) -> bool {
+fn aleatoric_ok(
+    position: &crate::time::EventPosition,
+    duration: &EventDuration,
+    a: crate::graph::AleatoricAnchoringDiscipline,
+) -> bool {
     use crate::graph::AleatoricAnchoringDiscipline as D;
     use crate::time::CoordinateKind::{Musical, WallClock};
-    let pos = e.position().kind();
-    let dur_kind = e.duration().concrete_kind(); // None for indeterminate
-    let bounds_kind = match e.duration() {
+    let pos = position.kind();
+    let dur_kind = duration.concrete_kind(); // None for indeterminate
+    let bounds_kind = match duration {
         EventDuration::Indeterminate(b) => duration_bounds_kind(b),
         _ => BoundsKind::Concrete(dur_kind),
     };
@@ -3098,13 +3108,7 @@ fn offset_matches(offset: OffsetKind, disc: CoordinateDiscipline) -> bool {
     use crate::graph::AleatoricAnchoringDiscipline as A;
     match offset {
         OffsetKind::Zero => true,
-        OffsetKind::Musical => matches!(
-            disc,
-            CoordinateDiscipline::Musical
-                | CoordinateDiscipline::Aleatoric(A::Musical)
-                | CoordinateDiscipline::Aleatoric(A::EitherPerEvent)
-                | CoordinateDiscipline::Aleatoric(A::FreelyMixed)
-        ),
+        OffsetKind::Musical => disc.admits_musical_offsets(),
         OffsetKind::WallClock => matches!(
             disc,
             CoordinateDiscipline::WallClock

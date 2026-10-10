@@ -472,6 +472,88 @@ pub(crate) fn fixture_extensions(
     }
 }
 
+// ===========================================================================
+// Quarter-tone accidentals by name (X3b's importer vocabulary; X4a.2 shares
+// it with the reducer, which moves an authored quarter-tone spelling with a
+// transposition).
+// ===========================================================================
+
+/// The alteration, in quarter-tones, of an accidental that MuseScore writes
+/// with no `<alter>`: Stein's quarter-tone accidentals, and the arrowed ones,
+/// whose arrow raises or lowers the accidental by a quarter-tone (MusicXML's
+/// `-up` and `-down`; `flat-up` is SMuFL's quarter-tone flat).
+pub fn quarter_tones_named(name: &str) -> Option<i8> {
+    ARROWED_QUARTER_TONES
+        .iter()
+        .map(|(n, q, _)| (*n, *q))
+        .chain(STEIN_QUARTER_TONES.iter().copied())
+        .find(|(n, _)| *n == name)
+        .map(|(_, q)| q)
+}
+
+/// The arrowed quarter-tone accidentals, as MusicXML names them: each
+/// one's alteration in quarter-tones and its arrow (`1` up, `-1` down). An
+/// arrow raises or lowers the accidental it rides by a quarter-tone.
+pub const ARROWED_QUARTER_TONES: [(&str, i8, i8); 10] = [
+    ("flat-flat-down", -5, -1),
+    ("flat-flat-up", -3, 1),
+    ("flat-down", -3, -1),
+    ("flat-up", -1, 1),
+    ("natural-down", -1, -1),
+    ("natural-up", 1, 1),
+    ("sharp-down", 1, -1),
+    ("sharp-up", 3, 1),
+    ("double-sharp-down", 3, -1),
+    ("double-sharp-up", 5, 1),
+];
+
+/// Stein's quarter-tone accidentals, as MusicXML names them, each with its
+/// alteration in quarter-tones.
+pub const STEIN_QUARTER_TONES: [(&str, i8); 4] = [
+    ("three-quarters-flat", -3),
+    ("quarter-flat", -1),
+    ("quarter-sharp", 1),
+    ("three-quarters-sharp", 3),
+];
+
+/// The quarter-tone accidental `name`, as the static name the tables hold.
+pub fn quarter_tone_name(name: &str) -> Option<&'static str> {
+    ARROWED_QUARTER_TONES
+        .iter()
+        .map(|(n, _, _)| *n)
+        .chain(STEIN_QUARTER_TONES.iter().map(|(n, _)| *n))
+        .find(|n| *n == name)
+}
+
+/// The accidental a quarter-tone of `quarter_tones` (odd) is spelt with at
+/// its sounding pitch, from `written`, the one the file writes or carries to
+/// it: an arrowed accidental keeps its arrow, so in a concert score it is the
+/// file's own, and in a transposed part the accidental under the arrow moves
+/// with the transposition; a Stein accidental stays Stein's. Where the
+/// family has no accidental for the alteration (an arrow past a double sharp
+/// or flat, Stein past three quarter-tones), the other arrow, and the up
+/// arrow first. A pitch the file gives no quarter-tone accidental, by a
+/// fractional `<alter>` alone, takes Stein's, as MusicXML's names do. `None`
+/// where no accidental names the alteration.
+pub fn quarter_tone_accidental(written: Option<&str>, quarter_tones: i8) -> Option<&'static str> {
+    let arrowed = |arrow: i8| {
+        ARROWED_QUARTER_TONES
+            .iter()
+            .find(|(_, q, a)| *q == quarter_tones && *a == arrow)
+            .map(|(n, _, _)| *n)
+    };
+    let stein = || {
+        STEIN_QUARTER_TONES
+            .iter()
+            .find(|(_, q)| *q == quarter_tones)
+            .map(|(n, _)| *n)
+    };
+    match written.and_then(|w| ARROWED_QUARTER_TONES.iter().find(|(n, _, _)| *n == w)) {
+        Some(&(_, _, arrow)) => arrowed(arrow).or_else(|| arrowed(-arrow)),
+        None => stein().or_else(|| arrowed(1)).or_else(|| arrowed(-1)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

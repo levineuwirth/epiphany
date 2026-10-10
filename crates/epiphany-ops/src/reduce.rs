@@ -38,13 +38,13 @@ use epiphany_core::{
     GestureAnchoring, Instrument, InstrumentId, KeySignature, KeySignatureChange, Measure,
     MeasureId, MeasurePosition, MeterChange, MetricGrid, MusicalDuration, MusicalPosition,
     OperationId, PartDefinition, PartDefinitionId, Pitch, PitchId, PitchSpelling, RationalTime,
-    RegionEdge, RegionId, RegionTimeModel, RepeatStructure, RepeatStructureId, ReplicaId, Score,
-    ScoreMetadata, SpellingAttachment, SpellingDirective, SpellingPrecedence, SpellingScope,
-    SpellingSource, Staff, StaffGroup, StaffGroupId, StaffId, StaffInstance, StaffInstanceId,
-    StaffLineConfiguration, TempoMap, TempoSegment, TempoShape, TimeAnchor, TimeSignature,
-    TimeSignatureId, TransactionId, TransposeRefusal, TranspositionInterval, TuningContextSettings,
-    TupletId, TypedObjectId, ViewDefinition, ViewId, Voice, VoiceId, VoiceOrigin,
-    WallClockDuration,
+    RegionEdge, RegionId, RepeatStructure, RepeatStructureId, ReplicaId, Score, ScoreMetadata,
+    SpellingAttachment, SpellingDirective, SpellingPrecedence, SpellingScope, SpellingSource,
+    Staff, StaffGroup, StaffGroupId, StaffId, StaffInstance, StaffInstanceId,
+    StaffLineConfiguration, TempoMap, TempoSegment, TempoShape, Tie, TieClass, TieId, TimeAnchor,
+    TimeSignature, TimeSignatureId, TransactionId, TransposeRefusal, TranspositionInterval,
+    TuningContextSettings, TupletId, TypedObjectId, ViewDefinition, ViewId, Voice, VoiceId,
+    VoiceOrigin, WallClockDuration,
 };
 use epiphany_determinism::CanonicalEncode;
 
@@ -675,7 +675,11 @@ fn effect_introduced_minor(effect: &OperationEffect) -> Option<u16> {
 
 /// Reduces an [`OperationSet`] to its canonical [`MaterializedState`].
 pub fn reduce_operation_set(op_set: &OperationSet) -> MaterializedState {
-    Reducer::new(op_set).run().0
+    let mut reducer = Reducer::new(op_set);
+    reducer.seed_score_settings(ScoreSettings::of(&Score::empty(
+        epiphany_core::IdentityContext::new(ReplicaId(0)),
+    )));
+    reducer.run().0
 }
 
 /// Reduces an [`OperationSet`] onto a canonical base [`Score`].
@@ -825,9 +829,11 @@ impl<V> Predecessor<V> {
 enum Recency {
     /// No recorded operational write — only a seeded base, or nothing.
     Base,
-    /// A recorded write, keyed by its authoring operation's canonical
-    /// position.
-    Write(crate::stamp::StampTuple),
+    /// A recorded write, keyed by the position its operation applied at in
+    /// the reduction's walk (reduction version 3: before it, by the
+    /// operation's stamp, which a transaction's members do not follow, the
+    /// block applying where its first member falls).
+    Write(u64),
     /// An in-flight, not-yet-applied prospective write (pin 6c, M31a) —
     /// always the most recent.
     Prospective,
@@ -882,10 +888,12 @@ type StaffLayoutValue = (Option<InstrumentId>, Option<StaffLineConfiguration>, b
 struct ResolvedTranspose {
     pitch: PitchId,
     value: Pitch,
-    /// `(index into score.spelling_attachments, moved spelling)`.
-    authored: Vec<(usize, PitchSpelling)>,
+    /// `(index into score.spelling_attachments, moved spelling)`, `None`
+    /// where the spelling cannot follow and is dropped.
+    authored: Vec<(usize, Option<PitchSpelling>)>,
 }
 
+#[derive(Clone)]
 enum ValueRestoration {
     Event {
         event: EventId,
@@ -1047,6 +1055,31 @@ fn seed_staff_changes(clefs: &mut ClefChains, keys: &mut KeyChains, instance: &S
 
 /// The anchor `position` after `region`'s start, as the importer writes a
 /// staff instance's changes.
+/// The objects meter changes name: each one's time signature and its anchor's
+/// target.
+fn meter_referents<'a>(meters: impl IntoIterator<Item = &'a MeterChange>) -> Vec<TypedObjectId> {
+    meters
+        .into_iter()
+        .flat_map(|meter| {
+            let mut referents = anchor_object_refs([&meter.anchor]);
+            referents.push(TypedObjectId::TimeSignature(meter.time_signature));
+            referents
+        })
+        .collect()
+}
+
+/// Whether `anchor` places its target in musical time: a region anchor at a
+/// musical offset, or a measure anchor.
+fn anchored_in_musical_time(anchor: &TimeAnchor) -> bool {
+    matches!(
+        anchor,
+        TimeAnchor::Region {
+            offset: AnchorOffset::Musical(_),
+            ..
+        } | TimeAnchor::Measure { .. }
+    )
+}
+
 fn region_position_anchor(region: RegionId, position: &MusicalPosition) -> TimeAnchor {
     TimeAnchor::Region {
         id: region,
@@ -1089,6 +1122,9 @@ struct Reducer<'a> {
     // Transient indices.
     minted_by: BTreeMap<TypedObjectId, OperationId>,
     event_pitches: BTreeMap<EventId, Vec<PitchId>>,
+    /// Each pitch a whole-event modify removed (observed-remove), as it stood:
+    /// an undo of the modify's transaction brings it back.
+    removed_pitches: BTreeMap<PitchId, RemovedPitch>,
     voice_occupancy: BTreeMap<VoiceId, Vec<(MusicalPosition, MusicalDuration, EventId)>>,
     // Per-key canonical-order write chains for every LWW overwrite family
     // (operation_catalog §UndoTransaction "Value restoration"). Each chain's
@@ -1118,6 +1154,11 @@ struct Reducer<'a> {
     engraved_spelling_chain: BTreeMap<PitchId, WriteChain<Vec<SpellingAttachment>>>,
     event_modify_chain: BTreeMap<EventId, WriteChain<Event>>,
     pitch_modify_chain: BTreeMap<PitchId, WriteChain<Pitch>>,
+    // Base-free only: each pitch's value as the reduction leaves it, written
+    // wherever the graph writes one, so a value-reading verdict (a transpose's
+    // resolution, and with it its write chain) is the graph-aware one
+    // (reduction version 3). Graph-aware reduction reads the graph.
+    pitch_values: BTreeMap<PitchId, Pitch>,
     cross_cutting_modify_chain: BTreeMap<TypedObjectId, WriteChain<CrossCuttingValue>>,
     metric_grid_chain: BTreeMap<RegionId, WriteChain<Option<MetricGrid>>>,
     metadata_chain: WriteChain<ScoreMetadata>,
@@ -1256,6 +1297,49 @@ struct Reducer<'a> {
     // question itself. Gates the identity-cursor derivation to from-empty
     // reduction only, never a transaction snapshot (fixed for the whole run).
     from_empty_base: bool,
+    // Every object an envelope of the set mints, whatever became of it (a
+    // refused mint, an equivocation's losing candidate, a pending or
+    // quarantined operation included). Base-free reduction has no universe,
+    // but it knows these: an object here that no operation made live never
+    // came to be, as graph-aware reduction finds it missing; an object no
+    // envelope mints may still come from a base, and stays unchecked
+    // (`referent_dead`, reduction version 3). Fixed for the run.
+    history_mints: BTreeSet<TypedObjectId>,
+    // The position each operation applied at in the walk, from 1, so two
+    // independent write chains compare by which was written later as the
+    // graph saw it (`chain_recency`; reduction version 3). A transaction's
+    // members apply together where its first member falls, which their
+    // stamps do not say.
+    applied_at: BTreeMap<OperationId, u64>,
+    // Each event's ties, live or not, by either end: written when a tie is
+    // seeded, created or rewritten and never pruned, so a reader checks a
+    // tie's liveness and current value (`ties_give_way`).
+    tie_ends: BTreeMap<EventId, BTreeSet<TieId>>,
+}
+
+/// A score's always-valued settings, which seed the score-level write chains.
+struct ScoreSettings {
+    metadata: ScoreMetadata,
+    canvas_layout_defaults: CanvasLayoutDefaults,
+    spelling_precedence: SpellingPrecedence,
+    tuning_context: TuningContextSettings,
+}
+
+impl ScoreSettings {
+    fn of(score: &Score) -> Self {
+        ScoreSettings {
+            metadata: score.metadata.clone(),
+            canvas_layout_defaults: score.canvas.layout_defaults,
+            spelling_precedence: score.spelling_precedence.clone(),
+            tuning_context: TuningContextSettings {
+                default_pitch_space: score.tuning_context.default_pitch_space.clone(),
+                default_tuning_system: score.tuning_context.default_tuning_system.clone(),
+                reference: score.tuning_context.reference.clone(),
+                smufl: score.tuning_context.smufl,
+                overrides: score.tuning_context.overrides.clone(),
+            },
+        }
+    }
 }
 
 /// A snapshot of the working state, for atomic transaction rollback.
@@ -1267,6 +1351,7 @@ struct WorkingSnapshot {
     conflicts: ConflictRegistry,
     minted_by: BTreeMap<TypedObjectId, OperationId>,
     event_pitches: BTreeMap<EventId, Vec<PitchId>>,
+    removed_pitches: BTreeMap<PitchId, RemovedPitch>,
     voice_occupancy: BTreeMap<VoiceId, Vec<(MusicalPosition, MusicalDuration, EventId)>>,
     respell_chain: BTreeMap<PitchId, WriteChain<PitchSpelling>>,
     /// A pitch's engraved-layer, pitch-scoped, explicit spelling attachment
@@ -1290,6 +1375,7 @@ struct WorkingSnapshot {
     engraved_spelling_chain: BTreeMap<PitchId, WriteChain<Vec<SpellingAttachment>>>,
     event_modify_chain: BTreeMap<EventId, WriteChain<Event>>,
     pitch_modify_chain: BTreeMap<PitchId, WriteChain<Pitch>>,
+    pitch_values: BTreeMap<PitchId, Pitch>,
     cross_cutting_modify_chain: BTreeMap<TypedObjectId, WriteChain<CrossCuttingValue>>,
     metric_grid_chain: BTreeMap<RegionId, WriteChain<Option<MetricGrid>>>,
     metadata_chain: WriteChain<ScoreMetadata>,
@@ -1408,6 +1494,27 @@ pub(crate) fn graph_voice_location(score: &Score, voice: VoiceId) -> Option<(usi
     None
 }
 
+/// Which ties an operation may break, for [`Reducer::ties_give_way`]: none,
+/// one it writes, those at (or beside) some events, or every live tie (an undo
+/// or a migration, which may move any event or value).
+/// A pitch a whole-event modify removed: its event, its value, and the spelling
+/// attachments the graph held for it (none base-free).
+#[derive(Clone)]
+struct RemovedPitch {
+    event: EventId,
+    value: Pitch,
+    attachments: Vec<SpellingAttachment>,
+}
+
+enum TieTouch {
+    Nothing,
+    Tie(TieId),
+    /// Some events, and with `true` the events either side of each in its
+    /// voice, where an insert or a move lands between a tie's ends.
+    Events(BTreeSet<EventId>, bool),
+    All,
+}
+
 /// The verdict on a [`ModifyEvent`](OperationKind::ModifyEvent)'s placement: whether
 /// it moves the target event's metric span, and if so whether the move keeps
 /// invariant 3 (`VoiceEventsSortedNonOverlap`). A non-metric or same-placement modify
@@ -1455,6 +1562,129 @@ struct ReferentContext {
 /// staff instance are excluded from "nearest".
 const PROXIMITY_SAME_STAFF_INSTANCE: u8 = 1;
 
+/// `event` holding `added` as well: a note's pitch list takes them, and any
+/// other kind, having no pitch list, becomes a note of its own pitches (a
+/// trajectory's) and `added` in its place, keeping an unpitched event's
+/// articulations, dynamic, stem and grace, as a pitch inserted into a rest
+/// makes it a note (reduction version 3: before it every kind but a rest, and
+/// later an unpitched event, kept its kind and the graph dropped the pitch the
+/// ledger held live, `SpellingScopeResolves` once spelt).
+fn with_pitches(event: Event, added: Vec<epiphany_core::IdentifiedPitch>) -> Event {
+    let mut pitches: Vec<epiphany_core::IdentifiedPitch> = Vec::new();
+    let mut own = Vec::new();
+    event.collect_identified_pitches(&mut own);
+    for pitch in own.into_iter().cloned().chain(added) {
+        if !pitches.iter().any(|ip| ip.id == pitch.id) {
+            pitches.push(pitch);
+        }
+    }
+    let mut note = match event {
+        Event::Pitched(pe) => pe,
+        Event::Unpitched(e) => epiphany_core::PitchedEvent {
+            id: e.id,
+            voice: e.voice,
+            position: e.position,
+            duration: e.duration,
+            pitches: Vec::new(),
+            articulations: e.articulations,
+            dynamic: e.dynamic,
+            ornaments: Vec::new(),
+            stem: e.stem,
+            grace: e.grace,
+        },
+        other => epiphany_core::PitchedEvent {
+            id: other.id(),
+            voice: other.voice(),
+            position: other.position().clone(),
+            duration: other.duration().clone(),
+            pitches: Vec::new(),
+            articulations: Vec::new(),
+            dynamic: None,
+            ornaments: Vec::new(),
+            stem: epiphany_core::StemConfiguration,
+            grace: None,
+        },
+    };
+    note.pitches = pitches;
+    Event::Pitched(note)
+}
+
+/// `event` without the pitches `gone` names, read as `with_pitches` adds one:
+/// a note's list loses them, a last pitch leaving a rest of its placement;
+/// any other kind holding one (a trajectory's endpoint or step) becomes a
+/// note of the pitches it still holds, or a rest when none remain (reduction
+/// version 3: before it the graph kept a trajectory's pitch the ledger
+/// removed).
+fn without_pitches(event: Event, gone: impl Fn(PitchId) -> bool) -> Event {
+    let mut held = Vec::new();
+    event.collect_identified_pitches(&mut held);
+    if !held.iter().any(|ip| gone(ip.id)) {
+        return event;
+    }
+    let left: Vec<epiphany_core::IdentifiedPitch> = held
+        .into_iter()
+        .filter(|ip| !gone(ip.id))
+        .cloned()
+        .collect();
+    if left.is_empty() {
+        return Event::Rest(epiphany_core::Rest {
+            id: event.id(),
+            voice: event.voice(),
+            position: event.position().clone(),
+            duration: event.duration().clone(),
+            vertical_position: None,
+            visible: true,
+        });
+    }
+    match event {
+        Event::Pitched(mut pe) => {
+            pe.pitches = left;
+            Event::Pitched(pe)
+        }
+        other => with_pitches(
+            Event::Rest(epiphany_core::Rest {
+                id: other.id(),
+                voice: other.voice(),
+                position: other.position().clone(),
+                duration: other.duration().clone(),
+                vertical_position: None,
+                visible: true,
+            }),
+            left,
+        ),
+    }
+}
+
+/// The pitch `pitch` an event holds, of any kind (a note's, a trajectory's
+/// endpoint or step), to write in place.
+fn held_pitch_mut(
+    event: &mut Event,
+    pitch: PitchId,
+) -> Option<&mut epiphany_core::IdentifiedPitch> {
+    match event {
+        Event::Pitched(pe) => pe.pitches.iter_mut().find(|ip| ip.id == pitch),
+        Event::Trajectory(te) => {
+            if let epiphany_core::TrajectoryEndpoint::ExplicitPitch(ip) = &mut te.start {
+                if ip.id == pitch {
+                    return Some(ip);
+                }
+            }
+            if let epiphany_core::TrajectoryEndpoint::ExplicitPitch(ip) = &mut te.end {
+                if ip.id == pitch {
+                    return Some(ip);
+                }
+            }
+            match &mut te.shape {
+                epiphany_core::TrajectoryShape::Stepwise(steps) => {
+                    steps.iter_mut().find(|ip| ip.id == pitch)
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Maps an *established* containment-proximity rank (k1 of the "nearest"
 /// ordering) to the ratified [`ReanchorReason`] vocabulary. Rank 4 (same
 /// canvas) records the appended `SameCanvasNearer` (Pass 12, P12-C4; wire
@@ -1463,6 +1693,80 @@ const PROXIMITY_SAME_STAFF_INSTANCE: u8 = 1;
 /// voice's placement is unresolvable, a selection-order tie the recording
 /// must not launder into a positive proximity claim — route through
 /// [`Reduction::rank_reason`], which downgrades those to `ExplicitFallback`.
+/// Whether an accidental stack writes a CMN pitch's alteration: a twelve-tone
+/// one up to a triple sharp or flat (a double accidental and a single, past
+/// which the stack repeats a double one); in `cmn-24` a whole number of
+/// semitones likewise, and an odd number of quarter-tones up to five, the
+/// most a quarter-tone accidental names. Any other position is not this
+/// check's to refuse.
+fn alteration_writable(pitch: &Pitch) -> bool {
+    let epiphany_core::PitchSpacePosition::Cmn { alteration, .. } = pitch.scale_position.position
+    else {
+        return true;
+    };
+    let alteration = i32::from(alteration);
+    if pitch.scale_position.space.as_str() == "cmn-24" {
+        if alteration % 2 == 0 {
+            (alteration / 2).abs() <= 3
+        } else {
+            alteration.abs() <= 5
+        }
+    } else {
+        alteration.abs() <= 3
+    }
+}
+
+/// The objects an operation's payload mints, as their ids (the referents a
+/// later operation can name): events and their pitches, structures,
+/// containers, signatures, a replacement rest. A system-derived id (a
+/// promoted voice) is not the payload's, and is left out.
+fn minted_objects(payload: &OperationPayload) -> Vec<TypedObjectId> {
+    use TypedObjectId as T;
+    let OperationPayload::Primitive(kind) = payload else {
+        return Vec::new();
+    };
+    let event = |e: &Event| -> Vec<TypedObjectId> {
+        let mut pitches = Vec::new();
+        e.collect_identified_pitches(&mut pitches);
+        std::iter::once(T::Event(e.id()))
+            .chain(pitches.iter().map(|p| T::Pitch(p.id)))
+            .collect()
+    };
+    match kind {
+        OperationKind::InsertEvent(op) => event(&op.event),
+        OperationKind::DeleteEvent(op) => match &op.tuplet_compensation {
+            TupletCompensation::ReplaceWithRest { rest } => vec![T::Event(rest.id)],
+            _ => Vec::new(),
+        },
+        OperationKind::InsertIdentifiedPitch(op) => vec![T::Pitch(op.pitch.id)],
+        OperationKind::CreateCrossCutting(op) => vec![match &op.structure {
+            CrossCuttingValue::Tie(x) => T::Tie(x.id),
+            CrossCuttingValue::Slur(x) => T::Slur(x.id),
+            CrossCuttingValue::Beam(x) => T::Beam(x.id),
+            CrossCuttingValue::Spanner(x) => T::Spanner(x.id),
+        }],
+        OperationKind::CreateRegion(op) => vec![T::Region(op.region.id)],
+        OperationKind::CreateStaffInstance(op) => vec![T::StaffInstance(op.instance.id)],
+        OperationKind::CreateVoice(op) => vec![T::Voice(op.voice.id)],
+        OperationKind::CreateStaff(op) => vec![T::Staff(op.staff.id)],
+        OperationKind::CreateInstrument(op) => vec![T::Instrument(op.instrument.id)],
+        OperationKind::CreateStaffGroup(op) => vec![T::StaffGroup(op.group.id)],
+        OperationKind::CreatePartDefinition(op) => vec![T::PartDefinition(op.part.id)],
+        OperationKind::CreateAnalysisLayer(op) => vec![T::AnalysisLayer(op.layer.id)],
+        OperationKind::CreateView(op) => vec![T::View(op.view.id)],
+        OperationKind::CreateMeasure(op) => vec![T::Measure(op.measure.id)],
+        OperationKind::CreateTuplet(op) => vec![T::Tuplet(op.tuplet.id)],
+        OperationKind::CreateRepeatStructure(op) => vec![T::RepeatStructure(op.repeat.id)],
+        OperationKind::SetTimeSignature(op) => op
+            .time_signature
+            .as_ref()
+            .map(|t| T::TimeSignature(t.id))
+            .into_iter()
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn reason_for_rank(rank: u8) -> ReanchorReason {
     match rank {
         0 => ReanchorReason::SameVoiceNearer,
@@ -1491,6 +1795,18 @@ fn anchor_object_refs<'a>(anchors: impl IntoIterator<Item = &'a TimeAnchor>) -> 
             TimeAnchor::WallClock { .. } => None,
         })
         .collect()
+}
+
+/// Every object a cross-cutting value names: its anchors' objects
+/// ([`CrossCuttingValue::anchor_object_refs`]) and, for a spanner, its staves.
+/// An undo's restoration of the value is superseded by the tombstoning of any
+/// of them.
+fn cross_cutting_referents(value: &CrossCuttingValue) -> Vec<TypedObjectId> {
+    let mut referents = value.anchor_object_refs();
+    if let CrossCuttingValue::Spanner(spanner) = value {
+        referents.extend(spanner.staves.iter().copied().map(TypedObjectId::Staff));
+    }
+    referents
 }
 
 /// Genesis tranche G3b (`spec/CONTRACT_GENESIS_G3B_MEASURE.md` pin 10.5):
@@ -1623,11 +1939,13 @@ impl<'a> Reducer<'a> {
             anomalies: BTreeMap::new(),
             minted_by: BTreeMap::new(),
             event_pitches: BTreeMap::new(),
+            removed_pitches: BTreeMap::new(),
             voice_occupancy: BTreeMap::new(),
             respell_chain: BTreeMap::new(),
             engraved_spelling_chain: BTreeMap::new(),
             event_modify_chain: BTreeMap::new(),
             pitch_modify_chain: BTreeMap::new(),
+            pitch_values: BTreeMap::new(),
             cross_cutting_modify_chain: BTreeMap::new(),
             metric_grid_chain: BTreeMap::new(),
             metadata_chain: WriteChain::new(),
@@ -1668,6 +1986,9 @@ impl<'a> Reducer<'a> {
             promoted_singles: BTreeMap::new(),
             graph: None,
             from_empty_base: false,
+            history_mints: BTreeSet::new(),
+            applied_at: BTreeMap::new(),
+            tie_ends: BTreeMap::new(),
         }
     }
 
@@ -1680,6 +2001,48 @@ impl<'a> Reducer<'a> {
         reducer.graph = Some(base.clone());
         reducer.seed_from_graph();
         reducer
+    }
+
+    /// Seeds the score-level settings chains with `score`'s values (metadata,
+    /// canvas layout defaults, spelling precedence, the tuning context's five
+    /// wire-bearing fields), as `seed_from_graph` does with a base's. Base-free
+    /// reduction seeds them with an empty score's, which is where a history
+    /// with no base starts for these always-valued fields, so an undo
+    /// restoring one restores it as graph-aware reduction onto an empty base
+    /// does (reduction version 3: before it base-free reduction restored to
+    /// absence, and a second undo of the transaction applied where it
+    /// conflicted graph-aware).
+    fn seed_score_settings(&mut self, settings: ScoreSettings) {
+        self.metadata_chain.seed(settings.metadata);
+        // Genesis tranche G2a (contract pin 6): same discipline for the two new
+        // settings setters. Both are always-valued `Score` fields — like
+        // `metadata`, not a map key — so there is no "never authored" state to
+        // distinguish; restoring the seeded base default is correct whether the
+        // base was authored-to-default or never touched.
+        self.canvas_layout_defaults_chain
+            .seed(settings.canvas_layout_defaults);
+        self.spelling_precedence_chain
+            .seed(settings.spelling_precedence);
+        // Genesis tranche G2b (contract pin 5): same discipline, seeded with
+        // only the five wire-bearing fields — the subset the chain's value
+        // type carries. `accidental_extensions` is not part of the seed and
+        // is never touched by undo.
+        self.tuning_context_chain.seed(settings.tuning_context);
+    }
+
+    /// Whether a referent an operation names is gone: not live. Graph-aware,
+    /// whatever is not live (the graph seeds every base object). Base-free,
+    /// with no universe, only what the set itself shows: an object it
+    /// tombstoned, or one an envelope mints that no operation made live; an
+    /// object no envelope mints may come from a base, and is taken as live,
+    /// as the catalog's base-free reduction takes every referent (reduction
+    /// version 3, `req:catalog:base-free-referents`).
+    fn referent_dead(&self, object: TypedObjectId) -> bool {
+        match self.objects.get(&object) {
+            Some(ObjectState::Live) => false,
+            Some(ObjectState::Tombstoned { .. }) => true,
+            None => self.graph.is_some() || self.history_mints.contains(&object),
+        }
     }
 
     /// Seeds reduction indices from the canonical base graph. Base objects are
@@ -1767,27 +2130,11 @@ impl<'a> Reducer<'a> {
         // The score-level LWW chains seed with the base values so a
         // value-restoring undo of the first operational write can restore the
         // pre-operational state (operation_catalog §UndoTransaction).
-        self.metadata_chain.seed(score.metadata.clone());
-        // Genesis tranche G2a (contract pin 6): same discipline for the two new
-        // settings setters. Both are always-valued `Score` fields — like
-        // `metadata`, not a map key — so there is no "never authored" state to
-        // distinguish; restoring the seeded base default is correct whether the
-        // base was authored-to-default or never touched.
-        self.canvas_layout_defaults_chain
-            .seed(score.canvas.layout_defaults);
-        self.spelling_precedence_chain
-            .seed(score.spelling_precedence.clone());
-        // Genesis tranche G2b (contract pin 5): same discipline, seeded with
-        // only the five wire-bearing fields — the subset the chain's value
-        // type carries. `accidental_extensions` is not part of the seed and
-        // is never touched by undo.
-        self.tuning_context_chain.seed(TuningContextSettings {
-            default_pitch_space: score.tuning_context.default_pitch_space.clone(),
-            default_tuning_system: score.tuning_context.default_tuning_system.clone(),
-            reference: score.tuning_context.reference.clone(),
-            smufl: score.tuning_context.smufl,
-            overrides: score.tuning_context.overrides.clone(),
-        });
+        let settings = ScoreSettings::of(score);
+        self.seed_score_settings(settings);
+        let Some(score) = self.graph.as_ref() else {
+            return;
+        };
         for segment in &score.tempo_map.segments {
             self.tempo_segment_chain
                 .entry((None, resolved_anchor_position(&segment.start)))
@@ -1980,6 +2327,9 @@ impl<'a> Reducer<'a> {
         }
         for tie in &score.cross_cutting.ties {
             let id = TypedObjectId::Tie(tie.id);
+            for event in [tie.start_event, tie.end_event] {
+                self.tie_ends.entry(event).or_default().insert(tie.id);
+            }
             self.objects.insert(id, ObjectState::Live);
             self.cross_cutting_modify_chain
                 .entry(id)
@@ -2185,6 +2535,18 @@ impl<'a> Reducer<'a> {
     }
 
     fn run(mut self) -> (MaterializedState, Option<Score>) {
+        for (_, slot) in self.op_set.slots() {
+            let envelopes: Vec<&OperationEnvelope> = match slot.single() {
+                Some(env) => vec![env],
+                None => slot
+                    .candidates()
+                    .filter_map(|hash| self.op_set.candidate(hash))
+                    .collect(),
+            };
+            for env in envelopes {
+                self.history_mints.extend(minted_objects(&env.payload));
+            }
+        }
         let singles = self.op_set.single_envelopes();
         let equivocated_all: BTreeSet<OperationId> =
             self.op_set.equivocated_ids().into_iter().collect();
@@ -2482,12 +2844,13 @@ impl<'a> Reducer<'a> {
         // globally unique and (Invariant 5) belongs to exactly one staff
         // instance, so the voice id alone determines the pair. Promotion applies
         // only to concurrent operations whose half-open duration intervals overlap.
+        // Every insert takes part, whatever its preconditions: graph-aware
+        // reduction once took only inserts whose voice its graph held before
+        // anything applied, so over an empty base it promoted none while
+        // base-free reduction promoted (reduction version 3).
         let mut buckets: BTreeMap<VoiceId, Vec<&OperationEnvelope>> = BTreeMap::new();
         for env in active {
             if let OperationPayload::Primitive(OperationKind::InsertEvent(op)) = &env.payload {
-                if self.graph_insert_precondition(op).is_err() {
-                    continue;
-                }
                 buckets.entry(op.voice()).or_default().push(env);
             }
         }
@@ -2640,8 +3003,20 @@ impl<'a> Reducer<'a> {
             // branch below reads the region and refuses `WrongRegionTimeModel`
             // where this refuses `VoiceMissing`. That split is older than this
             // check and is left to a later reduction version.
+            // A voice an envelope of the set mints that never came to be is
+            // missing, as the graph finds it (reduction version 3).
+            // So is a system-promoted voice no promotion of this reduction
+            // made: an author can name one only from a view in which a
+            // promotion made it.
+            let voice = TypedObjectId::Voice(op.voice());
+            if !self.objects.contains_key(&voice)
+                && (self.history_mints.contains(&voice)
+                    || op.voice().replica() == ReplicaId::SYSTEM_DERIVED)
+            {
+                return Err(PreconditionFailureReason::VoiceMissing);
+            }
             let voice_dead = matches!(
-                self.objects.get(&TypedObjectId::Voice(op.voice())),
+                self.objects.get(&voice),
                 Some(ObjectState::Tombstoned { .. })
             );
             let non_metric = self
@@ -3222,6 +3597,24 @@ impl<'a> Reducer<'a> {
                 _ => {}
             }
         }
+        // A pitch the undo tombstones leaves its event too, as a deleted
+        // pitch does (a last pitch turning the note to a rest, its spelling
+        // attachments with it), where the event itself survives (reduction
+        // version 3: before it the graph kept the pitch in its event, both
+        // live and tombstoned, `UniqueIdentifiers`).
+        for target in targets {
+            match target {
+                TypedObjectId::Pitch(pitch) => self.graph_delete_pitch(*pitch),
+                // An undone instance or region leaves the graph too, the
+                // strand guard having kept any with a live child of another
+                // transaction (reduction version 3).
+                TypedObjectId::StaffInstance(instance) => {
+                    self.graph_delete_staff_instance(*instance)
+                }
+                TypedObjectId::Region(region) => self.graph_delete_region(*region),
+                _ => {}
+            }
+        }
         repairs
     }
 
@@ -3253,7 +3646,36 @@ impl<'a> Reducer<'a> {
 
     // --- Dispatch. ----------------------------------------------------------
 
+    /// Applies one operation, then lets every tie it broke give way
+    /// ([`Self::ties_give_way`]).
+    /// Applies a lone operation, which is its own transaction: the ties it
+    /// may have broken give way once it has applied
+    /// (`req:opcat:tie-gives-way`).
     fn apply(&mut self, env: &OperationEnvelope) -> OperationEffect {
+        let (effect, touched) = self.apply_member(env);
+        let ties: BTreeMap<TieId, &OperationEnvelope> =
+            touched.into_iter().map(|tie| (tie, env)).collect();
+        let mut repairs = self.ties_give_way(&ties);
+        with_repairs(effect, repairs.remove(&env.id).unwrap_or_default())
+    }
+
+    /// Applies `env` alone or as a transaction's member, returning its effect
+    /// and the ties it may have broken, read once it has applied; the caller
+    /// holds them when the transaction completes.
+    fn apply_member(&mut self, env: &OperationEnvelope) -> (OperationEffect, BTreeSet<TieId>) {
+        let position = self.applied_at.len() as u64 + 1;
+        self.applied_at.entry(env.id).or_insert(position);
+        let touch = self.tie_touch(env);
+        let effect = self.apply_operation(env);
+        let touched = if matches!(effect, OperationEffect::NoOp { .. }) {
+            BTreeSet::new()
+        } else {
+            self.touched_ties(touch)
+        };
+        (effect, touched)
+    }
+
+    fn apply_operation(&mut self, env: &OperationEnvelope) -> OperationEffect {
         match &env.payload {
             OperationPayload::Primitive(kind) => match kind {
                 OperationKind::InsertEvent(op) => self.insert_event(env, op),
@@ -3323,6 +3745,9 @@ impl<'a> Reducer<'a> {
         if let Some(effect) = self.layout_region_slot(op.region) {
             return effect;
         }
+        if let Some(effect) = self.musical_slot(op.region, Some(&op.anchor)) {
+            return effect;
+        }
         if let Some(score) = self.graph.as_mut() {
             if let Some(region) = score.canvas.regions.iter_mut().find(|r| r.id == op.region) {
                 if let Some(content) = region.content.staff_based_mut() {
@@ -3358,6 +3783,60 @@ impl<'a> Reducer<'a> {
 
     /// `Some(NoOp)` when `region` cannot carry a metric grid or user break — it is
     /// missing, tombstoned, or FreeGraphic; `None` when it has a staff-based slot.
+    /// Whether `region` takes a musically-anchored layout write: its
+    /// coordinate discipline is musical, read from the index both modes keep
+    /// (reduction version 3: before it a break or grid written in musical
+    /// time into a proportional region applied, breaking `AnchorOffsetModel`).
+    fn musical_slot(
+        &self,
+        region: RegionId,
+        anchor: Option<&TimeAnchor>,
+    ) -> Option<OperationEffect> {
+        let musical_anchor = anchor.is_none_or(anchored_in_musical_time);
+        let musical_region = self
+            .region_disciplines
+            .get(&region)
+            .is_none_or(CoordinateDiscipline::admits_musical_offsets);
+        (musical_anchor && !musical_region).then_some(OperationEffect::NoOp {
+            reason: NoOpReason::PreconditionFailedUnderReduction {
+                reason: PreconditionFailureReason::WrongRegionTimeModel,
+            },
+        })
+    }
+
+    /// The migration that took `region` out of musical time, where it now
+    /// admits no musical offset: a value an undo would restore there in
+    /// musical time is superseded by it, as its setter is refused there
+    /// (reduction version 3). Read from the indices both modes keep; only an
+    /// applied migration makes a region so.
+    fn out_of_musical_time(&self, region: RegionId) -> Option<OperationId> {
+        let admits = self
+            .region_disciplines
+            .get(&region)
+            .is_none_or(CoordinateDiscipline::admits_musical_offsets);
+        if admits {
+            None
+        } else {
+            self.region_migrator.get(&region).copied()
+        }
+    }
+
+    /// The operation that tombstoned the first of `referents` no longer live:
+    /// a value an undo would restore naming it is superseded by that
+    /// operation (reduction version 3), a cross-cutting value's included. An
+    /// object the set never made live (from a base) counts as live.
+    fn tombstoned_since(
+        &self,
+        referents: impl IntoIterator<Item = TypedObjectId>,
+    ) -> Option<OperationId> {
+        referents
+            .into_iter()
+            .find_map(|referent| match self.objects.get(&referent) {
+                Some(ObjectState::Tombstoned { deleted_by, .. }) => Some(*deleted_by),
+                _ => None,
+            })
+    }
+
     fn layout_region_slot(&self, region: RegionId) -> Option<OperationEffect> {
         let live = matches!(
             self.objects.get(&TypedObjectId::Region(region)),
@@ -3452,6 +3931,11 @@ impl<'a> Reducer<'a> {
         if let Some(effect) = self.layout_region_slot(op.region) {
             return effect;
         }
+        if op.grid.is_some() {
+            if let Some(effect) = self.musical_slot(op.region, None) {
+                return effect;
+            }
+        }
         // A non-empty grid names a time signature per meter change; the graph
         // invariant (epiphany-core invariants.rs) rejects a grid that references an
         // undeclared signature, so reject it here rather than install an
@@ -3536,6 +4020,9 @@ impl<'a> Reducer<'a> {
         if let Some(effect) = self.layout_region_slot(op.region) {
             return effect;
         }
+        if let Some(effect) = self.musical_slot(op.region, Some(&op.anchor)) {
+            return effect;
+        }
         if let Some(score) = self.graph.as_mut() {
             if let Some(region) = score.canvas.regions.iter_mut().find(|r| r.id == op.region) {
                 if let Some(content) = region.content.staff_based_mut() {
@@ -3562,6 +4049,17 @@ impl<'a> Reducer<'a> {
             return OperationEffect::NoOp {
                 reason: NoOpReason::PreconditionFailedUnderReduction {
                     reason: PreconditionFailureReason::EventDurationInvalid,
+                },
+            };
+        }
+        // Only a metric region admits an insert, and it places events in
+        // musical time: a wall-clock position is refused in both modes, read
+        // from the value (reduction version 3: before it the insert was
+        // admitted and indexed at the region's origin, breaking invariant 4).
+        if !matches!(op.event.position(), EventPosition::Musical(_)) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::WrongRegionTimeModel,
                 },
             };
         }
@@ -3657,6 +4155,15 @@ impl<'a> Reducer<'a> {
             self.objects.entry(pv).or_insert(ObjectState::Live);
             self.minted_by.entry(pv).or_insert(env.id);
             self.note_minted(env, pv);
+            // Under its instance, as the graph holds it, so the instance's
+            // delete and an undo of it find the voice and its event
+            // (reduction version 3: before it a delete of the instance, its
+            // other voices gone, applied and left the event naming a voice
+            // the graph no longer held, `EventVoiceBacklink`).
+            self.instance_voices
+                .entry(op.staff_instance)
+                .or_default()
+                .insert(promoted);
             repairs.push(RepairRecord {
                 kind: RepairKind::VoicePromoted {
                     from: orig_voice,
@@ -3683,6 +4190,9 @@ impl<'a> Reducer<'a> {
                 .entry(ip.id)
                 .or_insert_with(WriteChain::new)
                 .seed(ip.pitch.clone());
+            if self.graph.is_none() {
+                self.pitch_values.insert(ip.id, ip.pitch.clone());
+            }
         }
         let mut pitches = Vec::new();
         for p in op.pitch_ids() {
@@ -3958,14 +4468,18 @@ impl<'a> Reducer<'a> {
     }
 
     /// Records `pitch`'s current graph attachment set as a write on
-    /// [`Self::engraved_spelling_chain`]. A no-op under base-free reduction,
-    /// which has no graph attachments to own — so base-free canonical bytes do
-    /// not move.
+    /// [`Self::engraved_spelling_chain`]. Base-free reduction, which has no
+    /// graph attachments, records the write with an empty set: an undo reads
+    /// the chain's writers to find a write superseded, and only graph-aware
+    /// reduction restores a set (reduction version 3: before it base-free
+    /// reduction recorded nothing, and undid a respelling a later transpose had
+    /// superseded, where graph-aware reduction conflicted).
     fn record_engraved_spellings(&mut self, env: &OperationEnvelope, pitch: PitchId) {
-        if self.graph.is_none() {
-            return;
-        }
-        let set = self.graph_spelling_set(pitch);
+        let set = if self.graph.is_some() {
+            self.graph_spelling_set(pitch)
+        } else {
+            Vec::new()
+        };
         self.engraved_spelling_chain
             .entry(pitch)
             .or_insert_with(WriteChain::new)
@@ -4031,6 +4545,9 @@ impl<'a> Reducer<'a> {
                 };
             }
         }
+        if let Some(effect) = self.spanner_staves_slot(&op.structure) {
+            return effect;
+        }
         if let Err(reason) = self.materialize_graph_cross_cutting(op) {
             return OperationEffect::NoOp {
                 reason: NoOpReason::PreconditionFailedUnderReduction { reason },
@@ -4039,6 +4556,9 @@ impl<'a> Reducer<'a> {
         self.objects.insert(sid, ObjectState::Live);
         self.minted_by.insert(sid, env.id);
         self.note_minted(env, sid);
+        if let CrossCuttingValue::Tie(tie) = &op.structure {
+            self.note_tie_ends(tie);
+        }
         // Seed the write chain with the minted value, so a later modify's
         // chain-predecessor is the created state.
         self.cross_cutting_modify_chain
@@ -4047,6 +4567,25 @@ impl<'a> Reducer<'a> {
             .seed(op.structure.clone());
         self.structures.insert(sid, endpoints);
         OperationEffect::Applied
+    }
+
+    /// A spanner's staves are referents, read in both modes as
+    /// `req:catalog:base-free-referents` reads one: a dead staff refuses the
+    /// write `TargetMissing` (reduction version 3: before it a spanner could
+    /// name a staff its history minted and lost, `CrossCuttingRefsResolve`).
+    fn spanner_staves_slot(&self, structure: &CrossCuttingValue) -> Option<OperationEffect> {
+        let CrossCuttingValue::Spanner(spanner) = structure else {
+            return None;
+        };
+        spanner
+            .staves
+            .iter()
+            .any(|staff| self.referent_dead(TypedObjectId::Staff(*staff)))
+            .then_some(OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            })
     }
 
     fn delete_cross_cutting(
@@ -4239,6 +4778,31 @@ impl<'a> Reducer<'a> {
 
     /// The live tuplets whose members include `event`, from the referent
     /// index, which holds them in both reduction modes.
+    /// The operation that minted a live tuplet holding `event`, not among an
+    /// undo's own `targets`, when `value` would give the event a duration
+    /// other than the one the occupancy index holds.
+    fn tuplet_fixing_duration(
+        &self,
+        event: EventId,
+        value: &Event,
+        targets: &[TypedObjectId],
+    ) -> Option<OperationId> {
+        let current = self
+            .voice_occupancy
+            .values()
+            .flatten()
+            .find(|(_, _, placed)| *placed == event)
+            .map(|(_, duration, _)| EventDuration::Musical(duration.clone()))?;
+        if current == *value.duration() {
+            return None;
+        }
+        self.containing_tuplets(event)
+            .into_iter()
+            .map(TypedObjectId::Tuplet)
+            .filter(|tuplet| !targets.contains(tuplet))
+            .find_map(|tuplet| self.minted_by.get(&tuplet).copied())
+    }
+
     fn containing_tuplets(&self, event: EventId) -> BTreeSet<TupletId> {
         let member = TypedObjectId::Event(event);
         self.structures
@@ -4343,6 +4907,9 @@ impl<'a> Reducer<'a> {
                 };
             }
         }
+        if let Some(effect) = self.spanner_staves_slot(&op.structure) {
+            return effect;
+        }
         // LWW field-overwrite, mirroring modify_event: the resolved value lives in
         // the graph; MaterializedState records only the effect and, on a
         // concurrent differing write, a StructuralFieldCollision.
@@ -4378,6 +4945,9 @@ impl<'a> Reducer<'a> {
             .or_insert_with(WriteChain::new)
             .record(env.id, env.transaction, op.structure.clone());
         self.structures.insert(sid, endpoints);
+        if let CrossCuttingValue::Tie(tie) = &op.structure {
+            self.note_tie_ends(tie);
+        }
         self.graph_modify_cross_cutting(&op.structure);
         effect
     }
@@ -4565,20 +5135,54 @@ impl<'a> Reducer<'a> {
         }
         // With staves mintable (operation_catalog §CreateStaff), the instance's
         // referenced global Staff must be live — the mint must leave the graph
-        // satisfying reference resolution. Graph-aware only (like the insert
-        // preconditions): base-free reduction has no staff universe to check
-        // against, and the base-seeded scenarios satisfy this vacuously.
-        if self.graph.is_some()
-            && !matches!(
-                self.objects.get(&TypedObjectId::Staff(op.instance.staff)),
-                Some(ObjectState::Live)
-            )
-        {
+        // satisfying reference resolution. Base-free reduction has no staff
+        // universe, and checks only a staff the set itself mints
+        // (`referent_dead`).
+        if self.referent_dead(TypedObjectId::Staff(op.instance.staff)) {
             return OperationEffect::NoOp {
                 reason: NoOpReason::PreconditionFailedUnderReduction {
                     reason: PreconditionFailureReason::TargetMissing,
                 },
             };
+        }
+        // A region manifests a staff at most once (`StaffInstanceResolves`):
+        // the region's place for the staff is taken, so the create is refused,
+        // read from the indices both modes keep (reduction version 3: before
+        // it two concurrent creates both applied).
+        let taken = self
+            .region_instances
+            .get(&op.region)
+            .is_some_and(|instances| {
+                instances.iter().any(|other| {
+                    *other != op.instance_id()
+                        && self.instance_staff.get(other) == Some(&op.instance.staff)
+                        && matches!(
+                            self.objects.get(&TypedObjectId::StaffInstance(*other)),
+                            Some(ObjectState::Live)
+                        )
+                })
+            });
+        if taken {
+            return container_not_empty();
+        }
+        // Its clef and key changes are anchors like any other: one anchored by
+        // a musical offset into a region admitting none is refused (reduction
+        // version 3: before it the instance carried it there,
+        // `AnchorOffsetModel`).
+        let anchors = op
+            .instance
+            .clef_sequence
+            .iter()
+            .map(|c| &c.anchor)
+            .chain(op.instance.key_sequence.iter().map(|k| &k.anchor));
+        for anchor in anchors {
+            let region = match anchor {
+                TimeAnchor::Region { id, .. } => *id,
+                _ => op.region,
+            };
+            if let Some(effect) = self.musical_slot(region, Some(anchor)) {
+                return effect;
+            }
         }
         self.graph_create_staff_instance(op.region, &op.instance);
         self.mint_container(env, iobj);
@@ -4680,15 +5284,11 @@ impl<'a> Reducer<'a> {
             }
             None => {}
         }
-        // Reference-resolution preconditions are graph-aware (like the insert
-        // preconditions): base-free reduction has no instrument/group universe
-        // to check against.
-        if self.graph.is_some() {
-            if !matches!(
-                self.objects
-                    .get(&TypedObjectId::Instrument(op.staff.instrument)),
-                Some(ObjectState::Live)
-            ) {
+        // Reference-resolution preconditions: base-free reduction has no
+        // instrument/group universe, and checks only what the set itself
+        // mints (`referent_dead`).
+        {
+            if self.referent_dead(TypedObjectId::Instrument(op.staff.instrument)) {
                 return OperationEffect::NoOp {
                     reason: NoOpReason::PreconditionFailedUnderReduction {
                         reason: PreconditionFailureReason::TargetMissing,
@@ -4696,10 +5296,7 @@ impl<'a> Reducer<'a> {
                 };
             }
             if let Some(group) = op.staff.group {
-                if !matches!(
-                    self.objects.get(&TypedObjectId::StaffGroup(group)),
-                    Some(ObjectState::Live)
-                ) {
+                if self.referent_dead(TypedObjectId::StaffGroup(group)) {
                     return OperationEffect::NoOp {
                         reason: NoOpReason::PreconditionFailedUnderReduction {
                             reason: PreconditionFailureReason::TargetMissing,
@@ -4896,12 +5493,9 @@ impl<'a> Reducer<'a> {
             }
             None => {}
         }
-        if self.graph.is_some() {
+        {
             for staff in &op.part.staves {
-                if !matches!(
-                    self.objects.get(&TypedObjectId::Staff(*staff)),
-                    Some(ObjectState::Live)
-                ) {
+                if self.referent_dead(TypedObjectId::Staff(*staff)) {
                     return OperationEffect::NoOp {
                         reason: NoOpReason::PreconditionFailedUnderReduction {
                             reason: PreconditionFailureReason::TargetMissing,
@@ -4993,12 +5587,9 @@ impl<'a> Reducer<'a> {
             }
             None => {}
         }
-        if self.graph.is_some() {
+        {
             for layer in &op.view.active_layers {
-                if !matches!(
-                    self.objects.get(&TypedObjectId::AnalysisLayer(*layer)),
-                    Some(ObjectState::Live)
-                ) {
+                if self.referent_dead(TypedObjectId::AnalysisLayer(*layer)) {
                     return OperationEffect::NoOp {
                         reason: NoOpReason::PreconditionFailedUnderReduction {
                             reason: PreconditionFailureReason::TargetMissing,
@@ -5407,7 +5998,7 @@ impl<'a> Reducer<'a> {
         match chain.and_then(|c| c.last_write()) {
             Some(write) => self
                 .env_of(write.op)
-                .map(|env| Recency::Write(env.stamp.reduction_tuple()))
+                .map(|env| Recency::Write(self.applied_at.get(&env.id).copied().unwrap_or(0)))
                 .unwrap_or(Recency::Base),
             None => Recency::Base,
         }
@@ -5737,6 +6328,54 @@ impl<'a> Reducer<'a> {
         out
     }
 
+    /// The time signatures named by the current value of each grid or
+    /// meter-change key whose restoration `restorations` holds and `safe`
+    /// does not: the values a best-effort undo leaves in place.
+    fn signatures_dropped_restorations_name(
+        &self,
+        restorations: &[ValueRestoration],
+        safe: &[ValueRestoration],
+    ) -> Vec<TypedObjectId> {
+        let admitted_grid = |r: &RegionId| {
+            safe.iter()
+                .any(|s| matches!(s, ValueRestoration::MetricGrid { region, .. } if region == r))
+        };
+        let admitted_meter = |r: &RegionId, p: &MusicalPosition| {
+            safe.iter().any(|s| {
+                matches!(s, ValueRestoration::MeterChange { region, position, .. }
+                    if region == r && position == p)
+            })
+        };
+        let mut named = Vec::new();
+        for restoration in restorations {
+            match restoration {
+                ValueRestoration::MetricGrid { region, .. } if !admitted_grid(region) => {
+                    let current = self
+                        .metric_grid_chain
+                        .get(region)
+                        .and_then(|chain| chain.current().cloned())
+                        .flatten();
+                    named.extend(meter_referents(
+                        current.iter().flat_map(|grid| &grid.meter_sequence),
+                    ));
+                }
+                ValueRestoration::MeterChange {
+                    region, position, ..
+                } if !admitted_meter(region, position) => {
+                    let current = self
+                        .meter_change_chain
+                        .get(&(*region, position.clone()))
+                        .and_then(|chain| chain.current().cloned())
+                        .flatten();
+                    named.extend(meter_referents(current.as_slice()));
+                }
+                _ => {}
+            }
+        }
+        named.retain(|t| matches!(t, TypedObjectId::TimeSignature(_)));
+        named
+    }
+
     fn graph_create_measure(&mut self, instance: StaffInstanceId, measure: &Measure) {
         let Some(score) = self.graph.as_mut() else {
             return;
@@ -5807,14 +6446,12 @@ impl<'a> Reducer<'a> {
             None => {}
         }
 
-        // Pins 8.2/8.3: reference-resolution preconditions are graph-aware
-        // only (base-free reduction has no universe to check against).
-        if self.graph.is_some() {
+        // Pins 8.2/8.3: reference-resolution preconditions; base-free
+        // reduction has no universe, and checks only what the set itself
+        // mints (`referent_dead`).
+        {
             if let Some(sig) = op.measure.time_signature {
-                if !matches!(
-                    self.objects.get(&TypedObjectId::TimeSignature(sig)),
-                    Some(ObjectState::Live)
-                ) {
+                if self.referent_dead(TypedObjectId::TimeSignature(sig)) {
                     return OperationEffect::NoOp {
                         reason: NoOpReason::PreconditionFailedUnderReduction {
                             reason: PreconditionFailureReason::TargetMissing,
@@ -5823,18 +6460,9 @@ impl<'a> Reducer<'a> {
                 }
             }
             let start_resolves = match &op.measure.start {
-                TimeAnchor::Event { id, .. } => matches!(
-                    self.objects.get(&TypedObjectId::Event(*id)),
-                    Some(ObjectState::Live)
-                ),
-                TimeAnchor::Measure { id, .. } => matches!(
-                    self.objects.get(&TypedObjectId::Measure(*id)),
-                    Some(ObjectState::Live)
-                ),
-                TimeAnchor::Region { id, .. } => matches!(
-                    self.objects.get(&TypedObjectId::Region(*id)),
-                    Some(ObjectState::Live)
-                ),
+                TimeAnchor::Event { id, .. } => !self.referent_dead(TypedObjectId::Event(*id)),
+                TimeAnchor::Measure { id, .. } => !self.referent_dead(TypedObjectId::Measure(*id)),
+                TimeAnchor::Region { id, .. } => !self.referent_dead(TypedObjectId::Region(*id)),
                 TimeAnchor::WallClock { .. } => true,
             };
             if !start_resolves {
@@ -5843,6 +6471,20 @@ impl<'a> Reducer<'a> {
                         reason: PreconditionFailureReason::TargetMissing,
                     },
                 };
+            }
+            // A measure starts in musical time, so its instance's region
+            // must admit a musical offset, as a time signature's must
+            // (reduction version 3: before it a measure created after a
+            // concurrent migration out of musical time applied there,
+            // `AnchorOffsetModel`).
+            let region = match &op.measure.start {
+                TimeAnchor::Region { id, .. } => Some(*id),
+                _ => self.instance_region_of(op.instance),
+            };
+            if let Some(effect) =
+                region.and_then(|region| self.musical_slot(region, Some(&op.measure.start)))
+            {
+                return effect;
             }
         }
 
@@ -6003,6 +6645,9 @@ impl<'a> Reducer<'a> {
         op: &SetTimeSignatureOp,
     ) -> OperationEffect {
         if let Some(effect) = self.layout_region_slot(op.region) {
+            return effect;
+        }
+        if let Some(effect) = self.musical_slot(op.region, Some(&op.anchor)) {
             return effect;
         }
         // Contract pin 9c.2/M45: EVERY invariant check must precede any
@@ -6187,6 +6832,28 @@ impl<'a> Reducer<'a> {
                 };
             }
         }
+        // A segment anchored by a musical offset into a region out of musical
+        // time is refused, as a break is (reduction version 3: before it the
+        // segment applied, `AnchorOffsetModel`).
+        // And one anchored to a region that is not live names nothing: a
+        // referent, read in both modes (reduction version 3: before it a
+        // score-level segment's anchor was not read, `CrossCuttingRefsResolve`).
+        if let Some(segment) = &op.segment {
+            for anchor in std::iter::once(&segment.start).chain(segment.end.as_ref()) {
+                if let TimeAnchor::Region { id, .. } = anchor {
+                    if self.referent_dead(TypedObjectId::Region(*id)) {
+                        return OperationEffect::NoOp {
+                            reason: NoOpReason::PreconditionFailedUnderReduction {
+                                reason: PreconditionFailureReason::TargetMissing,
+                            },
+                        };
+                    }
+                    if let Some(effect) = self.musical_slot(*id, Some(anchor)) {
+                        return effect;
+                    }
+                }
+            }
+        }
         let key = (op.region, op.resolved_start());
         if let Some(segment) = &op.segment {
             if !self.prospective_tempo_write_well_formed(&key, segment) {
@@ -6286,12 +6953,9 @@ impl<'a> Reducer<'a> {
         if let Some(effect) = self.staff_instance_slot(op.staff_instance) {
             return effect;
         }
-        if self.graph.is_some() {
+        {
             if let Some(instrument) = op.instrument_override {
-                if !matches!(
-                    self.objects.get(&TypedObjectId::Instrument(instrument)),
-                    Some(ObjectState::Live)
-                ) {
+                if self.referent_dead(TypedObjectId::Instrument(instrument)) {
                     return OperationEffect::NoOp {
                         reason: NoOpReason::PreconditionFailedUnderReduction {
                             reason: PreconditionFailureReason::TargetMissing,
@@ -6328,6 +6992,17 @@ impl<'a> Reducer<'a> {
             }),
             Some(ObjectState::Live) => None,
         }
+    }
+
+    /// The slot of a clef or key change, written at a musical position: a live
+    /// staff instance whose region admits musical offsets, a region out of
+    /// musical time refusing it `WrongRegionTimeModel` (reduction version 3:
+    /// before it the change applied there, `AnchorOffsetModel`).
+    fn staff_change_slot(&self, instance: StaffInstanceId) -> Option<OperationEffect> {
+        self.staff_instance_slot(instance).or_else(|| {
+            self.instance_region_of(instance)
+                .and_then(|region| self.musical_slot(region, None))
+        })
     }
 
     /// The effect of a structural LWW write against its key's last write
@@ -6371,7 +7046,7 @@ impl<'a> Reducer<'a> {
     /// change at a musical offset in a live staff instance's region, a
     /// structural LWW register keyed by `(instance, position)`.
     fn set_clef(&mut self, env: &OperationEnvelope, op: &SetClefOp) -> OperationEffect {
-        if let Some(effect) = self.staff_instance_slot(op.instance) {
+        if let Some(effect) = self.staff_change_slot(op.instance) {
             return effect;
         }
         let key = (op.instance, op.position());
@@ -6405,7 +7080,7 @@ impl<'a> Reducer<'a> {
         env: &OperationEnvelope,
         op: &SetKeySignatureOp,
     ) -> OperationEffect {
-        if let Some(effect) = self.staff_instance_slot(op.instance) {
+        if let Some(effect) = self.staff_change_slot(op.instance) {
             return effect;
         }
         let key = (op.instance, op.position());
@@ -6528,7 +7203,22 @@ impl<'a> Reducer<'a> {
             .region_instances
             .get(&op.region)
             .is_some_and(|s| !s.is_empty());
-        let minted_by = match self.delete_precondition(robj, env, has_instances) {
+        // A live tempo segment of another map anchored to the region holds it
+        // as its instances do: deleting the region would leave the segment's
+        // anchor naming nothing (`CrossCuttingRefsResolve`). Read from the
+        // tempo chains both modes keep (reduction version 3: before it the
+        // delete applied).
+        let anchors_here = |anchor: &TimeAnchor| matches!(anchor, TimeAnchor::Region { id, .. } if *id == op.region);
+        let tempo_anchored = self.tempo_segment_chain.iter().any(|((map, _), chain)| {
+            *map != Some(op.region)
+                && matches!(
+                    chain.current(),
+                    Some(Some(segment))
+                        if anchors_here(&segment.start)
+                            || segment.end.as_ref().is_some_and(anchors_here)
+                )
+        });
+        let minted_by = match self.delete_precondition(robj, env, has_instances || tempo_anchored) {
             Ok(minter) => minter,
             Err(effect) => return effect,
         };
@@ -6717,19 +7407,75 @@ impl<'a> Reducer<'a> {
             }
             crate::payload::PositionRemapping::PreserveTime => None,
         };
-        let proportional = matches!(op.new_time_model, RegionTimeModel::Proportional(_));
+        // The target's coordinate discipline, read as invariant 4 reads an
+        // event's coordinates (`admits_event`): a metric event, at a musical
+        // position for a musical duration, is admitted by a metric target
+        // and by an aleatoric one anchored musically, either way per event
+        // or freely mixed, and by no other.
+        let target = op.new_time_model.coordinate_discipline();
+        let admits_metric = target.admits_event(
+            &EventPosition::Musical(MusicalPosition::origin()),
+            &EventDuration::Musical(MusicalDuration::zero()),
+        );
         // The region's events with a metric placement, from the indices both
         // reduction modes keep, so the two derive one set of incompatible
-        // events: a metric event is incompatible with a proportional target,
-        // and with any target when a `Reassign` leaves it unmapped.
-        for event in self.indexed_region_events(op.region) {
-            if proportional || mapped.as_ref().is_some_and(|m| !m.contains(&event)) {
+        // events: a metric event is incompatible with a target that does not
+        // admit it (reduction version 3: before it only a proportional
+        // target, so an aleatoric target anchored in wall-clock time left
+        // the region's events in musical time, `EventCoordinateModel`), and
+        // with any target when a `Reassign` leaves it unmapped.
+        let region_events = self.indexed_region_events(op.region);
+        for event in region_events.iter().copied() {
+            if !admits_metric || mapped.as_ref().is_some_and(|m| !m.contains(&event)) {
                 incompatible_events.insert(event);
             }
         }
+        // A `Reassign` that would leave two events of one voice overlapping
+        // (invariant 3) makes both incompatible, read from the occupancy index
+        // both modes keep (reduction version 3: before it the migration
+        // applied and broke the invariant).
+        if let crate::payload::PositionRemapping::Reassign(remapping) = &op.remapping {
+            let moved: BTreeMap<EventId, &MusicalPosition> =
+                remapping.iter().map(|(event, at)| (*event, at)).collect();
+            for events in self.voice_occupancy.values() {
+                if !events.iter().any(|(_, _, e)| region_events.contains(e)) {
+                    continue;
+                }
+                let mut spans: Vec<(MusicalPosition, MusicalPosition, EventId)> = events
+                    .iter()
+                    .map(|(at, length, event)| {
+                        let at = moved.get(event).map_or(at, |to| *to).clone();
+                        (at.clone(), at + length.clone(), *event)
+                    })
+                    .collect();
+                spans.sort();
+                let mut reach: Option<(MusicalPosition, EventId)> = None;
+                for (start, end, event) in spans {
+                    if let Some((until, holder)) = &reach {
+                        if start < *until {
+                            incompatible_events.insert(*holder);
+                            incompatible_events.insert(event);
+                        }
+                    }
+                    if reach.as_ref().is_none_or(|(until, _)| end > *until) {
+                        reach = Some((end, event));
+                    }
+                }
+            }
+        }
+        // The region's liveness: in both modes as the set leaves it
+        // (`referent_dead`), so a region an undo tombstoned, which the graph
+        // keeps, is not migrated graph-aware either; graph-aware below, from
+        // the graph as well.
+        if self.referent_dead(TypedObjectId::Region(op.region)) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            };
+        }
         let mut graph_region_index = None;
         if let Some(score) = self.graph.as_ref() {
-            // The region's liveness is referential, so graph-aware only.
             let Some(region_index) = score
                 .canvas
                 .regions
@@ -6767,18 +7513,7 @@ impl<'a> Reducer<'a> {
                     incompatible_events.insert(*event_id);
                     continue;
                 };
-                let compatible = match &op.new_time_model {
-                    RegionTimeModel::Metric(_) => matches!(
-                        (event.position(), event.duration()),
-                        (EventPosition::Musical(_), EventDuration::Musical(_))
-                    ),
-                    RegionTimeModel::Proportional(_) => matches!(
-                        (event.position(), event.duration()),
-                        (EventPosition::WallClock(_), EventDuration::WallClock(_))
-                    ),
-                    RegionTimeModel::Aleatoric(_) => true,
-                };
-                if !compatible {
+                if !target.admits_event(event.position(), event.duration()) {
                     incompatible_events.insert(*event_id);
                 }
             }
@@ -6790,22 +7525,87 @@ impl<'a> Reducer<'a> {
                         .filter(|event| !mapped.contains(event))
                         .copied(),
                 );
-                if proportional {
+                if !admits_metric {
                     // Reassign carries musical positions in the current
-                    // prototype schema, so it cannot satisfy a proportional
-                    // region's wall-clock coordinate discipline.
+                    // prototype schema, so it cannot satisfy a discipline
+                    // that admits no metric event.
                     incompatible_events.extend(event_ids);
                 }
             }
         }
 
-        if !incompatible_events.is_empty() {
-            let incompatible: Vec<TypedObjectId> = incompatible_events
-                .into_iter()
-                .map(TypedObjectId::Event)
-                .collect();
+        // A target that admits no musical offset strands every measure of the
+        // region,
+        // anchored in musical time: each is incompatible, named beside the
+        // events, read from the measure values both modes keep (reduction
+        // version 3: before it the migration applied and left them anchored
+        // by musical offsets, `AnchorOffsetModel`).
+        let musical_target = op
+            .new_time_model
+            .coordinate_discipline()
+            .admits_musical_offsets();
+        let stranded_measures: Vec<TypedObjectId> = if musical_target {
+            Vec::new()
+        } else {
+            let instances = self.region_instances.get(&op.region);
+            let musical_here = |anchor: &TimeAnchor| {
+                matches!(anchor, TimeAnchor::Region { id, offset: AnchorOffset::Musical(_), .. }
+                    if *id == op.region)
+            };
+            // A live tempo segment of any map anchored here by a musical
+            // offset strands the region itself, the segment having no id of
+            // its own (reduction version 3).
+            let tempo_stranded = self.tempo_segment_chain.values().any(|chain| {
+                matches!(
+                    chain.current(),
+                    Some(Some(segment))
+                        if musical_here(&segment.start)
+                            || segment.end.as_ref().is_some_and(musical_here)
+                )
+            });
+            // A live staff instance of the region holding a clef or key change,
+            // which the chains key by musical position, strands itself
+            // (reduction version 3: before it the change stayed, anchored by a
+            // musical offset the region no longer admits).
+            let changes_stranded = instances.into_iter().flatten().filter(|instance| {
+                let holds_clef = self.clef_chain.iter().any(|((owner, _), chain)| {
+                    owner == *instance && matches!(chain.current(), Some(Some(_)))
+                });
+                let holds_key = self.key_chain.iter().any(|((owner, _), chain)| {
+                    owner == *instance && matches!(chain.current(), Some(Some(_)))
+                });
+                matches!(
+                    self.objects.get(&TypedObjectId::StaffInstance(**instance)),
+                    Some(ObjectState::Live)
+                ) && (holds_clef || holds_key)
+            });
+            self.measure_values
+                .iter()
+                .filter(|(_, (instance, _))| instances.is_some_and(|set| set.contains(instance)))
+                .map(|(id, _)| TypedObjectId::Measure(*id))
+                .filter(|m| matches!(self.objects.get(m), Some(ObjectState::Live)))
+                .chain(changes_stranded.map(|i| TypedObjectId::StaffInstance(*i)))
+                .chain(tempo_stranded.then_some(TypedObjectId::Region(op.region)))
+                .collect()
+        };
+        if !incompatible_events.is_empty() || !stranded_measures.is_empty() {
+            // In canonical order, as the conflict encodes it: the region a
+            // tempo segment strands does not sort after the events.
+            let incompatible: Vec<TypedObjectId> = epiphany_determinism::sorted_canonical(
+                incompatible_events
+                    .into_iter()
+                    .map(TypedObjectId::Event)
+                    .chain(stranded_measures)
+                    .collect(),
+            );
+            // The region once, though a tempo segment names it incompatible.
             let mut affected = vec![TypedObjectId::Region(op.region)];
-            affected.extend(incompatible.iter().copied());
+            affected.extend(
+                incompatible
+                    .iter()
+                    .copied()
+                    .filter(|object| *object != TypedObjectId::Region(op.region)),
+            );
             let conflict = ConflictRecord::new(
                 ConflictKind::TimeModelMigrationFailure {
                     region: op.region,
@@ -6836,15 +7636,38 @@ impl<'a> Reducer<'a> {
         if let Some(discipline) = self.region_disciplines.get_mut(&op.region) {
             *discipline = op.new_time_model.coordinate_discipline();
         }
+        // A target that is not musical drops the region's system and page
+        // breaks, advisory layout written in musical time (reduction version 3:
+        // before it they stayed, anchored by musical offsets the region no
+        // longer has).
+        if !musical_target {
+            self.breaks.retain(|(region, _), _| *region != op.region);
+            self.page_breaks
+                .retain(|(region, _), _| *region != op.region);
+        }
+        let mut reordered: BTreeSet<VoiceId> = BTreeSet::new();
         if let Some(region_index) = graph_region_index {
             let score = self
                 .graph
                 .as_mut()
                 .expect("a graph region index implies graph-aware reduction");
+            if !musical_target {
+                if let Some(content) = score.canvas.regions[region_index].content.staff_based_mut()
+                {
+                    content.user_system_breaks.clear();
+                    content.user_page_breaks.clear();
+                    // And its metric grids, meter changes in musical time.
+                    content.default_metric_grid = None;
+                    for instance in &mut content.staff_instances {
+                        instance.local_metric_grid = None;
+                    }
+                }
+            }
             if let crate::payload::PositionRemapping::Reassign(remapping) = &op.remapping {
                 for (event, position) in remapping {
                     if let Some(value) = score.events.get_mut(*event) {
                         value.set_position(EventPosition::Musical(position.clone()));
+                        reordered.insert(value.voice());
                     }
                 }
             }
@@ -6853,6 +7676,12 @@ impl<'a> Reducer<'a> {
             // discriminator tag.
             let region = &mut score.canvas.regions[region_index];
             region.time_model = op.new_time_model.clone();
+        }
+        // A remapping that reorders a voice's events leaves the voice sorted by
+        // position, as a move does (reduction version 3: before it the graph
+        // kept the old order, `VoiceEventsSortedNonOverlap`).
+        for voice in reordered {
+            self.resort_voice(voice);
         }
         self.migrated_regions.insert(op.region);
         self.region_migrator.insert(op.region, env.id);
@@ -6999,6 +7828,19 @@ impl<'a> Reducer<'a> {
         env: &OperationEnvelope,
         op: &UndoTransactionPayload,
     ) -> OperationEffect {
+        // A transaction is undone once it is complete: an undo that is a
+        // member of the transaction it names, which is still applying, is
+        // refused, read from the envelope, and the transaction with it
+        // (reduction version 3: before it the undo reversed the members
+        // before it, an earlier undo's restorations among them, against
+        // objects that undo had removed, `CrossCuttingRefsResolve`).
+        if member_transaction(env) == Some(op.target) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            };
+        }
         let targets = self.tx_minted.get(&op.target).cloned().unwrap_or_default();
         let (restorations, superseded) = self.collect_restorations(op.target, &targets);
         if targets.is_empty() && restorations.is_empty() && superseded.is_empty() {
@@ -7040,13 +7882,19 @@ impl<'a> Reducer<'a> {
                     .iter()
                     .find_map(|t| self.undo_strand_block(t, &targets, &restorations))
                 {
+                    // The blocked object once, a referencer with no id of its
+                    // own (a tempo segment) naming the blocked one.
+                    let mut affected = vec![blocked];
+                    if referencer != blocked {
+                        affected.push(referencer);
+                    }
                     let conflict = ConflictRecord::new(
                         ConflictKind::TransactionConflict {
                             transaction: op.target,
                             failed_members: vec![env.id],
                         },
                         vec![env.id],
-                        vec![blocked, referencer],
+                        affected,
                     );
                     let cid = conflict.id;
                     self.conflicts.insert(conflict);
@@ -7097,25 +7945,73 @@ impl<'a> Reducer<'a> {
             }
             UndoPolicy::BestEffort => {
                 // Tombstone the still-live, non-stranding mints; restore the
-                // still-last-written keys; skip the rest.
-                let tombstonable: Vec<TypedObjectId> = targets
+                // still-last-written keys; skip the rest. A mint kept for
+                // what names it holds what it names in turn, so the guard is
+                // read against the mints still going, until none is kept
+                // (reduction version 3: before it a staff kept for its live
+                // instance lost the instrument it names, read as going with
+                // it, `CrossCuttingRefsResolve`).
+                let mut tombstonable: Vec<TypedObjectId> = targets
                     .iter()
                     .filter(|t| matches!(self.objects.get(t), Some(ObjectState::Live)))
-                    .filter(|t| self.undo_strand_block(t, &targets, &restorations).is_none())
                     .copied()
                     .collect();
-                let repairs = self.tombstone_undo_targets(env, &tombstonable);
-                // Contract pin 9c.3, `BestEffort`: the canonical-order
-                // greedy applies the MAXIMAL safe subset of grid/meter-
-                // change restorations (never a naive per-restoration
-                // filter evaluated independently of the others already
-                // admitted) — see `select_invariant20_safe_restorations`.
-                let safe_restorations = self.select_invariant20_safe_restorations(restorations);
-                self.apply_restorations(env, safe_restorations);
-                if repairs.is_empty() {
-                    OperationEffect::Applied
-                } else {
-                    OperationEffect::AppliedWithRepair { repairs }
+                loop {
+                    let kept: Vec<TypedObjectId> = tombstonable
+                        .iter()
+                        .filter(|t| {
+                            self.undo_strand_block(t, &tombstonable, &restorations)
+                                .is_some()
+                        })
+                        .copied()
+                        .collect();
+                    if kept.is_empty() {
+                        break;
+                    }
+                    tombstonable.retain(|t| !kept.contains(t));
+                }
+                // The guard reads a time signature's meter changes as the
+                // restorations leave them, but best effort applies only the
+                // invariant-20-safe subset of them, chosen once the mints are
+                // gone: a restoration it drops leaves its key's value, which
+                // may still name a signature the undo removed. Such a
+                // signature stays, and the undo is taken again without it
+                // (reduction version 3: before it the signature was removed
+                // and the meter change named nothing,
+                // `CrossCuttingRefsResolve`). Read only when the undo removes
+                // a signature.
+                loop {
+                    let signatures = tombstonable
+                        .iter()
+                        .any(|t| matches!(t, TypedObjectId::TimeSignature(_)));
+                    let saved = signatures.then(|| self.snapshot());
+                    let repairs = self.tombstone_undo_targets(env, &tombstonable);
+                    // Contract pin 9c.3, `BestEffort`: the canonical-order
+                    // greedy applies the MAXIMAL safe subset of grid/meter-
+                    // change restorations (never a naive per-restoration
+                    // filter evaluated independently of the others already
+                    // admitted) — see `select_invariant20_safe_restorations`.
+                    let safe_restorations =
+                        self.select_invariant20_safe_restorations(restorations.clone());
+                    let still_named: Vec<TypedObjectId> = match saved {
+                        Some(_) => self
+                            .signatures_dropped_restorations_name(&restorations, &safe_restorations)
+                            .into_iter()
+                            .filter(|t| tombstonable.contains(t))
+                            .collect(),
+                        None => Vec::new(),
+                    };
+                    if let (Some(saved), false) = (saved, still_named.is_empty()) {
+                        self.restore(saved);
+                        tombstonable.retain(|t| !still_named.contains(t));
+                        continue;
+                    }
+                    self.apply_restorations(env, safe_restorations);
+                    break if repairs.is_empty() {
+                        OperationEffect::Applied
+                    } else {
+                        OperationEffect::AppliedWithRepair { repairs }
+                    };
                 }
             }
         }
@@ -7168,6 +8064,29 @@ impl<'a> Reducer<'a> {
                 target: *t,
             });
         }
+        // An event the undo removes takes every pitch it holds with it, as a
+        // delete does, a pitch another operation added since among them
+        // (reduction version 3: before it such a pitch stayed live while the
+        // graph dropped it with its event, so base-free reduction alone held
+        // its value and a later transposition of it split the modes).
+        for t in targets {
+            let TypedObjectId::Event(event) = t else {
+                continue;
+            };
+            for pitch in self.event_pitches.get(event).cloned().unwrap_or_default() {
+                let p_obj = TypedObjectId::Pitch(pitch);
+                if matches!(self.objects.get(&p_obj), Some(ObjectState::Live)) {
+                    let minted_by = self.minted_by.get(&p_obj).copied().unwrap_or(env.id);
+                    self.objects.insert(
+                        p_obj,
+                        ObjectState::Tombstoned {
+                            deleted_by: env.id,
+                            minted_by,
+                        },
+                    );
+                }
+            }
+        }
         repairs.extend(self.materialize_graph_tombstones(env, targets));
         // P13-D1: mirror the graph re-anchoring in the LEDGER. The graph side
         // (`materialize_graph_delete`, run above) silently re-anchors or
@@ -7184,6 +8103,28 @@ impl<'a> Reducer<'a> {
         // `reanchor_for_tombstone` skips the target-structures themselves.
         for (ev, voice) in event_voices {
             self.reanchor_for_tombstone(env, ev, &mut repairs, voice);
+        }
+        // The ledger's container indices forget what the undo removed, as a
+        // delete's do, so a container it emptied reads empty: a voice leaves
+        // its instance's index and its occupancy, an instance its region's
+        // (reduction version 3: before it the index kept them, and a delete
+        // of the emptied instance or region was refused `ContainerNotEmpty`).
+        for t in targets {
+            match t {
+                TypedObjectId::Voice(voice) => {
+                    self.voice_occupancy.remove(voice);
+                    for set in self.instance_voices.values_mut() {
+                        set.remove(voice);
+                    }
+                }
+                TypedObjectId::StaffInstance(instance) => {
+                    self.instance_voices.remove(instance);
+                    for set in self.region_instances.values_mut() {
+                        set.remove(instance);
+                    }
+                }
+                _ => {}
+            }
         }
         repairs
     }
@@ -7218,15 +8159,108 @@ impl<'a> Reducer<'a> {
         restorations: &[ValueRestoration],
     ) -> Option<(TypedObjectId, TypedObjectId)> {
         match target {
+            // A container with a live child the same undo does not remove: a
+            // region's staff instance, an instance's voice, a voice's event
+            // (reduction version 3: before it the undo tombstoned the
+            // container and the graph kept it, both live and tombstoned or
+            // naming a removed parent).
+            TypedObjectId::Region(region) => self
+                .region_instances
+                .get(region)
+                .and_then(|instances| {
+                    instances.iter().find_map(|instance| {
+                        let iobj = TypedObjectId::StaffInstance(*instance);
+                        (!targets.contains(&iobj)
+                            && matches!(self.objects.get(&iobj), Some(ObjectState::Live)))
+                        .then_some((*target, iobj))
+                    })
+                })
+                // A live tempo segment of another map anchored to the region,
+                // as it holds the region against a delete; the segment has no
+                // id, so the region names itself (reduction version 3: before
+                // it the undo left the anchor naming nothing,
+                // `CrossCuttingRefsResolve`). Read as the undo leaves it: a
+                // segment the undone transaction wrote is restored away.
+                .or_else(|| {
+                    let here = |anchor: &TimeAnchor| {
+                        matches!(anchor, TimeAnchor::Region { id, .. } if id == region)
+                    };
+                    self.tempo_segment_chain
+                        .iter()
+                        .filter(|((map, _), _)| *map != Some(*region))
+                        .any(|((map, position), chain)| {
+                            let prospective: Option<TempoSegment> = restorations
+                                .iter()
+                                .find_map(|restoration| match restoration {
+                                    ValueRestoration::TempoSegment {
+                                        region: r,
+                                        position: p,
+                                        value,
+                                    } if r == map && p == position => Some(value.clone()),
+                                    _ => None,
+                                })
+                                .unwrap_or_else(|| chain.current().cloned().flatten());
+                            prospective.is_some_and(|segment| {
+                                here(&segment.start) || segment.end.as_ref().is_some_and(here)
+                            })
+                        })
+                        .then_some((*target, *target))
+                }),
+            TypedObjectId::StaffInstance(instance) => {
+                self.instance_voices.get(instance).and_then(|voices| {
+                    voices.iter().find_map(|voice| {
+                        let vobj = TypedObjectId::Voice(*voice);
+                        (!targets.contains(&vobj)
+                            && matches!(self.objects.get(&vobj), Some(ObjectState::Live)))
+                        .then_some((*target, vobj))
+                    })
+                })
+            }
+            TypedObjectId::Voice(voice) => self.voice_occupancy.get(voice).and_then(|events| {
+                events.iter().find_map(|(_, _, event)| {
+                    let eobj = TypedObjectId::Event(*event);
+                    (!targets.contains(&eobj)
+                        && matches!(self.objects.get(&eobj), Some(ObjectState::Live)))
+                    .then_some((*target, eobj))
+                })
+            }),
             TypedObjectId::Staff(staff) => {
+                let survives = |object: &TypedObjectId| {
+                    !targets.contains(object)
+                        && matches!(self.objects.get(object), Some(ObjectState::Live))
+                };
                 self.instance_staff
                     .iter()
                     .find_map(|(instance, manifested)| {
                         let iobj = TypedObjectId::StaffInstance(*instance);
-                        (manifested == staff
-                            && !targets.contains(&iobj)
-                            && matches!(self.objects.get(&iobj), Some(ObjectState::Live)))
-                        .then_some((*target, iobj))
+                        (manifested == staff && survives(&iobj)).then_some((*target, iobj))
+                    })
+                    // A live part definition or spanner naming the staff
+                    // (reduction version 3: before it the undo removed the
+                    // staff and left the part or spanner naming nothing,
+                    // `CrossCuttingRefsResolve`). A part has no modify; a
+                    // spanner is read at its current value, and an earlier
+                    // value a later undo would restore naming the staff is
+                    // superseded by the staff's tombstoning
+                    // (`collect_restorations`).
+                    .or_else(|| {
+                        self.part_definition_values.iter().find_map(|(id, part)| {
+                            let pobj = TypedObjectId::PartDefinition(*id);
+                            (part.staves.contains(staff) && survives(&pobj))
+                                .then_some((*target, pobj))
+                        })
+                    })
+                    .or_else(|| {
+                        self.cross_cutting_modify_chain
+                            .iter()
+                            .find_map(|(sid, chain)| match chain.current() {
+                                Some(CrossCuttingValue::Spanner(spanner))
+                                    if spanner.staves.contains(staff) && survives(sid) =>
+                                {
+                                    Some((*target, *sid))
+                                }
+                                _ => None,
+                            })
                     })
             }
             TypedObjectId::TimeSignature(id) => {
@@ -7301,13 +8335,38 @@ impl<'a> Reducer<'a> {
                 })
             }
             TypedObjectId::Instrument(instrument) => {
-                self.staff_values.iter().find_map(|(staff_id, staff)| {
-                    let sobj = TypedObjectId::Staff(*staff_id);
-                    (staff.instrument == *instrument
-                        && !targets.contains(&sobj)
-                        && matches!(self.objects.get(&sobj), Some(ObjectState::Live)))
-                    .then_some((*target, sobj))
-                })
+                self.staff_values
+                    .iter()
+                    .find_map(|(staff_id, staff)| {
+                        let sobj = TypedObjectId::Staff(*staff_id);
+                        (staff.instrument == *instrument
+                            && !targets.contains(&sobj)
+                            && matches!(self.objects.get(&sobj), Some(ObjectState::Live)))
+                        .then_some((*target, sobj))
+                    })
+                    // A live staff instance overriding its staff's instrument
+                    // with this one, read as the undo leaves the override
+                    // (reduction version 3: before it the undo left the
+                    // override naming nothing, `CrossCuttingRefsResolve`).
+                    .or_else(|| {
+                        self.staff_layout_chain.iter().find_map(|(instance, chain)| {
+                            let iobj = TypedObjectId::StaffInstance(*instance);
+                            let prospective = restorations
+                                .iter()
+                                .find_map(|restoration| match restoration {
+                                    ValueRestoration::StaffLayout {
+                                        instance: i,
+                                        value,
+                                    } if i == instance => Some(value.clone()),
+                                    _ => None,
+                                })
+                                .unwrap_or_else(|| chain.current().cloned());
+                            (prospective.is_some_and(|(over, _, _)| over == Some(*instrument))
+                                && !targets.contains(&iobj)
+                                && matches!(self.objects.get(&iobj), Some(ObjectState::Live)))
+                            .then_some((*target, iobj))
+                        })
+                    })
             }
             // Genesis tranche G3b (`spec/CONTRACT_GENESIS_G3B_MEASURE.md` pin
             // 10.2/10.5): the Measure strand guard, across all SEVEN inbound
@@ -7365,6 +8424,28 @@ impl<'a> Reducer<'a> {
                             (names && self.owner_licenses_block(mobj, targets))
                                 .then_some((*target, mobj))
                         })
+                    })
+                    // 3b. A later measure of the same instance (`measure_values`),
+                    // owned by that measure: removing any measure but the last
+                    // leaves its successor two bars after its predecessor
+                    // (`MeasureMeterConsistency`; reduction version 3, before
+                    // which the undo removed it).
+                    .or_else(|| {
+                        let TypedObjectId::Measure(target_id) = target else {
+                            return None;
+                        };
+                        let (instance, mine) = self.measure_values.get(target_id)?;
+                        self.measure_values
+                            .iter()
+                            .find_map(|(mid, (other_instance, other))| {
+                                let mobj = TypedObjectId::Measure(*mid);
+                                let later = mid != target_id
+                                    && other_instance == instance
+                                    && self.anchors_comparable_order(&mine.start, &other.start)
+                                        == Some(Ordering::Less);
+                                (later && self.owner_licenses_block(mobj, targets))
+                                    .then_some((*target, mobj))
+                            })
                     })
                     // 4. Meter change (`meter_change_chain`) — restoration-
                     // aware, owned by the enclosing region.
@@ -7534,9 +8615,23 @@ impl<'a> Reducer<'a> {
                 ChainUndoVerdict::NotWritten => {}
                 ChainUndoVerdict::Superseded { by } => superseded.push(by),
                 ChainUndoVerdict::Restore(predecessor) => {
+                    let value = predecessor.map(Predecessor::into_value);
+                    // A live tuplet holding the event fixed its duration, which
+                    // only a tuplet-aware edit may change (a `ModifyEvent`'s
+                    // rule): it supersedes a restoration that would change it
+                    // (reduction version 3: before it the undo restored the
+                    // earlier duration and broke the tuplet's sum,
+                    // `TupletSum`).
+                    if let Some(by) = value
+                        .as_ref()
+                        .and_then(|value| self.tuplet_fixing_duration(*event, value, targets))
+                    {
+                        superseded.push(by);
+                        continue;
+                    }
                     restorations.push(ValueRestoration::Event {
                         event: *event,
-                        value: predecessor.map(Predecessor::into_value),
+                        value,
                     })
                 }
             }
@@ -7601,10 +8696,22 @@ impl<'a> Reducer<'a> {
                 ChainUndoVerdict::NotWritten => {}
                 ChainUndoVerdict::Superseded { by } => superseded.push(by),
                 ChainUndoVerdict::Restore(predecessor) => {
-                    restorations.push(ValueRestoration::CrossCutting {
-                        id: *id,
-                        value: predecessor.map(Predecessor::into_value),
-                    })
+                    let value = predecessor.map(Predecessor::into_value);
+                    // A restored value naming a referent tombstoned since (an
+                    // endpoint, a spanner's measure or region anchor, a
+                    // spanner's staff) is superseded by its tombstoning:
+                    // restoring it would reinstate a dangling reference
+                    // (`CrossCuttingRefsResolve`; reduction version 3, before
+                    // which it was restored).
+                    let deleted = value
+                        .as_ref()
+                        .and_then(|value| self.tombstoned_since(cross_cutting_referents(value)));
+                    match deleted {
+                        Some(by) => superseded.push(by),
+                        None => {
+                            restorations.push(ValueRestoration::CrossCutting { id: *id, value })
+                        }
+                    }
                 }
             }
         }
@@ -7657,12 +8764,27 @@ impl<'a> Reducer<'a> {
                 ChainUndoVerdict::Restore(predecessor) => {
                     // Flattened: no predecessor and a cleared-grid predecessor
                     // both restore "no grid".
+                    let value = match predecessor {
+                        Some(p) => p.into_value(),
+                        None => None,
+                    };
+                    // A grid is a meter in musical time, naming its meter
+                    // changes' signatures and anchors.
+                    if let Some(by) = value
+                        .as_ref()
+                        .and_then(|_| self.out_of_musical_time(*region))
+                        .or_else(|| {
+                            self.tombstoned_since(meter_referents(
+                                value.iter().flat_map(|grid| &grid.meter_sequence),
+                            ))
+                        })
+                    {
+                        superseded.push(by);
+                        continue;
+                    }
                     restorations.push(ValueRestoration::MetricGrid {
                         region: *region,
-                        value: match predecessor {
-                            Some(p) => p.into_value(),
-                            None => None,
-                        },
+                        value,
                     })
                 }
             }
@@ -7675,13 +8797,24 @@ impl<'a> Reducer<'a> {
                 ChainUndoVerdict::NotWritten => {}
                 ChainUndoVerdict::Superseded { by } => superseded.push(by),
                 ChainUndoVerdict::Restore(predecessor) => {
+                    let value = match predecessor {
+                        Some(p) => p.into_value(),
+                        None => None,
+                    };
+                    // A meter change stands in musical time, and names its
+                    // time signature and anchor.
+                    if let Some(by) = value
+                        .as_ref()
+                        .and_then(|_| self.out_of_musical_time(*region))
+                        .or_else(|| self.tombstoned_since(meter_referents(value.as_slice())))
+                    {
+                        superseded.push(by);
+                        continue;
+                    }
                     restorations.push(ValueRestoration::MeterChange {
                         region: *region,
                         position: position.clone(),
-                        value: match predecessor {
-                            Some(p) => p.into_value(),
-                            None => None,
-                        },
+                        value,
                     })
                 }
             }
@@ -7696,13 +8829,40 @@ impl<'a> Reducer<'a> {
                 ChainUndoVerdict::NotWritten => {}
                 ChainUndoVerdict::Superseded { by } => superseded.push(by),
                 ChainUndoVerdict::Restore(predecessor) => {
+                    let value: Option<TempoSegment> = match predecessor {
+                        Some(p) => p.into_value(),
+                        None => None,
+                    };
+                    // A segment anchored by a musical offset in a region out
+                    // of musical time.
+                    let stranded = value.as_ref().and_then(|segment| {
+                        std::iter::once(&segment.start)
+                            .chain(segment.end.as_ref())
+                            .find_map(|anchor| match anchor {
+                                TimeAnchor::Region { id, .. }
+                                    if anchored_in_musical_time(anchor) =>
+                                {
+                                    self.out_of_musical_time(*id)
+                                }
+                                _ => None,
+                            })
+                    });
+                    // And its anchors name their targets.
+                    let stranded = stranded.or_else(|| {
+                        self.tombstoned_since(value.iter().flat_map(|segment| {
+                            anchor_object_refs(
+                                std::iter::once(&segment.start).chain(segment.end.as_ref()),
+                            )
+                        }))
+                    });
+                    if let Some(by) = stranded {
+                        superseded.push(by);
+                        continue;
+                    }
                     restorations.push(ValueRestoration::TempoSegment {
                         region: *scope,
                         position: position.clone(),
-                        value: match predecessor {
-                            Some(p) => p.into_value(),
-                            None => None,
-                        },
+                        value,
                     })
                 }
             }
@@ -7715,9 +8875,19 @@ impl<'a> Reducer<'a> {
                 ChainUndoVerdict::NotWritten => {}
                 ChainUndoVerdict::Superseded { by } => superseded.push(by),
                 ChainUndoVerdict::Restore(predecessor) => {
+                    let value = predecessor.map(Predecessor::into_value);
+                    // An instrument override names its instrument.
+                    if let Some(by) = self.tombstoned_since(
+                        value
+                            .iter()
+                            .filter_map(|(over, _, _)| over.map(TypedObjectId::Instrument)),
+                    ) {
+                        superseded.push(by);
+                        continue;
+                    }
                     restorations.push(ValueRestoration::StaffLayout {
                         instance: *instance,
-                        value: predecessor.map(Predecessor::into_value),
+                        value,
                     })
                 }
             }
@@ -7730,10 +8900,20 @@ impl<'a> Reducer<'a> {
                 ChainUndoVerdict::NotWritten => {}
                 ChainUndoVerdict::Superseded { by } => superseded.push(by),
                 ChainUndoVerdict::Restore(predecessor) => {
+                    let value = predecessor.and_then(Predecessor::into_value);
+                    // A clef change stands in musical time.
+                    if let Some(by) = value
+                        .as_ref()
+                        .and_then(|_| self.instance_region_of(*instance))
+                        .and_then(|region| self.out_of_musical_time(region))
+                    {
+                        superseded.push(by);
+                        continue;
+                    }
                     restorations.push(ValueRestoration::Clef {
                         instance: *instance,
                         position: position.clone(),
-                        value: predecessor.and_then(Predecessor::into_value),
+                        value,
                     })
                 }
             }
@@ -7746,10 +8926,20 @@ impl<'a> Reducer<'a> {
                 ChainUndoVerdict::NotWritten => {}
                 ChainUndoVerdict::Superseded { by } => superseded.push(by),
                 ChainUndoVerdict::Restore(predecessor) => {
+                    let value = predecessor.and_then(Predecessor::into_value);
+                    // A key change stands in musical time.
+                    if let Some(by) = value
+                        .as_ref()
+                        .and_then(|_| self.instance_region_of(*instance))
+                        .and_then(|region| self.out_of_musical_time(region))
+                    {
+                        superseded.push(by);
+                        continue;
+                    }
                     restorations.push(ValueRestoration::Key {
                         instance: *instance,
                         position: position.clone(),
-                        value: predecessor.and_then(Predecessor::into_value),
+                        value,
                     })
                 }
             }
@@ -7762,6 +8952,27 @@ impl<'a> Reducer<'a> {
                 ChainUndoVerdict::NotWritten => {}
                 ChainUndoVerdict::Superseded { by } => superseded.push(by),
                 ChainUndoVerdict::Restore(predecessor) => {
+                    // A break anchored in musical time; restoring absence
+                    // writes nothing. A present break names its anchor's
+                    // target.
+                    let anchor = predecessor.as_ref().map(|p| match p {
+                        Predecessor::Write(value) | Predecessor::Base(value) => value,
+                    });
+                    if let Some(by) = anchor
+                        .filter(|(anchor, _)| anchored_in_musical_time(anchor))
+                        .and_then(|_| self.out_of_musical_time(*region))
+                        .or_else(|| {
+                            self.tombstoned_since(
+                                anchor
+                                    .filter(|(_, present)| *present)
+                                    .into_iter()
+                                    .flat_map(|(anchor, _)| anchor_object_refs([anchor])),
+                            )
+                        })
+                    {
+                        superseded.push(by);
+                        continue;
+                    }
                     restorations.push(ValueRestoration::SystemBreak {
                         region: *region,
                         position: position.clone(),
@@ -7778,6 +8989,27 @@ impl<'a> Reducer<'a> {
                 ChainUndoVerdict::NotWritten => {}
                 ChainUndoVerdict::Superseded { by } => superseded.push(by),
                 ChainUndoVerdict::Restore(predecessor) => {
+                    // A break anchored in musical time; restoring absence
+                    // writes nothing. A present break names its anchor's
+                    // target.
+                    let anchor = predecessor.as_ref().map(|p| match p {
+                        Predecessor::Write(value) | Predecessor::Base(value) => value,
+                    });
+                    if let Some(by) = anchor
+                        .filter(|(anchor, _)| anchored_in_musical_time(anchor))
+                        .and_then(|_| self.out_of_musical_time(*region))
+                        .or_else(|| {
+                            self.tombstoned_since(
+                                anchor
+                                    .filter(|(_, present)| *present)
+                                    .into_iter()
+                                    .flat_map(|(anchor, _)| anchor_object_refs([anchor])),
+                            )
+                        })
+                    {
+                        superseded.push(by);
+                        continue;
+                    }
                     restorations.push(ValueRestoration::PageBreak {
                         region: *region,
                         position: position.clone(),
@@ -7828,7 +9060,13 @@ impl<'a> Reducer<'a> {
             match restoration {
                 ValueRestoration::Event { event, value } => {
                     if let Some(value) = value {
-                        self.apply_event_value(&value);
+                        // The undo reverses its own transaction: the pitches
+                        // its modifies removed come back, a live pitch another
+                        // operation added since stays, and one deleted since
+                        // stays gone (reduction version 3), the transaction's
+                        // own pitches being tombstoned first.
+                        self.revive_removed_pitches(env, event);
+                        self.apply_event_value(&self.written_event(&value));
                         self.event_modify_chain
                             .entry(event)
                             .or_insert_with(WriteChain::new)
@@ -8284,8 +9522,232 @@ impl<'a> Reducer<'a> {
             .entry(event_id)
             .or_insert_with(WriteChain::new)
             .record(env.id, env.transaction, op.event.clone());
-        self.apply_event_value(&op.event);
-        effect
+        // A whole-event write follows observed-remove (reduction version 3,
+        // D48 and D49): a live pitch of the event the value leaves out is
+        // removed with its attachments if its author saw it, and stays, at
+        // its current value and with its attachments, if not (add wins); a
+        // carried pitch a delete or undo removed stays gone (delete wins).
+        // Before it the value's pitches replaced the event's in the graph
+        // alone.
+        let removed = self.remove_observed_pitches(env, &op.event);
+        self.mint_carried_pitches(env, &op.event);
+        let value = self.written_event(&op.event);
+        self.apply_event_value(&value);
+        with_repairs(
+            effect,
+            removed
+                .into_iter()
+                .map(|pitch| RepairRecord {
+                    kind: RepairKind::CascadeDeleted,
+                    target: TypedObjectId::Pitch(pitch),
+                })
+                .collect(),
+        )
+    }
+
+    /// A whole-event modify mints each pitch its value carries that no
+    /// operation has minted, as an insert mints its event's pitches: live, in
+    /// the event's pitch index, at its value in both modes and under the
+    /// modify's transaction for an undo (reduction version 3: before it the
+    /// pitch reached the graph alone, which the ledger never held, so no
+    /// operation could name it and the tie check could not read it,
+    /// `TiePairing`). A pitch a base holds is live already; a system-derived
+    /// one was refused above.
+    fn mint_carried_pitches(&mut self, env: &OperationEnvelope, value: &Event) {
+        let event = value.id();
+        let mut carried = Vec::new();
+        value.collect_identified_pitches(&mut carried);
+        for ip in carried {
+            let p_obj = TypedObjectId::Pitch(ip.id);
+            if self.objects.contains_key(&p_obj) {
+                continue;
+            }
+            self.objects.insert(p_obj, ObjectState::Live);
+            self.minted_by.insert(p_obj, env.id);
+            self.note_minted(env, p_obj);
+            self.pitch_modify_chain
+                .entry(ip.id)
+                .or_insert_with(WriteChain::new)
+                .seed(ip.pitch.clone());
+            if self.graph.is_none() {
+                self.pitch_values.insert(ip.id, ip.pitch.clone());
+            }
+            self.event_pitches.entry(event).or_default().push(ip.id);
+        }
+    }
+
+    /// Observed-remove for a whole-event modify: removes each live pitch of
+    /// the event that `value` does not carry and whose insert is in the
+    /// modify's causal past, as `DeleteIdentifiedPitch` removes one, its
+    /// attachments with it, recording it as it stood so an undo of the
+    /// modify's transaction can bring it back. A pitch from a base, which no
+    /// envelope of the set inserts, precedes every operation and so counts as
+    /// seen; base-free reduction holds no base pitch. Returns the removed
+    /// pitches in canonical order.
+    fn remove_observed_pitches(&mut self, env: &OperationEnvelope, value: &Event) -> Vec<PitchId> {
+        let event = value.id();
+        let mut carried = Vec::new();
+        value.collect_identified_pitches(&mut carried);
+        let mut removed: Vec<PitchId> = self
+            .event_pitches
+            .get(&event)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|p| !carried.iter().any(|ip| ip.id == *p))
+            .filter(|p| {
+                matches!(
+                    self.objects.get(&TypedObjectId::Pitch(*p)),
+                    Some(ObjectState::Live)
+                )
+            })
+            .filter(|p| match self.minted_by.get(&TypedObjectId::Pitch(*p)) {
+                Some(insert) => *insert == env.id || env.causal_context.covers(*insert),
+                None => true,
+            })
+            .collect();
+        removed.sort();
+        for pitch in &removed {
+            let p_obj = TypedObjectId::Pitch(*pitch);
+            let minted_by = self.minted_by.get(&p_obj).copied().unwrap_or(env.id);
+            if let Some(value) = self.event_pitch_value(event, *pitch) {
+                let attachments = self
+                    .graph
+                    .as_ref()
+                    .map(|score| {
+                        score
+                            .spelling_attachments
+                            .iter()
+                            .filter(|a| matches!(&a.scope, SpellingScope::Pitch(p) if p == pitch))
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                self.removed_pitches.insert(
+                    *pitch,
+                    RemovedPitch {
+                        event,
+                        value,
+                        attachments,
+                    },
+                );
+            }
+            self.objects.insert(
+                p_obj,
+                ObjectState::Tombstoned {
+                    deleted_by: env.id,
+                    minted_by,
+                },
+            );
+            for pitches in self.event_pitches.values_mut() {
+                pitches.retain(|p| p != pitch);
+            }
+            self.graph_delete_pitch(*pitch);
+        }
+        removed
+    }
+
+    /// Brings back, into `event`, each pitch a whole-event modify of the
+    /// transaction `env` undoes removed: live again, in the event at the value
+    /// it had, with the attachments the graph held for it (the planning
+    /// default for undo under observed-remove, D49: the undo reverts the
+    /// modify's own effect). Called before the event's restored value is
+    /// written, which then carries or keeps it.
+    fn revive_removed_pitches(&mut self, env: &OperationEnvelope, event: EventId) {
+        let OperationPayload::UndoTransaction(undo) = &env.payload else {
+            return;
+        };
+        let revived: Vec<PitchId> = self
+            .removed_pitches
+            .iter()
+            .filter(|(_, removed)| removed.event == event)
+            .filter(
+                |(pitch, _)| match self.objects.get(&TypedObjectId::Pitch(**pitch)) {
+                    Some(ObjectState::Tombstoned { deleted_by, .. }) => {
+                        self.env_of(*deleted_by).is_some_and(|by| {
+                            member_transaction(by) == Some(undo.target)
+                                && matches!(
+                                    by.payload,
+                                    OperationPayload::Primitive(OperationKind::ModifyEvent(_))
+                                )
+                        })
+                    }
+                    _ => false,
+                },
+            )
+            .map(|(pitch, _)| *pitch)
+            .collect();
+        for pitch in revived {
+            let removed = self
+                .removed_pitches
+                .remove(&pitch)
+                .expect("each revived pitch is recorded");
+            self.objects
+                .insert(TypedObjectId::Pitch(pitch), ObjectState::Live);
+            self.event_pitches.entry(event).or_default().push(pitch);
+            self.graph_insert_pitch(
+                event,
+                &epiphany_core::IdentifiedPitch {
+                    id: pitch,
+                    pitch: removed.value,
+                },
+            );
+            if let Some(score) = self.graph.as_mut() {
+                score.spelling_attachments.extend(removed.attachments);
+            }
+        }
+    }
+
+    /// The event a whole-event write (a modify's value, or an undo's restored
+    /// one) leaves: `value` without the pitches it carries that a delete or an
+    /// undo has tombstoned, and with each live pitch of its event
+    /// (`event_pitches`) it does not carry, at the pitch's current value. A
+    /// modify has by then removed the pitches its author saw and left out
+    /// (`remove_observed_pitches`), so what this keeps are the pitches it never
+    /// saw, and for an undo every pitch added since. An event of any kind
+    /// without a pitch list so kept becomes a note of those pitches, as a
+    /// pitch inserted into it makes it one ([`with_pitches`]).
+    fn written_event(&self, value: &Event) -> Event {
+        let event = value.id();
+        let tombstoned = |p: PitchId| {
+            matches!(
+                self.objects.get(&TypedObjectId::Pitch(p)),
+                Some(ObjectState::Tombstoned { .. })
+            )
+        };
+        let mut value = value.clone();
+        if let Event::Pitched(pe) = &mut value {
+            pe.pitches.retain(|ip| !tombstoned(ip.id));
+        } else {
+            // Any other kind carrying one, a trajectory, as a delete of it
+            // leaves the event (`without_pitches`).
+            value = without_pitches(value, tombstoned);
+        }
+        let mut carried = Vec::new();
+        value.collect_identified_pitches(&mut carried);
+        let kept: Vec<epiphany_core::IdentifiedPitch> = self
+            .event_pitches
+            .get(&event)
+            .into_iter()
+            .flatten()
+            .filter(|p| !carried.iter().any(|ip| ip.id == **p))
+            .filter(|p| {
+                matches!(
+                    self.objects.get(&TypedObjectId::Pitch(**p)),
+                    Some(ObjectState::Live)
+                )
+            })
+            .filter_map(|p| {
+                Some(epiphany_core::IdentifiedPitch {
+                    id: *p,
+                    pitch: self.event_pitch_value(event, *p)?,
+                })
+            })
+            .collect();
+        if kept.is_empty() {
+            return value;
+        }
+        with_pitches(value, kept)
     }
 
     /// Applies an event *value* (a modify's replacement, or an undo's restored
@@ -8534,10 +9996,19 @@ impl<'a> Reducer<'a> {
         // canonically-first offender — `req:opcat:transpose-interval-atomic`.
         let mut resolved: Vec<ResolvedTranspose> = Vec::with_capacity(mutable.len());
         for pitch in &mutable {
-            let Some(current) = self.graph_pitch_value(*pitch) else {
-                continue; // base-free: no value to check, and none to write
+            let Some(current) = self.pitch_value(*pitch) else {
+                continue; // a base's pitch, base-free: no value to check or write
             };
             let next = match current.transposed(op.interval) {
+                // A value no accidental stack writes refuses, read from the
+                // value in both modes (reduction version 3).
+                Ok(next) if !alteration_writable(&next) => {
+                    return OperationEffect::NoOp {
+                        reason: NoOpReason::PreconditionFailedUnderReduction {
+                            reason: PreconditionFailureReason::TranspositionOutOfRange,
+                        },
+                    };
+                }
                 Ok(next) => next,
                 Err(refusal) => {
                     let reason = match refusal {
@@ -8557,32 +10028,33 @@ impl<'a> Reducer<'a> {
                     };
                 }
             };
-            match self.resolve_transposed_spellings(*pitch, &next, op.interval) {
-                Some(authored) => resolved.push(ResolvedTranspose {
-                    pitch: *pitch,
-                    value: next,
-                    authored,
-                }),
-                // An authored spelling that cannot be written at the transposed
-                // staff position refuses the whole operation, like any other
-                // untransposable target. Silently leaving it stale is what this
-                // operation exists to stop.
-                None => {
-                    return OperationEffect::NoOp {
-                        reason: NoOpReason::PreconditionFailedUnderReduction {
-                            reason: PreconditionFailureReason::TranspositionOutOfRange,
-                        },
-                    }
-                }
-            }
+            resolved.push(ResolvedTranspose {
+                pitch: *pitch,
+                authored: self.resolve_transposed_spellings(*pitch, &next, op.interval),
+                value: next,
+            });
         }
 
-        // Two passes. The authored rewrites address `spelling_attachments` by
-        // index, and the propagated upsert may PUSH — which would shift every
-        // later target's indices. So every rewrite lands before any append.
+        // Three passes. The authored rewrites address `spelling_attachments`
+        // by index, and both a dropped spelling's removal and the propagated
+        // upsert's push would shift every later target's indices. So every
+        // rewrite lands first, then every removal, from the last index down,
+        // then every append.
         for r in &resolved {
             self.graph_modify_pitch(r.pitch, &r.value);
             self.graph_rewrite_authored_spellings(&r.authored);
+        }
+        let mut dropped: Vec<usize> = resolved
+            .iter()
+            .flat_map(|r| r.authored.iter())
+            .filter(|(_, spelling)| spelling.is_none())
+            .map(|(index, _)| *index)
+            .collect();
+        dropped.sort_unstable();
+        if let Some(score) = self.graph.as_mut() {
+            for index in dropped.into_iter().rev() {
+                score.spelling_attachments.remove(index);
+            }
         }
         for r in &resolved {
             self.graph_propagate_spelling(r.pitch, &r.value);
@@ -8604,8 +10076,10 @@ impl<'a> Reducer<'a> {
     }
 
     /// The engraved-layer authored spellings on `pitch`, each moved to where the
-    /// transposed pitch writes it. `None` if any of them cannot be written
-    /// there.
+    /// transposed pitch writes it, or `None` where it cannot be written there
+    /// and is dropped, the pitch then taking the spelling the transposition
+    /// propagates (reduction version 3: before it, such a spelling refused the
+    /// transpose, graph-aware only, base-free reduction holding no spelling).
     ///
     /// `Propagated` attachments are skipped: they are this operation's own
     /// output, regenerated from the transposed value. Everything else —
@@ -8618,9 +10092,9 @@ impl<'a> Reducer<'a> {
         pitch: PitchId,
         transposed: &Pitch,
         interval: TranspositionInterval,
-    ) -> Option<Vec<(usize, PitchSpelling)>> {
+    ) -> Vec<(usize, Option<PitchSpelling>)> {
         let Some(score) = self.graph.as_ref() else {
-            return Some(Vec::new());
+            return Vec::new();
         };
         let mut out = Vec::new();
         for (index, att) in score.spelling_attachments.iter().enumerate() {
@@ -8633,35 +10107,46 @@ impl<'a> Reducer<'a> {
             let SpellingDirective::Explicit(spelling) = &att.directive else {
                 continue;
             };
-            // The transposed 12-TET semitone is needed ONLY to rewrite an
-            // authored spelling, and the spelling pre-pass is still
-            // 12-chromatic (the built-in catalog's conformance note). So it is
-            // computed here, at point of use, and NOT before the loop: a pitch
-            // in a resolved non-12-chromatic space (`cmn-24`, since Push 4b
-            // tranche 1) transposes its *value* correctly and must not be
-            // refused merely for carrying no authored spelling to rewrite.
-            // When it does carry one, `?` still refuses — a 24-chromatic
-            // authored spelling is the documented spelling-layer limitation,
-            // not a silently stale write. Hoisting this above the loop is what
-            // made a spelling-less `cmn-24` transpose refuse (P13-S3-shaped:
-            // latent in code, made reachable the moment the space resolved).
-            let semitone = transposed.twelve_tet_semitone()?;
-            out.push((index, spelling.transposed(interval, semitone)?));
+            // A twelve-tone pitch's spelling moves by its 12-TET semitone; a
+            // quarter-tone's (`cmn-24`) by its quarter-tone, keeping its
+            // accidental's kind (reduction version 3: before it, any authored
+            // spelling on a `cmn-24` pitch refused the transpose graph-aware,
+            // where base-free reduction, holding no spelling, applied it).
+            let rewritten = match transposed.twelve_tet_semitone() {
+                Some(semitone) => spelling.transposed(interval, semitone),
+                None => transposed
+                    .quarter_tone_position()
+                    .and_then(|position| spelling.transposed_by_quarter_tones(interval, position)),
+            };
+            out.push((index, rewritten));
         }
-        Some(out)
+        out
     }
 
     /// Applies the rewrites `resolve_transposed_spellings` computed, preserving
     /// each attachment's `source`, `priority`, and `layer`. A transposed
     /// `UserChosen` spelling is still the user's choice.
-    fn graph_rewrite_authored_spellings(&mut self, rewrites: &[(usize, PitchSpelling)]) {
+    fn graph_rewrite_authored_spellings(&mut self, rewrites: &[(usize, Option<PitchSpelling>)]) {
         let Some(score) = self.graph.as_mut() else {
             return;
         };
         for (index, spelling) in rewrites {
-            if let Some(att) = score.spelling_attachments.get_mut(*index) {
+            if let (Some(att), Some(spelling)) =
+                (score.spelling_attachments.get_mut(*index), spelling)
+            {
                 att.directive = SpellingDirective::Explicit(spelling.clone());
             }
+        }
+    }
+
+    /// The current value of a live pitch: the graph's, graph-aware; base-free,
+    /// the value index's, which holds each pitch the reduction minted as it
+    /// stands (`None` for a pitch from a base, which base-free reduction never
+    /// sees).
+    fn pitch_value(&self, pitch: PitchId) -> Option<Pitch> {
+        match self.graph {
+            Some(_) => self.graph_pitch_value(pitch),
+            None => self.pitch_values.get(&pitch).cloned(),
         }
     }
 
@@ -8670,14 +10155,14 @@ impl<'a> Reducer<'a> {
     fn graph_pitch_value(&self, pitch: PitchId) -> Option<Pitch> {
         let score = self.graph.as_ref()?;
         let event = Self::graph_event_of_pitch(score, pitch)?;
-        match score.events.get(event) {
-            Some(Event::Pitched(pe)) => pe
-                .pitches
-                .iter()
-                .find(|ip| ip.id == pitch)
-                .map(|ip| ip.pitch.clone()),
-            _ => None,
-        }
+        let mut held = Vec::new();
+        score
+            .events
+            .get(event)?
+            .collect_identified_pitches(&mut held);
+        held.into_iter()
+            .find(|ip| ip.id == pitch)
+            .map(|ip| ip.pitch.clone())
     }
 
     /// Records the spelling a transposition determined
@@ -8889,6 +10374,37 @@ impl<'a> Reducer<'a> {
     fn graph_replace_event(&mut self, new_event: &Event, materialize_move: bool) {
         let placement_changed;
         let voice;
+        if self.graph.is_none() {
+            // The pitch values the graph would take, under the graph's own
+            // gate: a well-formed event whose placement stands, or whose move
+            // is sanctioned (`voice_occupancy` holds its placement until the
+            // caller moves it).
+            // Every pitch the value holds, of any kind (reduction version 3:
+            // before it a note's alone, so a trajectory's carried values
+            // stood in the graph alone).
+            let standing = self
+                .voice_occupancy
+                .values()
+                .flatten()
+                .find(|(_, _, event)| *event == new_event.id())
+                .map(|(position, duration, _)| (position.clone(), duration.clone()));
+            let placement = match (new_event.position(), new_event.duration()) {
+                (EventPosition::Musical(p), EventDuration::Musical(d)) => {
+                    Some((p.clone(), d.clone()))
+                }
+                _ => None,
+            };
+            let placement_changed = standing.is_none() || standing != placement;
+            let well_formed = !matches!(new_event, Event::Pitched(pe) if !pe.is_well_formed());
+            if well_formed && (!placement_changed || materialize_move) {
+                let mut held = Vec::new();
+                new_event.collect_identified_pitches(&mut held);
+                for ip in held {
+                    self.pitch_values.insert(ip.id, ip.pitch.clone());
+                }
+            }
+            return;
+        }
         {
             let Some(score) = self.graph.as_mut() else {
                 return;
@@ -8934,36 +10450,17 @@ impl<'a> Reducer<'a> {
 
     fn graph_insert_pitch(&mut self, event: EventId, pitch: &epiphany_core::IdentifiedPitch) {
         let Some(score) = self.graph.as_mut() else {
+            self.pitch_values.insert(pitch.id, pitch.pitch.clone());
             return;
         };
         let Some(slot) = score.events.get_mut(event) else {
             return;
         };
-        if let Event::Pitched(pe) = slot {
-            if !pe.pitches.iter().any(|ip| ip.id == pitch.id) {
-                pe.pitches.push(pitch.clone());
-            }
-            return;
-        }
-        // Adding a pitch to a rest turns the rest into a note — the dual of a
-        // last-pitch delete (below). Without this, the bookkeeping mints the
-        // pitch live while the graph silently drops it (a non-pitched slot has
-        // no pitch list), so the two would diverge.
-        if let Event::Rest(rest) = slot {
-            let replacement = epiphany_core::PitchedEvent {
-                id: rest.id,
-                voice: rest.voice,
-                position: rest.position.clone(),
-                duration: rest.duration.clone(),
-                pitches: vec![pitch.clone()],
-                articulations: Vec::new(),
-                dynamic: None,
-                ornaments: Vec::new(),
-                stem: epiphany_core::StemConfiguration,
-                grace: None,
-            };
-            *slot = Event::Pitched(replacement);
-        }
+        // Adding a pitch to an event without a pitch list turns it into a
+        // note, the dual of a last-pitch delete (below), whatever its kind.
+        // Without this, the bookkeeping mints the pitch live while the graph
+        // silently drops it, so the two would diverge.
+        *slot = with_pitches(slot.clone(), vec![pitch.clone()]);
     }
 
     fn graph_delete_pitch(&mut self, pitch: PitchId) {
@@ -8976,13 +10473,12 @@ impl<'a> Reducer<'a> {
         // pitch is not added to `tombstoned_pitches` here: unlike a whole-event
         // delete the event survives, and a later ModifyEvent may legitimately
         // reintroduce the id — tombstoning it would make it both live and
-        // tombstoned (invariant 11).
-        score.spelling_attachments.retain(|a| {
-            !(a.layer.is_none()
-                && matches!(a.source, SpellingSource::UserChosen)
-                && matches!(&a.scope, SpellingScope::Pitch(p) if *p == pitch)
-                && matches!(a.directive, SpellingDirective::Explicit(_)))
-        });
+        // tombstoned (invariant 11). Every attachment scoped to the pitch goes,
+        // whatever its source: a transposition's propagated one too (reduction
+        // version 3; before it a propagated spelling outlived its pitch).
+        score
+            .spelling_attachments
+            .retain(|a| !matches!(&a.scope, SpellingScope::Pitch(p) if *p == pitch));
         let Some(event) = Self::graph_event_of_pitch(score, pitch) else {
             return;
         };
@@ -9008,42 +10504,62 @@ impl<'a> Reducer<'a> {
             } else {
                 pe.pitches.retain(|ip| ip.id != pitch);
             }
+            return;
         }
+        // Any other kind holding it, a trajectory's endpoint or step, becomes
+        // a note of the pitches it still holds, a rest when none remain.
+        *slot = without_pitches(slot.clone(), |p| p == pitch);
     }
 
     fn graph_modify_pitch(&mut self, pitch: PitchId, value: &Pitch) {
         let Some(score) = self.graph.as_mut() else {
+            self.pitch_values.insert(pitch, value.clone());
             return;
         };
         let Some(event) = Self::graph_event_of_pitch(score, pitch) else {
             return;
         };
-        if let Some(Event::Pitched(pe)) = score.events.get_mut(event) {
-            if let Some(ip) = pe.pitches.iter_mut().find(|ip| ip.id == pitch) {
-                ip.pitch = value.clone();
-            }
+        // Wherever the event holds it, a trajectory's endpoint or step as a
+        // note's pitch (reduction version 3: before it a note's alone).
+        if let Some(ip) = score
+            .events
+            .get_mut(event)
+            .and_then(|held| held_pitch_mut(held, pitch))
+        {
+            ip.pitch = value.clone();
         }
     }
 
     fn graph_transpose_pitch(&mut self, pitch: PitchId, chromatic_steps: i32) {
         let Some(score) = self.graph.as_mut() else {
+            if let Some(epiphany_core::PitchSpacePosition::Cmn { alteration, .. }) = self
+                .pitch_values
+                .get_mut(&pitch)
+                .map(|p| &mut p.scale_position.position)
+            {
+                let shifted = (*alteration as i32).saturating_add(chromatic_steps);
+                *alteration = shifted.clamp(i8::MIN as i32, i8::MAX as i32) as i8;
+            }
             return;
         };
         let Some(event) = Self::graph_event_of_pitch(score, pitch) else {
             return;
         };
-        if let Some(Event::Pitched(pe)) = score.events.get_mut(event) {
-            if let Some(ip) = pe.pitches.iter_mut().find(|ip| ip.id == pitch) {
-                // Minimal interval: shift the CMN alteration, saturating at the
-                // `i8` bound (a lossy stand-in — an extreme transpose clamps
-                // rather than renormalizing nominal/octave). Full interval
-                // algebra (Chapter 4 tuning) is deferred — P12-K2.
-                if let epiphany_core::PitchSpacePosition::Cmn { alteration, .. } =
-                    &mut ip.pitch.scale_position.position
-                {
-                    let shifted = (*alteration as i32).saturating_add(chromatic_steps);
-                    *alteration = shifted.clamp(i8::MIN as i32, i8::MAX as i32) as i8;
-                }
+        // Wherever the event holds it, as `graph_modify_pitch` writes.
+        if let Some(ip) = score
+            .events
+            .get_mut(event)
+            .and_then(|held| held_pitch_mut(held, pitch))
+        {
+            // Minimal interval: shift the CMN alteration, saturating at the
+            // `i8` bound (a lossy stand-in — an extreme transpose clamps
+            // rather than renormalizing nominal/octave). Full interval
+            // algebra (Chapter 4 tuning) is deferred — P12-K2.
+            if let epiphany_core::PitchSpacePosition::Cmn { alteration, .. } =
+                &mut ip.pitch.scale_position.position
+            {
+                let shifted = (*alteration as i32).saturating_add(chromatic_steps);
+                *alteration = shifted.clamp(i8::MIN as i32, i8::MAX as i32) as i8;
             }
         }
     }
@@ -9186,6 +10702,263 @@ impl<'a> Reducer<'a> {
         });
     }
 
+    // --- Ties give way (reduction version 3). --------------------------------
+
+    /// Which ties `env` may break, read before it applies (a pitch's event is
+    /// gone from `event_pitches` once a delete applies).
+    fn tie_touch(&self, env: &OperationEnvelope) -> TieTouch {
+        let OperationPayload::Primitive(kind) = &env.payload else {
+            return match &env.payload {
+                OperationPayload::UndoTransaction(_) if !self.tie_ends.is_empty() => TieTouch::All,
+                _ => TieTouch::Nothing,
+            };
+        };
+        if let OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+            structure: CrossCuttingValue::Tie(tie),
+        })
+        | OperationKind::ModifyCrossCutting(ModifyCrossCuttingOp {
+            structure: CrossCuttingValue::Tie(tie),
+        }) = kind
+        {
+            return TieTouch::Tie(tie.id);
+        }
+        // No tie has ever stood: nothing to break.
+        if self.tie_ends.is_empty() {
+            return TieTouch::Nothing;
+        }
+        let events_of = |pitches: &mut dyn Iterator<Item = PitchId>| {
+            let pitches: BTreeSet<PitchId> = pitches.collect();
+            TieTouch::Events(
+                self.event_pitches
+                    .iter()
+                    .filter(|(_, held)| held.iter().any(|p| pitches.contains(p)))
+                    .map(|(event, _)| *event)
+                    .collect(),
+                false,
+            )
+        };
+        match kind {
+            OperationKind::InsertEvent(op) => {
+                TieTouch::Events(BTreeSet::from([op.event_id()]), true)
+            }
+            OperationKind::ModifyEvent(op) => {
+                TieTouch::Events(BTreeSet::from([op.event_id()]), true)
+            }
+            OperationKind::InsertIdentifiedPitch(op) => {
+                TieTouch::Events(BTreeSet::from([op.event]), false)
+            }
+            OperationKind::DeleteIdentifiedPitch(op) => events_of(&mut std::iter::once(op.pitch)),
+            OperationKind::ModifyIdentifiedPitch(op) => events_of(&mut std::iter::once(op.pitch)),
+            OperationKind::Transpose(op) => events_of(&mut op.targets.iter().copied()),
+            OperationKind::TransposeInterval(op) => events_of(&mut op.targets.iter().copied()),
+            OperationKind::ChangeRegionTimeModel(_) => TieTouch::All,
+            _ => TieTouch::Nothing,
+        }
+    }
+
+    /// Notes a tie under both its ends in `tie_ends`.
+    fn note_tie_ends(&mut self, tie: &Tie) {
+        for event in [tie.start_event, tie.end_event] {
+            self.tie_ends.entry(event).or_default().insert(tie.id);
+        }
+    }
+
+    /// The ties an applied operation's `touch` reaches, read once it has
+    /// applied: an insert's or a move's new neighbours are where it landed.
+    fn touched_ties(&self, touch: TieTouch) -> BTreeSet<TieId> {
+        match touch {
+            TieTouch::Nothing => BTreeSet::new(),
+            TieTouch::Tie(id) => BTreeSet::from([id]),
+            TieTouch::All => self.tie_ends.values().flatten().copied().collect(),
+            TieTouch::Events(events, beside) => {
+                // The events themselves and, for an insert or a move, the
+                // events now either side of them in their voices: an insert or
+                // a move lands between a tie's ends there.
+                let mut near = events.clone();
+                if beside {
+                    for event in &events {
+                        let Some((voice, position)) = self.event_placement(*event) else {
+                            continue;
+                        };
+                        let placements = &self.voice_occupancy[&voice];
+                        let before = placements
+                            .iter()
+                            .filter(|(p, _, _)| *p < position)
+                            .max_by(|a, b| a.0.cmp(&b.0));
+                        let after = placements
+                            .iter()
+                            .filter(|(p, _, _)| *p > position)
+                            .min_by(|a, b| a.0.cmp(&b.0));
+                        near.extend(before.into_iter().chain(after).map(|(_, _, e)| *e));
+                    }
+                }
+                near.iter()
+                    .filter_map(|event| self.tie_ends.get(event))
+                    .flatten()
+                    .copied()
+                    .collect()
+            }
+        }
+    }
+
+    /// A tie gives way (D48; reduction version 3;
+    /// `req:opcat:tie-gives-way`). When a transaction completes, a lone
+    /// operation being its own, each live tie its members may have broken is
+    /// held to Chapter 5 §"Ties" (`req:graph:tie-class-validation`); one that
+    /// no longer holds, its pairing or its class's adjacency broken, is
+    /// removed as a delete removes it, the member `ties` maps it to (the last
+    /// that touched it) recording a `CascadeDeleted` repair for it, returned
+    /// here by member. A conflicted operation's effect carries no repairs, so
+    /// there the tie's tombstone, which names the operation, is the record.
+    /// Before it a tie was accepted as written, and an insert between its
+    /// ends, a transpose of one end or a tie created over a concurrent change
+    /// left the graph breaking `TiePairing`; and, checked after each member,
+    /// a transaction that broke a tie and mended it lost it.
+    fn ties_give_way(
+        &mut self,
+        ties: &BTreeMap<TieId, &OperationEnvelope>,
+    ) -> BTreeMap<OperationId, Vec<RepairRecord>> {
+        let mut repairs: BTreeMap<OperationId, Vec<RepairRecord>> = BTreeMap::new();
+        // The live ones, at their current values, in canonical order.
+        let checked: Vec<(TypedObjectId, Tie, &OperationEnvelope)> = ties
+            .iter()
+            .map(|(id, env)| (TypedObjectId::Tie(*id), *env))
+            .filter(|(sid, _)| matches!(self.objects.get(sid), Some(ObjectState::Live)))
+            .filter_map(|(sid, env)| {
+                match self.cross_cutting_modify_chain.get(&sid)?.current()? {
+                    CrossCuttingValue::Tie(tie) => Some((sid, tie.clone(), env)),
+                    _ => None,
+                }
+            })
+            .collect();
+        for (sid, tie, env) in checked {
+            if self.tie_holds(&tie) {
+                continue;
+            }
+            self.cascade_structure(env, sid, repairs.entry(env.id).or_default());
+            self.structures.remove(&sid);
+            self.cross_cutting_modify_chain.remove(&sid);
+            self.graph_delete_cross_cutting(sid);
+        }
+        repairs
+    }
+
+    /// An event's voice and position, from `voice_occupancy`.
+    fn event_placement(&self, event: EventId) -> Option<(VoiceId, MusicalPosition)> {
+        self.voice_occupancy.iter().find_map(|(voice, placements)| {
+            placements
+                .iter()
+                .find(|(_, _, placed)| *placed == event)
+                .map(|(position, _, _)| (*voice, position.clone()))
+        })
+    }
+
+    /// The value of `pitch` in `event`: the graph's graph-aware, the index's
+    /// base-free.
+    fn event_pitch_value(&self, event: EventId, pitch: PitchId) -> Option<Pitch> {
+        match &self.graph {
+            // Every pitch the event holds, of any kind (a trajectory's too),
+            // as the core indexes an event's pitches and as base-free
+            // reduction holds their values (reduction version 3: before it a
+            // note's alone, so a tie on a trajectory read no value graph-aware
+            // and gave way there alone).
+            Some(score) => score.events.get(event).and_then(|held| {
+                let mut pitches = Vec::new();
+                held.collect_identified_pitches(&mut pitches);
+                pitches
+                    .into_iter()
+                    .find(|ip| ip.id == pitch)
+                    .map(|ip| ip.pitch.clone())
+            }),
+            None => self.pitch_values.get(&pitch).cloned(),
+        }
+    }
+
+    /// Whether `tie` holds as the core's `TiePairing` check reads it: its
+    /// pairing (each explicit pair a pitch of each end, chromatically
+    /// equivalent for the classes that require it; or, implicit, every start
+    /// pitch matched in id order to an equivalent end pitch) and its class's
+    /// placement (Standard: the next event of the start's voice; Editorial: a
+    /// later event of that voice; CrossVoice: an event of the same staff
+    /// instance, not before the start). Read from the indices both modes
+    /// keep: placements from `voice_occupancy`, pitches from
+    /// `event_pitches`, values through [`Self::event_pitch_value`].
+    fn tie_holds(&self, tie: &Tie) -> bool {
+        let pitches = |event: EventId| -> BTreeSet<PitchId> {
+            self.event_pitches
+                .get(&event)
+                .map(|held| {
+                    held.iter()
+                        .copied()
+                        .filter(|p| {
+                            matches!(
+                                self.objects.get(&TypedObjectId::Pitch(*p)),
+                                Some(ObjectState::Live)
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let (start_pitches, end_pitches) = (pitches(tie.start_event), pitches(tie.end_event));
+        let start_value = |p: PitchId| self.event_pitch_value(tie.start_event, p);
+        let end_value = |p: PitchId| self.event_pitch_value(tie.end_event, p);
+        let requires_enharmonic = matches!(
+            tie.class,
+            TieClass::Standard | TieClass::Editorial | TieClass::CrossVoice
+        );
+        let paired = match &tie.pitch_pairing {
+            Some(pairs) => pairs.iter().all(|(sp, ep)| {
+                start_pitches.contains(sp)
+                    && end_pitches.contains(ep)
+                    && (!requires_enharmonic
+                        || match (start_value(*sp), end_value(*ep)) {
+                            (Some(a), Some(b)) => a.chromatic_equivalent(&b),
+                            _ => true,
+                        })
+            }),
+            None => {
+                let mut used: BTreeSet<PitchId> = BTreeSet::new();
+                start_pitches.len() == end_pitches.len()
+                    && start_pitches.iter().all(|sp| {
+                        let a = start_value(*sp);
+                        let matched = end_pitches.iter().find(|ep| {
+                            !used.contains(*ep)
+                                && match (&a, end_value(**ep)) {
+                                    (Some(a), Some(b)) => a.chromatic_equivalent(&b),
+                                    _ => false,
+                                }
+                        });
+                        matched.is_some_and(|ep| used.insert(*ep))
+                    })
+            }
+        };
+        if !paired {
+            return false;
+        }
+        let index = |voice: VoiceId, position: &MusicalPosition| {
+            self.voice_occupancy[&voice]
+                .iter()
+                .filter(|(p, _, _)| p < position)
+                .count()
+        };
+        match (
+            self.event_placement(tie.start_event),
+            self.event_placement(tie.end_event),
+        ) {
+            (Some((sv, sp)), Some((ev, ep))) => match tie.class {
+                TieClass::Standard => sv == ev && index(ev, &ep) == index(sv, &sp) + 1,
+                TieClass::Editorial => sv == ev && index(ev, &ep) > index(sv, &sp),
+                TieClass::CrossVoice => {
+                    self.voice_instance(sv) == self.voice_instance(ev) && sp <= ep
+                }
+                TieClass::LaissezVibrer | TieClass::Registered(_) => true,
+            },
+            // An end the index does not place (the core's check skips it).
+            _ => true,
+        }
+    }
+
     fn surviving_endpoints(&self, sid: TypedObjectId, just_tombstoned: TypedObjectId) -> usize {
         self.structures
             .get(&sid)
@@ -9241,24 +11014,11 @@ impl<'a> Reducer<'a> {
     }
 
     /// The region a voice's placements lie in, from the base-free ledger
-    /// indices. A voice this reduction promoted is not among its instance's
-    /// voices there, so its instance is the one its losing insert named,
-    /// which is where the graph puts it.
+    /// indices. A voice this reduction promoted is among its instance's
+    /// voices there, under the instance its losing insert named, which is
+    /// where the graph puts it.
     fn indexed_voice_region(&self, voice: VoiceId) -> Option<RegionId> {
-        let instance = self.voice_instance(voice).or_else(|| {
-            self.promotion.iter().find_map(|(losing, (promoted, _))| {
-                if *promoted != voice {
-                    return None;
-                }
-                match &self.env_of(*losing)?.payload {
-                    OperationPayload::Primitive(OperationKind::InsertEvent(op)) => {
-                        Some(op.staff_instance)
-                    }
-                    _ => None,
-                }
-            })
-        })?;
-        self.instance_region_of(instance)
+        self.instance_region_of(self.voice_instance(voice)?)
     }
 
     /// The live events with a metric placement in `region`, from the
@@ -9916,21 +11676,28 @@ impl<'a> Reducer<'a> {
         }
 
         // Atomic: apply members against a snapshot; if any fails, roll back.
+        // A tie is held when the transaction completes, so one a member
+        // breaks and a later member mends stands; the last member that
+        // touched a tie that gives way records it.
         let snapshot = self.snapshot();
         self.current_tx = Some(tx);
         let mut member_effects: Vec<(OperationId, OperationEffect)> = Vec::new();
         let mut failed_members: Vec<OperationId> = Vec::new();
+        let mut touched: BTreeMap<TieId, &OperationEnvelope> = BTreeMap::new();
         for m in &ordered {
-            let eff = self.apply(m);
+            let (eff, ties) = self.apply_member(m);
             if is_member_failure(&eff) {
                 failed_members.push(m.id);
             }
+            touched.extend(ties.into_iter().map(|tie| (tie, *m)));
             member_effects.push((m.id, eff));
         }
         self.current_tx = None;
 
         if failed_members.is_empty() {
+            let mut repairs = self.ties_give_way(&touched);
             for (id, eff) in member_effects {
+                let eff = with_repairs(eff, repairs.remove(&id).unwrap_or_default());
                 self.effects.push((id, eff));
             }
         } else {
@@ -9985,11 +11752,13 @@ impl<'a> Reducer<'a> {
             conflicts: self.conflicts.clone(),
             minted_by: self.minted_by.clone(),
             event_pitches: self.event_pitches.clone(),
+            removed_pitches: self.removed_pitches.clone(),
             voice_occupancy: self.voice_occupancy.clone(),
             respell_chain: self.respell_chain.clone(),
             engraved_spelling_chain: self.engraved_spelling_chain.clone(),
             event_modify_chain: self.event_modify_chain.clone(),
             pitch_modify_chain: self.pitch_modify_chain.clone(),
+            pitch_values: self.pitch_values.clone(),
             cross_cutting_modify_chain: self.cross_cutting_modify_chain.clone(),
             metric_grid_chain: self.metric_grid_chain.clone(),
             metadata_chain: self.metadata_chain.clone(),
@@ -10035,11 +11804,13 @@ impl<'a> Reducer<'a> {
         self.conflicts = s.conflicts;
         self.minted_by = s.minted_by;
         self.event_pitches = s.event_pitches;
+        self.removed_pitches = s.removed_pitches;
         self.voice_occupancy = s.voice_occupancy;
         self.respell_chain = s.respell_chain;
         self.engraved_spelling_chain = s.engraved_spelling_chain;
         self.event_modify_chain = s.event_modify_chain;
         self.pitch_modify_chain = s.pitch_modify_chain;
+        self.pitch_values = s.pitch_values;
         self.cross_cutting_modify_chain = s.cross_cutting_modify_chain;
         self.metric_grid_chain = s.metric_grid_chain;
         self.metadata_chain = s.metadata_chain;
@@ -10074,6 +11845,22 @@ impl<'a> Reducer<'a> {
         self.descriptors = s.descriptors;
         self.tx_minted = s.tx_minted;
         self.graph = s.graph;
+    }
+}
+
+/// `effect` with `repairs` appended, where it applied; a conflicted or no-op
+/// effect carries none.
+fn with_repairs(effect: OperationEffect, repairs: Vec<RepairRecord>) -> OperationEffect {
+    if repairs.is_empty() {
+        return effect;
+    }
+    match effect {
+        OperationEffect::Applied => OperationEffect::AppliedWithRepair { repairs },
+        OperationEffect::AppliedWithRepair { repairs: mut own } => {
+            own.extend(repairs);
+            OperationEffect::AppliedWithRepair { repairs: own }
+        }
+        other => other,
     }
 }
 
@@ -12367,29 +14154,38 @@ mod tests {
     }
 
     #[test]
-    fn cmn_24_with_an_authored_spelling_still_refuses() {
-        // The complement: the spelling pre-pass remains 12-chromatic, so an
-        // *authored* spelling on a `cmn-24` pitch genuinely cannot be rewritten
-        // at the transposed position, and the operation refuses rather than
-        // leave the spelling stale — the point-of-use `?` still fires when
-        // there is a spelling to transpose.
-        let mut c4 = cmn_pitch(CmnNominal::B, 0, 4);
-        c4.scale_position.space = epiphany_core::PitchSpaceId::new("cmn-24");
-        let (mut base, pid) = base_with_pitch(c4);
-        author_spelling(&mut base, pid, PitchSpelling::cmn(CmnNominal::B, 4));
-        let expected = pitch_of(&base, pid);
+    fn cmn_24_with_an_authored_spelling_moves_it() {
+        // Reduction version 3: an authored spelling on a `cmn-24` pitch moves
+        // with it by quarter-tones, its accidental keeping its kind, where the
+        // operation refused (graph-aware only, base-free reduction holding no
+        // spelling, so the two modes split). B4 quarter-flat, spelt with
+        // Stein's quarter-flat, up a major second (four quarter-tones) is C5
+        // quarter-sharp, spelt with Stein's quarter-sharp.
+        let mut b4 = cmn_pitch(CmnNominal::B, -1, 4);
+        b4.scale_position.space = epiphany_core::PitchSpaceId::new("cmn-24");
+        let (mut base, pid) = base_with_pitch(b4);
+        let spelt = |nominal, name: &str, octave| PitchSpelling {
+            nominal: epiphany_core::SpellingNominal::Cmn(nominal),
+            accidentals: vec![epiphany_core::AccidentalId::new(name)],
+            octave,
+            render_hints: Default::default(),
+        };
+        author_spelling(&mut base, pid, spelt(CmnNominal::B, "quarter-flat", 4));
 
-        let (effect, score) = run_transpose(&base, &[pid], interval(1, 2));
-        assert_eq!(
-            effect,
-            OperationEffect::NoOp {
-                reason: NoOpReason::PreconditionFailedUnderReduction {
-                    reason: PreconditionFailureReason::TranspositionOutOfRange,
-                },
-            }
-        );
-        // Refused atomically: the value is untouched, not left half-transposed.
-        assert_eq!(pitch_of(&score, pid), expected);
+        let (effect, score) = run_transpose(&base, &[pid], interval(1, 4));
+        assert_eq!(effect, OperationEffect::Applied);
+        assert_eq!(cmn_of(&pitch_of(&score, pid)), (CmnNominal::C, 1, 5));
+        let authored: Vec<&PitchSpelling> = score
+            .spelling_attachments
+            .iter()
+            .filter(|a| matches!(&a.scope, SpellingScope::Pitch(p) if *p == pid))
+            .filter(|a| !matches!(a.source, SpellingSource::Propagated { .. }))
+            .filter_map(|a| match &a.directive {
+                SpellingDirective::Explicit(s) => Some(s),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(authored, vec![&spelt(CmnNominal::C, "quarter-sharp", 5)]);
     }
 
     #[test]
@@ -12538,14 +14334,35 @@ mod tests {
     }
 
     #[test]
-    fn an_untransposable_authored_spelling_refuses_the_whole_operation() {
+    fn an_unfollowable_authored_spelling_is_dropped_and_the_pitch_moves() {
         // The pitch itself transposes fine; its authored spelling cannot be
-        // written at the new staff position. Leaving it stale is exactly the
-        // bug, so the operation refuses and nothing moves.
+        // written at the new staff position (its octave would overflow).
+        // Reduction version 3: the transpose applies and the spelling is
+        // dropped, the pitch taking the spelling the transposition propagates,
+        // where before it the whole operation refused, graph-aware only,
+        // base-free reduction holding no spelling to find unwritable.
         let (mut base, pid) = base_with_pitch(cmn_pitch(CmnNominal::C, 0, 4));
         author_spelling(&mut base, pid, PitchSpelling::cmn(CmnNominal::C, 127));
 
         let (effect, score) = run_transpose(&base, &[pid], interval(7, 12));
+        assert_eq!(effect, OperationEffect::Applied);
+        assert_eq!(cmn_of(&pitch_of(&score, pid)), (CmnNominal::C, 0, 5));
+        let sources: Vec<&SpellingSource> = score
+            .spelling_attachments
+            .iter()
+            .filter(|a| matches!(&a.scope, SpellingScope::Pitch(p) if *p == pid))
+            .map(|a| &a.source)
+            .collect();
+        assert_eq!(sources, vec![&SpellingSource::Propagated { from: pid }]);
+    }
+
+    /// A transpose to a value no accidental stack writes (four flats) refuses,
+    /// read from the value, so in both modes alike (reduction version 3).
+    #[test]
+    fn a_transpose_past_a_triple_accidental_refuses() {
+        let (base, pid) = base_with_pitch(cmn_pitch(CmnNominal::C, -2, 4));
+        // C double-flat down an augmented unison and a half: C four flats.
+        let (effect, score) = run_transpose(&base, &[pid], interval(0, -2));
         assert_eq!(
             effect,
             OperationEffect::NoOp {
@@ -12554,7 +14371,9 @@ mod tests {
                 },
             }
         );
-        assert_eq!(cmn_of(&pitch_of(&score, pid)), (CmnNominal::C, 0, 4));
+        assert_eq!(cmn_of(&pitch_of(&score, pid)), (CmnNominal::C, -2, 4));
+        let (effect, _) = run_transpose(&base, &[pid], interval(0, -1));
+        assert_eq!(effect, OperationEffect::Applied, "a triple flat is written");
     }
 
     /// A declared transaction containing one `TransposeInterval`, plus a
@@ -13602,6 +15421,24 @@ mod tests {
         // major 0 unconditionally, and `MaterializedState` embeds no `Score`
         // field value for a clef or key, so there remains no surface on this
         // type for a leak to appear on.
+        //
+        // Re-pinned again at X4a.2, reduction version 3, by a verdict change
+        // rather than a reshuffle: the seeded stream is unchanged, but
+        // base-free reduction now refuses a referent the set mints that never
+        // came to be (`referent_dead`), and this stream's inserts and creates
+        // name many voices, staves and instances whose minting operation it
+        // refused. Effects, objects and conflicts move; no value enters the
+        // base. Moved again, within version 3, when a second instance of a
+        // staff in one region became refused: this stream's instances all
+        // name one staff. Moved again when a tempo segment's anchors became
+        // referents: this stream anchors its segments to regions it never
+        // made. Moved again when a whole-event modify came to follow
+        // observed-remove: this stream's modifies leave out pitches their
+        // authors saw, which they now remove (the removal disabled, the
+        // previous digest returns). Moved again when a whole-event modify
+        // came to mint the pitches it carries that nothing minted: this
+        // stream's modifies carry such pitches, now live (the mint disabled,
+        // the previous digest returns).
         let mut rng = epiphany_determinism::fuzz::SplitMix64::new(0xBA5E);
         let envelopes = crate::fuzz::gen_envelope_set(&mut rng, 200);
         let mut set = OperationSet::new();
@@ -13611,7 +15448,7 @@ mod tests {
         let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
             hex,
-            "110807c575e2c88301c7d53292716c36ff476c97c7ca17551022d8627bd89f53"
+            "ad881d02f3aeaecaedebd6277a3bc0b1af80373c8659962f3b0412da4fa47841"
         );
     }
 
@@ -18979,7 +20816,11 @@ mod tests {
             CausalContext::new(),
             OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
                 region,
-                instance: crate::valuegen::staff_instance(instance_b, staff),
+                // Another staff: a region manifests a staff once.
+                instance: crate::valuegen::staff_instance(
+                    instance_b,
+                    StaffId::new(ReplicaId(1), 5),
+                ),
             }),
         ));
 
@@ -20759,7 +22600,11 @@ mod tests {
                 CausalContext::new(),
                 OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
                     region,
-                    instance: crate::valuegen::staff_instance(*id, staff),
+                    // A staff of its own each: a region manifests a staff once.
+                    instance: crate::valuegen::staff_instance(
+                        *id,
+                        StaffId::new(ReplicaId(1), 100 + n as u64),
+                    ),
                 }),
             ));
         }
@@ -22677,7 +24522,15 @@ mod tests {
         fn m54_measure_values_surface_blocks_measure_undo() {
             let mut f = g3b_undo_fixture();
             let instance2 = StaffInstanceId::new(ReplicaId(1), 5);
-            let staff = StaffId::new(ReplicaId(1), 3);
+            // A second staff for the second instance: a region manifests a
+            // staff once.
+            let staff = StaffId::new(ReplicaId(1), 30);
+            f.push(
+                "CreateStaff 2",
+                OperationKind::CreateStaff(CreateStaffOp {
+                    staff: crate::valuegen::staff(staff, InstrumentId::new(ReplicaId(1), 4)),
+                }),
+            );
             let c = MeasureId::new(ReplicaId(1), 101);
             f.push(
                 "CreateStaffInstance 2",
@@ -22951,7 +24804,15 @@ mod tests {
         fn m61_same_transaction_teardown_exempts_measure_values() {
             let mut f = g3b_undo_fixture_prereqs_only();
             let instance2 = StaffInstanceId::new(ReplicaId(1), 5);
-            let staff = StaffId::new(ReplicaId(1), 3);
+            // A second staff for the second instance: a region manifests a
+            // staff once.
+            let staff = StaffId::new(ReplicaId(1), 30);
+            f.push(
+                "CreateStaff 2",
+                OperationKind::CreateStaff(CreateStaffOp {
+                    staff: crate::valuegen::staff(staff, InstrumentId::new(ReplicaId(1), 4)),
+                }),
+            );
             let c = MeasureId::new(ReplicaId(1), 101);
             f.push(
                 "CreateStaffInstance 2",
@@ -23203,7 +25064,15 @@ mod tests {
         fn m62_tombstoned_measure_referencer_does_not_block() {
             let mut f = g3b_undo_fixture();
             let instance2 = StaffInstanceId::new(ReplicaId(1), 5);
-            let staff = StaffId::new(ReplicaId(1), 3);
+            // A second staff for the second instance: a region manifests a
+            // staff once.
+            let staff = StaffId::new(ReplicaId(1), 30);
+            f.push(
+                "CreateStaff 2",
+                OperationKind::CreateStaff(CreateStaffOp {
+                    staff: crate::valuegen::staff(staff, InstrumentId::new(ReplicaId(1), 4)),
+                }),
+            );
             let c = MeasureId::new(ReplicaId(1), 101);
             let tx_c = TransactionId::new(ReplicaId(1), 901);
             f.push(

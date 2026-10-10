@@ -4746,3 +4746,342 @@ fn the_quarter_tone_fixture_engraves_to_its_golden() {
         golden.display()
     );
 }
+
+/// A file set transposed is drawn as it is set: `engrave_loaded` lays out
+/// the written view of a transposed score, its transposing parts at written
+/// pitch, and a concert score as the model holds it.
+#[test]
+fn a_transposed_file_is_drawn_at_written_pitch_and_a_concert_one_at_concert_pitch() {
+    use epiphany_cli::{engrave_loaded, engrave_on, geometry};
+    use epiphany_layout_ir::written_view;
+    let transposed = load(&fixture("written_keys.musicxml")).expect("loads");
+    assert!(!transposed.import.source.concert);
+    let page = geometry(&transposed.import.source);
+    let drawn = engrave_loaded(&transposed).layout;
+    assert_eq!(
+        drawn,
+        engrave_on(&written_view(&transposed.reduced.score), page).layout
+    );
+    assert_ne!(drawn, engrave_on(&transposed.reduced.score, page).layout);
+
+    let concert = load(&fixture("concert_transposing.musicxml")).expect("loads");
+    assert!(concert.import.source.concert);
+    let page = geometry(&concert.import.source);
+    assert_eq!(
+        engrave_loaded(&concert).layout,
+        engrave_on(&concert.reduced.score, page).layout
+    );
+}
+
+/// An open key is no key signature until the staff's first: the lead shows
+/// none and a B flat before the change states its flat, which the four-flat
+/// key then carries. Before, a staff whose first key came later was read in
+/// that key from its start.
+#[test]
+fn a_staff_has_no_key_before_its_first() {
+    use epiphany_core::TypedObjectId;
+    let note = "<note><pitch><step>B</step><alter>-1</alter><octave>4</octave></pitch>\
+                <duration>4</duration><voice>1</voice><type>whole</type></note>";
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\">\
+         <measure number=\"1\"><attributes><divisions>1</divisions>\
+         <key><fifths>0</fifths><mode>none</mode></key><time><beats>4</beats>\
+         <beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef>\
+         </attributes>{note}</measure>\
+         <measure number=\"2\"><attributes><key><fifths>-4</fifths></key></attributes>\
+         {note}</measure></part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("open_key.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = engrave(&loaded.reduced.score).layout;
+    let first_head = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("notehead"))
+        .map(|g| g.position.x.0)
+        .fold(f32::INFINITY, f32::min);
+    let flats: Vec<&epiphany_layout_ir::ResolvedGlyph> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str() == "accidentalFlat")
+        .collect();
+    let of_key = |g: &&&epiphany_layout_ir::ResolvedGlyph| {
+        matches!(g.provenance.source, TypedObjectId::StaffInstance(_))
+    };
+    assert_eq!(
+        flats
+            .iter()
+            .filter(of_key)
+            .filter(|g| g.position.x.0 < first_head)
+            .count(),
+        0,
+        "no key in the lead"
+    );
+    assert_eq!(
+        flats.iter().filter(|g| !of_key(g)).count(),
+        1,
+        "the first B flat states its flat, the key carries the second"
+    );
+    // The change to four flats, drawn after the first measure's barline.
+    assert_eq!(
+        flats
+            .iter()
+            .filter(of_key)
+            .filter(|g| g.position.x.0 > first_head)
+            .count(),
+        4
+    );
+}
+
+/// A key change is drawn after its barline with the naturals that cancel what
+/// the new key drops: all of the old key's accidentals for a change of side
+/// or to no key, those past the new count for a smaller key on the same
+/// side, none for a larger. Inside a system it stands between its barline and
+/// the measure's music; at a system break it ends the system before, after
+/// the closing barline, as a courtesy, and the new system's lead shows the
+/// new key alone. A key restated draws nothing.
+#[test]
+fn a_key_change_is_drawn_with_its_cancellation() {
+    let key = |fifths: i8| format!("<attributes><key><fifths>{fifths}</fifths></key></attributes>");
+    let rest = "<note><rest/><duration>4</duration><voice>1</voice><type>whole</type></note>";
+    let mut fifths: Vec<i8> = vec![3, -1, -3, -1, 0, 0];
+    fifths.extend((0..60).map(|m| if m % 2 == 0 { 2 } else { -2 }));
+    let body: String = fifths
+        .iter()
+        .enumerate()
+        .map(|(m, f)| {
+            let opening = if m == 0 {
+                format!(
+                    "<attributes><divisions>1</divisions><key><fifths>{f}</fifths></key>\
+                     <time><beats>4</beats><beat-type>4</beat-type></time>\
+                     <clef><sign>G</sign><line>2</line></clef></attributes>"
+                )
+            } else {
+                key(*f)
+            };
+            format!("<measure number=\"{}\">{opening}{rest}</measure>", m + 1)
+        })
+        .collect();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\">{body}</part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("key_changes.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = engrave(&loaded.reduced.score).layout;
+    let systems: Vec<_> = layout.systems().collect();
+    assert!(systems.len() > 2, "the score wraps");
+
+    let short = |name: &str| match name {
+        "accidentalNatural" => "n",
+        "accidentalSharp" => "#",
+        "accidentalFlat" => "b",
+        _ => "",
+    };
+    // Per system, its rests, barlines and accidentals in x order.
+    let mut rests_before = 0;
+    let mut courtesy: Option<String> = None;
+    for (s, system) in systems.iter().enumerate() {
+        let mut glyphs: Vec<&epiphany_layout_ir::ResolvedGlyph> = system
+            .primitives
+            .glyphs
+            .iter()
+            .map(|&i| &layout.glyphs[i as usize])
+            .collect();
+        glyphs.sort_by(|a, b| a.position.x.0.total_cmp(&b.position.x.0));
+        let rests: Vec<f32> = glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str().starts_with("rest"))
+            .map(|g| g.position.x.0)
+            .collect();
+        let accidentals: Vec<&&epiphany_layout_ir::ResolvedGlyph> = glyphs
+            .iter()
+            .filter(|g| !short(g.glyph.as_str()).is_empty())
+            .collect();
+        // The lead: the key in force at the system's first measure, alone.
+        let lead: String = accidentals
+            .iter()
+            .filter(|g| g.position.x.0 < rests[0])
+            .map(|g| short(g.glyph.as_str()))
+            .collect();
+        let in_force = fifths[rests_before];
+        let expected_lead =
+            if in_force > 0 { "#" } else { "b" }.repeat(in_force.unsigned_abs() as usize);
+        assert_eq!(lead, expected_lead, "system {s}'s lead");
+        if s > 0 {
+            // The courtesy that ended the system before named this key.
+            if let Some(courtesy) = courtesy.take() {
+                assert!(courtesy.ends_with(&expected_lead), "system {s}: {courtesy}");
+            }
+        }
+        // Each change inside the system, between its barline and its rest.
+        let barlines: Vec<f32> = glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str() == "barlineSingle")
+            .map(|g| g.position.x.0)
+            .collect();
+        let drawn = |from: f32, to: f32| -> String {
+            accidentals
+                .iter()
+                .filter(|g| g.position.x.0 > from && g.position.x.0 < to)
+                .map(|g| short(g.glyph.as_str()))
+                .collect()
+        };
+        for (r, pair) in rests.windows(2).enumerate() {
+            let m = rests_before + r + 1;
+            let barline = barlines
+                .iter()
+                .copied()
+                .find(|x| *x > pair[0] && *x < pair[1])
+                .expect("a barline between two measures");
+            assert_eq!(
+                drawn(pair[0], barline),
+                "",
+                "nothing before measure {m}'s barline"
+            );
+            let expected = match (fifths[m - 1], fifths[m]) {
+                (3, -1) => "nnnb",
+                (-1, -3) => "bbb",
+                (-3, -1) => "nnb",
+                (-1, 0) => "n",
+                (0, 0) => "",
+                (0, 2) => "##",
+                (2, -2) => "nnbb",
+                (-2, 2) => "nn##",
+                other => panic!("unexpected change {other:?}"),
+            };
+            assert_eq!(drawn(barline, pair[1]), expected, "measure {m}'s change");
+        }
+        rests_before += rests.len();
+        // A change at the break: after the system's last barline.
+        if rests_before < fifths.len() {
+            let last = barlines.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let after = drawn(last, f32::INFINITY);
+            if fifths[rests_before] != fifths[rests_before - 1] {
+                assert!(!after.is_empty(), "system {s} ends with a courtesy");
+                courtesy = Some(after);
+            } else {
+                assert_eq!(after, "");
+            }
+        }
+    }
+    assert_eq!(rests_before, fifths.len());
+}
+
+/// A slur passes over the accidentals of its staff it would meet: one rising
+/// to a flat, and a two-note one falling to a flat, lift their ends over it;
+/// one above raises its arc over an interior flat. No point of any curve
+/// stands inside an accidental's box. Before `ENGRAVER_VERSION` 44 each of
+/// the three measures had a slur run through its flat.
+#[test]
+fn a_slur_clears_the_accidentals_under_it() {
+    let note = |step: &str, alter: i8, octave: u8, slur: &str| {
+        let alter_el = if alter == 0 {
+            String::new()
+        } else {
+            format!("<alter>{alter}</alter>")
+        };
+        let accidental = if alter == -1 {
+            "<accidental>flat</accidental>"
+        } else {
+            ""
+        };
+        let slur = match slur {
+            "" => String::new(),
+            kind => format!("<notations><slur type=\"{kind}\" number=\"1\"/></notations>"),
+        };
+        format!(
+            "<note><pitch><step>{step}</step>{alter_el}<octave>{octave}</octave></pitch>\
+             <duration>1</duration><voice>1</voice><type>quarter</type>{accidental}{slur}</note>"
+        )
+    };
+    let measures = [
+        // Up from C5 to A-flat 5.
+        [
+            note("C", 0, 5, "start"),
+            note("D", 0, 5, ""),
+            note("E", 0, 5, ""),
+            note("A", -1, 5, "stop"),
+        ],
+        // D5 to E-flat 5, then C5 to B-flat 4.
+        [
+            note("D", 0, 5, "start"),
+            note("E", -1, 5, "stop"),
+            note("C", 0, 5, "start"),
+            note("B", -1, 4, "stop"),
+        ],
+        // Stems down, the slur above, over A-flat 5.
+        [
+            note("E", 0, 5, "start"),
+            note("A", -1, 5, ""),
+            note("G", 0, 5, ""),
+            note("F", 0, 5, "stop"),
+        ],
+    ];
+    let body: String = measures
+        .iter()
+        .enumerate()
+        .map(|(m, notes)| {
+            let opening = if m == 0 {
+                "<attributes><divisions>1</divisions><key><fifths>0</fifths></key>\
+                 <time><beats>4</beats><beat-type>4</beat-type></time>\
+                 <clef><sign>G</sign><line>2</line></clef></attributes>"
+            } else {
+                ""
+            };
+            format!(
+                "<measure number=\"{}\">{opening}{}</measure>",
+                m + 1,
+                notes.concat()
+            )
+        })
+        .collect();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\">{body}</part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("slurs_over_accidentals.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = engrave(&loaded.reduced.score).layout;
+
+    let accidentals: Vec<_> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("accidental"))
+        .map(|g| {
+            let b = g.bounding_box;
+            (
+                g.position.x.0 + b.left.0,
+                g.position.x.0 + b.right.0,
+                g.position.y.0 + b.bottom.0,
+                g.position.y.0 + b.top.0,
+            )
+        })
+        .collect();
+    assert_eq!(accidentals.len(), 4, "four flats");
+    assert_eq!(layout.curves.len(), 4, "four slurs");
+    for (c, curve) in layout.curves.iter().enumerate() {
+        let [p0, p1, p2, p3] = [curve.p0, curve.p1, curve.p2, curve.p3];
+        let at = |a: f32, b: f32, c: f32, d: f32, t: f32| {
+            let u = 1.0 - t;
+            u * u * u * a + 3.0 * u * u * t * b + 3.0 * u * t * t * c + t * t * t * d
+        };
+        for k in 0..=400 {
+            let t = k as f32 / 400.0;
+            let (x, y) = (
+                at(p0.x.0, p1.x.0, p2.x.0, p3.x.0, t),
+                at(p0.y.0, p1.y.0, p2.y.0, p3.y.0, t),
+            );
+            for (left, right, bottom, top) in &accidentals {
+                assert!(
+                    !(x > *left && x < *right && y > *bottom && y < *top),
+                    "slur {c} runs through an accidental at ({x:.2}, {y:.2})"
+                );
+            }
+        }
+    }
+}

@@ -1702,3 +1702,18 @@ round-trip test with; `a_tuplet_migrates_from_every_frozen_form_with_its_display
 carries a tuplet through majors 0 to 3, which `valid_score` never held.
 `Tuplet::decode_major_3` is public so an operation decoder can recognize a
 pre-major-4 `CreateTuplet` and refuse it by name.
+
+## Quarter-tone accidentals by name, and a spelling moved by quarter-tones (X4a.2, 2026-10-07)
+
+The quarter-tone accidentals the importer reads (MusicXML's arrowed names and
+Stein's) and its rule for choosing one at a sounding pitch, an arrow keeping
+its direction and Stein's its family, move here from `epiphany-musicxml`
+(`ARROWED_QUARTER_TONES`, `STEIN_QUARTER_TONES`, `quarter_tones_named`,
+`quarter_tone_name`, `quarter_tone_accidental`), since the reducer needs the
+same rule to move an authored quarter-tone spelling with a transposition. The
+importer re-exports the chooser where it was. `Pitch::quarter_tone_position`
+puts a `cmn-12` and a `cmn-24` pitch in one frame (twice the semitone, or the
+24-chromatic coordinate), and `PitchSpelling::transposed_by_quarter_tones`
+moves a spelling in it, the sibling of `PitchSpelling::transposed`. The
+engraver's glyph table is held to these names and alterations by
+`the_cores_quarter_tone_accidentals_are_drawn_at_their_alterations`.

@@ -453,7 +453,10 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
     // Schema major 4 appends `display` to `Tuplet`: the same score with a
     // tuplet, in the five-field form majors 0 to 3 share (accepted at major
     // 3, its display then the default) and with a hidden display at major
-    // 4; the major-3 bytes are no major-4 encoding.
+    // 4; the major-3 bytes are no major-4 encoding. The score decoder has no
+    // stamp to read, so it meets them as a major-4 score that ends early;
+    // the refusal by name belongs to the envelope decoder, which reads the
+    // block's stamp (`ops.operation_envelope`'s `create_tuplet_before_major_4`).
     let mut tupled = score.clone();
     let members: Vec<EventId> = tupled.events.iter().take(2).map(|e| e.id()).collect();
     let tuplet = Tuplet {
@@ -497,7 +500,7 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
     v.push(row(
         SV4,
         "reject",
-        "unsupported-layout",
+        "truncated",
         "with_a_major_3_tuplet",
         tupled_v3,
     ));
@@ -517,12 +520,12 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         }
         .canonical_bytes(),
     ));
-    // The five-field form of majors 0 to 3: its last two bytes are the
-    // display's two tags.
+    // The five-field form of majors 0 to 3: the hidden tuplet without its
+    // last two bytes, the display's two tags, so the live decoder runs out.
     v.push(row(
         TUPLET,
         "reject",
-        "unsupported-layout",
+        "truncated",
         "major_3_form",
         tuplet_bytes[..tuplet_bytes.len() - 2].to_vec(),
     ));
@@ -638,6 +641,58 @@ mod tests {
             assert!(accept, "{surface} has no accept vector");
             assert!(reject, "{surface} has no reject vector");
         }
+    }
+
+    /// The class column is informative (the corpus header), but where this
+    /// crate names a mechanical class it names what this decoder does: every
+    /// core vector classed `truncated` runs out of bytes and every one classed
+    /// `trailing-bytes` has bytes left over. The major-3 tuplet forms are
+    /// among the truncated: the core reads no stamp, so it cannot refuse
+    /// them by name, as the envelope decoder does.
+    #[test]
+    fn mechanical_classes_name_the_core_decoders_own_error() {
+        use crate::codec::ScoreDecodeError;
+        use crate::graph::Tuplet;
+        fn error(surface: &str, bytes: &[u8]) -> Option<ScoreDecodeError> {
+            let major = surface
+                .strip_prefix("core.score_v")
+                .map(|m| m.parse::<u16>().expect("a score surface names its major"));
+            match (surface, major) {
+                (_, Some(major)) => Score::decode_canonical_versioned(bytes, major).err(),
+                ("core.tuplet", None) => Tuplet::decode_canonical(bytes).err(),
+                ("core.event", None) => Event::decode_canonical(bytes).err(),
+                ("core.slur", None) => Slur::decode_canonical(bytes).err(),
+                ("core.pitch", None) => Pitch::decode_canonical(bytes).err(),
+                ("core.rational_time", None) => RationalTime::decode_canonical(bytes).err(),
+                ("core.time_anchor", None) => TimeAnchor::decode_canonical(bytes).err(),
+                ("core.score_tuning_context", None) => {
+                    ScoreTuningContext::decode_canonical(bytes).err()
+                }
+                ("core.tuning_override", None) => TuningOverride::decode_canonical(bytes).err(),
+                ("core.tuning_scope", None) => TuningScope::decode_canonical(bytes).err(),
+                ("core.smufl_version_requirement", None) => {
+                    SmuflVersionRequirement::decode_canonical(bytes).err()
+                }
+                ("core.smufl_version", None) => SmuflVersion::decode_canonical(bytes).err(),
+                (other, None) => panic!("{other}: a surface this test does not know"),
+            }
+        }
+        let mut checked = std::collections::BTreeSet::new();
+        for (surface, verdict, class, name, bytes) in decode_vectors() {
+            let expected = match (verdict, class) {
+                ("reject", "truncated") => ScoreDecodeError::UnexpectedEof,
+                ("reject", "trailing-bytes") => ScoreDecodeError::TrailingBytes,
+                _ => continue,
+            };
+            assert_eq!(
+                error(surface, &bytes),
+                Some(expected),
+                "{surface}/{name} is classed {class}"
+            );
+            checked.insert((surface, name.to_string()));
+        }
+        assert!(checked.contains(&("core.tuplet", "major_3_form".to_string())));
+        assert!(checked.contains(&("core.score_v4", "with_a_major_3_tuplet".to_string())));
     }
 
     /// The mandatory regression vector for the 3b-i defect is present: it is

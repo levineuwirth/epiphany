@@ -16,6 +16,14 @@
 //!   written-versus-sounding interval, octave changes folded in, goes on its
 //!   instrument (`part-transpose` in a concert score), so the written pitch is
 //!   the stored one moved by the inverse interval.
+//! - Keys are stored at concert pitch too. A concert score's already are; a
+//!   transposed score's are moved by the fifths of the part's first
+//!   `transpose`. An open key (`<mode>none</mode>`) is no key signature,
+//!   which no transposition moves: where no key is in force it is not
+//!   stored, and after one it is stored as no accidentals and recorded,
+//!   since the model holds no open key. Whether the file is a concert score
+//!   is kept on the source (`SourceScore::concert`), and a score is drawn as
+//!   its file is set.
 //! - The whole score is one metric region. Meter changes are
 //!   `SetTimeSignature` operations; each staff instance is created carrying
 //!   every clef and key change the file makes on it, since no operation adds

@@ -126,9 +126,11 @@ pub use pitch_space::{
 };
 
 pub use accidental::{
-    accidental_modification_compatible_with_space, resolve_accidental, AccidentalCombination,
-    AccidentalDefinition, AccidentalEngraving, AnchorPoint, EngravingBoundingBox, GlyphReference,
-    PitchSpaceModification, ScoreAccidentalExtensions, SmuflVersion, SmuflVersionRequirement,
+    accidental_modification_compatible_with_space, quarter_tone_accidental, quarter_tone_name,
+    quarter_tones_named, resolve_accidental, AccidentalCombination, AccidentalDefinition,
+    AccidentalEngraving, AnchorPoint, EngravingBoundingBox, GlyphReference, PitchSpaceModification,
+    ScoreAccidentalExtensions, SmuflVersion, SmuflVersionRequirement, ARROWED_QUARTER_TONES,
+    STEIN_QUARTER_TONES,
 };
 
 pub use prepass::{

@@ -250,6 +250,380 @@ pub mod vectors;
 ///   `migration_judges_a_bases_wall_clock_events_from_the_graph` holding
 ///   graph-aware reduction's own verdicts over a base.
 ///
+/// * `3` — **X4a** (2026-10-07). The two reduction modes are held to each
+///   other by a fuzz over editors' concurrent histories (`fuzz::modes`), and
+///   each split it finds is closed here, in the mode that disagreed. Each
+///   change is a **reduction verdict** change, and with it the state the
+///   verdict produces:
+///   - the promotion pre-pass buckets every concurrent `InsertEvent` into a
+///     voice, whatever its preconditions, as the catalog's rule reads, where
+///     graph-aware reduction took only inserts whose voice its graph held
+///     before anything applied. Over the importer's empty base it promoted
+///     nothing, so the later of two overlapping concurrent inserts into a
+///     voice the history made was refused `EventDurationInvalid` (or applied
+///     where its winner failed) graph-aware and promoted base-free; now both
+///     modes promote it. Base-free reduction is unchanged.
+///   - a `TransposeInterval` of a pitch in `cmn-24` with an authored spelling
+///     applies, the spelling moved by quarter-tones and its accidental kept to
+///     its kind (`PitchSpelling::transposed_by_quarter_tones`), where
+///     graph-aware reduction refused it `TranspositionOutOfRange`, unable to
+///     rewrite a 24-chromatic spelling, and base-free reduction, which holds no
+///     spelling, applied it. Every quarter-tone the importer reads carries
+///     such a spelling. The graph's pitch, spelling and value chain change with
+///     the verdict.
+///   - base-free reduction reads a referent its set mints as the set leaves
+///     it (`req:catalog:base-free-referents`): one an envelope mints that no
+///     operation made live, or that one tombstoned, is missing, so a
+///     `CreateStaffInstance`, `CreateStaff`, `CreatePartDefinition`,
+///     `CreateView`, `CreateMeasure`, `SetStaffLayout` or
+///     `ChangeRegionTimeModel` naming it is refused `TargetMissing`, and an
+///     `InsertEvent` into such a voice `VoiceMissing`, as graph-aware
+///     reduction refuses each; before, base-free reduction checked none of
+///     these referents, and created a voice it had never seen on first use.
+///     So is a system-promoted voice no promotion of the reduction made, and
+///     a migration of a region an undo tombstoned, which the graph keeps, is
+///     refused graph-aware as well, where it applied.
+///     An object no envelope mints is still taken as live. The pinned digest
+///     of a seeded `gen_envelope_set` reduction moves with these verdicts.
+///   - base-free reduction keeps each pitch it minted at its current value
+///     (`pitch_values`, written wherever the graph writes one), so a
+///     `TransposeInterval` resolves its targets and records its write in the
+///     pitch's chain in both modes: a concurrent `ModifyIdentifiedPitch` of a
+///     transposed pitch conflicts base-free as graph-aware, where it applied,
+///     and an undo of a transpose restores the pitch base-free, where it was
+///     refused `TargetMissing` for having nothing to restore. A pitch from a
+///     base is still unknown base-free.
+///   - a `TransposeInterval` whose transposed value no well-formed accidental
+///     stack writes (past a triple accidental, or in `cmn-24` past five
+///     quarter-tones) is refused `TranspositionOutOfRange` in both modes, read
+///     from the value; an authored spelling it cannot move is dropped, the
+///     pitch taking the propagated one, where the operation was refused
+///     graph-aware alone, and the graph wrote a repeated accidental for a
+///     value past a triple one. A deleted pitch takes every spelling
+///     attachment scoped to it, where a propagated one outlived it
+///     (`SpellingScopeResolves`).
+///   - an undo reads the same history in both modes: base-free reduction seeds
+///     the score-level settings chains (metadata, canvas layout defaults,
+///     spelling precedence, tuning context) with an empty score's values, as
+///     graph-aware reduction onto an empty base does, so a second undo of a
+///     settings transaction conflicts base-free as graph-aware, where it
+///     applied; and it records each write to a pitch's spelling set, so an
+///     undo of a respelling a later transpose superseded conflicts base-free,
+///     where it was undone.
+///   - a `ChangeRegionTimeModel` whose `Reassign` would leave two events of
+///     one voice overlapping conflicts `TimeModelMigrationFailure`, naming
+///     both, read from the occupancy index both modes keep, where it applied
+///     and broke invariant 3.
+///   - a `CreateStaffInstance` for a staff a live instance of its region
+///     already manifests is refused `ContainerNotEmpty`, read from the
+///     region's instances and their staves both modes keep, where two
+///     concurrent creates both applied (`StaffInstanceResolves`). The seeded
+///     digest moves again, its stream's instances all naming one staff, and
+///     test fixtures that made two instances of a staff in a region now give
+///     the second a staff of its own.
+///   - a `DeleteRegion` of a region a live tempo segment of another map
+///     anchors to is refused `ContainerNotEmpty`, read from the tempo chains
+///     both modes keep, where it applied and left the anchor naming nothing
+///     (`CrossCuttingRefsResolve`).
+///   - a `ChangeRegionTimeModel` to a model admitting no musical offset
+///     (`CoordinateDiscipline::admits_musical_offsets`) conflicts, naming the
+///     region's live measures beside its events, where it left them anchored
+///     in musical time; applied, it drops the region's system and page breaks;
+///     and a `SetUserSystemBreak` or `SetUserPageBreak` in musical time into
+///     such a region is refused `WrongRegionTimeModel` (`AnchorOffsetModel`).
+///   - an undo that would tombstone a measure with a live later measure in its
+///     instance is blocked by it, as by the measure guard's other surfaces
+///     (strict: conflicted; best effort: the measure kept), where it removed
+///     the measure and left the next two bars from its predecessor
+///     (`MeasureMeterConsistency`).
+///   - a pitch an undo tombstones leaves its surviving event in the graph, as
+///     a deleted pitch does, where it stayed both live and tombstoned
+///     (`UniqueIdentifiers`); a graph-state change only.
+///   - an undo that would tombstone a region, a staff instance or a voice with
+///     a live child the same undo leaves (an instance, a voice, an event) is
+///     blocked by it, as a measure is, where it removed the container and left
+///     the child naming it; and an instance or region an undo tombstones
+///     leaves the graph, as a deleted one does, where the graph kept it
+///     (`StaffInstanceResolves`).
+///   - an undo whose restored cross-cutting value names an endpoint deleted
+///     since is superseded by that delete, where it restored the dangling
+///     reference (`CrossCuttingRefsResolve`).
+///   - a `SetTimeSignature`, and a `SetMetricGrid` that sets a grid, into a
+///     region admitting no musical offset is refused `WrongRegionTimeModel`,
+///     and a `ChangeRegionTimeModel` into such a model drops the region's
+///     default and local metric grids, where each kept a meter in musical
+///     time (`AnchorOffsetModel`).
+///   - an `InsertEvent` carrying a wall-clock position is refused
+///     `WrongRegionTimeModel` in both modes, read from the value, where it was
+///     admitted into a metric region and indexed at the region's origin
+///     (`EventCoordinateModel`).
+///   - a `SetTempoSegment` whose segment is anchored to a region that is not
+///     live is refused `TargetMissing`, the anchor read as a referent in both
+///     modes, where a score-level segment's anchor was not read
+///     (`CrossCuttingRefsResolve`); one anchored by a musical offset to a
+///     region admitting none is refused `WrongRegionTimeModel`; and a live
+///     segment so anchored strands a migration of its region to such a model,
+///     which conflicts naming the region, where each applied
+///     (`AnchorOffsetModel`).
+///   - an applied `ChangeRegionTimeModel` whose `Reassign` reorders a voice's
+///     events leaves the voice in position order in the graph, as a move
+///     does, where it kept the old order (`VoiceEventsSortedNonOverlap`); a
+///     graph-state change only.
+///   - a tie gives way (D48, D49, `req:opcat:tie-gives-way`): when a
+///     transaction completes, a lone operation being its own, a live tie its
+///     members may have broken, its pairing or its class's placement no
+///     longer holding, is removed and the last member that touched it records
+///     a `CascadeDeleted` repair for it (a conflicted operation's effect
+///     carries none; the tie's tombstone names it), read from the indices both
+///     modes keep; a tie one member breaks and a later member mends stands.
+///     An insert between a tie's ends, a move, a pitch edited,
+///     transposed, deleted or added to an implicitly paired end, a migration's
+///     remapping, an undo's restoration, and a tie created or rewritten over
+///     such a change each so remove it, where the tie stayed (`TiePairing`).
+///   - a `ModifyEvent` keeps a live pitch of its event that its value does not
+///     carry and whose insert its author never saw, at its current value and
+///     with its attachments (add wins, D48; observed-remove, D49, below); and
+///     an undo restoring an event's value keeps every live pitch of the event
+///     the value does not carry, the undone transaction's own tombstoned
+///     first. Each dropped the pitch from the graph and left it live, its
+///     spelling naming nothing (`SpellingScopeResolves`).
+///   - a `SetClef` or `SetKeySignature` into an instance whose region admits
+///     no musical offset is refused `WrongRegionTimeModel`, as is a
+///     `CreateStaffInstance` carrying a clef or key change anchored by a
+///     musical offset into such a region; and a live instance of a region
+///     holding a clef or key change strands the region's migration to such a
+///     model, which conflicts naming the instance. Each applied and left a
+///     change anchored by a musical offset the region no longer admits
+///     (`AnchorOffsetModel`).
+///   - an undo that would tombstone a staff a live part definition or spanner
+///     names is blocked by it, as by a live staff instance (strict:
+///     conflicted; best effort: the staff kept); and a `CreateCrossCutting` or
+///     `ModifyCrossCutting` of a spanner naming a dead staff is refused
+///     `TargetMissing`, its staves read as referents in both modes. Each left
+///     a reference to a staff the score does not declare
+///     (`CrossCuttingRefsResolve`).
+///   - an undo whose restoration of an event's value would change the
+///     duration of a live tuplet's member, the tuplet not among the undo's own
+///     mints, is superseded by the tuplet's create (strict: conflicted; best
+///     effort: the duration left), as a `ModifyEvent` changing it is refused,
+///     where the restoration broke the tuplet's sum (`TupletSum`).
+///   - a `ModifyEvent` follows observed-remove (D49): a live pitch of its
+///     event its value leaves out and whose insert is in its causal past (or
+///     which a base holds, the base preceding every operation) is removed
+///     with its attachments, as `DeleteIdentifiedPitch` removes one, and the
+///     modify records a `CascadeDeleted` repair for it (a conflicted modify's
+///     effect carries none; the pitch's tombstone names it); so a rest or an
+///     unpitched event written over a note its author saw becomes that event,
+///     and over a note holding a pitch its author never saw, a note of that
+///     pitch. An undo restoring a modified event's value brings back, at
+///     their values and with their attachments, the pitches the undone
+///     transaction's modifies removed, and keeps every pitch added since
+///     (the owner's ruling, D51). A whole-event write leaves out
+///     a pitch it carries that a delete or undo tombstoned (delete wins). The
+///     modify dropped a pitch it left out from the graph and left it live
+///     (`SpellingScopeResolves`); then, under the checkpoint's first reading of
+///     D48, it removed none, so a removal written as a whole event, a rest
+///     over a note among them, was ignored; and a carried tombstoned pitch came
+///     back into the graph (`UniqueIdentifiers`).
+///   - a `CreateMeasure` whose start is anchored in musical time into a
+///     region admitting no musical offset is refused `WrongRegionTimeModel`,
+///     as a `SetTimeSignature` is, where it applied after a concurrent
+///     migration out of musical time (`AnchorOffsetModel`).
+///   - the effective grid's two independent chains, a region's whole-grid
+///     writes and its per-key meter changes, compare by the position each
+///     write's operation applied at in the walk (`applied_at`), where they
+///     compared by stamp: a transaction's members apply together where its
+///     first member falls, so its later-stamped grid write was taken for more
+///     recent than a concurrent time signature the graph applied after it,
+///     and a `CreateMeasure` placed by a grid the graph did not hold applied
+///     a bar out (`MeasureMeterConsistency`); it is now refused
+///     `MeasureMeterMismatch`.
+///   - an undo that would tombstone a region a live tempo segment of another
+///     map anchors to, or an instrument a live staff instance's override
+///     names (each read as the undo leaves it), is blocked by it (strict:
+///     conflicted, the conflict naming the region once for a segment, which
+///     has no id; best effort: the region or instrument kept), where the undo
+///     left the anchor or override naming nothing (`CrossCuttingRefsResolve`).
+///   - a best-effort undo that keeps a mint of its transaction for what names
+///     it keeps what that mint names in turn, the strand guard read against
+///     the mints still going until it keeps none, where it kept a staff for
+///     its live instance and removed the instrument the staff names, judging
+///     the staff's reference as going with it (`CrossCuttingRefsResolve`).
+///   - an `InsertIdentifiedPitch` into an unpitched event makes it a note of
+///     the pitch, as one into a rest does, where the graph dropped the pitch
+///     the ledger minted (a concurrent whole-event modify writing the note
+///     as unpitched; `SpellingScopeResolves` once the pitch was spelt). Graph
+///     state only.
+///   - a voice the promotion pre-pass makes is indexed under the staff
+///     instance its insert names, as the graph holds it, so a
+///     `DeleteStaffInstance` while it holds an event is refused
+///     `ContainerNotEmpty` in both modes, where the instance, its other voices
+///     gone, looked empty and its delete applied, the promoted event naming a
+///     voice the graph no longer held (`EventVoiceBacklink`).
+///   - an `UndoTransaction` that is a member of the transaction it names is
+///     refused `TargetMissing` in both modes, read from the envelope, and so
+///     fails that transaction, where it reversed the members before it, an
+///     earlier undo's restoration of a meter change among them, against a time
+///     signature that undo had removed (`CrossCuttingRefsResolve`).
+///   - an undo's restoration that would write in musical time into a region a
+///     migration has since taken out of it (a system or page break anchored
+///     by a musical offset, a meter change, a metric grid, a tempo segment
+///     anchored in the region, a clef or key change of its instance) is
+///     superseded by that migration in both modes (strict: conflicted; best
+///     effort: the value left out), as each setter is refused there, where it
+///     restored the value anchored by a musical offset the region no longer
+///     admits (`AnchorOffsetModel`; for the grid, a meter the migration had
+///     dropped).
+///   - an undo's restoration of a value naming an object tombstoned since (a
+///     meter change's or a metric grid's time signature or anchor, a tempo
+///     segment's anchors, an instrument override, a present break's anchor)
+///     is superseded by the operation that tombstoned it, as a cross-cutting
+///     value naming a deleted endpoint is (strict: conflicted; best effort:
+///     the value left out), where an undo of an undo restored a meter change
+///     naming the time signature the first undo had removed
+///     (`CrossCuttingRefsResolve`) or a break anchored to its removed measure.
+///   - an undo's restoration of a cross-cutting value is superseded by the
+///     tombstoning of any object the value names, a spanner's staves and its
+///     measure or region anchors as well as an endpoint event, where it read
+///     the endpoints alone and restored a spanner naming a staff, measure or
+///     region an undo had removed since (`CrossCuttingRefsResolve`).
+///
+///   - a pitch an event without a pitch list comes to hold, by an
+///     `InsertIdentifiedPitch` or kept by a whole-event write, makes it a note
+///     of its own pitches (a trajectory's) and that pitch, whatever its kind,
+///     as one did a rest and, above, an unpitched event, where an
+///     indeterminate, trajectory, graphic or cue event kept its kind and the
+///     graph dropped the pitch the ledger held live (`SpellingScopeResolves`
+///     once the pitch was spelt). Graph state only.
+///   - a `ChangeRegionTimeModel` judges each of its region's events against
+///     the target's coordinate discipline as invariant 4 does
+///     (`CoordinateDiscipline::admits_event`, shared with the invariant
+///     check): a metric event the index holds is incompatible with an
+///     aleatoric target anchored in wall-clock time as with a proportional
+///     one, and an event only the graph holds with an aleatoric target whose
+///     anchoring does not admit it, where every aleatoric target was taken to
+///     admit every event and the migration applied, leaving events in
+///     coordinates the region no longer admitted (`EventCoordinateModel`).
+///   - a `ModifyEvent` mints each pitch its value carries that no operation
+///     has minted, as an insert mints its event's pitches (live, at its value
+///     in both modes, under the modify's transaction for an undo), where the
+///     pitch reached the graph alone, every operation naming it was refused
+///     `TargetMissing`, and the tie check, reading the ledger, kept a tie
+///     whose end it had joined (`TiePairing`).
+///   - every pitch an event holds, whatever its kind (a trajectory's
+///     endpoints and steps), is read and written graph-aware as a note's is,
+///     as the core indexes it and base-free reduction holds its value: its
+///     value read by the tie check and an interval's transposition, written
+///     by a pitch's modify and transposition, and recorded base-free from a
+///     whole-event write of any kind; and a trajectory that loses one of its
+///     pitches, by a delete or a whole-event write carrying one a delete
+///     removed, becomes a note of the others, a rest when none remain. Where
+///     graph-aware reduction read and wrote a note's pitches alone, a tie on
+///     a trajectory gave way there alone (an effect split) and the graph kept
+///     a trajectory's pitch the ledger had removed.
+///   - a voice or staff instance an undo tombstones leaves the reducer's
+///     container indices, as a deleted one does (a voice its instance's and
+///     its occupancy, an instance its region's), so a later
+///     `DeleteStaffInstance` or `DeleteRegion` of the container the undo
+///     emptied applies, where it was refused `ContainerNotEmpty` with nothing
+///     live in the container.
+///   - a best-effort undo keeps a time signature that a meter change or
+///     grid it leaves in place still names: its strand guard reads every
+///     meter restoration, but it applies only the invariant-20-safe subset,
+///     chosen once its mints are gone, so a restoration that subset drops
+///     leaves its key's value; the undo is taken again with such a signature
+///     kept, where it removed the signature the meter change still named
+///     (`CrossCuttingRefsResolve`).
+///   - an event an undo removes takes every pitch it holds with it, as a
+///     `DeleteEvent` does, a pitch another operation added since among
+///     them, where such a pitch stayed live while the graph dropped it with
+///     its event, so base-free reduction alone held its value and a later
+///     interval transposition of it was refused there and applied
+///     graph-aware.
+///
+///   Locked by the committed histories of `tests/two_modes/` (each declares
+///   whether it reduces alike) and, for the promotion,
+///   `two_replacements_of_one_quarter_promote_alike_in_both_modes`
+///   (`epiphany-musicxml`'s `reduction_modes`); for the quarter-tone,
+///   `an_imported_quarter_tone_transposes_alike_in_both_modes` and
+///   `cmn_24_with_an_authored_spelling_moves_it`; for referents,
+///   `a_region_the_history_made_and_deleted_is_missing_in_both_modes` and
+///   `an_instrument_minted_by_a_failed_transaction_is_missing_in_both_modes`;
+///   for pitch values,
+///   `a_transpose_and_a_concurrent_pitch_edit_conflict_in_both_modes` and
+///   `an_undone_transpose_restores_its_pitch_in_both_modes`; for spellings,
+///   `a_transpose_past_a_triple_accidental_refuses` and
+///   `an_unfollowable_authored_spelling_is_dropped_and_the_pitch_moves`
+///   (which replaces `an_untransposable_authored_spelling_refuses_the_whole_operation`);
+///   for undo, `a_second_undo_of_a_settings_transaction_conflicts_in_both_modes`
+///   and `an_undo_of_a_respelling_a_transpose_superseded_conflicts_in_both_modes`;
+///   for the reassignment,
+///   `a_reassignment_that_overlaps_a_voice_conflicts_in_both_modes`; for
+///   anchors in musical time,
+///   `a_region_out_of_musical_time_keeps_no_musical_break_in_both_modes` and
+///   `a_migration_finds_its_regions_events_in_both_modes`, whose proportional
+///   target now names the measure too; for the measure undo,
+///   `an_undo_of_a_measure_with_a_later_one_conflicts_in_both_modes`; for the
+///   containers, `an_undo_of_a_container_another_author_filled_conflicts_in_both_modes`
+///   and `an_undone_region_leaves_the_graph`; for meters,
+///   `a_meter_in_a_region_out_of_musical_time_is_refused_in_both_modes`; for
+///   the wall-clock insert, `an_insert_at_a_wall_clock_position_is_refused_in_both_modes`
+///   and `a_migration_judges_an_indexed_event_by_its_placement_in_both_modes`,
+///   which held its admission and now holds its refusal; for tempo,
+///   `a_tempo_in_a_region_out_of_musical_time_is_refused_in_both_modes`; for
+///   the reordering,
+///   `a_reassignment_that_reorders_a_voice_keeps_it_sorted_in_both_modes`; for
+///   ties, `a_tie_gives_way_to_an_edit_that_breaks_it_in_both_modes`; for
+///   kept pitches, `a_modify_keeps_a_pitch_its_author_never_saw_in_both_modes`
+///   and `an_undo_of_a_modify_keeps_a_pitch_added_since_in_both_modes`; for
+///   clefs and keys,
+///   `a_clef_or_key_in_a_region_out_of_musical_time_is_refused_in_both_modes`
+///   and `a_migration_finds_its_regions_events_in_both_modes`, whose
+///   proportional target now names the instance too; for staves,
+///   `an_undo_of_a_staff_a_part_or_spanner_names_conflicts_in_both_modes`; for
+///   tuplet members,
+///   `an_undo_restoring_a_tuplet_members_duration_is_superseded_in_both_modes`;
+///   for regions and instruments still named,
+///   `an_undo_of_a_region_or_instrument_still_named_is_blocked_in_both_modes`;
+///   for whole-event writes,
+///   `a_whole_event_modify_removes_only_the_pitches_its_author_saw_in_both_modes`,
+///   `an_undo_of_a_modify_brings_back_the_pitch_it_removed_in_both_modes` and,
+///   over a base, `a_modify_counts_a_bases_pitch_as_seen`;
+///   for measures,
+///   `a_measure_in_a_region_out_of_musical_time_is_refused_in_both_modes`;
+///   for the grid's chains,
+///   `a_transactions_grid_write_is_as_recent_as_it_applied_in_both_modes`;
+///   for what a kept mint names,
+///   `an_undo_keeps_what_a_kept_mint_names_in_both_modes`; for promoted
+///   voices, `an_instance_holding_a_promoted_voice_is_not_empty_in_both_modes`;
+///   for an undo of its own transaction,
+///   `an_undo_of_its_own_transaction_is_refused_in_both_modes`; for
+///   restorations in musical time,
+///   `an_undo_writes_nothing_in_musical_time_into_a_region_out_of_it_in_both_modes`;
+///   for a tie held at its transaction's end,
+///   `a_tie_is_held_when_its_transaction_completes_in_both_modes`; for a
+///   pitch into an unpitched event,
+///   `a_pitch_inserted_into_an_unpitched_event_makes_it_a_note_in_both_modes`;
+///   for restorations naming what an undo removed,
+///   `a_redo_restores_nothing_naming_what_the_undo_removed_in_both_modes`;
+///   for a cross-cutting value's every referent,
+///   `an_undo_restores_no_spanner_naming_an_object_removed_since_in_both_modes`;
+///   for a pitch in an event of any kind,
+///   `a_pitch_an_event_of_any_kind_comes_to_hold_makes_it_a_note_in_both_modes`;
+///   for a migration's target discipline,
+///   `a_migration_admits_an_event_as_its_targets_discipline_does_in_both_modes`
+///   and, over a base, `migration_judges_a_bases_events_by_each_aleatoric_discipline`;
+///   for a modify's new pitches,
+///   `a_modify_mints_the_pitches_it_carries_in_both_modes`; for a trajectory's
+///   pitches,
+///   `a_trajectorys_own_pitches_are_read_and_written_as_a_notes_in_both_modes`;
+///   for an emptied container,
+///   `a_container_an_undo_emptied_reads_empty_in_both_modes`; for a dropped
+///   meter restoration,
+///   `a_best_effort_undo_keeps_a_signature_its_dropped_restoration_leaves_named_in_both_modes`;
+///   for an undone event's pitches,
+///   `an_event_an_undo_removes_takes_its_pitches_in_both_modes`.
+///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.
 ///
@@ -269,7 +643,7 @@ pub mod vectors;
 /// `epiphany-bundle` in order to use that crate's `ReductionAlgorithmVersion`
 /// wrapper. The wrapper is constructed at the composition boundary by whoever
 /// depends on both (P13-S27 pin 1, §0.3).
-pub const CURRENT_REDUCTION_ALGORITHM_VERSION: u32 = 2;
+pub const CURRENT_REDUCTION_ALGORITHM_VERSION: u32 = 3;
 
 pub use anomaly::{
     AnomalousReplicaSegment, IntegrityAnomaly, IntegrityAnomalyKind, ReplicaAnomalyReason,

@@ -16,10 +16,10 @@
 //! refusing everything.
 
 use epiphany_core::{
-    check_invariants, Event, EventDuration, EventId, EventPosition, GraphInvariant,
-    IdentityContext, MusicalDuration, MusicalPosition, OperationId, RationalTime, RegionId,
-    RegionTimeModel, ReplicaId, Rest, Score, TransactionId, Tuplet, TupletId, TupletRatio,
-    TypedObjectId, ViolationKind, WallClockDuration, WallClockTime, WellFormednessViolation,
+    check_invariants, Event, EventDuration, EventId, EventPosition, IdentityContext,
+    MusicalDuration, MusicalPosition, OperationId, RationalTime, RegionId, RegionTimeModel,
+    ReplicaId, Rest, Score, TransactionId, Tuplet, TupletId, TupletRatio, TypedObjectId,
+    WallClockDuration, WallClockTime, WellFormednessViolation,
 };
 use epiphany_musicxml::{import, Import};
 use epiphany_ops::{
@@ -63,7 +63,11 @@ struct Measure {
 
 impl Measure {
     fn new() -> Self {
-        let import = import(MEASURE).expect("the measure imports");
+        Self::of(MEASURE)
+    }
+
+    fn of(xml: &str) -> Self {
+        let import = import(xml).expect("the measure imports");
         let mut set = OperationSet::new();
         set.accept_all(import.envelopes.clone());
         let score = set
@@ -165,6 +169,18 @@ impl Measure {
         primitive(OperationKind::ChangeRegionTimeModel(
             ChangeRegionTimeModelOp {
                 region: self.region,
+                new_time_model: model,
+                declared_incompatible: Vec::new(),
+                remapping: PositionRemapping::PreserveTime,
+            },
+        ))
+    }
+
+    /// `region` migrated to `model`, positions kept.
+    fn migrate_region(&self, region: RegionId, model: RegionTimeModel) -> OperationPayload {
+        primitive(OperationKind::ChangeRegionTimeModel(
+            ChangeRegionTimeModelOp {
+                region,
                 new_time_model: model,
                 declared_incompatible: Vec::new(),
                 remapping: PositionRemapping::PreserveTime,
@@ -904,9 +920,14 @@ fn a_migration_finds_its_regions_events_in_both_modes() {
         "the quarters against a proportional target",
         std::slice::from_ref(&proportional),
     );
-    let mut quarters: Vec<TypedObjectId> = (0..4).map(|i| TypedObjectId::Event(m.q(i))).collect();
-    quarters.sort();
-    assert_eq!(migration_failure(&state, proportional.id), quarters);
+    // The quarters, and since reduction version 3 the measure and the staff
+    // instance with its clef and key, anchored in musical time, which a
+    // proportional region does not admit.
+    let mut stranded: Vec<TypedObjectId> = (0..4).map(|i| TypedObjectId::Event(m.q(i))).collect();
+    stranded.push(TypedObjectId::StaffInstance(m.import.ids.instances[0][0]));
+    stranded.push(TypedObjectId::Measure(m.import.ids.measures[0][0][0]));
+    stranded.sort();
+    assert_eq!(migration_failure(&state, proportional.id), stranded);
 }
 
 /// An insert reads the region's time model alike in both modes. A makes the
@@ -1041,9 +1062,11 @@ fn an_insert_reads_its_regions_time_model_in_both_modes() {
 
 /// A migration judges every event the occupancy index holds by its indexed
 /// placement, in both modes. An insert carrying a wall-clock position into the
-/// metric region is admitted today, against invariant 4, and indexed at the
-/// region's origin; a metric target then admits it in both modes, where
-/// graph-aware reduction once judged it from the graph and conflicted.
+/// metric region was admitted, against invariant 4, and indexed at the
+/// region's origin, where a metric target admitted it in both modes and
+/// graph-aware reduction once judged it from the graph and conflicted. Since
+/// reduction version 3 the insert is refused, so the graph keeps every
+/// invariant and the migration applies.
 #[test]
 fn a_migration_judges_an_indexed_event_by_its_placement_in_both_modes() {
     let m = Measure::new();
@@ -1067,16 +1090,14 @@ fn a_migration_judges_an_indexed_event_by_its_placement_in_both_modes() {
         &[deleted.id, inserted.id],
         m.migrate(m.model.clone()),
     );
-    let (state, violations) = m.compare(
+    let state = m.agree(
         "a wall-clock rest in the metric region, then a metric target",
         &[deleted, inserted.clone(), migrated.clone()],
     );
-    assert_eq!(effect(&state, inserted.id), Some(OperationEffect::Applied));
-    assert!(violations.iter().all(|violation| matches!(
-        violation.kind,
-        ViolationKind::Invariant(GraphInvariant::EventCoordinateModel)
-    )));
-    assert!(!violations.is_empty());
+    assert_eq!(
+        effect(&state, inserted.id),
+        refused(PreconditionFailureReason::WrongRegionTimeModel)
+    );
     assert_eq!(effect(&state, migrated.id), Some(OperationEffect::Applied));
 }
 
@@ -1206,4 +1227,4749 @@ fn a_tuplets_display_changes_no_verdict_or_canonical_state() {
     let mut unhidden = b.score.clone();
     unhidden.cross_cutting.tuplets[0].display = TupletDisplay::default();
     assert_eq!(a.score, unhidden);
+}
+
+/// Two authors each replace the same imported quarter with a rest of their
+/// own, neither having seen the other: the two rests collide in the quarter's
+/// voice, and the later is promoted to a system voice, in both modes. Before
+/// reduction version 3 the promotion pre-pass took only inserts whose voice
+/// the graph held before anything applied, so over the importer's empty base
+/// graph-aware reduction promoted nothing and refused the second rest.
+#[test]
+fn two_replacements_of_one_quarter_promote_alike_in_both_modes() {
+    let m = Measure::new();
+    let quarter = m.quarters[0].duration().clone();
+    let rest_a = m.rest(1000, 0, quarter.clone());
+    let mut rest_b = m.rest(1000, 0, quarter);
+    rest_b.id = EventId::new(B, 1000);
+    let delete_a = m.op(
+        A,
+        0,
+        1,
+        &[],
+        delete(m.q(0), TupletCompensation::NotInTuplet),
+    );
+    let insert_a = m.op(A, 1, 2, &[delete_a.id], m.insert(rest_a.clone()));
+    let delete_b = m.op(
+        B,
+        0,
+        1,
+        &[],
+        delete(m.q(0), TupletCompensation::NotInTuplet),
+    );
+    let insert_b = m.op(B, 1, 2, &[delete_b.id], m.insert(rest_b.clone()));
+    let state = m.agree(
+        "two replacements of one quarter",
+        &[delete_a, insert_a.clone(), delete_b, insert_b.clone()],
+    );
+    assert_eq!(effect(&state, insert_a.id), Some(OperationEffect::Applied));
+    let Some(OperationEffect::AppliedWithRepair { repairs }) = effect(&state, insert_b.id) else {
+        panic!("the later rest is promoted");
+    };
+    assert!(repairs
+        .iter()
+        .any(|r| matches!(r.kind, RepairKind::VoicePromoted { .. })));
+    assert!(live(&state, TypedObjectId::Event(rest_a.id)));
+    assert!(live(&state, TypedObjectId::Event(rest_b.id)));
+}
+
+/// An imported quarter-tone, which the importer spells as its file does, is
+/// transposed alike in both modes, and its spelling moves with it, keeping
+/// its arrow. Before reduction version 3 graph-aware reduction refused the
+/// transpose, finding the authored spelling it could not rewrite, while
+/// base-free reduction, which holds no spelling, applied it.
+#[test]
+fn an_imported_quarter_tone_transposes_alike_in_both_modes() {
+    use epiphany_core::{
+        AccidentalId, CmnNominal, PitchSpacePosition, PitchSpelling, SpellingDirective,
+        SpellingNominal, SpellingScope, TranspositionInterval,
+    };
+    use epiphany_ops::TransposeIntervalOp;
+
+    let import = import(QUARTER_TONES).expect("the measure imports");
+    let pitch = import.ids.pitches[0][0][0];
+    let transpose = OperationId::new(A, 0);
+    let envelope = OperationEnvelope {
+        id: transpose,
+        author: AuthorId(0),
+        stamp: OperationStamp::new(
+            HybridLogicalClock::new(WallClockTime(import.envelopes.len() as i64 + 1), 0),
+            transpose,
+        ),
+        causal_context: CausalContext::new()
+            .with_seen(import.replica, import.envelopes.len() as u64 - 1),
+        transaction: None,
+        // Up a major second: a step, and four quarter-tones in `cmn-24`.
+        payload: primitive(OperationKind::TransposeInterval(TransposeIntervalOp {
+            targets: [pitch].into_iter().collect(),
+            interval: TranspositionInterval {
+                diatonic_steps: 1,
+                chromatic_steps: 4,
+            },
+        })),
+    };
+    let mut set = OperationSet::new();
+    set.accept_all(import.envelopes.iter().cloned().chain([envelope]));
+    let free = set.reduce();
+    let aware = set.reduce_onto(&Score::empty(IdentityContext::new(import.replica)));
+    assert_eq!(effect(&free, transpose), Some(OperationEffect::Applied));
+    assert_eq!(
+        effect(&aware.state, transpose),
+        Some(OperationEffect::Applied)
+    );
+    assert_eq!(free.objects, aware.state.objects);
+    assert!(free.canonical_bytes() == aware.state.canonical_bytes());
+    let violations = check_invariants(&aware.score);
+    assert!(violations.is_empty(), "{violations:?}");
+
+    let Some(Event::Pitched(event)) = aware.score.events.get(import.ids.events[0][0]) else {
+        panic!("the first quarter");
+    };
+    assert_eq!(
+        event.pitches[0].pitch.scale_position.position,
+        PitchSpacePosition::Cmn {
+            nominal: CmnNominal::A,
+            alteration: -1,
+            octave: 4,
+        }
+    );
+    let spelt: Vec<&PitchSpelling> = aware
+        .score
+        .spelling_attachments
+        .iter()
+        .filter(|a| matches!(&a.scope, SpellingScope::Pitch(p) if *p == pitch))
+        .filter_map(|a| match &a.directive {
+            SpellingDirective::Explicit(s) => Some(s),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        spelt
+            .iter()
+            .any(|s| s.nominal == SpellingNominal::Cmn(CmnNominal::A)
+                && s.accidentals == vec![AccidentalId::new("flat-up")]),
+        "the spelling moves to A flat-up: {spelt:?}"
+    );
+}
+
+/// A region one author makes and another deletes while the first, unaware,
+/// migrates it: the migration names a region the history minted and lost,
+/// which graph-aware reduction finds missing. Before reduction version 3
+/// base-free reduction, which has no universe, applied it; it now refuses a
+/// referent the set itself mints that is not live, and still takes as live one
+/// no envelope mints, which may come from a base.
+#[test]
+fn a_region_the_history_made_and_deleted_is_missing_in_both_modes() {
+    use epiphany_ops::{CreateRegionOp, DeleteRegionOp};
+    let m = Measure::new();
+    let region = RegionId::new(A, 500);
+    let create = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::CreateRegion(CreateRegionOp {
+            region: valuegen::region(region),
+        })),
+    );
+    let delete = m.op(
+        B,
+        0,
+        2,
+        &[create.id],
+        primitive(OperationKind::DeleteRegion(DeleteRegionOp { region })),
+    );
+    let migrate = m.op(
+        A,
+        1,
+        3,
+        &[create.id],
+        primitive(OperationKind::ChangeRegionTimeModel(
+            ChangeRegionTimeModelOp {
+                region,
+                new_time_model: valuegen::proportional_model(),
+                declared_incompatible: Vec::new(),
+                remapping: PositionRemapping::PreserveTime,
+            },
+        )),
+    );
+    let state = m.agree(
+        "a region made, deleted and migrated",
+        &[create, delete.clone(), migrate.clone()],
+    );
+    assert_eq!(effect(&state, delete.id), Some(OperationEffect::Applied));
+    assert_eq!(
+        effect(&state, migrate.id),
+        refused(PreconditionFailureReason::TargetMissing)
+    );
+}
+
+/// An instrument made in a transaction that fails: its author empties a voice
+/// in the same transaction while another author, concurrently, enters a rest
+/// in it, so the transaction's delete finds the voice full and the instrument
+/// never comes to be. Its author, who saw the transaction apply, then names
+/// the instrument from a new staff. Graph-aware reduction finds it missing;
+/// base-free reduction, since version 3, refuses it too, the set itself
+/// minting the instrument, where it applied.
+#[test]
+fn an_instrument_minted_by_a_failed_transaction_is_missing_in_both_modes() {
+    use epiphany_core::{InstrumentId, StaffId, VoiceId};
+    use epiphany_ops::{CreateInstrumentOp, CreateStaffOp, CreateVoiceOp};
+    let m = Measure::new();
+    let voice = VoiceId::new(A, 600);
+    let instrument = InstrumentId::new(A, 601);
+    let tx = TransactionId::new(A, 602);
+    let create_voice = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::CreateVoice(CreateVoiceOp {
+            staff_instance: m.import.ids.instances[0][0],
+            voice: valuegen::voice(voice),
+        })),
+    );
+    let mut rest = m.rest(603, 0, m.quarters[0].duration().clone());
+    rest.id = EventId::new(B, 603);
+    rest.voice = voice;
+    let fill = m.op(B, 0, 2, &[create_voice.id], m.insert(rest));
+    let mut declare = m.op(
+        A,
+        1,
+        3,
+        &[create_voice.id],
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("instrument"),
+            category: None,
+        })),
+    );
+    declare.transaction = Some(tx);
+    let mut mint = m.op(
+        A,
+        2,
+        4,
+        &[declare.id],
+        primitive(OperationKind::CreateInstrument(CreateInstrumentOp {
+            instrument: valuegen::instrument(instrument),
+        })),
+    );
+    mint.transaction = Some(tx);
+    let mut empty = m.op(
+        A,
+        3,
+        5,
+        &[mint.id],
+        primitive(OperationKind::DeleteVoice(DeleteVoiceOp { voice })),
+    );
+    empty.transaction = Some(tx);
+    let staff = m.op(
+        A,
+        4,
+        6,
+        &[empty.id],
+        primitive(OperationKind::CreateStaff(CreateStaffOp {
+            staff: valuegen::staff(StaffId::new(A, 604), instrument),
+        })),
+    );
+    let state = m.agree(
+        "an instrument minted by a failed transaction",
+        &[
+            create_voice,
+            fill,
+            declare,
+            mint.clone(),
+            empty,
+            staff.clone(),
+        ],
+    );
+    assert!(
+        !live(&state, TypedObjectId::Instrument(instrument)),
+        "the transaction fails, so the instrument never comes to be"
+    );
+    assert_eq!(
+        effect(&state, staff.id),
+        refused(PreconditionFailureReason::TargetMissing)
+    );
+}
+
+/// One author transposes an imported quarter's pitch while another, unaware,
+/// sets it to another pitch: two concurrent writes of one pitch's value, which
+/// conflict in both modes. Before reduction version 3 base-free reduction,
+/// which held no pitch values, could not resolve the transpose, recorded no
+/// write for it, and applied the second write.
+#[test]
+fn a_transpose_and_a_concurrent_pitch_edit_conflict_in_both_modes() {
+    use epiphany_core::TranspositionInterval;
+    use epiphany_ops::{ModifyIdentifiedPitchOp, TransposeIntervalOp};
+    let m = Measure::new();
+    let pitch = m.import.ids.pitches[0][0][0];
+    let transpose = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::TransposeInterval(TransposeIntervalOp {
+            targets: [pitch].into_iter().collect(),
+            interval: TranspositionInterval {
+                diatonic_steps: 1,
+                chromatic_steps: 2,
+            },
+        })),
+    );
+    let edit = m.op(
+        B,
+        0,
+        2,
+        &[],
+        primitive(OperationKind::ModifyIdentifiedPitch(
+            ModifyIdentifiedPitchOp {
+                pitch,
+                value: valuegen::pitch_value_nth(32),
+            },
+        )),
+    );
+    let state = m.agree(
+        "a transpose and a concurrent pitch edit",
+        &[transpose.clone(), edit.clone()],
+    );
+    assert_eq!(effect(&state, transpose.id), Some(OperationEffect::Applied));
+    assert!(matches!(
+        effect(&state, edit.id),
+        Some(OperationEffect::Conflicted { .. })
+    ));
+}
+
+/// A transpose its author undoes: the undo restores the pitch in both modes.
+/// Before reduction version 3 base-free reduction recorded nothing for the
+/// transpose, so the undo found nothing to restore and was refused.
+#[test]
+fn an_undone_transpose_restores_its_pitch_in_both_modes() {
+    use epiphany_core::TranspositionInterval;
+    use epiphany_ops::TransposeIntervalOp;
+    let m = Measure::new();
+    let pitch = m.import.ids.pitches[0][1][0];
+    let tx = TransactionId::new(A, 700);
+    let mut declare = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("transpose"),
+            category: None,
+        })),
+    );
+    declare.transaction = Some(tx);
+    let mut transpose = m.op(
+        A,
+        1,
+        2,
+        &[declare.id],
+        primitive(OperationKind::TransposeInterval(TransposeIntervalOp {
+            targets: [pitch].into_iter().collect(),
+            interval: TranspositionInterval {
+                diatonic_steps: 2,
+                chromatic_steps: 4,
+            },
+        })),
+    );
+    transpose.transaction = Some(tx);
+    let undo = m.op(
+        A,
+        2,
+        3,
+        &[transpose.id],
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::StrictInverse,
+        }),
+    );
+    let state = m.agree("an undone transpose", &[declare, transpose, undo.clone()]);
+    assert_eq!(effect(&state, undo.id), Some(OperationEffect::Applied));
+}
+
+/// A transaction respells an imported quarter's pitch, the same author then
+/// transposes the pitch, and then undoes the transaction: the transpose wrote
+/// the pitch's spelling set after the respelling, so a strict undo conflicts,
+/// in both modes. Before reduction version 3 base-free reduction kept no
+/// spelling-set writes and undid the respelling.
+#[test]
+fn an_undo_of_a_respelling_a_transpose_superseded_conflicts_in_both_modes() {
+    use epiphany_core::{CmnNominal, PitchSpelling, TranspositionInterval};
+    use epiphany_ops::{RespellPitchOp, TransposeIntervalOp};
+    let m = Measure::new();
+    let pitch = m.import.ids.pitches[0][2][0];
+    let tx = TransactionId::new(A, 800);
+    let mut declare = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("respell"),
+            category: None,
+        })),
+    );
+    declare.transaction = Some(tx);
+    let mut respell = m.op(
+        A,
+        1,
+        2,
+        &[declare.id],
+        primitive(OperationKind::RespellPitch(RespellPitchOp {
+            pitch,
+            spelling: PitchSpelling::cmn(CmnNominal::E, 4),
+        })),
+    );
+    respell.transaction = Some(tx);
+    let transpose = m.op(
+        A,
+        2,
+        3,
+        &[respell.id],
+        primitive(OperationKind::TransposeInterval(TransposeIntervalOp {
+            targets: [pitch].into_iter().collect(),
+            interval: TranspositionInterval {
+                diatonic_steps: 1,
+                chromatic_steps: 2,
+            },
+        })),
+    );
+    let undo = m.op(
+        A,
+        3,
+        4,
+        &[transpose.id],
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::StrictInverse,
+        }),
+    );
+    let state = m.agree(
+        "an undo of a superseded respelling",
+        &[declare, respell, transpose, undo.clone()],
+    );
+    assert!(matches!(
+        effect(&state, undo.id),
+        Some(OperationEffect::Conflicted { .. })
+    ));
+}
+
+/// A transaction sets the score's metadata and is undone twice: the first undo
+/// restores the empty score's metadata, a write of its own, so the second
+/// finds the transaction's write superseded and conflicts, in both modes.
+/// Before reduction version 3 base-free reduction, seeding no metadata,
+/// restored to absence and wrote nothing, so the second undo applied.
+#[test]
+fn a_second_undo_of_a_settings_transaction_conflicts_in_both_modes() {
+    use epiphany_ops::SetMetadataOp;
+    let m = Measure::new();
+    let tx = TransactionId::new(A, 810);
+    let mut declare = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("metadata"),
+            category: None,
+        })),
+    );
+    declare.transaction = Some(tx);
+    let mut set = m.op(
+        A,
+        1,
+        2,
+        &[declare.id],
+        primitive(OperationKind::SetMetadata(SetMetadataOp {
+            metadata: valuegen::score_metadata(5),
+        })),
+    );
+    set.transaction = Some(tx);
+    let undo = |counter: u64, at: i64, after: OperationId| {
+        m.op(
+            A,
+            counter,
+            at,
+            &[after],
+            OperationPayload::UndoTransaction(UndoTransactionPayload {
+                target: tx,
+                policy: UndoPolicy::StrictInverse,
+            }),
+        )
+    };
+    let first = undo(2, 3, set.id);
+    let second = undo(3, 4, first.id);
+    let state = m.agree(
+        "a settings transaction undone twice",
+        &[declare, set, first.clone(), second.clone()],
+    );
+    assert_eq!(effect(&state, first.id), Some(OperationEffect::Applied));
+    assert!(matches!(
+        effect(&state, second.id),
+        Some(OperationEffect::Conflicted { .. })
+    ));
+}
+
+/// A migration that keeps the region metric but reassigns two quarters to one
+/// place would leave their voice overlapping (invariant 3): it conflicts,
+/// naming both, in both modes. Before reduction version 3 it applied and broke
+/// the invariant.
+#[test]
+fn a_reassignment_that_overlaps_a_voice_conflicts_in_both_modes() {
+    let m = Measure::new();
+    let migrate = m.op(A, 0, 1, &[], m.reassign(&[(0, 0), (1, 0), (2, 2), (3, 3)]));
+    let state = m.agree(
+        "an overlapping reassignment",
+        std::slice::from_ref(&migrate),
+    );
+    assert_eq!(
+        migration_failure(&state, migrate.id),
+        vec![TypedObjectId::Event(m.q(0)), TypedObjectId::Event(m.q(1))]
+    );
+}
+
+/// A reassignment that reorders a voice, the second and third quarters
+/// changing places, applies in both modes and leaves the voice in position
+/// order. Before reduction version 3 graph-aware reduction moved the events
+/// and kept the voice's old order, breaking `VoiceEventsSortedNonOverlap`.
+#[test]
+fn a_reassignment_that_reorders_a_voice_keeps_it_sorted_in_both_modes() {
+    let m = Measure::new();
+    let swap = m.op(A, 0, 1, &[], m.reassign(&[(0, 0), (1, 2), (2, 1), (3, 3)]));
+    let state = m.agree("two quarters swapped", std::slice::from_ref(&swap));
+    assert_eq!(effect(&state, swap.id), Some(OperationEffect::Applied));
+}
+
+/// A region one author makes, breaks and then migrates to proportional time,
+/// while another, unaware of the migration, breaks it again in musical time:
+/// the migration drops the first break, written in musical time the region no
+/// longer has, and the second is refused, in both modes. Before reduction
+/// version 3 both stayed, anchored by musical offsets the region does not
+/// admit (`AnchorOffsetModel`).
+#[test]
+fn a_region_out_of_musical_time_keeps_no_musical_break_in_both_modes() {
+    use epiphany_ops::{CreateRegionOp, SetUserSystemBreakOp};
+    let m = Measure::new();
+    let region = RegionId::new(A, 900);
+    let break_at = |n: i64| SetUserSystemBreakOp {
+        region,
+        anchor: valuegen::region_start_anchor(
+            region,
+            MusicalPosition(RationalTime::new(n, 1).expect("a bar")),
+        ),
+        present: true,
+    };
+    let create = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::CreateRegion(CreateRegionOp {
+            region: valuegen::region(region),
+        })),
+    );
+    let first = m.op(
+        A,
+        1,
+        2,
+        &[create.id],
+        primitive(OperationKind::SetUserSystemBreak(break_at(0))),
+    );
+    let migrate = m.op(
+        A,
+        2,
+        3,
+        &[first.id],
+        m.migrate_region(region, valuegen::proportional_model()),
+    );
+    let second = m.op(
+        B,
+        0,
+        4,
+        &[create.id],
+        primitive(OperationKind::SetUserSystemBreak(break_at(1))),
+    );
+    let state = m.agree(
+        "breaks around a migration out of musical time",
+        &[create, first.clone(), migrate.clone(), second.clone()],
+    );
+    assert_eq!(effect(&state, first.id), Some(OperationEffect::Applied));
+    assert_eq!(effect(&state, migrate.id), Some(OperationEffect::Applied));
+    assert_eq!(
+        effect(&state, second.id),
+        refused(PreconditionFailureReason::WrongRegionTimeModel)
+    );
+    assert!(state.breaks.keys().all(|(r, _)| *r != region));
+}
+
+/// A transaction adds the measure after the import's, another author, who
+/// has seen it, adds the one after that, and the transaction is undone:
+/// removing the second measure would leave the third two bars from the first
+/// (`MeasureMeterConsistency`), so a strict undo conflicts, in both modes.
+/// Before reduction version 3 the undo removed it.
+#[test]
+fn an_undo_of_a_measure_with_a_later_one_conflicts_in_both_modes() {
+    use epiphany_core::{Measure as Bar, MeasureId, MeasureNumberVisibility};
+    use epiphany_ops::CreateMeasureOp;
+    let m = Measure::new();
+    let instance = m.import.ids.instances[0][0];
+    let bar = |author: ReplicaId, counter: u64, at: i64| {
+        OperationKind::CreateMeasure(CreateMeasureOp {
+            instance,
+            measure: Bar {
+                id: MeasureId::new(author, counter),
+                start: valuegen::region_start_anchor(
+                    m.region,
+                    MusicalPosition(RationalTime::new(at, 1).expect("a bar")),
+                ),
+                time_signature: None,
+                explicit_number: None,
+                number_visibility: MeasureNumberVisibility::Auto,
+            },
+        })
+    };
+    let tx = TransactionId::new(A, 950);
+    let mut declare = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("a bar"),
+            category: None,
+        })),
+    );
+    declare.transaction = Some(tx);
+    let mut second = m.op(A, 1, 2, &[declare.id], primitive(bar(A, 951, 1)));
+    second.transaction = Some(tx);
+    let third = m.op(B, 0, 3, &[second.id], primitive(bar(B, 952, 2)));
+    let undo = m.op(
+        A,
+        2,
+        4,
+        &[second.id],
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::StrictInverse,
+        }),
+    );
+    let state = m.agree(
+        "an undone measure before a later one",
+        &[declare, second, third.clone(), undo.clone()],
+    );
+    assert_eq!(effect(&state, third.id), Some(OperationEffect::Applied));
+    assert!(matches!(
+        effect(&state, undo.id),
+        Some(OperationEffect::Conflicted { .. })
+    ));
+}
+
+/// Three containers, each made in a transaction that another author, having
+/// seen it, then fills: a region given a staff instance, an instance given a
+/// voice, a voice given a rest. Undoing the transaction would leave the child
+/// naming a removed parent, so a strict undo conflicts, in both modes, and
+/// the container stays. Before reduction version 3 the undo removed it.
+#[test]
+fn an_undo_of_a_container_another_author_filled_conflicts_in_both_modes() {
+    use epiphany_core::{StaffInstanceId, VoiceId};
+    use epiphany_ops::{CreateRegionOp, CreateStaffInstanceOp, CreateVoiceOp};
+    let m = Measure::new();
+    let staff = m.import.ids.staves[0][0];
+    let declare = |counter: u64, at: i64, seen: &[OperationId], tx: TransactionId| {
+        let mut declare = m.op(
+            A,
+            counter,
+            at,
+            seen,
+            primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                id: tx,
+                label: String::from("a container"),
+                category: None,
+            })),
+        );
+        declare.transaction = Some(tx);
+        declare
+    };
+    let undo = |counter: u64, at: i64, made: OperationId, tx: TransactionId| {
+        m.op(
+            A,
+            counter,
+            at,
+            &[made],
+            OperationPayload::UndoTransaction(UndoTransactionPayload {
+                target: tx,
+                policy: UndoPolicy::StrictInverse,
+            }),
+        )
+    };
+    let create_region = |region: RegionId| {
+        primitive(OperationKind::CreateRegion(CreateRegionOp {
+            region: valuegen::region(region),
+        }))
+    };
+    let create_instance = |region: RegionId, instance: StaffInstanceId| {
+        primitive(OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+            region,
+            instance: valuegen::staff_instance(instance, staff),
+        }))
+    };
+    let create_voice = |instance: StaffInstanceId, voice: VoiceId| {
+        primitive(OperationKind::CreateVoice(CreateVoiceOp {
+            staff_instance: instance,
+            voice: valuegen::voice(voice),
+        }))
+    };
+    let check = |history: &str, authored: &[OperationEnvelope], filled: OperationId| {
+        let undone = authored.last().expect("an undo").id;
+        let state = m.agree(history, authored);
+        assert_eq!(effect(&state, filled), Some(OperationEffect::Applied));
+        assert!(
+            matches!(
+                effect(&state, undone),
+                Some(OperationEffect::Conflicted { .. })
+            ),
+            "{history}: {:?}",
+            effect(&state, undone)
+        );
+    };
+
+    let tx = TransactionId::new(A, 960);
+    let region = RegionId::new(A, 961);
+    let opening = declare(0, 1, &[], tx);
+    let mut made = m.op(A, 1, 2, &[opening.id], create_region(region));
+    made.transaction = Some(tx);
+    let filled = m.op(
+        B,
+        0,
+        3,
+        &[made.id],
+        create_instance(region, StaffInstanceId::new(B, 962)),
+    );
+    let undone = undo(2, 4, made.id, tx);
+    check(
+        "an undone region holding another author's instance",
+        &[opening, made, filled.clone(), undone],
+        filled.id,
+    );
+
+    let tx = TransactionId::new(A, 963);
+    let region = RegionId::new(A, 964);
+    let instance = StaffInstanceId::new(A, 965);
+    let before = m.op(A, 0, 1, &[], create_region(region));
+    let opening = declare(1, 2, &[before.id], tx);
+    let mut made = m.op(A, 2, 3, &[opening.id], create_instance(region, instance));
+    made.transaction = Some(tx);
+    let filled = m.op(
+        B,
+        0,
+        4,
+        &[made.id],
+        create_voice(instance, VoiceId::new(B, 966)),
+    );
+    let undone = undo(3, 5, made.id, tx);
+    check(
+        "an undone instance holding another author's voice",
+        &[before, opening, made, filled.clone(), undone],
+        filled.id,
+    );
+
+    let tx = TransactionId::new(A, 967);
+    let voice = VoiceId::new(A, 968);
+    let opening = declare(0, 1, &[], tx);
+    let mut made = m.op(
+        A,
+        1,
+        2,
+        &[opening.id],
+        create_voice(m.import.ids.instances[0][0], voice),
+    );
+    made.transaction = Some(tx);
+    let mut rest = m.rest(969, 0, eighth());
+    rest.id = EventId::new(B, 969);
+    rest.voice = voice;
+    let filled = m.op(B, 0, 3, &[made.id], m.insert(rest));
+    let undone = undo(2, 4, made.id, tx);
+    check(
+        "an undone voice holding another author's rest",
+        &[opening, made, filled.clone(), undone],
+        filled.id,
+    );
+}
+
+/// A region made in a transaction that is then undone leaves the graph-aware
+/// score with the transaction, where before reduction version 3 the score
+/// kept a region its objects held tombstoned.
+#[test]
+fn an_undone_region_leaves_the_graph() {
+    use epiphany_ops::CreateRegionOp;
+    let m = Measure::new();
+    let tx = TransactionId::new(A, 970);
+    let region = RegionId::new(A, 971);
+    let mut opening = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("a region"),
+            category: None,
+        })),
+    );
+    opening.transaction = Some(tx);
+    let mut made = m.op(
+        A,
+        1,
+        2,
+        &[opening.id],
+        primitive(OperationKind::CreateRegion(CreateRegionOp {
+            region: valuegen::region(region),
+        })),
+    );
+    made.transaction = Some(tx);
+    let undone = m.op(
+        A,
+        2,
+        3,
+        &[made.id],
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::StrictInverse,
+        }),
+    );
+    let authored = [opening, made, undone.clone()];
+    let state = m.agree("an undone region", &authored);
+    assert!(matches!(
+        effect(&state, undone.id),
+        Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
+    ));
+    assert!(tombstoned(&state, TypedObjectId::Region(region)));
+    let mut set = OperationSet::new();
+    set.accept_all(m.import.envelopes.iter().chain(&authored).cloned());
+    let aware = set.reduce_onto(&Score::empty(IdentityContext::new(m.import.replica)));
+    assert!(
+        aware.score.canvas.regions.iter().all(|r| r.id != region),
+        "the undone region is still drawn"
+    );
+}
+
+/// A meter in a region out of musical time: a time signature and a metric
+/// grid in a region migrated to proportional time are refused, in both
+/// modes, where before reduction version 3 each applied and the graph held a
+/// musical meter in a region with no musical offsets (`AnchorOffsetModel`).
+/// Clearing the grid still applies.
+#[test]
+fn a_meter_in_a_region_out_of_musical_time_is_refused_in_both_modes() {
+    use epiphany_core::TimeSignatureId;
+    use epiphany_ops::{CreateRegionOp, SetMetricGridOp, SetTimeSignatureOp};
+    let m = Measure::new();
+    let region = RegionId::new(A, 980);
+    let create = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::CreateRegion(CreateRegionOp {
+            region: valuegen::region(region),
+        })),
+    );
+    let migrate = m.op(
+        A,
+        1,
+        2,
+        &[create.id],
+        m.migrate_region(region, valuegen::proportional_model()),
+    );
+    let signature = m.op(
+        A,
+        2,
+        3,
+        &[migrate.id],
+        primitive(OperationKind::SetTimeSignature(SetTimeSignatureOp {
+            region,
+            anchor: valuegen::region_start_anchor(region, MusicalPosition::origin()),
+            time_signature: Some(valuegen::time_signature(TimeSignatureId::new(A, 981), 3)),
+        })),
+    );
+    let grid = |counter: u64, at: i64, grid| {
+        m.op(
+            A,
+            counter,
+            at,
+            &[migrate.id],
+            primitive(OperationKind::SetMetricGrid(SetMetricGridOp {
+                region,
+                grid,
+            })),
+        )
+    };
+    let set_grid = grid(3, 4, Some(valuegen::metric_grid()));
+    let cleared = grid(4, 5, None);
+    let state = m.agree(
+        "a meter in a proportional region",
+        &[
+            create,
+            migrate.clone(),
+            signature.clone(),
+            set_grid.clone(),
+            cleared.clone(),
+        ],
+    );
+    assert_eq!(effect(&state, migrate.id), Some(OperationEffect::Applied));
+    for refused_op in [&signature, &set_grid] {
+        assert_eq!(
+            effect(&state, refused_op.id),
+            refused(PreconditionFailureReason::WrongRegionTimeModel)
+        );
+    }
+    assert_eq!(effect(&state, cleared.id), Some(OperationEffect::Applied));
+}
+
+/// A rest carrying a wall-clock position, inserted into a voice of the
+/// metric region, is refused `WrongRegionTimeModel` in both modes; a metric
+/// region places events in musical time. Before reduction version 3 it was
+/// admitted, indexed at the region's origin, and the graph held a wall-clock
+/// event in a metric region.
+#[test]
+fn an_insert_at_a_wall_clock_position_is_refused_in_both_modes() {
+    use epiphany_core::VoiceId;
+    use epiphany_ops::CreateVoiceOp;
+    let m = Measure::new();
+    let voice = VoiceId::new(A, 990);
+    let made = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::CreateVoice(CreateVoiceOp {
+            staff_instance: m.import.ids.instances[0][0],
+            voice: valuegen::voice(voice),
+        })),
+    );
+    let mut rest = m.rest(991, 0, eighth());
+    rest.voice = voice;
+    rest.position = EventPosition::WallClock(WallClockTime(5));
+    let inserted = m.op(A, 1, 2, &[made.id], m.insert(rest));
+    let state = m.agree(
+        "a wall-clock rest in a metric region",
+        &[made.clone(), inserted.clone()],
+    );
+    assert_eq!(effect(&state, made.id), Some(OperationEffect::Applied));
+    assert_eq!(
+        effect(&state, inserted.id),
+        refused(PreconditionFailureReason::WrongRegionTimeModel)
+    );
+}
+
+/// A tempo segment anchored by a musical offset in a region, and the region
+/// migrated to proportional time, in either order: written after the
+/// migration, the segment is refused `WrongRegionTimeModel`; written before
+/// it, it strands the migration, which conflicts naming the region, the
+/// segment having no id of its own. Both in both modes. Before reduction
+/// version 3 each applied and left a tempo anchored in musical time in a
+/// region with none (`AnchorOffsetModel`).
+#[test]
+fn a_tempo_in_a_region_out_of_musical_time_is_refused_in_both_modes() {
+    use epiphany_ops::{CreateRegionOp, SetTempoSegmentOp};
+    let m = Measure::new();
+    let tempo = |region: RegionId| {
+        primitive(OperationKind::SetTempoSegment(SetTempoSegmentOp {
+            region: None,
+            start: valuegen::region_start_anchor(region, MusicalPosition::origin()),
+            segment: Some(valuegen::tempo_segment(
+                region,
+                MusicalPosition::origin(),
+                96.0,
+            )),
+        }))
+    };
+    let create = |counter: u64, region: RegionId| {
+        m.op(
+            A,
+            counter,
+            counter as i64 + 1,
+            &[],
+            primitive(OperationKind::CreateRegion(CreateRegionOp {
+                region: valuegen::region(region),
+            })),
+        )
+    };
+
+    let region = RegionId::new(A, 1000);
+    let made = create(0, region);
+    let migrated = m.op(
+        A,
+        1,
+        2,
+        &[made.id],
+        m.migrate_region(region, valuegen::proportional_model()),
+    );
+    let after = m.op(A, 2, 3, &[migrated.id], tempo(region));
+    let state = m.agree(
+        "a tempo after a migration out of musical time",
+        &[made, migrated.clone(), after.clone()],
+    );
+    assert_eq!(effect(&state, migrated.id), Some(OperationEffect::Applied));
+    assert_eq!(
+        effect(&state, after.id),
+        refused(PreconditionFailureReason::WrongRegionTimeModel)
+    );
+
+    let region = RegionId::new(A, 1001);
+    let made = create(0, region);
+    let before = m.op(A, 1, 2, &[made.id], tempo(region));
+    let migrated = m.op(
+        A,
+        2,
+        3,
+        &[before.id],
+        m.migrate_region(region, valuegen::proportional_model()),
+    );
+    let state = m.agree(
+        "a tempo before a migration out of musical time",
+        &[made, before.clone(), migrated.clone()],
+    );
+    assert_eq!(effect(&state, before.id), Some(OperationEffect::Applied));
+    assert_eq!(
+        migration_failure(&state, migrated.id),
+        vec![TypedObjectId::Region(region)]
+    );
+    // The conflict names the region once, so the state decodes as written.
+    assert_eq!(
+        MaterializedState::decode_canonical(&state.canonical_bytes()).as_ref(),
+        Ok(&state)
+    );
+}
+
+const REPEATED: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="4.0">
+  <part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>2</divisions><key><fifths>0</fifths></key>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+        <clef><sign>G</sign><line>2</line></clef></attributes>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>quarter</type></note>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>quarter</type></note>
+      <note><pitch><step>D</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>quarter</type></note>
+      <note><pitch><step>E</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>quarter</type></note>
+    </measure>
+  </part>
+</score-partwise>
+"#;
+
+/// A tie gives way (D48): every operation that moves a pitch or an event
+/// applies, and a tie whose pairing or adjacency it breaks is removed, the
+/// operation recording a `CascadeDeleted` repair for it, in both modes, the
+/// score keeping every invariant. An edit that leaves the tie whole keeps it.
+/// Before reduction version 3 every such edit applied and left the tie in
+/// place, breaking `TiePairing`.
+#[test]
+fn a_tie_gives_way_to_an_edit_that_breaks_it_in_both_modes() {
+    use epiphany_core::{
+        IdentifiedPitch, Pitch, PitchId, Tie, TieClass, TieId, TranspositionInterval,
+    };
+    use epiphany_ops::{
+        CreateCrossCuttingOp, CrossCuttingValue, DeleteIdentifiedPitchOp, InsertIdentifiedPitchOp,
+        ModifyCrossCuttingOp, ModifyIdentifiedPitchOp, TransposeIntervalOp, TransposeOp,
+    };
+    // C4 C4 D4 E4, the tie from the first C to the second.
+    let m = Measure::of(REPEATED);
+    let pitch = |i: usize| m.import.ids.pitches[0][i][0];
+    let value = |i: usize| -> Pitch {
+        match &m.quarters[i] {
+            Event::Pitched(e) => e.pitches[0].pitch.clone(),
+            other => panic!("a note, not {other:?}"),
+        }
+    };
+    let tie_id = TieId::new(A, 900);
+    let tied = TypedObjectId::Tie(tie_id);
+    let tie_value = |start: usize, end: usize, pairing: Pairing| {
+        CrossCuttingValue::Tie(Tie {
+            id: tie_id,
+            start_event: m.q(start),
+            end_event: m.q(end),
+            pitch_pairing: pairing,
+            class: TieClass::Standard,
+            style: Default::default(),
+        })
+    };
+    type Pairing = Option<Vec<(PitchId, PitchId)>>;
+    let explicit = || Some(vec![(pitch(0), pitch(1))]);
+    let tie = |pairing: Pairing| {
+        m.op(
+            A,
+            0,
+            1,
+            &[],
+            primitive(OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                structure: tie_value(0, 1, pairing),
+            })),
+        )
+    };
+    let tie_seen = OperationId::new(A, 0);
+    let up_a_second = |targets: &[usize]| {
+        primitive(OperationKind::TransposeInterval(TransposeIntervalOp {
+            targets: targets.iter().map(|i| pitch(*i)).collect(),
+            interval: TranspositionInterval {
+                diatonic_steps: 1,
+                chromatic_steps: 2,
+            },
+        }))
+    };
+    let set_pitch = |i: usize, to: Pitch| {
+        primitive(OperationKind::ModifyIdentifiedPitch(
+            ModifyIdentifiedPitchOp {
+                pitch: pitch(i),
+                value: to,
+            },
+        ))
+    };
+    let with_value = |i: usize, to: Pitch| {
+        let mut event = m.quarters[i].clone();
+        match &mut event {
+            Event::Pitched(e) => e.pitches[0].pitch = to,
+            other => panic!("a note, not {other:?}"),
+        }
+        primitive(OperationKind::ModifyEvent(ModifyEventOp { event }))
+    };
+    let added = |i: usize| {
+        primitive(OperationKind::InsertIdentifiedPitch(
+            InsertIdentifiedPitchOp {
+                event: m.q(i),
+                pitch: IdentifiedPitch {
+                    id: PitchId::new(A, 950),
+                    pitch: value(3),
+                },
+            },
+        ))
+    };
+    let gave_way = |state: &MaterializedState, id: OperationId| {
+        tombstoned(state, tied)
+            && matches!(
+                effect(state, id),
+                Some(OperationEffect::AppliedWithRepair { repairs })
+                    if repairs.iter().any(|r| r.kind == RepairKind::CascadeDeleted && r.target == tied)
+            )
+    };
+
+    // Each edit by A, after the tie: the edit applies and the tie gives way.
+    let edits: Vec<(&str, Pairing, OperationPayload)> = vec![
+        ("a transpose of one end", explicit(), up_a_second(&[1])),
+        (
+            "a replay transpose of one end",
+            explicit(),
+            primitive(OperationKind::Transpose(TransposeOp {
+                targets: vec![pitch(0)],
+                chromatic_steps: 1,
+            })),
+        ),
+        (
+            "a pitch edit of one end",
+            explicit(),
+            set_pitch(1, value(2)),
+        ),
+        (
+            "a whole-event edit of one end's pitch",
+            explicit(),
+            with_value(0, value(3)),
+        ),
+        (
+            "a delete of an end's pitch",
+            explicit(),
+            primitive(OperationKind::DeleteIdentifiedPitch(
+                DeleteIdentifiedPitchOp { pitch: pitch(1) },
+            )),
+        ),
+        ("a pitch added to an implicitly paired end", None, added(1)),
+        (
+            "its end moved past the next quarter",
+            explicit(),
+            m.reassign(&[(0, 0), (1, 2), (2, 1), (3, 3)]),
+        ),
+        (
+            "the tie rewritten onto a quarter not next",
+            explicit(),
+            primitive(OperationKind::ModifyCrossCutting(ModifyCrossCuttingOp {
+                structure: tie_value(0, 2, None),
+            })),
+        ),
+    ];
+    for (name, pairing, payload) in edits {
+        let tie = tie(pairing);
+        let edit = m.op(A, 1, 2, &[tie_seen], payload);
+        let state = m.agree(name, &[tie, edit.clone()]);
+        assert!(
+            gave_way(&state, edit.id),
+            "{name}: {:?}",
+            effect(&state, edit.id)
+        );
+    }
+
+    // An insert between the ends, into the time the start's trim freed.
+    let trim = m.op(A, 1, 2, &[tie_seen], primitive(m.trim(0, eighth())));
+    let mut rest = m.rest(960, 0, eighth());
+    rest.position = EventPosition::Musical(MusicalPosition(
+        RationalTime::new(1, 8).expect("an eighth in"),
+    ));
+    let insert = m.op(B, 0, 3, &[tie_seen, trim.id], m.insert(rest));
+    let state = m.agree(
+        "an insert between the ends",
+        &[tie(explicit()), trim.clone(), insert.clone()],
+    );
+    assert_eq!(
+        effect(&state, trim.id),
+        Some(OperationEffect::Applied),
+        "a trim keeps the tie"
+    );
+    assert!(
+        gave_way(&state, insert.id),
+        "{:?}",
+        effect(&state, insert.id)
+    );
+
+    // A tie created over a concurrent edit that breaks it gives way at once.
+    let edit = m.op(B, 0, 1, &[], set_pitch(1, value(2)));
+    let late = m.op(
+        A,
+        0,
+        2,
+        &[],
+        primitive(OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+            structure: tie_value(0, 1, explicit()),
+        })),
+    );
+    let state = m.agree("a tie over a concurrent pitch edit", &[edit, late.clone()]);
+    assert!(gave_way(&state, late.id), "{:?}", effect(&state, late.id));
+
+    // An undo restoring the pitch the tie was made for: the D made a C, tied
+    // from the C before it, then the edit undone.
+    let tx = TransactionId::new(A, 970);
+    let mut declare = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("edit"),
+            category: None,
+        })),
+    );
+    declare.transaction = Some(tx);
+    let mut make_c = m.op(A, 1, 2, &[declare.id], set_pitch(2, value(1)));
+    make_c.transaction = Some(tx);
+    let later_tie = m.op(
+        A,
+        2,
+        3,
+        &[make_c.id],
+        primitive(OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+            structure: tie_value(1, 2, None),
+        })),
+    );
+    let undo = m.op(
+        A,
+        3,
+        4,
+        &[later_tie.id],
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::StrictInverse,
+        }),
+    );
+    let state = m.agree(
+        "an undo restoring an end's pitch",
+        &[declare, make_c, later_tie.clone(), undo.clone()],
+    );
+    assert_eq!(effect(&state, later_tie.id), Some(OperationEffect::Applied));
+    assert!(gave_way(&state, undo.id), "{:?}", effect(&state, undo.id));
+
+    // Edits that leave the tie whole keep it: both ends transposed together,
+    // a pitch added to an explicitly paired end, the next quarter lengthened.
+    let keeps: Vec<(&str, OperationPayload)> = vec![
+        ("both ends transposed", up_a_second(&[0, 1])),
+        ("a pitch added beside an explicit pair", added(1)),
+        (
+            "the quarter after the tie trimmed",
+            primitive(m.trim(2, eighth())),
+        ),
+    ];
+    for (name, payload) in keeps {
+        let edit = m.op(A, 1, 2, &[tie_seen], payload);
+        let state = m.agree(name, &[tie(explicit()), edit.clone()]);
+        assert_eq!(
+            effect(&state, edit.id),
+            Some(OperationEffect::Applied),
+            "{name}"
+        );
+        assert!(live(&state, tied), "{name}: the tie stays");
+    }
+}
+
+/// The pitch one author adds to the first quarter and transposes, which
+/// leaves it a propagated spelling: its insert and its transpose.
+fn added_pitch(
+    m: &Measure,
+    counter: u64,
+    at: i64,
+    seen: &[OperationId],
+) -> (epiphany_core::PitchId, [OperationEnvelope; 2]) {
+    use epiphany_core::{IdentifiedPitch, PitchId, TranspositionInterval};
+    use epiphany_ops::{InsertIdentifiedPitchOp, TransposeIntervalOp};
+    let pitch = PitchId::new(B, 600);
+    let insert = m.op(
+        B,
+        counter,
+        at,
+        seen,
+        primitive(OperationKind::InsertIdentifiedPitch(
+            InsertIdentifiedPitchOp {
+                event: m.q(0),
+                pitch: IdentifiedPitch {
+                    id: pitch,
+                    pitch: valuegen::pitch_value_nth(4),
+                },
+            },
+        )),
+    );
+    let mut after = seen.to_vec();
+    after.push(insert.id);
+    let transpose = m.op(
+        B,
+        counter + 1,
+        at + 1,
+        &after,
+        primitive(OperationKind::TransposeInterval(TransposeIntervalOp {
+            targets: [pitch].into_iter().collect(),
+            interval: TranspositionInterval {
+                diatonic_steps: 1,
+                chromatic_steps: 2,
+            },
+        })),
+    );
+    (pitch, [insert, transpose])
+}
+
+/// Whether the graph-aware score's event holds `pitch`, with a spelling
+/// attachment scoped to it.
+fn holds_with_spelling(
+    m: &Measure,
+    authored: &[OperationEnvelope],
+    event: EventId,
+    pitch: epiphany_core::PitchId,
+) -> bool {
+    use epiphany_core::SpellingScope;
+    let mut set = OperationSet::new();
+    set.accept_all(m.import.envelopes.iter().chain(authored).cloned());
+    let score = set
+        .reduce_onto(&Score::empty(IdentityContext::new(m.import.replica)))
+        .score;
+    let held = matches!(score.events.get(event), Some(Event::Pitched(e))
+        if e.pitches.iter().any(|ip| ip.id == pitch));
+    let spelt = score
+        .spelling_attachments
+        .iter()
+        .any(|a| matches!(&a.scope, SpellingScope::Pitch(p) if *p == pitch));
+    held && spelt
+}
+
+/// A whole-event modify follows observed-remove (D49), and so keeps a pitch a
+/// concurrent author added and it never saw, with the pitch's attachments
+/// (add wins, D48), in both modes. Before reduction version 3 the modify's
+/// value replaced the event's pitches, so the added pitch left the graph while
+/// it stayed live and its spelling attachment named nothing
+/// (`SpellingScopeResolves`).
+#[test]
+fn a_modify_keeps_a_pitch_its_author_never_saw_in_both_modes() {
+    let m = Measure::new();
+    let (pitch, [insert, transpose]) = added_pitch(&m, 0, 1, &[]);
+    let trim = m.op(A, 0, 3, &[], primitive(m.trim(0, eighth())));
+    let authored = [insert.clone(), transpose, trim.clone()];
+    let state = m.agree("a trim beside an unseen pitch", &authored);
+    assert_eq!(effect(&state, trim.id), Some(OperationEffect::Applied));
+    assert!(live(&state, TypedObjectId::Pitch(pitch)));
+    assert!(
+        holds_with_spelling(&m, &authored, m.q(0), pitch),
+        "the trimmed quarter keeps the added pitch and its spelling"
+    );
+}
+
+/// An undo of a modify keeps a pitch another author added to the event
+/// since, with its attachments: the undo reverses its own transaction, not
+/// the pitch's insert. Before reduction version 3 the restored value replaced
+/// the event's pitches, dropping the added one from the graph.
+#[test]
+fn an_undo_of_a_modify_keeps_a_pitch_added_since_in_both_modes() {
+    let m = Measure::new();
+    let tx = TransactionId::new(A, 650);
+    let mut declare = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("trim"),
+            category: None,
+        })),
+    );
+    declare.transaction = Some(tx);
+    let mut trim = m.op(A, 1, 2, &[declare.id], primitive(m.trim(0, eighth())));
+    trim.transaction = Some(tx);
+    let (pitch, [insert, transpose]) = added_pitch(&m, 0, 3, &[trim.id]);
+    let undo = m.op(
+        A,
+        2,
+        5,
+        &[transpose.id],
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::StrictInverse,
+        }),
+    );
+    let authored = [declare, trim, insert, transpose, undo.clone()];
+    let state = m.agree("an undone trim beside a pitch added since", &authored);
+    assert_eq!(effect(&state, undo.id), Some(OperationEffect::Applied));
+    assert!(
+        holds_with_spelling(&m, &authored, m.q(0), pitch),
+        "the restored quarter keeps the added pitch and its spelling"
+    );
+}
+
+/// A clef or key change is written at a musical position, so a region out of
+/// musical time takes none: `SetClef` and `SetKeySignature` there, and a
+/// `CreateStaffInstance` carrying such a change, are refused
+/// `WrongRegionTimeModel`, and a live change strands a migration of its
+/// region out of musical time, which conflicts naming the instance, in both
+/// modes. Before reduction version 3 each applied and left a change anchored
+/// by a musical offset the region no longer admits (`AnchorOffsetModel`).
+#[test]
+fn a_clef_or_key_in_a_region_out_of_musical_time_is_refused_in_both_modes() {
+    use epiphany_core::{Clef, ClefChange, ClefShape, KeySignature, StaffInstanceId, TimeAnchor};
+    use epiphany_ops::{CreateRegionOp, CreateStaffInstanceOp, SetClefOp, SetKeySignatureOp};
+    let m = Measure::new();
+    let staff = m.import.ids.staves[0][0];
+    let alto = Clef {
+        shape: ClefShape::C,
+        line: 3,
+        octave_shift: 0,
+    };
+    let made = |counter: u64, region: RegionId| {
+        m.op(
+            A,
+            counter,
+            counter as i64 + 1,
+            &[],
+            primitive(OperationKind::CreateRegion(CreateRegionOp {
+                region: valuegen::region(region),
+            })),
+        )
+    };
+    let instance_op = |counter: u64, seen: &[OperationId], region, instance, clefs| {
+        let mut value = valuegen::staff_instance(instance, staff);
+        value.clef_sequence = clefs;
+        m.op(
+            A,
+            counter,
+            counter as i64 + 1,
+            seen,
+            primitive(OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                region,
+                instance: value,
+            })),
+        )
+    };
+    let clef = |instance| {
+        primitive(OperationKind::SetClef(SetClefOp {
+            instance,
+            offset: RationalTime::zero(),
+            clef: Some(alto),
+        }))
+    };
+    let key = |instance| {
+        primitive(OperationKind::SetKeySignature(SetKeySignatureOp {
+            instance,
+            offset: RationalTime::zero(),
+            key: KeySignature::new(2),
+        }))
+    };
+
+    // After the migration: a clef, a key and an instance carrying a clef in
+    // musical time are refused.
+    let region = RegionId::new(A, 1100);
+    let instance = StaffInstanceId::new(A, 1101);
+    let create = made(0, region);
+    let quiet = instance_op(1, &[create.id], region, instance, Vec::new());
+    let migrated = m.op(
+        A,
+        2,
+        3,
+        &[quiet.id],
+        m.migrate_region(region, valuegen::proportional_model()),
+    );
+    let set_clef = m.op(A, 3, 4, &[migrated.id], clef(instance));
+    let set_key = m.op(A, 4, 5, &[migrated.id], key(instance));
+    // The carrying instance goes into a second region, the first already
+    // manifesting the staff.
+    let other = RegionId::new(A, 1103);
+    let create_other = m.op(
+        A,
+        5,
+        6,
+        &[set_key.id],
+        primitive(OperationKind::CreateRegion(CreateRegionOp {
+            region: valuegen::region(other),
+        })),
+    );
+    let migrated_other = m.op(
+        A,
+        6,
+        7,
+        &[create_other.id],
+        m.migrate_region(other, valuegen::proportional_model()),
+    );
+    let carried = vec![ClefChange {
+        anchor: TimeAnchor::Region {
+            id: other,
+            edge: epiphany_core::RegionEdge::Start,
+            offset: epiphany_core::AnchorOffset::Musical(MusicalDuration::zero()),
+        },
+        clef: alto,
+    }];
+    let second = instance_op(
+        7,
+        &[migrated_other.id],
+        other,
+        StaffInstanceId::new(A, 1102),
+        carried,
+    );
+    let state = m.agree(
+        "a clef, a key and an instance in a proportional region",
+        &[
+            create,
+            quiet,
+            migrated.clone(),
+            set_clef.clone(),
+            set_key.clone(),
+            create_other,
+            migrated_other.clone(),
+            second.clone(),
+        ],
+    );
+    assert_eq!(effect(&state, migrated.id), Some(OperationEffect::Applied));
+    assert_eq!(
+        effect(&state, migrated_other.id),
+        Some(OperationEffect::Applied)
+    );
+    for op in [&set_clef, &set_key, &second] {
+        assert_eq!(
+            effect(&state, op.id),
+            refused(PreconditionFailureReason::WrongRegionTimeModel)
+        );
+    }
+
+    // Before the migration: a live clef, or key, strands it.
+    let changes: [&dyn Fn(StaffInstanceId) -> OperationPayload; 2] = [&clef, &key];
+    for (n, change) in changes.into_iter().enumerate() {
+        let region = RegionId::new(A, 1110 + n as u64);
+        let instance = StaffInstanceId::new(A, 1120 + n as u64);
+        let create = made(0, region);
+        let quiet = instance_op(1, &[create.id], region, instance, Vec::new());
+        let set = m.op(A, 2, 3, &[quiet.id], change(instance));
+        let migrated = m.op(
+            A,
+            3,
+            4,
+            &[set.id],
+            m.migrate_region(region, valuegen::proportional_model()),
+        );
+        let state = m.agree(
+            "a migration a clef or key strands",
+            &[create, quiet, set.clone(), migrated.clone()],
+        );
+        assert_eq!(effect(&state, set.id), Some(OperationEffect::Applied));
+        assert_eq!(
+            migration_failure(&state, migrated.id),
+            vec![TypedObjectId::StaffInstance(instance)]
+        );
+    }
+}
+
+/// A staff named by a live part definition or spanner is not undone: an undo
+/// of the transaction that made it, after another author named it, conflicts
+/// in both modes, naming the referencer; and a spanner naming a staff an undo
+/// has removed is refused `TargetMissing` in both, its staves read as
+/// referents. Before reduction version 3 the undo removed the staff and the
+/// spanner applied, each leaving a reference to a staff the score does not
+/// declare (`CrossCuttingRefsResolve`).
+#[test]
+fn an_undo_of_a_staff_a_part_or_spanner_names_conflicts_in_both_modes() {
+    use epiphany_core::{PartDefinitionId, SpannerId, StaffId};
+    use epiphany_ops::{
+        ConflictKind, CreateCrossCuttingOp, CreatePartDefinitionOp, CreateStaffOp,
+        CrossCuttingValue,
+    };
+    let m = Measure::new();
+    let instrument = m.import.ids.instruments[0];
+    let make_staff = |tx: TransactionId, staff: StaffId| {
+        let mut declare = m.op(
+            A,
+            0,
+            1,
+            &[],
+            primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                id: tx,
+                label: String::from("a staff"),
+                category: None,
+            })),
+        );
+        declare.transaction = Some(tx);
+        let mut made = m.op(
+            A,
+            1,
+            2,
+            &[declare.id],
+            primitive(OperationKind::CreateStaff(CreateStaffOp {
+                staff: valuegen::staff(staff, instrument),
+            })),
+        );
+        made.transaction = Some(tx);
+        (declare, made)
+    };
+    let undo = |counter: u64, at: i64, seen: &[OperationId], tx: TransactionId| {
+        m.op(
+            A,
+            counter,
+            at,
+            seen,
+            OperationPayload::UndoTransaction(UndoTransactionPayload {
+                target: tx,
+                policy: UndoPolicy::StrictInverse,
+            }),
+        )
+    };
+    let part = |staff: StaffId| {
+        primitive(OperationKind::CreatePartDefinition(
+            CreatePartDefinitionOp {
+                part: valuegen::part_definition(PartDefinitionId::new(B, 1201), vec![staff]),
+            },
+        ))
+    };
+    let spanner = |staff: StaffId| {
+        primitive(OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+            structure: CrossCuttingValue::Spanner(epiphany_core::Spanner {
+                id: SpannerId::new(B, 1202),
+                start: valuegen::event_anchor(m.q(0)),
+                end: valuegen::event_anchor(m.q(1)),
+                staves: vec![staff],
+                kind: Default::default(),
+                style: Default::default(),
+            }),
+        }))
+    };
+
+    for (n, (name, named)) in [
+        ("a part", &part as &dyn Fn(StaffId) -> OperationPayload),
+        ("a spanner", &spanner),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let tx = TransactionId::new(A, 1210 + n as u64);
+        let staff = StaffId::new(A, 1220 + n as u64);
+        let (declare, made) = make_staff(tx, staff);
+        let naming = m.op(B, 0, 3, &[made.id], named(staff));
+        let undone = undo(2, 4, &[naming.id], tx);
+        let state = m.agree(
+            &format!("an undone staff {name} names"),
+            &[declare, made, naming.clone(), undone.clone()],
+        );
+        assert_eq!(effect(&state, naming.id), Some(OperationEffect::Applied));
+        let Some(OperationEffect::Conflicted { conflict }) = effect(&state, undone.id) else {
+            panic!("{name}: {:?}", effect(&state, undone.id));
+        };
+        let record = state
+            .conflicts
+            .records()
+            .iter()
+            .find(|r| r.id == conflict)
+            .expect("recorded");
+        assert!(matches!(
+            record.kind,
+            ConflictKind::TransactionConflict { .. }
+        ));
+        assert!(
+            live(&state, TypedObjectId::Staff(staff)),
+            "{name}: the staff stays"
+        );
+    }
+
+    // A spanner after the undo, its author unaware of it, names a dead staff.
+    let tx = TransactionId::new(A, 1230);
+    let staff = StaffId::new(A, 1231);
+    let (declare, made) = make_staff(tx, staff);
+    let undone = undo(2, 3, &[made.id], tx);
+    let late = m.op(B, 0, 4, &[made.id], spanner(staff));
+    let state = m.agree(
+        "a spanner naming an undone staff",
+        &[declare, made, undone.clone(), late.clone()],
+    );
+    assert!(tombstoned(&state, TypedObjectId::Staff(staff)));
+    assert!(matches!(
+        effect(&state, undone.id),
+        Some(OperationEffect::AppliedWithRepair { .. })
+    ));
+    assert_eq!(
+        effect(&state, late.id),
+        refused(PreconditionFailureReason::TargetMissing)
+    );
+}
+
+/// A tuplet another author made over an event fixes its duration, so an undo
+/// of the transaction that trimmed the event, which would restore its earlier
+/// duration, is superseded by the tuplet in both modes: a strict undo
+/// conflicts and a best-effort one leaves the duration, the tuplet's members
+/// still filling its total. Before reduction version 3 the undo restored the
+/// duration and broke the tuplet's sum (`TupletSum`).
+#[test]
+fn an_undo_restoring_a_tuplet_members_duration_is_superseded_in_both_modes() {
+    for policy in [UndoPolicy::StrictInverse, UndoPolicy::BestEffort] {
+        let m = Measure::new();
+        let tx = TransactionId::new(A, 1300);
+        let mut declare = m.op(
+            A,
+            0,
+            1,
+            &[],
+            primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                id: tx,
+                label: String::from("trim"),
+                category: None,
+            })),
+        );
+        declare.transaction = Some(tx);
+        let mut trim = m.op(A, 1, 2, &[declare.id], primitive(m.trim(1, eighth())));
+        trim.transaction = Some(tx);
+        let tuplet = m.op(
+            B,
+            0,
+            3,
+            &[trim.id],
+            primitive(OperationKind::CreateTuplet(CreateTupletOp {
+                tuplet: Tuplet {
+                    id: TupletId::new(B, 1301),
+                    ratio: TupletRatio::new(3, 2).expect("not degenerate"),
+                    members: vec![m.q(0), m.q(1)],
+                    parent: None,
+                    required_total: musical(m.quarters[0].duration()) + musical(&eighth()),
+                    display: Default::default(),
+                },
+            })),
+        );
+        let undo = m.op(
+            A,
+            2,
+            4,
+            &[tuplet.id],
+            OperationPayload::UndoTransaction(UndoTransactionPayload { target: tx, policy }),
+        );
+        let state = m.agree(
+            &format!("an undone trim of a tuplet member, {policy:?}"),
+            &[declare, trim, tuplet.clone(), undo.clone()],
+        );
+        assert_eq!(effect(&state, tuplet.id), Some(OperationEffect::Applied));
+        match policy {
+            UndoPolicy::BestEffort => {
+                assert_eq!(effect(&state, undo.id), Some(OperationEffect::Applied))
+            }
+            _ => assert!(
+                matches!(
+                    effect(&state, undo.id),
+                    Some(OperationEffect::Conflicted { .. })
+                ),
+                "{:?}",
+                effect(&state, undo.id)
+            ),
+        }
+    }
+}
+
+/// An undo of the transaction that made a region, after a tempo segment was
+/// anchored to it, or of the one that made an instrument, after a staff
+/// instance was set to it, is blocked in both modes: a strict undo conflicts,
+/// a best-effort one keeps the region or instrument. Before reduction version
+/// 3 each undo removed it and left the anchor or the override naming nothing
+/// (`CrossCuttingRefsResolve`).
+#[test]
+fn an_undo_of_a_region_or_instrument_still_named_is_blocked_in_both_modes() {
+    use epiphany_core::InstrumentId;
+    use epiphany_ops::{CreateInstrumentOp, CreateRegionOp, SetStaffLayoutOp, SetTempoSegmentOp};
+    let m = Measure::new();
+    let made = |tx: TransactionId, payload: OperationPayload| {
+        let mut declare = m.op(
+            A,
+            0,
+            1,
+            &[],
+            primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                id: tx,
+                label: String::from("make"),
+                category: None,
+            })),
+        );
+        declare.transaction = Some(tx);
+        let mut make = m.op(A, 1, 2, &[declare.id], payload);
+        make.transaction = Some(tx);
+        (declare, make)
+    };
+    let region = RegionId::new(A, 1400);
+    let instrument = InstrumentId::new(A, 1401);
+    let cases: [(&str, OperationPayload, OperationPayload, TypedObjectId); 2] = [
+        (
+            "a region a tempo segment anchors to",
+            primitive(OperationKind::CreateRegion(CreateRegionOp {
+                region: valuegen::region(region),
+            })),
+            primitive(OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                region: None,
+                start: valuegen::region_start_anchor(region, MusicalPosition::origin()),
+                segment: Some(valuegen::tempo_segment(
+                    region,
+                    MusicalPosition::origin(),
+                    96.0,
+                )),
+            })),
+            TypedObjectId::Region(region),
+        ),
+        (
+            "an instrument a staff instance is set to",
+            primitive(OperationKind::CreateInstrument(CreateInstrumentOp {
+                instrument: valuegen::instrument(instrument),
+            })),
+            primitive(OperationKind::SetStaffLayout(SetStaffLayoutOp {
+                staff_instance: m.import.ids.instances[0][0],
+                instrument_override: Some(instrument),
+                staff_lines_override: None,
+                visible: true,
+            })),
+            TypedObjectId::Instrument(instrument),
+        ),
+    ];
+    for (n, (name, make, naming, object)) in cases.into_iter().enumerate() {
+        for policy in [UndoPolicy::StrictInverse, UndoPolicy::BestEffort] {
+            let tx = TransactionId::new(A, 1410 + n as u64);
+            let (declare, make) = made(tx, make.clone());
+            let named = m.op(B, 0, 3, &[make.id], naming.clone());
+            let undo = m.op(
+                A,
+                2,
+                4,
+                &[named.id],
+                OperationPayload::UndoTransaction(UndoTransactionPayload { target: tx, policy }),
+            );
+            let state = m.agree(
+                &format!("an undo of {name}, {policy:?}"),
+                &[declare, make, named.clone(), undo.clone()],
+            );
+            assert_eq!(
+                effect(&state, named.id),
+                Some(OperationEffect::Applied),
+                "{name}"
+            );
+            assert!(live(&state, object), "{name}, {policy:?}: kept");
+            if policy == UndoPolicy::StrictInverse {
+                assert!(
+                    matches!(
+                        effect(&state, undo.id),
+                        Some(OperationEffect::Conflicted { .. })
+                    ),
+                    "{name}: {:?}",
+                    effect(&state, undo.id)
+                );
+                // The conflict names the region once, so the state decodes as
+                // written.
+                assert_eq!(
+                    MaterializedState::decode_canonical(&state.canonical_bytes()).as_ref(),
+                    Ok(&state)
+                );
+            }
+        }
+    }
+}
+
+/// A whole-event modify follows observed-remove (D49), in both modes: a pitch
+/// its author saw and left out is removed with its attachments, the modify
+/// recording a `CascadeDeleted` repair for it; a rest written over a note its
+/// author saw becomes the rest, and over a note holding a pitch its author
+/// never saw, a note of that pitch alone; and a pitch it carries that an undo
+/// removed concurrently stays gone. Before reduction version 3 the first left
+/// the graph while it stayed live, its spelling naming nothing
+/// (`SpellingScopeResolves`), and the last came back into the graph while
+/// tombstoned (`UniqueIdentifiers`); and, as the checkpoint first had it, a
+/// modify removed no live pitch, so a removal written as a whole event was
+/// ignored and the rest written over a note stayed a note.
+#[test]
+fn a_whole_event_modify_removes_only_the_pitches_its_author_saw_in_both_modes() {
+    use epiphany_core::{IdentifiedPitch, PitchId, SpellingScope};
+    use epiphany_ops::InsertIdentifiedPitchOp;
+    let m = Measure::new();
+    let reduced = |authored: &[OperationEnvelope]| {
+        let mut set = OperationSet::new();
+        set.accept_all(m.import.envelopes.iter().chain(authored).cloned());
+        set.reduce_onto(&Score::empty(IdentityContext::new(m.import.replica)))
+            .score
+    };
+    let removed_with_repair = |state: &MaterializedState, id: OperationId, pitch: PitchId| {
+        tombstoned(state, TypedObjectId::Pitch(pitch))
+            && matches!(
+                effect(state, id),
+                Some(OperationEffect::AppliedWithRepair { repairs })
+                    if repairs.iter().any(|r| r.kind == RepairKind::CascadeDeleted
+                        && r.target == TypedObjectId::Pitch(pitch))
+            )
+    };
+    let as_rest = |i: usize| -> Event {
+        Event::Rest(Rest {
+            id: m.q(i),
+            voice: m.quarters[i].voice(),
+            position: m.quarters[i].position().clone(),
+            duration: m.quarters[i].duration().clone(),
+            vertical_position: None,
+            visible: true,
+        })
+    };
+    let own_pitch = |i: usize| m.import.ids.pitches[0][i][0];
+
+    // Left out by an author who saw it: removed, its spelling with it.
+    let (pitch, [insert, transpose]) = added_pitch(&m, 0, 1, &[]);
+    let trim = m.op(A, 0, 3, &[transpose.id], primitive(m.trim(0, eighth())));
+    let authored = [insert, transpose, trim.clone()];
+    let state = m.agree("a trim leaving out a pitch it saw", &authored);
+    assert!(
+        removed_with_repair(&state, trim.id, pitch),
+        "{:?}",
+        effect(&state, trim.id)
+    );
+    let score = reduced(&authored);
+    let Some(Event::Pitched(quarter)) = score.events.get(m.q(0)) else {
+        panic!("the first quarter");
+    };
+    assert!(quarter.pitches.iter().all(|ip| ip.id != pitch));
+    assert!(score
+        .spelling_attachments
+        .iter()
+        .all(|a| !matches!(&a.scope, SpellingScope::Pitch(p) if *p == pitch)));
+
+    // A rest written over a note its author saw becomes the rest.
+    let rest = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::ModifyEvent(ModifyEventOp {
+            event: as_rest(1),
+        })),
+    );
+    let state = m.agree(
+        "a rest over a note its author saw",
+        std::slice::from_ref(&rest),
+    );
+    assert!(removed_with_repair(&state, rest.id, own_pitch(1)));
+    assert!(matches!(
+        reduced(std::slice::from_ref(&rest)).events.get(m.q(1)),
+        Some(Event::Rest(_))
+    ));
+
+    // Over a note holding a pitch its author never saw: a note of that pitch.
+    let (unseen, [insert, transpose]) = added_pitch(&m, 0, 1, &[]);
+    let rest = m.op(
+        A,
+        0,
+        3,
+        &[],
+        primitive(OperationKind::ModifyEvent(ModifyEventOp {
+            event: as_rest(0),
+        })),
+    );
+    let authored = [insert, transpose, rest.clone()];
+    let state = m.agree("a rest over a note with an unseen pitch", &authored);
+    assert!(removed_with_repair(&state, rest.id, own_pitch(0)));
+    assert!(live(&state, TypedObjectId::Pitch(unseen)));
+    let Some(Event::Pitched(note)) = reduced(&authored).events.get(m.q(0)).cloned() else {
+        panic!("the unseen pitch keeps a note");
+    };
+    assert_eq!(
+        note.pitches.iter().map(|ip| ip.id).collect::<Vec<_>>(),
+        vec![unseen]
+    );
+    assert!(holds_with_spelling(&m, &authored, m.q(0), unseen));
+
+    // Carried after an undo removed it.
+    let tx = TransactionId::new(A, 1500);
+    let added = PitchId::new(A, 1501);
+    let mut declare = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("add"),
+            category: None,
+        })),
+    );
+    declare.transaction = Some(tx);
+    let mut add = m.op(
+        A,
+        1,
+        2,
+        &[declare.id],
+        primitive(OperationKind::InsertIdentifiedPitch(
+            InsertIdentifiedPitchOp {
+                event: m.q(0),
+                pitch: IdentifiedPitch {
+                    id: added,
+                    pitch: valuegen::pitch_value_nth(4),
+                },
+            },
+        )),
+    );
+    add.transaction = Some(tx);
+    let undo = m.op(
+        B,
+        0,
+        3,
+        &[add.id],
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::StrictInverse,
+        }),
+    );
+    let mut chord = m.quarters[0].clone();
+    match &mut chord {
+        Event::Pitched(e) => {
+            e.duration = eighth();
+            e.pitches.push(IdentifiedPitch {
+                id: added,
+                pitch: valuegen::pitch_value_nth(4),
+            });
+        }
+        other => panic!("a note, not {other:?}"),
+    }
+    let carried = m.op(
+        A,
+        2,
+        4,
+        &[add.id],
+        primitive(OperationKind::ModifyEvent(ModifyEventOp { event: chord })),
+    );
+    let authored = [declare, add, undo.clone(), carried.clone()];
+    let state = m.agree("a trim carrying a pitch an undo removed", &authored);
+    assert!(matches!(
+        effect(&state, undo.id),
+        Some(OperationEffect::AppliedWithRepair { .. })
+    ));
+    assert!(tombstoned(&state, TypedObjectId::Pitch(added)));
+    let Some(Event::Pitched(quarter)) = reduced(&authored).events.get(m.q(0)).cloned() else {
+        panic!("the first quarter");
+    };
+    assert!(
+        quarter.pitches.iter().all(|ip| ip.id != added),
+        "the removed pitch stays out of the event"
+    );
+}
+
+/// An undo of a whole-event modify reverts that modify's own effect and no
+/// more, in both modes (observed-remove, D49, and the owner's ruling for its
+/// undo, D51): the pitch it removed comes back, at its value and with its
+/// spelling, and the event its earlier value; a pitch added since stays.
+#[test]
+fn an_undo_of_a_modify_brings_back_the_pitch_it_removed_in_both_modes() {
+    use epiphany_core::{IdentifiedPitch, PitchId};
+    use epiphany_ops::InsertIdentifiedPitchOp;
+    let m = Measure::new();
+    let (pitch, [insert, transpose]) = added_pitch(&m, 0, 1, &[]);
+    let tx = TransactionId::new(A, 2300);
+    let mut declare = m.op(
+        A,
+        0,
+        3,
+        &[transpose.id],
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("trim"),
+            category: None,
+        })),
+    );
+    declare.transaction = Some(tx);
+    // The context names its author's own declaration and the pitch's
+    // transpose, which it saw.
+    let mut trim = m.op(
+        A,
+        1,
+        4,
+        &[declare.id, transpose.id],
+        primitive(m.trim(0, eighth())),
+    );
+    trim.transaction = Some(tx);
+    let since = PitchId::new(B, 2301);
+    let added_since = m.op(
+        B,
+        2,
+        5,
+        &[trim.id],
+        primitive(OperationKind::InsertIdentifiedPitch(
+            InsertIdentifiedPitchOp {
+                event: m.q(0),
+                pitch: IdentifiedPitch {
+                    id: since,
+                    pitch: valuegen::pitch_value_nth(5),
+                },
+            },
+        )),
+    );
+    let undo = m.op(
+        A,
+        2,
+        6,
+        &[added_since.id, trim.id],
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::StrictInverse,
+        }),
+    );
+    let authored = [
+        insert,
+        transpose,
+        declare,
+        trim.clone(),
+        added_since,
+        undo.clone(),
+    ];
+    let state = m.agree("an undone trim that removed a pitch", &authored);
+    assert!(matches!(
+        effect(&state, trim.id),
+        Some(OperationEffect::AppliedWithRepair { .. })
+    ));
+    assert_eq!(effect(&state, undo.id), Some(OperationEffect::Applied));
+    assert!(live(&state, TypedObjectId::Pitch(pitch)), "it comes back");
+    assert!(
+        holds_with_spelling(&m, &authored, m.q(0), pitch),
+        "in the event, with its spelling"
+    );
+    assert!(
+        live(&state, TypedObjectId::Pitch(since)),
+        "the pitch added since stays"
+    );
+    let mut set = OperationSet::new();
+    set.accept_all(m.import.envelopes.iter().chain(&authored).cloned());
+    let score = set
+        .reduce_onto(&Score::empty(IdentityContext::new(m.import.replica)))
+        .score;
+    let Some(Event::Pitched(quarter)) = score.events.get(m.q(0)) else {
+        panic!("the first quarter");
+    };
+    assert_eq!(
+        &quarter.duration,
+        m.quarters[0].duration(),
+        "the trim undone"
+    );
+    assert!(quarter.pitches.iter().any(|ip| ip.id == since));
+}
+
+/// A measure starts in musical time, so a `CreateMeasure` into a staff
+/// instance of a region out of musical time is refused `WrongRegionTimeModel`
+/// in both modes. Before reduction version 3 it applied, its start anchored by
+/// a musical offset the region does not admit (`AnchorOffsetModel`).
+#[test]
+fn a_measure_in_a_region_out_of_musical_time_is_refused_in_both_modes() {
+    use epiphany_core::{MeasureId, StaffInstanceId, TimeSignatureId};
+    use epiphany_ops::{CreateMeasureOp, CreateRegionOp, CreateStaffInstanceOp};
+    let m = Measure::new();
+    let region = RegionId::new(A, 1600);
+    let instance = StaffInstanceId::new(A, 1601);
+    let create = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::CreateRegion(CreateRegionOp {
+            region: valuegen::region(region),
+        })),
+    );
+    let staff = m.op(
+        A,
+        1,
+        2,
+        &[create.id],
+        primitive(OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+            region,
+            instance: valuegen::staff_instance(instance, m.import.ids.staves[0][0]),
+        })),
+    );
+    let migrated = m.op(
+        A,
+        2,
+        3,
+        &[staff.id],
+        m.migrate_region(region, valuegen::proportional_model()),
+    );
+    let mut measure = valuegen::measure(MeasureId::new(A, 1602), TimeSignatureId::new(A, 1603), 1);
+    measure.time_signature = None;
+    measure.start = valuegen::region_start_anchor(region, MusicalPosition::origin());
+    let made = m.op(
+        A,
+        3,
+        4,
+        &[migrated.id],
+        primitive(OperationKind::CreateMeasure(CreateMeasureOp {
+            instance,
+            measure,
+        })),
+    );
+    let state = m.agree(
+        "a measure in a proportional region",
+        &[create, staff, migrated.clone(), made.clone()],
+    );
+    assert_eq!(effect(&state, migrated.id), Some(OperationEffect::Applied));
+    assert_eq!(
+        effect(&state, made.id),
+        refused(PreconditionFailureReason::WrongRegionTimeModel)
+    );
+}
+
+/// Two chains written independently, a region's whole grid and one of its
+/// meter changes, compare by which was written later as the reduction applies
+/// them. A transaction applies where its first member falls, so a grid write
+/// it stamps after another author's concurrent time signature is applied
+/// before it, and the signature governs the grid the next measure is placed
+/// by: a measure a bar too far is refused `MeasureMeterMismatch` in both
+/// modes. Before reduction version 3 the comparison read the stamps, took the
+/// grid write for the later, placed the measure by no signature and applied
+/// it, a bar too far under the signature the graph held
+/// (`MeasureMeterConsistency`).
+#[test]
+fn a_transactions_grid_write_is_as_recent_as_it_applied_in_both_modes() {
+    use epiphany_core::{MeasureId, StaffInstanceId, TimeSignatureId};
+    use epiphany_ops::{
+        CreateMeasureOp, CreateRegionOp, CreateStaffInstanceOp, SetMetricGridOp, SetTimeSignatureOp,
+    };
+    let m = Measure::new();
+    let region = RegionId::new(A, 1700);
+    let instance = StaffInstanceId::new(A, 1701);
+    let at = |offset: i64| {
+        valuegen::region_start_anchor(
+            region,
+            MusicalPosition(RationalTime::new(offset, 1).expect("whole notes")),
+        )
+    };
+    let measure = |id: u64, offset: i64| {
+        let mut measure = valuegen::measure(MeasureId::new(A, id), TimeSignatureId::new(A, 0), 1);
+        measure.time_signature = None;
+        measure.start = at(offset);
+        primitive(OperationKind::CreateMeasure(CreateMeasureOp {
+            instance,
+            measure,
+        }))
+    };
+    let create = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::CreateRegion(CreateRegionOp {
+            region: valuegen::region(region),
+        })),
+    );
+    let staff = m.op(
+        A,
+        1,
+        2,
+        &[create.id],
+        primitive(OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+            region,
+            instance: valuegen::staff_instance(instance, m.import.ids.staves[0][0]),
+        })),
+    );
+    let first = m.op(A, 2, 3, &[staff.id], measure(1702, 1));
+    // A's transaction: its first grid write before B's signature, its second
+    // after; the block applies where its first member falls.
+    let tx = TransactionId::new(A, 1703);
+    let mut declare = m.op(
+        A,
+        3,
+        4,
+        &[first.id],
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("grid"),
+            category: None,
+        })),
+    );
+    declare.transaction = Some(tx);
+    let clear = |counter: u64, at: i64, seen: OperationId| {
+        let mut write = m.op(
+            A,
+            counter,
+            at,
+            &[seen],
+            primitive(OperationKind::SetMetricGrid(SetMetricGridOp {
+                region,
+                grid: None,
+            })),
+        );
+        write.transaction = Some(tx);
+        write
+    };
+    let early = clear(4, 5, declare.id);
+    let signature = m.op(
+        B,
+        0,
+        6,
+        &[first.id],
+        primitive(OperationKind::SetTimeSignature(SetTimeSignatureOp {
+            region,
+            anchor: at(1),
+            time_signature: Some(valuegen::time_signature(TimeSignatureId::new(B, 1704), 2)),
+        })),
+    );
+    let grid = clear(5, 7, early.id);
+    // A bar of 2/4 after the first measure is a half; this is a whole.
+    let second = m.op(A, 6, 8, &[grid.id, signature.id], measure(1705, 2));
+    let state = m.agree(
+        "a measure placed by the grid as it applied",
+        &[
+            create,
+            staff,
+            first,
+            declare,
+            early,
+            signature.clone(),
+            grid.clone(),
+            second.clone(),
+        ],
+    );
+    assert_eq!(effect(&state, signature.id), Some(OperationEffect::Applied));
+    assert_eq!(effect(&state, grid.id), Some(OperationEffect::Applied));
+    assert_eq!(
+        effect(&state, second.id),
+        refused(PreconditionFailureReason::MeasureMeterMismatch)
+    );
+}
+
+/// An undo that keeps one of its transaction's mints for what names it keeps
+/// what that mint names in turn, in both modes: a transaction makes an
+/// instrument and a staff on it, another author puts an instance of the staff
+/// in the region, and an undo of the transaction keeps the staff for its
+/// instance and so the instrument for the staff (strict: conflicted; best
+/// effort: both kept). Before reduction version 3 a best-effort undo kept the
+/// staff and removed the instrument, judging the staff's reference as going
+/// with it, and the staff named an instrument the score did not declare
+/// (`CrossCuttingRefsResolve`).
+#[test]
+fn an_undo_keeps_what_a_kept_mint_names_in_both_modes() {
+    use epiphany_core::{InstrumentId, StaffId, StaffInstanceId};
+    use epiphany_ops::{CreateInstrumentOp, CreateStaffInstanceOp, CreateStaffOp};
+    let m = Measure::new();
+    for (n, policy) in [UndoPolicy::StrictInverse, UndoPolicy::BestEffort]
+        .into_iter()
+        .enumerate()
+    {
+        let n = n as u64;
+        let tx = TransactionId::new(A, 1800 + 10 * n);
+        let instrument = InstrumentId::new(A, 1801 + 10 * n);
+        let staff = StaffId::new(A, 1802 + 10 * n);
+        let mut declare = m.op(
+            A,
+            0,
+            1,
+            &[],
+            primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                id: tx,
+                label: String::from("an instrument and its staff"),
+                category: None,
+            })),
+        );
+        declare.transaction = Some(tx);
+        let mut made_instrument = m.op(
+            A,
+            1,
+            2,
+            &[declare.id],
+            primitive(OperationKind::CreateInstrument(CreateInstrumentOp {
+                instrument: valuegen::instrument(instrument),
+            })),
+        );
+        made_instrument.transaction = Some(tx);
+        let mut made_staff = m.op(
+            A,
+            2,
+            3,
+            &[made_instrument.id],
+            primitive(OperationKind::CreateStaff(CreateStaffOp {
+                staff: valuegen::staff(staff, instrument),
+            })),
+        );
+        made_staff.transaction = Some(tx);
+        let instance = m.op(
+            B,
+            0,
+            4,
+            &[made_staff.id],
+            primitive(OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                region: m.region,
+                instance: valuegen::staff_instance(StaffInstanceId::new(B, 1803 + 10 * n), staff),
+            })),
+        );
+        let undo = m.op(
+            A,
+            3,
+            5,
+            &[instance.id],
+            OperationPayload::UndoTransaction(UndoTransactionPayload { target: tx, policy }),
+        );
+        let state = m.agree(
+            &format!("an undo of an instrument and its staff, {policy:?}"),
+            &[
+                declare,
+                made_instrument,
+                made_staff,
+                instance.clone(),
+                undo.clone(),
+            ],
+        );
+        assert_eq!(effect(&state, instance.id), Some(OperationEffect::Applied));
+        assert!(live(&state, TypedObjectId::Staff(staff)), "{policy:?}");
+        assert!(
+            live(&state, TypedObjectId::Instrument(instrument)),
+            "{policy:?}: the kept staff keeps its instrument"
+        );
+        match policy {
+            UndoPolicy::StrictInverse => assert!(
+                matches!(
+                    effect(&state, undo.id),
+                    Some(OperationEffect::Conflicted { .. })
+                ),
+                "{:?}",
+                effect(&state, undo.id)
+            ),
+            _ => assert_eq!(effect(&state, undo.id), Some(OperationEffect::Applied)),
+        }
+    }
+}
+
+/// A voice the reduction promotes stands in its instance's index as any voice
+/// does, so the instance is not empty while the promoted voice holds an event,
+/// in both modes: two authors insert overlapping rests into one voice of a new
+/// instance, the later promoted to a voice of its own, while a third, aware of
+/// neither, deletes the voice and then its instance. The voice's delete
+/// applies between the two inserts, the retained insert finds its voice gone,
+/// and the instance's delete is refused `ContainerNotEmpty`. Before reduction
+/// version 3 the instance looked empty, its delete applied, and the promoted
+/// event named a voice the graph no longer held (`EventVoiceBacklink`).
+#[test]
+fn an_instance_holding_a_promoted_voice_is_not_empty_in_both_modes() {
+    use epiphany_core::{StaffId, StaffInstanceId, VoiceId};
+    use epiphany_ops::{
+        CreateStaffInstanceOp, CreateStaffOp, CreateVoiceOp, DeleteStaffInstanceOp,
+    };
+    const C: ReplicaId = ReplicaId(23);
+    let m = Measure::new();
+    let staff = StaffId::new(A, 1900);
+    let instance = StaffInstanceId::new(A, 1901);
+    let voice = VoiceId::new(A, 1902);
+    let made_staff = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::CreateStaff(CreateStaffOp {
+            staff: valuegen::staff(staff, m.import.ids.instruments[0]),
+        })),
+    );
+    let made_instance = m.op(
+        A,
+        1,
+        2,
+        &[made_staff.id],
+        primitive(OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+            region: m.region,
+            instance: valuegen::staff_instance(instance, staff),
+        })),
+    );
+    let made_voice = m.op(
+        A,
+        2,
+        3,
+        &[made_instance.id],
+        primitive(OperationKind::CreateVoice(CreateVoiceOp {
+            staff_instance: instance,
+            voice: valuegen::voice(voice),
+        })),
+    );
+    let rest = |id: EventId, quarters: i64| {
+        primitive(OperationKind::InsertEvent(InsertEventOp {
+            staff_instance: instance,
+            event: Event::Rest(Rest {
+                id,
+                voice,
+                position: EventPosition::Musical(MusicalPosition(
+                    RationalTime::new(quarters, 4).expect("quarters"),
+                )),
+                duration: EventDuration::Musical(MusicalDuration(
+                    RationalTime::new(1, 2).expect("a half"),
+                )),
+                vertical_position: None,
+                visible: true,
+            }),
+        }))
+    };
+    let setup = [
+        made_staff.clone(),
+        made_instance.clone(),
+        made_voice.clone(),
+    ];
+    let seen_setup = [made_voice.id];
+    // B's insert, the greater id, is promoted; it applies first, then C's
+    // voice delete, then A's retained insert, then C's instance delete.
+    let promoted = m.op(B, 0, 4, &seen_setup, rest(EventId::new(B, 1903), 1));
+    let delete_voice = m.op(
+        C,
+        0,
+        5,
+        &seen_setup,
+        primitive(OperationKind::DeleteVoice(DeleteVoiceOp { voice })),
+    );
+    let retained = m.op(A, 3, 6, &seen_setup, rest(EventId::new(A, 1904), 0));
+    let delete_instance = m.op(
+        C,
+        1,
+        7,
+        &[delete_voice.id],
+        primitive(OperationKind::DeleteStaffInstance(DeleteStaffInstanceOp {
+            staff_instance: instance,
+        })),
+    );
+    let mut authored = setup.to_vec();
+    authored.extend([
+        promoted.clone(),
+        delete_voice.clone(),
+        retained.clone(),
+        delete_instance.clone(),
+    ]);
+    let state = m.agree("a promoted voice's instance deleted", &authored);
+    assert!(
+        matches!(
+            effect(&state, promoted.id),
+            Some(OperationEffect::AppliedWithRepair { ref repairs })
+                if repairs.iter().any(|r| matches!(r.kind, RepairKind::VoicePromoted { .. }))
+        ),
+        "{:?}",
+        effect(&state, promoted.id)
+    );
+    assert_eq!(
+        effect(&state, delete_voice.id),
+        Some(OperationEffect::Applied)
+    );
+    assert_eq!(
+        effect(&state, retained.id),
+        refused(PreconditionFailureReason::VoiceMissing)
+    );
+    assert_eq!(
+        effect(&state, delete_instance.id),
+        refused(PreconditionFailureReason::ContainerNotEmpty)
+    );
+    assert!(live(&state, TypedObjectId::StaffInstance(instance)));
+}
+
+/// A transaction is undone once it is complete, so an undo that is a member of
+/// the transaction it names is refused `TargetMissing` in both modes, and the
+/// transaction holding it conflicts as a whole: here one that undoes an
+/// earlier transaction's time signature and then undoes itself. Before
+/// reduction version 3 the self-undo reversed the first undo's restoration of
+/// the region's meter change, restoring a meter change naming the time
+/// signature that undo had removed (`CrossCuttingRefsResolve`).
+#[test]
+fn an_undo_of_its_own_transaction_is_refused_in_both_modes() {
+    use epiphany_core::TimeSignatureId;
+    use epiphany_ops::{ConflictKind, CreateRegionOp, SetTimeSignatureOp};
+    let m = Measure::new();
+    for (n, policy) in [UndoPolicy::StrictInverse, UndoPolicy::BestEffort]
+        .into_iter()
+        .enumerate()
+    {
+        let n = n as u64;
+        let region = RegionId::new(A, 2000 + 10 * n);
+        let first = TransactionId::new(A, 2001 + 10 * n);
+        let second = TransactionId::new(A, 2002 + 10 * n);
+        let signature = TimeSignatureId::new(A, 2003 + 10 * n);
+        let declare = |counter: u64, at: i64, seen: &[OperationId], tx: TransactionId| {
+            let mut declare = m.op(
+                A,
+                counter,
+                at,
+                seen,
+                primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                    id: tx,
+                    label: String::from("edit"),
+                    category: None,
+                })),
+            );
+            declare.transaction = Some(tx);
+            declare
+        };
+        let undo = |counter: u64, at: i64, seen: OperationId, target: TransactionId| {
+            let mut undo = m.op(
+                A,
+                counter,
+                at,
+                &[seen],
+                OperationPayload::UndoTransaction(UndoTransactionPayload { target, policy }),
+            );
+            undo.transaction = Some(second);
+            undo
+        };
+        let create = m.op(
+            A,
+            0,
+            1,
+            &[],
+            primitive(OperationKind::CreateRegion(CreateRegionOp {
+                region: valuegen::region(region),
+            })),
+        );
+        let open_first = declare(1, 2, &[create.id], first);
+        let mut set = m.op(
+            A,
+            2,
+            3,
+            &[open_first.id],
+            primitive(OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                region,
+                anchor: valuegen::region_start_anchor(
+                    region,
+                    MusicalPosition(RationalTime::new(1, 1).expect("a bar in")),
+                ),
+                time_signature: Some(valuegen::time_signature(signature, 4)),
+            })),
+        );
+        set.transaction = Some(first);
+        let open_second = declare(3, 4, &[set.id], second);
+        let undo_first = undo(4, 5, open_second.id, first);
+        let undo_itself = undo(5, 6, undo_first.id, second);
+        let state = m.agree(
+            &format!("a transaction undoing itself, {policy:?}"),
+            &[
+                create,
+                open_first,
+                set.clone(),
+                open_second,
+                undo_first.clone(),
+                undo_itself.clone(),
+            ],
+        );
+        assert_eq!(effect(&state, set.id), Some(OperationEffect::Applied));
+        for member in [&undo_first, &undo_itself] {
+            assert_eq!(
+                effect(&state, member.id),
+                Some(OperationEffect::NoOp {
+                    reason: NoOpReason::TransactionConflict
+                }),
+                "{policy:?}"
+            );
+        }
+        assert!(
+            state.conflicts.records().iter().any(|r| matches!(
+                &r.kind,
+                ConflictKind::TransactionConflict { transaction, failed_members }
+                    if *transaction == second && *failed_members == vec![undo_itself.id]
+            )),
+            "{policy:?}: the self-undo fails its transaction"
+        );
+        assert!(live(&state, TypedObjectId::TimeSignature(signature)));
+    }
+}
+
+/// An undo restores a value as its setter writes one, so a restoration that
+/// would write in musical time into a region a migration has since taken out
+/// of it is superseded by the migration, in both modes (strict: conflicted;
+/// best effort: the value left out), as each setter is refused there: a
+/// system or page break, a meter change, a metric grid, a tempo segment
+/// anchored in the region, and a clef or key change of its instance. Each case
+/// writes a value, a transaction takes it away, another author migrates the
+/// region to proportional time, and the transaction is undone. Before
+/// reduction version 3 the undo restored the value, anchored by a musical
+/// offset the region no longer admits (`AnchorOffsetModel`).
+#[test]
+fn an_undo_writes_nothing_in_musical_time_into_a_region_out_of_it_in_both_modes() {
+    use epiphany_core::{Clef, KeySignature, StaffInstanceId, TimeSignatureId};
+    use epiphany_ops::{
+        CreateRegionOp, CreateStaffInstanceOp, SetClefOp, SetKeySignatureOp, SetMetricGridOp,
+        SetTempoSegmentOp, SetTimeSignatureOp, SetUserPageBreakOp, SetUserSystemBreakOp,
+    };
+    let m = Measure::new();
+    let origin = MusicalPosition::origin();
+    type Write = Box<dyn Fn(RegionId, StaffInstanceId, bool) -> OperationKind>;
+    let cases: Vec<(&str, Write)> = vec![
+        (
+            "a system break",
+            Box::new(|region, _, on| {
+                OperationKind::SetUserSystemBreak(SetUserSystemBreakOp {
+                    region,
+                    anchor: valuegen::region_start_anchor(region, MusicalPosition::origin()),
+                    present: on,
+                })
+            }),
+        ),
+        (
+            "a page break",
+            Box::new(|region, _, on| {
+                OperationKind::SetUserPageBreak(SetUserPageBreakOp {
+                    region,
+                    anchor: valuegen::region_start_anchor(region, MusicalPosition::origin()),
+                    present: on,
+                })
+            }),
+        ),
+        (
+            "a meter change",
+            Box::new(|region, _, on| {
+                OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region,
+                    anchor: valuegen::region_start_anchor(region, MusicalPosition::origin()),
+                    time_signature: on.then(|| {
+                        valuegen::time_signature(TimeSignatureId::new(A, region.counter() + 5), 3)
+                    }),
+                })
+            }),
+        ),
+        (
+            "a metric grid",
+            Box::new(|region, _, on| {
+                OperationKind::SetMetricGrid(SetMetricGridOp {
+                    region,
+                    grid: on.then(valuegen::metric_grid),
+                })
+            }),
+        ),
+        (
+            "a tempo segment",
+            Box::new(|region, _, on| {
+                OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                    region: Some(region),
+                    start: valuegen::region_start_anchor(region, MusicalPosition::origin()),
+                    segment: on
+                        .then(|| valuegen::tempo_segment(region, MusicalPosition::origin(), 96.0)),
+                })
+            }),
+        ),
+        (
+            "a clef change",
+            Box::new(|_, instance, on| {
+                OperationKind::SetClef(SetClefOp {
+                    instance,
+                    offset: RationalTime::zero(),
+                    clef: on.then(Clef::bass),
+                })
+            }),
+        ),
+        (
+            "a key change",
+            Box::new(|_, instance, on| {
+                OperationKind::SetKeySignature(SetKeySignatureOp {
+                    instance,
+                    offset: RationalTime::zero(),
+                    key: on.then(|| KeySignature::new(2).expect("a key in range")),
+                })
+            }),
+        ),
+    ];
+    let _ = &origin;
+    let mut n = 0u64;
+    for (name, write) in &cases {
+        for policy in [UndoPolicy::StrictInverse, UndoPolicy::BestEffort] {
+            n += 1;
+            let region = RegionId::new(A, 2100 + 10 * n);
+            let instance = StaffInstanceId::new(A, 2101 + 10 * n);
+            let tx = TransactionId::new(A, 2102 + 10 * n);
+            let create = m.op(
+                A,
+                0,
+                1,
+                &[],
+                primitive(OperationKind::CreateRegion(CreateRegionOp {
+                    region: valuegen::region(region),
+                })),
+            );
+            let staff = m.op(
+                A,
+                1,
+                2,
+                &[create.id],
+                primitive(OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                    region,
+                    instance: valuegen::staff_instance(instance, m.import.ids.staves[0][0]),
+                })),
+            );
+            let written = m.op(
+                A,
+                2,
+                3,
+                &[staff.id],
+                primitive(write(region, instance, true)),
+            );
+            let mut declare = m.op(
+                A,
+                3,
+                4,
+                &[written.id],
+                primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                    id: tx,
+                    label: String::from("take it away"),
+                    category: None,
+                })),
+            );
+            declare.transaction = Some(tx);
+            let mut taken = m.op(
+                A,
+                4,
+                5,
+                &[declare.id],
+                primitive(write(region, instance, false)),
+            );
+            taken.transaction = Some(tx);
+            let migrate = m.op(
+                B,
+                0,
+                6,
+                &[taken.id],
+                m.migrate_region(region, valuegen::proportional_model()),
+            );
+            let undo = m.op(
+                A,
+                5,
+                7,
+                &[taken.id],
+                OperationPayload::UndoTransaction(UndoTransactionPayload { target: tx, policy }),
+            );
+            let history = format!("{name} restored after a migration, {policy:?}");
+            let state = m.agree(
+                &history,
+                &[
+                    create,
+                    staff,
+                    written.clone(),
+                    declare,
+                    taken.clone(),
+                    migrate.clone(),
+                    undo.clone(),
+                ],
+            );
+            for applied in [&written, &taken, &migrate] {
+                assert!(
+                    matches!(
+                        effect(&state, applied.id),
+                        Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
+                    ),
+                    "{history}: {:?}",
+                    effect(&state, applied.id)
+                );
+            }
+            match policy {
+                UndoPolicy::StrictInverse => {
+                    let Some(OperationEffect::Conflicted { conflict }) = effect(&state, undo.id)
+                    else {
+                        panic!("{history}: {:?}", effect(&state, undo.id));
+                    };
+                    let record = state
+                        .conflicts
+                        .records()
+                        .iter()
+                        .find(|r| r.id == conflict)
+                        .expect("recorded");
+                    assert!(record.caused_by.contains(&migrate.id), "{history}");
+                }
+                _ => assert_eq!(
+                    effect(&state, undo.id),
+                    Some(OperationEffect::Applied),
+                    "{history}"
+                ),
+            }
+            assert!(state.breaks.keys().all(|(r, _)| *r != region), "{history}");
+            assert!(
+                state.page_breaks.keys().all(|(r, _)| *r != region),
+                "{history}"
+            );
+        }
+    }
+}
+
+/// A tie gives way only if it is still broken when its transaction completes
+/// (D49), in both modes: a transaction moving each end of a tied pair up a
+/// second, one at a time, keeps the tie; one that moves one end and leaves it
+/// so removes it, the last member that touched the tie recording the
+/// `CascadeDeleted` repair. Before reduction version 3's amendment the tie was
+/// held after each member, so the first move removed it though the second
+/// mended the pairing.
+#[test]
+fn a_tie_is_held_when_its_transaction_completes_in_both_modes() {
+    use epiphany_core::{Tie, TieClass, TieId, TranspositionInterval};
+    use epiphany_ops::{CreateCrossCuttingOp, CrossCuttingValue, TransposeIntervalOp};
+    // C4 C4 D4 E4, the tie from the first C to the second.
+    let m = Measure::of(REPEATED);
+    let pitch = |i: usize| m.import.ids.pitches[0][i][0];
+    let tie_id = TieId::new(A, 2200);
+    let tied = TypedObjectId::Tie(tie_id);
+    let tie = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+            structure: CrossCuttingValue::Tie(Tie {
+                id: tie_id,
+                start_event: m.q(0),
+                end_event: m.q(1),
+                pitch_pairing: Some(vec![(pitch(0), pitch(1))]),
+                class: TieClass::Standard,
+                style: Default::default(),
+            }),
+        })),
+    );
+    let up = |i: usize, diatonic_steps: i32, chromatic_steps: i32| {
+        primitive(OperationKind::TransposeInterval(TransposeIntervalOp {
+            targets: [pitch(i)].into_iter().collect(),
+            interval: TranspositionInterval {
+                diatonic_steps,
+                chromatic_steps,
+            },
+        }))
+    };
+    let tx = TransactionId::new(A, 2201);
+    let in_transaction = |members: [OperationPayload; 2]| {
+        let mut declare = m.op(
+            A,
+            1,
+            2,
+            &[tie.id],
+            primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                id: tx,
+                label: String::from("move the notes"),
+                category: None,
+            })),
+        );
+        declare.transaction = Some(tx);
+        let mut seen = declare.id;
+        let mut out = vec![declare];
+        for (k, payload) in members.into_iter().enumerate() {
+            let mut member = m.op(A, 2 + k as u64, 3 + k as i64, &[seen], payload);
+            member.transaction = Some(tx);
+            seen = member.id;
+            out.push(member);
+        }
+        out
+    };
+    let repaired = |state: &MaterializedState, id: OperationId| {
+        matches!(
+            effect(state, id),
+            Some(OperationEffect::AppliedWithRepair { repairs })
+                if repairs.iter().any(|r| r.kind == RepairKind::CascadeDeleted && r.target == tied)
+        )
+    };
+
+    // Both ends up a second: broken after the first member, mended by the
+    // second.
+    let members = in_transaction([up(0, 1, 2), up(1, 1, 2)]);
+    let mut authored = vec![tie.clone()];
+    authored.extend(members.iter().cloned());
+    let state = m.agree("a tie broken and mended in one transaction", &authored);
+    for member in &members[1..] {
+        assert_eq!(effect(&state, member.id), Some(OperationEffect::Applied));
+    }
+    assert!(live(&state, tied), "the mended tie stays");
+
+    // One end moved and left so; the other member touches no tie.
+    let members = in_transaction([up(0, 1, 2), up(2, 1, 2)]);
+    let mut authored = vec![tie.clone()];
+    authored.extend(members.iter().cloned());
+    let state = m.agree("a tie left broken by its transaction", &authored);
+    assert!(tombstoned(&state, tied));
+    assert!(repaired(&state, members[1].id), "the member that broke it");
+    assert_eq!(
+        effect(&state, members[2].id),
+        Some(OperationEffect::Applied)
+    );
+
+    // Both ends moved, apart: the later member touched it last.
+    let members = in_transaction([up(0, 1, 2), up(1, 2, 4)]);
+    let mut authored = vec![tie.clone()];
+    authored.extend(members.iter().cloned());
+    let state = m.agree("a tie both members touch, left broken", &authored);
+    assert!(tombstoned(&state, tied));
+    assert_eq!(
+        effect(&state, members[1].id),
+        Some(OperationEffect::Applied)
+    );
+    assert!(
+        repaired(&state, members[2].id),
+        "the last member to touch it"
+    );
+}
+
+/// Observed-remove over a base (D49): a pitch a base holds was inserted by no
+/// envelope of the set, and the base precedes every operation, so a modify
+/// that leaves it out has seen it and removes it, graph-aware. Base-free
+/// reduction holds no base pitch and so removes none; the two modes agree
+/// over an empty base, as for every referent a base supplies.
+#[test]
+fn a_modify_counts_a_bases_pitch_as_seen() {
+    let m = Measure::new();
+    let mut imported = OperationSet::new();
+    imported.accept_all(m.import.envelopes.iter().cloned());
+    let base = imported
+        .reduce_onto(&Score::empty(IdentityContext::new(m.import.replica)))
+        .score;
+    let base_pitch = m.import.ids.pitches[0][0][0];
+    let rest = Event::Rest(Rest {
+        id: m.q(0),
+        voice: m.quarters[0].voice(),
+        position: m.quarters[0].position().clone(),
+        duration: m.quarters[0].duration().clone(),
+        vertical_position: None,
+        visible: true,
+    });
+    // An author who has seen only the base, which the set does not hold.
+    let mut modify = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::ModifyEvent(ModifyEventOp { event: rest })),
+    );
+    modify.causal_context = CausalContext::new();
+    let mut set = OperationSet::new();
+    set.accept_all([modify.clone()]);
+    let aware = set.reduce_onto(&base);
+    assert_eq!(
+        effect(&aware.state, modify.id),
+        Some(OperationEffect::AppliedWithRepair {
+            repairs: vec![epiphany_ops::RepairRecord {
+                kind: RepairKind::CascadeDeleted,
+                target: TypedObjectId::Pitch(base_pitch),
+            }]
+        })
+    );
+    assert!(matches!(
+        aware.score.events.get(m.q(0)),
+        Some(Event::Rest(_))
+    ));
+    assert!(check_invariants(&aware.score).is_empty());
+    // Base-free reduction knows neither the event nor its pitch.
+    let free = set.reduce();
+    assert_eq!(
+        effect(&free, modify.id),
+        refused(PreconditionFailureReason::TargetMissing)
+    );
+    assert!(!free.objects.contains_key(&TypedObjectId::Pitch(base_pitch)));
+}
+
+/// A pitch inserted into an unpitched event makes it a note, as one inserted
+/// into a rest does, in both modes: one author writes a note as an unpitched
+/// event while another, concurrently, adds a pitch to the note and respells
+/// it. Before reduction version 3 the graph dropped the pitch the ledger
+/// minted, and its spelling attachment named nothing (`SpellingScopeResolves`).
+#[test]
+fn a_pitch_inserted_into_an_unpitched_event_makes_it_a_note_in_both_modes() {
+    use epiphany_core::{
+        IdentifiedPitch, PitchId, PitchSpelling, StaffPosition, UnpitchedEvent, UnpitchedMemberId,
+    };
+    use epiphany_ops::{InsertIdentifiedPitchOp, RespellPitchOp};
+    let m = Measure::new();
+    let unpitched = Event::Unpitched(UnpitchedEvent {
+        id: m.q(0),
+        voice: m.quarters[0].voice(),
+        position: m.quarters[0].position().clone(),
+        duration: m.quarters[0].duration().clone(),
+        staff_position: StaffPosition(-1),
+        instrument_member: UnpitchedMemberId(0),
+        articulations: Vec::new(),
+        dynamic: None,
+        stem: epiphany_core::StemConfiguration,
+        grace: None,
+    });
+    let written = m.op(
+        B,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::ModifyEvent(ModifyEventOp {
+            event: unpitched,
+        })),
+    );
+    let pitch = PitchId::new(A, 2400);
+    let value = valuegen::pitch_value_nth(4);
+    let added = m.op(
+        A,
+        0,
+        2,
+        &[],
+        primitive(OperationKind::InsertIdentifiedPitch(
+            InsertIdentifiedPitchOp {
+                event: m.q(0),
+                pitch: IdentifiedPitch {
+                    id: pitch,
+                    pitch: value,
+                },
+            },
+        )),
+    );
+    let respelt = m.op(
+        A,
+        1,
+        3,
+        &[added.id],
+        primitive(OperationKind::RespellPitch(RespellPitchOp {
+            pitch,
+            spelling: PitchSpelling::cmn(epiphany_core::CmnNominal::C, 4),
+        })),
+    );
+    let authored = [written.clone(), added.clone(), respelt];
+    let state = m.agree("a pitch added to a note written unpitched", &authored);
+    assert!(matches!(
+        effect(&state, written.id),
+        Some(OperationEffect::AppliedWithRepair { .. })
+    ));
+    assert_eq!(effect(&state, added.id), Some(OperationEffect::Applied));
+    assert!(live(&state, TypedObjectId::Pitch(pitch)));
+    assert!(
+        holds_with_spelling(&m, &authored, m.q(0), pitch),
+        "the unpitched event becomes a note of the added pitch, spelt"
+    );
+}
+
+/// An undo of an undo (a redo) restores a value as the first undo found it,
+/// so a restored value naming an object the first undo removed is superseded
+/// by that undo, in both modes (strict: conflicted; best effort: the value
+/// left out), as a cross-cutting value naming a deleted endpoint is. Each case
+/// is a transaction that makes an object and writes a value naming it, a
+/// transaction undoing it, and an undo of that: a meter change naming its time
+/// signature, a metric grid naming one, a tempo segment anchored to a new
+/// region, a staff instance set to a new instrument, and a system and a page
+/// break at a new measure. Before reduction version 3 the redo restored the value naming
+/// the removed object (`CrossCuttingRefsResolve`, or an anchor naming
+/// nothing).
+#[test]
+fn a_redo_restores_nothing_naming_what_the_undo_removed_in_both_modes() {
+    use epiphany_core::{
+        AnchorOffset, InstrumentId, MeasureId, MeasurePosition, MeterChange, MetricGrid,
+        TimeAnchor, TimeSignatureId,
+    };
+    use epiphany_ops::{
+        CreateInstrumentOp, CreateMeasureOp, CreateRegionOp, SetMetricGridOp, SetStaffLayoutOp,
+        SetTempoSegmentOp, SetTimeSignatureOp, SetUserPageBreakOp, SetUserSystemBreakOp,
+    };
+    let m = Measure::new();
+    let at = |region: RegionId, bars: i64| {
+        valuegen::region_start_anchor(
+            region,
+            MusicalPosition(RationalTime::new(bars, 1).expect("bars")),
+        )
+    };
+    let signature_at = |region: RegionId, bars: i64, id: TimeSignatureId| {
+        primitive(OperationKind::SetTimeSignature(SetTimeSignatureOp {
+            region,
+            anchor: at(region, bars),
+            time_signature: Some(valuegen::time_signature(id, 3)),
+        }))
+    };
+    let make_region = |region: RegionId| {
+        primitive(OperationKind::CreateRegion(CreateRegionOp {
+            region: valuegen::region(region),
+        }))
+    };
+    // Each case: what it writes beforehand, the transaction's members, and
+    // the object they make.
+    type Case = (Vec<OperationPayload>, Vec<OperationPayload>, TypedObjectId);
+    let cases = |n: u64| -> Vec<(&'static str, Case)> {
+        let region = RegionId::new(A, 2500 + 10 * n);
+        let signature = TimeSignatureId::new(A, 2501 + 10 * n);
+        let other = RegionId::new(A, 2502 + 10 * n);
+        let instrument = InstrumentId::new(A, 2503 + 10 * n);
+        let measure = MeasureId::new(A, 2504 + 10 * n);
+        let page_measure = MeasureId::new(A, 2505 + 10 * n);
+        vec![
+            (
+                "a meter change",
+                (
+                    vec![make_region(region)],
+                    vec![signature_at(region, 1, signature)],
+                    TypedObjectId::TimeSignature(signature),
+                ),
+            ),
+            (
+                "a metric grid",
+                (
+                    vec![make_region(region)],
+                    vec![
+                        signature_at(region, 1, signature),
+                        primitive(OperationKind::SetMetricGrid(SetMetricGridOp {
+                            region,
+                            grid: Some(MetricGrid {
+                                meter_sequence: vec![MeterChange {
+                                    anchor: at(region, 1),
+                                    time_signature: signature,
+                                }],
+                            }),
+                        })),
+                    ],
+                    TypedObjectId::TimeSignature(signature),
+                ),
+            ),
+            (
+                "a tempo segment",
+                (
+                    Vec::new(),
+                    vec![
+                        primitive(OperationKind::CreateRegion(CreateRegionOp {
+                            region: valuegen::region(other),
+                        })),
+                        primitive(OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                            region: None,
+                            start: at(other, 0),
+                            segment: Some(valuegen::tempo_segment(
+                                other,
+                                MusicalPosition::origin(),
+                                96.0,
+                            )),
+                        })),
+                    ],
+                    TypedObjectId::Region(other),
+                ),
+            ),
+            (
+                "an instrument override",
+                (
+                    Vec::new(),
+                    vec![
+                        primitive(OperationKind::CreateInstrument(CreateInstrumentOp {
+                            instrument: valuegen::instrument(instrument),
+                        })),
+                        primitive(OperationKind::SetStaffLayout(SetStaffLayoutOp {
+                            staff_instance: m.import.ids.instances[0][0],
+                            instrument_override: Some(instrument),
+                            staff_lines_override: None,
+                            visible: true,
+                        })),
+                    ],
+                    TypedObjectId::Instrument(instrument),
+                ),
+            ),
+            (
+                // A break at the region's start beforehand, so the undo's
+                // restoration of it is a write the redo then reverses.
+                "a system break at a measure",
+                (
+                    vec![primitive(OperationKind::SetUserSystemBreak(
+                        SetUserSystemBreakOp {
+                            region: m.region,
+                            anchor: at(m.region, 0),
+                            present: true,
+                        },
+                    ))],
+                    vec![
+                        primitive(OperationKind::CreateMeasure(CreateMeasureOp {
+                            instance: m.import.ids.instances[0][0],
+                            measure: epiphany_core::Measure {
+                                id: measure,
+                                start: at(m.region, 1),
+                                time_signature: None,
+                                explicit_number: Some(2),
+                                number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+                            },
+                        })),
+                        primitive(OperationKind::SetUserSystemBreak(SetUserSystemBreakOp {
+                            region: m.region,
+                            anchor: TimeAnchor::Measure {
+                                id: measure,
+                                position: MeasurePosition::Start,
+                                offset: AnchorOffset::Zero,
+                            },
+                            present: true,
+                        })),
+                    ],
+                    TypedObjectId::Measure(measure),
+                ),
+            ),
+            (
+                // A page break, likewise.
+                "a page break at a measure",
+                (
+                    vec![primitive(OperationKind::SetUserPageBreak(
+                        SetUserPageBreakOp {
+                            region: m.region,
+                            anchor: at(m.region, 0),
+                            present: true,
+                        },
+                    ))],
+                    vec![
+                        primitive(OperationKind::CreateMeasure(CreateMeasureOp {
+                            instance: m.import.ids.instances[0][0],
+                            measure: epiphany_core::Measure {
+                                id: page_measure,
+                                start: at(m.region, 1),
+                                time_signature: None,
+                                explicit_number: Some(2),
+                                number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+                            },
+                        })),
+                        primitive(OperationKind::SetUserPageBreak(SetUserPageBreakOp {
+                            region: m.region,
+                            anchor: TimeAnchor::Measure {
+                                id: page_measure,
+                                position: MeasurePosition::Start,
+                                offset: AnchorOffset::Zero,
+                            },
+                            present: true,
+                        })),
+                    ],
+                    TypedObjectId::Measure(page_measure),
+                ),
+            ),
+        ]
+    };
+    let mut n = 0u64;
+    for policy in [UndoPolicy::StrictInverse, UndoPolicy::BestEffort] {
+        for (name, (before, members, made)) in cases(n) {
+            n += 1;
+            let made_tx = TransactionId::new(A, 2600 + 10 * n);
+            let undo_tx = TransactionId::new(A, 2601 + 10 * n);
+            let mut authored: Vec<OperationEnvelope> = Vec::new();
+            let mut counter = 0;
+            let mut push = |payload: OperationPayload, transaction: Option<TransactionId>| {
+                let seen: Vec<OperationId> = authored.last().map(|e| e.id).into_iter().collect();
+                let mut env = m.op(A, counter, counter as i64 + 1, &seen, payload);
+                env.transaction = transaction;
+                counter += 1;
+                authored.push(env.clone());
+                env
+            };
+            for payload in before {
+                push(payload, None);
+            }
+            let declare = |tx: TransactionId| {
+                primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                    id: tx,
+                    label: String::from("edit"),
+                    category: None,
+                }))
+            };
+            push(declare(made_tx), Some(made_tx));
+            let mut writes = Vec::new();
+            for member in members {
+                writes.push(push(member, Some(made_tx)));
+            }
+            push(declare(undo_tx), Some(undo_tx));
+            let undo = push(
+                OperationPayload::UndoTransaction(UndoTransactionPayload {
+                    target: made_tx,
+                    policy: UndoPolicy::StrictInverse,
+                }),
+                Some(undo_tx),
+            );
+            let redo = push(
+                OperationPayload::UndoTransaction(UndoTransactionPayload {
+                    target: undo_tx,
+                    policy,
+                }),
+                None,
+            );
+            let history = format!("{name} redone, {policy:?}");
+            let state = m.agree(&history, &authored);
+            for write in &writes {
+                assert!(
+                    matches!(
+                        effect(&state, write.id),
+                        Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
+                    ),
+                    "{history}: {:?}",
+                    effect(&state, write.id)
+                );
+            }
+            assert!(
+                matches!(
+                    effect(&state, undo.id),
+                    Some(OperationEffect::AppliedWithRepair { .. })
+                ),
+                "{history}: {:?}",
+                effect(&state, undo.id)
+            );
+            assert!(tombstoned(&state, made), "{history}: removed by the undo");
+            match policy {
+                UndoPolicy::StrictInverse => {
+                    let Some(OperationEffect::Conflicted { conflict }) = effect(&state, redo.id)
+                    else {
+                        panic!("{history}: {:?}", effect(&state, redo.id));
+                    };
+                    let record = state
+                        .conflicts
+                        .records()
+                        .iter()
+                        .find(|r| r.id == conflict)
+                        .expect("recorded");
+                    assert!(record.caused_by.contains(&undo.id), "{history}");
+                }
+                _ => assert!(
+                    matches!(
+                        effect(&state, redo.id),
+                        Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
+                    ),
+                    "{history}: {:?}",
+                    effect(&state, redo.id)
+                ),
+            }
+        }
+    }
+}
+
+/// An undo's restoration of a cross-cutting value is superseded by the
+/// tombstoning of any object the value names, not only an endpoint event, in
+/// both modes (strict: conflicted; best effort: the value left out). Each case
+/// is one author's: a transaction makes an object, a spanner is rewritten to
+/// name it and then, in a second transaction, rewritten away from it; an undo
+/// of the first transaction removes the object, which the spanner's current
+/// value no longer names, and an undo of the second would restore the value
+/// naming it. The object is a staff the spanner spans, a measure its start is
+/// anchored to, and a region its end is anchored to. Before reduction version
+/// 3's reading of every referent the undo restored the spanner naming the
+/// removed object (`CrossCuttingRefsResolve`).
+#[test]
+fn an_undo_restores_no_spanner_naming_an_object_removed_since_in_both_modes() {
+    use epiphany_core::{
+        AnchorOffset, MeasureId, MeasurePosition, Spanner, SpannerId, StaffId, TimeAnchor,
+    };
+    use epiphany_ops::{
+        CreateCrossCuttingOp, CreateMeasureOp, CreateRegionOp, CreateStaffOp, CrossCuttingValue,
+        ModifyCrossCuttingOp,
+    };
+    let m = Measure::new();
+    let at = |region: RegionId, bars: i64| {
+        valuegen::region_start_anchor(
+            region,
+            MusicalPosition(RationalTime::new(bars, 1).expect("bars")),
+        )
+    };
+    let staff = m.import.ids.staves[0][0];
+    let spanner = |id: SpannerId, start: TimeAnchor, end: TimeAnchor, staves: Vec<StaffId>| {
+        CrossCuttingValue::Spanner(Spanner {
+            id,
+            start,
+            end,
+            staves,
+            kind: Default::default(),
+            style: Default::default(),
+        })
+    };
+    // Each case: the transaction's member making the object, the object, and
+    // the spanner's value naming it, beside its value naming the import alone.
+    type Case = (
+        OperationPayload,
+        TypedObjectId,
+        CrossCuttingValue,
+        CrossCuttingValue,
+    );
+    let cases = |n: u64| -> Vec<(&'static str, Case)> {
+        let id = SpannerId::new(A, 2700 + 10 * n);
+        let plain = spanner(
+            id,
+            valuegen::event_anchor(m.q(0)),
+            valuegen::event_anchor(m.q(1)),
+            vec![staff],
+        );
+        let new_staff = StaffId::new(A, 2701 + 10 * n);
+        let measure = MeasureId::new(A, 2702 + 10 * n);
+        let region = RegionId::new(A, 2703 + 10 * n);
+        vec![
+            (
+                "a staff it spans",
+                (
+                    primitive(OperationKind::CreateStaff(CreateStaffOp {
+                        staff: valuegen::staff(new_staff, m.import.ids.instruments[0]),
+                    })),
+                    TypedObjectId::Staff(new_staff),
+                    spanner(
+                        id,
+                        valuegen::event_anchor(m.q(0)),
+                        valuegen::event_anchor(m.q(1)),
+                        vec![new_staff],
+                    ),
+                    plain.clone(),
+                ),
+            ),
+            (
+                "a measure its start is anchored to",
+                (
+                    primitive(OperationKind::CreateMeasure(CreateMeasureOp {
+                        instance: m.import.ids.instances[0][0],
+                        measure: epiphany_core::Measure {
+                            id: measure,
+                            start: at(m.region, 1),
+                            time_signature: None,
+                            explicit_number: Some(2),
+                            number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+                        },
+                    })),
+                    TypedObjectId::Measure(measure),
+                    spanner(
+                        id,
+                        TimeAnchor::Measure {
+                            id: measure,
+                            position: MeasurePosition::Start,
+                            offset: AnchorOffset::Zero,
+                        },
+                        valuegen::event_anchor(m.q(1)),
+                        vec![staff],
+                    ),
+                    plain.clone(),
+                ),
+            ),
+            (
+                "a region its end is anchored to",
+                (
+                    primitive(OperationKind::CreateRegion(CreateRegionOp {
+                        region: valuegen::region(region),
+                    })),
+                    TypedObjectId::Region(region),
+                    spanner(
+                        id,
+                        valuegen::event_anchor(m.q(0)),
+                        at(region, 0),
+                        vec![staff],
+                    ),
+                    plain,
+                ),
+            ),
+        ]
+    };
+    let mut n = 0u64;
+    for policy in [UndoPolicy::StrictInverse, UndoPolicy::BestEffort] {
+        for (name, (make, made, naming, away)) in cases(n) {
+            n += 1;
+            let made_tx = TransactionId::new(A, 2800 + 10 * n);
+            let away_tx = TransactionId::new(A, 2801 + 10 * n);
+            let mut authored: Vec<OperationEnvelope> = Vec::new();
+            let mut counter = 0;
+            let mut push = |payload: OperationPayload, transaction: Option<TransactionId>| {
+                let seen: Vec<OperationId> = authored.last().map(|e| e.id).into_iter().collect();
+                let mut env = m.op(A, counter, counter as i64 + 1, &seen, payload);
+                env.transaction = transaction;
+                counter += 1;
+                authored.push(env.clone());
+                env
+            };
+            let declare = |tx: TransactionId| {
+                primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                    id: tx,
+                    label: String::from("edit"),
+                    category: None,
+                }))
+            };
+            push(declare(made_tx), Some(made_tx));
+            push(make, Some(made_tx));
+            let created = push(
+                primitive(OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                    structure: away.clone(),
+                })),
+                None,
+            );
+            let renamed = push(
+                primitive(OperationKind::ModifyCrossCutting(ModifyCrossCuttingOp {
+                    structure: naming,
+                })),
+                None,
+            );
+            push(declare(away_tx), Some(away_tx));
+            let moved = push(
+                primitive(OperationKind::ModifyCrossCutting(ModifyCrossCuttingOp {
+                    structure: away.clone(),
+                })),
+                Some(away_tx),
+            );
+            let undo = push(
+                OperationPayload::UndoTransaction(UndoTransactionPayload {
+                    target: made_tx,
+                    policy: UndoPolicy::StrictInverse,
+                }),
+                None,
+            );
+            let second = push(
+                OperationPayload::UndoTransaction(UndoTransactionPayload {
+                    target: away_tx,
+                    policy,
+                }),
+                None,
+            );
+            let history = format!("{name}, {policy:?}");
+            let state = m.agree(&history, &authored);
+            for write in [&created, &renamed, &moved] {
+                assert_eq!(
+                    effect(&state, write.id),
+                    Some(OperationEffect::Applied),
+                    "{history}"
+                );
+            }
+            assert!(
+                matches!(
+                    effect(&state, undo.id),
+                    Some(OperationEffect::AppliedWithRepair { .. })
+                ),
+                "{history}: {:?}",
+                effect(&state, undo.id)
+            );
+            assert!(tombstoned(&state, made), "{history}: removed by the undo");
+            match policy {
+                UndoPolicy::StrictInverse => {
+                    let Some(OperationEffect::Conflicted { conflict }) = effect(&state, second.id)
+                    else {
+                        panic!("{history}: {:?}", effect(&state, second.id));
+                    };
+                    let record = state
+                        .conflicts
+                        .records()
+                        .iter()
+                        .find(|r| r.id == conflict)
+                        .expect("recorded");
+                    assert!(record.caused_by.contains(&undo.id), "{history}");
+                }
+                _ => assert!(
+                    matches!(
+                        effect(&state, second.id),
+                        Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
+                    ),
+                    "{history}: {:?}",
+                    effect(&state, second.id)
+                ),
+            }
+            // The spanner keeps the value naming the import alone.
+            let mut set = OperationSet::new();
+            set.accept_all(m.import.envelopes.iter().chain(&authored).cloned());
+            let aware = set.reduce_onto(&Score::empty(IdentityContext::new(m.import.replica)));
+            let CrossCuttingValue::Spanner(expected) = &away else {
+                unreachable!("a spanner");
+            };
+            assert_eq!(
+                aware.score.cross_cutting.spanners.as_slice(),
+                std::slice::from_ref(expected),
+                "{history}"
+            );
+        }
+    }
+}
+
+/// A pitch an event without a pitch list comes to hold makes it a note of the
+/// pitch, whatever the event's kind, as one inserted into a rest or an
+/// unpitched event does, in both modes. For a graphic, a cue, an indeterminate
+/// and a trajectory event: one author writes a note as that kind and then adds
+/// a pitch to it and respells the pitch; two authors do the same concurrently,
+/// the kind written first in canonical order (the pitch inserted into the
+/// written event, `81821a6`'s shape); and concurrently with the pitch first
+/// (the write keeping the pitch its author never saw). Before reduction
+/// version 3 the graph dropped the pitch the ledger held live, and its
+/// spelling attachment named nothing (`SpellingScopeResolves`).
+#[test]
+fn a_pitch_an_event_of_any_kind_comes_to_hold_makes_it_a_note_in_both_modes() {
+    use epiphany_core::{
+        CueEvent, CueRendering, GraphicEvent, IdentifiedPitch, IndeterminacyHints,
+        IndeterminacyKind, IndeterminateEvent, PitchId, PitchSpelling, TrajectoryDisplay,
+        TrajectoryEndpoint, TrajectoryEvent, TrajectoryShape,
+    };
+    use epiphany_ops::{InsertIdentifiedPitchOp, RespellPitchOp};
+    let m = Measure::new();
+    let pitch_of = |i: usize| match &m.quarters[i] {
+        Event::Pitched(e) => e.pitches[0].id,
+        other => panic!("a note, not {other:?}"),
+    };
+    let quarter = &m.quarters[0];
+    let (id, voice) = (quarter.id(), quarter.voice());
+    let (position, duration) = (quarter.position().clone(), quarter.duration().clone());
+    let kinds: [(&str, Event); 4] = [
+        (
+            "a graphic event",
+            Event::Graphic(GraphicEvent {
+                id,
+                voice,
+                position: position.clone(),
+                duration: duration.clone(),
+                graphics: Vec::new(),
+                playback_bindings: Vec::new(),
+            }),
+        ),
+        (
+            "a cue event",
+            Event::Cue(CueEvent {
+                id,
+                voice,
+                position: position.clone(),
+                duration: duration.clone(),
+                source: vec![m.q(1)],
+                rendering: CueRendering,
+            }),
+        ),
+        (
+            "an indeterminate event",
+            Event::Indeterminate(IndeterminateEvent {
+                id,
+                voice,
+                position: position.clone(),
+                duration: duration.clone(),
+                indeterminacy: IndeterminacyKind::Pitch,
+                hints: IndeterminacyHints::default(),
+            }),
+        ),
+        (
+            "a trajectory event",
+            Event::Trajectory(TrajectoryEvent {
+                id,
+                voice,
+                position,
+                duration,
+                start: TrajectoryEndpoint::EventPitch(pitch_of(1)),
+                end: TrajectoryEndpoint::EventPitch(pitch_of(2)),
+                shape: TrajectoryShape::Linear,
+                display: TrajectoryDisplay,
+            }),
+        ),
+    ];
+    for (n, (kind, value)) in kinds.into_iter().enumerate() {
+        for shape in ["one author", "the kind first", "the pitch first"] {
+            let pitch = PitchId::new(A, 2900 + n as u64);
+            let write = |counter, at, seen: &[OperationId]| {
+                m.op(
+                    B,
+                    counter,
+                    at,
+                    seen,
+                    primitive(OperationKind::ModifyEvent(ModifyEventOp {
+                        event: value.clone(),
+                    })),
+                )
+            };
+            let add = |author, counter, at, seen: &[OperationId]| {
+                m.op(
+                    author,
+                    counter,
+                    at,
+                    seen,
+                    primitive(OperationKind::InsertIdentifiedPitch(
+                        InsertIdentifiedPitchOp {
+                            event: id,
+                            pitch: IdentifiedPitch {
+                                id: pitch,
+                                pitch: valuegen::pitch_value_nth(4),
+                            },
+                        },
+                    )),
+                )
+            };
+            let respell = |author, counter, at, seen: &[OperationId]| {
+                m.op(
+                    author,
+                    counter,
+                    at,
+                    seen,
+                    primitive(OperationKind::RespellPitch(RespellPitchOp {
+                        pitch,
+                        spelling: PitchSpelling::cmn(epiphany_core::CmnNominal::C, 4),
+                    })),
+                )
+            };
+            let (written, added, respelt) = match shape {
+                "one author" => {
+                    let written = write(0, 1, &[]);
+                    let added = add(B, 1, 2, &[written.id]);
+                    let respelt = respell(B, 2, 3, &[added.id]);
+                    (written, added, respelt)
+                }
+                "the kind first" => {
+                    let written = write(0, 1, &[]);
+                    let added = add(A, 0, 2, &[]);
+                    let respelt = respell(A, 1, 3, &[added.id]);
+                    (written, added, respelt)
+                }
+                _ => {
+                    let added = add(A, 0, 1, &[]);
+                    let respelt = respell(A, 1, 2, &[added.id]);
+                    let written = write(0, 3, &[]);
+                    (written, added, respelt)
+                }
+            };
+            let history = format!("a pitch and {kind}, {shape}");
+            let authored = [written.clone(), added.clone(), respelt.clone()];
+            let state = m.agree(&history, &authored);
+            // The write removes the quarter's own pitch, which its author saw.
+            assert!(
+                matches!(
+                    effect(&state, written.id),
+                    Some(OperationEffect::AppliedWithRepair { .. })
+                ),
+                "{history}: {:?}",
+                effect(&state, written.id)
+            );
+            for op in [&added, &respelt] {
+                assert_eq!(
+                    effect(&state, op.id),
+                    Some(OperationEffect::Applied),
+                    "{history}"
+                );
+            }
+            assert!(live(&state, TypedObjectId::Pitch(pitch)), "{history}");
+            assert!(
+                holds_with_spelling(&m, &authored, id, pitch),
+                "{history}: the event becomes a note of the added pitch, spelt"
+            );
+        }
+    }
+
+    // A trajectory holding pitches of its own, entered in the fourth
+    // quarter's place, becomes a note of its pitches and the added one.
+    let own = [PitchId::new(B, 2950), PitchId::new(B, 2951)];
+    let pitch = PitchId::new(A, 2952);
+    let freed = m.op(
+        B,
+        0,
+        1,
+        &[],
+        delete(m.q(3), epiphany_ops::TupletCompensation::NotInTuplet),
+    );
+    let trajectory = EventId::new(B, 2953);
+    let entered = m.op(
+        B,
+        1,
+        2,
+        &[freed.id],
+        primitive(OperationKind::InsertEvent(InsertEventOp {
+            staff_instance: m.import.ids.instances[0][0],
+            event: Event::Trajectory(TrajectoryEvent {
+                id: trajectory,
+                voice: m.quarters[3].voice(),
+                position: m.quarters[3].position().clone(),
+                duration: m.quarters[3].duration().clone(),
+                start: TrajectoryEndpoint::ExplicitPitch(IdentifiedPitch {
+                    id: own[0],
+                    pitch: valuegen::pitch_value_nth(1),
+                }),
+                end: TrajectoryEndpoint::ExplicitPitch(IdentifiedPitch {
+                    id: own[1],
+                    pitch: valuegen::pitch_value_nth(2),
+                }),
+                shape: TrajectoryShape::Linear,
+                display: TrajectoryDisplay,
+            }),
+        })),
+    );
+    let added = m.op(
+        A,
+        0,
+        3,
+        &[entered.id],
+        primitive(OperationKind::InsertIdentifiedPitch(
+            InsertIdentifiedPitchOp {
+                event: trajectory,
+                pitch: IdentifiedPitch {
+                    id: pitch,
+                    pitch: valuegen::pitch_value_nth(4),
+                },
+            },
+        )),
+    );
+    let authored = [freed, entered, added.clone()];
+    let state = m.agree(
+        "a pitch added to a trajectory of its own pitches",
+        &authored,
+    );
+    assert_eq!(effect(&state, added.id), Some(OperationEffect::Applied));
+    let mut set = OperationSet::new();
+    set.accept_all(m.import.envelopes.iter().chain(&authored).cloned());
+    let score = set
+        .reduce_onto(&Score::empty(IdentityContext::new(m.import.replica)))
+        .score;
+    let Some(Event::Pitched(note)) = score.events.get(trajectory) else {
+        panic!("{:?}", score.events.get(trajectory));
+    };
+    assert_eq!(
+        note.pitches.iter().map(|ip| ip.id).collect::<Vec<_>>(),
+        vec![own[0], own[1], pitch]
+    );
+}
+
+/// A migration judges a metric event against its target's coordinate
+/// discipline as invariant 4 does, in both modes: a region holding a rest and
+/// no measure, migrated to an aleatoric model of each anchoring discipline,
+/// applies where the discipline admits an event in musical time (anchored
+/// musically, either way per event, or freely mixed) and conflicts naming the
+/// rest where it does not (anchored in wall-clock time). Before reduction
+/// version 3's reading of the discipline every aleatoric target was taken to
+/// admit every event, and one anchored in wall-clock time left the rest in
+/// musical time (`EventCoordinateModel`).
+#[test]
+fn a_migration_admits_an_event_as_its_targets_discipline_does_in_both_modes() {
+    use epiphany_core::{
+        AleatoricAnchoringDiscipline, AleatoricTimeModel, EventOrderingDAG, StaffInstanceId,
+        VoiceId,
+    };
+    use epiphany_ops::{CreateRegionOp, CreateStaffInstanceOp, CreateVoiceOp};
+    let m = Measure::new();
+    for (n, anchoring) in [
+        AleatoricAnchoringDiscipline::Musical,
+        AleatoricAnchoringDiscipline::WallClock,
+        AleatoricAnchoringDiscipline::EitherPerEvent,
+        AleatoricAnchoringDiscipline::FreelyMixed,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let n = n as u64;
+        let region = RegionId::new(A, 3000 + 10 * n);
+        let instance = StaffInstanceId::new(A, 3001 + 10 * n);
+        let voice = VoiceId::new(A, 3002 + 10 * n);
+        let rest = EventId::new(A, 3003 + 10 * n);
+        let mut authored: Vec<OperationEnvelope> = Vec::new();
+        let mut push = |payload: OperationPayload| {
+            let seen: Vec<OperationId> = authored.last().map(|e| e.id).into_iter().collect();
+            let counter = authored.len() as u64;
+            let env = m.op(A, counter, counter as i64 + 1, &seen, payload);
+            authored.push(env.clone());
+            env
+        };
+        push(primitive(OperationKind::CreateRegion(CreateRegionOp {
+            region: valuegen::region(region),
+        })));
+        push(primitive(OperationKind::CreateStaffInstance(
+            CreateStaffInstanceOp {
+                region,
+                instance: valuegen::staff_instance(instance, m.import.ids.staves[0][0]),
+            },
+        )));
+        push(primitive(OperationKind::CreateVoice(CreateVoiceOp {
+            staff_instance: instance,
+            voice: valuegen::voice(voice),
+        })));
+        let entered = push(primitive(OperationKind::InsertEvent(InsertEventOp {
+            staff_instance: instance,
+            event: Event::Rest(Rest {
+                id: rest,
+                voice,
+                position: EventPosition::Musical(MusicalPosition::origin()),
+                duration: m.quarters[0].duration().clone(),
+                vertical_position: None,
+                visible: true,
+            }),
+        })));
+        let migration = push(m.migrate_region(
+            region,
+            RegionTimeModel::Aleatoric(AleatoricTimeModel {
+                ordering: EventOrderingDAG::default(),
+                anchoring,
+                bounds: Default::default(),
+                duration_hint: WallClockDuration(1),
+            }),
+        ));
+        let history = format!("a rest migrated to an aleatoric model anchored {anchoring:?}");
+        let state = m.agree(&history, &authored);
+        assert_eq!(
+            effect(&state, entered.id),
+            Some(OperationEffect::Applied),
+            "{history}"
+        );
+        if anchoring == AleatoricAnchoringDiscipline::WallClock {
+            assert_eq!(
+                migration_failure(&state, migration.id),
+                vec![TypedObjectId::Event(rest)],
+                "{history}"
+            );
+        } else {
+            assert_eq!(
+                effect(&state, migration.id),
+                Some(OperationEffect::Applied),
+                "{history}"
+            );
+        }
+    }
+}
+
+/// A whole-event modify mints each pitch its value carries that no operation
+/// has minted, in both modes, as an insert mints its event's pitches: the
+/// pitch is live, operations naming it apply, the tie check reads it, and an
+/// undo of the modify's transaction removes it. One author each time: a
+/// quarter written as a chord with a new pitch, which is then respelt,
+/// transposed and deleted; a tie whose end a modify gives a new pitch, which
+/// gives way; and a chord written with a new pitch in a transaction, undone.
+/// Before reduction version 3's mint the pitch reached the graph alone, every
+/// operation naming it was refused, and the tie stood while its ends' pitches
+/// no longer paired (`TiePairing`).
+#[test]
+fn a_modify_mints_the_pitches_it_carries_in_both_modes() {
+    use epiphany_core::{IdentifiedPitch, PitchId, PitchSpelling, TieClass, TieId};
+    use epiphany_ops::{
+        CreateCrossCuttingOp, CrossCuttingValue, DeleteIdentifiedPitchOp, RespellPitchOp,
+        TransposeOp,
+    };
+    let m = Measure::new();
+    let pitches_of = |i: usize| match &m.quarters[i] {
+        Event::Pitched(e) => e.pitches.clone(),
+        other => panic!("a note, not {other:?}"),
+    };
+    let with_pitch = |i: usize, extra: IdentifiedPitch| {
+        let Event::Pitched(mut note) = m.quarters[i].clone() else {
+            unreachable!("a note");
+        };
+        note.pitches.push(extra);
+        primitive(OperationKind::ModifyEvent(ModifyEventOp {
+            event: Event::Pitched(note),
+        }))
+    };
+    let serial = |payloads: Vec<(OperationPayload, Option<TransactionId>)>| {
+        let mut authored: Vec<OperationEnvelope> = Vec::new();
+        for (counter, (payload, transaction)) in payloads.into_iter().enumerate() {
+            let seen: Vec<OperationId> = authored.last().map(|e| e.id).into_iter().collect();
+            let mut env = m.op(A, counter as u64, counter as i64 + 1, &seen, payload);
+            env.transaction = transaction;
+            authored.push(env);
+        }
+        authored
+    };
+
+    // A chord written with a new pitch, the pitch then edited and deleted.
+    let new = PitchId::new(A, 3100);
+    let authored = serial(vec![
+        (
+            with_pitch(
+                0,
+                IdentifiedPitch {
+                    id: new,
+                    pitch: valuegen::pitch_value_nth(4),
+                },
+            ),
+            None,
+        ),
+        (
+            primitive(OperationKind::RespellPitch(RespellPitchOp {
+                pitch: new,
+                spelling: PitchSpelling::cmn(epiphany_core::CmnNominal::C, 4),
+            })),
+            None,
+        ),
+        (
+            primitive(OperationKind::Transpose(TransposeOp {
+                targets: vec![new],
+                chromatic_steps: 2,
+            })),
+            None,
+        ),
+        (
+            primitive(OperationKind::DeleteIdentifiedPitch(
+                DeleteIdentifiedPitchOp { pitch: new },
+            )),
+            None,
+        ),
+    ]);
+    let state = m.agree("a minted pitch edited", &authored);
+    for op in &authored {
+        assert!(
+            matches!(
+                effect(&state, op.id),
+                Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
+            ),
+            "{:?}: {:?}",
+            op.id,
+            effect(&state, op.id)
+        );
+    }
+    assert!(tombstoned(&state, TypedObjectId::Pitch(new)));
+
+    // A tie whose end a modify gives a new pitch gives way.
+    let tie = TieId::new(A, 3110);
+    let gained = PitchId::new(A, 3111);
+    let start = pitches_of(0)[0].clone();
+    let Event::Pitched(mut unison) = m.quarters[1].clone() else {
+        unreachable!("a note");
+    };
+    unison.pitches[0].pitch = start.pitch.clone();
+    let mut value = valuegen::tie(tie, m.q(0), m.q(1));
+    value.class = TieClass::Standard;
+    let authored = serial(vec![
+        (
+            primitive(OperationKind::ModifyEvent(ModifyEventOp {
+                event: Event::Pitched(unison),
+            })),
+            None,
+        ),
+        (
+            primitive(OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                structure: CrossCuttingValue::Tie(value),
+            })),
+            None,
+        ),
+        (
+            with_pitch(
+                1,
+                IdentifiedPitch {
+                    id: gained,
+                    pitch: valuegen::pitch_value_nth(5),
+                },
+            ),
+            None,
+        ),
+    ]);
+    let state = m.agree("a tie's end given a minted pitch", &authored);
+    assert_eq!(
+        effect(&state, authored[1].id),
+        Some(OperationEffect::Applied)
+    );
+    let Some(OperationEffect::AppliedWithRepair { repairs }) = effect(&state, authored[2].id)
+    else {
+        panic!("{:?}", effect(&state, authored[2].id));
+    };
+    assert!(repairs
+        .iter()
+        .any(|r| r.kind == RepairKind::CascadeDeleted && r.target == TypedObjectId::Tie(tie)));
+    assert!(live(&state, TypedObjectId::Pitch(gained)));
+
+    // A chord written with a new pitch in a transaction, undone.
+    let tx = TransactionId::new(A, 3120);
+    let undone = PitchId::new(A, 3121);
+    let authored = serial(vec![
+        (
+            primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                id: tx,
+                label: String::from("a chord"),
+                category: None,
+            })),
+            Some(tx),
+        ),
+        (
+            with_pitch(
+                2,
+                IdentifiedPitch {
+                    id: undone,
+                    pitch: valuegen::pitch_value_nth(6),
+                },
+            ),
+            Some(tx),
+        ),
+        (
+            OperationPayload::UndoTransaction(UndoTransactionPayload {
+                target: tx,
+                policy: UndoPolicy::StrictInverse,
+            }),
+            None,
+        ),
+    ]);
+    let state = m.agree("a minted pitch undone", &authored);
+    assert!(matches!(
+        effect(&state, authored[2].id),
+        Some(OperationEffect::AppliedWithRepair { .. })
+    ));
+    assert!(tombstoned(&state, TypedObjectId::Pitch(undone)));
+    let mut set = OperationSet::new();
+    set.accept_all(m.import.envelopes.iter().chain(&authored).cloned());
+    let score = set
+        .reduce_onto(&Score::empty(IdentityContext::new(m.import.replica)))
+        .score;
+    assert_eq!(score.events.get(m.q(2)), Some(&m.quarters[2]));
+}
+
+/// A trajectory's own pitches are read and written as a note's, in both
+/// modes, as the core indexes them. One author ties a chord to the next
+/// chord, writes the first as a trajectory between its pitches and moves both
+/// ends a whole tone in a transaction: the tie holds in both modes and the
+/// trajectory's endpoints take the new values. A trajectory written with a
+/// pitch at another value breaks the tie in both. Deleting a trajectory's
+/// endpoint leaves a note of the pitch it still holds, and a rest after the
+/// last; and a trajectory written over a pitch another author deleted
+/// concurrently becomes a note of the pitch left, as a delete of it would
+/// leave it. Before reduction version 3 graph-aware reduction read and wrote
+/// a note's pitches alone, so the tie gave way there alone (an effect split)
+/// and the graph kept a deleted endpoint.
+#[test]
+fn a_trajectorys_own_pitches_are_read_and_written_as_a_notes_in_both_modes() {
+    use epiphany_core::{
+        IdentifiedPitch, PitchId, TieClass, TieId, TrajectoryDisplay, TrajectoryEndpoint,
+        TrajectoryEvent, TrajectoryShape,
+    };
+    use epiphany_ops::{
+        CreateCrossCuttingOp, CrossCuttingValue, DeleteIdentifiedPitchOp, InsertIdentifiedPitchOp,
+        TransposeOp,
+    };
+    let m = Measure::new();
+    let own = |i: usize| match &m.quarters[i] {
+        Event::Pitched(e) => e.pitches[0].clone(),
+        other => panic!("a note, not {other:?}"),
+    };
+    let trajectory = |i: usize, start: IdentifiedPitch, end: IdentifiedPitch| {
+        Event::Trajectory(TrajectoryEvent {
+            id: m.q(i),
+            voice: m.quarters[i].voice(),
+            position: m.quarters[i].position().clone(),
+            duration: m.quarters[i].duration().clone(),
+            start: TrajectoryEndpoint::ExplicitPitch(start),
+            end: TrajectoryEndpoint::ExplicitPitch(end),
+            shape: TrajectoryShape::Linear,
+            display: TrajectoryDisplay,
+        })
+    };
+    let modify = |event: Event| primitive(OperationKind::ModifyEvent(ModifyEventOp { event }));
+    let add = |i: usize, pitch: IdentifiedPitch| {
+        primitive(OperationKind::InsertIdentifiedPitch(
+            InsertIdentifiedPitchOp {
+                event: m.q(i),
+                pitch,
+            },
+        ))
+    };
+    let declare = |tx: TransactionId| {
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("move the tied notes"),
+            category: None,
+        }))
+    };
+    let serial = |payloads: Vec<(OperationPayload, Option<TransactionId>)>| {
+        let mut authored: Vec<OperationEnvelope> = Vec::new();
+        for (counter, (payload, transaction)) in payloads.into_iter().enumerate() {
+            let seen: Vec<OperationId> = authored.last().map(|e| e.id).into_iter().collect();
+            let mut env = m.op(A, counter as u64, counter as i64 + 1, &seen, payload);
+            env.transaction = transaction;
+            authored.push(env);
+        }
+        authored
+    };
+    let graph = |authored: &[OperationEnvelope]| {
+        let mut set = OperationSet::new();
+        set.accept_all(m.import.envelopes.iter().chain(authored).cloned());
+        set.reduce_onto(&Score::empty(IdentityContext::new(m.import.replica)))
+            .score
+    };
+    let pitch = |id: PitchId, nth: u8| IdentifiedPitch {
+        id,
+        pitch: valuegen::pitch_value_nth(nth),
+    };
+    // The first chord: the first quarter's pitch and an added one; the
+    // second the same two values, under its own pitch and a minted one.
+    let (upper, upper2) = (PitchId::new(A, 3200), PitchId::new(A, 3202));
+    let first = own(0);
+    let added = pitch(upper, 4);
+    let mut second_lower = own(1);
+    second_lower.pitch = first.pitch.clone();
+    let second_upper = IdentifiedPitch {
+        id: upper2,
+        pitch: added.pitch.clone(),
+    };
+    let Event::Pitched(mut second) = m.quarters[1].clone() else {
+        unreachable!("a note");
+    };
+    second.pitches = vec![second_lower.clone(), second_upper.clone()];
+    let tie = TieId::new(A, 3203);
+    let mut tie_value = valuegen::tie(tie, m.q(0), m.q(1));
+    tie_value.class = TieClass::Standard;
+    let chords = vec![
+        (add(0, added.clone()), None),
+        (modify(Event::Pitched(second)), None),
+        (
+            primitive(OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                structure: CrossCuttingValue::Tie(tie_value),
+            })),
+            None,
+        ),
+    ];
+
+    // Written as a trajectory and moved with its tied chord: the tie holds.
+    let tx = TransactionId::new(A, 3204);
+    let mut moved = chords.clone();
+    moved.extend([
+        (modify(trajectory(0, first.clone(), added.clone())), None),
+        (declare(tx), Some(tx)),
+        (
+            primitive(OperationKind::Transpose(TransposeOp {
+                targets: vec![first.id, upper],
+                chromatic_steps: 2,
+            })),
+            Some(tx),
+        ),
+        (
+            primitive(OperationKind::Transpose(TransposeOp {
+                targets: vec![second_lower.id, upper2],
+                chromatic_steps: 2,
+            })),
+            Some(tx),
+        ),
+    ]);
+    let authored = serial(moved);
+    let state = m.agree("a trajectory moved with its tied chord", &authored);
+    for op in &authored {
+        assert!(
+            matches!(
+                effect(&state, op.id),
+                Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
+            ),
+            "{:?}: {:?}",
+            op.id,
+            effect(&state, op.id)
+        );
+    }
+    assert!(live(&state, TypedObjectId::Tie(tie)), "the tie holds");
+    let Some(Event::Trajectory(held)) = graph(&authored).events.get(m.q(0)).cloned() else {
+        panic!("a trajectory");
+    };
+    let TrajectoryEndpoint::ExplicitPitch(start) = held.start else {
+        panic!("its own pitch");
+    };
+    assert_ne!(start.pitch, first.pitch, "the endpoint moved");
+
+    // Written as a trajectory with a pitch at another value: the tie breaks.
+    let mut retuned = chords.clone();
+    retuned.push((
+        modify(trajectory(
+            0,
+            IdentifiedPitch {
+                id: first.id,
+                pitch: valuegen::pitch_value_nth(6),
+            },
+            added.clone(),
+        )),
+        None,
+    ));
+    let authored = serial(retuned);
+    let state = m.agree("a trajectory written at another value", &authored);
+    let Some(OperationEffect::AppliedWithRepair { repairs }) = effect(&state, authored[3].id)
+    else {
+        panic!("{:?}", effect(&state, authored[3].id));
+    };
+    assert!(repairs
+        .iter()
+        .any(|r| r.kind == RepairKind::CascadeDeleted && r.target == TypedObjectId::Tie(tie)));
+
+    // An endpoint transposed by an interval.
+    let third = own(2);
+    let third_upper = pitch(PitchId::new(A, 3210), 5);
+    let authored = serial(vec![
+        (add(2, third_upper.clone()), None),
+        (
+            modify(trajectory(2, third.clone(), third_upper.clone())),
+            None,
+        ),
+        (
+            primitive(OperationKind::TransposeInterval(
+                epiphany_ops::TransposeIntervalOp {
+                    targets: [third_upper.id].into_iter().collect(),
+                    interval: epiphany_core::TranspositionInterval {
+                        diatonic_steps: 1,
+                        chromatic_steps: 2,
+                    },
+                },
+            )),
+            None,
+        ),
+    ]);
+    let state = m.agree("a trajectory's endpoint transposed", &authored);
+    assert_eq!(
+        effect(&state, authored[2].id),
+        Some(OperationEffect::Applied)
+    );
+    let Some(Event::Trajectory(held)) = graph(&authored).events.get(m.q(2)).cloned() else {
+        panic!("a trajectory");
+    };
+    let TrajectoryEndpoint::ExplicitPitch(end) = held.end else {
+        panic!("its own pitch");
+    };
+    assert_ne!(end.pitch, third_upper.pitch, "the endpoint moved");
+
+    // An endpoint deleted, then the other.
+    let delete_pitch = |id: PitchId| {
+        primitive(OperationKind::DeleteIdentifiedPitch(
+            DeleteIdentifiedPitchOp { pitch: id },
+        ))
+    };
+    let authored = serial(vec![
+        (add(2, third_upper.clone()), None),
+        (
+            modify(trajectory(2, third.clone(), third_upper.clone())),
+            None,
+        ),
+        (delete_pitch(third_upper.id), None),
+    ]);
+    m.agree("a trajectory's endpoint deleted", &authored);
+    let Some(Event::Pitched(left)) = graph(&authored).events.get(m.q(2)).cloned() else {
+        panic!("a note");
+    };
+    assert_eq!(left.pitches, vec![third.clone()]);
+    let authored = serial(vec![
+        (add(2, third_upper.clone()), None),
+        (
+            modify(trajectory(2, third.clone(), third_upper.clone())),
+            None,
+        ),
+        (delete_pitch(third_upper.id), None),
+        (delete_pitch(third.id), None),
+    ]);
+    m.agree("both endpoints deleted", &authored);
+    assert!(matches!(
+        graph(&authored).events.get(m.q(2)),
+        Some(Event::Rest(_))
+    ));
+
+    // A trajectory written over a pitch another author deleted.
+    let fourth = own(3);
+    let fourth_upper = pitch(PitchId::new(A, 3220), 5);
+    let inserted = m.op(A, 0, 1, &[], add(3, fourth_upper.clone()));
+    let deleted = m.op(B, 0, 2, &[inserted.id], delete_pitch(fourth_upper.id));
+    let written = m.op(
+        A,
+        1,
+        3,
+        &[inserted.id],
+        modify(trajectory(3, fourth.clone(), fourth_upper.clone())),
+    );
+    let authored = [inserted, deleted.clone(), written.clone()];
+    let state = m.agree("a trajectory over a deleted pitch", &authored);
+    assert_eq!(effect(&state, deleted.id), Some(OperationEffect::Applied));
+    assert!(tombstoned(&state, TypedObjectId::Pitch(fourth_upper.id)));
+    let Some(Event::Pitched(left)) = graph(&authored).events.get(m.q(3)).cloned() else {
+        panic!("a note");
+    };
+    assert_eq!(left.pitches, vec![fourth]);
+}
+
+/// A container an undo emptied reads empty, in both modes: the ledger's
+/// indices forget the voice or staff instance the undo removed, as a delete's
+/// do. One author makes a region and an instance in it, adds a voice to the
+/// instance in a transaction and undoes it, then deletes the instance; and
+/// makes a region, adds an instance to it in a transaction, undoes it and
+/// deletes the region. Each delete applies. Before reduction version 3 the
+/// index kept the removed voice or instance, and the delete was refused
+/// `ContainerNotEmpty` with nothing in the container.
+#[test]
+fn a_container_an_undo_emptied_reads_empty_in_both_modes() {
+    use epiphany_core::{StaffInstanceId, VoiceId};
+    use epiphany_ops::{
+        CreateRegionOp, CreateStaffInstanceOp, CreateVoiceOp, DeleteRegionOp, DeleteStaffInstanceOp,
+    };
+    let m = Measure::new();
+    let staff = m.import.ids.staves[0][0];
+    let serial = |payloads: Vec<(OperationPayload, Option<TransactionId>)>| {
+        let mut authored: Vec<OperationEnvelope> = Vec::new();
+        for (counter, (payload, transaction)) in payloads.into_iter().enumerate() {
+            let seen: Vec<OperationId> = authored.last().map(|e| e.id).into_iter().collect();
+            let mut env = m.op(A, counter as u64, counter as i64 + 1, &seen, payload);
+            env.transaction = transaction;
+            authored.push(env);
+        }
+        authored
+    };
+    let declare = |tx: TransactionId| {
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("edit"),
+            category: None,
+        }))
+    };
+    let undo = |tx: TransactionId| {
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::StrictInverse,
+        })
+    };
+    let make_region = |region: RegionId| {
+        primitive(OperationKind::CreateRegion(CreateRegionOp {
+            region: valuegen::region(region),
+        }))
+    };
+    let make_instance = |region: RegionId, instance: StaffInstanceId| {
+        primitive(OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+            region,
+            instance: valuegen::staff_instance(instance, staff),
+        }))
+    };
+
+    // A voice undone, its instance deleted.
+    let (region, instance, voice) = (
+        RegionId::new(A, 3300),
+        StaffInstanceId::new(A, 3301),
+        VoiceId::new(A, 3302),
+    );
+    let tx = TransactionId::new(A, 3303);
+    let authored = serial(vec![
+        (make_region(region), None),
+        (make_instance(region, instance), None),
+        (declare(tx), Some(tx)),
+        (
+            primitive(OperationKind::CreateVoice(CreateVoiceOp {
+                staff_instance: instance,
+                voice: valuegen::voice(voice),
+            })),
+            Some(tx),
+        ),
+        (undo(tx), None),
+        (
+            primitive(OperationKind::DeleteStaffInstance(DeleteStaffInstanceOp {
+                staff_instance: instance,
+            })),
+            None,
+        ),
+    ]);
+    let state = m.agree("an instance whose voice was undone, deleted", &authored);
+    assert!(tombstoned(&state, TypedObjectId::Voice(voice)));
+    assert_eq!(
+        effect(&state, authored[5].id),
+        Some(OperationEffect::Applied)
+    );
+    assert!(tombstoned(&state, TypedObjectId::StaffInstance(instance)));
+
+    // An instance undone, its region deleted.
+    let (region, instance) = (RegionId::new(A, 3310), StaffInstanceId::new(A, 3311));
+    let tx = TransactionId::new(A, 3312);
+    let authored = serial(vec![
+        (make_region(region), None),
+        (declare(tx), Some(tx)),
+        (make_instance(region, instance), Some(tx)),
+        (undo(tx), None),
+        (
+            primitive(OperationKind::DeleteRegion(DeleteRegionOp { region })),
+            None,
+        ),
+    ]);
+    let state = m.agree("a region whose instance was undone, deleted", &authored);
+    assert!(tombstoned(&state, TypedObjectId::StaffInstance(instance)));
+    assert_eq!(
+        effect(&state, authored[4].id),
+        Some(OperationEffect::Applied)
+    );
+    assert!(tombstoned(&state, TypedObjectId::Region(region)));
+}
+
+/// A best-effort undo keeps a time signature a meter change still names
+/// after the undo, in both modes. The undo restores what the meter change
+/// named before only where invariant 20 allows (the measures must still fit
+/// the meter), so its restoration can be dropped, leaving the meter change
+/// naming the signature the undone transaction made. One author: a region
+/// with measures at its second and third bars, a 2/4 signature at the
+/// second, a default grid set in one transaction, a 4/4 signature at the
+/// second bar in another, and that transaction undone best effort: the 2/4
+/// restoration would leave the measures a bar apart under a half-bar meter,
+/// so it is dropped and the 4/4 signature stays. Before reduction version 3's
+/// rule the undo removed the signature the meter change still named
+/// (`CrossCuttingRefsResolve`).
+#[test]
+fn a_best_effort_undo_keeps_a_signature_its_dropped_restoration_leaves_named_in_both_modes() {
+    use epiphany_core::{MeasureId, MetricGrid, StaffInstanceId, TimeSignatureId};
+    use epiphany_ops::{
+        CreateMeasureOp, CreateRegionOp, CreateStaffInstanceOp, SetMetricGridOp, SetTimeSignatureOp,
+    };
+    let m = Measure::new();
+    let region = RegionId::new(A, 3400);
+    let instance = StaffInstanceId::new(A, 3401);
+    let (half, whole) = (TimeSignatureId::new(A, 3402), TimeSignatureId::new(A, 3403));
+    let (grid_tx, meter_tx) = (TransactionId::new(A, 3404), TransactionId::new(A, 3405));
+    let at = |bars: i64| {
+        valuegen::region_start_anchor(
+            region,
+            MusicalPosition(RationalTime::new(bars, 1).expect("bars")),
+        )
+    };
+    let measure = |id: u64, bar: i64| {
+        primitive(OperationKind::CreateMeasure(CreateMeasureOp {
+            instance,
+            measure: epiphany_core::Measure {
+                id: MeasureId::new(A, id),
+                start: at(bar),
+                time_signature: None,
+                explicit_number: Some(bar as u32 + 1),
+                number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+            },
+        }))
+    };
+    let signature = |id: TimeSignatureId, beats: u16| {
+        primitive(OperationKind::SetTimeSignature(SetTimeSignatureOp {
+            region,
+            anchor: at(1),
+            time_signature: Some(valuegen::time_signature(id, beats)),
+        }))
+    };
+    let declare = |tx: TransactionId| {
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("edit"),
+            category: None,
+        }))
+    };
+    let payloads = vec![
+        (
+            primitive(OperationKind::CreateRegion(CreateRegionOp {
+                region: valuegen::region(region),
+            })),
+            None,
+        ),
+        (
+            primitive(OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                region,
+                instance: valuegen::staff_instance(instance, m.import.ids.staves[0][0]),
+            })),
+            None,
+        ),
+        (measure(3406, 1), None),
+        (signature(half, 2), None),
+        (declare(grid_tx), Some(grid_tx)),
+        (
+            primitive(OperationKind::SetMetricGrid(SetMetricGridOp {
+                region,
+                grid: Some(MetricGrid {
+                    meter_sequence: Vec::new(),
+                }),
+            })),
+            Some(grid_tx),
+        ),
+        (measure(3407, 2), None),
+        (declare(meter_tx), Some(meter_tx)),
+        (signature(whole, 4), Some(meter_tx)),
+        (
+            OperationPayload::UndoTransaction(UndoTransactionPayload {
+                target: meter_tx,
+                policy: UndoPolicy::BestEffort,
+            }),
+            None,
+        ),
+    ];
+    let mut authored: Vec<OperationEnvelope> = Vec::new();
+    for (counter, (payload, transaction)) in payloads.into_iter().enumerate() {
+        let seen: Vec<OperationId> = authored.last().map(|e| e.id).into_iter().collect();
+        let mut env = m.op(A, counter as u64, counter as i64 + 1, &seen, payload);
+        env.transaction = transaction;
+        authored.push(env);
+    }
+    let state = m.agree(
+        "a best-effort undo of a signature its meter change keeps",
+        &authored,
+    );
+    for env in &authored {
+        assert!(
+            matches!(
+                effect(&state, env.id),
+                Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
+            ),
+            "{:?}: {:?}",
+            env.id,
+            effect(&state, env.id)
+        );
+    }
+    assert!(
+        live(&state, TypedObjectId::TimeSignature(whole)),
+        "the 4/4 stays"
+    );
+    assert!(live(&state, TypedObjectId::TimeSignature(half)));
+}
+
+/// An event an undo removes takes every pitch it holds with it, as a delete
+/// does, a pitch another operation added since among them, in both modes.
+/// One author replaces the first quarter with a rest in a transaction, gives
+/// the rest a pitch, undoes the transaction (under each policy) and then
+/// transposes the pitch by steps and by an interval: the pitch went with its
+/// event, so each transposition is refused alike. Before reduction version 3
+/// the pitch stayed live while the graph dropped it with the rest, so
+/// base-free reduction alone held its value and the interval's verdict split
+/// the modes.
+#[test]
+fn an_event_an_undo_removes_takes_its_pitches_in_both_modes() {
+    use epiphany_core::{IdentifiedPitch, PitchId, TranspositionInterval};
+    use epiphany_ops::{InsertIdentifiedPitchOp, TransposeIntervalOp, TransposeOp};
+    let m = Measure::new();
+    for (n, policy) in [UndoPolicy::StrictInverse, UndoPolicy::BestEffort]
+        .into_iter()
+        .enumerate()
+    {
+        let n = n as u64;
+        let tx = TransactionId::new(A, 3500 + 10 * n);
+        let pitch = PitchId::new(A, 3501 + 10 * n);
+        let rest = m.rest(3502 + 10 * n, 0, m.quarters[0].duration().clone());
+        let rest_id = rest.id;
+        let payloads = vec![
+            (
+                primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                    id: tx,
+                    label: String::from("replace with a rest"),
+                    category: None,
+                })),
+                Some(tx),
+            ),
+            (delete(m.q(0), TupletCompensation::NotInTuplet), Some(tx)),
+            (m.insert(rest), Some(tx)),
+            (
+                primitive(OperationKind::InsertIdentifiedPitch(
+                    InsertIdentifiedPitchOp {
+                        event: rest_id,
+                        pitch: IdentifiedPitch {
+                            id: pitch,
+                            pitch: valuegen::pitch_value_nth(4),
+                        },
+                    },
+                )),
+                None,
+            ),
+            (
+                OperationPayload::UndoTransaction(UndoTransactionPayload { target: tx, policy }),
+                None,
+            ),
+            (
+                primitive(OperationKind::Transpose(TransposeOp {
+                    targets: vec![pitch],
+                    chromatic_steps: 3,
+                })),
+                None,
+            ),
+            (
+                primitive(OperationKind::TransposeInterval(TransposeIntervalOp {
+                    targets: [pitch].into_iter().collect(),
+                    interval: TranspositionInterval {
+                        diatonic_steps: -1,
+                        chromatic_steps: -2,
+                    },
+                })),
+                None,
+            ),
+        ];
+        let mut authored: Vec<OperationEnvelope> = Vec::new();
+        for (counter, (payload, transaction)) in payloads.into_iter().enumerate() {
+            let seen: Vec<OperationId> = authored.last().map(|e| e.id).into_iter().collect();
+            let mut env = m.op(A, counter as u64, counter as i64 + 1, &seen, payload);
+            env.transaction = transaction;
+            authored.push(env);
+        }
+        let history = format!("a pitch in an undone rest, {policy:?}");
+        let state = m.agree(&history, &authored);
+        assert!(
+            matches!(
+                effect(&state, authored[4].id),
+                Some(OperationEffect::AppliedWithRepair { .. })
+            ),
+            "{history}: {:?}",
+            effect(&state, authored[4].id)
+        );
+        assert!(
+            tombstoned(&state, TypedObjectId::Event(rest_id)),
+            "{history}"
+        );
+        assert!(tombstoned(&state, TypedObjectId::Pitch(pitch)), "{history}");
+        for op in &authored[5..] {
+            assert!(
+                matches!(effect(&state, op.id), Some(OperationEffect::NoOp { .. })),
+                "{history}: {:?}",
+                effect(&state, op.id)
+            );
+        }
+    }
 }

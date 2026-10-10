@@ -859,6 +859,7 @@ const KEY_SIG_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x4B45_5953_4
 /// octave clef's numeral) is synthesized from it, keyed by the change's place
 /// among the drawn changes and the glyph's within the change.
 const CLEF_CHANGE_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x434C_4546_4348_4E47); // "CLEFCHNG"
+const KEY_CHANGE_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x4B45_5943_4841_4E47); // "KEYCHANG"
 
 /// The registry id for **time-signature synthesis**: the measure introduces the
 /// meter, but its numerator/denominator digit glyphs each need a distinct stable
@@ -1047,6 +1048,9 @@ pub fn try_to_constrained(
         let mut column_overhang: BTreeMap<ColumnKey, f32> = BTreeMap::new();
         // How far each clef-change column's ink reaches right of it.
         let mut clef_reach: BTreeMap<ColumnKey, f32> = BTreeMap::new();
+        // How far the widest key change drawn in each barline column reaches
+        // right of the barline's ink.
+        let mut key_change_reach: BTreeMap<ColumnKey, f32> = BTreeMap::new();
         // The right edge of the widest lead (clef and key signature): the first
         // note column clears it.
         let mut lead_right = 0.0f32;
@@ -1312,6 +1316,18 @@ pub fn try_to_constrained(
                         keys.insert(ColumnKey::Lead);
                         lead_right = lead_right.max(lead_extent(&glyphs));
                     }
+                    // Each key change in the barline column at its time,
+                    // after the barline, so a change a system break falls at
+                    // ends the system before as a courtesy while the new
+                    // system's lead shows the key.
+                    for (time, old, new) in drawn_key_changes(content) {
+                        let clef = active_clef_or(&content.clefs, &time, content.default_clef);
+                        let key = ColumnKey::Timed(time, ColumnRole::Barline);
+                        let reach = lead_extent(&key_change_glyphs(old, new, &clef, yo));
+                        let entry = key_change_reach.entry(key.clone()).or_insert(0.0);
+                        *entry = entry.max(reach);
+                        keys.insert(key);
+                    }
                     // Each clef change in a column of its own at its time,
                     // before the barline or notes there.
                     for (time, clef) in drawn_clef_changes(content) {
@@ -1528,6 +1544,14 @@ pub fn try_to_constrained(
                     .or_insert(0.0);
                 *entry = entry.max(reach);
             }
+        }
+
+        // A key change stands after its barline's ink, a repeat sign's
+        // included, and the column after clears it as it clears a clef change.
+        for (key, reach) in &key_change_reach {
+            let at = key_change_x(marks.get(key)) + reach;
+            let entry = clef_reach.entry(key.clone()).or_insert(0.0);
+            *entry = entry.max(at);
         }
 
         // The column after a clef change clears the change's ink and gap.
@@ -2165,6 +2189,33 @@ pub fn try_to_constrained(
                             staff,
                             info.slot,
                         );
+                    }
+                    // Each key change, after the barline in its column.
+                    for (c, (time, old, new)) in drawn_key_changes(content).into_iter().enumerate()
+                    {
+                        let column_key = ColumnKey::Timed(time.clone(), ColumnRole::Barline);
+                        let info = column(&column_key);
+                        let x0 = info.x + key_change_x(marks.get(&column_key));
+                        let clef = active_clef_or(&content.clefs, &time, content.default_clef);
+                        for (g, (name, x, y)) in key_change_glyphs(old, new, &clef, yo)
+                            .into_iter()
+                            .enumerate()
+                        {
+                            let glyph_provenance = Provenance::synthesized(
+                                provenance.source,
+                                SynthesisKind::Registered(KEY_CHANGE_SYNTHESIS),
+                                SynthesisInstanceKey((c as u128) << 8 | g as u128),
+                                provenance.dependencies.clone(),
+                            );
+                            emit.glyph(
+                                &glyph_provenance,
+                                name,
+                                Point::new(x0 + x, y),
+                                band_of(staff),
+                                staff,
+                                info.slot,
+                            );
+                        }
                     }
                     // Each clef change, in its column.
                     for (c, (time, clef)) in drawn_clef_changes(content).into_iter().enumerate() {
@@ -3100,6 +3151,9 @@ pub fn try_to_constrained(
                 ColumnKey::Lead => reserve(LEAD_GAP),
                 ColumnKey::Timed(_, ColumnRole::Signature) => reserve(SIGNATURE_GAP),
                 ColumnKey::Timed(_, ColumnRole::Clef) => reserve(CLEF_CHANGE_GAP),
+                ColumnKey::Timed(_, ColumnRole::Barline) if key_change_reach.contains_key(key) => {
+                    reserve(CLEF_CHANGE_GAP)
+                }
                 _ => 0.0,
             }
             .max(COLUMN_PREFERRED_WIDTH);
@@ -4293,6 +4347,64 @@ fn drawn_clef_changes(content: &StaffContent) -> Vec<(TimePoint, Clef)> {
     out
 }
 
+/// The key changes a staff draws within its systems, in time order: each
+/// change after the staff's start to a key other than the one in force before
+/// it, with that key (none, where the staff has had no key signature). A
+/// change restating the key in force draws nothing.
+fn drawn_key_changes(content: &StaffContent) -> Vec<(TimePoint, KeySignature, KeySignature)> {
+    let mut changes: Vec<&PlacedKeySignature> = content.keys.iter().collect();
+    changes.sort_by(|a, b| time_total(&a.time, &b.time));
+    let mut current = KeySignature::default();
+    let mut out = Vec::new();
+    for change in changes {
+        if time_total(&change.time, &origin()) == Ordering::Greater && change.key != current {
+            out.push((change.time.clone(), current, change.key));
+        }
+        current = change.key;
+    }
+    out
+}
+
+/// A key change's glyphs from x 0, `KEY_ACC_X` apart: a natural cancelling
+/// each accidental of the old key the new one does not keep, at its place,
+/// then the new key's accidentals. A new key on the same side keeps the old
+/// one's first accidentals, so only those past its own count are cancelled;
+/// one on the other side, or none, cancels them all.
+fn key_change_glyphs(
+    old: KeySignature,
+    new: KeySignature,
+    clef: &Clef,
+    yo: f32,
+) -> Vec<(&'static str, f32, f32)> {
+    let before = key_signature(old, clef);
+    let after = key_signature(new, clef);
+    let same_side = old.fifths().signum() == new.fifths().signum();
+    let kept = if same_side { after.len() } else { 0 };
+    before
+        .iter()
+        .skip(kept)
+        .map(|accidental| ("accidentalNatural", accidental.position))
+        .chain(
+            after
+                .iter()
+                .map(|accidental| (accidental.glyph, accidental.position)),
+        )
+        .enumerate()
+        .map(|(i, (glyph, position))| (glyph, i as f32 * KEY_ACC_X, step_to_y(yo, position)))
+        .collect()
+}
+
+/// Where a key change starts right of its barline column's x: past the
+/// barline's ink, the repeat sign a boundary there morphs it into included,
+/// and a gap.
+fn key_change_x(mark: Option<&RepeatMark>) -> f32 {
+    let name = mark.map_or("barlineSingle", |mark| {
+        repeat_sign_name(mark.start, mark.end)
+    });
+    let right = metrics(name).map_or(0.0, |m| m.bounding_box().right.0);
+    repeat_sign_x(name, 0.0) + right + KEY_GAP
+}
+
 /// A clef change's glyphs, smaller than a staff's leading clef: the change
 /// clef on its line at x 0 and, for an octave clef, its numeral centred over
 /// or under it, since SMuFL has no change-size octave clef. A shape with no
@@ -4488,8 +4600,9 @@ fn tracked(pitch: &crate::logical::NotePitch) -> Option<((epiphany_core::CmnNomi
     Some(((nominal, spelling.octave), alteration))
 }
 
-/// The key signature in force at `at` (the latest change at or before it,
-/// else the earliest), or `None` when the staff declares none.
+/// The key signature in force at `at`: the latest change at or before it,
+/// or `None` before the staff's first, where it has no key signature (an
+/// open key is held as none).
 fn key_at(keys: &[PlacedKeySignature], at: &TimePoint) -> Option<KeySignature> {
     keys.iter()
         .filter(|placed| {
@@ -4499,7 +4612,6 @@ fn key_at(keys: &[PlacedKeySignature], at: &TimePoint) -> Option<KeySignature> {
             )
         })
         .max_by(|a, b| time_total(&a.time, &b.time))
-        .or_else(|| keys.iter().min_by(|a, b| time_total(&a.time, &b.time)))
         .map(|placed| placed.key)
 }
 
@@ -5109,13 +5221,13 @@ struct KneedInk<'a> {
 /// it or a run of it shared with other tuplets. Its number is centred on its
 /// own notes, `TUPLET_CLEARANCE` off the beam on one side (above, where the
 /// upper staff's stems come down to it, or below, where the lower staff's
-/// come up), moved along the beam to the place nearest the middle where it
+/// come up), moved over its own notes to the place nearest the middle where it
 /// stands clear of the upper staff's ink, every head, ledger line,
 /// accidental, dot, stem and drawn rest, by `TUPLET_NUMBER_GAP` beside it and
 /// `TUPLET_CLEARANCE` above or below; below the beam it also stands beside
 /// all the lower staff's ink, never over or under it (`KneedInk`). It stands
 /// above wherever it finds such a place within its notes' span, else on the
-/// side needing the shorter move; where neither side has one along the beam,
+/// side needing the shorter move; where neither side has one over its notes,
 /// it stands at the middle above all the upper staff's ink it would meet. It
 /// rides the slot of its note nearest it, and takes no bracket. A tuplet a
 /// drawn rest opens, or holds, takes a bracket as well, since the beam does
@@ -5247,7 +5359,6 @@ fn kneed_tuplet_marks(
     }
 
     let middle = (first + last) / 2.0;
-    let (from, to) = (beam.xs[0], beam.xs[beam.xs.len() - 1]);
     // The number's baseline at centre `c`, `TUPLET_CLEARANCE` off the beam.
     let baseline_at = |c: f32, above: bool| {
         let (left, right) = (c - width / 2.0, c + width / 2.0);
@@ -5257,7 +5368,8 @@ fn kneed_tuplet_marks(
             edge(left).min(edge(right)) - beam.depth - TUPLET_CLEARANCE - height
         }
     };
-    // The nearest centre to the middle, along the beam, at which the number
+    // The nearest centre to the middle, over the tuplet's own notes (on a
+    // beam it shares, never among another tuplet's), at which the number
     // meets no ink on one side, and how far it moved.
     let place = |above: bool| -> (f32, f32) {
         let mut candidates = vec![middle];
@@ -5267,7 +5379,7 @@ fn kneed_tuplet_marks(
         }
         candidates
             .into_iter()
-            .filter(|c| (from..=to).contains(c))
+            .filter(|c| (first..=last).contains(c))
             .filter(|c| {
                 let span = (c - width / 2.0, c + width / 2.0, height);
                 !meets_ink(at.upper_ink, span, baseline_at(*c, above))
@@ -8599,5 +8711,85 @@ mod tests {
         );
         // Geometry validates — the layout is not blanked.
         assert!(constrained.validate().is_ok());
+    }
+
+    /// Two tuplets sharing one beam across two staves: where the first finds
+    /// no clear place for its number among its own notes, on either side of
+    /// the beam, it does not settle among its neighbor's notes, which are
+    /// clear, but stands over its own, above the upper staff's ink there.
+    #[test]
+    fn a_shared_beam_number_stays_over_its_own_notes() {
+        use epiphany_core::{EventId, ReplicaId, StaffId, TupletDisplay, TupletRatio};
+        let events: Vec<EventId> = (1..=12).map(|n| EventId::new(ReplicaId(1), n)).collect();
+        let xs: Vec<f32> = (0..12).map(|i| 2.0 * i as f32).collect();
+        let beam = KneedBeam {
+            record: 0,
+            members: events.clone(),
+            upper: StaffId::new(ReplicaId(1), 1),
+            lower: StaffId::new(ReplicaId(1), 2),
+            xs: xs.clone(),
+            slots: (0..12).map(|i| SpringSlotId(i as u128)).collect(),
+            x0: 0.0,
+            intercept: 0.0,
+            slope: 0.0,
+            depth: 0.5,
+        };
+        let seg = || StemSeg {
+            key: ColumnKey::Lead,
+            lo: 0.0,
+            hi: 0.0,
+            drawn: true,
+            comp: 0,
+            up: true,
+            voiced: None,
+            x_off: 0.0,
+            dx: 0.0,
+            tip: 0.0,
+            end: 0.0,
+            flag: None,
+            beams: 1,
+        };
+        let stems: BTreeMap<EventId, Vec<StemSeg>> =
+            events.iter().map(|e| (*e, vec![seg()])).collect();
+        // Ink over the first group's notes on both sides of the beam: the
+        // upper staff's just above it, the lower staff's anywhere; the second
+        // group's notes stand clear.
+        let block = |bottom: f32, top: f32| InkBox {
+            left: -1.0,
+            right: 11.0,
+            bottom,
+            top,
+            behind: false,
+        };
+        let (upper_ink, lower_ink) = (vec![block(0.2, 3.0)], vec![block(-6.0, -1.0)]);
+        let (columns, staves, ink) = (BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
+        let at = KneedInk {
+            columns: &columns,
+            stems: &stems,
+            staves: &staves,
+            rests: &[],
+            ink: &ink,
+            upper_ink: &upper_ink,
+            lower_ink: &lower_ink,
+        };
+        let first = crate::logical::TupletContent {
+            ratio: TupletRatio::new(6, 4).expect("not degenerate"),
+            members: events[..6].to_vec(),
+            display: TupletDisplay::default(),
+        };
+        let marks = kneed_tuplet_marks(&first, &beam, &at).expect("a numbered tuplet");
+        let (_, at_point) = marks.digits[0];
+        let six = metrics("tuplet6").expect("a glyph").bounding_box();
+        let centre = at_point.x.0 + (six.left.0 + six.right.0) / 2.0;
+        assert!(
+            (xs[0]..=xs[5]).contains(&centre),
+            "the first group's 6 stands at {centre}, outside its notes {}..{}",
+            xs[0],
+            xs[5]
+        );
+        assert!(
+            at_point.y.0 >= 3.0,
+            "over its own notes it stands above the upper staff's ink there"
+        );
     }
 }

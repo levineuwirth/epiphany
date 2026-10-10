@@ -1,0 +1,8 @@
+# class: effect ChangeRegionTimeModel: base-free Applied | graph-aware NoOp TransactionConflict
+# expect: agree
+# agrees since: base-free reduction refuses a referent the set mints that never came to be
+# found: seed 0x4a24e7, 24 authored; minimized from 92 to 4 envelopes
+(envelope #x00000000000000020000000000000000 #x00000000000000000000000000000002 (stamp 69 0 #x00000000000000020000000000000000) (causal () ()) () (primitive (create-region (region #x00000000000000020000000000000000 (proportional (proportional-time-model 1)) (staff-based (staff-based-content () () () () ())) (time-extent (wall-clock 1000000000) (wall-clock 1000001000)) (staff-extent ()) () false))))
+(envelope #x00000000000000010000000000000000 #x00000000000000000000000000000001 (stamp 78 0 #x00000000000000010000000000000000) (causal ((#x0000000000000002 0)) ()) () (primitive (delete-region #x00000000000000020000000000000000)))
+(envelope #x00000000000000020000000000000001 #x00000000000000000000000000000002 (stamp 81 0 #x00000000000000020000000000000001) (causal ((#x0000000000000002 0)) ()) (some #x00000000000000020000000000000004) (primitive (declare-transaction #x00000000000000020000000000000004 "edit" ())))
+(envelope #x00000000000000020000000000000002 #x00000000000000000000000000000002 (stamp 84 0 #x00000000000000020000000000000002) (causal ((#x0000000000000002 1)) ()) (some #x00000000000000020000000000000004) (primitive (change-region-time-model #x00000000000000020000000000000000 (aleatoric (aleatoric-time-model (event-ordering-dag ()) freely-mixed () 1)) () preserve-time)))

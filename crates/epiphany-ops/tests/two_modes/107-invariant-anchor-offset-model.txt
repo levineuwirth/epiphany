@@ -1,0 +1,7 @@
+# class: invariant Invariant(AnchorOffsetModel
+# expect: agree
+# agrees since: a migration out of musical time strands no measure or break
+# found: seed 0x4a0677, 24 authored; minimized from 94 to 3 envelopes
+(envelope #x00000000000000030000000000000000 #x00000000000000000000000000000003 (stamp 78 0 #x00000000000000030000000000000000) (causal () ()) () (primitive (create-region (region #x00000000000000030000000000000000 (metric (metric-time-model () tempo-map-reference)) (staff-based (staff-based-content () () () () ())) (time-extent (wall-clock 1000000000) (wall-clock 1000001000)) (staff-extent ()) () false))))
+(envelope #x00000000000000030000000000000001 #x00000000000000000000000000000003 (stamp 83 0 #x00000000000000030000000000000001) (causal ((#x0000000000000003 0)) ()) () (primitive (set-user-system-break #x00000000000000030000000000000000 (region #x00000000000000030000000000000000 start (musical (ratio 0 1))) true)))
+(envelope #x00000000000000030000000000000002 #x00000000000000000000000000000003 (stamp 89 0 #x00000000000000030000000000000002) (causal ((#x0000000000000003 1)) ()) () (primitive (change-region-time-model #x00000000000000030000000000000000 (proportional (proportional-time-model 1)) () preserve-time)))

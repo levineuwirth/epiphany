@@ -340,6 +340,29 @@ pub fn key_signature(key: KeySignature, clef: &Clef) -> Vec<KeyAccidental> {
 mod tests {
     use super::*;
 
+    /// The quarter-tone accidentals the core names (the importer spells
+    /// with them and the reducer moves them with a transposition) are the
+    /// ones this table draws, each at the alteration the core gives it.
+    #[test]
+    fn the_cores_quarter_tone_accidentals_are_drawn_at_their_alterations() {
+        let named = epiphany_core::ARROWED_QUARTER_TONES
+            .iter()
+            .map(|(n, q, _)| (*n, *q))
+            .chain(epiphany_core::STEIN_QUARTER_TONES.iter().copied());
+        let mut count = 0;
+        for (name, quarter_tones) in named {
+            let id = AccidentalId::new(name);
+            assert!(accidental_glyph(&id).is_some(), "{name} draws no glyph");
+            assert_eq!(
+                stack_quarter_tones(std::slice::from_ref(&id)),
+                Some(quarter_tones),
+                "{name}"
+            );
+            count += 1;
+        }
+        assert_eq!(count, 14);
+    }
+
     #[test]
     fn staff_position_is_diatonic_and_clef_relative() {
         let treble = Clef::treble();
