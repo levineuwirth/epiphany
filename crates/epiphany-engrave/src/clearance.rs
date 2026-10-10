@@ -1,4 +1,8 @@
-//! A slur or tie clears the accidentals under it (`ENGRAVER_VERSION` 44).
+//! A slur or tie clears the accidentals under it (`ENGRAVER_VERSION` 44) and
+//! the stems of its staff inside its span (`ENGRAVER_VERSION` 48, X5c.3): a
+//! stem's ink is passed as an accidental's is. A tie whose start runs through
+//! its first note's flag starts past the flag first ([`start_past_flag`],
+//! `ENGRAVER_VERSION` 49, X5c.4).
 //!
 //! The constrained pass shapes a slur over the heads and stems of the columns
 //! it spans and a tie between its heads, in a frame where columns stand closer
@@ -18,10 +22,15 @@
 //!   arc would grow past [`MAX_ARC`], by lifting that end, the inner control
 //!   points moving with the chord.
 //!
-//! A tie's ends stay at its heads, so a tie only raises its arc, and only as
-//! far as [`MAX_TIE_ARC`]: a tie that would have to arc further to pass every
-//! accidental it meets (a long tie under another voice's notes, which
-//! MuseScore draws through them too) is left as it was, not half raised.
+//! A tie's ends stay at its heads, so a tie only raises its arc, and first only
+//! as far as [`MAX_TIE_ARC`]. A tie that would have to arc further to pass
+//! every accidental it meets (a long tie through another voice's notes, which
+//! MuseScore draws through them) takes a fuller arc instead, its inner control
+//! points moved toward its ends ([`FULL_TIE_SHARE`]) so it leaves its heads
+//! more steeply and keeps its height over its middle, and may arc as far as
+//! [`LONG_TIE_SHARE`] of its span, never past [`MAX_LONG_TIE_ARC`] (X5c.2,
+//! `ENGRAVER_VERSION` 47); one that cannot pass so either is left as it was,
+//! not half raised.
 
 use epiphany_layout_ir::Point;
 
@@ -40,6 +49,23 @@ const MAX_ARC: f32 = 4.0;
 /// The most a tie's arc stands off its chord once raised for an accidental,
 /// in staff spaces: under twice the tallest a tie arcs by its length.
 const MAX_TIE_ARC: f32 = 1.5;
+
+/// Where a long tie's inner control points stand once it takes a fuller arc,
+/// as a share of its span from each end: under a third, so the arc rises
+/// sooner off its heads and stays near its height across its middle.
+const FULL_TIE_SHARE: f32 = 0.125;
+
+/// The most a long tie arcs once it takes a fuller arc, as a share of its
+/// span: half a slur's third, so a tie stays flatter than a slur of its
+/// length.
+const LONG_TIE_SHARE: f32 = 1.0 / 6.0;
+
+/// The most a long tie arcs, in staff spaces, however long it is.
+const MAX_LONG_TIE_ARC: f32 = 3.0;
+
+/// The least a tie runs once it starts past its first note's flag, in staff
+/// spaces.
+const MIN_TIE_SPAN: f32 = 1.0;
 
 /// How many accidentals one curve passes, at most.
 const MAX_PASSES: usize = 24;
@@ -76,44 +102,118 @@ fn parameter_at(cp: &[Point; 4], x: f32) -> f32 {
 /// `cp` with its arc raised and, for a slur, its ends lifted until it passes
 /// every accidental in `accidentals` it would otherwise meet. A curve that
 /// does not arc (its inner control points on its chord) is left as it is.
-pub(crate) fn clear_accidentals(
-    mut cp: [Point; 4],
-    accidentals: &[InkRect],
-    tie: bool,
-) -> [Point; 4] {
+pub(crate) fn clear_accidentals(cp: [Point; 4], accidentals: &[InkRect], tie: bool) -> [Point; 4] {
     let (x0, x3) = (cp[0].x.0, cp[3].x.0);
     let span = x3 - x0;
     if span <= 1e-3 {
         return cp;
     }
-    // The inner control points' offsets from the chord, at their thirds.
-    let offset = |cp: &[Point; 4]| {
-        let chord = |f: f32| cp[0].y.0 + f * (cp[3].y.0 - cp[0].y.0);
-        (cp[1].y.0 - chord(1.0 / 3.0) + cp[2].y.0 - chord(2.0 / 3.0)) / 2.0
-    };
     let initial = offset(&cp);
     if initial.abs() < 1e-4 {
         return cp;
     }
-    let side = initial.signum();
-    // The arc's height off its chord at its middle is three quarters of the
-    // control points' offset.
-    let max_arc = if tie {
-        MAX_TIE_ARC
-    } else {
-        (span / 3.0).min(MAX_ARC)
-    };
-    let max_offset = (initial.abs() * 0.75).max(max_arc) / 0.75;
-    let original = cp;
     let near: Vec<&InkRect> = accidentals
         .iter()
         .filter(|b| b.right > x0 && b.left < x3)
         .collect();
+    if !tie {
+        return pass(cp, &near, (span / 3.0).min(MAX_ARC), false).0;
+    }
+    match pass(cp, &near, MAX_TIE_ARC, true) {
+        (cleared, true) => cleared,
+        // A long tie takes a fuller arc and may arc further, in proportion to
+        // its span; one that cannot pass so either is left as it was.
+        _ => {
+            let mut full = cp;
+            full[1].x.0 = x0 + span * FULL_TIE_SHARE;
+            full[2].x.0 = x3 - span * FULL_TIE_SHARE;
+            let reach = (span * LONG_TIE_SHARE).clamp(MAX_TIE_ARC, MAX_LONG_TIE_ARC);
+            match pass(full, &near, reach, true) {
+                (cleared, true) if reach > MAX_TIE_ARC => cleared,
+                _ => cp,
+            }
+        }
+    }
+}
+
+/// `cp` past the accidentals and the stems it would meet
+/// ([`clear_accidentals`] over both), except that a tie which cannot pass a
+/// stem so, under a beamed run whose stems reach a beam far above it, still
+/// passes the accidentals it can, as if the stem were not there, rather than
+/// being left running through both.
+pub(crate) fn clear_obstacles(
+    cp: [Point; 4],
+    accidentals: &[InkRect],
+    stems: &[InkRect],
+    tie: bool,
+) -> [Point; 4] {
+    let all: Vec<InkRect> = accidentals.iter().chain(stems).copied().collect();
+    let cleared = clear_accidentals(cp, &all, tie);
+    if tie && cleared == cp && !stems.is_empty() {
+        clear_accidentals(cp, accidentals, tie)
+    } else {
+        cleared
+    }
+}
+
+/// `cp`, a tie, starting past any flag at its start that it runs through: its
+/// first note's flag, standing on the tie's side of its head, which the tie
+/// would otherwise leave its head into. The start moves right to the flag's
+/// right edge and [`ACCIDENTAL_CLEARANCE`] beyond, at the same height, and the
+/// inner control points keep their shares of the shorter span; a tie the move
+/// would leave shorter than [`MIN_TIE_SPAN`] is kept as it was.
+pub(crate) fn start_past_flag(cp: [Point; 4], flags: &[InkRect]) -> [Point; 4] {
+    let (x0, x3) = (cp[0].x.0, cp[3].x.0);
+    let span = x3 - x0;
+    if span <= 1e-3 {
+        return cp;
+    }
+    let meets = |b: &InkRect| {
+        (1..64).any(|k| {
+            let t = k as f32 / 64.0;
+            let x = bezier(cp[0].x.0, cp[1].x.0, cp[2].x.0, cp[3].x.0, t);
+            let y = bezier(cp[0].y.0, cp[1].y.0, cp[2].y.0, cp[3].y.0, t);
+            x > b.left && x < b.right && y > b.bottom && y < b.top
+        })
+    };
+    let start = flags
+        .iter()
+        .filter(|b| b.left < x0 + 0.5 && b.right > x0 && meets(b))
+        .map(|b| b.right + ACCIDENTAL_CLEARANCE)
+        .fold(x0, f32::max);
+    if start <= x0 || x3 - start < MIN_TIE_SPAN {
+        return cp;
+    }
+    let along = |x: f32| start + (x - x0) * (x3 - start) / span;
+    [
+        Point::new(start, cp[0].y.0),
+        Point::new(along(cp[1].x.0), cp[1].y.0),
+        Point::new(along(cp[2].x.0), cp[2].y.0),
+        cp[3],
+    ]
+}
+
+/// The inner control points' offsets from the chord, at its thirds.
+fn offset(cp: &[Point; 4]) -> f32 {
+    let chord = |f: f32| cp[0].y.0 + f * (cp[3].y.0 - cp[0].y.0);
+    (cp[1].y.0 - chord(1.0 / 3.0) + cp[2].y.0 - chord(2.0 / 3.0)) / 2.0
+}
+
+/// `cp` raised, and for a slur its ends lifted, past each accidental of
+/// `near` it meets, its arc kept within `max_arc` (or its own, if higher);
+/// and whether it now passes every one. A tie only raises its arc.
+fn pass(mut cp: [Point; 4], near: &[&InkRect], max_arc: f32, tie: bool) -> ([Point; 4], bool) {
+    let (x0, x3) = (cp[0].x.0, cp[3].x.0);
+    let initial = offset(&cp);
+    let side = initial.signum();
+    // The arc's height off its chord at its middle is three quarters of the
+    // control points' offset.
+    let max_offset = (initial.abs() * 0.75).max(max_arc) / 0.75;
     for _ in 0..MAX_PASSES {
         // The worst meeting: how far the curve must move off its chord, and
         // where along it.
         let mut worst: Option<(f32, f32)> = None;
-        for b in &near {
+        for b in near {
             let (near_edge, far_edge) = if side > 0.0 {
                 (b.bottom, b.top)
             } else {
@@ -137,7 +237,7 @@ pub(crate) fn clear_accidentals(
             }
         }
         let Some((deficit, t)) = worst else {
-            return cp;
+            return (cp, true);
         };
         // Raising both inner control points by `d` raises the arc at `t` by
         // `3t(1-t)d`.
@@ -148,9 +248,8 @@ pub(crate) fn clear_accidentals(
             cp[1].y.0 += side * raise;
             cp[2].y.0 += side * raise;
         } else if tie {
-            // A tie keeps its ends at its heads and its arc within bounds: one
-            // that cannot pass every accidental so is left as it was.
-            return original;
+            // A tie keeps its ends at its heads and its arc within bounds.
+            return (cp, false);
         } else if t > 0.5 {
             // Lifting the end by `r` lifts the curve at `t` by `t·r`.
             let lift = side * deficit / t;
@@ -164,13 +263,8 @@ pub(crate) fn clear_accidentals(
             cp[2].y.0 += lift / 3.0;
         }
     }
-    // Still meeting one after every pass: a slur keeps what it has cleared, a
-    // tie its own arc.
-    if tie {
-        original
-    } else {
-        cp
-    }
+    // Still meeting one after every pass: a slur keeps what it has cleared.
+    (cp, false)
 }
 
 #[cfg(test)]
@@ -294,6 +388,81 @@ mod tests {
             },
         ];
         assert_eq!(clear_accidentals(tie, &sharps, true), tie);
+    }
+
+    /// A long tie that must arc further than a short tie may takes a fuller
+    /// arc, its inner control points moved toward its ends, and passes within
+    /// its share of its span; a short tie needing as much is left as it was.
+    #[test]
+    fn a_long_tie_takes_a_fuller_arc_to_pass_and_a_short_one_does_not() {
+        let tie = |span: f32| {
+            [
+                Point::new(0.0, 0.0),
+                Point::new(span / 4.0, 1.0),
+                Point::new(span * 3.0 / 4.0, 1.0),
+                Point::new(span, 0.0),
+            ]
+        };
+        // An accidental a step above the tie's heads, at its middle: passing
+        // it takes 2.4 spaces of arc.
+        let flat = |middle: f32| InkRect {
+            left: middle - 0.4,
+            right: middle + 0.4,
+            bottom: 0.3,
+            top: 2.2,
+        };
+        let long = tie(15.0);
+        let over = flat(7.5);
+        assert!(clearance(&long, &over, 1.0) < 0.0, "the tie meets it");
+        let cleared = clear_accidentals(long, &[over], true);
+        assert!(clearance(&cleared, &over, 1.0) >= ACCIDENTAL_CLEARANCE - 1e-3);
+        assert_eq!(
+            (cleared[0], cleared[3]),
+            (long[0], long[3]),
+            "its ends stay"
+        );
+        assert!(
+            cleared[1].x.0 < long[1].x.0 && cleared[2].x.0 > long[2].x.0,
+            "its inner points move toward its ends"
+        );
+        assert!(offset(&cleared) * 0.75 <= 15.0 * LONG_TIE_SHARE + 1e-3);
+        let short = tie(8.0);
+        assert_eq!(clear_accidentals(short, &[flat(4.0)], true), short);
+    }
+
+    /// A long tie that can pass an accidental in its path but not a stem
+    /// rising far past its reach passes the accidental, rather than being
+    /// left through both.
+    #[test]
+    fn a_tie_that_cannot_pass_a_stem_still_passes_its_accidental() {
+        let span = 15.0;
+        let tie = [
+            Point::new(0.0, 0.0),
+            Point::new(span / 4.0, 1.0),
+            Point::new(span * 3.0 / 4.0, 1.0),
+            Point::new(span, 0.0),
+        ];
+        let flat = InkRect {
+            left: 7.1,
+            right: 7.9,
+            bottom: 0.3,
+            top: 2.2,
+        };
+        let stem = InkRect {
+            left: 10.96,
+            right: 11.04,
+            bottom: -1.0,
+            top: 9.0,
+        };
+        assert!(clearance(&tie, &flat, 1.0) < 0.0, "the tie meets the flat");
+        assert_eq!(
+            clear_accidentals(tie, &[flat, stem], true),
+            tie,
+            "no arc within bounds passes both"
+        );
+        let cleared = clear_obstacles(tie, &[flat], &[stem], true);
+        assert!(clearance(&cleared, &flat, 1.0) >= ACCIDENTAL_CLEARANCE - 1e-3);
+        assert_eq!((cleared[0], cleared[3]), (tie[0], tie[3]), "its ends stay");
     }
 
     #[test]

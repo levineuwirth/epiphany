@@ -713,7 +713,7 @@ mod tests {
         QUALITY_METRIC_KINDS,
     };
 
-    /// The QUICKSTART ten-measure hand-off fixture: wraps into two systems
+    /// The QUICKSTART ten-measure hand-off fixture: wraps into three systems
     /// under the default A4 geometry — the multi-system measurement case.
     fn ten_measure() -> ConstrainedLayoutIR {
         to_constrained(&to_logical(
@@ -752,16 +752,10 @@ mod tests {
         // The ten-measure fixture under the default geometry, measured for
         // real (values pinned loosely; the goldens pin the geometry itself):
         // no cross-column collisions; regular spacing; a single page (the
-        // page-fill axis degenerates to exactly 0.0). Greedy first-fit alone
-        // would leave a two-measure stub last system (width CV 0.61 -> the
-        // clamped worst 1.0); casting-off's widow-rebalance evens that into a
-        // six/four split (system widths ~59.5 vs ~37.8 staff spaces, CV ~0.22),
-        // so casting_off measures ~0.45 — comfortably inside the Minimal 0.90
-        // threshold. The trade-off is on the break axis: the non-final system
-        // is deliberately left ~66% full (not greedy's ~87%), so system_break
-        // rises to ~0.68 — still well inside Minimal. Both axes sit above the
-        // Standard profile's floor (0.8 x 0.35 = 0.28), so both fire the
-        // SHOULD-level diagnostic, which per the catalog never changes status.
+        // page-fill axis degenerates to exactly 0.0). Its forty quarters,
+        // spaced by their duration, break three/four/three, and every system,
+        // the last included (its ink fills past three tenths of the width),
+        // is justified to the content width.
         let report = Engraver::default().solve(&ten_measure(), &SolverConfig::default());
         let vector = &report.metric_vector;
         assert_eq!(vector.collision_penalty.0, 0.0);
@@ -776,47 +770,41 @@ mod tests {
         // shortfall) collapses to near zero — the point of justification.
         assert!(
             vector.system_break_penalty.0 < 0.1,
-            "the non-final system fills the width after justification: {}",
+            "the non-final systems fill the width after justification: {}",
             vector.system_break_penalty.0
         );
-        // The width-uniformity axes are non-zero: the justified non-final system
-        // spans the full width while the last stays ragged-right, so the two
-        // systems' ink widths (and their glyph densities) differ. Optimal
-        // casting-off balances the split (5/4 measures, not greedy's 6-plus/stub),
-        // which fills the final system more and pulls casting_off DOWN from the
-        // greedy value (~0.80 → ~0.61) — the break search's payoff. Still honest
-        // for a two-system score (one full line, one shorter last line); a metric
-        // refinement that scores casting-off on natural widths or excludes the
-        // intentionally-ragged final system is a follow-up (see DECISIONS).
+        // The systems' ink widths are all the content width, so the casting-off
+        // axis, their width uniformity, is near zero; their glyph densities
+        // still differ, four measures against three.
         assert!(
-            (0.5..0.7).contains(&vector.casting_off_quality.0),
-            "the balanced split leaves a moderate full-vs-ragged contrast: {}",
+            vector.casting_off_quality.0 < 0.1,
+            "every system spans the content width: {}",
             vector.casting_off_quality.0
         );
         assert!(
-            (0.45..0.65).contains(&vector.symbol_density_uniformity.0),
-            "density differs between the stretched and the ragged system: {}",
+            (0.2..0.35).contains(&vector.symbol_density_uniformity.0),
+            "density differs between a system of four measures and one of three: {}",
             vector.symbol_density_uniformity.0
         );
-        // The casting-off axis exceeds 0.8 × its Standard threshold, so its
-        // SHOULD-level floor diagnostic fires (per the catalog, never changing
-        // status); the system-break axis, now near zero, no longer floors.
+        // Neither axis approaches its Standard floor, so no SHOULD-level floor
+        // diagnostic fires (per the catalog, one would never change status).
         let floored = |metric: QualityMetricKind| {
             report.warnings.iter().any(|w| {
                 matches!(w.kind, SolverWarningKind::QualityFloorApproached { metric: m } if m == metric)
             })
         };
-        assert!(floored(QualityMetricKind::CastingOff));
+        assert!(!floored(QualityMetricKind::CastingOff));
         assert!(!floored(QualityMetricKind::SystemBreak));
         assert_eq!(report.status, SolveStatus::Solved);
     }
 
     #[test]
     fn slur_shape_is_measured_penalizing_out_of_band_arcs() {
-        use epiphany_core::{Slur, SlurId, SlurKind, SpanStyle};
+        use epiphany_core::{CurvatureOverride, Slur, SlurId, SlurKind, SpaceUnit, SpanStyle};
+        use epiphany_determinism::CanonicalF64;
         use epiphany_layout_ir::to_constrained;
 
-        let with_slur = |start: usize, end: usize| {
+        let with_slur = |start: usize, end: usize, height: Option<f64>| {
             let mut s = epiphany_testkit::fixtures::ten_measure_single_staff(0x000A_11CE);
             let ev: Vec<_> = s.canvas.regions[0].staff_instances()[0].voices[0]
                 .events
@@ -826,7 +814,10 @@ mod tests {
                 start_event: ev[start],
                 end_event: ev[end],
                 kind: SlurKind::Legato,
-                curvature_override: None,
+                curvature_override: height.map(|h| CurvatureOverride {
+                    direction: None,
+                    height: Some(SpaceUnit(CanonicalF64::new(h).expect("finite"))),
+                }),
                 style: SpanStyle::default(),
             });
             Engraver::default()
@@ -835,17 +826,18 @@ mod tests {
                 .slur_shape_penalty
                 .0
         };
-        // A slur over adjacent events: the min-height clamp forces a tall arc
-        // over a tiny chord (ρ well above the 0.25 band), a real bulge penalty.
+        // A slur over adjacent quarters authored three spaces tall: a tall arc
+        // over a chord of one quarter's column (ρ well above the 0.25 band), a
+        // real bulge penalty.
         assert!(
-            with_slur(0, 1) > 0.0,
+            with_slur(0, 1, Some(3.0)) > 0.0,
             "a bulgy short slur is penalized: {}",
-            with_slur(0, 1)
+            with_slur(0, 1, Some(3.0))
         );
         // A slur over a wide span: the auto height gives ρ ≈ 0.16, inside the
         // ideal band [0.08, 0.25], so no penalty.
         assert_eq!(
-            with_slur(0, 6),
+            with_slur(0, 6, None),
             0.0,
             "an in-band (mid-span) slur is not penalized"
         );
@@ -866,13 +858,34 @@ mod tests {
             .events
             .clone();
         let id: SlurId = score.identity.mint();
-        // Events 14→24 straddle the fixture's centred two-system break (optimal
-        // casting-off balances to ~5/4 measures), wide enough that the height
-        // clamp does not bind → ρ ≈ 0.16.
+        // Three events either side of the fixture's first system break (the
+        // first system's notes, counted), wide enough that the minimum height
+        // does not bind and short enough that the slur stays in band.
+        let plain = Engraver::default()
+            .solve(
+                &to_constrained(&to_logical(&score)),
+                &SolverConfig::default(),
+            )
+            .layout;
+        let first_heads = plain
+            .systems()
+            .next()
+            .expect("a system")
+            .primitives
+            .glyphs
+            .iter()
+            .filter(|&&i| {
+                matches!(
+                    plain.glyphs[i as usize].provenance.source,
+                    TypedObjectId::Pitch(_)
+                )
+            })
+            .count();
+        assert!(first_heads > 3, "the first system holds notes");
         score.cross_cutting.slurs.push(Slur {
             id,
-            start_event: ev[14],
-            end_event: ev[24],
+            start_event: ev[first_heads - 3],
+            end_event: ev[first_heads + 3],
             kind: SlurKind::Legato,
             curvature_override: None,
             style: SpanStyle::default(),
@@ -1075,10 +1088,17 @@ mod tests {
     /// `members` drops it, and the axis loses the unit entirely.
     #[test]
     fn a_glyphless_staff_band_still_contributes_an_inter_staff_unit() {
-        let u = units_of(epiphany_testkit::fixtures::percussion_placeholder_constrained(1));
+        let input = epiphany_testkit::fixtures::percussion_placeholder_constrained(1);
+        let systems = Engraver::default()
+            .solve(&input, &SolverConfig::default())
+            .layout
+            .systems()
+            .count();
+        let u = units_of(input);
+        assert!(systems >= 2, "the fixture wraps");
         assert_eq!(
             u.inter_staff.len(),
-            2,
+            systems,
             "one unit per system realizing the pair, not zero"
         );
         for value in &u.inter_staff {
@@ -1092,11 +1112,21 @@ mod tests {
     /// A gap band realized in several systems contributes one unit PER SYSTEM.
     /// The inter-staff solve sizes each system's gaps from that system's own
     /// content, so the realizations are independent measurements; the wrapping
-    /// fixture's two systems sit at very different staff distances.
+    /// fixture's systems sit at very different staff distances.
     #[test]
     fn each_system_realizing_a_gap_band_contributes_its_own_unit() {
-        let u = units(&epiphany_testkit::fixtures::two_staff_wrapping_pressure(1));
-        assert_eq!(u.inter_staff.len(), 2, "two systems, two realizations");
+        let score = epiphany_testkit::fixtures::two_staff_wrapping_pressure(1);
+        let systems = Engraver::default()
+            .solve(
+                &to_constrained(&to_logical(&score)),
+                &SolverConfig::default(),
+            )
+            .layout
+            .systems()
+            .count();
+        let u = units(&score);
+        assert!(systems >= 2, "the fixture wraps");
+        assert_eq!(u.inter_staff.len(), systems, "one realization a system");
         for value in &u.inter_staff {
             assert!(*value < 1e-4, "each solved to its declared gap: {value}");
         }

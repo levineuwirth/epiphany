@@ -318,8 +318,21 @@ pub struct Engraver {
 /// a courtesy, where a key change inside a system had drawn nothing, and to
 /// `44` when a slur or tie began passing over the accidentals of its staff
 /// it would meet, after spacing: a slur by raising its arc or, near an end,
-/// lifting that end, a tie by raising its arc within bounds.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(44);
+/// lifting that end, a tie by raising its arc within bounds, and to `45` when
+/// time columns began spacing by the durations sounding through them, a
+/// column's ink clearing only the earlier ink at its height, a justified
+/// system's slack going to its note columns by their springs, and a region's
+/// last system justifying once it fills three tenths of the width, and to
+/// `46` when a barline joined across the gap between two staves of a group
+/// began reserving its line there, so ink in the gap keeps a barline's
+/// clearance, and to `47` when a tie that must arc further than 1.5 spaces
+/// to pass an accidental began taking a fuller arc, as far as a sixth of its
+/// span and three spaces at most, rather than running through it, to `48`
+/// when a slur or tie began passing the stems of its staff inside its span
+/// as it passes accidentals, to `49` when a tie meeting its first note's
+/// flag began starting past it, and to `50` when a tie that cannot pass a
+/// stem began passing its accidentals still.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(50);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -678,12 +691,17 @@ impl HorizontalRemap {
     /// Re-maps each curve's four control-point x's through the same coordinate
     /// map as a spanning stroke's endpoints (a slur is never rigid-width), so
     /// the arc stretches with the spacing between its endpoint columns, then
-    /// passes it over the accidentals of its staff it would meet
+    /// passes it over the accidentals of its staff it would meet, and the
+    /// stems of its staff that stand inside its span
     /// ([`clearance::clear_accidentals`]): a slur by its arc or, near an end,
-    /// by lifting that end, a tie by its arc alone. Its y is otherwise kept.
+    /// by lifting that end, a tie by its arc alone, a tie meeting its first
+    /// note's flag starting past it first ([`clearance::start_past_flag`]).
+    /// Its y is otherwise kept.
     fn curves(&self, input: &ConstrainedLayoutIR) -> Vec<Curve> {
         let anchors = span_anchors(input);
-        let accidentals = self.accidentals(input);
+        let accidentals = self.glyph_ink(input, "accidental");
+        let flags = self.glyph_ink(input, "flag");
+        let stems = self.stems(input, &anchors);
         input
             .curves
             .iter()
@@ -698,13 +716,24 @@ impl HorizontalRemap {
                         .map(|point| Point::new(self.map(point.x.0), point.y.0)),
                 };
                 let [p0, p1, p2, p3] = match c.provenance.source {
-                    TypedObjectId::Slur(_) | TypedObjectId::Tie(_) => clearance::clear_accidentals(
-                        spaced,
-                        accidentals
-                            .get(&c.vertical_band)
-                            .map_or(&[][..], Vec::as_slice),
-                        matches!(c.provenance.source, TypedObjectId::Tie(_)),
-                    ),
+                    TypedObjectId::Slur(_) | TypedObjectId::Tie(_) => {
+                        let tie = matches!(c.provenance.source, TypedObjectId::Tie(_));
+                        let band = |of| in_band(of, &c.vertical_band);
+                        let spaced = if tie {
+                            clearance::start_past_flag(spaced, band(&flags))
+                        } else {
+                            spaced
+                        };
+                        // The stems inside the span, clear of those of the
+                        // notes the curve joins, which stand at its ends.
+                        let (x0, x3) = (spaced[0].x.0, spaced[3].x.0);
+                        let inside = |s: &&clearance::InkRect| {
+                            s.left > x0 + STEM_END_MARGIN && s.right < x3 - STEM_END_MARGIN
+                        };
+                        let inner: Vec<clearance::InkRect> =
+                            band(&stems).iter().filter(inside).copied().collect();
+                        clearance::clear_obstacles(spaced, band(&accidentals), &inner, tie)
+                    }
                     _ => spaced,
                 };
                 Curve {
@@ -724,15 +753,66 @@ impl HorizontalRemap {
     }
 }
 
+/// The ink of `band` in a by-band table, or none.
+fn in_band<'a>(
+    of: &'a BTreeMap<epiphany_layout_ir::VerticalBandId, Vec<clearance::InkRect>>,
+    band: &epiphany_layout_ir::VerticalBandId,
+) -> &'a [clearance::InkRect] {
+    of.get(band).map_or(&[][..], Vec::as_slice)
+}
+
+/// How far inside a curve's span, from either end, a stem must stand for the
+/// curve to pass it, in staff spaces: the stems of the notes a curve joins
+/// stand at its ends.
+const STEM_END_MARGIN: f32 = 0.6;
+
 impl HorizontalRemap {
-    /// Every accidental glyph's ink where the spacing sets it, by its band.
-    fn accidentals(
+    /// Every stem's ink where the spacing sets it, by its band: an event's
+    /// upright stroke whose ends ride one slot.
+    fn stems(
         &self,
         input: &ConstrainedLayoutIR,
+        anchors: &BTreeMap<GlyphObjectId, (SpringSlotId, SpringSlotId)>,
+    ) -> BTreeMap<epiphany_layout_ir::VerticalBandId, Vec<clearance::InkRect>> {
+        let mut by_band: BTreeMap<_, Vec<clearance::InkRect>> = BTreeMap::new();
+        for s in &input.strokes {
+            if !matches!(s.provenance.source, TypedObjectId::Event(_))
+                || (s.from.x.0 - s.to.x.0).abs() > 1e-6
+                || (s.from.y.0 - s.to.y.0).abs() < 0.3
+            {
+                continue;
+            }
+            let Some(delta) = anchors
+                .get(&s.id())
+                .filter(|(start, end)| start == end)
+                .and_then(|(start, _)| self.slot_delta.get(start))
+            else {
+                continue;
+            };
+            let (x, half) = (s.from.x.0 + delta, s.thickness.0 * 0.5);
+            by_band
+                .entry(s.vertical_band)
+                .or_default()
+                .push(clearance::InkRect {
+                    left: x - half,
+                    right: x + half,
+                    bottom: s.from.y.0.min(s.to.y.0),
+                    top: s.from.y.0.max(s.to.y.0),
+                });
+        }
+        by_band
+    }
+
+    /// Every glyph's ink whose name begins `prefix`, where the spacing sets
+    /// it, by its band.
+    fn glyph_ink(
+        &self,
+        input: &ConstrainedLayoutIR,
+        prefix: &str,
     ) -> BTreeMap<epiphany_layout_ir::VerticalBandId, Vec<clearance::InkRect>> {
         let mut by_band: BTreeMap<_, Vec<clearance::InkRect>> = BTreeMap::new();
         for g in &input.glyphs {
-            if !g.glyph.as_str().starts_with("accidental") {
+            if !g.glyph.as_str().starts_with(prefix) {
                 continue;
             }
             let x = match self.slot_delta.get(&g.horizontal_slot) {
@@ -2682,7 +2762,7 @@ mod tests {
             .iter()
             .flat_map(|page| &page.systems)
             .collect();
-        assert_eq!(systems.len(), 2, "the region wraps into two systems");
+        assert!(systems.len() >= 2, "the region wraps");
         let pitch = |sys: &epiphany_layout_ir::ResolvedSystem| {
             assert_eq!(sys.staves.len(), 2, "both staves ride every system");
             sys.staves[0].bounding_box.origin.y.0 - sys.staves[1].bounding_box.origin.y.0

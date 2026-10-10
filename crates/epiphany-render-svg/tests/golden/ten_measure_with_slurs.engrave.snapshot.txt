@@ -1,15 +1,15 @@
 fixture=ten_measure_with_slurs solver=engrave
-glyph_count=52
-path_count=52
+glyph_count=53
+path_count=53
 fallback_rect_count=0
-stroke_count=95
-curve_count=4
-provenance_count=151
+stroke_count=100
+curve_count=5
+provenance_count=158
 layer_count=1
 hard_constraint_count=90
 xml_well_formed=true
-view_box=[5.435 -30.843822 94.06501 25.343245]
+view_box=[5.435 -43.56759 94.065 38.06701]
 class_counts:
   barline=10
-  clef=2
+  clef=3
   notehead=40

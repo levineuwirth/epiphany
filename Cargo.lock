@@ -1252,6 +1252,7 @@ name = "epiphany-engrave"
 version = "0.0.0"
 dependencies = [
  "epiphany-core",
+ "epiphany-determinism",
  "epiphany-layout-ir",
  "epiphany-testkit",
 ]

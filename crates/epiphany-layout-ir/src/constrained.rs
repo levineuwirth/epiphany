@@ -14,8 +14,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::{
     Clef, EventId, KeySignature, LineStyle, MeasureId, MeasurePosition, MusicalDuration, NoteValue,
-    PitchId, PitchSpelling, RepeatStructureId, SpellingNominal, StaffId, TimeAnchor, TypedObjectId,
-    WallClockTime,
+    PitchId, PitchSpelling, RationalTime, RepeatStructureId, SpellingNominal, StaffId, TimeAnchor,
+    TypedObjectId, WallClockTime,
 };
 use epiphany_determinism::{DomainTag, Preimage};
 
@@ -733,7 +733,7 @@ const STAFF_HEIGHT: f32 = 4.0; // 4 spaces between the outer lines of a 5-line s
 const SYSTEM_STAFF_PITCH: f32 = 12.0; // vertical distance between stacked staves
 const CLEF_X: f32 = 0.0;
 const FIRST_COLUMN_X: f32 = 3.0; // x of the first time column (right of the clef)
-const COLUMN_X_STEP: f32 = 1.6; // x advance per distinct musical time column
+const COLUMN_X_STEP: f32 = 1.6; // the least x advance from one time column to the next
 const COLUMN_PREFERRED_WIDTH: f32 = 1.5; // a column's spring preferred width
 const STAFF_LEFT_MARGIN: f32 = 1.0; // staff line extends this far left of the clef
 const STAFF_RIGHT_MARGIN: f32 = 2.0; // …and this far right of the last column
@@ -1036,6 +1036,9 @@ pub fn try_to_constrained(
         let mut column_ink: BTreeMap<(StaffId, ColumnKey), ColumnInk> = BTreeMap::new();
         let mut event_rests: BTreeMap<EventId, Vec<RestSeg>> = BTreeMap::new();
         let mut sounding: Vec<Sounding> = Vec::new();
+        // Every note's, unpitched note's and rest's components as the musical
+        // spans they sound through: what spaces a column by its durations.
+        let mut spans: Vec<(RationalTime, RationalTime)> = Vec::new();
         // Every column that needs an x. A column earns a spring slot only if a
         // glyph actually lands in it (decided after emission, by occupancy), so a
         // stroke-only column — e.g. an unbundled rest, or a pitch-less note — gets
@@ -1070,6 +1073,7 @@ pub fn try_to_constrained(
             match (object.provenance().source, object.content()) {
                 (TypedObjectId::Event(eid), LayoutContent::Note(note)) => {
                     event_staff.extend(staff.map(|st| (eid, st)));
+                    spans.extend(component_spans(&note.position, &note.components, false));
                     let mut stems = Vec::new();
                     for (comp, (offset, value, dots, tied)) in
                         components_of(&note.components).enumerate()
@@ -1167,6 +1171,11 @@ pub fn try_to_constrained(
                     // An unpitched note: a notehead at its staff position, read
                     // as on a five-line staff, with the stem, flag and dots of
                     // its value; it has no accidental.
+                    spans.extend(component_spans(
+                        &unpitched.position,
+                        &unpitched.components,
+                        false,
+                    ));
                     let mut stems = Vec::new();
                     let step = StaffStep::from(unpitched.staff_position.0);
                     for (comp, (offset, value, dots, tied)) in
@@ -1225,6 +1234,11 @@ pub fn try_to_constrained(
                     event_voices.insert(eid, unpitched.voice);
                 }
                 (TypedObjectId::Event(eid), LayoutContent::Rest(rest)) => {
+                    spans.extend(component_spans(
+                        &rest.position,
+                        &rest.components,
+                        rest.whole_measure,
+                    ));
                     let mut segs = Vec::new();
                     for (comp, (offset, value, dots, _)) in
                         components_of(&rest.components).enumerate()
@@ -1566,20 +1580,31 @@ pub fn try_to_constrained(
         }
 
         // Pass 1b — turn the collected column keys into a table: each gets an x
-        // (the lead at the clef, timed columns spread by rank, the final-barline
+        // (the lead at the clef, timed columns in order, the final-barline
         // column at the right) and a spring slot. The table is sorted by
-        // `ColumnKey`'s exact order.
-        let timed_count = keys
+        // `ColumnKey`'s exact order. A timed column advances by
+        // `COLUMN_X_STEP`, a note column by the width its durations ask where
+        // that is more, so this frame stands columns roughly where the spacing
+        // will, and the curves and beams shaped in it keep their proportions
+        // once spaced.
+        let all_keys: Vec<&ColumnKey> = keys.iter().collect();
+        let source_widths = duration_widths(&all_keys, spans.clone());
+        let step = |key: &ColumnKey| {
+            source_widths
+                .get(key)
+                .map_or(COLUMN_X_STEP, |width| width.max(COLUMN_X_STEP))
+        };
+        let total_step: f32 = keys
             .iter()
             .filter(|k| matches!(k, ColumnKey::Timed(..)))
-            .count();
+            .map(step)
+            .sum();
         // The first note column clears the clef *and* the key signature; each
         // timed column additionally clears the previous one by its accidental
         // overhang, so the source layout is collision-free.
         let first_col = FIRST_COLUMN_X.max(lead_right + LEAD_GAP);
         let total_overhang: f32 = column_overhang.values().sum();
-        let local_right =
-            first_col + total_overhang + timed_count as f32 * COLUMN_X_STEP + STAFF_RIGHT_MARGIN;
+        let local_right = first_col + total_overhang + total_step + STAFF_RIGHT_MARGIN;
         let staff_left = region_x + CLEF_X - STAFF_LEFT_MARGIN;
         let staff_right = region_x + local_right;
         let mut columns: BTreeMap<ColumnKey, ColumnInfo> = BTreeMap::new();
@@ -1591,7 +1616,7 @@ pub fn try_to_constrained(
                     // Push right of the previous column by this column's overhang.
                     timed_x += column_overhang.get(key).copied().unwrap_or(0.0);
                     let x = region_x + timed_x;
-                    timed_x += COLUMN_X_STEP;
+                    timed_x += step(key);
                     x
                 }
                 ColumnKey::End => staff_right - 0.5,
@@ -3119,6 +3144,18 @@ pub fn try_to_constrained(
         // a slot to it (barline/lead/end columns are visual, not musical query
         // points, so they are omitted from it).
         let mut region_placements = Vec::new();
+        // A note column's natural width comes from the durations sounding
+        // through it, measured to the next column that takes a slot.
+        let realized: Vec<&ColumnKey> = columns
+            .iter()
+            .filter(|(_, info)| {
+                column_members
+                    .get(&info.slot)
+                    .is_some_and(|m| !m.is_empty())
+            })
+            .map(|(key, _)| key)
+            .collect();
+        let durations = duration_widths(&realized, spans);
         for (key, info) in &columns {
             let members = column_members.get(&info.slot).cloned().unwrap_or_default();
             // Realize a slot only if a glyph occupies the column — never an empty
@@ -3127,13 +3164,14 @@ pub fn try_to_constrained(
             if members.is_empty() {
                 continue;
             }
-            // The spring slot's natural width is uniform, but for the lead's and a
-            // time signature's, which reserve their ink and the gap after it;
-            // the engraver computes the collision-aware advance (per-slot
-            // bearings) when it re-spaces, measuring a slot's width from its
-            // first glyph's baseline, and the *source* geometry below already
-            // separates columns enough that accidentals do not overlap the
-            // previous note.
+            // A note column's spring takes the width its durations ask
+            // (`duration_widths`) and is the one that stretches when a system
+            // is justified; the lead's, a time signature's and a change's
+            // reserve their ink and the gap after it and keep it. The engraver
+            // computes the collision-aware advance (each staff's ink) when it
+            // re-spaces, measuring a slot's width from its first glyph's
+            // baseline, and the *source* geometry below already separates
+            // columns enough that accidentals do not overlap the previous note.
             let reserve = |gap: f32| {
                 let ink: Vec<&GlyphObject> = glyphs
                     .iter()
@@ -3157,13 +3195,18 @@ pub fn try_to_constrained(
                 _ => 0.0,
             }
             .max(COLUMN_PREFERRED_WIDTH);
+            let (preferred, stretch) = match durations.get(key) {
+                Some(&width) => (width, 1.0),
+                None if info.note_column => (preferred, 1.0),
+                None => (preferred, 0.0),
+            };
             horizontal_slots.push(SpringSlot {
                 id: info.slot,
                 time: info.time.clone(),
-                min_width: StaffSpace(1.0),
+                min_width: StaffSpace(preferred.min(1.0)),
                 preferred_width: StaffSpace(preferred),
                 max_width: None,
-                stretch_factor: 1.0,
+                stretch_factor: stretch,
                 compress_factor: 1.0,
                 members,
             });
@@ -4129,6 +4172,148 @@ fn time_digit(digit: u8) -> &'static str {
 /// The `(offset, base value, dots, tied to the next)` of each notated
 /// component, or a single implicit undotted quarter at offset zero when the
 /// event carries no decomposition.
+/// The musical spans a note's, unpitched note's or rest's components sound
+/// through, each `[start, end)` in the region's musical time. A rest filling
+/// its measure is one span, as it is one glyph. Components in wall-clock time
+/// give none.
+fn component_spans(
+    position: &TimePoint,
+    components: &[crate::logical::PlacedComponent],
+    whole_measure: bool,
+) -> Vec<(RationalTime, RationalTime)> {
+    let TimePoint::Musical(position) = position else {
+        return Vec::new();
+    };
+    let spans = components.iter().map(|c| {
+        let start = position.clone() + c.offset.clone();
+        let end = start.clone() + c.component.sounding_duration(c.tuplet);
+        (start.0, end.0)
+    });
+    if whole_measure {
+        let end = spans.clone().map(|(_, end)| end).max();
+        end.map(|end| (position.0.clone(), end))
+            .into_iter()
+            .collect()
+    } else {
+        spans.filter(|(start, end)| end > start).collect()
+    }
+}
+
+/// The width, in staff spaces, of a quarter note's column: its spring's
+/// natural width when nothing shorter sounds through it, chosen by measuring
+/// the systems it casts against MuseScore's own.
+const QUARTER_SPACE: f64 = 5.0;
+/// How much wider a column grows each time the shortest duration sounding
+/// through it doubles: MuseScore's default (its "measure spacing" style, 1.5).
+const SPACE_RATIO: f64 = 1.5;
+/// `log2(SPACE_RATIO)`: a column's width grows as this power of its duration.
+const SPACE_EXPONENT: f64 = 0.584_962_500_721_156_2;
+
+/// Each note column's natural width, by the durations sounding through it, as
+/// conventional engraving and MuseScore space: the shortest duration `s`
+/// sounding at the column (any staff's note or rest that has started and not
+/// ended) asks `QUARTER_SPACE · (s / quarter)^SPACE_EXPONENT` for its whole
+/// length, and a column that holds only part of it, because something else
+/// starts before it ends, takes its part in proportion, `dt / s`, `dt` being
+/// the time to the next column that takes a slot (`realized`, in column order).
+/// A note column after which nothing timed follows runs to the end of what
+/// sounds through it. Columns in wall-clock time take none.
+fn duration_widths(
+    realized: &[&ColumnKey],
+    mut spans: Vec<(RationalTime, RationalTime)>,
+) -> BTreeMap<ColumnKey, f32> {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+
+    let musical = |key: &ColumnKey| match key {
+        ColumnKey::Timed(TimePoint::Musical(t), _) => Some(t.0.clone()),
+        _ => None,
+    };
+    let content_end = spans.iter().map(|(_, end)| end.clone()).max();
+    spans.sort();
+    let mut next_span = 0;
+    // The durations of the spans sounding at the sweep's time, and when each ends.
+    let mut active: BTreeMap<RationalTime, usize> = BTreeMap::new();
+    let mut ending: BinaryHeap<Reverse<(RationalTime, RationalTime)>> = BinaryHeap::new();
+    let mut widths = BTreeMap::new();
+    for (i, key) in realized.iter().enumerate() {
+        let (ColumnKey::Timed(_, ColumnRole::Note), Some(t)) = (key, musical(key)) else {
+            continue;
+        };
+        while let Some((start, end)) = spans.get(next_span) {
+            if start > &t {
+                break;
+            }
+            let duration = end.sub(start);
+            *active.entry(duration.clone()).or_insert(0) += 1;
+            ending.push(Reverse((end.clone(), duration)));
+            next_span += 1;
+        }
+        while let Some(Reverse((end, duration))) = ending.peek() {
+            if end > &t {
+                break;
+            }
+            if let Some(count) = active.get_mut(duration) {
+                *count -= 1;
+                if *count == 0 {
+                    active.remove(duration);
+                }
+            }
+            ending.pop();
+        }
+        let Some(shortest) = active.keys().next().cloned() else {
+            continue;
+        };
+        let next = realized[i + 1..]
+            .iter()
+            .find_map(|k| musical(k).filter(|n| n > &t))
+            .or_else(|| content_end.clone().filter(|end| end > &t));
+        let dt = next.map_or(shortest.clone(), |n| n.sub(&t));
+        let (s, dt) = (shortest.to_f64(), dt.to_f64());
+        if !(s > 0.0 && dt > 0.0 && s.is_finite() && dt.is_finite()) {
+            continue;
+        }
+        let width = QUARTER_SPACE * ratio_power(s * 4.0) * dt / s;
+        widths.insert((*key).clone(), width as f32);
+    }
+    widths
+}
+
+/// `x^SPACE_EXPONENT` for `x > 0`, as `SPACE_RATIO^k · m^SPACE_EXPONENT`
+/// with `x = 2^k · m`, `1 ≤ m < 2`, and `m`'s power taken from square roots
+/// and products alone: IEEE rounds each of those exactly, so the result is
+/// the same on every platform, which a library `powf` does not promise.
+fn ratio_power(x: f64) -> f64 {
+    let (mut m, mut k) = (x, 0i32);
+    while m >= 2.0 {
+        m /= 2.0;
+        k += 1;
+    }
+    while m < 1.0 {
+        m *= 2.0;
+        k -= 1;
+    }
+    let mut power = 1.0;
+    for _ in 0..k.unsigned_abs() {
+        power = if k > 0 {
+            power * SPACE_RATIO
+        } else {
+            power / SPACE_RATIO
+        };
+    }
+    // m^e = the product of m^(2^-j) over the set bits of e's binary expansion.
+    let (mut root, mut rest) = (m, SPACE_EXPONENT);
+    for _ in 0..40 {
+        root = root.sqrt();
+        rest *= 2.0;
+        if rest >= 1.0 {
+            power *= root;
+            rest -= 1.0;
+        }
+    }
+    power
+}
+
 fn components_of(
     components: &[crate::logical::PlacedComponent],
 ) -> impl Iterator<Item = (MusicalDuration, NoteValue, u8, bool)> + '_ {
@@ -6112,6 +6297,69 @@ mod tests {
                 .expect("break constraints name realized slots");
             assert!(!slot.members.is_empty());
         }
+    }
+
+    #[test]
+    fn ratio_power_doubles_by_the_ratio_and_agrees_with_powf() {
+        // A power of two is exact: each doubling multiplies by the ratio.
+        assert_eq!(ratio_power(1.0), 1.0);
+        assert_eq!(ratio_power(2.0), SPACE_RATIO);
+        assert_eq!(ratio_power(4.0), SPACE_RATIO * SPACE_RATIO);
+        assert_eq!(ratio_power(0.5), 1.0 / SPACE_RATIO);
+        // Between them, the library's power to within rounding.
+        for x in [1.5f64, 0.75, 1.0 / 3.0, 2.0 / 3.0, 1.75, 5.0, 0.1] {
+            let expected = x.powf(SPACE_RATIO.log2());
+            assert!(
+                (ratio_power(x) - expected).abs() < 1e-12,
+                "{x}: {} vs {expected}",
+                ratio_power(x)
+            );
+        }
+    }
+
+    #[test]
+    fn a_column_takes_the_width_of_the_shortest_duration_sounding_through_it() {
+        let at = |n: i64, d: i64| RationalTime::new(n, d).expect("a time");
+        let key = |n: i64, d: i64| {
+            ColumnKey::Timed(
+                TimePoint::Musical(epiphany_core::MusicalPosition(at(n, d))),
+                ColumnRole::Note,
+            )
+        };
+        let barline = ColumnKey::Timed(
+            TimePoint::Musical(epiphany_core::MusicalPosition(at(1, 2))),
+            ColumnRole::Barline,
+        );
+        // A quarter and two eighths on one staff over a half on another, then
+        // a barline at the half's end.
+        let keys = [key(0, 1), key(1, 4), key(3, 8), barline.clone()];
+        let realized: Vec<&ColumnKey> = keys.iter().collect();
+        let spans = vec![
+            (at(0, 1), at(1, 4)),
+            (at(1, 4), at(3, 8)),
+            (at(3, 8), at(1, 2)),
+            (at(0, 1), at(1, 2)),
+        ];
+        let widths = duration_widths(&realized, spans);
+        let quarter = QUARTER_SPACE as f32;
+        let eighth = (QUARTER_SPACE / SPACE_RATIO) as f32;
+        assert!((widths[&key(0, 1)] - quarter).abs() < 1e-5);
+        assert!((widths[&key(1, 4)] - eighth).abs() < 1e-5);
+        assert!((widths[&key(3, 8)] - eighth).abs() < 1e-5);
+        assert!(
+            !widths.contains_key(&barline),
+            "a barline takes no duration width"
+        );
+
+        // A half cut a quarter in by another staff's onset: each part takes
+        // half the half's width.
+        let keys = [key(0, 1), key(1, 4)];
+        let realized: Vec<&ColumnKey> = keys.iter().collect();
+        let widths = duration_widths(&realized, vec![(at(0, 1), at(1, 2)), (at(1, 4), at(1, 2))]);
+        let half = (QUARTER_SPACE * SPACE_RATIO) as f32;
+        assert!((widths[&key(0, 1)] - half / 2.0).abs() < 1e-5);
+        // The last column runs to the end of what sounds through it.
+        assert!((widths[&key(1, 4)] - quarter).abs() < 1e-5);
     }
 
     #[test]

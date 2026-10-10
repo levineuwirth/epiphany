@@ -106,18 +106,17 @@ fn eighth() -> GridResolution {
     }
 }
 
-/// The two systems the A4 default geometry casts the fixture into (the
-/// documented `PageGeometry::default` behavior), page 1 top-first.
+/// The first two of the systems the A4 default geometry casts the fixture
+/// into (the documented `PageGeometry::default` behavior), page 1 top-first.
 fn two_systems(session: &EditorSession) -> (Rect, Rect) {
     let page = session
         .resolved()
         .pages
         .first()
         .expect("the engraver emits a page");
-    assert_eq!(
-        page.systems.len(),
-        2,
-        "A4 default geometry wraps the ten-measure fixture into two systems"
+    assert!(
+        page.systems.len() >= 2,
+        "A4 default geometry wraps the ten-measure fixture onto more than one system"
     );
     (page.systems[0].bounding_box, page.systems[1].bounding_box)
 }
