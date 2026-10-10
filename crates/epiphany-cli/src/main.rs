@@ -4,30 +4,36 @@
 //!     epiphany render <file.musicxml|file.musc> [--page N] [-o out.svg]
 //!     epiphany import <file.musicxml>
 //!     epiphany new <file.musicxml> -o <file.musc>
+//!     epiphany export <file.musicxml|file.musc> -o <prefix> [--svg | --pdf] [--staff-space-mm X]
 //!
 //! `render` imports the file through the operation API, or opens it when it
 //! is a saved document, engraves it and writes page N (default 1) as SVG to
 //! `out.svg`, or to standard output. `new` imports a MusicXML file into a new
 //! document, which must not exist yet: the import's operations are its log.
-//! `import` prints what the import carried and what it could not: every
-//! operation that did not apply, with the reducer's reason; the source
-//! features not imported, by kind; the comparison against the source; and
-//! the score's invariant violations.
+//! `export` writes every page as `<prefix>-<n>.svg`, framed by its page, and
+//! all of them as `<prefix>.pdf` (or only one kind), on paper at the staff
+//! space the MusicXML file sets, X mm, or 2 mm for a saved document. `import`
+//! prints what the import carried and what it could not: every operation that
+//! did not apply, with the reducer's reason; the source features not imported,
+//! by kind; the comparison against the source; and the score's invariant
+//! violations.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use epiphany_cli::{
-    engrave_loaded, engrave_score, is_document, load, new_document, open_document, page, svg,
-    Loaded,
+    engrave_loaded, engrave_path, engrave_score, export, is_document, load, new_document,
+    open_document, page, svg, ExportOptions, Loaded,
 };
 use epiphany_musicxml::source::FeatureClass;
 
 const USAGE: &str =
     "usage: epiphany render <file.musicxml|file.musc> [--page N] [-o out.svg]\n       \
                      epiphany import <file.musicxml>\n       \
-                     epiphany new <file.musicxml> -o <file.musc>";
+                     epiphany new <file.musicxml> -o <file.musc>\n       \
+                     epiphany export <file.musicxml|file.musc> -o <prefix> [--svg | --pdf] \
+                     [--staff-space-mm X]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -35,6 +41,7 @@ fn main() -> ExitCode {
         Some("render") => render_command(&args[1..]),
         Some("import") => import_command(&args[1..]),
         Some("new") => new_command(&args[1..]),
+        Some("export") => export_command(&args[1..]),
         Some("-h" | "--help") => {
             println!("{USAGE}");
             ExitCode::SUCCESS
@@ -150,6 +157,65 @@ fn render_document(file: &Path, number: usize, output: Option<PathBuf>) -> ExitC
         }
     );
     ExitCode::SUCCESS
+}
+
+fn export_command(args: &[String]) -> ExitCode {
+    let mut file: Option<PathBuf> = None;
+    let mut prefix: Option<PathBuf> = None;
+    let mut options = ExportOptions::default();
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "-o" => match rest.next() {
+                Some(path) => prefix = Some(PathBuf::from(path)),
+                None => return fail("-o needs a path prefix"),
+            },
+            "--svg" => options.pdf = false,
+            "--pdf" => options.svg = false,
+            "--staff-space-mm" => match rest.next().and_then(|n| n.parse::<f32>().ok()) {
+                Some(mm) if mm > 0.0 && mm.is_finite() => options.staff_space_mm = Some(mm),
+                _ => return fail("--staff-space-mm needs a positive length"),
+            },
+            other if other.starts_with('-') => {
+                return fail(&format!("unknown option {other}\n{USAGE}"))
+            }
+            other if file.is_none() => file = Some(PathBuf::from(other)),
+            other => return fail(&format!("unexpected argument {other}\n{USAGE}")),
+        }
+    }
+    let (Some(file), Some(prefix)) = (file, prefix) else {
+        return fail(USAGE);
+    };
+    if !options.svg && !options.pdf {
+        return fail("--svg and --pdf each ask for only one kind; give at most one");
+    }
+    let engraved = match engrave_path(&file) {
+        Ok(engraved) => engraved,
+        Err(e) => return fail(&format!("{}: {e}", file.display())),
+    };
+    match export(&engraved, &prefix, &options) {
+        Ok(exported) => {
+            eprintln!(
+                "{}: {} pages; wrote {}",
+                file.display(),
+                engraved.layout.pages.len(),
+                exported
+                    .paths
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            for (number, overrun) in &exported.overruns {
+                eprintln!(
+                    "  page {number}: the music runs {overrun:.1} staff spaces past the page, \
+                     which is extended to hold it"
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(&format!("{}: {e}", prefix.display())),
+    }
 }
 
 fn new_command(args: &[String]) -> ExitCode {

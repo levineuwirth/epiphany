@@ -1177,6 +1177,11 @@ pub struct SourceScore {
     /// `<defaults><page-layout>`: the page the file sets the score on, when
     /// it gives one whole.
     pub page: Option<SourcePage>,
+    /// `<defaults><scaling>`: millimeters to the staff space on the file's
+    /// paper. The score graph holds no physical scale, so it stays with the
+    /// source (and is recorded as not imported): an export straight from the
+    /// file prints at it.
+    pub scaling: Option<SourceScaling>,
     pub parts: Vec<SourcePart>,
     pub measures: Vec<SourceMeasure>,
     /// The meter changes of the first part, which govern the score.
@@ -1210,6 +1215,16 @@ pub struct SourcePage {
 
 // Every field is finite (`read` admits no other), so equality is total.
 impl Eq for SourcePage {}
+
+/// The physical scale `<defaults><scaling>` sets.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SourceScaling {
+    /// Millimeters to the staff space on the file's paper.
+    pub staff_space_mm: f32,
+}
+
+// Finite by construction (`scaling` admits no other), so equality is total.
+impl Eq for SourceScaling {}
 
 impl SourcePage {
     /// The page of a `<page-layout>`: its size and its first margins (the
@@ -1254,6 +1269,19 @@ impl SourceScore {
 }
 
 // --- Small readers. ---------------------------------------------------------
+
+/// The scale a `<scaling>` sets: its millimeters for its tenths, a staff space
+/// being ten tenths. `None` unless both are positive and finite.
+fn scaling(node: Node) -> Option<SourceScaling> {
+    let value = |name: &str| -> Option<f32> {
+        let v: f32 = child_text(node, name)?.trim().parse().ok()?;
+        (v.is_finite() && v > 0.0).then_some(v)
+    };
+    let staff_space_mm = value("millimeters")? / value("tenths")? * 10.0;
+    staff_space_mm
+        .is_finite()
+        .then_some(SourceScaling { staff_space_mm })
+}
 
 fn line_of(doc: &Document, node: Node) -> u32 {
     doc.text_pos_at(node.range().start).row
@@ -1521,6 +1549,7 @@ impl<'d, 'i> Reader<'d, 'i> {
         let mut composer = None;
         let mut concert = false;
         let mut page = None;
+        let mut scaling_mm = None;
         let mut score_parts: BTreeMap<String, Node> = BTreeMap::new();
         let mut part_nodes = Vec::new();
         // The part-list in order: each part's id, and each group start
@@ -1579,6 +1608,9 @@ impl<'d, 'i> Reader<'d, 'i> {
                                 );
                             }
                         } else {
+                            if name(part) == "scaling" {
+                                scaling_mm = scaling(part);
+                            }
                             self.features.record(
                                 FeatureClass::Presentation,
                                 format!("defaults: {}", name(part)),
@@ -1737,6 +1769,7 @@ impl<'d, 'i> Reader<'d, 'i> {
             composer,
             concert,
             page,
+            scaling: scaling_mm,
             parts,
             measures,
             meters,

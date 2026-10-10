@@ -168,6 +168,18 @@ impl PageGeometry {
     pub fn content_height(&self) -> f32 {
         self.size.height.0 - self.margins.top.0 - self.margins.bottom.0
     }
+
+    /// Where the page at `index` (from 0) lies in the layout's world: the
+    /// rectangle the engraver stacked it in, a full page height plus
+    /// [`INTER_PAGE_GAP`] below the page before it, page 1's top-left corner at
+    /// the origin. Its origin is its bottom-left corner (the world is y-up).
+    pub fn page_frame(&self, index: usize) -> Rect {
+        let top = -(index as f32) * (self.size.height.0 + INTER_PAGE_GAP);
+        Rect {
+            origin: Point::new(0.0, top - self.size.height.0),
+            size: self.size,
+        }
+    }
 }
 
 impl Default for PageGeometry {
@@ -2863,6 +2875,20 @@ mod tests {
             page_top_content(1, &geometry),
             -(148.5 + INTER_PAGE_GAP) - 7.5
         );
+    }
+
+    /// A page's frame is where its content was stacked: its top edge one top
+    /// margin above the content's top, its size the page's.
+    #[test]
+    fn a_page_frame_holds_the_page_s_content_top() {
+        let geometry = PageGeometry::default();
+        for p in 0..4 {
+            let frame = geometry.page_frame(p);
+            let top = frame.origin.y.0 + frame.size.height.0;
+            assert!((top - geometry.margins.top.0 - page_top_content(p, &geometry)).abs() < 1e-3);
+            assert_eq!(frame.size, geometry.size);
+            assert_eq!(frame.origin.x.0, 0.0);
+        }
     }
 
     /// A uniform test measure: one break-candidate barline slot per measure,

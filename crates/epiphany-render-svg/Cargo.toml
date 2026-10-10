@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Agent I's SVG renderer behind the Epiphany RenderIR interface (spec Chapter 7): turns a ResolvedLayoutIR into well-formed SVG 1.1 using genuine Bravura SMuFL path outlines or an embedded-font text mode. A renderer, not an engraver — it makes SVG-encoding choices only, never engraving-semantic ones."
+description = "Renders a resolved Epiphany layout: SVG 1.1 with genuine Bravura SMuFL glyphs (inline outlines or an embedded font subset), and a dependency-free PDF writer; plus the page-by-page framing an export uses."
 
 [dependencies]
 # The renderer consumes the Chapter 7 ResolvedLayoutIR / RenderIR and the glyph
