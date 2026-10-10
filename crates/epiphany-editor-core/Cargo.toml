@@ -25,3 +25,5 @@ getrandom.workspace = true
 [dev-dependencies]
 # Tests drive the editor from real score fixtures.
 epiphany-core.workspace = true
+# The real engraver, so the break tests see systems and pages cast off.
+epiphany-engrave.workspace = true

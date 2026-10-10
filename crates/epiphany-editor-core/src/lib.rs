@@ -83,8 +83,8 @@ use epiphany_ops::{
     CreateMeasureOp, CrossCuttingValue, DeleteEventOp, DeleteIdentifiedPitchOp, HybridLogicalClock,
     InsertEventOp, InsertIdentifiedPitchOp, ModifyEventOp, ModifyIdentifiedPitchOp,
     OperationEnvelope, OperationKind, OperationKindTag, OperationPayload, OperationStamp,
-    RespellPitchOp, TransactionCategory, TransactionDescriptor, TransposeIntervalOp,
-    TupletCompensation,
+    RespellPitchOp, SetUserPageBreakOp, SetUserSystemBreakOp, TransactionCategory,
+    TransactionDescriptor, TransposeIntervalOp, TupletCompensation,
 };
 
 /// The current selection: the score-graph object to act on, plus the stable layout
@@ -303,6 +303,16 @@ pub struct Caret {
     pub entry_duration: MusicalDuration,
 }
 
+/// A layout break the editor sets or clears: before a measure, a new system
+/// (a line break) or a new page.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum LayoutBreak {
+    /// The measure starts a system.
+    System,
+    /// The measure starts a page.
+    Page,
+}
+
 /// What an [`EditorSession::apply`] did.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct EditOutcome {
@@ -497,6 +507,10 @@ pub enum EditorError {
     /// requires a non-empty selection); this guards a hand-crafted or
     /// corrupt fragment.
     EmptyFragment,
+    /// A line or page break was asked for where no measure starts: a break is
+    /// set before a measure, and not before the region's first, which starts a
+    /// system anyway; or a break was asked after the last measure.
+    NotAMeasureStart,
 }
 
 impl fmt::Display for EditorError {
@@ -564,6 +578,9 @@ impl fmt::Display for EditorError {
             ),
             EditorError::EmptyFragment => {
                 f.write_str("the fragment names no events to paste")
+            }
+            EditorError::NotAMeasureStart => {
+                f.write_str("a line or page break goes before a measure after the first")
             }
         }
     }
@@ -2446,6 +2463,120 @@ impl EditorSession {
             c.position = c.position.clone() + duration;
         }
         Ok(outcome)
+    }
+
+    /// Sets (`present`) or clears a line or page break before the measure that
+    /// starts at `at` in `region`, through `SetUserSystemBreak` or
+    /// `SetUserPageBreak`. The break is anchored at its musical offset from the
+    /// region's start, the reducer's key for it, so setting and clearing at one
+    /// place name one break (until breaks are keyed by their anchors, it does
+    /// not move with music inserted before it). Errors with
+    /// [`EditorError::NotAMeasureStart`] unless a measure of the region starts
+    /// at `at`, after the region's start.
+    pub fn set_break(
+        &mut self,
+        kind: LayoutBreak,
+        region: RegionId,
+        at: MusicalPosition,
+        present: bool,
+    ) -> Result<EditOutcome, EditorError> {
+        if at <= MusicalPosition::origin() || !self.measure_starts_in(region).contains(&at) {
+            return Err(EditorError::NotAMeasureStart);
+        }
+        let anchor = TimeAnchor::Region {
+            id: region,
+            edge: RegionEdge::Start,
+            offset: AnchorOffset::Musical(MusicalDuration(at.0)),
+        };
+        self.apply(match kind {
+            LayoutBreak::System => OperationKind::SetUserSystemBreak(SetUserSystemBreakOp {
+                region,
+                anchor,
+                present,
+            }),
+            LayoutBreak::Page => OperationKind::SetUserPageBreak(SetUserPageBreakOp {
+                region,
+                anchor,
+                present,
+            }),
+        })
+    }
+
+    /// Whether a line or page break stands before `at` in `region`: a break
+    /// written as a musical offset from the region's start, as the editor and
+    /// the importer write them.
+    pub fn has_break(&self, kind: LayoutBreak, region: RegionId, at: &MusicalPosition) -> bool {
+        let Some(content) = self
+            .score
+            .canvas
+            .regions
+            .iter()
+            .find(|r| r.id == region)
+            .and_then(|r| r.content.staff_based())
+        else {
+            return false;
+        };
+        let breaks = match kind {
+            LayoutBreak::System => &content.user_system_breaks,
+            LayoutBreak::Page => &content.user_page_breaks,
+        };
+        breaks.iter().any(|anchor| {
+            matches!(anchor, TimeAnchor::Region {
+                id,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Musical(d),
+            } if *id == region && d.0 == at.0)
+        })
+    }
+
+    /// Toggles a line or page break after the measure that holds the anchor
+    /// selection's note or rest, as MuseScore's line-break key does: the next
+    /// measure then starts a system (or a page). Errors with
+    /// [`EditorError::NoSelection`] or [`EditorError::WrongSelection`] without a
+    /// selected event, and [`EditorError::NotAMeasureStart`] after the last
+    /// measure.
+    pub fn toggle_break_after_selection(
+        &mut self,
+        kind: LayoutBreak,
+    ) -> Result<EditOutcome, EditorError> {
+        let anchor = self.selection.anchor().ok_or(EditorError::NoSelection)?;
+        let event = match anchor.source {
+            TypedObjectId::Event(event) => event,
+            TypedObjectId::Pitch(pitch) => {
+                self.event_and_pitch_of(pitch)
+                    .ok_or(EditorError::WrongSelection { expected: "note" })?
+                    .0
+            }
+            _ => return Err(EditorError::WrongSelection { expected: "note" }),
+        };
+        let wrong = EditorError::WrongSelection { expected: "note" };
+        let event = self.score.events.get(event).ok_or(wrong.clone())?;
+        let EventPosition::Musical(onset) = event.position() else {
+            return Err(wrong);
+        };
+        let (region, _, _) = self
+            .score
+            .voices()
+            .find(|(_, _, v)| v.id == event.voice())
+            .ok_or(wrong)?;
+        let after = self
+            .measure_starts_in(region)
+            .into_iter()
+            .filter(|start| start > onset)
+            .min()
+            .ok_or(EditorError::NotAMeasureStart)?;
+        let present = !self.has_break(kind, region, &after);
+        self.set_break(kind, region, after, present)
+    }
+
+    /// Every measure start of `region`'s staves, as the layout resolved them.
+    fn measure_starts_in(&self, region: RegionId) -> BTreeSet<MusicalPosition> {
+        self.score
+            .staff_instances()
+            .filter(|(r, _)| *r == region)
+            .flat_map(|(_, si)| si.measures.iter())
+            .filter_map(|m| self.measure_starts.get(&m.id).cloned())
+            .collect()
     }
 
     /// Copies the current selection to the clipboard fragment projection

@@ -656,3 +656,26 @@ The pencil's and the caret's goldens (`ten_measure_insert`,
 `ten_measure_caret_entry`) were re-blessed: each entry now fills an eleventh
 measure where it overfilled the tenth. Their before-and-after renders are in
 the phase's handoff for the owner's reading (D10).
+
+## Line and page breaks (2026-10-10, X5a.5)
+
+`set_break(kind, region, at, present)` sets or clears a line or page break
+before the measure starting at `at`, through `SetUserSystemBreak` or
+`SetUserPageBreak`; `toggle_break_after_selection` is MuseScore's line-break
+key, toggling one after the selected note's measure. The importer writes a
+file's `<print new-system|new-page>` the same way.
+
+**Anchored by offset, not by measure.** A break is written as its musical
+offset from the region's start (`TimeAnchor::Region`, edge `Start`). The
+reducer keys a break's last-writer slot by its anchor's resolved position,
+and every anchor but such an offset resolves to the region's origin, so two
+measure- or event-anchored breaks in one region would share a slot. The
+layout now resolves the offset form too. The cost: a break does not move with
+music inserted before it, until breaks are keyed by their anchors (a model
+change).
+
+**Breaks and D30.** A user break is honored unless it would close a system
+holding no note. A continued tie's 1.5 staff spaces after a system's clef and
+key come from widening that system's lead; an imported break never moves for
+it. If the widened system then overruns the width, the engraver opens an
+extra automatic break inside it, as it does for any system that will not fit.

@@ -115,6 +115,20 @@ pub struct SourceMeasure {
     pub length: Time,
     /// `implicit="yes"`: a measure that does not count (a pickup).
     pub implicit: bool,
+    /// A line or page break the file makes before this measure (any part's
+    /// `<print new-system="yes">` or `new-page="yes"`, a page break winning):
+    /// where its writer broke the score. `None` for the first measure, which
+    /// starts the score anyway.
+    pub break_before: Option<SourceBreak>,
+}
+
+/// A break a file makes before a measure.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SourceBreak {
+    /// `<print new-system="yes">`: the measure starts a system.
+    System,
+    /// `<print new-page="yes">`: the measure starts a page.
+    Page,
 }
 
 /// A meter: `numerators` over `denominator` (`3+2` over 8 is `[3, 2]`, 8).
@@ -1502,6 +1516,8 @@ struct WrittenPitch {
 struct Reader<'d, 'i> {
     doc: &'d Document<'i>,
     features: Features,
+    /// The breaks the parts' `<print>`s make, by measure index.
+    breaks: BTreeMap<usize, SourceBreak>,
 }
 
 /// A part read with measure-relative times; onsets are made absolute once
@@ -1525,6 +1541,7 @@ impl<'d, 'i> Reader<'d, 'i> {
         Reader {
             doc,
             features: Features::default(),
+            breaks: BTreeMap::new(),
         }
     }
 
@@ -1691,6 +1708,7 @@ impl<'d, 'i> Reader<'d, 'i> {
                 onset: onset.clone(),
                 length: length.clone(),
                 implicit,
+                break_before: self.breaks.get(&index).copied().filter(|_| index > 0),
             });
             onset = onset.add(&length);
         }
@@ -2034,13 +2052,18 @@ impl<'d, 'i> Reader<'d, 'i> {
                     "direction" => self.read_direction(item, &place),
                     "barline" => self.read_barline(item, &place),
                     "print" => {
-                        for attr in ["new-system", "new-page"] {
-                            if item.attribute(attr) == Some("yes") {
-                                self.features.record(
-                                    FeatureClass::Notation,
-                                    format!("print: {attr}"),
-                                    place.clone(),
-                                );
+                        // A line or page break, imported as the score's user
+                        // break before this measure.
+                        let page = item.attribute("new-page") == Some("yes");
+                        if page || item.attribute("new-system") == Some("yes") {
+                            let kind = if page {
+                                SourceBreak::Page
+                            } else {
+                                SourceBreak::System
+                            };
+                            let entry = self.breaks.entry(index).or_insert(kind);
+                            if kind == SourceBreak::Page {
+                                *entry = SourceBreak::Page;
                             }
                         }
                         if elements(item).next().is_some() {

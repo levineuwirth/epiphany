@@ -53,6 +53,15 @@
 //!   becomes the score's canvas layout defaults through
 //!   `SetCanvasLayoutDefaults`, so a document made from the import is drawn
 //!   on the page its file is.
+//! - A line or page break the file makes (`<print new-system="yes">`,
+//!   `new-page="yes"`, in any part) is a user break of the region before that
+//!   measure, `SetUserSystemBreak` or `SetUserPageBreak`, anchored at the
+//!   measure's musical offset from the region's start, the key the reducer
+//!   gives a break; a page break wins where parts differ, and one before the
+//!   first measure breaks nothing. The engraver honors such a break and adds
+//!   one inside a system only if that system will not fit its width: a tie
+//!   continued across an imported line break gets its room by widening the
+//!   next system's lead, never by moving the break.
 //! - Every operation comes from one replica in one causal chain, so the import
 //!   is deterministic and reduces as one author's history.
 //!

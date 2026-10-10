@@ -3306,7 +3306,8 @@ pub fn try_to_constrained(
                 OverrideKind::PageBreak { anchor } => (anchor, false),
                 _ => continue,
             };
-            let Some(time) = break_anchor_time(anchor, &event_onsets, &measure_starts) else {
+            let Some(time) = break_anchor_time(anchor, region_id, &event_onsets, &measure_starts)
+            else {
                 continue;
             };
             // A break opens a system after the barline at its onset, so it
@@ -3800,13 +3801,16 @@ fn component_provenance(base: &Provenance, comp: usize) -> Provenance {
 
 /// Resolves a projected break override's [`TimeAnchor`] to the region-local
 /// [`TimePoint`] whose spacing column carries it, using the onsets this
-/// region's own objects resolved to. Returns `None` — the break is skipped
-/// silently — when the anchor addresses something no spacing column
-/// represents: an event or measure outside this region, a measure *end* (the
-/// Minimal slice resolves measure starts only), a region edge, or an offset
-/// whose clock does not match its base.
+/// region's own objects resolved to. A region-relative musical offset from this
+/// region's start is that musical time: how an imported or editor-set break is
+/// written, since the reducer keys breaks by that offset (X5a). Returns `None`
+/// — the break is skipped silently — when the anchor addresses something no
+/// spacing column represents: an event, measure or region other than this one,
+/// a measure *end* (the Minimal slice resolves measure starts only), a region
+/// edge with no offset, or an offset whose clock does not match its base.
 fn break_anchor_time(
     anchor: &TimeAnchor,
+    region: epiphany_core::RegionId,
     event_onsets: &BTreeMap<EventId, TimePoint>,
     measure_starts: &BTreeMap<MeasureId, TimePoint>,
 ) -> Option<TimePoint> {
@@ -3818,6 +3822,14 @@ fn break_anchor_time(
             position: MeasurePosition::Start,
             offset,
         } => apply_offset(measure_starts.get(id)?.clone(), offset),
+        TimeAnchor::Region {
+            id,
+            edge: epiphany_core::RegionEdge::Start,
+            offset: offset @ epiphany_core::AnchorOffset::Musical(_),
+        } if *id == region => apply_offset(
+            TimePoint::Musical(epiphany_core::MusicalPosition::origin()),
+            offset,
+        ),
         TimeAnchor::Measure { .. } | TimeAnchor::Region { .. } => None,
     }
 }
@@ -6036,6 +6048,78 @@ mod tests {
             c,
             LayoutConstraint::SystemBreakAt { .. } | LayoutConstraint::PageBreakAt { .. }
         )));
+    }
+
+    /// A break written as a musical offset from its region's start lands on the
+    /// slot an event-anchored break at that onset does; one naming another
+    /// region is skipped.
+    #[test]
+    fn a_region_offset_break_lands_where_its_onset_s_event_break_does() {
+        use epiphany_core::generators::valid_score;
+        use epiphany_core::{
+            AnchorOffset, Event, EventPosition, MusicalDuration, RegionEdge, RegionId, ReplicaId,
+            TimeAnchor,
+        };
+
+        let base = valid_score(3);
+        let region_id = base.canvas.regions[0].id;
+        let (event, onset) = base.canvas.regions[0]
+            .staff_instances()
+            .iter()
+            .flat_map(|si| si.voices.iter())
+            .flat_map(|voice| voice.events.iter().copied())
+            .filter_map(|eid| match base.events.get(eid) {
+                Some(Event::Pitched(p)) if !p.pitches.is_empty() => match &p.position {
+                    EventPosition::Musical(at)
+                        if *at > epiphany_core::MusicalPosition::origin() =>
+                    {
+                        Some((eid, at.clone()))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .next()
+            .expect("valid_score has a pitched event after its start");
+        let slot_with = |anchor: TimeAnchor| {
+            let mut score = base.clone();
+            score.canvas.regions[0]
+                .content
+                .staff_based_mut()
+                .expect("staff based")
+                .user_system_breaks
+                .push(anchor);
+            to_constrained(&to_logical(&score))
+                .constraints
+                .iter()
+                .find_map(|c| match c {
+                    LayoutConstraint::SystemBreakAt { slot, .. } => Some(*slot),
+                    _ => None,
+                })
+        };
+        let by_event = slot_with(TimeAnchor::Event {
+            id: event,
+            offset: AnchorOffset::Zero,
+        });
+        assert!(by_event.is_some());
+        let offset = AnchorOffset::Musical(MusicalDuration(onset.0.clone()));
+        assert_eq!(
+            slot_with(TimeAnchor::Region {
+                id: region_id,
+                edge: RegionEdge::Start,
+                offset: offset.clone(),
+            }),
+            by_event
+        );
+        assert_eq!(
+            slot_with(TimeAnchor::Region {
+                id: RegionId::new(ReplicaId(0x77), 77),
+                edge: RegionEdge::Start,
+                offset,
+            }),
+            None,
+            "another region's offset names no column here"
+        );
     }
 
     #[test]

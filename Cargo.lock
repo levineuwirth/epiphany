@@ -1232,6 +1232,7 @@ dependencies = [
  "epiphany-bundle",
  "epiphany-core",
  "epiphany-determinism",
+ "epiphany-engrave",
  "epiphany-layout-ir",
  "epiphany-ops",
  "getrandom 0.2.17",

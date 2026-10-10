@@ -28,10 +28,12 @@ use epiphany_ops::{
     CreateRegionOp, CreateStaffGroupOp, CreateStaffInstanceOp, CreateStaffOp, CreateTupletOp,
     CreateVoiceOp, CrossCuttingValue, HybridLogicalClock, InsertEventOp, OperationEnvelope,
     OperationKind, OperationPayload, OperationStamp, RespellPitchOp, SetCanvasLayoutDefaultsOp,
-    SetMetadataOp, SetTimeSignatureOp,
+    SetMetadataOp, SetTimeSignatureOp, SetUserPageBreakOp, SetUserSystemBreakOp,
 };
 
-use crate::source::{Content, FeatureClass, GroupKind, Meter, Place, SourcePart, SourceScore};
+use crate::source::{
+    Content, FeatureClass, GroupKind, Meter, Place, SourceBreak, SourcePart, SourceScore,
+};
 
 /// The replica an import authors from unless told otherwise.
 pub const DEFAULT_REPLICA: ReplicaId = ReplicaId(0x6D75_7369_6378_6D6C);
@@ -560,6 +562,33 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
             per_staff.push(measures);
         }
         ids.measures.push(per_staff);
+    }
+
+    // The file's line and page breaks, as the region's user breaks at the
+    // measures they come before: musical offsets from the region's start,
+    // which the reducer keys each break by.
+    for measure in &source.measures {
+        let Some(kind) = measure.break_before else {
+            continue;
+        };
+        let anchor = region_anchor(region_id, &measure.onset);
+        let op = match kind {
+            SourceBreak::System => OperationKind::SetUserSystemBreak(SetUserSystemBreakOp {
+                region: region_id,
+                anchor,
+                present: true,
+            }),
+            SourceBreak::Page => OperationKind::SetUserPageBreak(SetUserPageBreakOp {
+                region: region_id,
+                anchor,
+                present: true,
+            }),
+        };
+        let name = match kind {
+            SourceBreak::System => "SetUserSystemBreak",
+            SourceBreak::Page => "SetUserPageBreak",
+        };
+        e.emit(name, Subject::Score, op);
     }
 
     // Events, part by part in source order.
