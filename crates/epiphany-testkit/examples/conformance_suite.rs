@@ -370,7 +370,8 @@ mod golden_gate {
     /// function's doc comment for the full derivation rationale (why the
     /// *last* system is the one with the lowest `bounding_box.origin.y`, and
     /// why the target is the rightmost Pitch-sourced notehead within that
-    /// system's vertical band rather than the page-wide rightmost notehead).
+    /// system's vertical band rather than the page-wide rightmost notehead,
+    /// and why the click stands half a space inside the system's right edge).
     fn scripted_insert_target(session: &EditorSession) -> Point {
         let last_system = session
             .resolved()
@@ -403,8 +404,11 @@ mod golden_gate {
             .max_by(|a, b| a.right.0.total_cmp(&b.right.0))
             .expect("the last system renders at least one notehead");
 
+        let system_right =
+            last_system.bounding_box.origin.x.0 + last_system.bounding_box.size.width.0;
+        assert!(system_right - 0.5 > last_notehead.right.0);
         Point::new(
-            last_notehead.right.0 + 0.5,
+            system_right - 0.5,
             (last_notehead.bottom.0 + last_notehead.top.0) / 2.0 + 2.0,
         )
     }
