@@ -772,6 +772,149 @@ mod tests {
         );
     }
 
+    /// X4b: a block of schema major 5's payloads, one of each new value and
+    /// the new kind (marks, an ornament and a grace on events; a marker, a
+    /// lyric, a wavy pedal bracket; a voice's home), stamps 5.15, reopens
+    /// read-write, and gives back every envelope as written.
+    #[test]
+    fn an_expression_block_stamps_5_15_and_round_trips() {
+        use epiphany_core::{
+            AnchorOffset, Dynamic, Event, EventId, EventMark, Grace, GraceKind, LineStyle, Lyric,
+            LyricLineId, Marker, MarkerId, MarkerKind, MusicalDuration, MusicalPosition, NoteValue,
+            OperationId, Ornament, OrnamentKind, PedalKind, PitchId, ReplicaId, SpanStyle, Spanner,
+            SpannerId, SpannerKind, StaffId, StaffInstanceId, Syllabic, Text, TimeAnchor, VoiceId,
+            WallClockTime,
+        };
+        use epiphany_ops::{
+            valuegen, AuthorId, CausalContext, CreateCrossCuttingOp, CrossCuttingValue,
+            HybridLogicalClock, InsertEventOp, OperationEnvelope, OperationKind, OperationPayload,
+            OperationStamp, SetVoiceHomeOp,
+        };
+        let r = ReplicaId(1);
+        let voice = VoiceId::new(r, 1);
+        let at = MusicalPosition::origin();
+        let mut note = valuegen::insert_event_value(
+            EventId::new(r, 1),
+            voice,
+            at.clone(),
+            MusicalDuration::whole(),
+            &[PitchId::new(r, 1)],
+        );
+        let mut grace = valuegen::insert_event_value(
+            EventId::new(r, 2),
+            voice,
+            at,
+            MusicalDuration::zero(),
+            &[PitchId::new(r, 2)],
+        );
+        if let Event::Pitched(p) = &mut note {
+            p.marks = vec![EventMark::Accent, EventMark::Tremolo { strokes: 2 }];
+            p.ornaments = vec![Ornament {
+                kind: OrnamentKind::Turn,
+                accidental_above: None,
+                accidental_below: Some(epiphany_core::AccidentalId::new("flat")),
+            }];
+        }
+        if let Event::Pitched(p) = &mut grace {
+            p.grace = Some(Grace {
+                kind: GraceKind::Appoggiatura,
+                value: NoteValue::Sixteenth,
+                dots: 1,
+                order: 2,
+            });
+        }
+        let on = TimeAnchor::Event {
+            id: EventId::new(r, 1),
+            offset: AnchorOffset::Zero,
+        };
+        let instance = StaffInstanceId::new(r, 1);
+        let kinds = vec![
+            OperationKind::InsertEvent(InsertEventOp {
+                staff_instance: instance,
+                event: note,
+            }),
+            OperationKind::InsertEvent(InsertEventOp {
+                staff_instance: instance,
+                event: grace,
+            }),
+            OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                structure: CrossCuttingValue::Marker(Marker {
+                    id: MarkerId::new(r, 1),
+                    anchor: on.clone(),
+                    kind: MarkerKind::Dynamic(Dynamic::Other(Text::new("pi\u{f9}"))),
+                }),
+            }),
+            OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                structure: CrossCuttingValue::Lyric(Lyric {
+                    id: LyricLineId::new(r, 1),
+                    event: EventId::new(r, 1),
+                    verse: 2,
+                    text: Text::new("\u{e9}t\u{e9}"),
+                    syllabic: Syllabic::Middle,
+                    extension: true,
+                }),
+            }),
+            OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                structure: CrossCuttingValue::Spanner(Spanner {
+                    id: SpannerId::new(r, 1),
+                    start: on.clone(),
+                    end: on,
+                    staves: vec![StaffId::new(r, 1)],
+                    kind: SpannerKind::PedalBracket(PedalKind::UnaCorda),
+                    style: SpanStyle {
+                        line: LineStyle::Wavy,
+                        thickness: None,
+                    },
+                }),
+            }),
+            OperationKind::SetVoiceHome(SetVoiceHomeOp {
+                voice,
+                home: Some(StaffId::new(r, 2)),
+            }),
+        ];
+        let envelopes: Vec<OperationEnvelope> = kinds
+            .into_iter()
+            .enumerate()
+            .map(|(i, kind)| {
+                let id = OperationId::new(r, i as u64 + 1);
+                OperationEnvelope {
+                    id,
+                    author: AuthorId(0xAB),
+                    stamp: OperationStamp::new(
+                        HybridLogicalClock::new(WallClockTime(100 * (i as i64 + 1)), 0),
+                        id,
+                    ),
+                    causal_context: CausalContext::new(),
+                    transaction: None,
+                    payload: OperationPayload::Primitive(kind),
+                }
+            })
+            .collect();
+
+        let staged = crate::bundle_harness::stage_operation_block(&envelopes);
+        assert_eq!(
+            staged.schema_version,
+            SchemaVersion::new(5, 15),
+            "a block carrying a major-5 value stamps major 5, and SetVoiceHome's epoch 15"
+        );
+        let reopened = reopen_with_op_block(0xD2_0005, staged);
+        assert!(
+            !reopened.is_read_only(),
+            "major 5 is inside the raised op-block accept-set [0, 5]"
+        );
+        let blocks = reopened
+            .read_operation_block(&reopened.manifest().operation_roots[0])
+            .expect("a major-5 op block is admitted by the accept-set");
+        assert_eq!(blocks.len(), envelopes.len());
+        for (bytes, env) in blocks.iter().zip(&envelopes) {
+            assert_eq!(bytes, &env.to_canonical_bytes());
+            assert_eq!(
+                &epiphany_ops::decode_envelope(bytes).expect("the envelope decodes"),
+                env
+            );
+        }
+    }
+
     #[test]
     fn a_create_tuplet_block_stamps_4_13_and_reopens_read_write() {
         use epiphany_core::{
