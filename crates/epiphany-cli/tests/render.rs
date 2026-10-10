@@ -5526,3 +5526,101 @@ fn an_accidental_in_a_gap_keeps_clear_of_the_barline_joined_across_it() {
         flat[0] - line[2]
     );
 }
+
+/// A tie that must arc further than a short tie may to pass an accidental of
+/// another voice it would meet passes it, with a fuller arc in proportion to
+/// its length: here a whole note's tie arcing up over the lower voice's
+/// A-flat a step above it, which sits in its path, as it would at a voice
+/// crossing. No point of the tie stands inside the flat's box. Before
+/// `ENGRAVER_VERSION` 47 a tie needing more than 1.5 spaces of arc was left
+/// running through it.
+#[test]
+fn a_long_tie_clears_an_accidental_in_its_path() {
+    let note = |pitch: Option<(&str, i8, u8)>, duration: u8, kind: &str, voice: u8, tie: &str| {
+        let body = match pitch {
+            None => "<rest/>".to_string(),
+            Some((step, alter, octave)) => {
+                let alter = match alter {
+                    0 => String::new(),
+                    a => format!("<alter>{a}</alter>"),
+                };
+                format!("<pitch><step>{step}</step>{alter}<octave>{octave}</octave></pitch>")
+            }
+        };
+        let accidental = match pitch {
+            Some((_, -1, _)) => "<accidental>flat</accidental>",
+            _ => "",
+        };
+        let (tie_el, tied) = match tie {
+            "" => (String::new(), String::new()),
+            kind => (
+                format!("<tie type=\"{kind}\"/>"),
+                format!("<notations><tied type=\"{kind}\"/></notations>"),
+            ),
+        };
+        let stem = if voice == 1 { "up" } else { "down" };
+        format!(
+            "<note>{body}<duration>{duration}</duration>{tie_el}<voice>{voice}</voice>\
+             <type>{kind}</type>{accidental}<stem>{stem}</stem>{tied}</note>"
+        )
+    };
+    let backup = "<backup><duration>8</duration></backup>";
+    let first = format!(
+        "<attributes><divisions>2</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time><clef><sign>G</sign><line>2</line></clef></attributes>{}{backup}{}{}{}{}{}",
+        note(Some(("G", 0, 4)), 8, "whole", 1, "start"),
+        note(None, 1, "eighth", 2, ""),
+        note(None, 1, "eighth", 2, ""),
+        note(None, 2, "quarter", 2, ""),
+        note(Some(("A", -1, 4)), 2, "quarter", 2, ""),
+        note(None, 2, "quarter", 2, ""),
+    );
+    let second = format!(
+        "{}{backup}{}",
+        note(Some(("G", 0, 4)), 8, "whole", 1, "stop"),
+        note(None, 8, "whole", 2, ""),
+    );
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">{first}\
+         </measure><measure number=\"2\">{second}</measure></part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("long_tie_over_a_flat.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = engrave(&loaded.reduced.score).layout;
+    let flat = layout
+        .glyphs
+        .iter()
+        .find(|g| g.glyph.as_str() == "accidentalFlat")
+        .map(glyph_box)
+        .expect("the lower voice's flat");
+    let ties: Vec<_> = layout
+        .curves
+        .iter()
+        .filter(|c| matches!(c.provenance.source, epiphany_core::TypedObjectId::Tie(_)))
+        .collect();
+    assert_eq!(ties.len(), 1, "one tie");
+    let [p0, p1, p2, p3] = [ties[0].p0, ties[0].p1, ties[0].p2, ties[0].p3];
+    let at = |a: f32, b: f32, c: f32, d: f32, t: f32| {
+        let u = 1.0 - t;
+        u * u * u * a + 3.0 * u * u * t * b + 3.0 * u * t * t * c + t * t * t * d
+    };
+    // The tie spans the flat, which stands above its chord within reach.
+    assert!(p0.x.0 < flat[0] && flat[2] < p3.x.0 && flat[1] < p0.y.0 + 1.0);
+    let mut passes_over = false;
+    for k in 0..=400 {
+        let t = k as f32 / 400.0;
+        let (x, y) = (
+            at(p0.x.0, p1.x.0, p2.x.0, p3.x.0, t),
+            at(p0.y.0, p1.y.0, p2.y.0, p3.y.0, t),
+        );
+        assert!(
+            !(x > flat[0] && x < flat[2] && y > flat[1] && y < flat[3]),
+            "the tie runs through the flat at ({x:.2}, {y:.2})"
+        );
+        passes_over |= x > flat[0] && x < flat[2] && y >= flat[3];
+    }
+    assert!(passes_over, "the tie arcs over the flat");
+    assert_eq!((ties[0].p0, ties[0].p3), (p0, p3));
+}

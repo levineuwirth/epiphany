@@ -325,8 +325,10 @@ pub struct Engraver {
 /// last system justifying once it fills three tenths of the width, and to
 /// `46` when a barline joined across the gap between two staves of a group
 /// began reserving its line there, so ink in the gap keeps a barline's
-/// clearance.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(46);
+/// clearance, and to `47` when a tie that must arc further than 1.5 spaces
+/// to pass an accidental began taking a fuller arc, as far as a sixth of its
+/// span and three spaces at most, rather than running through it.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(47);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.

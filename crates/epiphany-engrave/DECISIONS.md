@@ -1785,3 +1785,25 @@ line opens a measure). Two goldens moved, `notation` by at most 0.008 of a
 space and `arrow_accidentals` by less, where a joining line's band within
 the skyline's margin of a staff is a hair wider than the barline glyph's
 box; re-blessed with renders before and after for the owner's reading.
+
+## ENGRAVER_VERSION 46 → 47: a long tie passes the accidentals in its path (X5c.2, 2026-10-10)
+
+Version 44 passed a tie over the accidentals of its staff by raising its arc
+as far as `MAX_TIE_ARC`, 1.5 spaces, and left a tie that would have to arc
+further running through them: a held note's tie through another voice's
+notes near its pitch, mostly, at a voice crossing or under a run, which
+MuseScore draws through them as well. Such a tie now takes a fuller arc:
+its inner control points move to an eighth of its span from each end
+(`FULL_TIE_SHARE`), so it leaves its heads more steeply and keeps its height
+across its middle, and it may arc as far as a sixth of its span
+(`LONG_TIE_SHARE`), half the third a slur may take, and never past three
+spaces (`MAX_LONG_TIE_ARC`). A tie that passes within 1.5 spaces keeps its
+own shape, and so a tie of nine spaces or less is unchanged; one that cannot
+pass either way is still left as it was, not half raised. Slurs are
+untouched. Locked by `clearance`'s
+`a_long_tie_takes_a_fuller_arc_to_pass_and_a_short_one_does_not` and
+`a_long_tie_clears_an_accidental_in_its_path` (`epiphany-cli`: a whole
+note's tie over the other voice's A-flat a step above it). The
+`arrow_accidentals` golden's whole-note tie, which ran through the arrow of
+an arrowed natural, now arcs over it; re-blessed with renders before and
+after for the owner's reading.
