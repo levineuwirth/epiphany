@@ -267,7 +267,8 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
     for (p, part) in source.parts.iter().enumerate() {
         let census = &source.census[p];
         let (mut pitched, mut unpitched, mut rests, mut extra) = (0, 0, 0, 0);
-        for event in &part.events {
+        // Grace notes are the expression census's to count, below.
+        for event in part.events.iter().filter(|e| e.grace.is_none()) {
             match &event.content {
                 Content::Rest { .. } => rests += 1,
                 Content::Pitched(pitches) => {
@@ -841,11 +842,18 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
                 source_beams.values().sum::<isize>()
             ));
         }
-        if part.beams.len() != census.beams || part.unmade_beams != census.unmade_beams {
+        // A grace note's beam joins graces alone, which the census does not
+        // walk.
+        let graceless = |beam: &&crate::source::SourceBeam| {
+            beam.events.iter().all(|&i| part.events[i].grace.is_none())
+        };
+        if part.beams.iter().filter(graceless).count() != census.beams
+            || part.unmade_beams != census.unmade_beams
+        {
             fidelity.failures.push(format!(
                 "{name}: the reader made {} beams and recorded {} unmade, but the file \
                  makes {} and leaves {} unmade",
-                part.beams.len(),
+                part.beams.iter().filter(graceless).count(),
                 part.unmade_beams,
                 census.beams,
                 census.unmade_beams
@@ -872,7 +880,7 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
             *file_beams.entry(members).or_default() += 1;
         }
         let mut read_beams: BTreeMap<PlacedBeam, usize> = BTreeMap::new();
-        for beam in &part.beams {
+        for beam in part.beams.iter().filter(graceless) {
             let members = beam
                 .events
                 .iter()
@@ -1336,6 +1344,36 @@ pub fn compare(import: &Import, reduced: &Reduced) -> Fidelity {
             misspelt[0]
         ));
     }
+    // Expression and text (schema major 5): each class the census counts in
+    // the file, against the same class counted in the reduced score; a
+    // tempo, once at each place any part sets one.
+    let mut expected: BTreeMap<String, usize> = BTreeMap::new();
+    for census in &source.census {
+        for (class, n) in &census.expression {
+            *expected.entry(class.clone()).or_default() += n;
+        }
+    }
+    let tempo_places: BTreeSet<(usize, RationalTime)> = source
+        .census
+        .iter()
+        .flat_map(|c| c.tempo_places.iter().cloned())
+        .collect();
+    if !tempo_places.is_empty() {
+        expected.insert(String::from("tempo"), tempo_places.len());
+    }
+    let found = expression_counts(score);
+    let classes: BTreeSet<&String> = expected.keys().chain(found.keys()).collect();
+    for class in classes {
+        let (want, got) = (
+            expected.get(class).copied().unwrap_or(0),
+            found.get(class).copied().unwrap_or(0),
+        );
+        if want != got {
+            fidelity
+                .failures
+                .push(format!("{class}: the file has {want}, the score {got}"));
+        }
+    }
     fidelity
 }
 
@@ -1418,4 +1456,91 @@ fn display(display: &TimeSignatureDisplay) -> String {
         } => format!("{numerator}/{denominator}"),
         other => format!("{other:?}"),
     }
+}
+
+/// The expression and text a score holds, by class, named as
+/// [`crate::source::expression_census`] names them: each event's marks and
+/// ornaments, its grace notes, point marks by kind, lyric syllables, lines by
+/// kind, and the tempo map's segments.
+pub fn expression_counts(score: &Score) -> BTreeMap<String, usize> {
+    use epiphany_core::{EventMark, MarkerKind, OrnamentKind, SpannerKind};
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut add = |class: &str| *counts.entry(class.to_owned()).or_default() += 1;
+    for event in score.events.iter() {
+        let (marks, ornaments, grace) = match event {
+            Event::Pitched(e) => (&e.marks[..], &e.ornaments[..], e.grace.is_some()),
+            Event::Unpitched(e) => (&e.marks[..], &[][..], e.grace.is_some()),
+            _ => continue,
+        };
+        for mark in marks {
+            add(match mark {
+                EventMark::Staccato => "mark staccato",
+                EventMark::Staccatissimo => "mark staccatissimo",
+                EventMark::Spiccato => "mark spiccato",
+                EventMark::Tenuto => "mark tenuto",
+                EventMark::DetachedLegato => "mark detached legato",
+                EventMark::Accent => "mark accent",
+                EventMark::Marcato => "mark marcato",
+                EventMark::Stress => "mark stress",
+                EventMark::Unstress => "mark unstress",
+                EventMark::UpBow => "mark up-bow",
+                EventMark::DownBow => "mark down-bow",
+                EventMark::Harmonic => "mark harmonic",
+                EventMark::OpenString => "mark open",
+                EventMark::Stopped => "mark stopped",
+                EventMark::SnapPizzicato => "mark snap pizzicato",
+                EventMark::Scoop => "mark scoop",
+                EventMark::Plop => "mark plop",
+                EventMark::Doit => "mark doit",
+                EventMark::Falloff => "mark falloff",
+                EventMark::Tremolo { .. } => "mark tremolo",
+                EventMark::TremoloWithNext { .. } => "mark two-note tremolo",
+                EventMark::Arpeggio { .. } => "mark arpeggio",
+            });
+        }
+        for ornament in ornaments {
+            add(match ornament.kind {
+                OrnamentKind::Trill => "ornament trill-mark",
+                OrnamentKind::Mordent => "ornament mordent",
+                OrnamentKind::InvertedMordent => "ornament inverted-mordent",
+                OrnamentKind::Turn => "ornament turn",
+                OrnamentKind::InvertedTurn => "ornament inverted-turn",
+            });
+        }
+        if grace {
+            add("grace");
+        }
+    }
+    for marker in &score.cross_cutting.markers {
+        add(match marker.kind {
+            MarkerKind::Dynamic(_) => "marker dynamic",
+            MarkerKind::Fermata(_) => "marker fermata",
+            MarkerKind::Breath(_) => "marker breath",
+            MarkerKind::Caesura(_) => "marker caesura",
+            MarkerKind::Text(_) => "marker text",
+            MarkerKind::Tempo(_) => "marker tempo",
+            MarkerKind::Rehearsal(_) => "marker rehearsal",
+            MarkerKind::Segno => "marker segno",
+            MarkerKind::Coda => "marker coda",
+        });
+    }
+    for _ in &score.cross_cutting.lyrics {
+        add("lyric");
+    }
+    for spanner in &score.cross_cutting.spanners {
+        add(match spanner.kind {
+            SpannerKind::Hairpin(_) => "spanner hairpin",
+            SpannerKind::PedalLine(_) | SpannerKind::PedalBracket(_) => "spanner pedal",
+            SpannerKind::OctaveLine(_) => "spanner ottava",
+            SpannerKind::TrillExtension => "spanner trill line",
+            SpannerKind::Glissando => "spanner glissando",
+            SpannerKind::TextLine(_) => "spanner text line",
+            SpannerKind::Bracket(_) => "spanner bracket",
+            SpannerKind::Generic | SpannerKind::Portamento => "spanner other",
+        });
+    }
+    for _ in &score.tempo_map.segments {
+        add("tempo");
+    }
+    counts
 }

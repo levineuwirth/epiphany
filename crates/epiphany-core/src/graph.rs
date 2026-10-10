@@ -14,7 +14,7 @@
 //! and belongs to Agent E; this module carries minimal placeholders for it.
 
 use core::num::NonZeroU16;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_determinism::{CanonicalF64, SystemDomainTag};
 
@@ -975,6 +975,8 @@ pub enum LineStyle {
     Solid,
     Dashed,
     Dotted,
+    /// A wavy line, as a glissando may be drawn (schema major 5).
+    Wavy,
 }
 
 /// The class of a slur (Chapter 5 §"Slurs"; schema major 2). The
@@ -1093,10 +1095,11 @@ pub enum PedalKind {
 }
 
 /// A text line's content (Chapter 5 §"Spanners"; schema major 2); the
-/// dash pattern comes from the spanner's style.
+/// dash pattern comes from the spanner's style. Its text is NFC since schema
+/// major 5 ([`crate::Text`]); the bytes of NFC text are unchanged.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct TextLineDefinition {
-    pub text: String,
+    pub text: crate::Text,
 }
 
 /// A bracket spanner's shape (Chapter 5 §"Spanners"; schema major 2).
@@ -1123,6 +1126,9 @@ pub enum SpannerKind {
     Portamento,
     TextLine(TextLineDefinition),
     Bracket(BracketKind),
+    /// A pedal line drawn without its sign, the line alone (schema major 5).
+    /// [`SpannerKind::PedalLine`] is drawn with it.
+    PedalBracket(PedalKind),
 }
 
 /// A generic spanning mark anchored by time (Chapter 5 §"Spanners").
@@ -1277,12 +1283,115 @@ pub enum AnnotationAnchor {
     Region(RegionId),
 }
 
-/// A point marker: rehearsal mark, segno, tempo text, … (Chapter 5 §"Markers").
-/// The visual `kind` is Chapter 7's; the load-bearing field is the anchor.
+/// A point mark (Chapter 5 §"Markers"): a dynamic, a fermata, a breath mark or
+/// caesura, staff text, a tempo or rehearsal mark, a segno or coda, anchored
+/// where it stands. Its staff is its anchor's: an event's voice and instance,
+/// a measure's instance, or none for a region anchor (system-wide). `kind` is
+/// schema major 5's; a marker before it carried an anchor alone, and no
+/// operation created one.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Marker {
     pub id: crate::ids::MarkerId,
     pub anchor: TimeAnchor,
+    pub kind: MarkerKind,
+}
+
+/// What a [`Marker`] marks (schema major 5). Growth is by appended variant.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum MarkerKind {
+    Dynamic(Dynamic),
+    Fermata(Fermata),
+    Breath(BreathMark),
+    Caesura(CaesuraMark),
+    /// Staff or expression text, styled by the engraver.
+    Text(crate::Text),
+    Tempo(TempoMark),
+    Rehearsal(crate::Text),
+    Segno,
+    Coda,
+}
+
+/// A point dynamic. Growth is by appended variant.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Dynamic {
+    Pppppp,
+    Ppppp,
+    Pppp,
+    Ppp,
+    Pp,
+    P,
+    Mp,
+    Mf,
+    F,
+    Ff,
+    Fff,
+    Ffff,
+    Fffff,
+    Ffffff,
+    Fp,
+    Sf,
+    Sfz,
+    Sffz,
+    Sfp,
+    Sfpp,
+    Rf,
+    Rfz,
+    Fz,
+    Niente,
+    /// A dynamic no other variant names, as written.
+    Other(crate::Text),
+}
+
+/// A fermata's shape and whether it is drawn inverted (below).
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct Fermata {
+    pub shape: FermataShape,
+    pub inverted: bool,
+}
+
+/// A fermata's shape. Growth is by appended variant.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum FermataShape {
+    Normal,
+    Short,
+    /// The square fermata.
+    Long,
+    VeryShort,
+    VeryLong,
+}
+
+/// A breath mark's sign. Growth is by appended variant.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum BreathMark {
+    Comma,
+    Tick,
+}
+
+/// A caesura's sign. Growth is by appended variant.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum CaesuraMark {
+    Normal,
+    Thick,
+    Short,
+    Curved,
+}
+
+/// A tempo mark as written: its text, its metronome mark, or both. What it
+/// sounds like is the tempo map's, which the importer writes beside it; the
+/// mark stores no link to it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct TempoMark {
+    pub text: Option<crate::Text>,
+    pub metronome: Option<Metronome>,
+}
+
+/// A metronome mark: a beat of `beat` with `dots`, `per_minute` times a
+/// minute, as written ("120", "c. 120").
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Metronome {
+    pub beat: NoteValue,
+    pub dots: u8,
+    pub per_minute: crate::Text,
 }
 
 /// The kind of a repeat structure (Chapter 5 §"Repeat Structures";
@@ -1430,12 +1539,30 @@ pub struct GraphicGesture {
     pub anchoring: GestureAnchoring,
 }
 
-/// A lyric line attached to a sequence of events (Chapter 5
-/// §"Cross-Cutting Structures"). Baseline: the event references it carries.
+/// One syllable of a lyric, on one event (Chapter 5 §"Cross-Cutting
+/// Structures"; schema major 5, which replaced the line of event references a
+/// `LyricLine` held before, which no operation ever created). Its identifier
+/// keeps the `LyricLine` kind. An event holds at most one syllable per verse.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct LyricLine {
+pub struct Lyric {
     pub id: LyricLineId,
-    pub events: Vec<crate::ids::EventId>,
+    pub event: crate::ids::EventId,
+    /// The verse, from 1.
+    pub verse: u16,
+    pub text: crate::Text,
+    pub syllabic: Syllabic,
+    /// Whether a melisma line extends from the syllable, to the last note
+    /// before its verse's next syllable.
+    pub extension: bool,
+}
+
+/// A syllable's place in its word.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum Syllabic {
+    Single,
+    Begin,
+    Middle,
+    End,
 }
 
 /// A chord symbol anchored to a point in time (Chapter 5
@@ -1461,7 +1588,7 @@ pub struct CrossCuttingRegistry {
     pub analytical: Vec<AnalyticalAnnotation>,
     pub comments: Vec<Comment>,
     pub graphic_gestures: Vec<GraphicGesture>,
-    pub lyrics: Vec<LyricLine>,
+    pub lyrics: Vec<Lyric>,
     pub chord_symbols: Vec<ChordSymbol>,
 }
 
@@ -1909,6 +2036,12 @@ pub struct Score {
     pub tombstoned_pitches: BTreeSet<PitchId>,
     /// Event identifiers retained as tombstones.
     pub tombstoned_events: BTreeSet<crate::ids::EventId>,
+    /// Each visiting voice's home staff (schema major 5): a voice that holds
+    /// a cross-staff part of a voice homed on another staff, by its id. A
+    /// voice not in the map is at home on its own instance's staff. Held here,
+    /// not on [`Voice`], because operations carry `Voice` values, which
+    /// schema major 5 does not change; written by `SetVoiceHome`.
+    pub voice_homes: BTreeMap<VoiceId, StaffId>,
 }
 
 impl Score {
@@ -1935,6 +2068,7 @@ impl Score {
             identity,
             tombstoned_pitches: BTreeSet::new(),
             tombstoned_events: BTreeSet::new(),
+            voice_homes: BTreeMap::new(),
         }
     }
 

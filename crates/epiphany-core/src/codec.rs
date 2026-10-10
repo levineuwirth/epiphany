@@ -41,28 +41,30 @@ use epiphany_determinism::{CanonicalDecode, CanonicalEncode, CanonicalF64, Conte
 
 use crate::accidental::{SmuflVersion, SmuflVersionRequirement};
 use crate::event::{
-    ArticulationMark, CueEvent, CueRendering, DynamicMark, Event, EventArena, GraceKind,
-    GraphicEvent, IndeterminacyHints, IndeterminacyKind, IndeterminateEvent, OrnamentMark,
-    PitchedEvent, PlaybackBinding, Rest, StaffPosition, StemConfiguration, TrajectoryDisplay,
-    TrajectoryEndpoint, TrajectoryEvent, TrajectoryShape, UnpitchedEvent, UnpitchedMemberId,
+    ArpeggioDirection, CueEvent, CueRendering, DynamicMark, Event, EventArena, EventMark, Grace,
+    GraceKind, GraphicEvent, IndeterminacyHints, IndeterminacyKind, IndeterminateEvent, Ornament,
+    OrnamentKind, PitchedEvent, PlaybackBinding, Rest, StaffPosition, StemConfiguration,
+    TrajectoryDisplay, TrajectoryEndpoint, TrajectoryEvent, TrajectoryShape, UnpitchedEvent,
+    UnpitchedMemberId,
 };
 use crate::graph::{
     AleatoricAnchoringDiscipline, AleatoricTimeModel, AnalysisLayer, AnalyticalAnnotation,
     AnnotationAnchor, BarlineAlignmentGroup, BarlineAlignmentMember, Beam, BeamGeometryOverride,
-    BeatGroup, BracketKind, Canvas, CanvasLayoutDefaults, CanvasMargins, CanvasSize, ChordSymbol,
-    Clef, ClefChange, ClefShape, Comment, CrossCuttingRegistry, CurvatureOverride, CurveDirection,
-    DecompositionAttachment, DecompositionSource, EventOrderingDAG, GestureAnchoring,
-    GraphicContent, GraphicGesture, GraphicObject, HairpinDirection, Instrument, KeySignature,
-    KeySignatureChange, LineStyle, LyricLine, Marker, Measure, MeasureNumberVisibility,
-    MetadataEntry, MetadataValue, MeterChange, MetricGrid, MetricTimeModel, NotatedComponent,
-    NoteValue, OctaveOffset, PartDefinition, PedalKind, PowerOfTwo, ProportionalTimeModel, Region,
-    RegionContent, RegionTimeModel, RepeatKind, RepeatStructure, Score, ScoreMetadata,
-    ScoreTuningContext, Slur, SlurKind, SoundConfiguration, SpaceUnit, SpanStyle, Spanner,
-    SpannerKind, Staff, StaffBasedContent, StaffBracketKind, StaffExtent, StaffGroup,
-    StaffGroupKind, StaffInstance, StaffLineConfiguration, StemDirection, SubBeam,
-    TempoMapReference, TextLineDefinition, Tie, TieClass, TimeExtent, TimeSignature,
-    TimeSignatureDisplay, Timestamp, TuningContextSettings, Tuplet, TupletBracket, TupletDisplay,
-    TupletNumber, TupletRatio, UnpitchedMember, ViewDefinition, Voice, VoiceOrigin, Volta,
+    BeatGroup, BracketKind, BreathMark, CaesuraMark, Canvas, CanvasLayoutDefaults, CanvasMargins,
+    CanvasSize, ChordSymbol, Clef, ClefChange, ClefShape, Comment, CrossCuttingRegistry,
+    CurvatureOverride, CurveDirection, DecompositionAttachment, DecompositionSource, Dynamic,
+    EventOrderingDAG, Fermata, FermataShape, GestureAnchoring, GraphicContent, GraphicGesture,
+    GraphicObject, HairpinDirection, Instrument, KeySignature, KeySignatureChange, LineStyle,
+    Lyric, Marker, MarkerKind, Measure, MeasureNumberVisibility, MetadataEntry, MetadataValue,
+    MeterChange, MetricGrid, MetricTimeModel, Metronome, NotatedComponent, NoteValue, OctaveOffset,
+    PartDefinition, PedalKind, PowerOfTwo, ProportionalTimeModel, Region, RegionContent,
+    RegionTimeModel, RepeatKind, RepeatStructure, Score, ScoreMetadata, ScoreTuningContext, Slur,
+    SlurKind, SoundConfiguration, SpaceUnit, SpanStyle, Spanner, SpannerKind, Staff,
+    StaffBasedContent, StaffBracketKind, StaffExtent, StaffGroup, StaffGroupKind, StaffInstance,
+    StaffLineConfiguration, StemDirection, SubBeam, Syllabic, TempoMapReference, TempoMark,
+    TextLineDefinition, Tie, TieClass, TimeExtent, TimeSignature, TimeSignatureDisplay, Timestamp,
+    TuningContextSettings, Tuplet, TupletBracket, TupletDisplay, TupletNumber, TupletRatio,
+    UnpitchedMember, ViewDefinition, Voice, VoiceOrigin, Volta,
 };
 use crate::ids::{
     AnalysisLayerId, AnalyticalAnnotationId, BarlineAlignmentGroupId, BeamId, ChordSymbolId,
@@ -350,6 +352,18 @@ impl Codec for String {
         core::str::from_utf8(bytes)
             .map(|s| s.to_owned())
             .map_err(|_| ScoreDecodeError::InvalidUtf8)
+    }
+}
+
+// Score text: a `String`'s layout, refused unless already NFC (`crate::Text`).
+impl Codec for crate::Text {
+    fn enc(&self, out: &mut Vec<u8>) {
+        put_len(out, self.as_str().len());
+        out.extend_from_slice(self.as_str().as_bytes());
+    }
+    fn dec(r: &mut Reader<'_>) -> Result<Self> {
+        crate::Text::from_nfc(String::dec(r)?)
+            .ok_or(ScoreDecodeError::InvalidValue("Text: not in Unicode NFC"))
     }
 }
 
@@ -653,9 +667,7 @@ macro_rules! catalog_id_codec {
 }
 
 unit_codec!(
-    ArticulationMark,
     DynamicMark,
-    OrnamentMark,
     StemConfiguration,
     TrajectoryDisplay,
     PlaybackBinding,
@@ -1243,29 +1255,97 @@ struct_codec!(SpellingAttachment {
 // event.rs
 // ===========================================================================
 
-impl Codec for GraceKind {
+// Schema major 5: an event's grace slot, marks and ornaments take real types.
+// Each slot was empty in every value written before (an empty list, `None`),
+// whose bytes are unchanged; the frozen major-4 event layout is read and
+// written by `dec_event_v4`/`enc_event_v4`.
+cstyle_enum_codec!(GraceKind { 0 => Acciaccatura, 1 => Appoggiatura });
+struct_codec!(Grace {
+    kind,
+    value,
+    dots,
+    order
+});
+cstyle_enum_codec!(ArpeggioDirection { 0 => Plain, 1 => Up, 2 => Down });
+cstyle_enum_codec!(OrnamentKind {
+    0 => Trill, 1 => Mordent, 2 => InvertedMordent, 3 => Turn, 4 => InvertedTurn,
+});
+struct_codec!(Ornament {
+    kind,
+    accidental_above,
+    accidental_below
+});
+
+impl Codec for EventMark {
     fn enc(&self, out: &mut Vec<u8>) {
+        out.push(self.tag());
         match self {
-            GraceKind::Acciaccatura => out.push(0),
-            GraceKind::Appoggiatura => out.push(1),
-            GraceKind::Unmeasured => out.push(2),
-            GraceKind::MeasuredFraction(d) => {
-                out.push(3);
-                d.enc(out);
+            EventMark::Tremolo { strokes } | EventMark::TremoloWithNext { strokes } => {
+                strokes.enc(out)
             }
+            EventMark::Arpeggio { direction } => direction.enc(out),
+            _ => {}
         }
     }
     fn dec(r: &mut Reader<'_>) -> Result<Self> {
-        match r.u8()? {
-            0 => Ok(GraceKind::Acciaccatura),
-            1 => Ok(GraceKind::Appoggiatura),
-            2 => Ok(GraceKind::Unmeasured),
-            3 => Ok(GraceKind::MeasuredFraction(Codec::dec(r)?)),
-            tag => Err(ScoreDecodeError::InvalidTag {
-                kind: "GraceKind",
-                tag,
-            }),
-        }
+        Ok(match r.u8()? {
+            0 => EventMark::Staccato,
+            1 => EventMark::Staccatissimo,
+            2 => EventMark::Spiccato,
+            3 => EventMark::Tenuto,
+            4 => EventMark::DetachedLegato,
+            5 => EventMark::Accent,
+            6 => EventMark::Marcato,
+            7 => EventMark::Stress,
+            8 => EventMark::Unstress,
+            9 => EventMark::UpBow,
+            10 => EventMark::DownBow,
+            11 => EventMark::Harmonic,
+            12 => EventMark::OpenString,
+            13 => EventMark::Stopped,
+            14 => EventMark::SnapPizzicato,
+            15 => EventMark::Scoop,
+            16 => EventMark::Plop,
+            17 => EventMark::Doit,
+            18 => EventMark::Falloff,
+            19 => EventMark::Tremolo {
+                strokes: Codec::dec(r)?,
+            },
+            20 => EventMark::TremoloWithNext {
+                strokes: Codec::dec(r)?,
+            },
+            21 => EventMark::Arpeggio {
+                direction: Codec::dec(r)?,
+            },
+            tag => {
+                return Err(ScoreDecodeError::InvalidTag {
+                    kind: "EventMark",
+                    tag,
+                })
+            }
+        })
+    }
+}
+
+/// An event's marks are a set: strictly ascending by tag, so one per kind.
+fn check_mark_set(marks: &[EventMark]) -> Result<()> {
+    if marks.windows(2).all(|w| w[0].tag() < w[1].tag()) {
+        Ok(())
+    } else {
+        Err(ScoreDecodeError::InvalidValue(
+            "event marks: not a canonical set (ascending by kind, one per kind)",
+        ))
+    }
+}
+
+/// A note's ornaments are a set: strictly ascending by kind.
+fn check_ornament_set(ornaments: &[Ornament]) -> Result<()> {
+    if ornaments.windows(2).all(|w| w[0].kind < w[1].kind) {
+        Ok(())
+    } else {
+        Err(ScoreDecodeError::InvalidValue(
+            "ornaments: not a canonical set (ascending by kind, one per kind)",
+        ))
     }
 }
 
@@ -1358,7 +1438,7 @@ struct_codec!(PitchedEvent {
     position,
     duration,
     pitches,
-    articulations,
+    marks,
     dynamic,
     ornaments,
     stem,
@@ -1371,7 +1451,7 @@ struct_codec!(UnpitchedEvent {
     duration,
     staff_position,
     instrument_member,
-    articulations,
+    marks,
     dynamic,
     stem,
     grace
@@ -1454,8 +1534,17 @@ impl Codec for Event {
     }
     fn dec(r: &mut Reader<'_>) -> Result<Self> {
         match r.u8()? {
-            0 => Ok(Event::Pitched(Codec::dec(r)?)),
-            1 => Ok(Event::Unpitched(Codec::dec(r)?)),
+            0 => {
+                let e: PitchedEvent = Codec::dec(r)?;
+                check_mark_set(&e.marks)?;
+                check_ornament_set(&e.ornaments)?;
+                Ok(Event::Pitched(e))
+            }
+            1 => {
+                let e: UnpitchedEvent = Codec::dec(r)?;
+                check_mark_set(&e.marks)?;
+                Ok(Event::Unpitched(e))
+            }
             2 => Ok(Event::Rest(Codec::dec(r)?)),
             3 => Ok(Event::Indeterminate(Codec::dec(r)?)),
             4 => Ok(Event::Trajectory(Codec::dec(r)?)),
@@ -1576,7 +1665,8 @@ impl Codec for OctaveOffset {
     }
 }
 
-cstyle_enum_codec!(LineStyle { 0 => Solid, 1 => Dashed, 2 => Dotted });
+// Schema major 5 appended `Wavy`.
+cstyle_enum_codec!(LineStyle { 0 => Solid, 1 => Dashed, 2 => Dotted, 3 => Wavy });
 cstyle_enum_codec!(SlurKind {
     0 => Legato,
     1 => Phrase,
@@ -1623,6 +1713,11 @@ impl Codec for SpannerKind {
                 out.push(8);
                 b.enc(out);
             }
+            // Schema major 5.
+            SpannerKind::PedalBracket(p) => {
+                out.push(9);
+                p.enc(out);
+            }
         }
     }
     fn dec(r: &mut Reader<'_>) -> Result<Self> {
@@ -1636,6 +1731,7 @@ impl Codec for SpannerKind {
             6 => Ok(SpannerKind::Portamento),
             7 => Ok(SpannerKind::TextLine(Codec::dec(r)?)),
             8 => Ok(SpannerKind::Bracket(Codec::dec(r)?)),
+            9 => Ok(SpannerKind::PedalBracket(Codec::dec(r)?)),
             tag => Err(ScoreDecodeError::InvalidTag {
                 kind: "SpannerKind",
                 tag,
@@ -2073,7 +2169,151 @@ struct_codec!(Spanner {
     kind,
     style
 });
-struct_codec!(Marker { id, anchor });
+// Schema major 5: `Marker` gained `kind` (appended after `anchor`). The frozen
+// major-4 form (`id`, `anchor`) is read and written by `dec_marker_v4`/
+// `enc_marker_v4`; no operation ever created a marker before.
+struct_codec!(Marker { id, anchor, kind });
+cstyle_enum_codec!(FermataShape {
+    0 => Normal, 1 => Short, 2 => Long, 3 => VeryShort, 4 => VeryLong,
+});
+struct_codec!(Fermata { shape, inverted });
+cstyle_enum_codec!(BreathMark { 0 => Comma, 1 => Tick });
+cstyle_enum_codec!(CaesuraMark {
+    0 => Normal, 1 => Thick, 2 => Short, 3 => Curved,
+});
+struct_codec!(Metronome {
+    beat,
+    dots,
+    per_minute
+});
+struct_codec!(TempoMark { text, metronome });
+
+impl Codec for Dynamic {
+    fn enc(&self, out: &mut Vec<u8>) {
+        let tag: u8 = match self {
+            Dynamic::Pppppp => 0,
+            Dynamic::Ppppp => 1,
+            Dynamic::Pppp => 2,
+            Dynamic::Ppp => 3,
+            Dynamic::Pp => 4,
+            Dynamic::P => 5,
+            Dynamic::Mp => 6,
+            Dynamic::Mf => 7,
+            Dynamic::F => 8,
+            Dynamic::Ff => 9,
+            Dynamic::Fff => 10,
+            Dynamic::Ffff => 11,
+            Dynamic::Fffff => 12,
+            Dynamic::Ffffff => 13,
+            Dynamic::Fp => 14,
+            Dynamic::Sf => 15,
+            Dynamic::Sfz => 16,
+            Dynamic::Sffz => 17,
+            Dynamic::Sfp => 18,
+            Dynamic::Sfpp => 19,
+            Dynamic::Rf => 20,
+            Dynamic::Rfz => 21,
+            Dynamic::Fz => 22,
+            Dynamic::Niente => 23,
+            Dynamic::Other(_) => 24,
+        };
+        out.push(tag);
+        if let Dynamic::Other(text) = self {
+            text.enc(out);
+        }
+    }
+    fn dec(r: &mut Reader<'_>) -> Result<Self> {
+        Ok(match r.u8()? {
+            0 => Dynamic::Pppppp,
+            1 => Dynamic::Ppppp,
+            2 => Dynamic::Pppp,
+            3 => Dynamic::Ppp,
+            4 => Dynamic::Pp,
+            5 => Dynamic::P,
+            6 => Dynamic::Mp,
+            7 => Dynamic::Mf,
+            8 => Dynamic::F,
+            9 => Dynamic::Ff,
+            10 => Dynamic::Fff,
+            11 => Dynamic::Ffff,
+            12 => Dynamic::Fffff,
+            13 => Dynamic::Ffffff,
+            14 => Dynamic::Fp,
+            15 => Dynamic::Sf,
+            16 => Dynamic::Sfz,
+            17 => Dynamic::Sffz,
+            18 => Dynamic::Sfp,
+            19 => Dynamic::Sfpp,
+            20 => Dynamic::Rf,
+            21 => Dynamic::Rfz,
+            22 => Dynamic::Fz,
+            23 => Dynamic::Niente,
+            24 => Dynamic::Other(Codec::dec(r)?),
+            tag => {
+                return Err(ScoreDecodeError::InvalidTag {
+                    kind: "Dynamic",
+                    tag,
+                })
+            }
+        })
+    }
+}
+
+impl Codec for MarkerKind {
+    fn enc(&self, out: &mut Vec<u8>) {
+        match self {
+            MarkerKind::Dynamic(d) => {
+                out.push(0);
+                d.enc(out);
+            }
+            MarkerKind::Fermata(f) => {
+                out.push(1);
+                f.enc(out);
+            }
+            MarkerKind::Breath(b) => {
+                out.push(2);
+                b.enc(out);
+            }
+            MarkerKind::Caesura(c) => {
+                out.push(3);
+                c.enc(out);
+            }
+            MarkerKind::Text(t) => {
+                out.push(4);
+                t.enc(out);
+            }
+            MarkerKind::Tempo(t) => {
+                out.push(5);
+                t.enc(out);
+            }
+            MarkerKind::Rehearsal(t) => {
+                out.push(6);
+                t.enc(out);
+            }
+            MarkerKind::Segno => out.push(7),
+            MarkerKind::Coda => out.push(8),
+        }
+    }
+    fn dec(r: &mut Reader<'_>) -> Result<Self> {
+        Ok(match r.u8()? {
+            0 => MarkerKind::Dynamic(Codec::dec(r)?),
+            1 => MarkerKind::Fermata(Codec::dec(r)?),
+            2 => MarkerKind::Breath(Codec::dec(r)?),
+            3 => MarkerKind::Caesura(Codec::dec(r)?),
+            4 => MarkerKind::Text(Codec::dec(r)?),
+            5 => MarkerKind::Tempo(Codec::dec(r)?),
+            6 => MarkerKind::Rehearsal(Codec::dec(r)?),
+            7 => MarkerKind::Segno,
+            8 => MarkerKind::Coda,
+            tag => {
+                return Err(ScoreDecodeError::InvalidTag {
+                    kind: "MarkerKind",
+                    tag,
+                })
+            }
+        })
+    }
+}
 struct_codec!(RepeatStructure {
     id,
     start,
@@ -2086,7 +2326,18 @@ struct_codec!(Comment {
     anchor,
     resolved
 });
-struct_codec!(LyricLine { id, events });
+// Schema major 5 replaced the lyric line (`id`, `events`) by one syllable per
+// object; the frozen major-4 form is read and written by `dec_lyric_v4`/
+// `enc_lyric_v4`, and no operation ever created one before.
+cstyle_enum_codec!(Syllabic { 0 => Single, 1 => Begin, 2 => Middle, 3 => End });
+struct_codec!(Lyric {
+    id,
+    event,
+    verse,
+    text,
+    syllabic,
+    extension
+});
 struct_codec!(ChordSymbol { id, anchor });
 struct_codec!(AnalyticalAnnotation { id, anchor, layer });
 struct_codec!(GraphicGesture {
@@ -2584,7 +2835,8 @@ struct_codec!(Score {
     views,
     identity,
     tombstoned_pitches,
-    tombstoned_events
+    tombstoned_events,
+    voice_homes
 });
 
 // ===========================================================================
@@ -2604,7 +2856,7 @@ impl Score {
     /// Decodes the exact inverse of [`Score::canonical_bytes`], validating every
     /// tag, length, primitive, and type invariant. Trailing bytes are rejected.
     ///
-    /// This is the **current (schema major 4)** layout. To decode bytes whose
+    /// This is the **current (schema major 5)** layout. To decode bytes whose
     /// schema major is not known to be current, use
     /// [`Score::decode_canonical_versioned`].
     ///
@@ -2632,21 +2884,24 @@ impl Score {
     }
 
     /// The **schema-version dispatch seam** (Binary Format companion
-    /// §"Schema Major 1" to §"Schema Major 4"): decodes a full-`Score`
+    /// §"Schema Major 1" to §"Schema Major 5"): decodes a full-`Score`
     /// snapshot whose bytes were written under the given schema `major`,
     /// migrating a lower-major encoding up to the current in-memory form on
-    /// read. Major 4 is the current layout ([`Score::decode_canonical`]);
-    /// majors 3, 2, 1, and 0 are decoded through their frozen wire forms
-    /// (`decode_v3_score`, `decode_v2_score`, `decode_v1_score`,
-    /// `decode_v0_score`), each a total default-filling migration — the
-    /// composed v0→v1→v2→v3→v4 translation happens in the one v0 read.
+    /// read. Major 5 is the current layout ([`Score::decode_canonical`]);
+    /// majors 4, 3, 2, 1, and 0 are decoded through their frozen wire forms
+    /// (`decode_v4_score` to `decode_v0_score`), each a total default-filling
+    /// migration — the composed v0→…→v5 translation happens in the one v0
+    /// read — except that a value an earlier major gave no meaning (a mark,
+    /// ornament or grace placeholder, a marker, a lyric line) is refused by
+    /// name.
     ///
     /// The caller (the bundle read path) only reaches this after the chunk gate
     /// has admitted the major into its accept-set, so a major outside
-    /// `{0, 1, 2, 3, 4}` is a defensive error, not an expected path.
+    /// `{0, 1, 2, 3, 4, 5}` is a defensive error, not an expected path.
     pub fn decode_canonical_versioned(bytes: &[u8], major: u16) -> Result<Score> {
         match major {
-            4 => Score::decode_canonical(bytes),
+            5 => Score::decode_canonical(bytes),
+            4 => decode_v4_score(bytes),
             3 => decode_v3_score(bytes),
             2 => decode_v2_score(bytes),
             1 => decode_v1_score(bytes),
@@ -2709,7 +2964,7 @@ fn decode_v0_score(bytes: &[u8]) -> Result<Score> {
     let time_signatures = Codec::dec(&mut r)?;
     let tuning_context = dec_tuning_context_v2(&mut r)?;
     let tempo_map = Codec::dec(&mut r)?;
-    let events = Codec::dec(&mut r)?;
+    let events = dec_events_v4(&mut r)?;
     let spelling_attachments = Codec::dec(&mut r)?;
     let decomposition_attachments = Codec::dec(&mut r)?;
     let spelling_precedence = Codec::dec(&mut r)?;
@@ -2739,7 +2994,9 @@ fn decode_v0_score(bytes: &[u8]) -> Result<Score> {
         identity,
         tombstoned_pitches,
         tombstoned_events,
+        voice_homes: BTreeMap::new(),
     };
+    refuse_major_5_values(&score)?;
     // Strictly canonical on the **v0 wire form**, exactly as
     // `Score::decode_canonical` is for v1: the frozen field walk above decodes
     // leniently (the unchanged fields normalize on decode — an unreduced
@@ -2799,7 +3056,7 @@ pub(crate) fn encode_v0_score(s: &Score) -> Vec<u8> {
     s.time_signatures.enc(&mut out);
     enc_tuning_context_v2(&s.tuning_context, &mut out);
     s.tempo_map.enc(&mut out);
-    s.events.enc(&mut out);
+    enc_events_v4(&s.events, &mut out);
     s.spelling_attachments.enc(&mut out);
     s.decomposition_attachments.enc(&mut out);
     s.spelling_precedence.enc(&mut out);
@@ -3099,12 +3356,12 @@ fn enc_ccr_v3(c: &CrossCuttingRegistry, out: &mut Vec<u8>) {
     c.beams.enc(out);
     enc_vec_v1(&c.tuplets, out, enc_tuplet_v3);
     c.spanners.enc(out);
-    c.markers.enc(out);
+    enc_vec_v1(&c.markers, out, enc_marker_v4);
     c.repeats.enc(out);
     c.analytical.enc(out);
     c.comments.enc(out);
     c.graphic_gestures.enc(out);
-    c.lyrics.enc(out);
+    enc_vec_v1(&c.lyrics, out, enc_lyric_v4);
     c.chord_symbols.enc(out);
 }
 
@@ -3117,12 +3374,12 @@ fn dec_ccr_v3(r: &mut Reader<'_>) -> Result<CrossCuttingRegistry> {
         beams: Codec::dec(r)?,
         tuplets: dec_vec_v1(r, dec_tuplet_v3)?,
         spanners: Codec::dec(r)?,
-        markers: Codec::dec(r)?,
+        markers: dec_vec_v1(r, dec_marker_v4)?,
         repeats: Codec::dec(r)?,
         analytical: Codec::dec(r)?,
         comments: Codec::dec(r)?,
         graphic_gestures: Codec::dec(r)?,
-        lyrics: Codec::dec(r)?,
+        lyrics: dec_vec_v1(r, dec_lyric_v4)?,
         chord_symbols: Codec::dec(r)?,
     })
 }
@@ -3136,12 +3393,12 @@ fn enc_ccr_v1(c: &CrossCuttingRegistry, out: &mut Vec<u8>) {
     enc_vec_v1(&c.beams, out, enc_beam_v1);
     enc_vec_v1(&c.tuplets, out, enc_tuplet_v3);
     enc_vec_v1(&c.spanners, out, enc_spanner_v1);
-    c.markers.enc(out);
+    enc_vec_v1(&c.markers, out, enc_marker_v4);
     enc_vec_v1(&c.repeats, out, enc_repeat_v1);
     c.analytical.enc(out);
     c.comments.enc(out);
     c.graphic_gestures.enc(out);
-    c.lyrics.enc(out);
+    enc_vec_v1(&c.lyrics, out, enc_lyric_v4);
     c.chord_symbols.enc(out);
 }
 
@@ -3152,12 +3409,12 @@ fn dec_ccr_v1(r: &mut Reader<'_>) -> Result<CrossCuttingRegistry> {
         beams: dec_vec_v1(r, dec_beam_v1)?,
         tuplets: dec_vec_v1(r, dec_tuplet_v3)?,
         spanners: dec_vec_v1(r, dec_spanner_v1)?,
-        markers: Codec::dec(r)?,
+        markers: dec_vec_v1(r, dec_marker_v4)?,
         repeats: dec_vec_v1(r, dec_repeat_v1)?,
         analytical: Codec::dec(r)?,
         comments: Codec::dec(r)?,
         graphic_gestures: Codec::dec(r)?,
-        lyrics: Codec::dec(r)?,
+        lyrics: dec_vec_v1(r, dec_lyric_v4)?,
         chord_symbols: Codec::dec(r)?,
     })
 }
@@ -3343,7 +3600,7 @@ pub(crate) fn encode_v1_score(s: &Score) -> Vec<u8> {
     s.time_signatures.enc(&mut out);
     enc_tuning_context_v2(&s.tuning_context, &mut out);
     s.tempo_map.enc(&mut out);
-    s.events.enc(&mut out);
+    enc_events_v4(&s.events, &mut out);
     s.spelling_attachments.enc(&mut out);
     s.decomposition_attachments.enc(&mut out);
     s.spelling_precedence.enc(&mut out);
@@ -3372,7 +3629,7 @@ fn decode_v1_score(bytes: &[u8]) -> Result<Score> {
     let time_signatures = Codec::dec(&mut r)?;
     let tuning_context = dec_tuning_context_v2(&mut r)?;
     let tempo_map = Codec::dec(&mut r)?;
-    let events = Codec::dec(&mut r)?;
+    let events = dec_events_v4(&mut r)?;
     let spelling_attachments = Codec::dec(&mut r)?;
     let decomposition_attachments = Codec::dec(&mut r)?;
     let spelling_precedence = Codec::dec(&mut r)?;
@@ -3402,7 +3659,9 @@ fn decode_v1_score(bytes: &[u8]) -> Result<Score> {
         identity,
         tombstoned_pitches,
         tombstoned_events,
+        voice_homes: BTreeMap::new(),
     };
+    refuse_major_5_values(&score)?;
     if encode_v1_score(&score) != bytes {
         return Err(ScoreDecodeError::InvalidValue(
             "non-canonical v1 Score encoding",
@@ -3465,7 +3724,7 @@ pub(crate) fn encode_v2_score(s: &Score) -> Vec<u8> {
     s.time_signatures.enc(&mut out);
     enc_tuning_context_v2(&s.tuning_context, &mut out);
     s.tempo_map.enc(&mut out);
-    s.events.enc(&mut out);
+    enc_events_v4(&s.events, &mut out);
     s.spelling_attachments.enc(&mut out);
     s.decomposition_attachments.enc(&mut out);
     s.spelling_precedence.enc(&mut out);
@@ -3497,7 +3756,7 @@ fn decode_v2_score(bytes: &[u8]) -> Result<Score> {
     let time_signatures = Codec::dec(&mut r)?;
     let tuning_context = dec_tuning_context_v2(&mut r)?;
     let tempo_map = Codec::dec(&mut r)?;
-    let events = Codec::dec(&mut r)?;
+    let events = dec_events_v4(&mut r)?;
     let spelling_attachments = Codec::dec(&mut r)?;
     let decomposition_attachments = Codec::dec(&mut r)?;
     let spelling_precedence = Codec::dec(&mut r)?;
@@ -3527,7 +3786,9 @@ fn decode_v2_score(bytes: &[u8]) -> Result<Score> {
         identity,
         tombstoned_pitches,
         tombstoned_events,
+        voice_homes: BTreeMap::new(),
     };
+    refuse_major_5_values(&score)?;
     if encode_v2_score(&score) != bytes {
         return Err(ScoreDecodeError::InvalidValue(
             "non-canonical v2 Score encoding",
@@ -3554,7 +3815,7 @@ pub(crate) fn encode_v3_score(s: &Score) -> Vec<u8> {
     s.time_signatures.enc(&mut out);
     s.tuning_context.enc(&mut out);
     s.tempo_map.enc(&mut out);
-    s.events.enc(&mut out);
+    enc_events_v4(&s.events, &mut out);
     s.spelling_attachments.enc(&mut out);
     s.decomposition_attachments.enc(&mut out);
     s.spelling_precedence.enc(&mut out);
@@ -3584,7 +3845,7 @@ fn decode_v3_score(bytes: &[u8]) -> Result<Score> {
     let time_signatures = Codec::dec(&mut r)?;
     let tuning_context = Codec::dec(&mut r)?;
     let tempo_map = Codec::dec(&mut r)?;
-    let events = Codec::dec(&mut r)?;
+    let events = dec_events_v4(&mut r)?;
     let spelling_attachments = Codec::dec(&mut r)?;
     let decomposition_attachments = Codec::dec(&mut r)?;
     let spelling_precedence = Codec::dec(&mut r)?;
@@ -3614,13 +3875,383 @@ fn decode_v3_score(bytes: &[u8]) -> Result<Score> {
         identity,
         tombstoned_pitches,
         tombstoned_events,
+        voice_homes: BTreeMap::new(),
     };
+    refuse_major_5_values(&score)?;
     if encode_v3_score(&score) != bytes {
         return Err(ScoreDecodeError::InvalidValue(
             "non-canonical v3 Score encoding",
         ));
     }
     Ok(score)
+}
+
+// ===========================================================================
+// Frozen schema-major-4 forms (Binary Format §"Schema Major 5"). Majors 0 to 4
+// share them: none of these values changed before major 5.
+// ===========================================================================
+
+/// The frozen major-4 event: the live layout, but a note's or unpitched
+/// note's marks, ornaments and grace slot written empty, as every writer
+/// before major 5 wrote them (their element types were placeholders that
+/// carried nothing).
+fn enc_event_v4(e: &Event, out: &mut Vec<u8>) {
+    match e {
+        Event::Pitched(p) => {
+            let mut p = p.clone();
+            p.marks.clear();
+            p.ornaments.clear();
+            p.grace = None;
+            Event::Pitched(p).enc(out);
+        }
+        Event::Unpitched(u) => {
+            let mut u = u.clone();
+            u.marks.clear();
+            u.grace = None;
+            Event::Unpitched(u).enc(out);
+        }
+        other => other.enc(out),
+    }
+}
+
+/// Reads a placeholder list of the major-4 layout, whose elements encoded no
+/// bytes: only an empty one has a meaning now.
+fn dec_placeholder_list_v4(r: &mut Reader<'_>, what: &'static str) -> Result<()> {
+    if r.count()? == 0 {
+        Ok(())
+    } else {
+        Err(ScoreDecodeError::InvalidValue(what))
+    }
+}
+
+/// Reads a major-4 grace slot: `None`, or a grace kind that no writer before
+/// schema major 5 wrote and that has no meaning now.
+fn dec_grace_v4(r: &mut Reader<'_>) -> Result<()> {
+    match r.u8()? {
+        0 => Ok(()),
+        1 => Err(ScoreDecodeError::InvalidValue(
+            "a grace kind before schema major 5",
+        )),
+        tag => Err(ScoreDecodeError::InvalidTag {
+            kind: "Option",
+            tag,
+        }),
+    }
+}
+
+/// The exact inverse of [`enc_event_v4`]: a major-4 event, refused by name
+/// if it holds a mark, an ornament or a grace kind.
+fn dec_event_v4(r: &mut Reader<'_>) -> Result<Event> {
+    const MARKS: &str = "an articulation placeholder before schema major 5";
+    const ORNAMENTS: &str = "an ornament placeholder before schema major 5";
+    match r.u8()? {
+        0 => {
+            let id = Codec::dec(r)?;
+            let voice = Codec::dec(r)?;
+            let position = Codec::dec(r)?;
+            let duration = Codec::dec(r)?;
+            let pitches = Codec::dec(r)?;
+            dec_placeholder_list_v4(r, MARKS)?;
+            let dynamic = Codec::dec(r)?;
+            dec_placeholder_list_v4(r, ORNAMENTS)?;
+            let stem = Codec::dec(r)?;
+            dec_grace_v4(r)?;
+            Ok(Event::Pitched(PitchedEvent {
+                id,
+                voice,
+                position,
+                duration,
+                pitches,
+                marks: Vec::new(),
+                dynamic,
+                ornaments: Vec::new(),
+                stem,
+                grace: None,
+            }))
+        }
+        1 => {
+            let id = Codec::dec(r)?;
+            let voice = Codec::dec(r)?;
+            let position = Codec::dec(r)?;
+            let duration = Codec::dec(r)?;
+            let staff_position = Codec::dec(r)?;
+            let instrument_member = Codec::dec(r)?;
+            dec_placeholder_list_v4(r, MARKS)?;
+            let dynamic = Codec::dec(r)?;
+            let stem = Codec::dec(r)?;
+            dec_grace_v4(r)?;
+            Ok(Event::Unpitched(UnpitchedEvent {
+                id,
+                voice,
+                position,
+                duration,
+                staff_position,
+                instrument_member,
+                marks: Vec::new(),
+                dynamic,
+                stem,
+                grace: None,
+            }))
+        }
+        2 => Ok(Event::Rest(Codec::dec(r)?)),
+        3 => Ok(Event::Indeterminate(Codec::dec(r)?)),
+        4 => Ok(Event::Trajectory(Codec::dec(r)?)),
+        5 => Ok(Event::Graphic(Codec::dec(r)?)),
+        6 => Ok(Event::Cue(Codec::dec(r)?)),
+        tag => Err(ScoreDecodeError::InvalidTag { kind: "Event", tag }),
+    }
+}
+
+/// The frozen major-4 event arena: the live layout, each event in its
+/// frozen form ([`enc_event_v4`]).
+fn enc_events_v4(a: &EventArena, out: &mut Vec<u8>) {
+    let events: Vec<&Event> = a.iter_canonical().collect();
+    put_len(out, events.len());
+    for event in events {
+        enc_event_v4(event, out);
+    }
+}
+
+fn dec_events_v4(r: &mut Reader<'_>) -> Result<EventArena> {
+    let n = r.count()?;
+    let mut arena = EventArena::new();
+    for _ in 0..n {
+        arena
+            .insert(dec_event_v4(r)?)
+            .map_err(|_| ScoreDecodeError::Reconstruct("EventArena"))?;
+    }
+    Ok(arena)
+}
+
+/// The frozen major-4 marker: `id`, `anchor`, no kind.
+fn enc_marker_v4(m: &Marker, out: &mut Vec<u8>) {
+    m.id.enc(out);
+    m.anchor.enc(out);
+}
+
+/// A marker before schema major 5 had no kind, and no operation created one,
+/// so none has a meaning now: refused by name.
+fn dec_marker_v4(_r: &mut Reader<'_>) -> Result<Marker> {
+    Err(ScoreDecodeError::InvalidValue(
+        "a marker before schema major 5 has no kind",
+    ))
+}
+
+/// The frozen major-4 lyric line, `id` then its events: a syllable is written
+/// as a line of its one event.
+fn enc_lyric_v4(l: &Lyric, out: &mut Vec<u8>) {
+    l.id.enc(out);
+    vec![l.event].enc(out);
+}
+
+/// A lyric line before schema major 5 held events and no text, and no
+/// operation created one, so none has a meaning now: refused by name.
+fn dec_lyric_v4(_r: &mut Reader<'_>) -> Result<Lyric> {
+    Err(ScoreDecodeError::InvalidValue(
+        "a lyric line before schema major 5 has no syllable",
+    ))
+}
+
+/// Refuses, in a score decoded from a major before 5, any value only major 5
+/// can hold: a wavy line style anywhere one is held, or a pedal line without
+/// its sign. Majors 0 to 4 read these unions with the live codec, which knows
+/// the appended tags, so the frozen decoders hold the line here.
+fn refuse_major_5_values(s: &Score) -> Result<()> {
+    const WAVY: &str = "a wavy line style before schema major 5";
+    let wavy = |l: &LineStyle| matches!(l, LineStyle::Wavy);
+    let c = &s.cross_cutting;
+    if c.slurs.iter().any(|x| wavy(&x.style.line))
+        || c.ties.iter().any(|x| wavy(&x.style.line))
+        || c.spanners.iter().any(|x| wavy(&x.style.line))
+        || s.staves
+            .iter()
+            .any(|x| wavy(&x.default_staff_lines.line_style))
+        || s.instruments
+            .iter()
+            .any(|x| wavy(&x.default_staff_lines.line_style))
+        || s.staff_instances().any(|(_, i)| {
+            i.staff_lines_override
+                .as_ref()
+                .is_some_and(|l| wavy(&l.line_style))
+        })
+    {
+        return Err(ScoreDecodeError::InvalidValue(WAVY));
+    }
+    if c.spanners
+        .iter()
+        .any(|x| matches!(x.kind, SpannerKind::PedalBracket(_)))
+    {
+        return Err(ScoreDecodeError::InvalidValue(
+            "a pedal line without its sign before schema major 5",
+        ));
+    }
+    Ok(())
+}
+
+/// The frozen major-4 cross-cutting registry: the live layout, but markers and
+/// lyrics in their frozen forms.
+fn enc_ccr_v4(c: &CrossCuttingRegistry, out: &mut Vec<u8>) {
+    c.slurs.enc(out);
+    c.ties.enc(out);
+    c.beams.enc(out);
+    c.tuplets.enc(out);
+    c.spanners.enc(out);
+    enc_vec_v1(&c.markers, out, enc_marker_v4);
+    c.repeats.enc(out);
+    c.analytical.enc(out);
+    c.comments.enc(out);
+    c.graphic_gestures.enc(out);
+    enc_vec_v1(&c.lyrics, out, enc_lyric_v4);
+    c.chord_symbols.enc(out);
+}
+
+fn dec_ccr_v4(r: &mut Reader<'_>) -> Result<CrossCuttingRegistry> {
+    Ok(CrossCuttingRegistry {
+        slurs: Codec::dec(r)?,
+        ties: Codec::dec(r)?,
+        beams: Codec::dec(r)?,
+        tuplets: Codec::dec(r)?,
+        spanners: Codec::dec(r)?,
+        markers: dec_vec_v1(r, dec_marker_v4)?,
+        repeats: Codec::dec(r)?,
+        analytical: Codec::dec(r)?,
+        comments: Codec::dec(r)?,
+        graphic_gestures: Codec::dec(r)?,
+        lyrics: dec_vec_v1(r, dec_lyric_v4)?,
+        chord_symbols: Codec::dec(r)?,
+    })
+}
+
+/// The **frozen schema-major-4** encoding of a score: the live layout up to
+/// `tombstoned_events`, with no `voice_homes`, the events, markers and lyrics
+/// in their frozen forms.
+pub(crate) fn encode_v4_score(s: &Score) -> Vec<u8> {
+    let mut out = Vec::new();
+    s.metadata.enc(&mut out);
+    s.canvas.enc(&mut out);
+    s.instruments.enc(&mut out);
+    s.staves.enc(&mut out);
+    s.staff_groups.enc(&mut out);
+    s.parts.enc(&mut out);
+    enc_ccr_v4(&s.cross_cutting, &mut out);
+    s.time_signatures.enc(&mut out);
+    s.tuning_context.enc(&mut out);
+    s.tempo_map.enc(&mut out);
+    enc_events_v4(&s.events, &mut out);
+    s.spelling_attachments.enc(&mut out);
+    s.decomposition_attachments.enc(&mut out);
+    s.spelling_precedence.enc(&mut out);
+    s.analysis_layers.enc(&mut out);
+    s.views.enc(&mut out);
+    s.identity.enc(&mut out);
+    s.tombstoned_pitches.enc(&mut out);
+    s.tombstoned_events.enc(&mut out);
+    out
+}
+
+/// Decodes **schema-major-4** `Score` bytes into the current-layout `Score`,
+/// migrating on read: `voice_homes` takes its default, empty (Binary Format
+/// §"Schema Major 5"'s migration table), and a value major 4 could not give a
+/// meaning (a mark, ornament or grace placeholder, a marker, a lyric line) or
+/// cannot hold (a wavy line, a pedal line without its sign) is refused by
+/// name. Strictly canonical on the v4 wire form: re-encodes through
+/// [`encode_v4_score`] and rejects any input that is not already its canonical
+/// v4 encoding.
+fn decode_v4_score(bytes: &[u8]) -> Result<Score> {
+    let mut r = Reader::new(bytes);
+    let metadata = Codec::dec(&mut r)?;
+    let canvas = Codec::dec(&mut r)?;
+    let instruments = Codec::dec(&mut r)?;
+    let staves = Codec::dec(&mut r)?;
+    let staff_groups = Codec::dec(&mut r)?;
+    let parts = Codec::dec(&mut r)?;
+    let cross_cutting = dec_ccr_v4(&mut r)?;
+    let time_signatures = Codec::dec(&mut r)?;
+    let tuning_context = Codec::dec(&mut r)?;
+    let tempo_map = Codec::dec(&mut r)?;
+    let events = dec_events_v4(&mut r)?;
+    let spelling_attachments = Codec::dec(&mut r)?;
+    let decomposition_attachments = Codec::dec(&mut r)?;
+    let spelling_precedence = Codec::dec(&mut r)?;
+    let analysis_layers = Codec::dec(&mut r)?;
+    let views = Codec::dec(&mut r)?;
+    let identity = Codec::dec(&mut r)?;
+    let tombstoned_pitches = Codec::dec(&mut r)?;
+    let tombstoned_events = Codec::dec(&mut r)?;
+    r.finish()?;
+    let score = Score {
+        metadata,
+        canvas,
+        instruments,
+        staves,
+        staff_groups,
+        parts,
+        cross_cutting,
+        time_signatures,
+        tuning_context,
+        tempo_map,
+        events,
+        spelling_attachments,
+        decomposition_attachments,
+        spelling_precedence,
+        analysis_layers,
+        views,
+        identity,
+        tombstoned_pitches,
+        tombstoned_events,
+        voice_homes: BTreeMap::new(),
+    };
+    refuse_major_5_values(&score)?;
+    if encode_v4_score(&score) != bytes {
+        return Err(ScoreDecodeError::InvalidValue(
+            "non-canonical v4 Score encoding",
+        ));
+    }
+    Ok(score)
+}
+
+/// `s` without the values only schema major 5 holds (markers, lyrics, voice
+/// homes, an event's marks, ornaments and grace, a wavy line style, a pedal line
+/// without its sign), so its frozen older-major encodings are genuine ones: for
+/// a test or a fuzz pool that encodes a score at every major.
+pub(crate) fn without_major_5_values(s: &Score) -> Score {
+    let mut s = s.clone();
+    s.cross_cutting.markers.clear();
+    s.cross_cutting.lyrics.clear();
+    s.voice_homes.clear();
+    let unwave = |l: &mut LineStyle| {
+        if *l == LineStyle::Wavy {
+            *l = LineStyle::Solid;
+        }
+    };
+    for x in &mut s.cross_cutting.slurs {
+        unwave(&mut x.style.line);
+    }
+    for x in &mut s.cross_cutting.ties {
+        unwave(&mut x.style.line);
+    }
+    for x in &mut s.cross_cutting.spanners {
+        unwave(&mut x.style.line);
+        if let SpannerKind::PedalBracket(p) = x.kind {
+            x.kind = SpannerKind::PedalLine(p);
+        }
+    }
+    let ids: Vec<crate::ids::EventId> = s.events.iter().map(|e| e.id()).collect();
+    for id in ids {
+        match s.events.get_mut(id) {
+            Some(Event::Pitched(p)) => {
+                p.marks.clear();
+                p.ornaments.clear();
+                p.grace = None;
+            }
+            Some(Event::Unpitched(u)) => {
+                u.marks.clear();
+                u.grace = None;
+            }
+            _ => {}
+        }
+    }
+    s
 }
 
 // ===========================================================================
@@ -3740,6 +4371,9 @@ canonical_value! {
     // Repeat authoring (schema-major-2 revision) — CreateRepeatStructure
     // embeds the full value.
     RepeatStructure,
+    // Schema major 5 — CreateCrossCutting carries point marks and lyrics.
+    Marker,
+    Lyric,
     // Decode-vector corpus (`spec/CONTRACT_CORE_DECODE_VECTORS.md`): the fifth
     // representative layout (`RationalTime` — the other four, `Pitch`,
     // `TimeAnchor`, `Event`, `Slur`, are already above), plus the
@@ -4374,7 +5008,7 @@ mod tests {
 
         let bytes = score.canonical_bytes();
         assert_eq!(Score::decode_canonical(&bytes).unwrap(), score);
-        assert_eq!(Score::decode_canonical_versioned(&bytes, 3).unwrap(), score);
+        assert_eq!(Score::decode_canonical_versioned(&bytes, 5).unwrap(), score);
         // The non-default major-1 values are representable at the frozen v1
         // wire form too: the v1 encoding migrates back to the same score
         // (its major-2 and major-3 fields are all defaults here).
@@ -4434,15 +5068,20 @@ mod tests {
             assert_eq!(migrated.canonical_bytes(), current);
             // Major 1: the frozen v1 bytes migrate to the same score.
             assert_eq!(Score::decode_canonical_versioned(&v1, 1).unwrap(), score);
-            // Major 4: the current bytes decode unchanged.
+            // Major 5: the current bytes decode unchanged; major 4's frozen
+            // form, the same score.
             assert_eq!(
-                Score::decode_canonical_versioned(&current, 4).unwrap(),
+                Score::decode_canonical_versioned(&current, 5).unwrap(),
+                score
+            );
+            assert_eq!(
+                Score::decode_canonical_versioned(&encode_v4_score(&score), 4).unwrap(),
                 score
             );
         }
-        // A major outside {0, 1, 2, 3, 4} is a defensive decode error (the
+        // A major outside {0, 1, 2, 3, 4, 5} is a defensive decode error (the
         // gate rejects it upstream in practice).
-        assert!(Score::decode_canonical_versioned(&valid_score(1).canonical_bytes(), 5).is_err());
+        assert!(Score::decode_canonical_versioned(&valid_score(1).canonical_bytes(), 6).is_err());
     }
 
     #[test]
@@ -4490,7 +5129,9 @@ mod tests {
                 + score.instruments.len() * 28
                 + override_sites * 14
                 + 23
-                + 12;
+                + 12
+                // Schema major 5's `voice_homes`, empty: a bare u32 count.
+                + 4;
             assert_eq!(
                 current.len() - v1.len(),
                 expected_removed,
@@ -4502,6 +5143,96 @@ mod tests {
             assert_eq!(migrated, score);
             assert_eq!(migrated.canonical_bytes(), current);
         }
+    }
+
+    #[test]
+    fn schema_major_5_wire_bytes_are_frozen() {
+        // Schema major 5's values, by literal: a self-consistent renumbering
+        // of a union's tags or a reordering of a struct's fields passes every
+        // round-trip test, and none of these.
+        use crate::event::{ArpeggioDirection, EventMark, Grace, GraceKind, OrnamentKind};
+        use crate::graph::{
+            BreathMark, CaesuraMark, Dynamic, Fermata, FermataShape, Metronome, PedalKind,
+            Syllabic, TempoMark,
+        };
+        fn hex<T: Codec>(value: &T) -> String {
+            let mut bytes = Vec::new();
+            value.enc(&mut bytes);
+            bytes.iter().map(|b| format!("{b:02x}")).collect()
+        }
+        // Event marks: the kind's tag, then a tremolo's strokes or an
+        // arpeggio's direction.
+        assert_eq!(hex(&EventMark::Staccato), "00");
+        assert_eq!(hex(&EventMark::Falloff), "12");
+        assert_eq!(hex(&EventMark::Tremolo { strokes: 3 }), "1303");
+        assert_eq!(hex(&EventMark::TremoloWithNext { strokes: 2 }), "1402");
+        assert_eq!(
+            hex(&EventMark::Arpeggio {
+                direction: ArpeggioDirection::Down
+            }),
+            "1502"
+        );
+        // A grace: kind, notated value, dots, order (u16 LE).
+        let grace = Grace {
+            kind: GraceKind::Appoggiatura,
+            value: NoteValue::Eighth,
+            dots: 1,
+            order: 0x0102,
+        };
+        assert_eq!(hex(&grace), "0103010201");
+        // An ornament: kind, then the accidentals above and below.
+        let ornament = Ornament {
+            kind: OrnamentKind::Turn,
+            accidental_above: Some(AccidentalId::new("flat")),
+            accidental_below: None,
+        };
+        assert_eq!(hex(&ornament), "030104000000666c617400");
+        // Text: a length-prefixed UTF-8 string in NFC.
+        assert_eq!(hex(&crate::Text::new("e\u{301}")), "02000000c3a9");
+        // A marker's kind: its tag, then its value.
+        assert_eq!(hex(&MarkerKind::Dynamic(Dynamic::Sfz)), "0010");
+        assert_eq!(
+            hex(&MarkerKind::Dynamic(Dynamic::Other(crate::Text::new("p")))),
+            "00180100000070"
+        );
+        assert_eq!(
+            hex(&MarkerKind::Fermata(Fermata {
+                shape: FermataShape::Long,
+                inverted: true
+            })),
+            "010201"
+        );
+        assert_eq!(hex(&MarkerKind::Breath(BreathMark::Tick)), "0201");
+        assert_eq!(hex(&MarkerKind::Caesura(CaesuraMark::Curved)), "0303");
+        assert_eq!(
+            hex(&MarkerKind::Text(crate::Text::new("x"))),
+            "040100000078"
+        );
+        assert_eq!(
+            hex(&MarkerKind::Tempo(TempoMark {
+                text: None,
+                metronome: Some(Metronome {
+                    beat: NoteValue::Quarter,
+                    dots: 0,
+                    per_minute: crate::Text::new("60"),
+                }),
+            })),
+            // text None; metronome Some: a quarter, no dots, "60"
+            "0500010200020000003630"
+        );
+        assert_eq!(
+            hex(&MarkerKind::Rehearsal(crate::Text::new("A"))),
+            "060100000041"
+        );
+        assert_eq!(hex(&MarkerKind::Segno), "07");
+        assert_eq!(hex(&MarkerKind::Coda), "08");
+        assert_eq!(hex(&Syllabic::End), "03");
+        // The appended tags of the line style and the spanner kind.
+        assert_eq!(hex(&LineStyle::Wavy), "03");
+        assert_eq!(
+            hex(&SpannerKind::PedalBracket(PedalKind::Sostenuto)),
+            "0901"
+        );
     }
 
     #[test]
@@ -4591,7 +5322,8 @@ mod tests {
         });
         let current = score.canonical_bytes();
         let v3 = encode_v3_score(&score);
-        assert_eq!(current.len() - v3.len(), 2);
+        // The display's two bytes, and major 5's empty `voice_homes` count.
+        assert_eq!(current.len() - v3.len(), 2 + 4);
         for (major, bytes) in [
             (3, v3),
             (2, encode_v2_score(&score)),
@@ -4603,7 +5335,11 @@ mod tests {
             assert_eq!(migrated.canonical_bytes(), current, "major {major}");
         }
         assert_eq!(
-            Score::decode_canonical_versioned(&current, 4).unwrap(),
+            Score::decode_canonical_versioned(&current, 5).unwrap(),
+            score
+        );
+        assert_eq!(
+            Score::decode_canonical_versioned(&encode_v4_score(&score), 4).unwrap(),
             score
         );
         // A hidden tuplet round-trips at major 4; its v3 form has no room for
@@ -4647,8 +5383,9 @@ mod tests {
             let v2 = encode_v2_score(&score);
             assert_eq!(
                 current.len() - v2.len(),
-                12,
-                "v2 omits exactly the flat smufl(8)+overrides-count(4) default bytes"
+                12 + 4,
+                "v2 omits exactly the flat smufl(8)+overrides-count(4) default bytes, \
+                 and major 5's empty voice-homes count (4)"
             );
 
             let migrated = Score::decode_canonical_versioned(&v2, 2).unwrap();
@@ -4720,8 +5457,9 @@ mod tests {
             SpannerKind::OctaveLine(OctaveOffset(-1)),
             SpannerKind::PedalLine(PedalKind::Sostenuto),
             SpannerKind::TextLine(TextLineDefinition {
-                text: String::from("rit."),
+                text: crate::Text::new("rit."),
             }),
+            SpannerKind::PedalBracket(PedalKind::Sustain),
             SpannerKind::Bracket(BracketKind::Square),
             SpannerKind::TrillExtension,
         ]
@@ -4839,7 +5577,7 @@ mod tests {
 
         let bytes = score.canonical_bytes();
         assert_eq!(Score::decode_canonical(&bytes).unwrap(), score);
-        assert_eq!(Score::decode_canonical_versioned(&bytes, 3).unwrap(), score);
+        assert_eq!(Score::decode_canonical_versioned(&bytes, 5).unwrap(), score);
         // The per-value seam carries the filled bodies too.
         let slur = &score.cross_cutting.slurs[0];
         assert_eq!(
@@ -4856,7 +5594,8 @@ mod tests {
         // after the first element (every later region would misparse), so a
         // multi-region canvas is the discriminating fixture — valid_score_rich
         // carries three regions.
-        let score = valid_score_rich(9);
+        // Its marker is schema major 5's, which no older major holds.
+        let score = without_major_5_values(&valid_score_rich(9));
         assert!(
             score.canvas.regions.len() >= 2,
             "need a multi-region canvas to exercise the Vec walk"
@@ -4974,12 +5713,15 @@ mod tests {
                 duration: dur.clone(),
                 staff_position: crate::event::StaffPosition(2),
                 instrument_member: crate::event::UnpitchedMemberId(7),
-                articulations: vec![crate::event::ArticulationMark],
+                marks: vec![EventMark::Accent, EventMark::Tremolo { strokes: 4 }],
                 dynamic: Some(crate::event::DynamicMark),
                 stem: crate::event::StemConfiguration,
-                grace: Some(GraceKind::MeasuredFraction(crate::time::MusicalDuration(
-                    crate::time::RationalTime::new(1, 8).unwrap(),
-                ))),
+                grace: Some(Grace {
+                    kind: GraceKind::Appoggiatura,
+                    value: NoteValue::Sixteenth,
+                    dots: 0,
+                    order: 0,
+                }),
             }))
             .expect("unpitched inserts");
         score

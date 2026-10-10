@@ -240,7 +240,7 @@
   {\Large\scshape\color{epiphanyslate}Binary Format}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.20.0 --- Schema major 4: a tuplet's display}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.21.0 --- Schema major 5: expression and text}\\[4pt]
   {\small\color{epiphanyslate}Normative for the byte layouts it defines}
   \vfill
 \end{titlepage}
@@ -1500,6 +1500,10 @@ and the reader disagree about the field's type.
     option tag (\tablenums{0}/\tablenums{1}) \cat{}
     $\mathrm{lp}$(\texttt{KeySignature}) if present &
     \sectionsc{SetClef and SetKeySignature} \\
+  \tablenums{43} & \texttt{SetVoiceHome} &
+    \texttt{voice} (16) \cat{} option tag (\tablenums{0}/\tablenums{1})
+    \cat{} \texttt{home} (\texttt{StaffId}, 16) if present &
+    \sectionsc{SetVoiceHome} \\
   \bottomrule
 \end{longtable}
 \endgroup
@@ -1515,7 +1519,9 @@ payload):
     \tablenums{3} CascadeDeleteTuplets \cat{}
     $\mathrm{seq}^{\uparrow}$(\texttt{TupletId}).
   \item[\texttt{CrossCuttingValue}.] \tablenums{0} Tie, \tablenums{1} Slur,
-    \tablenums{2} Beam, \tablenums{3} Spanner; in every case the tag is
+    \tablenums{2} Beam, \tablenums{3} Spanner, \tablenums{4} Marker and
+    \tablenums{5} Lyric (both from schema major~5,
+    Section~\ref{sec:evolution:major5}); in every case the tag is
     followed by $\mathrm{lp}$(the typed structure's \texttt{CanonicalValue}
     bytes).
   \item[\texttt{PositionRemapping}.] \tablenums{0} PreserveTime (empty);
@@ -1574,7 +1580,7 @@ discriminants and wrong lengths are decode errors. Append-only past
   \tablenums{36} & \texttt{CreatePartDefinition} & \tablenums{37} & \texttt{CreateAnalysisLayer} \\
   \tablenums{38} & \texttt{CreateView} & \tablenums{39} & \texttt{CreateMeasure} \\
   \tablenums{40} & \texttt{CreateTuplet} & \tablenums{41} & \texttt{SetClef} \\
-  \tablenums{42} & \texttt{SetKeySignature} & & \\
+  \tablenums{42} & \texttt{SetKeySignature} & \tablenums{43} & \texttt{SetVoiceHome} \\
   \bottomrule
 \end{longtable}
 \endgroup
@@ -1665,7 +1671,8 @@ trailing bytes are decode errors.
     \tablenums{14} AcousticRealizationPinned;
     \tablenums{15} TranspositionOutOfRange (both Push~4a);
     \tablenums{16} MeasureMeterMismatch, \tablenums{17} MeasureOutOfOrder,
-    \tablenums{18} MeasureOrderUnverifiable (genesis tranche G3b). \\
+    \tablenums{18} MeasureOrderUnverifiable (genesis tranche G3b);
+    \tablenums{19} SlotOccupied (X4b). \\
   \texttt{RepairRecord} &
     (struct) \texttt{kind} (\texttt{RepairKind}) \cat{} \texttt{target}
     (\texttt{TypedObjectId}). \\
@@ -2387,24 +2394,27 @@ Every chunk declares a \texttt{SchemaVersion} (major, minor) in its
     $[\textsc{min}, \textsc{max}]$ of majors and rejects any chunk whose major
     falls \emph{outside} $[\textsc{min}, \textsc{max}]$ --- too new (above
     \textsc{max}) or, once \textsc{min} rises past a retired major, too old
-    (Section~\ref{sec:evolution:major1}). Five majors are defined:
+    (Section~\ref{sec:evolution:major1}). Six majors are defined:
     \tablenums{0}, \tablenums{1} (Section~\ref{sec:evolution:major1}),
     \tablenums{2} (Section~\ref{sec:evolution:major2}), \tablenums{3}
-    (Section~\ref{sec:evolution:major3}), and \tablenums{4}
-    (Section~\ref{sec:evolution:major4}). The accept-set is \textbf{per chunk
+    (Section~\ref{sec:evolution:major3}), \tablenums{4}
+    (Section~\ref{sec:evolution:major4}), and \tablenums{5}
+    (Section~\ref{sec:evolution:major5}). The accept-set is \textbf{per chunk
     role}, not one shared bound (Section~\ref{sec:evolution:major1}'s ``raised
     per chunk role'' rule, sharpened by major~3, the first bump under which the
     roles' maxima genuinely diverge): the \texttt{Snapshot} role's max is
-    \tablenums{4}; the \texttt{OperationEnvelopeBlock} role's max is
-    \tablenums{4} as of X3c (\texttt{CreateTuplet}, \tablenums{40}, is born
-    at v4 unconditionally; the role was \tablenums{3} from genesis tranche
+    \tablenums{5}; the \texttt{OperationEnvelopeBlock} role's max is
+    \tablenums{5} as of X4b (an operation whose value holds a value only
+    major~5 encodes is born at v5; the role was \tablenums{4} from X3c, when
+    \texttt{CreateTuplet}, \tablenums{40}, was born at v4 unconditionally,
+    \tablenums{3} from genesis tranche
     G2b, \texttt{spec/CONTRACT\_GENESIS\_G2B\_TUNING.md}, when
     \texttt{SetTuningContext}, \tablenums{34}, was born at v3
     unconditionally, and \tablenums{2} from Push~4b tranche 3b-i, when
     schema major~3 embedded no operation payload, until that rung); every
     other role's max is \tablenums{0}. The reference implementation's
-    overall envelope is $\{0, 1, 2, 3, 4\}$ ($\textsc{min} = 0$,
-    $\textsc{max} = 4$), realized as these differing per-role maxima rather
+    overall envelope is $\{0, 1, 2, 3, 4, 5\}$ ($\textsc{min} = 0$,
+    $\textsc{max} = 5$), realized as these differing per-role maxima rather
     than a single shared bound.
   \item \textbf{Minor} = additive. v0 readers verify the major only; the
     minor is a \emph{record}, not a gate --- but it is a mandatory record:
@@ -2438,7 +2448,7 @@ The \emph{only} minor-additive mechanism in schema major~0 is
 \textbf{appending discriminants to open vocabularies}:
 
 \begin{itemize}
-  \item \texttt{OperationKind}: append at ${\geq}\,\tablenums{43}$
+  \item \texttt{OperationKind}: append at ${\geq}\,\tablenums{44}$
     (Requirement~\ref{req:binfmt:kind-discriminants}; the Phase-3
     tranche took \tablenums{24}--\tablenums{27} under this mechanism,
     the repeat pair \tablenums{28}/\tablenums{29} in the
@@ -2452,8 +2462,9 @@ The \emph{only} minor-additive mechanism in schema major~0 is
     \texttt{CreatePartDefinition}, \texttt{CreateAnalysisLayer},
     \texttt{CreateView}), genesis tranche G3b took \tablenums{39}
     (\texttt{CreateMeasure}), X3.1 took \tablenums{40}
-    (\texttt{CreateTuplet}), and X3.6 took \tablenums{41}/\tablenums{42}
-    (\texttt{SetClef}, \texttt{SetKeySignature}) --- the discriminant space is
+    (\texttt{CreateTuplet}), X3.6 took \tablenums{41}/\tablenums{42}
+    (\texttt{SetClef}, \texttt{SetKeySignature}), and X4b took \tablenums{43}
+    (\texttt{SetVoiceHome}) --- the discriminant space is
     one append-only table across majors, but a kind's \emph{block stamp}
     follows minimal stamping over its payload: \tablenums{28}'s payload
     embeds a v2 layout, so its blocks stamp major~2,
@@ -2462,13 +2473,14 @@ The \emph{only} minor-additive mechanism in schema major~0 is
     Section~\ref{sec:evolution:major3}; \tablenums{40}'s payload embeds the
     v4 \texttt{Tuplet} unconditionally since X3c, so its blocks stamp
     major~4, Section~\ref{sec:evolution:major4};
-    \tablenums{35}--\tablenums{39}, \tablenums{41} and \tablenums{42} are
+    \tablenums{35}--\tablenums{39} and \tablenums{41}--\tablenums{43} are
     each major~0, no versioned walk existing for any of their carried
-    types);
-  \item \texttt{OperationKindTag}: append at ${\geq}\,\tablenums{43}$
-    (Requirement~\ref{req:binfmt:kind-tag}; the same nineteen variants as
-    \texttt{OperationKind}, at the same nineteen discriminants, appended by
-    the same ten tranches);
+    types; \tablenums{0}, \tablenums{3}, \tablenums{8} and \tablenums{14}
+    stamp major~5 by value, Section~\ref{sec:evolution:major5});
+  \item \texttt{OperationKindTag}: append at ${\geq}\,\tablenums{44}$
+    (Requirement~\ref{req:binfmt:kind-tag}; the same twenty variants as
+    \texttt{OperationKind}, at the same twenty discriminants, appended by
+    the same eleven tranches);
   \item \texttt{OperationPayload}: append at ${\geq}\,\tablenums{4}$
     (Section~\ref{sec:ops:payload}; \texttt{ResolveEquivocation} = 3, Push~3,
     is the one and only append this vocabulary has had);
@@ -3269,6 +3281,177 @@ the default display.
 \end{tabular}
 \end{center}
 
+\section{Schema Major 5}
+\label{sec:evolution:major5}
+
+Schema major~5 is the fifth data-model expansion major (X4b, roadmap D58):
+expression and text. An event's mark, ornament and grace slots take their
+real types; a \texttt{Marker} gains its kind; the lyric line becomes a
+\texttt{Lyric}, one syllable; text is held to Unicode NFC; \texttt{LineStyle}
+and \texttt{SpannerKind} gain a variant each; and the score gains a voice's
+home staff.
+
+\subsection{Where the changed fields reach}
+
+\begin{itemize}
+  \item \textbf{The filled slots.} \texttt{PitchedEvent} and
+    \texttt{UnpitchedEvent} already carried \texttt{articulations},
+    \texttt{ornaments} (a note's) and \texttt{grace}, each empty in every
+    value any writer produced. Their types change, and their names:
+    \texttt{articulations} is \texttt{marks}. An empty slot encodes
+    byte-identically to the placeholder it replaces (a zero count, an absent
+    option), so an \texttt{InsertEvent} or \texttt{ModifyEvent} written
+    before this major decodes unchanged, and one whose value holds a mark,
+    an ornament or a grace is \emph{born at v5}; any other is stamped as
+    before. No field is appended to a value an operation carried before this
+    major.
+  \item \textbf{Cross-cutting values.} \texttt{CrossCuttingValue} appends
+    \tablenums{4} Marker and \tablenums{5} Lyric; a create or modify carrying
+    either, a wavy line or a pedal line without its sign is born at v5, any
+    other at v2 as before. The staff, instrument, staff-instance, layout and
+    region payloads are born at v5 where a staff-line style they carry is
+    wavy.
+  \item \textbf{The snapshot.} \texttt{Marker} appends \texttt{kind},
+    \texttt{Lyric} replaces \texttt{LyricLine} in the cross-cutting
+    registry's \texttt{lyrics}, and \texttt{Score} appends
+    \texttt{voice\_homes}. No operation created a marker or a lyric line
+    before this major, so neither layout change reaches an operation written
+    earlier. The \texttt{OperationEnvelopeBlock} and \texttt{Snapshot} roles'
+    accept-sets both \textbf{widen to major~5}
+    (Section~\ref{sec:evolution:gate}).
+  \item \textbf{The canonical base is unchanged.} The
+    \texttt{MaterializedState} embeds no \texttt{Score} field value; a
+    voice's home and the new values' write registers are reducer state,
+    rebuilt from the operations, so it remains major~0, byte-identical
+    across the bump.
+  \item The manifest stays major~0.
+\end{itemize}
+
+\subsection{Cross-major reader behaviour}
+A major-5 reader reads a snapshot of any lower major through that major's
+frozen layout, the event read as major~4 wrote it. A value no major before~5
+gave a meaning, and no writer before it produced, \MUST{} be rejected rather
+than given a default: a placeholder list with an element, a grace kind, a
+marker (it had no kind), a lyric line (it had no syllable), a wavy line and a
+pedal line without its sign. The reference implementation refuses each by
+name; the decode corpus pins each refusal under \texttt{core.score\_v4}
+(class \texttt{major-5-value}). The older majors' decoders read
+\texttt{LineStyle} and \texttt{SpannerKind} with the live codec, which knows
+the appended tags, so a reader holds those two by checking the decoded score.
+A major-4-only reader meeting a major-5 op block opens read-only, the
+one-way door Section~\ref{sec:evolution:gate} describes.
+
+\subsection{Changed value layout}
+The wire form appends new fields \emph{after} the existing ones, and a filled
+slot keeps its place:
+
+\begin{itemize}
+  \item \texttt{PitchedEvent} $=$ \ldots{} \cat{} \texttt{pitches} \cat{}
+    \textbf{\texttt{marks}} ($\mathrm{seq}^{\Uparrow}$(\texttt{EventMark}))
+    \cat{} \texttt{dynamic} \cat{} \textbf{\texttt{ornaments}}
+    ($\mathrm{seq}^{\Uparrow}$(\texttt{Ornament})) \cat{} \texttt{stem}
+    \cat{} \textbf{\texttt{grace}} (\texttt{Option<Grace>});
+    \texttt{UnpitchedEvent} likewise without \texttt{ornaments}. Marks and
+    ornaments are canonical sets: at most one of each kind, ascending by
+    kind (a mark's discriminant, an ornament's \texttt{kind}), a repeated
+    kind or an unordered pair rejected (class \texttt{marks-out-of-order}). \texttt{dynamic} stays the reserved unit
+    \texttt{DynamicMark}: a dynamic is a marker.
+  \item \texttt{Marker} $=$ \texttt{id} \cat{} \texttt{anchor} \cat{}
+    \textbf{\texttt{kind}} (\texttt{MarkerKind}).
+  \item \texttt{Lyric} $=$ \texttt{id} (\texttt{LyricLineId}) \cat{}
+    \texttt{event} (\texttt{EventId}) \cat{} \texttt{verse} (\texttt{u16}
+    LE) \cat{} \texttt{text} (\texttt{Text}) \cat{} \texttt{syllabic}
+    (\texttt{Syllabic}) \cat{} \texttt{extension} (bool), replacing
+    \texttt{LyricLine} $=$ \texttt{id} \cat{} \texttt{events}.
+  \item \texttt{Score} $=$ \ldots{} (the major-4 fields) \cat{}
+    \textbf{\texttt{voice\_homes}} (\texttt{u32} count \cat{} entries
+    ascending by \texttt{VoiceId}, each a \texttt{VoiceId} leaf \cat{} a
+    \texttt{StaffId} leaf, 20 bytes each in this chapter's leaf framing).
+  \item \texttt{TextLineDefinition} $=$ \texttt{text} (\texttt{Text}),
+    the same bytes as before, now held to NFC.
+\end{itemize}
+
+\subsection{New leaf-type layouts}
+\begin{itemize}
+  \item \texttt{Text}: a length-prefixed UTF-8 string, rejected at decode
+    unless it is in Unicode Normalization Form C.
+  \item \texttt{EventMark}: discriminant byte \cat{} payload ---
+    \tablenums{0} Staccato, \tablenums{1} Staccatissimo, \tablenums{2}
+    Spiccato, \tablenums{3} Tenuto, \tablenums{4} DetachedLegato,
+    \tablenums{5} Accent, \tablenums{6} Marcato, \tablenums{7} Stress,
+    \tablenums{8} Unstress, \tablenums{9} UpBow, \tablenums{10} DownBow,
+    \tablenums{11} Harmonic, \tablenums{12} OpenString, \tablenums{13}
+    Stopped, \tablenums{14} SnapPizzicato, \tablenums{15} Scoop,
+    \tablenums{16} Plop, \tablenums{17} Doit, \tablenums{18} Falloff;
+    \tablenums{19} Tremolo \cat{} \texttt{strokes} (\texttt{u8});
+    \tablenums{20} TremoloWithNext \cat{} \texttt{strokes} (\texttt{u8});
+    \tablenums{21} Arpeggio \cat{} \texttt{ArpeggioDirection} (one byte:
+    \tablenums{0} Plain, \tablenums{1} Up, \tablenums{2} Down).
+  \item \texttt{Ornament} $=$ \texttt{kind} (\texttt{OrnamentKind}, one
+    byte: \tablenums{0} Trill, \tablenums{1} Mordent, \tablenums{2}
+    InvertedMordent, \tablenums{3} Turn, \tablenums{4} InvertedTurn) \cat{}
+    \texttt{accidental\_above} (\texttt{Option<AccidentalId>}) \cat{}
+    \texttt{accidental\_below} (\texttt{Option<AccidentalId>}).
+  \item \texttt{Grace} $=$ \texttt{kind} (\texttt{GraceKind}, one byte:
+    \tablenums{0} Acciaccatura, \tablenums{1} Appoggiatura; major~0's
+    \tablenums{2} and \tablenums{3}, which nothing wrote, are gone) \cat{}
+    \texttt{value} (\texttt{NoteValue}) \cat{} \texttt{dots} (\texttt{u8})
+    \cat{} \texttt{order} (\texttt{u16} LE).
+  \item \texttt{MarkerKind}: discriminant byte \cat{} payload ---
+    \tablenums{0} Dynamic \cat{} \texttt{Dynamic}; \tablenums{1} Fermata
+    \cat{} \texttt{Fermata}; \tablenums{2} Breath \cat{} \texttt{BreathMark}
+    (one byte: \tablenums{0} Comma, \tablenums{1} Tick); \tablenums{3}
+    Caesura \cat{} \texttt{CaesuraMark} (one byte: \tablenums{0} Normal,
+    \tablenums{1} Thick, \tablenums{2} Short, \tablenums{3} Curved);
+    \tablenums{4} Text \cat{} \texttt{Text}; \tablenums{5} Tempo \cat{}
+    \texttt{TempoMark}; \tablenums{6} Rehearsal \cat{} \texttt{Text};
+    \tablenums{7} Segno; \tablenums{8} Coda.
+  \item \texttt{Dynamic}: discriminant byte --- \tablenums{0}--\tablenums{13}
+    the marks from \textit{pppppp} to \textit{ffffff}, \tablenums{14} fp,
+    \tablenums{15} sf, \tablenums{16} sfz, \tablenums{17} sffz,
+    \tablenums{18} sfp, \tablenums{19} sfpp, \tablenums{20} rf,
+    \tablenums{21} rfz, \tablenums{22} fz, \tablenums{23} niente;
+    \tablenums{24} Other \cat{} \texttt{Text}.
+  \item \texttt{Fermata} $=$ \texttt{shape} (\texttt{FermataShape}, one
+    byte: \tablenums{0} Normal, \tablenums{1} Short, \tablenums{2} Long,
+    \tablenums{3} VeryShort, \tablenums{4} VeryLong) \cat{}
+    \texttt{inverted} (bool).
+  \item \texttt{TempoMark} $=$ \texttt{text} (\texttt{Option<Text>}) \cat{}
+    \texttt{metronome} (\texttt{Option<Metronome>}); \texttt{Metronome}
+    $=$ \texttt{beat} (\texttt{NoteValue}) \cat{} \texttt{dots}
+    (\texttt{u8}) \cat{} \texttt{per\_minute} (\texttt{Text}).
+  \item \texttt{Syllabic}: one byte --- \tablenums{0} Single,
+    \tablenums{1} Begin, \tablenums{2} Middle, \tablenums{3} End.
+\end{itemize}
+
+\subsection{Appended variants}
+\texttt{LineStyle} appends \tablenums{3} Wavy, and \texttt{SpannerKind}
+appends \tablenums{9} PedalBracket \cat{} \texttt{PedalKind}, a pedal line
+drawn without its sign; \tablenums{3} PedalLine is unchanged and is drawn
+with its sign. Neither tag existed before this major, so no earlier document
+holds either, and a value holding one is stamped major~5 rather than at a
+raised minor of an earlier major.
+
+\subsection{Migration from major 4}
+Total for every value a major-4 writer produced, needing no score context.
+
+\begin{center}
+\begin{tabular}{p{1.9in} p{3.4in}}
+  \toprule
+  \textbf{major-4 form} & \textbf{major-5 form} \\
+  \midrule
+  an event's empty slots & the same bytes, read as empty \texttt{marks},
+    \texttt{ornaments} and no \texttt{grace} \\
+  a filled slot, a marker, a lyric line & rejected by name; no writer
+    produced one \\
+  \texttt{Score} & append \texttt{voice\_homes} $=$ empty (four zero
+    bytes) \\
+  canonical-base \texttt{MaterializedState} & unchanged, byte-identical,
+    stays major~0 \\
+  \bottomrule
+\end{tabular}
+\end{center}
+
 % ===========================================================================
 \chapter{Non-Canonical Pinned Encodings}
 \label{ch:noncanon}
@@ -3912,6 +4095,23 @@ only}: implementations need not agree on an error taxonomy.
   \texttt{core.tuplet}, a major-3 score with a tuplet, and a hidden
   \texttt{CreateTuplet} with its pre-major-4 rejection. Semantics: Operation
   Catalog \sectionsc{CreateTuplet}, 0.18.0. \\
+
+    \today & Schema evolution, operation wire forms & 0.21.0 --- X4b:
+  schema major~5 (Section~\ref{sec:evolution:major5}). An event's mark,
+  ornament and grace slots take their types, a marker its kind, a lyric its
+  syllable, text NFC; \texttt{LineStyle} and \texttt{SpannerKind} append a
+  variant each and \texttt{Score} appends \texttt{voice\_homes}.
+  \texttt{CrossCuttingValue} appends \tablenums{4} Marker and \tablenums{5}
+  Lyric, \texttt{OperationKind} and \texttt{OperationKindTag} append
+  \tablenums{43} \texttt{SetVoiceHome}, and
+  \texttt{PreconditionFailureReason} appends \tablenums{19}
+  \texttt{SlotOccupied}, at epoch~15. Operations whose values hold a new
+  value stamp major~5 by value; the \texttt{OperationEnvelopeBlock} and
+  \texttt{Snapshot} accept-sets rise to \tablenums{5}. The canonical base
+  stays major~0. The decode corpus gains \texttt{core.score\_v5}, a refusal
+  of each major-5 value under \texttt{core.score\_v4}, an event with marks
+  and a grace, an unordered mark set, and a lyric not in NFC. Semantics:
+  Operation Catalog, 0.21.0. \\
 \bottomrule
 \end{longtable}
 

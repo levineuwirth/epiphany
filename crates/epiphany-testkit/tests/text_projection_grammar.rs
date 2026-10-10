@@ -310,14 +310,15 @@ fn the_kind_productions_are_the_operation_vocabulary() {
     // from 35 to 39 by adding `CreateStaffGroup`, `CreatePartDefinition`,
     // `CreateAnalysisLayer`, and `CreateView`; genesis G3b took it from 39
     // to 40 by adding `CreateMeasure`; X3.1 took it from 40 to 41 by adding
-    // `CreateTuplet`; X3.6 takes it from 41 to 43 by adding `SetClef` and
-    // `SetKeySignature`). It stays a literal on purpose: deriving it from
+    // `CreateTuplet`; X3.6 took it from 41 to 43 by adding `SetClef` and
+    // `SetKeySignature`; X4b takes it from 43 to 44 by adding
+    // `SetVoiceHome`). It stays a literal on purpose: deriving it from
     // `PAYLOAD_FREE.len()` would make the assertion vacuous, since that is
     // the very list it exists to pin.
     assert_eq!(
         expected.len(),
-        43,
-        "42 payload-free kinds plus `Registered`"
+        44,
+        "43 payload-free kinds plus `Registered`"
     );
 
     let actual = alternatives("kind");

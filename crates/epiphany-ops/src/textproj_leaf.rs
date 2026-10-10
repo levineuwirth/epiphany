@@ -280,6 +280,12 @@ impl TextValue for CrossCuttingValue {
             CrossCuttingValue::Spanner(value) => {
                 Sexp::List(vec![Sexp::sym("spanner"), value.project()])
             }
+            CrossCuttingValue::Marker(value) => {
+                Sexp::List(vec![Sexp::sym("marker"), value.project()])
+            }
+            CrossCuttingValue::Lyric(value) => {
+                Sexp::List(vec![Sexp::sym("lyric"), value.project()])
+            }
         }
     }
 
@@ -291,6 +297,8 @@ impl TextValue for CrossCuttingValue {
             "slur" => Ok(Self::Slur(Slur::parse(&fields[0])?)),
             "beam" => Ok(Self::Beam(Beam::parse(&fields[0])?)),
             "spanner" => Ok(Self::Spanner(Spanner::parse(&fields[0])?)),
+            "marker" => Ok(Self::Marker(epiphany_core::Marker::parse(&fields[0])?)),
+            "lyric" => Ok(Self::Lyric(epiphany_core::Lyric::parse(&fields[0])?)),
             _ => Err(unknown("CrossCuttingValue", name)),
         }
     }

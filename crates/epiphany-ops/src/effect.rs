@@ -199,6 +199,9 @@ pub enum PreconditionFailureReason {
     /// delta between them is not computable (contract pin 6b) (genesis
     /// tranche G3b, contract pin 8b).
     MeasureOrderUnverifiable,
+    /// A create (or a modify) would fill a slot a live object of its kind
+    /// already fills: a lyric's event and verse (schema major 5).
+    SlotOccupied,
 }
 
 impl PreconditionFailureReason {
@@ -228,6 +231,8 @@ impl PreconditionFailureReason {
             PreconditionFailureReason::MeasureMeterMismatch => 16,
             PreconditionFailureReason::MeasureOutOfOrder => 17,
             PreconditionFailureReason::MeasureOrderUnverifiable => 18,
+            // Additive (X4b); appended past 18.
+            PreconditionFailureReason::SlotOccupied => 19,
         }
     }
 }
@@ -265,6 +270,8 @@ impl PreconditionFailureReason {
             PreconditionFailureReason::MeasureMeterMismatch => Some(12),
             PreconditionFailureReason::MeasureOutOfOrder => Some(12),
             PreconditionFailureReason::MeasureOrderUnverifiable => Some(12),
+            // Minor 15 (X4b).
+            PreconditionFailureReason::SlotOccupied => Some(15),
         }
     }
 }
@@ -566,6 +573,19 @@ mod tests {
         assert_eq!(
             PreconditionFailureReason::MeasureOrderUnverifiable.introduced_minor(),
             Some(12)
+        );
+    }
+
+    /// X4b's appended reason: discriminant 19 at epoch 15, stated by hand.
+    #[test]
+    fn x4b_slot_occupied_is_19_at_epoch_15() {
+        assert_eq!(
+            PreconditionFailureReason::SlotOccupied.to_canonical_bytes(),
+            vec![19]
+        );
+        assert_eq!(
+            PreconditionFailureReason::SlotOccupied.introduced_minor(),
+            Some(15)
         );
     }
 

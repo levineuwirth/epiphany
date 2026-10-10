@@ -4,6 +4,9 @@
 //! three columns (source features not imported, operations the reducer did
 //! not apply, what the engraver left out), each by kind; the comparison with
 //! the source; invariant violations; and read, reduce and engrave times.
+//! Each score's expression and text imported is counted by class, and the
+//! closing summary totals those classes and the unsupported features by kind
+//! across the corpus, with the number of scores each occurs in.
 //!
 //!     corpus-report [--cache DIR] [--render NAME]...
 //!
@@ -160,7 +163,33 @@ fn report(loaded: &Loaded, report: &mut String) -> (usize, usize) {
         "    presentation and playback not imported: {} kinds, {presentation} elements",
         features(FeatureClass::Presentation).count()
     );
+    let imported = epiphany_musicxml::fidelity::expression_counts(&loaded.reduced.score);
+    let _ = writeln!(
+        report,
+        "  expression and text imported: {}",
+        joined(imported.iter().map(|(k, n)| (k.as_str(), *n)))
+    );
     (events, rejected.len())
+}
+
+/// Each kind's count across the corpus, and in how many scores it occurs.
+type Tally = BTreeMap<String, (usize, usize)>;
+
+fn tally<'a>(into: &mut Tally, kinds: impl Iterator<Item = (&'a str, usize)>) {
+    for (kind, n) in kinds {
+        let entry = into.entry(kind.to_owned()).or_default();
+        entry.0 += n;
+        entry.1 += 1;
+    }
+}
+
+fn write_tally(text: &mut String, title: &str, tally: &Tally) {
+    let _ = writeln!(text, "\n== {title}");
+    let mut rows: Vec<(&String, &(usize, usize))> = tally.iter().collect();
+    rows.sort_by(|a, b| b.1 .0.cmp(&a.1 .0).then(a.0.cmp(b.0)));
+    for (kind, (n, scores)) in rows {
+        let _ = writeln!(text, "{n:8} {scores:4} scores  {kind}");
+    }
 }
 
 fn main() -> ExitCode {
@@ -203,6 +232,8 @@ fn main() -> ExitCode {
     let mut text = String::new();
     let mut summary = Vec::new();
     let mut failed = false;
+    let mut imported = Tally::new();
+    let mut unsupported = Tally::new();
     for score in &list {
         let title = format!("{}/{}", score.group, score.name);
         let _ = writeln!(text, "\n== {title}");
@@ -228,6 +259,21 @@ fn main() -> ExitCode {
             }
         };
         let (events, rejected) = report(&loaded, &mut text);
+        tally(
+            &mut imported,
+            epiphany_musicxml::fidelity::expression_counts(&loaded.reduced.score)
+                .iter()
+                .map(|(k, n)| (k.as_str(), *n)),
+        );
+        tally(
+            &mut unsupported,
+            loaded
+                .import
+                .source
+                .features
+                .of_class(FeatureClass::Content)
+                .map(|(k, f)| (k, f.places.len())),
+        );
         let engraved = engrave_loaded(&loaded);
         let omitted = omissions(
             &loaded.reduced.score,
@@ -309,6 +355,16 @@ fn main() -> ExitCode {
     for line in &summary {
         let _ = writeln!(closing, "{line}");
     }
+    write_tally(
+        &mut closing,
+        "expression and text imported, by class",
+        &imported,
+    );
+    write_tally(
+        &mut closing,
+        "unsupported source features, by kind",
+        &unsupported,
+    );
     print!("{closing}");
     let whole = std::fs::read_to_string(&partial).unwrap_or_default() + &closing;
     let _ = std::fs::write(out_root.join("report.txt"), whole);

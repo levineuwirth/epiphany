@@ -68,7 +68,7 @@ use crate::payload::{
     InsertIdentifiedPitchOp, ModifyCrossCuttingOp, ModifyEventOp, ModifyIdentifiedPitchOp,
     OperationKind, OperationPayload, RespellPitchOp, SetCanvasLayoutDefaultsOp, SetClefOp,
     SetKeySignatureOp, SetMetadataOp, SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp,
-    SetTempoSegmentOp, SetTimeSignatureOp, SetTuningContextOp, SetUserPageBreakOp,
+    SetTempoSegmentOp, SetTimeSignatureOp, SetTuningContextOp, SetUserPageBreakOp, SetVoiceHomeOp,
     TransposeIntervalOp, TransposeOp, TupletCompensation,
 };
 use crate::stamp::StampTuple;
@@ -952,6 +952,11 @@ enum ValueRestoration {
         instance: StaffInstanceId,
         value: Option<StaffLayoutValue>,
     },
+    /// X4b: a voice's home staff.
+    VoiceHome {
+        voice: VoiceId,
+        value: Option<StaffId>,
+    },
     /// X3.6.
     Clef {
         instance: StaffInstanceId,
@@ -1183,6 +1188,9 @@ struct Reducer<'a> {
     tempo_segment_chain:
         BTreeMap<(Option<RegionId>, MusicalPosition), WriteChain<Option<TempoSegment>>>,
     staff_layout_chain: BTreeMap<StaffInstanceId, WriteChain<StaffLayoutValue>>,
+    /// Each voice's home-staff register (schema major 5): seeded at the
+    /// voice's create (no home) or from a base, written by `SetVoiceHome`.
+    voice_home_chain: BTreeMap<VoiceId, WriteChain<Option<StaffId>>>,
     // X3.6: each staff instance's clef and key changes, keyed by musical
     // position in its region (`SetClef`, `SetKeySignature`), seeded from the
     // base or the created instance; `None` = an explicit removal.
@@ -1388,6 +1396,9 @@ struct WorkingSnapshot {
     tempo_segment_chain:
         BTreeMap<(Option<RegionId>, MusicalPosition), WriteChain<Option<TempoSegment>>>,
     staff_layout_chain: BTreeMap<StaffInstanceId, WriteChain<StaffLayoutValue>>,
+    /// Each voice's home-staff register (schema major 5): seeded at the
+    /// voice's create (no home) or from a base, written by `SetVoiceHome`.
+    voice_home_chain: BTreeMap<VoiceId, WriteChain<Option<StaffId>>>,
     clef_chain: ClefChains,
     key_chain: KeyChains,
     staff_values: BTreeMap<StaffId, Staff>,
@@ -1454,6 +1465,73 @@ fn promoted_voice_inputs(
     inputs.extend_from_slice(&winning_op.canonical_bytes());
     inputs.extend_from_slice(&losing_op.canonical_bytes());
     inputs
+}
+
+/// The order of a voice's events in the graph: by musical position, the grace
+/// notes at a position before the event of positive duration there, in their
+/// `order` (schema major 5), then by id; an event with no musical position by
+/// id, as before.
+fn voice_order(score: &Score, a: EventId, b: EventId) -> Ordering {
+    let key = |id: EventId| {
+        score
+            .events
+            .get(id)
+            .and_then(|event| match event.position() {
+                EventPosition::Musical(position) => Some((
+                    position.clone(),
+                    event.grace().is_none(),
+                    event.grace().map_or(0, |g| g.order),
+                )),
+                _ => None,
+            })
+    };
+    match (key(a), key(b)) {
+        (Some(ka), Some(kb)) => ka.cmp(&kb).then_with(|| a.cmp(&b)),
+        _ => a.cmp(&b),
+    }
+}
+
+/// A marker's anchor, or a spanner's start and end: the anchors a region
+/// holds a cross-cutting value by.
+fn region_anchors(structure: &CrossCuttingValue) -> Vec<&TimeAnchor> {
+    match structure {
+        CrossCuttingValue::Marker(marker) => vec![&marker.anchor],
+        CrossCuttingValue::Spanner(spanner) => vec![&spanner.start, &spanner.end],
+        _ => Vec::new(),
+    }
+}
+
+/// Whether an event's value agrees on grace and duration: a grace note's
+/// duration is musical and zero, and any other event's is not zero (schema
+/// major 5, reduction version 4). A non-musical duration is judged elsewhere.
+fn grace_duration_agrees(event: &Event) -> bool {
+    match event.duration() {
+        EventDuration::Musical(d) => {
+            if event.grace().is_some() {
+                d.0.is_zero()
+            } else {
+                d.is_positive()
+            }
+        }
+        _ => event.grace().is_none(),
+    }
+}
+
+/// Whether a zero-length span `a` (a grace note) stands strictly inside the
+/// span `b`, between its onset and its end: there no grace has a principal,
+/// and invariant 3 would break. A zero-length span overlaps nothing
+/// ([`intervals_overlap`]), so this is the check that places it.
+fn inside_span(
+    a_position: &MusicalPosition,
+    a_duration: &MusicalDuration,
+    b_position: &MusicalPosition,
+    b_duration: &MusicalDuration,
+) -> bool {
+    if a_duration.is_positive() || !b_duration.is_positive() {
+        return false;
+    }
+    let b_end = b_position.clone() + b_duration.clone();
+    b_position < a_position && a_position < &b_end
 }
 
 fn intervals_overlap(
@@ -1586,7 +1664,7 @@ fn with_pitches(event: Event, added: Vec<epiphany_core::IdentifiedPitch>) -> Eve
             position: e.position,
             duration: e.duration,
             pitches: Vec::new(),
-            articulations: e.articulations,
+            marks: e.marks,
             dynamic: e.dynamic,
             ornaments: Vec::new(),
             stem: e.stem,
@@ -1598,7 +1676,7 @@ fn with_pitches(event: Event, added: Vec<epiphany_core::IdentifiedPitch>) -> Eve
             position: other.position().clone(),
             duration: other.duration().clone(),
             pitches: Vec::new(),
-            articulations: Vec::new(),
+            marks: Vec::new(),
             dynamic: None,
             ornaments: Vec::new(),
             stem: epiphany_core::StemConfiguration,
@@ -1739,12 +1817,7 @@ fn minted_objects(payload: &OperationPayload) -> Vec<TypedObjectId> {
             _ => Vec::new(),
         },
         OperationKind::InsertIdentifiedPitch(op) => vec![T::Pitch(op.pitch.id)],
-        OperationKind::CreateCrossCutting(op) => vec![match &op.structure {
-            CrossCuttingValue::Tie(x) => T::Tie(x.id),
-            CrossCuttingValue::Slur(x) => T::Slur(x.id),
-            CrossCuttingValue::Beam(x) => T::Beam(x.id),
-            CrossCuttingValue::Spanner(x) => T::Spanner(x.id),
-        }],
+        OperationKind::CreateCrossCutting(op) => vec![op.structure.id()],
         OperationKind::CreateRegion(op) => vec![T::Region(op.region.id)],
         OperationKind::CreateStaffInstance(op) => vec![T::StaffInstance(op.instance.id)],
         OperationKind::CreateVoice(op) => vec![T::Voice(op.voice.id)],
@@ -1957,6 +2030,7 @@ impl<'a> Reducer<'a> {
             meter_change_chain: BTreeMap::new(),
             tempo_segment_chain: BTreeMap::new(),
             staff_layout_chain: BTreeMap::new(),
+            voice_home_chain: BTreeMap::new(),
             clef_chain: BTreeMap::new(),
             key_chain: BTreeMap::new(),
             staff_values: BTreeMap::new(),
@@ -2053,6 +2127,7 @@ impl<'a> Reducer<'a> {
         let Some(score) = self.graph.as_ref() else {
             return;
         };
+        let base_homes = score.voice_homes.clone();
 
         for instrument in &score.instruments {
             self.objects
@@ -2224,6 +2299,10 @@ impl<'a> Reducer<'a> {
                 for voice in &instance.voices {
                     self.objects
                         .insert(TypedObjectId::Voice(voice.id), ObjectState::Live);
+                    self.voice_home_chain
+                        .entry(voice.id)
+                        .or_insert_with(WriteChain::new)
+                        .seed(base_homes.get(&voice.id).copied());
                     // Register base system-promoted voices in the mint registry
                     // so a promotion minted by this reduction is collision-checked
                     // against them (Chapter 5 §"System-Derived Counter Collisions").
@@ -3094,17 +3173,7 @@ impl<'a> Reducer<'a> {
                 .events
                 .clone();
             ordered.push(op.event_id());
-            ordered.sort_by(|a, b| {
-                let a_position = score.events.get(*a).map(Event::position);
-                let b_position = score.events.get(*b).map(Event::position);
-                match (a_position, b_position) {
-                    (
-                        Some(EventPosition::Musical(a_position)),
-                        Some(EventPosition::Musical(b_position)),
-                    ) => a_position.cmp(b_position).then_with(|| a.cmp(b)),
-                    _ => a.cmp(b),
-                }
-            });
+            ordered.sort_by(|a, b| voice_order(score, *a, *b));
             score.canvas.regions[region_index]
                 .content
                 .staff_instances_mut()
@@ -3437,10 +3506,12 @@ impl<'a> Reducer<'a> {
             .collect();
         score.cross_cutting.repeats = kept_repeats;
 
-        score.cross_cutting.lyrics.retain_mut(|line| {
-            line.events.retain(|event| *event != op.event);
-            !line.events.is_empty()
-        });
+        // A syllable leaves with its event; the ledger records the cascade
+        // (`reanchor_for_tombstone`).
+        score
+            .cross_cutting
+            .lyrics
+            .retain(|lyric| lyric.event != op.event);
         // The remaining rule-table rows — markers, cue events, comments,
         // analytical annotations, graphic gestures — are decided and applied
         // together (ledger record + graph mutation) once the event is out of
@@ -3462,11 +3533,19 @@ impl<'a> Reducer<'a> {
             })
             .collect();
         for event in events {
+            // Base-free reduction's marker rows read the event's placement
+            // from the index, before it forgets the event.
+            let without_graph = if self.graph.is_none() {
+                self.reanchor_markers_without_graph(event)
+            } else {
+                Vec::new()
+            };
             for placements in self.voice_occupancy.values_mut() {
                 placements.retain(|(_, _, stored_event)| *stored_event != event);
             }
             self.voice_occupancy
                 .retain(|_, placements| !placements.is_empty());
+            repairs.extend(without_graph);
             repairs.extend(self.materialize_graph_delete(
                 env,
                 &DeleteEventOp {
@@ -3494,6 +3573,10 @@ impl<'a> Reducer<'a> {
                             }
                         }
                     }
+                    // A voice that left takes its home staff with it.
+                    if score.voices().all(|(_, _, v)| v.id != *voice) {
+                        score.voice_homes.remove(voice);
+                    }
                 }
                 TypedObjectId::Slur(id) => {
                     score.cross_cutting.slurs.retain(|value| value.id != *id);
@@ -3512,6 +3595,12 @@ impl<'a> Reducer<'a> {
                 }
                 TypedObjectId::RepeatStructure(id) => {
                     score.cross_cutting.repeats.retain(|value| value.id != *id);
+                }
+                TypedObjectId::Marker(id) => {
+                    score.cross_cutting.markers.retain(|value| value.id != *id);
+                }
+                TypedObjectId::LyricLine(id) => {
+                    score.cross_cutting.lyrics.retain(|value| value.id != *id);
                 }
                 TypedObjectId::Tuplet(id) => {
                     remove_tuplets(score, &BTreeSet::from([*id]));
@@ -3640,6 +3729,8 @@ impl<'a> Reducer<'a> {
             CrossCuttingValue::Spanner(spanner) => {
                 score.cross_cutting.spanners.push(spanner.clone())
             }
+            CrossCuttingValue::Marker(marker) => score.cross_cutting.markers.push(marker.clone()),
+            CrossCuttingValue::Lyric(lyric) => score.cross_cutting.lyrics.push(lyric.clone()),
         }
         Ok(())
     }
@@ -3728,6 +3819,7 @@ impl<'a> Reducer<'a> {
                 OperationKind::CreateTuplet(op) => self.create_tuplet(env, op),
                 OperationKind::SetClef(op) => self.set_clef(env, op),
                 OperationKind::SetKeySignature(op) => self.set_key_signature(env, op),
+                OperationKind::SetVoiceHome(op) => self.set_voice_home(env, op),
             },
             OperationPayload::ResolveConflict(op) => self.resolve_conflict(env, op),
             OperationPayload::UndoTransaction(op) => self.undo_transaction(env, op),
@@ -4045,7 +4137,10 @@ impl<'a> Reducer<'a> {
         let orig_voice = op.voice();
         let op_position = op.musical_position();
         let op_duration = op.musical_duration();
-        if !op_duration.is_positive() {
+        // A grace note has zero duration and only a grace note does (schema
+        // major 5, reduction version 4); every other event's duration is
+        // positive, as before.
+        if !grace_duration_agrees(&op.event) {
             return OperationEffect::NoOp {
                 reason: NoOpReason::PreconditionFailedUnderReduction {
                     reason: PreconditionFailureReason::EventDurationInvalid,
@@ -4131,6 +4226,8 @@ impl<'a> Reducer<'a> {
             .is_some_and(|events| {
                 events.iter().any(|(position, duration, _)| {
                     intervals_overlap(position, duration, &op_position, &op_duration)
+                        || inside_span(&op_position, &op_duration, position, duration)
+                        || inside_span(position, duration, &op_position, &op_duration)
                 })
             })
         {
@@ -4276,7 +4373,11 @@ impl<'a> Reducer<'a> {
                 minted_by: minter,
             },
         );
-        let graph_repairs = self.materialize_graph_delete(env, op);
+        let graph_repairs = if self.graph.is_some() {
+            self.materialize_graph_delete(env, op)
+        } else {
+            self.reanchor_markers_without_graph(op.event)
+        };
         for events in self.voice_occupancy.values_mut() {
             events.retain(|(_, _, event)| *event != op.event);
         }
@@ -4545,7 +4646,13 @@ impl<'a> Reducer<'a> {
                 };
             }
         }
-        if let Some(effect) = self.spanner_staves_slot(&op.structure) {
+        if let Some(effect) = self
+            .spanner_staves_slot(&op.structure)
+            .or_else(|| self.region_anchor_slot(&op.structure))
+        {
+            return effect;
+        }
+        if let Some(effect) = self.lyric_slot_taken(&op.structure) {
             return effect;
         }
         if let Err(reason) = self.materialize_graph_cross_cutting(op) {
@@ -4588,6 +4695,72 @@ impl<'a> Reducer<'a> {
             })
     }
 
+    /// A marker's or spanner's anchors to a region by a musical offset, where
+    /// the region admits none: refused `WrongRegionTimeModel`, as a clef or
+    /// key change written there is (schema major 5, reduction version 4:
+    /// before it the value applied, `AnchorOffsetModel`).
+    fn region_anchor_slot(&self, structure: &CrossCuttingValue) -> Option<OperationEffect> {
+        region_anchors(structure)
+            .into_iter()
+            .find_map(|anchor| match anchor {
+                TimeAnchor::Region { id, .. } => self.musical_slot(*id, Some(anchor)),
+                _ => None,
+            })
+    }
+
+    /// The live markers and spanners anchored to `region` (by a musical
+    /// offset only, with `musical`), read from the values both modes keep,
+    /// those `except` names aside.
+    fn anchored_to_region(
+        &self,
+        region: RegionId,
+        musical: bool,
+        except: &[TypedObjectId],
+    ) -> Vec<TypedObjectId> {
+        self.cross_cutting_modify_chain
+            .iter()
+            .filter(|(sid, _)| {
+                !except.contains(sid) && matches!(self.objects.get(*sid), Some(ObjectState::Live))
+            })
+            .filter(|(_, chain)| {
+                chain.current().is_some_and(|value| {
+                    region_anchors(value).into_iter().any(|anchor| {
+                        matches!(anchor, TimeAnchor::Region { id, offset, .. }
+                            if *id == region
+                                && (!musical || matches!(offset, AnchorOffset::Musical(_))))
+                    })
+                })
+            })
+            .map(|(sid, _)| *sid)
+            .collect()
+    }
+
+    /// An event holds at most one lyric syllable per verse (schema major 5,
+    /// reduction version 4): a create or modify of a lyric whose event and verse
+    /// another live lyric holds is refused `SlotOccupied`, in both modes, read
+    /// from the write chains both keep. Concurrent creates for one slot apply
+    /// the earlier in canonical order and refuse the later.
+    fn lyric_slot_taken(&self, structure: &CrossCuttingValue) -> Option<OperationEffect> {
+        let CrossCuttingValue::Lyric(lyric) = structure else {
+            return None;
+        };
+        let own = TypedObjectId::LyricLine(lyric.id);
+        self.cross_cutting_modify_chain
+            .iter()
+            .filter(|(sid, _)| **sid != own)
+            .filter(|(sid, _)| matches!(self.objects.get(sid), Some(ObjectState::Live)))
+            .filter_map(|(_, chain)| match chain.current() {
+                Some(CrossCuttingValue::Lyric(other)) => Some(other),
+                _ => None,
+            })
+            .any(|other| other.event == lyric.event && other.verse == lyric.verse)
+            .then_some(OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::SlotOccupied,
+                },
+            })
+    }
+
     fn delete_cross_cutting(
         &mut self,
         env: &OperationEnvelope,
@@ -4602,6 +4775,8 @@ impl<'a> Reducer<'a> {
                 | TypedObjectId::Slur(_)
                 | TypedObjectId::Beam(_)
                 | TypedObjectId::Spanner(_)
+                | TypedObjectId::Marker(_)
+                | TypedObjectId::LyricLine(_)
         ) {
             return OperationEffect::NoOp {
                 reason: NoOpReason::PreconditionFailedUnderReduction {
@@ -4757,7 +4932,11 @@ impl<'a> Reducer<'a> {
                     .map(|(_, duration, _)| duration.clone())
             })
             .try_fold(MusicalDuration::zero(), |sum, duration| {
-                duration.map(|duration| sum + duration)
+                // A grace note, of zero duration, is no tuplet's member
+                // (reduction version 4).
+                duration
+                    .filter(MusicalDuration::is_positive)
+                    .map(|duration| sum + duration)
             });
         if total.as_ref() != Some(&op.tuplet.required_total) {
             return OperationEffect::NoOp {
@@ -4907,7 +5086,13 @@ impl<'a> Reducer<'a> {
                 };
             }
         }
-        if let Some(effect) = self.spanner_staves_slot(&op.structure) {
+        if let Some(effect) = self
+            .spanner_staves_slot(&op.structure)
+            .or_else(|| self.region_anchor_slot(&op.structure))
+        {
+            return effect;
+        }
+        if let Some(effect) = self.lyric_slot_taken(&op.structure) {
             return effect;
         }
         // LWW field-overwrite, mirroring modify_event: the resolved value lives in
@@ -4961,6 +5146,8 @@ impl<'a> Reducer<'a> {
             TypedObjectId::Tie(id) => score.cross_cutting.ties.retain(|v| v.id != id),
             TypedObjectId::Beam(id) => score.cross_cutting.beams.retain(|v| v.id != id),
             TypedObjectId::Spanner(id) => score.cross_cutting.spanners.retain(|v| v.id != id),
+            TypedObjectId::Marker(id) => score.cross_cutting.markers.retain(|v| v.id != id),
+            TypedObjectId::LyricLine(id) => score.cross_cutting.lyrics.retain(|v| v.id != id),
             _ => {}
         }
     }
@@ -5008,6 +5195,26 @@ impl<'a> Reducer<'a> {
                     .find(|v| v.id == spanner.id)
                 {
                     *existing = spanner.clone();
+                }
+            }
+            CrossCuttingValue::Marker(marker) => {
+                if let Some(existing) = score
+                    .cross_cutting
+                    .markers
+                    .iter_mut()
+                    .find(|v| v.id == marker.id)
+                {
+                    *existing = marker.clone();
+                }
+            }
+            CrossCuttingValue::Lyric(lyric) => {
+                if let Some(existing) = score
+                    .cross_cutting
+                    .lyrics
+                    .iter_mut()
+                    .find(|v| v.id == lyric.id)
+                {
+                    *existing = lyric.clone();
                 }
             }
         }
@@ -5238,7 +5445,85 @@ impl<'a> Reducer<'a> {
             .entry(op.staff_instance)
             .or_default()
             .insert(op.voice_id());
+        // A voice is created at home (schema major 5): its register's first
+        // value, so an undo of a first `SetVoiceHome` restores no home in both
+        // modes.
+        self.voice_home_chain
+            .entry(op.voice_id())
+            .or_insert_with(WriteChain::new)
+            .seed(None);
         OperationEffect::Applied
+    }
+
+    /// X4b (operation_catalog §SetVoiceHome): sets or clears a voice's home
+    /// staff, an LWW structural overwrite keyed by the voice. The voice must be
+    /// live, and a staff it names a live referent, in both modes; concurrent
+    /// differing writes record a `StructuralFieldCollision` the later wins.
+    fn set_voice_home(&mut self, env: &OperationEnvelope, op: &SetVoiceHomeOp) -> OperationEffect {
+        match self.objects.get(&TypedObjectId::Voice(op.voice)) {
+            None => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::TargetMissing,
+                    },
+                }
+            }
+            Some(ObjectState::Tombstoned { .. }) => {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::TargetTombstoned,
+                }
+            }
+            Some(ObjectState::Live) => {}
+        }
+        if op
+            .home
+            .is_some_and(|staff| self.referent_dead(TypedObjectId::Staff(staff)))
+        {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            };
+        }
+        let prev = self
+            .voice_home_chain
+            .get(&op.voice)
+            .and_then(|chain| chain.last_write())
+            .map(|write| (write.op, write.value));
+        let effect = match self.structural_write_effect(
+            env,
+            prev,
+            &op.home,
+            "home_staff",
+            TypedObjectId::Voice(op.voice),
+        ) {
+            Ok(effect) => effect,
+            Err(effect) => return effect,
+        };
+        self.voice_home_chain
+            .entry(op.voice)
+            .or_insert_with(WriteChain::new)
+            .record(env.id, env.transaction, op.home);
+        self.graph_set_voice_home(op.voice, op.home);
+        effect
+    }
+
+    /// Writes a voice's home into the graph, where the graph holds the voice.
+    fn graph_set_voice_home(&mut self, voice: VoiceId, home: Option<StaffId>) {
+        let Some(score) = self.graph.as_mut() else {
+            return;
+        };
+        if score.voices().all(|(_, _, v)| v.id != voice) {
+            return;
+        }
+        match home {
+            Some(staff) => {
+                score.voice_homes.insert(voice, staff);
+            }
+            None => {
+                score.voice_homes.remove(&voice);
+            }
+        }
     }
 
     // --- Phase-3 first tranche (operation_catalog §CreateStaff, §"Meter and
@@ -7218,10 +7503,14 @@ impl<'a> Reducer<'a> {
                             || segment.end.as_ref().is_some_and(anchors_here)
                 )
         });
-        let minted_by = match self.delete_precondition(robj, env, has_instances || tempo_anchored) {
-            Ok(minter) => minter,
-            Err(effect) => return effect,
-        };
+        // A live marker or spanner anchored to the region holds it likewise
+        // (schema major 5, reduction version 4).
+        let marked = !self.anchored_to_region(op.region, false, &[]).is_empty();
+        let minted_by =
+            match self.delete_precondition(robj, env, has_instances || tempo_anchored || marked) {
+                Ok(minter) => minter,
+                Err(effect) => return effect,
+            };
         self.objects.insert(
             robj,
             ObjectState::Tombstoned {
@@ -7371,6 +7660,8 @@ impl<'a> Reducer<'a> {
                 }
             }
         }
+        // Its home staff leaves with it (schema major 5).
+        score.voice_homes.remove(&voice);
     }
 
     fn change_region_time_model(
@@ -7579,6 +7870,9 @@ impl<'a> Reducer<'a> {
                     Some(ObjectState::Live)
                 ) && (holds_clef || holds_key)
             });
+            // A live marker or spanner anchored here by a musical offset
+            // strands itself (schema major 5, reduction version 4).
+            let anchored = self.anchored_to_region(op.region, true, &[]);
             self.measure_values
                 .iter()
                 .filter(|(_, (instance, _))| instances.is_some_and(|set| set.contains(instance)))
@@ -7586,6 +7880,7 @@ impl<'a> Reducer<'a> {
                 .filter(|m| matches!(self.objects.get(m), Some(ObjectState::Live)))
                 .chain(changes_stranded.map(|i| TypedObjectId::StaffInstance(*i)))
                 .chain(tempo_stranded.then_some(TypedObjectId::Region(op.region)))
+                .chain(anchored)
                 .collect()
         };
         if !incompatible_events.is_empty() || !stranded_measures.is_empty() {
@@ -8205,6 +8500,13 @@ impl<'a> Reducer<'a> {
                             })
                         })
                         .then_some((*target, *target))
+                })
+                // A live marker or spanner anchored to the region the undo
+                // does not remove (schema major 5, reduction version 4).
+                .or_else(|| {
+                    self.anchored_to_region(*region, false, targets)
+                        .first()
+                        .map(|sid| (*target, *sid))
                 }),
             TypedObjectId::StaffInstance(instance) => {
                 self.instance_voices.get(instance).and_then(|voices| {
@@ -8261,6 +8563,25 @@ impl<'a> Reducer<'a> {
                                 }
                                 _ => None,
                             })
+                    })
+                    // A live voice whose home the undo leaves naming the
+                    // staff (schema major 5, reduction version 4), read as
+                    // the undo leaves the home.
+                    .or_else(|| {
+                        self.voice_home_chain.iter().find_map(|(voice, chain)| {
+                            let vobj = TypedObjectId::Voice(*voice);
+                            let prospective = restorations
+                                .iter()
+                                .find_map(|restoration| match restoration {
+                                    ValueRestoration::VoiceHome { voice: v, value } if v == voice => {
+                                        Some(*value)
+                                    }
+                                    _ => None,
+                                })
+                                .unwrap_or_else(|| chain.current().copied().flatten());
+                            (prospective == Some(*staff) && survives(&vobj))
+                                .then_some((*target, vobj))
+                        })
                     })
             }
             TypedObjectId::TimeSignature(id) => {
@@ -8578,8 +8899,109 @@ impl<'a> Reducer<'a> {
                             })
                     })
             }
+            // A grace note keeps a pitch (schema major 5, reduction version
+            // 4): an undo removing its last, the grace staying, is held. Read
+            // as the undo leaves the event: a value it restores, and the
+            // pitches that value carries which the undone modifies removed
+            // and the undo brings back.
+            TypedObjectId::Pitch(pitch) => {
+                let (event, held) = self
+                    .event_pitches
+                    .iter()
+                    .find(|(_, pitches)| pitches.contains(pitch))?;
+                let eobj = TypedObjectId::Event(*event);
+                let stays = !targets.contains(&eobj)
+                    && matches!(self.objects.get(&eobj), Some(ObjectState::Live));
+                let restored = restorations.iter().find_map(|restoration| match restoration {
+                    ValueRestoration::Event { event: e, value } if e == event => value.as_ref(),
+                    _ => None,
+                });
+                let grace = match restored {
+                    Some(value) => value.grace().is_some(),
+                    None => self.event_is_grace(*event),
+                };
+                let mut revived = Vec::new();
+                if let Some(value) = restored {
+                    value.collect_identified_pitches(&mut revived);
+                }
+                let another = held.iter().any(|p| {
+                    p != pitch
+                        && !targets.contains(&TypedObjectId::Pitch(*p))
+                        && matches!(
+                            self.objects.get(&TypedObjectId::Pitch(*p)),
+                            Some(ObjectState::Live)
+                        )
+                }) || revived.iter().any(|ip| {
+                    self.removed_pitches
+                        .get(&ip.id)
+                        .is_some_and(|removed| removed.event == *event)
+                });
+                (stays && grace && !another).then_some((*target, eobj))
+            }
             _ => None,
         }
+    }
+
+    /// Whether `event`'s value, as both modes hold it, is a grace note.
+    fn event_is_grace(&self, event: EventId) -> bool {
+        self.event_modify_chain
+            .get(&event)
+            .and_then(WriteChain::current)
+            .is_some_and(|value| value.grace().is_some())
+    }
+
+    /// Whether `pitch` is the last live pitch of a grace note.
+    fn last_pitch_of_grace(&self, pitch: PitchId) -> bool {
+        let Some((event, held)) = self
+            .event_pitches
+            .iter()
+            .find(|(_, pitches)| pitches.contains(&pitch))
+        else {
+            return false;
+        };
+        self.event_is_grace(*event)
+            && held.iter().all(|p| {
+                *p == pitch
+                    || !matches!(
+                        self.objects.get(&TypedObjectId::Pitch(*p)),
+                        Some(ObjectState::Live)
+                    )
+            })
+    }
+
+    /// Whether a whole-event `value` written as `env` would leave its grace
+    /// note no pitch: none it carries stands (each removed since), and its
+    /// author saw every live pitch it leaves out, so observed-remove takes
+    /// them all.
+    fn grace_left_without_pitch(&self, env: &OperationEnvelope, value: &Event) -> bool {
+        if value.grace().is_none() {
+            return false;
+        }
+        let mut carried = Vec::new();
+        value.collect_identified_pitches(&mut carried);
+        let carried_stands = carried.iter().any(|ip| {
+            !matches!(
+                self.objects.get(&TypedObjectId::Pitch(ip.id)),
+                Some(ObjectState::Tombstoned { .. })
+            )
+        });
+        let unseen_kept = self
+            .event_pitches
+            .get(&value.id())
+            .into_iter()
+            .flatten()
+            .filter(|p| !carried.iter().any(|ip| ip.id == **p))
+            .filter(|p| {
+                matches!(
+                    self.objects.get(&TypedObjectId::Pitch(**p)),
+                    Some(ObjectState::Live)
+                )
+            })
+            .any(|p| match self.minted_by.get(&TypedObjectId::Pitch(*p)) {
+                Some(insert) => *insert != env.id && !env.causal_context.covers(*insert),
+                None => false,
+            });
+        !carried_stands && !unseen_kept
     }
 
     /// Walks every write chain and collects, for the target transaction: the
@@ -8887,6 +9309,27 @@ impl<'a> Reducer<'a> {
                     }
                     restorations.push(ValueRestoration::StaffLayout {
                         instance: *instance,
+                        value,
+                    })
+                }
+            }
+        }
+        for (voice, chain) in &self.voice_home_chain {
+            if !slot_live(TypedObjectId::Voice(*voice)) {
+                continue;
+            }
+            match chain.undo_verdict(tx) {
+                ChainUndoVerdict::NotWritten => {}
+                ChainUndoVerdict::Superseded { by } => superseded.push(by),
+                ChainUndoVerdict::Restore(predecessor) => {
+                    let value = predecessor.and_then(Predecessor::into_value);
+                    // A home names its staff.
+                    if let Some(by) = self.tombstoned_since(value.map(TypedObjectId::Staff)) {
+                        superseded.push(by);
+                        continue;
+                    }
+                    restorations.push(ValueRestoration::VoiceHome {
+                        voice: *voice,
                         value,
                     })
                 }
@@ -9213,6 +9656,13 @@ impl<'a> Reducer<'a> {
                             .record(env.id, env.transaction, value);
                     }
                 }
+                ValueRestoration::VoiceHome { voice, value } => {
+                    self.voice_home_chain
+                        .entry(voice)
+                        .or_insert_with(WriteChain::new)
+                        .record(env.id, env.transaction, value);
+                    self.graph_set_voice_home(voice, value);
+                }
                 ValueRestoration::Clef {
                     instance,
                     position,
@@ -9457,12 +9907,36 @@ impl<'a> Reducer<'a> {
                 },
             };
         }
+        // A pitch belongs to one event (invariant `PitchIdUnique`): a value
+        // carrying a pitch another event holds live is refused, as a create
+        // re-carrying a live id under a different parent is (reduction
+        // version 4: before it the modify applied and put the pitch in both
+        // events). Read from `event_pitches`, which both modes keep.
+        if carried
+            .iter()
+            .any(|ip| self.pitch_live_in_another_event(ip.id, event_id))
+        {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::RecreateContentMismatch,
+                },
+            };
+        }
         // A `ModifyEvent` that moves a metric event's span (a trim or move) is now
         // materialized, but it must keep invariant 3 (`VoiceEventsSortedNonOverlap`):
         // refuse a move onto another live event in the voice, or one with a
         // non-positive span, rather than skip it silently (which would log a clean op
         // that never took effect). The verdict reads `voice_occupancy`, the
         // graph-independent index, so `reduce()` and `reduce_onto()` agree on it.
+        // A grace note has zero duration and only a grace note does, as at an
+        // insert (reduction version 4); and it keeps a pitch.
+        if !grace_duration_agrees(&op.event) || self.grace_left_without_pitch(env, &op.event) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::EventDurationInvalid,
+                },
+            };
+        }
         let placement = self.metric_placement_verdict(&op.event);
         if matches!(placement, PlacementVerdict::Refused) {
             return OperationEffect::NoOp {
@@ -9543,6 +10017,25 @@ impl<'a> Reducer<'a> {
                 })
                 .collect(),
         )
+    }
+
+    /// Whether `pitch` is live and held by an event other than `event`, as the
+    /// pitch index both modes keep (`event_pitches`) records it.
+    fn pitch_live_in_another_event(&self, pitch: PitchId, event: EventId) -> bool {
+        if self
+            .event_pitches
+            .get(&event)
+            .is_some_and(|own| own.contains(&pitch))
+            || !matches!(
+                self.objects.get(&TypedObjectId::Pitch(pitch)),
+                Some(ObjectState::Live)
+            )
+        {
+            return false;
+        }
+        self.event_pitches
+            .iter()
+            .any(|(other, pitches)| *other != event && pitches.contains(&pitch))
     }
 
     /// A whole-event modify mints each pitch its value carries that no
@@ -9810,13 +10303,15 @@ impl<'a> Reducer<'a> {
         if *new_position == current_position && *new_duration == current_duration {
             return PlacementVerdict::Unchanged;
         }
-        if !new_duration.is_positive() {
+        if !new_duration.is_positive() && new_event.grace().is_none() {
             return PlacementVerdict::Refused;
         }
         let overlaps = self.voice_occupancy.get(&voice).is_some_and(|events| {
             events.iter().any(|(position, duration, event)| {
                 *event != event_id
-                    && intervals_overlap(new_position, new_duration, position, duration)
+                    && (intervals_overlap(new_position, new_duration, position, duration)
+                        || inside_span(new_position, new_duration, position, duration)
+                        || inside_span(position, duration, new_position, new_duration))
             })
         });
         if overlaps {
@@ -9845,17 +10340,7 @@ impl<'a> Reducer<'a> {
             .voices[voice_index]
             .events
             .clone();
-        ordered.sort_by(|a, b| {
-            let a_position = score.events.get(*a).map(Event::position);
-            let b_position = score.events.get(*b).map(Event::position);
-            match (a_position, b_position) {
-                (
-                    Some(EventPosition::Musical(a_position)),
-                    Some(EventPosition::Musical(b_position)),
-                ) => a_position.cmp(b_position).then_with(|| a.cmp(b)),
-                _ => a.cmp(b),
-            }
-        });
+        ordered.sort_by(|a, b| voice_order(score, *a, *b));
         score.canvas.regions[region_index]
             .content
             .staff_instances_mut()
@@ -10283,6 +10768,16 @@ impl<'a> Reducer<'a> {
             }
             Some(ObjectState::Live) => self.minted_by.get(&p_obj).copied().unwrap_or(env.id),
         };
+        // A grace note keeps a pitch (schema major 5, reduction version 4):
+        // with none it would be a rest of no length. Its last is not deleted;
+        // a delete of the grace removes it.
+        if self.last_pitch_of_grace(op.pitch) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::EventDurationInvalid,
+                },
+            };
+        }
         self.objects.insert(
             p_obj,
             ObjectState::Tombstoned {
@@ -10372,7 +10867,7 @@ impl<'a> Reducer<'a> {
     /// materialization gated on this single sanction is what holds the graph and the
     /// `voice_occupancy` index in agreement.
     fn graph_replace_event(&mut self, new_event: &Event, materialize_move: bool) {
-        let placement_changed;
+        let mut placement_changed;
         let voice;
         if self.graph.is_none() {
             // The pitch values the graph would take, under the graph's own
@@ -10423,6 +10918,10 @@ impl<'a> Reducer<'a> {
             };
             placement_changed = new_event.position() != existing.position()
                 || new_event.duration() != existing.duration();
+            // A grace's order places it among its position's graces, so a
+            // change of order re-sorts the voice as a move does.
+            let order_changed = new_event.grace().map(|grace| grace.order)
+                != existing.grace().map(|grace| grace.order);
             // A placement change is materialized (and the voice re-sorted below) only
             // when the caller sanctioned it as a valid metric move; otherwise it is
             // deferred, leaving the LWW bookkeeping to record the modify. Same-placement
@@ -10434,6 +10933,7 @@ impl<'a> Reducer<'a> {
             let mut replacement = new_event.clone();
             replacement.set_voice(voice);
             *existing = replacement;
+            placement_changed |= order_changed;
         }
         if placement_changed {
             self.resort_voice(voice);
@@ -10596,6 +11096,12 @@ impl<'a> Reducer<'a> {
                     // A tie's existence requires both endpoints: cascade-delete.
                     self.cascade_structure(env, sid, repairs);
                 }
+                // A lyric syllable belongs to its event (rule table "Lyric /
+                // Event", schema major 5): cascade-delete, in both modes; the
+                // graph drops it where the event leaves.
+                TypedObjectId::LyricLine(_) => {
+                    self.cascade_structure(env, sid, repairs);
+                }
                 // A member's delete must declare its tuplet compensation
                 // (rule table "Tuplet / Member event"), which a `DeleteEvent`
                 // precondition enforces and which leaves no tuplet naming the
@@ -10606,13 +11112,15 @@ impl<'a> Reducer<'a> {
                 TypedObjectId::Tuplet(_) => {
                     self.cascade_structure(env, sid, repairs);
                 }
-                // The graph-only referent kinds — markers, cue events,
-                // comments, analytical annotations, graphic gestures — are
+                // The graph-only referent kinds — cue events, comments,
+                // analytical annotations, graphic gestures — and markers are
                 // repaired where their graph mutation happens
                 // (`reanchor_event_referents`, run from
                 // `materialize_graph_delete`), so the ledger record and the
-                // graph always agree. They only exist under graph-aware
-                // reduction (none is creatable by an operation).
+                // graph always agree. A marker an operation creates (schema
+                // major 5) is repaired by base-free reduction too, at the same
+                // point, from the indexed referent
+                // (`reanchor_markers_without_graph`).
                 TypedObjectId::Marker(_)
                 | TypedObjectId::Comment(_)
                 | TypedObjectId::AnalyticalAnnotation(_)
@@ -10936,10 +11444,13 @@ impl<'a> Reducer<'a> {
         if !paired {
             return false;
         }
+        // An event's place among its voice's events of positive duration, as
+        // the core's tie check reads it: a grace note (zero duration) takes
+        // the place of the note it precedes.
         let index = |voice: VoiceId, position: &MusicalPosition| {
             self.voice_occupancy[&voice]
                 .iter()
-                .filter(|(p, _, _)| p < position)
+                .filter(|(p, d, _)| p < position && d.is_positive())
                 .count()
         };
         match (
@@ -11305,6 +11816,67 @@ impl<'a> Reducer<'a> {
                 });
             }
         }
+    }
+
+    /// Base-free reduction's "Marker / Anchor" rows for the event `deleted`
+    /// (schema major 5, reduction version 4): a marker an operation created
+    /// re-anchors, or orphans, as graph-aware reduction re-anchors it where the
+    /// event leaves the graph ([`Self::reanchor_event_referents`]), from the
+    /// referent the indices both modes keep give ([`Self::indexed_referent`]),
+    /// so the two record the same repairs. Called only without a graph, at the
+    /// point graph-aware reduction calls `materialize_graph_delete`.
+    fn reanchor_markers_without_graph(&mut self, deleted: EventId) -> Vec<RepairRecord> {
+        let deleted_obj = TypedObjectId::Event(deleted);
+        let markers: Vec<TypedObjectId> = self
+            .structures
+            .iter()
+            .filter(|(sid, refs)| {
+                matches!(sid, TypedObjectId::Marker(_))
+                    && refs.contains(&deleted_obj)
+                    && matches!(self.objects.get(sid), Some(ObjectState::Live))
+            })
+            .map(|(sid, _)| *sid)
+            .collect();
+        let mut repairs = Vec::new();
+        if markers.is_empty() {
+            return repairs;
+        }
+        let referent = self.indexed_referent(deleted);
+        for sid in markers {
+            match &referent {
+                Some(referent) => self.reanchor_marker(deleted, referent, sid, &mut repairs),
+                None => {
+                    self.structures.remove(&sid);
+                    repairs.push(RepairRecord {
+                        kind: RepairKind::Orphaned,
+                        target: sid,
+                    });
+                }
+            }
+        }
+        repairs
+    }
+
+    /// An event's referent context from the indices both modes keep: its
+    /// occupancy entry (voice, musical placement) and its voice's instance's
+    /// region. `None` for an event the index does not hold (not metric).
+    fn indexed_referent(&self, event: EventId) -> Option<ReferentContext> {
+        let (voice, position, duration) =
+            self.voice_occupancy.iter().find_map(|(voice, events)| {
+                events
+                    .iter()
+                    .find(|(_, _, stored)| *stored == event)
+                    .map(|(position, duration, _)| (*voice, position.clone(), duration.clone()))
+            })?;
+        let region = self
+            .voice_instance(voice)
+            .and_then(|instance| self.instance_region_of(instance));
+        Some(ReferentContext {
+            voice,
+            region,
+            position: EventPosition::Musical(position),
+            duration: EventDuration::Musical(duration),
+        })
     }
 
     /// Row "Cue event / Source event": cascade-delete — the plain normative
@@ -11770,6 +12342,7 @@ impl<'a> Reducer<'a> {
             meter_change_chain: self.meter_change_chain.clone(),
             tempo_segment_chain: self.tempo_segment_chain.clone(),
             staff_layout_chain: self.staff_layout_chain.clone(),
+            voice_home_chain: self.voice_home_chain.clone(),
             clef_chain: self.clef_chain.clone(),
             key_chain: self.key_chain.clone(),
             staff_values: self.staff_values.clone(),
@@ -11822,6 +12395,7 @@ impl<'a> Reducer<'a> {
         self.meter_change_chain = s.meter_change_chain;
         self.tempo_segment_chain = s.tempo_segment_chain;
         self.staff_layout_chain = s.staff_layout_chain;
+        self.voice_home_chain = s.voice_home_chain;
         self.clef_chain = s.clef_chain;
         self.key_chain = s.key_chain;
         self.staff_values = s.staff_values;
@@ -12918,7 +13492,7 @@ mod tests {
             position: EventPosition::Musical(position_of(0, 1)),
             duration: EventDuration::Musical(musical(1, 2)),
             pitches: vec![],
-            articulations: vec![],
+            marks: vec![],
             dynamic: None,
             ornaments: vec![],
             stem: epiphany_core::StemConfiguration,
@@ -15633,6 +16207,7 @@ mod tests {
                 id: event_id,
                 offset: AnchorOffset::Zero,
             },
+            kind: epiphany_core::MarkerKind::Segno,
         });
 
         let del = prim_env(
@@ -15731,6 +16306,7 @@ mod tests {
                 id: referent,
                 offset: AnchorOffset::Zero,
             },
+            kind: epiphany_core::MarkerKind::Segno,
         });
         let del = prim_env(
             3,

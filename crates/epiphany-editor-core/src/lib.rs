@@ -2129,7 +2129,7 @@ impl EditorSession {
                 id: new_pitch,
                 pitch: anchor_value,
             }],
-            articulations: vec![],
+            marks: vec![],
             dynamic: None,
             ornaments: vec![],
             stem: StemConfiguration,
@@ -2556,7 +2556,7 @@ impl EditorSession {
                         spelling_override: authored_spelling(&self.score, ip.id),
                     })
                     .collect(),
-                articulations: pe.articulations.clone(),
+                marks: pe.marks.clone(),
                 dynamic: pe.dynamic.clone(),
                 ornaments: pe.ornaments.clone(),
                 stem: pe.stem.clone(),
@@ -3834,7 +3834,7 @@ fn note_event(
             position,
             duration,
             pitches,
-            articulations: Vec::new(),
+            marks: Vec::new(),
             dynamic: None,
             ornaments: Vec::new(),
             stem: StemConfiguration,
@@ -3876,7 +3876,7 @@ fn fragment_event_to_op_event(
         ),
         fragment::FragmentEventContent::Pitched {
             pitches,
-            articulations,
+            marks,
             dynamic,
             ornaments,
             stem,
@@ -3906,7 +3906,7 @@ fn fragment_event_to_op_event(
                     position,
                     duration,
                     pitches: identified,
-                    articulations: articulations.clone(),
+                    marks: marks.clone(),
                     dynamic: dynamic.clone(),
                     ornaments: ornaments.clone(),
                     stem: stem.clone(),
@@ -5259,7 +5259,7 @@ mod tests {
             evs[0].0
         };
         if let Some(Event::Pitched(pe)) = score.events.get_mut(first_id) {
-            pe.articulations.push(epiphany_core::ArticulationMark);
+            pe.marks.push(epiphany_core::EventMark::Staccato);
         }
 
         let mut session = EditorSession::open(score, Box::new(StubSolver)).expect("renders");
@@ -5292,7 +5292,7 @@ mod tests {
             .expect("a tail event at the original note's remainder");
         match tail {
             Event::Pitched(pe) => assert!(
-                !pe.articulations.is_empty(),
+                !pe.marks.is_empty(),
                 "the split tail kept the note's articulation"
             ),
             _ => panic!("the tail of a pitched note is pitched"),
@@ -6067,7 +6067,7 @@ mod tests {
                 duration,
                 staff_position: StaffPosition(0),
                 instrument_member: UnpitchedMemberId(0),
-                articulations: Vec::new(),
+                marks: Vec::new(),
                 dynamic: None,
                 stem: StemConfiguration,
                 grace: None,
@@ -8636,7 +8636,7 @@ mod tests {
                         // rendered rects and must not catch a neighbor's ledger.
                         pitch: cmn_pitch(CmnNominal::G, 4),
                     }],
-                    articulations: vec![],
+                    marks: vec![],
                     dynamic: None,
                     ornaments: vec![],
                     stem: StemConfiguration,
@@ -9191,7 +9191,7 @@ mod tests {
                         id: pid,
                         pitch: cmn_pitch(CmnNominal::G, 4),
                     }],
-                    articulations: vec![],
+                    marks: vec![],
                     dynamic: None,
                     ornaments: vec![],
                     stem: StemConfiguration,
@@ -9289,7 +9289,7 @@ mod tests {
                         id: pid,
                         pitch: cmn_pitch(CmnNominal::G, 4),
                     }],
-                    articulations: vec![],
+                    marks: vec![],
                     dynamic: None,
                     ornaments: vec![],
                     stem: StemConfiguration,
@@ -9316,7 +9316,7 @@ mod tests {
                     id: pid,
                     pitch: cmn_pitch(CmnNominal::G, 4),
                 }],
-                articulations: vec![],
+                marks: vec![],
                 dynamic: None,
                 ornaments: vec![],
                 stem: StemConfiguration,
@@ -9421,7 +9421,7 @@ mod tests {
                         id: pid,
                         pitch: cmn_pitch(CmnNominal::G, 4),
                     }],
-                    articulations: vec![],
+                    marks: vec![],
                     dynamic: None,
                     ornaments: vec![],
                     stem: StemConfiguration,

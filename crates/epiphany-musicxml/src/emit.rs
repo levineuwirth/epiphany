@@ -12,24 +12,28 @@ use std::collections::BTreeMap;
 use epiphany_core::{
     AnchorOffset, Beam, BeamId, BeatGroup, Clef, ClefChange, Event, EventDuration, EventId,
     EventPosition, ForeignFormatId, IdentifiedPitch, IdentityContext, Instrument, InstrumentId,
-    KeySignature, KeySignatureChange, Measure, MeasureId, MeasureNumberVisibility, MetricTimeModel,
-    MusicalDuration, MusicalPosition, OperationId, PitchId, PitchedEvent, PowerOfTwo, RationalTime,
-    Region, RegionContent, RegionEdge, RegionId, RegionTimeModel, ReplicaId, Rest, ScoreMetadata,
-    Slur, SlurId, SlurKind, Staff, StaffExtent, StaffGroup, StaffGroupId, StaffGroupKind, StaffId,
-    StaffInstance, StaffInstanceId, StaffLineConfiguration, StaffPosition, StemConfiguration, Tie,
-    TieClass, TieId, TimeAnchor, TimeExtent, TimeSignature, TimeSignatureDisplay, TimeSignatureId,
-    Timestamp, Tuplet, TupletRatio, UnpitchedEvent, UnpitchedMember, UnpitchedMemberId, Voice,
-    VoiceId, VoiceOrigin, WallClockTime,
+    KeySignature, KeySignatureChange, Lyric, LyricLineId, Marker, MarkerId, MarkerKind, Measure,
+    MeasureId, MeasureNumberVisibility, MetricTimeModel, MusicalDuration, MusicalPosition,
+    OperationId, PitchId, PitchedEvent, PowerOfTwo, RationalTime, Region, RegionContent,
+    RegionEdge, RegionId, RegionTimeModel, ReplicaId, Rest, ScoreMetadata, Slur, SlurId, SlurKind,
+    SpanStyle, Spanner, SpannerId, Staff, StaffExtent, StaffGroup, StaffGroupId, StaffGroupKind,
+    StaffId, StaffInstance, StaffInstanceId, StaffLineConfiguration, StaffPosition,
+    StemConfiguration, Tempo, TempoSegment, TempoShape, Tie, TieClass, TieId, TimeAnchor,
+    TimeExtent, TimeSignature, TimeSignatureDisplay, TimeSignatureId, Timestamp, TransactionId,
+    Tuplet, TupletRatio, UnpitchedEvent, UnpitchedMember, UnpitchedMemberId, Voice, VoiceId,
+    VoiceOrigin, WallClockTime,
 };
 use epiphany_ops::{
     AuthorId, CausalContext, CreateCrossCuttingOp, CreateInstrumentOp, CreateMeasureOp,
     CreateRegionOp, CreateStaffGroupOp, CreateStaffInstanceOp, CreateStaffOp, CreateTupletOp,
     CreateVoiceOp, CrossCuttingValue, HybridLogicalClock, InsertEventOp, OperationEnvelope,
     OperationKind, OperationPayload, OperationStamp, RespellPitchOp, SetMetadataOp,
-    SetTimeSignatureOp,
+    SetTempoSegmentOp, SetTimeSignatureOp, SetVoiceHomeOp, TransactionDescriptor,
 };
 
-use crate::source::{Content, FeatureClass, GroupKind, Meter, Place, SourcePart, SourceScore};
+use crate::source::{
+    Content, FeatureClass, GroupKind, Meter, Place, SourcePart, SourcePoint, SourceScore,
+};
 
 /// The replica an import authors from unless told otherwise.
 pub const DEFAULT_REPLICA: ReplicaId = ReplicaId(0x6D75_7369_6378_6D6C);
@@ -62,6 +66,17 @@ pub enum Subject {
     Spelling(usize, usize, usize),
     /// A staff group: index into [`SourceScore::groups`].
     Group(usize),
+    /// A point mark: part and index into its markers.
+    Marker(usize, usize),
+    /// A lyric syllable: part, event and the syllable's index on it.
+    Lyric(usize, usize, usize),
+    /// A line: part and index into its spanners.
+    Spanner(usize, usize),
+    /// A tempo, its mark and its transaction: part and index into its
+    /// tempos.
+    Tempo(usize, usize),
+    /// A visiting voice's home staff: part, staff and the file's voice.
+    VoiceHome(usize, usize, String),
 }
 
 /// What one emitted operation carries.
@@ -114,6 +129,8 @@ struct Emitter {
     identity: IdentityContext,
     envelopes: Vec<OperationEnvelope>,
     labels: Vec<Label>,
+    /// The transaction the operations emitted now belong to.
+    transaction: Option<TransactionId>,
 }
 
 impl Emitter {
@@ -132,7 +149,7 @@ impl Emitter {
                 id,
             ),
             causal_context,
-            transaction: None,
+            transaction: self.transaction,
             payload: OperationPayload::Primitive(op),
         });
         self.labels.push(Label { kind, subject });
@@ -216,7 +233,7 @@ fn staff_lines(lines: Option<u8>) -> StaffLineConfiguration {
 /// holding as many; a number that sounds on two staves at once names a voice
 /// on each, as where a file numbers each staff's voices afresh, and is at
 /// home on both.
-fn staff_voices(part: &SourcePart) -> Vec<Vec<&str>> {
+fn staff_voices(part: &SourcePart) -> (Vec<Vec<&str>>, BTreeMap<&str, Option<usize>>) {
     let mut counts: BTreeMap<&str, BTreeMap<usize, usize>> = BTreeMap::new();
     let mut spans: BTreeMap<&str, Vec<(&RationalTime, RationalTime, usize)>> = BTreeMap::new();
     for event in &part.events {
@@ -255,7 +272,7 @@ fn staff_voices(part: &SourcePart) -> Vec<Vec<&str>> {
             (voice, most.filter(|_| !at_once))
         })
         .collect();
-    (0..part.staves.len())
+    let orders = (0..part.staves.len())
         .map(|staff| {
             let mut voices: Vec<&str> = counts
                 .iter()
@@ -269,7 +286,8 @@ fn staff_voices(part: &SourcePart) -> Vec<Vec<&str>> {
             });
             voices
         })
-        .collect()
+        .collect();
+    (orders, homes)
 }
 
 /// The events of a part by staff and onset, each list in source order.
@@ -286,6 +304,37 @@ pub(crate) fn event_starts(
     starts
 }
 
+/// Where a mark the file places stands: on its event, or on the first event
+/// of its staff starting at its position (a note or rest before a grace
+/// note there), or, where none starts there, at the position in the region;
+/// a barline's mark at its position always.
+fn point_anchor(
+    part: &SourcePart,
+    events: &[EventId],
+    region: RegionId,
+    point: &SourcePoint,
+) -> TimeAnchor {
+    let on = |i: usize| TimeAnchor::Event {
+        id: events[i],
+        offset: AnchorOffset::Zero,
+    };
+    match point {
+        SourcePoint::Event(i) => on(*i),
+        SourcePoint::At { staff, onset, .. } => {
+            let starting = |grace: bool| {
+                part.events.iter().position(|event| {
+                    event.staff == *staff && &event.onset == onset && event.grace.is_some() == grace
+                })
+            };
+            match starting(false).or_else(|| starting(true)) {
+                Some(i) => on(i),
+                None => region_anchor(region, onset),
+            }
+        }
+        SourcePoint::Barline { onset, .. } => region_anchor(region, onset),
+    }
+}
+
 /// Emits the operations that build `source` from an empty score.
 pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
     let mut e = Emitter {
@@ -293,6 +342,7 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
         identity: IdentityContext::new(replica),
         envelopes: Vec::new(),
         labels: Vec::new(),
+        transaction: None,
     };
     let mut ids = Ids::default();
 
@@ -451,10 +501,19 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
         }
     }
 
-    // Staff instances with their clefs and keys, then voices.
+    // Staff instances with their clefs and keys, then voices; a voice
+    // visiting a staff from its home on another names that home (D46).
+    let mut visitors: Vec<(usize, usize, String, usize)> = Vec::new();
     for (p, part) in source.parts.iter().enumerate() {
         let mut instances = Vec::new();
-        let staff_voices = staff_voices(part);
+        let (staff_voices, homes) = staff_voices(part);
+        for (s, voices) in staff_voices.iter().enumerate() {
+            for voice in voices {
+                if let Some(home) = homes[voice].filter(|home| *home != s) {
+                    visitors.push((p, s, (*voice).to_owned(), home));
+                }
+            }
+        }
         for (s, staff) in part.staves.iter().enumerate() {
             let instance_id: StaffInstanceId = e.identity.mint();
             let mut instance = StaffInstance::new(instance_id, ids.staves[p][s]);
@@ -506,6 +565,17 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
             }
         }
         ids.instances.push(instances);
+    }
+    for (p, s, voice, home) in visitors {
+        let id = ids.voices[&(p, s, voice.clone())];
+        e.emit(
+            "SetVoiceHome",
+            Subject::VoiceHome(p, s, voice),
+            OperationKind::SetVoiceHome(SetVoiceHomeOp {
+                voice: id,
+                home: Some(ids.staves[p][home]),
+            }),
+        );
     }
 
     // Measures, on every staff.
@@ -571,11 +641,11 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
                             }
                         })
                         .collect(),
-                    articulations: Vec::new(),
+                    marks: event.marks.clone(),
                     dynamic: None,
-                    ornaments: Vec::new(),
+                    ornaments: event.ornaments.clone(),
                     stem: StemConfiguration,
-                    grace: None,
+                    grace: event.grace.clone(),
                 }),
                 Content::Unpitched { step, member, .. } => Event::Unpitched(UnpitchedEvent {
                     id,
@@ -584,10 +654,10 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
                     duration,
                     staff_position: StaffPosition(*step),
                     instrument_member: UnpitchedMemberId(*member as u32),
-                    articulations: Vec::new(),
+                    marks: event.marks.clone(),
                     dynamic: None,
                     stem: StemConfiguration,
-                    grace: None,
+                    grace: event.grace.clone(),
                 }),
             };
             e.emit(
@@ -826,6 +896,149 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
                 }),
             );
         }
+
+        // Point marks, lyric syllables and lines (schema major 5).
+        let anchor = |point: &SourcePoint| point_anchor(part, &ids.events[p], region_id, point);
+        for (k, marker) in part.markers.iter().enumerate() {
+            let id: MarkerId = e.identity.mint();
+            e.emit(
+                "CreateCrossCutting(Marker)",
+                Subject::Marker(p, k),
+                OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                    structure: CrossCuttingValue::Marker(Marker {
+                        id,
+                        anchor: anchor(&marker.at),
+                        kind: marker.kind.clone(),
+                    }),
+                }),
+            );
+        }
+        for (i, event) in part.events.iter().enumerate() {
+            for (n, lyric) in event.lyrics.iter().enumerate() {
+                let id: LyricLineId = e.identity.mint();
+                e.emit(
+                    "CreateCrossCutting(Lyric)",
+                    Subject::Lyric(p, i, n),
+                    OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                        structure: CrossCuttingValue::Lyric(Lyric {
+                            id,
+                            event: ids.events[p][i],
+                            verse: lyric.verse,
+                            text: lyric.text.clone(),
+                            syllabic: lyric.syllabic,
+                            extension: lyric.extension,
+                        }),
+                    }),
+                );
+            }
+        }
+        for (k, spanner) in part.spanners.iter().enumerate() {
+            let id: SpannerId = e.identity.mint();
+            e.emit(
+                "CreateCrossCutting(Spanner)",
+                Subject::Spanner(p, k),
+                OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                    structure: CrossCuttingValue::Spanner(Spanner {
+                        id,
+                        start: anchor(&spanner.start),
+                        end: anchor(&spanner.end),
+                        staves: vec![ids.staves[p][spanner.staff]],
+                        kind: spanner.kind.clone(),
+                        style: SpanStyle {
+                            line: spanner.line,
+                            thickness: None,
+                        },
+                    }),
+                }),
+            );
+        }
+    }
+
+    // Tempos, in score order: each in a transaction of its own, the tempo
+    // map's segment and the mark the file shows beside it (D58, Q7). A tempo
+    // a later part sets again at the same place adds no segment, and its
+    // mark stands alone.
+    let mut tempos: Vec<(RationalTime, usize, usize)> = Vec::new();
+    for (p, part) in source.parts.iter().enumerate() {
+        for (k, tempo) in part.tempos.iter().enumerate() {
+            if let SourcePoint::At { onset, .. } = &tempo.at {
+                tempos.push((onset.clone(), p, k));
+            }
+        }
+    }
+    tempos.sort();
+    let mut set_at: BTreeMap<RationalTime, f64> = BTreeMap::new();
+    for (onset, p, k) in tempos {
+        let part = &source.parts[p];
+        let tempo = &part.tempos[k];
+        let mark = tempo.mark.clone().map(|mark| Marker {
+            id: e.identity.mint(),
+            anchor: point_anchor(part, &ids.events[p], region_id, &tempo.at),
+            kind: MarkerKind::Tempo(mark),
+        });
+        if let Some(&bpm) = set_at.get(&onset) {
+            if bpm != tempo.bpm {
+                source.features.record(
+                    FeatureClass::Content,
+                    "a second tempo at one place",
+                    Place {
+                        part: part.name.clone(),
+                        measure: String::new(),
+                    },
+                );
+            }
+            if let Some(marker) = mark {
+                e.emit(
+                    "CreateCrossCutting(Marker)",
+                    Subject::Tempo(p, k),
+                    OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                        structure: CrossCuttingValue::Marker(marker),
+                    }),
+                );
+            }
+            continue;
+        }
+        let Some(start_tempo) = Tempo::quarter(tempo.bpm) else {
+            continue;
+        };
+        set_at.insert(onset.clone(), tempo.bpm);
+        let tx: TransactionId = e.identity.mint();
+        e.emit(
+            "DeclareTransaction",
+            Subject::Tempo(p, k),
+            OperationKind::DeclareTransaction(TransactionDescriptor {
+                id: tx,
+                label: String::from("tempo"),
+                category: None,
+            }),
+        );
+        e.transaction = Some(tx);
+        let start = region_anchor(region_id, &onset);
+        e.emit(
+            "SetTempoSegment",
+            Subject::Tempo(p, k),
+            OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                region: None,
+                start: start.clone(),
+                segment: Some(TempoSegment {
+                    start,
+                    end: None,
+                    start_tempo,
+                    end_tempo: None,
+                    shape: TempoShape::Constant,
+                }),
+            }),
+        );
+        if let Some(marker) = mark {
+            e.emit(
+                "CreateCrossCutting(Marker)",
+                Subject::Tempo(p, k),
+                OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                    structure: CrossCuttingValue::Marker(marker),
+                }),
+            );
+        }
+        e.transaction = None;
     }
 
     Import {

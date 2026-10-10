@@ -166,6 +166,19 @@ pub fn print_import(loaded: &Loaded) {
             println!("not imported ({class:?}): {}", kinds.join(", "));
         }
     }
+    let imported = epiphany_musicxml::fidelity::expression_counts(&loaded.reduced.score);
+    println!(
+        "expression and text imported: {}",
+        if imported.is_empty() {
+            String::from("none")
+        } else {
+            imported
+                .iter()
+                .map(|(class, n)| format!("{class} ×{n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    );
     println!(
         "fidelity: {} failures, {} explained by rejected operations",
         loaded.fidelity.failures.len(),

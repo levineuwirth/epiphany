@@ -3626,3 +3626,172 @@ kept where they stand. With M3's fix reverted the fuzz finds its break at the
 fifth of 10,000 histories of 64 authored (seed `0x62640004`); at the tip the
 gesture's wall-clock migration conflicts naming the note and the others
 apply.
+
+## X4b.0 — X4a's follow-ups (2026-10-10)
+
+Review 3 of C4a converged with four Lows and one follow-up found by hand,
+which the owner sent to X4b.0 (D55). Each is closed in its own commit.
+
+**The deferred class reads liveness from the ledger (review 3's L1).**
+`overlap_made_by_regions` counted every staff instance the graph-aware score
+holds, so an overlap left by a removal the graph failed to make (a delete
+that tombstones an instance in the ledger and leaves it in the graph, review
+3's plant D2) fell into the deferred class under a named cause, history by
+history, although the same plant showed plainly as `StaffInstanceResolves`
+within the budget. An instance now counts only when the graph holds it and
+the ledger (`objects`) holds it live, so such an overlap keeps the
+invariant's plain class; an overlap made by creating or filling regions is
+unchanged, since each instance it fills is live in both. Locked by
+`an_overlap_by_an_instance_the_ledger_removed_is_not_the_deferred_class`:
+the never-seen history's graph with one region's instance tombstoned in the
+ledger alone gives a plain `RegionExtents` finding and no deferred one.
+Mutation: the ledger's liveness ignored (the finding is "never seen", the
+test fails).
+
+**A dropped grid restoration's signature is pinned (review 3's L2).**
+`0b3789b` keeps a time signature a best-effort undo would remove while a
+meter change or a whole grid its dropped restoration leaves in place still
+names it; the grid arm was pinned by nothing, and review 3's probe did not
+reach it, so it might have been unreachable. It is reachable. The probe's
+transaction minted its signature by a meter change at the grid's own
+position, where the per-key overlay governs, so the grid's restoration was
+admitted and only the meter change's dropped. Here the transaction mints a
+2/4 signature by a meter change at a later bar and sets the region's whole
+grid to it at the start; measures entered after it at the second and third
+half bars fit 2/4 only, so the grid's restoration to 4/4 is dropped, the
+meter change's removal admitted, and the grid alone names the signature.
+Locked by
+`a_best_effort_undo_keeps_a_signature_its_dropped_grid_restoration_leaves_named_in_both_modes`.
+Mutation: the grid arm disabled (the undo removes the signature the grid
+names, `CrossCuttingRefsResolve`, and the test fails).
+
+**A stepwise trajectory's steps are tested, and the shapes the fuzz leaves
+out are named (review 3's L3).** `34a8d0a` reads and writes a trajectory's
+own pitches as a note's, its stepwise steps among them, and neither the
+generator nor any test wrote a step. The trajectory test now writes a
+stepwise trajectory over a note, minting its two steps, transposes the first
+by steps, gives the second a new value and deletes the first, which leaves a
+note of the pitches it still holds, in both modes. The module doc of
+`fuzz::modes` now names what the generator leaves out of the kinds it writes,
+beyond the references D54 parks: curved and stepwise trajectories, a
+compound indeterminacy, and an indeterminate event's hints. Mutation:
+`held_pitch_mut`'s steps arm disabled (the transposed step keeps its value
+in the graph, and the test fails).
+
+**A generated redo restores something (review 3's L4).** The undo-and-redo
+gesture undid any transaction the view held and then undid its own undo. An
+undo of an undo that removed what its transaction minted has nothing to
+compensate, a tombstone being final, so most such redos were refused
+`TargetMissing` (991 of 1,196 per 3,000 histories of 64 authored), and an
+editor's redo restores what it undid. The gesture now draws its target among
+transactions that overwrote values: each member applied in the author's view,
+minting and deleting nothing, and none the frozen `Transpose`, which records
+no write and so is undone by nothing. Where the view holds none, its author
+first revalues a pitch in a transaction of its own, as an editor edits, undoes
+and redoes. A redo stays an undo of the undo, never the command authored
+again. A first form that only filtered the target fired less often and wrote
+fewer redos that applied (107 against 140) and fewer undos (3,898 against
+5,257); one that transposed by steps as its fallback edit found every undo
+of it refused, which the census showed and the catalog says. Measured with a
+census of the generated undos (`undo_census`, outside the repository) over the
+same 3,000 histories of 64 authored from seed `0xA3F80000`: undos authored
+5,257 to 7,626; redos 1,196 to 2,457, of which applied 140 to 1,560 and
+refused `TargetMissing` 991 to 648 (624 of the 648 redo an overwrite, and
+438 of those reverse an undo whose own transaction rolled back); undos naming
+another replica's transaction 1,457 to 1,426. The CI budget and the committed
+histories pass at the new generator.
+
+**A pitch belongs to one event (review 3's F1; reduction version 4).** A
+`ModifyEvent` carrying a pitch id live in another event applied in both modes
+and left one pitch in two events (`PitchIdUnique`), one author, one
+operation. `InsertEvent` refuses a carried pitch id the ledger already holds;
+the modify had no check that a carried pitch was its own event's, and
+`f045d9f`'s mint skips any known id, so it neither caused nor fixed this.
+Neither the importer nor the editor writes such a modify, and the modes
+agreed, so review 3 graded it a follow-up. It is refused now, in both modes,
+read from `event_pitches`: a carried pitch the ledger holds live and the
+index places in another event, `RecreateContentMismatch`, the reason a
+create re-carrying a live id under a different parent already takes (a
+measure, pin 5), so no reason is appended and the wire is unchanged. A pitch
+of the event's own, a fresh one (minted by the modify) and one a delete
+removed (left out, delete wins) are unaffected. This changes a reduction
+verdict, so version 3 moves to 4, the version X4b's schema walk then shares.
+Locked by `a_modify_carrying_a_pitch_another_event_holds_is_refused_in_both_modes`
+(another event's pitch carried alone and beside a fresh one, refused with
+nothing minted; the event's own and a fresh one, applied; a deleted one,
+applied without it). Mutation: the check disabled (the pitch stands in two
+events, `PitchIdUnique`, and the test fails).
+
+## X4b.2 — schema major 5 in the operations (2026-10-10)
+
+The ruled shapes (D58) reach the payloads, the decoder, reduction and the
+text projection.
+
+**The wire.** `SetVoiceHome` is kind/tag 43 at epoch 15, its payload a voice
+and an optional staff. `CrossCuttingValue` appends `Marker` (4) and `Lyric`
+(5); `PreconditionFailureReason` appends `SlotOccupied` (19, epoch 15).
+`InsertEvent`, `ModifyEvent`, `CreateCrossCutting` and `ModifyCrossCutting`
+stamp major 5 by value, where the value holds a mark, an ornament, a grace,
+a marker, a lyric, a wavy line or a pedal bracket, and as before otherwise;
+so do the staff, instrument, instance and region payloads where a staff-line
+style is wavy. The op-block and snapshot accept-sets rise to `[0, 5]`. The
+text projection moves to 0.18.0, its `kind` production gaining
+`set-voice-home` and its `cross-cutting` production `marker` and `lyric`.
+Locked by `x4b_payloads_stamp_major_5_by_value`,
+`cross_cutting_value_discriminants_are_golden` and the vocabulary goldens.
+
+**Reduction.** Version 4's `Bumps` entry gains X4b.2's verdicts, each held
+alike in both modes by `epiphany-musicxml`'s `expression_modes`, one test a
+verdict, each observed failing with its rule disabled (eighteen mutations):
+a grace's zero duration and a non-grace's positive one, refused
+`EventDurationInvalid` at an insert or a modify; a grace never strictly
+inside another event's span; a voice's order by position, then a position's
+graces by `(order, id)`, then its event of positive duration, re-sorted when
+a modify changes only a grace's order; a grace no tuplet's member; a tie's
+adjacency over events of positive duration; one syllable per event and
+verse, `SlotOccupied`, and a syllable cascade-deleted with its event; a
+marker an operation anchored to an event re-anchored at its delete in
+base-free reduction too, from the occupancy index (`indexed_referent`); and
+the voice home's register, guard and undo.
+
+**A voice's home is a register.** `SetVoiceHome` writes a last-writer-wins
+value keyed by the voice, seeded with no home at the voice's create and from
+a base's `voice_homes`. A dead voice refuses it `TargetTombstoned` or
+`TargetMissing`, a dead staff `TargetMissing`; concurrent differing writes
+are a `StructuralFieldCollision`. An undo restores the earlier home, a home
+naming a staff removed since being superseded; an undo cannot remove a staff
+a live voice's home names (the strand guard, as for a part or a spanner);
+a voice's delete takes its home with it.
+
+**What an editor's clipboard carries.** The fragment format's note carries
+the real marks, ornaments and grace. An empty value projects as before, so
+the fragment version is unchanged.
+
+**The fuzz writes `SetVoiceHome`** (arm 56), so the every-kind test holds;
+X4b.4 adds the arms for the new values.
+
+## X4b.4 — the fuzz writes schema major 5 (2026-10-10)
+
+**New arms.** The two-mode fuzz now writes every new payload and operation:
+an inserted note or unpitched note carries marks a third of the time and a
+note an ornament a sixth (`random_marks`, `random_ornaments`); arm 57 inserts
+a grace note at an event's onset, or alone where it ends; arm 58 rewrites an
+event's marks or ornaments or a grace's order; arms 59 and 60 create a marker
+(on an event or at a region's position) and a lyric (in one of two verses,
+so a second syllable is often refused); the delete and modify arms draw
+markers and lyrics among the live structures, moving a marker or giving it
+another kind and moving a syllable to another verse, text or event; a created
+spanner takes any kind and line, the wavy line and the pedal bracket among
+them; arm 56 sets a voice's home. `Coverage` counts each new payload shape
+beside its kind (`InsertEvent+grace`, `CreateCrossCutting+Lyric` and so on),
+so `the_ci_budget_authors_and_applies_every_kind` holds each shape authored
+and applied as it holds each kind.
+
+**What it found.** Two single-author breaks, each now a verdict under
+reduction version 4 with its test: a grace note whose last pitch was deleted
+became a rest of no length (`VoiceEventsSortedNonOverlap`), so a grace keeps
+a pitch; and a marker anchored to a region by a musical offset stayed when the
+region left musical time (`AnchorOffsetModel`) or was deleted
+(`CrossCuttingRefsResolve`), so a marker or spanner is held to its region as
+a clef, key or tempo segment is. Each rule was observed failing its test with
+the rule disabled (eight mutations).

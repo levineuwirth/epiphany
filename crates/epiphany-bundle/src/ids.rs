@@ -209,6 +209,14 @@ impl SchemaVersion {
     /// operation-envelope block carrying a `CreateTuplet`.
     pub const V4: SchemaVersion = SchemaVersion { major: 4, minor: 0 };
 
+    /// Schema major 5 — the fifth data-model expansion major (Binary Format
+    /// companion §"Schema Major 5", X4b): an event's marks, ornaments and
+    /// grace, a marker's kind, a lyric, a wavy line, a pedal bracket and a
+    /// voice's home staff. Stamped on the acceleration full-`Score` snapshot
+    /// and on any operation-envelope block carrying an operation whose value
+    /// holds one.
+    pub const V5: SchemaVersion = SchemaVersion { major: 5, minor: 0 };
+
     /// Constructs a schema version.
     #[inline]
     pub const fn new(major: u16, minor: u16) -> Self {
@@ -217,7 +225,8 @@ impl SchemaVersion {
 
     /// The **baseline** schema version at a given major: [`Self::V0`] for
     /// major 0, [`Self::V1`] for major 1, [`Self::V2`] for major 2,
-    /// [`Self::V3`] for major 3, [`Self::V4`] for major 4, and `{major, 0}`
+    /// [`Self::V3`] for major 3, [`Self::V4`] for major 4, [`Self::V5`] for
+    /// major 5, and `{major, 0}`
     /// for any higher (future) major. A writer maps a chunk's derived schema major to a version this
     /// way — e.g. an operation-envelope block stamps the max over its
     /// operations' `schema_major()`.
@@ -239,6 +248,7 @@ impl SchemaVersion {
             2 => SchemaVersion::V2,
             3 => SchemaVersion::V3,
             4 => SchemaVersion::V4,
+            5 => SchemaVersion::V5,
             m => SchemaVersion { major: m, minor: 0 },
         }
     }

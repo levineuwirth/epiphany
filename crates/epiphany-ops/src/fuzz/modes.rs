@@ -25,9 +25,13 @@
 //! moved one end at a time in one transaction, a pitch entered with its
 //! spelling, a spanner moved to another staff as a command of its own (onto a
 //! staff added for it, onto one the view holds, or onto an added one and back
-//! again as two commands), an undo and its redo, the author's two latest
-//! commands reverted, the older first, and an unmeasured passage (a region, a
-//! staff, a voice and a note) set in free time by any anchoring discipline. A
+//! again as two commands), an undo and its redo (of a transaction that
+//! overwrote values, minting and deleting nothing, so the redo has values to
+//! restore, the author revaluing a pitch first where the view holds none; a
+//! redo is an undo of the undo, never the command authored again),
+//! the author's two latest commands reverted, the older first, and an
+//! unmeasured passage (a region, a staff, a voice and a note) set in free time
+//! by any anchoring discipline. A
 //! whole-event modify moves, resizes or revalues an event, writes a chord
 //! without a pitch its author sees, writes an event as another kind in its
 //! place, or mints a pitch, a chord written with a new one or another kind
@@ -42,6 +46,14 @@
 //! migration's aleatoric target takes every anchoring discipline. A spanner is
 //! anchored to events only: one anchored to a region a delete or undo removes
 //! is a class the owner has parked (P13-D3).
+//!
+//! Some shapes of those kinds are not written either, though none names
+//! another object: a trajectory is linear or exponential, never curved or
+//! stepwise, so a step is never drawn (the reducer reads and writes a step as
+//! a note's pitch, held by the trajectory test in `epiphany-musicxml`'s
+//! `reduction_modes`); an indeterminate event's kind is pitch, duration or
+//! choice, never compound; and its hints are empty (no duration bounds, no
+//! alternatives, no textual instruction).
 //!
 //! Everything is seeded: [`generate`] is a function of its seed and length, so
 //! a finding reproduces from both. [`minimize`] shrinks a failing history to
@@ -80,14 +92,16 @@ use crate::payload::{
     ResolveEquivocationPayload, RespellPitchOp, SetCanvasLayoutDefaultsOp, SetClefOp,
     SetKeySignatureOp, SetMetadataOp, SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp,
     SetTempoSegmentOp, SetTimeSignatureOp, SetTuningContextOp, SetUserPageBreakOp,
-    SetUserSystemBreakOp, TransactionDescriptor, TransposeIntervalOp, TransposeOp,
+    SetUserSystemBreakOp, SetVoiceHomeOp, TransactionDescriptor, TransposeIntervalOp, TransposeOp,
     TupletCompensation,
 };
 use crate::stamp::{HybridLogicalClock, OperationStamp};
 use crate::support::AuthorId;
 use crate::undo::{UndoPolicy, UndoTransactionPayload};
 use crate::valuegen;
-use crate::{GraphMaterialization, MaterializedState, OperationEffect, OperationKindRegistryId};
+use crate::{
+    GraphMaterialization, MaterializedState, ObjectState, OperationEffect, OperationKindRegistryId,
+};
 
 /// The identity of the empty base both modes start from.
 const BASE: ReplicaId = ReplicaId(0);
@@ -400,21 +414,28 @@ fn compare(
             }
         }
     }
-    out.extend(invariant_findings(history, &aware_effects, &aware.score));
+    out.extend(invariant_findings(
+        history,
+        &aware_effects,
+        &aware.score,
+        &aware.state.objects,
+    ));
     out
 }
 
 /// The deferred class (D48, D50 to D52) is every `RegionExtents` overlap made
 /// by creating or filling regions, whatever its cause and however many
-/// authors: read from the graph, two regions whose time extents overlap, each
-/// holding a live instance of a common staff (`overlap_made_by_regions`).
+/// authors: two regions whose time extents overlap, each holding an instance
+/// of a common staff that the graph holds and the ledger holds live
+/// (`overlap_made_by_regions`).
 /// Refusing a region's creation or fill where it would overlap one the merged
 /// history keeps needs region extents compared in both modes; X5 does so and
 /// closes the class. The causes the classifier knows are named apart
 /// ([`REGION_NEVER_SEEN`], [`REGION_SEEN_DELETED`], [`REGION_SEEN_UNDONE`]),
 /// the rest under one general name ([`REGION_OVERLAP`]). An overlap of
 /// another making (a region's staff extent naming a staff it holds no live
-/// instance of) keeps the invariant's plain class, which nothing excepts.
+/// instance of, or an instance the graph keeps that the ledger tombstoned)
+/// keeps the invariant's plain class, which nothing excepts.
 /// This constant is the prefix the three named causes share.
 pub const DEFERRED_REGIONS: &str = "invariant Invariant(RegionExtents: a region created at the place of one its author's view did not hold live";
 
@@ -451,6 +472,7 @@ fn invariant_findings(
     history: &[OperationEnvelope],
     effects: &BTreeMap<OperationId, OperationEffect>,
     score: &Score,
+    objects: &BTreeMap<TypedObjectId, ObjectState>,
 ) -> Vec<Finding> {
     let mut seen = BTreeSet::new();
     check_invariants(score)
@@ -463,7 +485,7 @@ fn invariant_findings(
                     epiphany_core::GraphInvariant::RegionExtents
                 )
             )
-            .then(|| deferred_region_cause(history, effects, score, &violation.witness))
+            .then(|| deferred_region_cause(history, effects, score, objects, &violation.witness))
             .flatten();
             let class = match named {
                 Some(cause) => String::from(cause),
@@ -573,12 +595,19 @@ fn witness_regions(witness: &str) -> Vec<RegionId> {
 }
 
 /// Whether a `RegionExtents` witness is an overlap made by creating or
-/// filling regions (D52), read from the graph: it names two regions, both in
-/// `score`, whose time extents overlap (where both are wall-clock; the
-/// invariant has judged any other), each holding a live staff instance of a
-/// common staff. A staff extent naming a staff of no live instance is another
-/// making.
-fn overlap_made_by_regions(score: &Score, witness: &str) -> bool {
+/// filling regions (D52): it names two regions, both in `score`, whose time
+/// extents overlap (where both are wall-clock; the invariant has judged any
+/// other), each holding a staff instance of a common staff that the graph
+/// holds and the ledger (`objects`) holds live. A staff extent naming a staff
+/// of no live instance is another making, and so is an instance the graph
+/// keeps after the ledger tombstoned it, a removal the graph failed to make
+/// (X4a review 3's L1: read from the graph alone, such an overlap was
+/// deferred under a named cause).
+fn overlap_made_by_regions(
+    score: &Score,
+    objects: &BTreeMap<TypedObjectId, ObjectState>,
+    witness: &str,
+) -> bool {
     let [a, b] = witness_regions(witness)[..] else {
         return false;
     };
@@ -596,8 +625,18 @@ fn overlap_made_by_regions(score: &Score, witness: &str) -> bool {
             return false;
         }
     }
-    let staves =
-        |r: &Region| -> BTreeSet<StaffId> { r.staff_instances().iter().map(|i| i.staff).collect() };
+    let staves = |r: &Region| -> BTreeSet<StaffId> {
+        r.staff_instances()
+            .iter()
+            .filter(|i| {
+                matches!(
+                    objects.get(&TypedObjectId::StaffInstance(i.id)),
+                    Some(ObjectState::Live)
+                )
+            })
+            .map(|i| i.staff)
+            .collect()
+    };
     !staves(a).is_disjoint(&staves(b))
 }
 
@@ -608,9 +647,10 @@ fn deferred_region_cause(
     history: &[OperationEnvelope],
     effects: &BTreeMap<OperationId, OperationEffect>,
     score: &Score,
+    objects: &BTreeMap<TypedObjectId, ObjectState>,
     witness: &str,
 ) -> Option<&'static str> {
-    overlap_made_by_regions(score, witness)
+    overlap_made_by_regions(score, objects, witness)
         .then(|| region_cause(history, effects, witness).unwrap_or(REGION_OVERLAP))
 }
 
@@ -706,16 +746,20 @@ impl Coverage {
     fn record(&mut self, authored: &[OperationEnvelope], state: &MaterializedState) {
         let effects: BTreeMap<_, _> = state.effects.iter().cloned().collect();
         for envelope in authored {
-            let name = kind_name(&envelope.payload);
-            *self.authored.entry(name.clone()).or_default() += 1;
             let effect = effects.get(&envelope.id);
-            if matches!(
+            let applied = matches!(
                 effect,
                 Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
-            ) {
-                *self.applied.entry(name).or_default() += 1;
-            } else {
-                *self.other.entry((name, effect_shape(effect))).or_default() += 1;
+            );
+            let names = std::iter::once(kind_name(&envelope.payload))
+                .chain(shape_names(&envelope.payload).into_iter().map(String::from));
+            for name in names {
+                *self.authored.entry(name.clone()).or_default() += 1;
+                if applied {
+                    *self.applied.entry(name).or_default() += 1;
+                } else {
+                    *self.other.entry((name, effect_shape(effect))).or_default() += 1;
+                }
             }
         }
     }
@@ -733,7 +777,105 @@ impl Coverage {
                 .iter()
                 .map(|s| (*s).to_owned()),
         );
+        kinds.extend(SHAPES.iter().map(|s| (*s).to_owned()));
         kinds
+    }
+}
+
+/// The payload shapes schema major 5 adds, each counted beside its kind.
+const SHAPES: [&str; 14] = [
+    "InsertEvent+marks",
+    "InsertEvent+ornaments",
+    "InsertEvent+grace",
+    "ModifyEvent+marks",
+    "ModifyEvent+ornaments",
+    "ModifyEvent+grace",
+    "CreateCrossCutting+Marker",
+    "CreateCrossCutting+Lyric",
+    "CreateCrossCutting+wavy line",
+    "CreateCrossCutting+pedal bracket",
+    "ModifyCrossCutting+Marker",
+    "ModifyCrossCutting+Lyric",
+    "DeleteCrossCutting+Marker",
+    "DeleteCrossCutting+Lyric",
+];
+
+/// Which of [`SHAPES`] a payload has.
+fn shape_names(payload: &OperationPayload) -> Vec<&'static str> {
+    let OperationPayload::Primitive(kind) = payload else {
+        return Vec::new();
+    };
+    let event = |event: &Event, prefix: [&'static str; 3]| {
+        let (marks, ornaments, grace) = match event {
+            Event::Pitched(p) => (
+                !p.marks.is_empty(),
+                !p.ornaments.is_empty(),
+                p.grace.is_some(),
+            ),
+            Event::Unpitched(u) => (!u.marks.is_empty(), false, u.grace.is_some()),
+            _ => (false, false, false),
+        };
+        [marks, ornaments, grace]
+            .iter()
+            .zip(prefix)
+            .filter(|(has, _)| **has)
+            .map(|(_, name)| name)
+            .collect::<Vec<_>>()
+    };
+    let structure = |value: &CrossCuttingValue, marker: &'static str, lyric: &'static str| {
+        let mut out = Vec::new();
+        match value {
+            CrossCuttingValue::Marker(_) => out.push(marker),
+            CrossCuttingValue::Lyric(_) => out.push(lyric),
+            CrossCuttingValue::Spanner(s) => {
+                if matches!(s.style.line, epiphany_core::LineStyle::Wavy)
+                    && marker.starts_with("Create")
+                {
+                    out.push("CreateCrossCutting+wavy line");
+                }
+                if matches!(s.kind, epiphany_core::SpannerKind::PedalBracket(_))
+                    && marker.starts_with("Create")
+                {
+                    out.push("CreateCrossCutting+pedal bracket");
+                }
+            }
+            _ => {}
+        }
+        out
+    };
+    match kind {
+        OperationKind::InsertEvent(op) => event(
+            &op.event,
+            [
+                "InsertEvent+marks",
+                "InsertEvent+ornaments",
+                "InsertEvent+grace",
+            ],
+        ),
+        OperationKind::ModifyEvent(op) => event(
+            &op.event,
+            [
+                "ModifyEvent+marks",
+                "ModifyEvent+ornaments",
+                "ModifyEvent+grace",
+            ],
+        ),
+        OperationKind::CreateCrossCutting(op) => structure(
+            &op.structure,
+            "CreateCrossCutting+Marker",
+            "CreateCrossCutting+Lyric",
+        ),
+        OperationKind::ModifyCrossCutting(op) => structure(
+            &op.structure,
+            "ModifyCrossCutting+Marker",
+            "ModifyCrossCutting+Lyric",
+        ),
+        OperationKind::DeleteCrossCutting(op) => match op.structure {
+            TypedObjectId::Marker(_) => vec!["DeleteCrossCutting+Marker"],
+            TypedObjectId::LyricLine(_) => vec!["DeleteCrossCutting+Lyric"],
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
     }
 }
 
@@ -991,6 +1133,172 @@ fn random_duration(rng: &mut Rng) -> MusicalDuration {
     }
 }
 
+/// A few marks of any kinds, as a canonical set (schema major 5).
+fn random_marks(rng: &mut Rng) -> Vec<epiphany_core::EventMark> {
+    use epiphany_core::{ArpeggioDirection, EventMark as M};
+    let count = 1 + rng.below(3);
+    let marks: Vec<M> = (0..count)
+        .map(|_| match rng.below(22) {
+            0 => M::Staccato,
+            1 => M::Staccatissimo,
+            2 => M::Spiccato,
+            3 => M::Tenuto,
+            4 => M::DetachedLegato,
+            5 => M::Accent,
+            6 => M::Marcato,
+            7 => M::Stress,
+            8 => M::Unstress,
+            9 => M::UpBow,
+            10 => M::DownBow,
+            11 => M::Harmonic,
+            12 => M::OpenString,
+            13 => M::Stopped,
+            14 => M::SnapPizzicato,
+            15 => M::Scoop,
+            16 => M::Plop,
+            17 => M::Doit,
+            18 => M::Falloff,
+            19 => M::Tremolo {
+                strokes: 1 + rng.below(4) as u8,
+            },
+            20 => M::TremoloWithNext {
+                strokes: 1 + rng.below(4) as u8,
+            },
+            _ => M::Arpeggio {
+                direction: [
+                    ArpeggioDirection::Plain,
+                    ArpeggioDirection::Up,
+                    ArpeggioDirection::Down,
+                ][rng.below(3) as usize],
+            },
+        })
+        .collect();
+    epiphany_core::canonical_marks(marks)
+}
+
+/// An ornament, with an accidental above it a third of the time.
+fn random_ornaments(rng: &mut Rng) -> Vec<epiphany_core::Ornament> {
+    use epiphany_core::OrnamentKind as K;
+    let kind = [
+        K::Trill,
+        K::Mordent,
+        K::InvertedMordent,
+        K::Turn,
+        K::InvertedTurn,
+    ][rng.below(5) as usize];
+    let accidental_above = rng.chance(3).then(|| {
+        epiphany_core::AccidentalId::new(["flat", "sharp", "natural"][rng.below(3) as usize])
+    });
+    vec![epiphany_core::Ornament {
+        kind,
+        accidental_above,
+        accidental_below: None,
+    }]
+}
+
+/// A grace note's notation, in an order among its position's graces.
+fn random_grace(rng: &mut Rng) -> epiphany_core::Grace {
+    use epiphany_core::{GraceKind, NoteValue};
+    epiphany_core::Grace {
+        kind: if rng.chance(2) {
+            GraceKind::Acciaccatura
+        } else {
+            GraceKind::Appoggiatura
+        },
+        value: [NoteValue::Eighth, NoteValue::Sixteenth, NoteValue::Quarter][rng.below(3) as usize],
+        dots: u8::from(rng.chance(6)),
+        order: rng.below(3) as u16,
+    }
+}
+
+/// A short text, one of them composed (an NFC `é`).
+fn random_text(rng: &mut Rng) -> epiphany_core::Text {
+    epiphany_core::Text::new(["la", "lo", "\u{e9}", "cresc."][rng.below(4) as usize])
+}
+
+/// A point mark of any kind.
+fn random_marker_kind(rng: &mut Rng) -> epiphany_core::MarkerKind {
+    use epiphany_core::{
+        BreathMark, CaesuraMark, Dynamic, Fermata, FermataShape, MarkerKind, Metronome, NoteValue,
+        TempoMark,
+    };
+    match rng.below(9) {
+        0 => MarkerKind::Dynamic(
+            [Dynamic::P, Dynamic::Mf, Dynamic::Sfz, Dynamic::Niente][rng.below(4) as usize].clone(),
+        ),
+        1 => MarkerKind::Fermata(Fermata {
+            shape: [FermataShape::Normal, FermataShape::Long][rng.below(2) as usize],
+            inverted: rng.chance(4),
+        }),
+        2 => MarkerKind::Breath(BreathMark::Comma),
+        3 => MarkerKind::Caesura(CaesuraMark::Thick),
+        4 => MarkerKind::Text(random_text(rng)),
+        5 => MarkerKind::Tempo(TempoMark {
+            text: rng.chance(2).then(|| random_text(rng)),
+            metronome: Some(Metronome {
+                beat: NoteValue::Quarter,
+                dots: 0,
+                per_minute: epiphany_core::Text::new("96"),
+            }),
+        }),
+        6 => MarkerKind::Rehearsal(epiphany_core::Text::new("A")),
+        7 => MarkerKind::Segno,
+        _ => MarkerKind::Coda,
+    }
+}
+
+/// A lyric syllable on `event`, in one of two verses.
+fn random_lyric(
+    id: epiphany_core::LyricLineId,
+    event: EventId,
+    rng: &mut Rng,
+) -> epiphany_core::Lyric {
+    use epiphany_core::Syllabic;
+    epiphany_core::Lyric {
+        id,
+        event,
+        verse: 1 + rng.below(2) as u16,
+        text: random_text(rng),
+        syllabic: [
+            Syllabic::Single,
+            Syllabic::Begin,
+            Syllabic::Middle,
+            Syllabic::End,
+        ][rng.below(4) as usize],
+        extension: rng.chance(4),
+    }
+}
+
+/// A spanner's kind and line, the wavy line and the pedal bracket among them.
+fn random_spanner_look(rng: &mut Rng) -> (epiphany_core::SpannerKind, epiphany_core::SpanStyle) {
+    use epiphany_core::{HairpinDirection, LineStyle, OctaveOffset, PedalKind, SpannerKind};
+    let kind = match rng.below(8) {
+        0 => SpannerKind::Generic,
+        1 => SpannerKind::Hairpin(HairpinDirection::Crescendo),
+        2 => SpannerKind::PedalLine(PedalKind::Sustain),
+        3 => SpannerKind::PedalBracket(PedalKind::Sostenuto),
+        4 => SpannerKind::TrillExtension,
+        5 => SpannerKind::Glissando,
+        6 => SpannerKind::OctaveLine(OctaveOffset(1)),
+        _ => SpannerKind::TextLine(epiphany_core::TextLineDefinition {
+            text: random_text(rng),
+        }),
+    };
+    let line = [
+        LineStyle::Solid,
+        LineStyle::Dashed,
+        LineStyle::Dotted,
+        LineStyle::Wavy,
+    ][rng.below(4) as usize];
+    (
+        kind,
+        epiphany_core::SpanStyle {
+            line,
+            thickness: None,
+        },
+    )
+}
+
 /// An event value of a random kind in `voice`.
 fn event_value(
     sim: &mut Simulation,
@@ -1023,9 +1331,17 @@ fn event_value(
                 position,
                 duration,
                 pitches,
-                articulations: Vec::new(),
+                marks: if sim.rng.chance(3) {
+                    random_marks(&mut sim.rng)
+                } else {
+                    Vec::new()
+                },
                 dynamic: None,
-                ornaments: Vec::new(),
+                ornaments: if sim.rng.chance(6) {
+                    random_ornaments(&mut sim.rng)
+                } else {
+                    Vec::new()
+                },
                 stem: StemConfiguration,
                 grace: None,
             })
@@ -1045,7 +1361,11 @@ fn event_value(
             duration,
             staff_position: StaffPosition(sim.rng.range(-4, 4) as i16),
             instrument_member: UnpitchedMemberId(0),
-            articulations: Vec::new(),
+            marks: if sim.rng.chance(3) {
+                random_marks(&mut sim.rng)
+            } else {
+                Vec::new()
+            },
             dynamic: None,
             stem: StemConfiguration,
             grace: None,
@@ -1269,7 +1589,7 @@ fn genesis(sim: &mut Simulation) {
                             id: pid,
                             pitch: random_pitch(&mut sim.rng, 1000),
                         }],
-                        articulations: Vec::new(),
+                        marks: Vec::new(),
                         dynamic: None,
                         ornaments: Vec::new(),
                         stem: StemConfiguration,
@@ -1511,13 +1831,14 @@ fn make(
                         .iter()
                         .find(|(_, inst)| Some(inst.id) == h.instance_of_voice.get(&voice).copied())
                         .map(|(_, inst)| inst.staff)?;
+                    let (kind, style) = random_spanner_look(&mut sim.rng);
                     CrossCuttingValue::Spanner(epiphany_core::Spanner {
                         id: sim.mint(r),
                         start: valuegen::event_anchor(a),
                         end: valuegen::event_anchor(b),
                         staves: vec![staff],
-                        kind: Default::default(),
-                        style: Default::default(),
+                        kind,
+                        style,
                     })
                 }
             };
@@ -1766,14 +2087,11 @@ fn make(
             live.extend(cc.ties.iter().cloned().map(CrossCuttingValue::Tie));
             live.extend(cc.beams.iter().cloned().map(CrossCuttingValue::Beam));
             live.extend(cc.spanners.iter().cloned().map(CrossCuttingValue::Spanner));
+            live.extend(cc.markers.iter().cloned().map(CrossCuttingValue::Marker));
+            live.extend(cc.lyrics.iter().cloned().map(CrossCuttingValue::Lyric));
             let chosen = sim.rng.pick(&live)?.clone();
             if kind == 13 {
-                let structure = match &chosen {
-                    CrossCuttingValue::Slur(s) => TypedObjectId::Slur(s.id),
-                    CrossCuttingValue::Tie(t) => TypedObjectId::Tie(t.id),
-                    CrossCuttingValue::Beam(b) => TypedObjectId::Beam(b.id),
-                    CrossCuttingValue::Spanner(s) => TypedObjectId::Spanner(s.id),
-                };
+                let structure = chosen.id();
                 vec![prim(OperationKind::DeleteCrossCutting(
                     DeleteCrossCuttingOp { structure },
                 ))]
@@ -1830,6 +2148,25 @@ fn make(
                             s.staves = staves;
                         }
                         CrossCuttingValue::Spanner(s)
+                    }
+                    // A point mark of another kind, or moved to another event.
+                    CrossCuttingValue::Marker(mut m) => {
+                        if sim.rng.chance(2) {
+                            m.kind = random_marker_kind(&mut sim.rng);
+                        } else {
+                            m.anchor = valuegen::event_anchor(other);
+                        }
+                        CrossCuttingValue::Marker(m)
+                    }
+                    // A syllable in another verse, of another text, or moved
+                    // to another event, where one may stand already.
+                    CrossCuttingValue::Lyric(mut l) => {
+                        match sim.rng.below(3) {
+                            0 => l.verse = 1 + sim.rng.below(2) as u16,
+                            1 => l.text = random_text(&mut sim.rng),
+                            _ => l.event = other,
+                        }
+                        CrossCuttingValue::Lyric(l)
                     }
                 };
                 vec![prim(OperationKind::ModifyCrossCutting(
@@ -2400,7 +2737,7 @@ fn make(
                         duration: duration.clone(),
                         staff_position: StaffPosition(sim.rng.range(-4, 4) as i16),
                         instrument_member: UnpitchedMemberId(0),
-                        articulations: Vec::new(),
+                        marks: Vec::new(),
                         dynamic: None,
                         stem: StemConfiguration,
                         grace: None,
@@ -2436,7 +2773,7 @@ fn make(
                     position: other.position().clone(),
                     duration: other.duration().clone(),
                     pitches: vec![pitch.clone()],
-                    articulations: Vec::new(),
+                    marks: Vec::new(),
                     dynamic: None,
                     ornaments: Vec::new(),
                     stem: StemConfiguration,
@@ -2525,35 +2862,55 @@ fn make(
             out
         }
         53 => {
-            // An undo and its redo: a transaction the view declares undone in
-            // a transaction of its own, which is then undone in turn.
+            // An undo and its redo: a transaction that overwrote values
+            // (`overwrite_target`) undone in a transaction of its own, which
+            // is then undone in turn. Where the view holds no such
+            // transaction, its author makes one first, a pitch revalued in a
+            // transaction of its own, as an editor edits, undoes and redoes.
             if sim.replicas[r].open.is_some() {
                 return None;
             }
-            let target = undo_target(sim, r, h)?;
             let mut policy = || match sim.rng.below(3) {
                 0 => UndoPolicy::StrictInverse,
                 1 => UndoPolicy::BestEffort,
                 _ => UndoPolicy::Cascade,
             };
             let (undo_policy, redo_policy) = (policy(), policy());
-            let tx: TransactionId = sim.mint(r);
-            sim.replicas[r].open = Some((tx, 2));
-            vec![
+            let declare = |id: TransactionId, label: &str| {
                 prim(OperationKind::DeclareTransaction(TransactionDescriptor {
-                    id: tx,
-                    label: String::from("undo"),
+                    id,
+                    label: String::from(label),
                     category: None,
-                })),
-                OperationPayload::UndoTransaction(UndoTransactionPayload {
-                    target,
-                    policy: undo_policy,
-                }),
-                OperationPayload::UndoTransaction(UndoTransactionPayload {
-                    target: tx,
-                    policy: redo_policy,
-                }),
-            ]
+                }))
+            };
+            let tx: TransactionId = sim.mint(r);
+            let mut out = Vec::new();
+            let target = match overwrite_target(sim, r, h) {
+                Some(target) => {
+                    sim.replicas[r].open = Some((tx, 2));
+                    target
+                }
+                None => {
+                    // A pitch given a new value, which an undo restores.
+                    let edit = make(sim, r, 12, h)?;
+                    let edit_tx: TransactionId = sim.mint(r);
+                    sim.replicas[r].open = Some((edit_tx, 1 + edit.len() as u64));
+                    sim.replicas[r].queued.push((tx, 2));
+                    out.push(declare(edit_tx, "transpose"));
+                    out.extend(edit);
+                    edit_tx
+                }
+            };
+            out.push(declare(tx, "undo"));
+            out.push(OperationPayload::UndoTransaction(UndoTransactionPayload {
+                target,
+                policy: undo_policy,
+            }));
+            out.push(OperationPayload::UndoTransaction(UndoTransactionPayload {
+                target: tx,
+                policy: redo_policy,
+            }));
+            out
         }
         54 => {
             // Its author's two latest commands reverted from the undo history,
@@ -2651,6 +3008,110 @@ fn make(
             )));
             out
         }
+        56 => {
+            // SetVoiceHome: a voice's home set to a staff the view holds, or
+            // cleared.
+            let voices: Vec<VoiceId> = h.score.voices().map(|(_, _, v)| v.id).collect();
+            let voice = *sim.rng.pick(&voices)?;
+            let home = if sim.rng.chance(4) {
+                None
+            } else {
+                Some(sim.rng.pick(&h.score.staves)?.id)
+            };
+            vec![prim(OperationKind::SetVoiceHome(SetVoiceHomeOp {
+                voice,
+                home,
+            }))]
+        }
+        57 => {
+            // A grace note in an event's voice: at the event's onset, before
+            // it, or alone where it ends; marked a quarter of the time.
+            let event = rng_event(sim)?;
+            let (start, end) = span(event)?;
+            let voice = event.voice();
+            let instance = *h.instance_of_voice.get(&voice)?;
+            let at = if sim.rng.chance(4) { end } else { start };
+            let id: EventId = sim.mint(r);
+            let pitch = IdentifiedPitch {
+                id: sim.mint(r),
+                pitch: random_pitch(&mut sim.rng, 6),
+            };
+            let value = Event::Pitched(PitchedEvent {
+                id,
+                voice,
+                position: EventPosition::Musical(at),
+                duration: EventDuration::Musical(MusicalDuration::zero()),
+                pitches: vec![pitch],
+                marks: if sim.rng.chance(4) {
+                    random_marks(&mut sim.rng)
+                } else {
+                    Vec::new()
+                },
+                dynamic: None,
+                ornaments: Vec::new(),
+                stem: StemConfiguration,
+                grace: Some(random_grace(&mut sim.rng)),
+            });
+            vec![prim(OperationKind::InsertEvent(InsertEventOp {
+                staff_instance: instance,
+                event: value,
+            }))]
+        }
+        58 => {
+            // ModifyEvent: a grace's order, or an event's marks or ornaments,
+            // rewritten.
+            let mut value = rng_event(sim)?.clone();
+            match &mut value {
+                Event::Pitched(p) => match p.grace.as_mut() {
+                    Some(grace) if sim.rng.chance(2) => grace.order = sim.rng.below(3) as u16,
+                    _ if sim.rng.chance(2) => p.marks = random_marks(&mut sim.rng),
+                    _ if sim.rng.chance(3) => p.ornaments = Vec::new(),
+                    _ => p.ornaments = random_ornaments(&mut sim.rng),
+                },
+                Event::Unpitched(u) => {
+                    u.marks = if sim.rng.chance(3) {
+                        Vec::new()
+                    } else {
+                        random_marks(&mut sim.rng)
+                    }
+                }
+                _ => return None,
+            }
+            vec![prim(OperationKind::ModifyEvent(ModifyEventOp {
+                event: value,
+            }))]
+        }
+        59 => {
+            // A point mark on an event, or at a position of a region.
+            let anchor = if sim.rng.chance(3) {
+                let regions = h.metric();
+                let (region, _, _) = sim.rng.pick(&regions)?;
+                valuegen::region_start_anchor(*region, position(sim.rng.below(16) as i64, 8))
+            } else {
+                valuegen::event_anchor(rng_event(sim)?.id())
+            };
+            let marker = epiphany_core::Marker {
+                id: sim.mint(r),
+                anchor,
+                kind: random_marker_kind(&mut sim.rng),
+            };
+            vec![prim(OperationKind::CreateCrossCutting(
+                CreateCrossCuttingOp {
+                    structure: CrossCuttingValue::Marker(marker),
+                },
+            ))]
+        }
+        60 => {
+            // A lyric syllable on an event, in one of two verses, where
+            // another may stand already.
+            let event = rng_event(sim)?.id();
+            let id = sim.mint(r);
+            vec![prim(OperationKind::CreateCrossCutting(
+                CreateCrossCuttingOp {
+                    structure: CrossCuttingValue::Lyric(random_lyric(id, event, &mut sim.rng)),
+                },
+            ))]
+        }
         _ => return None,
     })
 }
@@ -2668,6 +3129,82 @@ fn undo_target(sim: &mut Simulation, r: usize, h: &Holdings<'_>) -> Option<Trans
             }
             _ => None,
         })
+        .collect();
+    let own: Vec<TransactionId> = declared
+        .iter()
+        .filter(|(replica, _)| *replica == sim.replicas[r].id)
+        .map(|(_, tx)| *tx)
+        .collect();
+    let latest = &own[own.len().saturating_sub(3)..];
+    match sim.rng.pick(latest) {
+        Some(tx) if sim.rng.chance(2) => Some(*tx),
+        _ => sim.rng.pick(&declared).map(|(_, tx)| *tx),
+    }
+}
+
+/// A transaction the view holds that overwrote values, drawn as
+/// [`undo_target`] draws (half the time one of its author's three latest):
+/// each member writes a value over another that an undo restores (minting and
+/// deleting nothing, and not the frozen `Transpose`, which records no write),
+/// and applied in the view, so an undo of it restores the earlier values and a
+/// redo, an undo of that undo, restores the transaction's own. (An undo of a
+/// transaction that rolled back has nothing to restore, and its redo less.) A redo of an undo that removed what
+/// its transaction minted has nothing to restore, a tombstone being final, so
+/// drawn over any transaction most redos were refused `TargetMissing` (X4a
+/// review 3's L4: 991 of 1,196 per 3,000 histories of 64 authored). `None`
+/// where the view holds no such transaction.
+fn overwrite_target(sim: &mut Simulation, r: usize, h: &Holdings<'_>) -> Option<TransactionId> {
+    let effects: BTreeMap<OperationId, &OperationEffect> =
+        h.state.effects.iter().map(|(id, e)| (*id, e)).collect();
+    let overwrites = |tx: TransactionId| {
+        let mut members = h
+            .envelopes
+            .iter()
+            .filter(|e| e.transaction == Some(tx))
+            .filter(|e| {
+                !matches!(
+                    &e.payload,
+                    OperationPayload::Primitive(OperationKind::DeclareTransaction(_))
+                )
+            })
+            .peekable();
+        members.peek().is_some()
+            && members.all(|e| match &e.payload {
+                OperationPayload::Primitive(kind) => {
+                    !matches!(
+                        kind,
+                        OperationKind::DeleteEvent(_)
+                            | OperationKind::DeleteIdentifiedPitch(_)
+                            | OperationKind::DeleteCrossCutting(_)
+                            | OperationKind::DeleteRegion(_)
+                            | OperationKind::DeleteStaffInstance(_)
+                            | OperationKind::DeleteVoice(_)
+                            | OperationKind::DeleteRepeatStructure(_)
+                            // The frozen transposition records no write, so
+                            // its undo restores nothing (operation catalog).
+                            | OperationKind::Transpose(_)
+                    ) && mints_and_refs(&e.payload).0.is_empty()
+                        && matches!(
+                            effects.get(&e.id),
+                            Some(
+                                OperationEffect::Applied
+                                    | OperationEffect::AppliedWithRepair { .. }
+                            )
+                        )
+                }
+                _ => false,
+            })
+    };
+    let declared: Vec<(ReplicaId, TransactionId)> = h
+        .envelopes
+        .iter()
+        .filter_map(|e| match &e.payload {
+            OperationPayload::Primitive(OperationKind::DeclareTransaction(d)) => {
+                Some((e.id.replica, d.id))
+            }
+            _ => None,
+        })
+        .filter(|(_, tx)| overwrites(*tx))
         .collect();
     let own: Vec<TransactionId> = declared
         .iter()
@@ -2719,7 +3256,7 @@ fn tie_entry(
         position: EventPosition::Musical(end),
         duration: EventDuration::Musical(length),
         pitches,
-        articulations: Vec::new(),
+        marks: Vec::new(),
         dynamic: None,
         ornaments: Vec::new(),
         stem: StemConfiguration,
@@ -2744,7 +3281,7 @@ fn tie_entry(
 /// Each arm of [`make`] and how often it is drawn: the editing of notes,
 /// pitches and their marks three times as often as the score's structure and
 /// settings, as an editor's history runs.
-const ARMS: [(u64, u64); 56] = [
+const ARMS: [(u64, u64); 61] = [
     (0, 4),
     (1, 3),
     (2, 3),
@@ -2801,6 +3338,11 @@ const ARMS: [(u64, u64); 56] = [
     (53, 1),
     (54, 1),
     (55, 1),
+    (56, 1),
+    (57, 2),
+    (58, 2),
+    (59, 2),
+    (60, 2),
 ];
 
 fn draw_arm(rng: &mut Rng) -> u64 {
@@ -3069,6 +3611,12 @@ fn mints_and_refs(payload: &OperationPayload) -> (Vec<TypedObjectId>, Vec<TypedO
                     anchor(&x.end, &mut named);
                     (T::Spanner(x.id), named)
                 }
+                CrossCuttingValue::Marker(x) => {
+                    let mut named = Vec::new();
+                    anchor(&x.anchor, &mut named);
+                    (T::Marker(x.id), named)
+                }
+                CrossCuttingValue::Lyric(x) => (T::LyricLine(x.id), vec![T::Event(x.event)]),
             };
             if creating {
                 mints.push(own);
@@ -3177,6 +3725,10 @@ fn mints_and_refs(payload: &OperationPayload) -> (Vec<TypedObjectId>, Vec<TypedO
         }
         OperationKind::SetClef(op) => refs.push(T::StaffInstance(op.instance)),
         OperationKind::SetKeySignature(op) => refs.push(T::StaffInstance(op.instance)),
+        OperationKind::SetVoiceHome(op) => {
+            refs.push(T::Voice(op.voice));
+            refs.extend(op.home.map(T::Staff));
+        }
         _ => {}
     }
     (mints, refs)
@@ -3435,7 +3987,8 @@ mod tests {
         set.accept_all(history.iter().cloned());
         let aware = set.reduce_onto(&empty_base());
         let effects = aware.state.effects.iter().cloned().collect();
-        let reduced: Vec<String> = invariant_findings(&history, &effects, &aware.score)
+        let objects = &aware.state.objects;
+        let reduced: Vec<String> = invariant_findings(&history, &effects, &aware.score, objects)
             .into_iter()
             .map(|f| f.class)
             .collect();
@@ -3452,7 +4005,7 @@ mod tests {
             other => panic!("a staff-based region, not {other:?}"),
         }
         assert!(!first.staff_extent.staves.is_empty(), "the stale extent");
-        let classes: Vec<String> = invariant_findings(&history, &effects, &score)
+        let classes: Vec<String> = invariant_findings(&history, &effects, &score, objects)
             .into_iter()
             .map(|f| f.class)
             .collect();
@@ -3460,6 +4013,58 @@ mod tests {
             classes
                 .iter()
                 .any(|c| c.starts_with("invariant Invariant(RegionExtents: ")),
+            "{classes:?}"
+        );
+        assert!(classes.iter().all(|c| !deferred(c)), "{classes:?}");
+    }
+
+    /// An overlap left by a removal the graph failed to make stays out of the
+    /// deferred class (X4a review 3's L1): the never-seen history's graph as
+    /// reduced, with one region's staff instance tombstoned in the ledger and
+    /// kept in the graph, as review 3's plant D2 (a delete leaving the
+    /// instance in the graph) leaves it, overlaps the other region by an
+    /// instance the ledger does not hold live, so the finding is the
+    /// invariant's plain class. Read from the graph alone, it was deferred as
+    /// never seen.
+    #[test]
+    fn an_overlap_by_an_instance_the_ledger_removed_is_not_the_deferred_class() {
+        use super::{
+            deferred, empty_base, invariant_findings, ObjectState, OperationSet, TypedObjectId,
+        };
+        let history = super::parse(include_str!(
+            "../../tests/two_modes/110-invariant-region-extents.txt"
+        ))
+        .expect("parses");
+        let mut set = OperationSet::new();
+        set.accept_all(history.iter().cloned());
+        let aware = set.reduce_onto(&empty_base());
+        let effects = aware.state.effects.iter().cloned().collect();
+        let instance = aware
+            .score
+            .canvas
+            .regions
+            .iter()
+            .find_map(|region| region.staff_instances().first().map(|i| i.id))
+            .expect("a filled region");
+        let mut objects = aware.state.objects.clone();
+        let deleted_by = history.last().expect("a history").id;
+        let minted_by = history.first().expect("a history").id;
+        let slot = objects
+            .get_mut(&TypedObjectId::StaffInstance(instance))
+            .expect("the ledger holds the instance");
+        assert_eq!(*slot, ObjectState::Live);
+        *slot = ObjectState::Tombstoned {
+            deleted_by,
+            minted_by,
+        };
+        let classes: Vec<String> = invariant_findings(&history, &effects, &aware.score, &objects)
+            .into_iter()
+            .map(|f| f.class)
+            .collect();
+        assert!(
+            classes
+                .iter()
+                .any(|c| c.starts_with("invariant Invariant(RegionExtents: ") && !deferred(c)),
             "{classes:?}"
         );
         assert!(classes.iter().all(|c| !deferred(c)), "{classes:?}");
