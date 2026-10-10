@@ -630,3 +630,29 @@ cross-process lock is taken where a document is opened from a path, in the
 GUI, which may use `File::try_lock` (MSRV-excluded); the generation and
 file-UUID revalidation before each commit, against a writer that ignores the
 lock, is not implemented.
+
+## Note entry across the barline (2026-10-10, X5a.2)
+
+Caret entry and the pencil share one core, `entry_ops`, which enters as
+MuseScore does. An entry that would cross a barline is split there into
+events tied in turn (a rest's parts are not tied), and an entry that runs
+past the staff's last measure first opens the measures it needs. Everything
+it mints (the measures, the make-room edits, the parts and their ties) is one
+transaction, so one undo takes it back whole.
+
+**Where measures end.** A measure ends where the next one starts; the last
+ends one bar of the latest meter a measure names after its start, which is
+how the layout draws it. A staff whose measures name no meter (the editor's
+own ten-measure fixture is one) takes the last measure to be as long as the
+one before it. A staff with neither plans nothing, and the entry is made
+whole where it is, as before.
+
+**Opened measures** go on every staff instance of the region that lacks a
+measure at that start, so the staves keep one barline grid; each is anchored
+at its offset from the region's start and names no meter, so the meter in
+force continues.
+
+The pencil's and the caret's goldens (`ten_measure_insert`,
+`ten_measure_caret_entry`) were re-blessed: each entry now fills an eleventh
+measure where it overfilled the tenth. Their before-and-after renders are in
+the phase's handoff for the owner's reading (D10).

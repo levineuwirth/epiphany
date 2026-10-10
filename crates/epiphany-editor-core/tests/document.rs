@@ -107,8 +107,8 @@ fn membership(envelopes: &[OperationEnvelope]) -> Vec<String> {
 
 /// Enters the exercise's phrase into a two-measure score of 4/4: mixed durations
 /// and rests, running across the barline at whole note 1 — quarter C, eighths D
-/// and E, a quarter rest and quarter F in the first measure; a half G, a quarter
-/// rest and eighths A and B in the second.
+/// and E, a quarter rest, and a half F on beat 4 that crosses the barline and is
+/// split there and tied; then a quarter G, a quarter rest and eighths A and B.
 fn enter_phrase(session: &mut EditorSession) {
     let voice = the_voice(session);
     session
@@ -119,8 +119,8 @@ fn enter_phrase(session: &mut EditorSession) {
         (Some(CmnNominal::D), (1, 8)),
         (Some(CmnNominal::E), (1, 8)),
         (None, (1, 4)),
-        (Some(CmnNominal::F), (1, 4)),
-        (Some(CmnNominal::G), (1, 2)),
+        (Some(CmnNominal::F), (1, 2)),
+        (Some(CmnNominal::G), (1, 4)),
         (None, (1, 4)),
         (Some(CmnNominal::A), (1, 8)),
         (Some(CmnNominal::B), (1, 8)),
@@ -137,6 +137,31 @@ fn enter_phrase(session: &mut EditorSession) {
         assert!(outcome.graph_changed);
     }
     assert_eq!(session.caret().map(|c| c.position), Some(at(2, 1)));
+    assert_eq!(
+        music(session.score()),
+        vec![
+            (at(0, 1), whole(1, 4), true),
+            (at(1, 4), whole(1, 8), true),
+            (at(3, 8), whole(1, 8), true),
+            (at(1, 2), whole(1, 4), false),
+            (at(3, 4), whole(1, 4), true),
+            (at(1, 1), whole(1, 4), true),
+            (at(5, 4), whole(1, 4), true),
+            (at(3, 2), whole(1, 4), false),
+            (at(7, 4), whole(1, 8), true),
+            (at(15, 8), whole(1, 8), true),
+        ],
+        "the phrase, its half F split at the barline"
+    );
+    assert_eq!(session.score().cross_cutting.ties.len(), 1, "and tied");
+}
+
+/// The number of measures on each staff.
+fn measures(score: &Score) -> Vec<usize> {
+    score
+        .staff_instances()
+        .map(|(_, si)| si.measures.len())
+        .collect()
 }
 
 /// The exercise, over any store: create, enter the phrase, edit, undo, save,
@@ -213,15 +238,28 @@ fn exercise<S: BlockStore>(store: S, reopen: impl Fn(S) -> S) -> S {
         "each lease mints under a fresh replica"
     );
 
-    // Continue: a third measure's worth of entries after the phrase.
+    // Continue past the last measure: a half E opens a third measure, and a
+    // dotted half F after it crosses into a fourth, split and tied.
     let voice = the_voice(&reopened);
     reopened
-        .set_caret(voice, at(1, 1), whole(1, 2))
-        .expect("the caret goes at the second measure");
+        .set_caret(voice, at(2, 1), whole(1, 2))
+        .expect("the caret goes at the end");
     reopened
         .enter_nominal(CmnNominal::E)
         .expect("the reopened document takes an edit");
+    reopened.set_entry_duration(whole(3, 4)).unwrap();
+    reopened.enter_nominal(CmnNominal::F).unwrap();
+    assert_eq!(measures(reopened.score()), vec![4]);
     let continued = music(reopened.score());
+    assert_eq!(
+        continued[10..],
+        [
+            (at(2, 1), whole(1, 2), true),
+            (at(5, 2), whole(1, 2), true),
+            (at(3, 1), whole(1, 4), true),
+        ]
+    );
+    assert_eq!(reopened.score().cross_cutting.ties.len(), 2);
     let saved = document
         .save(&mut reopened)
         .expect("the second save commits");
@@ -242,6 +280,7 @@ fn exercise<S: BlockStore>(store: S, reopen: impl Fn(S) -> S) -> S {
         .view(Box::new(StubSolver))
         .expect("the document draws");
     assert_eq!(music(view.score()), continued);
+    assert_eq!(measures(view.score()), vec![4]);
     document.into_store()
 }
 

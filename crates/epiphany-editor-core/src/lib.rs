@@ -62,13 +62,15 @@ use std::fmt;
 
 use epiphany_core::prepass::{derive_annotations, DerivedAnnotations, PrePassProfile};
 use epiphany_core::{
-    AcousticPitch, AcousticRealization, Clef, CmnNominal, Event, EventDuration, EventId,
-    EventPosition, IdentifiedPitch, MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId,
-    PitchSpaceId, PitchSpacePosition, PitchSpelling, PitchedEvent, RationalTime, RegionId,
-    RegionTimeModel, ReplicaId, ScalePosition, Score, Slur, SlurId, SpellingDirective,
+    AcousticPitch, AcousticRealization, AnchorOffset, Clef, CmnNominal, Event, EventDuration,
+    EventId, EventPosition, IdentifiedPitch, Measure, MeasureId, MeasureNumberVisibility,
+    MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId, PitchSpaceId,
+    PitchSpacePosition, PitchSpelling, PitchedEvent, RationalTime, RegionEdge, RegionId,
+    RegionTimeModel, ReplicaId, ScalePosition, Score, Slur, SlurId, SpanStyle, SpellingDirective,
     SpellingNominal, SpellingScope, SpellingSourceKind, StaffId, StaffInstance, StaffInstanceId,
-    StemConfiguration, Tie, TieId, TimeSignature, TimeSignatureDisplay, TransactionId,
-    TranspositionInterval, TuningReference, TupletId, TypedObjectId, VoiceId, WallClockTime,
+    StemConfiguration, Tie, TieClass, TieId, TimeAnchor, TimeSignature, TimeSignatureDisplay,
+    TransactionId, TranspositionInterval, TuningReference, TupletId, TypedObjectId, VoiceId,
+    WallClockTime,
 };
 use epiphany_layout_ir::{
     active_clef_or, manifestation_layout_id, staff_step_pitch, to_constrained, to_logical,
@@ -78,10 +80,11 @@ use epiphany_layout_ir::{
 };
 use epiphany_ops::{
     advisory_violations, AcceptOutcome, AuthorId, CausalContext, CreateCrossCuttingOp,
-    CrossCuttingValue, DeleteEventOp, DeleteIdentifiedPitchOp, HybridLogicalClock, InsertEventOp,
-    InsertIdentifiedPitchOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationEnvelope,
-    OperationKind, OperationKindTag, OperationPayload, OperationStamp, RespellPitchOp,
-    TransactionCategory, TransactionDescriptor, TransposeIntervalOp, TupletCompensation,
+    CreateMeasureOp, CrossCuttingValue, DeleteEventOp, DeleteIdentifiedPitchOp, HybridLogicalClock,
+    InsertEventOp, InsertIdentifiedPitchOp, ModifyEventOp, ModifyIdentifiedPitchOp,
+    OperationEnvelope, OperationKind, OperationKindTag, OperationPayload, OperationStamp,
+    RespellPitchOp, TransactionCategory, TransactionDescriptor, TransposeIntervalOp,
+    TupletCompensation,
 };
 
 /// The current selection: the score-graph object to act on, plus the stable layout
@@ -595,6 +598,11 @@ pub struct EditorSession {
     // `(region, staff)`, since one staff can be tiled into several regions. The
     // vertical half of click-to-insert reads this to spell the clicked height.
     start_clefs: BTreeMap<(RegionId, StaffId), Clef>,
+    // Where each measure starts, resolved by the logical layout from its anchor:
+    // what note entry reads to find the barlines a note crosses and the measure it
+    // must open (see `measure_plan`). A measure whose start is not a musical
+    // position is absent.
+    measure_starts: MeasureStarts,
     selection: SelectionSet,
     // The note-entry caret (contract: `spec/CONTRACT_EDITOR_T3_CARET.md` §W1) —
     // session-local, never in the op log. `reresolve_caret` (called alongside
@@ -665,10 +673,7 @@ pub struct EditorSession {
 /// disagree with the score). Produced by [`EditorSession::materialize`].
 struct Materialization {
     score: Score,
-    start_clefs: BTreeMap<(RegionId, StaffId), Clef>,
-    resolved: ResolvedLayoutIR,
-    render: RenderIR,
-    map: HitTestMap,
+    rendered: Rendered,
 }
 
 impl EditorSession {
@@ -699,8 +704,13 @@ impl EditorSession {
         replica: ReplicaId,
         lease: Option<document::Lease>,
     ) -> Result<Self, EditorError> {
-        let (start_clefs, resolved, render, map) =
-            render_score(&score, solver.as_ref()).ok_or(EditorError::NotRenderable)?;
+        let Rendered {
+            start_clefs,
+            measure_starts,
+            resolved,
+            render,
+            map,
+        } = render_score(&score, solver.as_ref()).ok_or(EditorError::NotRenderable)?;
         let op_floor = committed.next_counter(replica);
         Ok(EditorSession {
             base,
@@ -710,6 +720,7 @@ impl EditorSession {
             render,
             map,
             start_clefs,
+            measure_starts,
             selection: SelectionSet::default(),
             caret: None,
             replica,
@@ -1626,24 +1637,19 @@ impl EditorSession {
             return Err(EditorError::RejectedOperation);
         }
         let score = materialized.score;
-        let (start_clefs, resolved, render, map) =
+        let rendered =
             render_score(&score, self.solver.as_ref()).ok_or(EditorError::NotRenderable)?;
-        Ok(Materialization {
-            score,
-            start_clefs,
-            resolved,
-            render,
-            map,
-        })
+        Ok(Materialization { score, rendered })
     }
 
     /// Installs a materialization as the session's current score, layout, and render.
     fn install(&mut self, materialized: Materialization) {
         self.score = materialized.score;
-        self.start_clefs = materialized.start_clefs;
-        self.resolved = materialized.resolved;
-        self.render = materialized.render;
-        self.map = materialized.map;
+        self.start_clefs = materialized.rendered.start_clefs;
+        self.measure_starts = materialized.rendered.measure_starts;
+        self.resolved = materialized.rendered.resolved;
+        self.render = materialized.rendered.render;
+        self.map = materialized.rendered.map;
     }
 
     /// Applies a single primitive operation: mints an envelope and commits it. A
@@ -2329,28 +2335,15 @@ impl EditorSession {
             return Err(EditorError::NoInsertTarget);
         }
 
-        // The new note's half-open span; make room over whatever it overlaps.
-        let start = placed.position;
-        let duration = grid.step.clone();
-        let end = start.clone() + duration.clone();
-        let room = self.make_room(voice, &start, &end, None)?;
-
-        let mut minter = self.minter();
-        let mut ops = self.make_room_ops(room, pitch.staff_instance, &mut minter);
-        let new_note = note_event(
-            minter.event(),
+        // The new note's half-open span: measures opened, room made, and the note
+        // split and tied at any barline it crosses (see `entry_ops`).
+        let ops = self.entry_ops(
             voice,
-            start,
-            duration,
-            vec![IdentifiedPitch {
-                id: minter.pitch(),
-                pitch: cmn_pitch(pitch.nominal, pitch.octave),
-            }],
-        );
-        ops.push(OperationKind::InsertEvent(InsertEventOp {
-            staff_instance: pitch.staff_instance,
-            event: new_note,
-        }));
+            pitch.staff_instance,
+            placed.position,
+            grid.step.clone(),
+            vec![cmn_pitch(pitch.nominal, pitch.octave)],
+        )?;
 
         // A bare insert needs no transaction; a make-room insert is atomic.
         if ops.len() == 1 {
@@ -2433,31 +2426,14 @@ impl EditorSession {
         let staff_instance = self
             .metric_staff_instance_of_voice(caret.voice)
             .ok_or(EditorError::NoInsertTarget)?;
-        let start = caret.position.clone();
         let duration = caret.entry_duration.clone();
-        let end = start.clone() + duration.clone();
-        let room = self.make_room(caret.voice, &start, &end, None)?;
-
-        let mut minter = self.minter();
-        let mut ops = self.make_room_ops(room, staff_instance, &mut minter);
-        let pitches = match pitch {
-            Some(p) => vec![IdentifiedPitch {
-                id: minter.pitch(),
-                pitch: p,
-            }],
-            None => Vec::new(),
-        };
-        let new_event = note_event(
-            minter.event(),
+        let ops = self.entry_ops(
             caret.voice,
-            start,
-            duration.clone(),
-            pitches,
-        );
-        ops.push(OperationKind::InsertEvent(InsertEventOp {
             staff_instance,
-            event: new_event,
-        }));
+            caret.position.clone(),
+            duration.clone(),
+            pitch.into_iter().collect(),
+        )?;
 
         // A bare insert needs no transaction; a make-room insert is atomic.
         let outcome = if ops.len() == 1 {
@@ -3032,6 +3008,187 @@ impl EditorSession {
         }
     }
 
+    /// The operations entering one note (or, with no `pitches`, a rest) at
+    /// `[start, start + duration)` in `voice`, as MuseScore enters it: the measures
+    /// the span runs past the staff's last are opened on every staff of the region,
+    /// room is made over whatever the span overlaps, and the entry is split at each
+    /// barline it crosses into events tied in turn (a rest's parts are not tied). The
+    /// shared core of caret entry and the pencil. Errors as [`Self::make_room`] does.
+    fn entry_ops(
+        &self,
+        voice: VoiceId,
+        staff_instance: StaffInstanceId,
+        start: MusicalPosition,
+        duration: MusicalDuration,
+        pitches: Vec<Pitch>,
+    ) -> Result<Vec<OperationKind>, EditorError> {
+        let end = start.clone() + duration;
+        let plan = self.measure_plan(staff_instance, &start, &end);
+        let room = self.make_room(voice, &start, &end, None)?;
+        let mut minter = self.minter();
+        let mut ops = self.open_measures_ops(staff_instance, &plan.open, &mut minter);
+        ops.extend(self.make_room_ops(room, staff_instance, &mut minter));
+        let mut bounds = vec![start];
+        bounds.extend(plan.barlines);
+        bounds.push(end);
+        let mut previous: Option<EventId> = None;
+        for part in bounds.windows(2) {
+            let id = minter.event();
+            let identified = pitches
+                .iter()
+                .map(|pitch| IdentifiedPitch {
+                    id: minter.pitch(),
+                    pitch: pitch.clone(),
+                })
+                .collect();
+            ops.push(OperationKind::InsertEvent(InsertEventOp {
+                staff_instance,
+                event: note_event(
+                    id,
+                    voice,
+                    part[0].clone(),
+                    span_between(&part[0], &part[1]),
+                    identified,
+                ),
+            }));
+            if let (Some(start_event), false) = (previous, pitches.is_empty()) {
+                ops.push(OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                    structure: CrossCuttingValue::Tie(Tie {
+                        id: minter.tie(),
+                        start_event,
+                        end_event: id,
+                        pitch_pairing: None,
+                        class: TieClass::Standard,
+                        style: SpanStyle::default(),
+                    }),
+                }));
+            }
+            previous = Some(id);
+        }
+        Ok(ops)
+    }
+
+    /// Where `[start, end)` meets the measures of `staff_instance`: the barlines
+    /// strictly inside it, and the starts of the measures to open after the last so
+    /// that the span ends inside one. A measure ends where the next starts; the last
+    /// ends one bar of the latest meter a measure names after its start, as the
+    /// layout draws it, or, where no measure names a meter, as long after it as the
+    /// measure before it lasted. A staff with neither, or whose starts are not
+    /// musical, plans nothing: the entry is made whole, where it is.
+    fn measure_plan(
+        &self,
+        staff_instance: StaffInstanceId,
+        start: &MusicalPosition,
+        end: &MusicalPosition,
+    ) -> MeasurePlan {
+        let mut plan = MeasurePlan::default();
+        let Some((_, si)) = self
+            .score
+            .staff_instances()
+            .find(|(_, si)| si.id == staff_instance)
+        else {
+            return plan;
+        };
+        let mut bar: Option<MusicalDuration> = None;
+        let mut starts: Vec<MusicalPosition> = Vec::with_capacity(si.measures.len());
+        for measure in &si.measures {
+            if let Some(signature) = measure
+                .time_signature
+                .and_then(|id| self.score.time_signatures.iter().find(|t| t.id == id))
+            {
+                bar = Some(signature.measure_duration().clone());
+            }
+            if let Some(at) = self.measure_starts.get(&measure.id) {
+                starts.push(at.clone());
+            }
+        }
+        starts.sort();
+        let Some(last) = starts.last().cloned() else {
+            return plan;
+        };
+        let bar = bar.or_else(|| {
+            let previous = starts.iter().rev().nth(1)?;
+            Some(span_between(previous, &last))
+        });
+        let Some(bar) = bar else {
+            return plan;
+        };
+        if !bar.is_positive() {
+            return plan;
+        }
+        plan.barlines = starts
+            .into_iter()
+            .filter(|at| start < at && at < end)
+            .collect();
+        let mut next = last + bar.clone();
+        while &next < end {
+            if start < &next {
+                plan.barlines.push(next.clone());
+            }
+            plan.open.push(next.clone());
+            next = next + bar.clone();
+        }
+        plan.barlines.sort();
+        plan.barlines.dedup();
+        plan
+    }
+
+    /// `CreateMeasure` operations opening a measure at each of `starts` on every
+    /// staff instance of `staff_instance`'s region that has none starting there, so
+    /// the staves keep one barline grid. Each is anchored at its offset from the
+    /// region's start and names no meter, so the meter in force continues.
+    fn open_measures_ops(
+        &self,
+        staff_instance: StaffInstanceId,
+        starts: &[MusicalPosition],
+        minter: &mut Minter,
+    ) -> Vec<OperationKind> {
+        let mut ops = Vec::new();
+        if starts.is_empty() {
+            return ops;
+        }
+        let Some((region, _)) = self
+            .score
+            .staff_instances()
+            .find(|(_, si)| si.id == staff_instance)
+        else {
+            return ops;
+        };
+        let instances: Vec<&StaffInstance> = self
+            .score
+            .staff_instances()
+            .filter(|(r, _)| *r == region)
+            .map(|(_, si)| si)
+            .collect();
+        for instance in instances {
+            let held: BTreeSet<&MusicalPosition> = instance
+                .measures
+                .iter()
+                .filter_map(|m| self.measure_starts.get(&m.id))
+                .collect();
+            for at in starts {
+                if held.contains(at) {
+                    continue;
+                }
+                ops.push(OperationKind::CreateMeasure(CreateMeasureOp {
+                    instance: instance.id,
+                    measure: Measure {
+                        id: minter.measure(),
+                        start: TimeAnchor::Region {
+                            id: region,
+                            edge: RegionEdge::Start,
+                            offset: AnchorOffset::Musical(MusicalDuration(at.0.clone())),
+                        },
+                        time_signature: None,
+                        explicit_number: None,
+                        number_visibility: MeasureNumberVisibility::Auto,
+                    },
+                }));
+            }
+        }
+        ops
+    }
+
     /// The events make-room must change to clear `[start, end)` in `voice` (other than
     /// `exclude`, the event being inserted/resized): whole-event deletes, in-place
     /// trims, splits, and whole-tuplet cascade deletes. A tuplet is **atomic** — an
@@ -3235,6 +3392,7 @@ impl EditorSession {
             next_pitch: self.mint_pitch_id().counter(),
             next_slur: self.mint_slur_id().counter(),
             next_tie: self.mint_tie_id().counter(),
+            next_measure: self.mint_measure_id().counter(),
         }
     }
 
@@ -3412,6 +3570,30 @@ impl EditorSession {
                 c.checked_add(1).expect("tie id counter overflowed u64")
             });
         TieId::new(self.replica, next)
+    }
+
+    /// Mints a fresh [`MeasureId`], the measure analogue of [`Self::mint_tie_id`]:
+    /// one past every measure counter of this replica in the pristine `base`, the
+    /// current score, the committed partition and the authored history.
+    fn mint_measure_id(&self) -> MeasureId {
+        let measures = |score: &Score| -> Vec<MeasureId> {
+            score
+                .staff_instances()
+                .flat_map(|(_, si)| si.measures.iter().map(|m| m.id))
+                .collect()
+        };
+        let ids = measures(&self.base)
+            .into_iter()
+            .chain(measures(&self.score))
+            .chain(self.committed_and_authored().flat_map(inserted_measure_ids));
+        let next = ids
+            .filter(|m| m.replica() == self.replica)
+            .map(|m| m.counter())
+            .max()
+            .map_or(0, |c| {
+                c.checked_add(1).expect("measure id counter overflowed u64")
+            });
+        MeasureId::new(self.replica, next)
     }
 
     /// The committed partition followed by this session's authored history: every
@@ -3825,6 +4007,16 @@ fn time_signature_beat(ts: &TimeSignature) -> Option<MusicalDuration> {
 /// trims (a `ModifyEvent` value), and splits (the original event plus the tail's onset
 /// and duration, for re-inserting the tail with fresh ids). Built by
 /// [`EditorSession::make_room`], turned into ops by [`EditorSession::make_room_ops`].
+/// Where a span of note entry meets its staff's measures (see
+/// [`EditorSession::measure_plan`]).
+#[derive(Default)]
+struct MeasurePlan {
+    /// The barlines strictly inside the span, in order: where the entry splits.
+    barlines: Vec<MusicalPosition>,
+    /// The starts of the measures to open after the staff's last, in order.
+    open: Vec<MusicalPosition>,
+}
+
 #[derive(Default)]
 struct MakeRoom {
     trims: Vec<Event>,
@@ -3848,6 +4040,7 @@ struct Minter {
     next_pitch: u64,
     next_slur: u64,
     next_tie: u64,
+    next_measure: u64,
 }
 
 impl Minter {
@@ -3884,6 +4077,15 @@ impl Minter {
             .next_tie
             .checked_add(1)
             .expect("tie id counter overflowed u64");
+        id
+    }
+
+    fn measure(&mut self) -> MeasureId {
+        let id = MeasureId::new(self.replica, self.next_measure);
+        self.next_measure = self
+            .next_measure
+            .checked_add(1)
+            .expect("measure id counter overflowed u64");
         id
     }
 }
@@ -4100,6 +4302,15 @@ fn inserted_tie_ids(env: &OperationEnvelope) -> Vec<TieId> {
     }
 }
 
+/// The measure ids a session envelope brought into being — the measure analogue of
+/// [`inserted_event_ids`].
+fn inserted_measure_ids(env: &OperationEnvelope) -> Vec<MeasureId> {
+    match &env.payload {
+        OperationPayload::Primitive(OperationKind::CreateMeasure(op)) => vec![op.measure.id],
+        _ => Vec::new(),
+    }
+}
+
 /// The transaction id a session envelope declares, if it is a `DeclareTransaction`.
 fn declared_transaction_id(env: &OperationEnvelope) -> Option<TransactionId> {
     match &env.payload {
@@ -4206,26 +4417,62 @@ fn staff_step_spelling(spelling: &PitchSpelling, steps: i32) -> Option<PitchSpel
     })
 }
 
+type StartClefs = BTreeMap<(RegionId, StaffId), Clef>;
+type MeasureStarts = BTreeMap<MeasureId, MusicalPosition>;
+
+/// A score's render, and the tables the editor reads from its logical layout.
+struct Rendered {
+    start_clefs: StartClefs,
+    measure_starts: MeasureStarts,
+    resolved: ResolvedLayoutIR,
+    render: RenderIR,
+    map: HitTestMap,
+}
+
 /// Renders a score with `solver` to its `RenderIR` + hit-test map, or `None` if the
 /// solver's report is diagnostic-only (not renderable).
-type StartClefs = BTreeMap<(RegionId, StaffId), Clef>;
-
-fn render_score(
-    score: &Score,
-    solver: &dyn ConstraintSolver,
-) -> Option<(StartClefs, ResolvedLayoutIR, RenderIR, HitTestMap)> {
+fn render_score(score: &Score, solver: &dyn ConstraintSolver) -> Option<Rendered> {
     // Build the start-clef table from the logical layout, where anchor resolution has
     // already placed each `PlacedClef` at a concrete time — the editor's vertical
-    // inverse spells the clicked height against this, not against vector order.
+    // inverse spells the clicked height against this, not against vector order. The
+    // measure starts come from the same resolution.
     let logical = to_logical(score);
     let start_clefs = staff_start_clefs(&logical);
+    let measure_starts = measure_starts(&logical);
     let report = solver.solve(&to_constrained(&logical), &SolverConfig::default());
     if !report.status.is_renderable() {
         return None;
     }
     let render = to_render(&report.layout);
     let map = render.hit_test_map();
-    Some((start_clefs, report.layout, render, map))
+    Some(Rendered {
+        start_clefs,
+        measure_starts,
+        resolved: report.layout,
+        render,
+        map,
+    })
+}
+
+/// Each measure's start as the logical layout resolved its anchor, where that is a
+/// musical position.
+fn measure_starts(logical: &LogicalLayoutIR) -> MeasureStarts {
+    let mut starts = MeasureStarts::new();
+    for region in &logical.regions {
+        for object in &region.objects {
+            if let (
+                TypedObjectId::Measure(id),
+                LayoutContent::Measure(epiphany_layout_ir::MeasureContent {
+                    start: TimePoint::Musical(start),
+                    ..
+                }),
+            ) = (object.provenance().source, object.content())
+            {
+                starts.insert(id, start.clone());
+            }
+        }
+    }
+    starts
 }
 
 /// The clef in force at each manifested staff's start, resolved by time from the
