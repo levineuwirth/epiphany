@@ -5874,6 +5874,151 @@ fn a_best_effort_undo_keeps_a_signature_its_dropped_restoration_leaves_named_in_
     assert!(live(&state, TypedObjectId::TimeSignature(half)));
 }
 
+/// A best-effort undo keeps a time signature a region's whole grid still
+/// names after the undo, in both modes: the grid arm of the rule above. One
+/// author: a region with a measure at its start under a 4/4 grid; a
+/// transaction minting a 2/4 signature (by a meter change at a later bar) and
+/// setting the region's whole grid to it; measures then entered at its
+/// second and third half bars; and the transaction undone best effort. The
+/// grid's restoration to 4/4 would leave those measures half a bar apart
+/// under a whole-bar meter, so it is dropped and the grid keeps naming the
+/// 2/4 signature, which stays; the meter change's removal is admitted. With
+/// the grid arm gone the undo removed the signature the grid still named
+/// (`CrossCuttingRefsResolve`); X4a review 3 found the arm pinned by nothing
+/// (its L2).
+#[test]
+fn a_best_effort_undo_keeps_a_signature_its_dropped_grid_restoration_leaves_named_in_both_modes() {
+    use epiphany_core::{MeasureId, MeterChange, MetricGrid, StaffInstanceId, TimeSignatureId};
+    use epiphany_ops::{
+        CreateMeasureOp, CreateRegionOp, CreateStaffInstanceOp, SetMetricGridOp, SetTimeSignatureOp,
+    };
+    let m = Measure::new();
+    let region = RegionId::new(A, 3420);
+    let instance = StaffInstanceId::new(A, 3421);
+    let (whole, half) = (TimeSignatureId::new(A, 3422), TimeSignatureId::new(A, 3423));
+    let tx = TransactionId::new(A, 3424);
+    let at = |halves: i64| {
+        valuegen::region_start_anchor(
+            region,
+            MusicalPosition(RationalTime::new(halves, 2).expect("halves")),
+        )
+    };
+    let measure = |id: u64, halves: i64| {
+        primitive(OperationKind::CreateMeasure(CreateMeasureOp {
+            instance,
+            measure: epiphany_core::Measure {
+                id: MeasureId::new(A, id),
+                start: at(halves),
+                time_signature: None,
+                explicit_number: Some(halves as u32 + 1),
+                number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+            },
+        }))
+    };
+    let signature = |id: TimeSignatureId, beats: u16, halves: i64| {
+        primitive(OperationKind::SetTimeSignature(SetTimeSignatureOp {
+            region,
+            anchor: at(halves),
+            time_signature: Some(valuegen::time_signature(id, beats)),
+        }))
+    };
+    let grid = |signature: TimeSignatureId| {
+        primitive(OperationKind::SetMetricGrid(SetMetricGridOp {
+            region,
+            grid: Some(MetricGrid {
+                meter_sequence: vec![MeterChange {
+                    anchor: at(0),
+                    time_signature: signature,
+                }],
+            }),
+        }))
+    };
+    let payloads = vec![
+        (
+            primitive(OperationKind::CreateRegion(CreateRegionOp {
+                region: valuegen::region(region),
+            })),
+            None,
+        ),
+        (
+            primitive(OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                region,
+                instance: valuegen::staff_instance(instance, m.import.ids.staves[0][0]),
+            })),
+            None,
+        ),
+        (measure(3425, 0), None),
+        (signature(whole, 4, 0), None),
+        (grid(whole), None),
+        (
+            primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                id: tx,
+                label: String::from("edit"),
+                category: None,
+            })),
+            Some(tx),
+        ),
+        (signature(half, 2, 4), Some(tx)),
+        (grid(half), Some(tx)),
+        (measure(3426, 1), None),
+        (measure(3427, 2), None),
+        (
+            OperationPayload::UndoTransaction(UndoTransactionPayload {
+                target: tx,
+                policy: UndoPolicy::BestEffort,
+            }),
+            None,
+        ),
+    ];
+    let mut authored: Vec<OperationEnvelope> = Vec::new();
+    for (counter, (payload, transaction)) in payloads.into_iter().enumerate() {
+        let seen: Vec<OperationId> = authored.last().map(|e| e.id).into_iter().collect();
+        let mut env = m.op(A, counter as u64, counter as i64 + 1, &seen, payload);
+        env.transaction = transaction;
+        authored.push(env);
+    }
+    let state = m.agree(
+        "a best-effort undo of a signature its grid keeps",
+        &authored,
+    );
+    for env in &authored {
+        assert!(
+            matches!(
+                effect(&state, env.id),
+                Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
+            ),
+            "{:?}: {:?}",
+            env.id,
+            effect(&state, env.id)
+        );
+    }
+    assert!(
+        live(&state, TypedObjectId::TimeSignature(half)),
+        "the 2/4 the grid names stays"
+    );
+    assert!(live(&state, TypedObjectId::TimeSignature(whole)));
+    let mut set = OperationSet::new();
+    set.accept_all(m.import.envelopes.iter().chain(&authored).cloned());
+    let score = set
+        .reduce_onto(&Score::empty(IdentityContext::new(m.import.replica)))
+        .score;
+    let held = score
+        .canvas
+        .regions
+        .iter()
+        .find(|r| r.id == region)
+        .expect("the region");
+    let epiphany_core::RegionContent::StaffBased(content) = &held.content else {
+        panic!("a staff-based region");
+    };
+    let named: Vec<TimeSignatureId> = content
+        .default_metric_grid
+        .iter()
+        .flat_map(|g| g.meter_sequence.iter().map(|c| c.time_signature))
+        .collect();
+    assert_eq!(named, vec![half], "the grid's restoration was dropped");
+}
+
 /// An event an undo removes takes every pitch it holds with it, as a delete
 /// does, a pitch another operation added since among them, in both modes.
 /// One author replaces the first quarter with a rest in a transaction, gives

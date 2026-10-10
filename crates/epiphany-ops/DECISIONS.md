@@ -3647,3 +3647,20 @@ the never-seen history's graph with one region's instance tombstoned in the
 ledger alone gives a plain `RegionExtents` finding and no deferred one.
 Mutation: the ledger's liveness ignored (the finding is "never seen", the
 test fails).
+
+**A dropped grid restoration's signature is pinned (review 3's L2).**
+`0b3789b` keeps a time signature a best-effort undo would remove while a
+meter change or a whole grid its dropped restoration leaves in place still
+names it; the grid arm was pinned by nothing, and review 3's probe did not
+reach it, so it might have been unreachable. It is reachable. The probe's
+transaction minted its signature by a meter change at the grid's own
+position, where the per-key overlay governs, so the grid's restoration was
+admitted and only the meter change's dropped. Here the transaction mints a
+2/4 signature by a meter change at a later bar and sets the region's whole
+grid to it at the start; measures entered after it at the second and third
+half bars fit 2/4 only, so the grid's restoration to 4/4 is dropped, the
+meter change's removal admitted, and the grid alone names the signature.
+Locked by
+`a_best_effort_undo_keeps_a_signature_its_dropped_grid_restoration_leaves_named_in_both_modes`.
+Mutation: the grid arm disabled (the undo removes the signature the grid
+names, `CrossCuttingRefsResolve`, and the test fails).

@@ -620,7 +620,9 @@ pub mod vectors;
 ///   for an emptied container,
 ///   `a_container_an_undo_emptied_reads_empty_in_both_modes`; for a dropped
 ///   meter restoration,
-///   `a_best_effort_undo_keeps_a_signature_its_dropped_restoration_leaves_named_in_both_modes`;
+///   `a_best_effort_undo_keeps_a_signature_its_dropped_restoration_leaves_named_in_both_modes`
+///   and, for a dropped grid restoration (pinned in X4b.0),
+///   `a_best_effort_undo_keeps_a_signature_its_dropped_grid_restoration_leaves_named_in_both_modes`;
 ///   for an undone event's pitches,
 ///   `an_event_an_undo_removes_takes_its_pitches_in_both_modes`.
 ///
