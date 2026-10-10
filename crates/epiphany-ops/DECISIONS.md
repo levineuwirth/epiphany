@@ -3696,9 +3696,9 @@ of it refused, which the census showed and the catalog says. Measured with a
 census of the generated undos (`undo_census`, outside the repository) over the
 same 3,000 histories of 64 authored from seed `0xA3F80000`: undos authored
 5,257 to 7,626; redos 1,196 to 2,457, of which applied 140 to 1,560 and
-refused `TargetMissing` 991 to 648 (of those 648, 438 reverse an undo whose
-own transaction rolled back under concurrency); undos naming another
-replica's transaction 1,457 to 1,426. The CI budget and the committed
+refused `TargetMissing` 991 to 648 (624 of the 648 redo an overwrite, and
+438 of those reverse an undo whose own transaction rolled back); undos naming
+another replica's transaction 1,457 to 1,426. The CI budget and the committed
 histories pass at the new generator.
 
 **A pitch belongs to one event (review 3's F1; reduction version 4).** A
