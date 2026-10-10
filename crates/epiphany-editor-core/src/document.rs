@@ -460,6 +460,19 @@ impl<S: BlockStore> EditorDocument<S> {
         self.committed.envelopes()
     }
 
+    /// The score the committed operations make: their reduction from an empty
+    /// score. What a reader that only draws the document needs; its `identity`
+    /// names whichever replica reduced it.
+    pub fn score(&self) -> Score {
+        match &self.prepared {
+            Some(prepared) => prepared.score.clone(),
+            None => {
+                let base = Score::empty(IdentityContext::new(ReplicaId::generate()));
+                self.committed.set().reduce_onto(&base).score
+            }
+        }
+    }
+
     /// The bundle, for its manifest and anomalies.
     pub fn bundle(&self) -> &Bundle<S> {
         &self.bundle

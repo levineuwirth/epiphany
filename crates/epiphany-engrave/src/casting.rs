@@ -63,12 +63,12 @@
 //!
 //! ## Default page geometry
 //!
-//! The spec names `Canvas.layout_defaults` ("paper size, margins") but does not
-//! define its type, and the core graph deliberately does not carry it yet (the
-//! graph home is staged to the data-model schema major — see `DECISIONS.md`),
-//! so page geometry is an **engraver-side parameter** ([`PageGeometry`], a
+//! Page geometry is an **engraver-side parameter** ([`PageGeometry`], a
 //! constructor argument of [`crate::Engraver`]) with a documented default; see
-//! [`PageGeometry::default`] for the arithmetic.
+//! [`PageGeometry::default`] for the arithmetic. The score graph now holds a
+//! page too (`Canvas.layout_defaults`, authored by `SetCanvasLayoutDefaults`,
+//! whose default is the same page), and a caller drawing a score on its own
+//! page builds the parameter from it (`PageGeometry::from`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -144,9 +144,8 @@ const KEY_NS_PAGE: u128 = 2;
 
 /// Page geometry the engraver casts off against: the page size and margins, in
 /// staff spaces (Chapter 7 §7.2: IR coordinates are staff spaces). A parameter
-/// of [`crate::Engraver`] because the score graph has no home for it yet — the
-/// spec's `Canvas.layout_defaults` is named but never defined, and adding a
-/// graph field is a data-model schema-major change (see `DECISIONS.md`).
+/// of [`crate::Engraver`]; a score's own page, its canvas's layout defaults,
+/// converts into one.
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub struct PageGeometry {
     /// Full page size, in staff spaces.
@@ -195,6 +194,27 @@ impl Default for PageGeometry {
                 right: StaffSpace(7.5),
                 bottom: StaffSpace(7.5),
                 left: StaffSpace(7.5),
+            },
+        }
+    }
+}
+
+impl From<&epiphany_core::CanvasLayoutDefaults> for PageGeometry {
+    /// The page a score's canvas sets it on (`Canvas.layout_defaults`, authored by
+    /// `SetCanvasLayoutDefaults`): its size and margins, in staff spaces. The
+    /// canvas's default is this type's default.
+    fn from(defaults: &epiphany_core::CanvasLayoutDefaults) -> Self {
+        let ss = |v: f64| StaffSpace(v as f32);
+        PageGeometry {
+            size: Size2D {
+                width: ss(defaults.page_size.width.get()),
+                height: ss(defaults.page_size.height.get()),
+            },
+            margins: Margins {
+                top: ss(defaults.margins.top.get()),
+                right: ss(defaults.margins.right.get()),
+                bottom: ss(defaults.margins.bottom.get()),
+                left: ss(defaults.margins.left.get()),
             },
         }
     }

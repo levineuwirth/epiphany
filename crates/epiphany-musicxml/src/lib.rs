@@ -49,6 +49,10 @@
 //!   voice on each. Unpitched notes keep their staff step (read against a
 //!   treble clef, bottom line 0) and their instrument member, and a tie
 //!   between two of the same member and step pairs no pitch.
+//! - The page the file sets the score on (`<defaults><page-layout>`, whole)
+//!   becomes the score's canvas layout defaults through
+//!   `SetCanvasLayoutDefaults`, so a document made from the import is drawn
+//!   on the page its file is.
 //! - Every operation comes from one replica in one causal chain, so the import
 //!   is deterministic and reduces as one author's history.
 //!

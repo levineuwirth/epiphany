@@ -1193,7 +1193,10 @@ dependencies = [
 name = "epiphany-cli"
 version = "0.0.0"
 dependencies = [
+ "epiphany-bundle",
  "epiphany-core",
+ "epiphany-determinism",
+ "epiphany-editor-core",
  "epiphany-engrave",
  "epiphany-layout-ir",
  "epiphany-musicxml",
@@ -1280,6 +1283,7 @@ name = "epiphany-musicxml"
 version = "0.0.0"
 dependencies = [
  "epiphany-core",
+ "epiphany-determinism",
  "epiphany-engrave",
  "epiphany-layout-ir",
  "epiphany-ops",

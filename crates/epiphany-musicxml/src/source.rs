@@ -1568,14 +1568,16 @@ impl<'d, 'i> Reader<'d, 'i> {
                         if name(part) == "concert-score" {
                             concert = true;
                         } else if name(part) == "page-layout" && page.is_none() {
-                            // The page is the renderer's to cast off against;
-                            // the score graph does not hold it.
+                            // A whole page is imported as the score's layout
+                            // defaults; one missing a size or margin is not.
                             page = SourcePage::read(part);
-                            self.features.record(
-                                FeatureClass::Presentation,
-                                "defaults: page-layout",
-                                score_place(),
-                            );
+                            if page.is_none() {
+                                self.features.record(
+                                    FeatureClass::Presentation,
+                                    "defaults: page-layout",
+                                    score_place(),
+                                );
+                            }
                         } else {
                             self.features.record(
                                 FeatureClass::Presentation,

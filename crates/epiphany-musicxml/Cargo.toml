@@ -12,6 +12,8 @@ description = "Imports partwise MusicXML into an Epiphany score through the publ
 epiphany-core.workspace = true
 # The operation vocabulary, envelopes and the reduction the import goes through.
 epiphany-ops.workspace = true
+# The canonical float a page's dimensions are stored as.
+epiphany-determinism.workspace = true
 # A read-only XML DOM with no dependencies of its own (MSRV 1.60). The same
 # version the rendering stack already locks.
 roxmltree = "0.20"

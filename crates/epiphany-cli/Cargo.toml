@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Command-line entry points: `epiphany render` engraves a MusicXML file to SVG, and `corpus-report` imports and renders a directory of exported scores and reports what each import could not carry."
+description = "Command-line entry points: `epiphany render` engraves a MusicXML file or a saved document to SVG, `epiphany new` imports a MusicXML file into a document, and `corpus-report` imports and renders a directory of exported scores and reports what each import could not carry."
 
 [[bin]]
 name = "epiphany"
@@ -23,3 +23,7 @@ epiphany-musicxml.workspace = true
 epiphany-layout-ir.workspace = true
 epiphany-engrave.workspace = true
 epiphany-render-svg.workspace = true
+# Documents: a score saved as a bundle, opened, made from an import.
+epiphany-editor-core.workspace = true
+epiphany-bundle.workspace = true
+epiphany-determinism.workspace = true

@@ -6,7 +6,9 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use epiphany_bundle::FileStore;
 use epiphany_core::{check_invariants, Score, WellFormednessViolation};
+use epiphany_editor_core::{DocumentError, EditorDocument};
 use epiphany_engrave::{Engraver, PageGeometry};
 use epiphany_layout_ir::{
     constrained::LayoutDiagnostic, to_constrained, to_logical, written_view, ConstraintSolver,
@@ -32,6 +34,7 @@ pub struct Loaded {
 pub enum LoadError {
     Io(std::io::Error),
     Read(epiphany_musicxml::ReadError),
+    Document(DocumentError),
 }
 
 impl std::fmt::Display for LoadError {
@@ -39,6 +42,7 @@ impl std::fmt::Display for LoadError {
         match self {
             LoadError::Io(e) => write!(f, "{e}"),
             LoadError::Read(e) => write!(f, "{e}"),
+            LoadError::Document(e) => write!(f, "{e}"),
         }
     }
 }
@@ -66,6 +70,46 @@ pub fn load(path: &Path) -> Result<Loaded, LoadError> {
     })
 }
 
+/// Whether the file at `path` is a saved document (a bundle) rather than
+/// MusicXML: whether it begins with the bundle's magic bytes.
+pub fn is_document(path: &Path) -> Result<bool, LoadError> {
+    use std::io::Read;
+    let mut head = [0u8; 8];
+    let mut file = std::fs::File::open(path).map_err(LoadError::Io)?;
+    match file.read_exact(&mut head) {
+        Ok(()) => Ok(head == epiphany_determinism::BUNDLE_MAGIC),
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(false),
+        Err(e) => Err(LoadError::Io(e)),
+    }
+}
+
+/// Opens the saved document at `path`.
+pub fn open_document(path: &Path) -> Result<EditorDocument<FileStore>, LoadError> {
+    let store = FileStore::open(path).map_err(LoadError::Io)?;
+    EditorDocument::open(store).map_err(LoadError::Document)
+}
+
+/// Imports the MusicXML file at `source` into a new document at `target`, which
+/// must not exist: the import's operations become the document's first
+/// generation, its log.
+pub fn new_document(source: &Path, target: &Path) -> Result<EditorDocument<FileStore>, LoadError> {
+    let xml = std::fs::read_to_string(source).map_err(LoadError::Io)?;
+    let import = epiphany_musicxml::import(&xml).map_err(LoadError::Read)?;
+    let store = FileStore::create_new(target).map_err(LoadError::Io)?;
+    EditorDocument::create(store, import.envelopes).map_err(LoadError::Document)
+}
+
+/// The score a file holds, imported or reduced from a saved document, engraved
+/// on its page: an import at the pitch its file sets it in (see
+/// [`engrave_loaded`]), a document as its operations make it.
+pub fn engrave_path(path: &Path) -> Result<Engraved, LoadError> {
+    if is_document(path)? {
+        Ok(engrave_score(&open_document(path)?.score()))
+    } else {
+        Ok(engrave_loaded(&load(path)?))
+    }
+}
+
 pub mod omissions;
 
 /// A score engraved by the real solver.
@@ -87,12 +131,23 @@ pub fn engrave(score: &Score) -> Engraved {
 /// in: a concert score at concert pitch, a transposed one with each
 /// transposing part at written pitch under its written key.
 pub fn engrave_loaded(loaded: &Loaded) -> Engraved {
-    let geometry = geometry(&loaded.import.source);
+    let geometry = page_of(&loaded.reduced.score);
     if loaded.import.source.concert {
         engrave_on(&loaded.reduced.score, geometry)
     } else {
         engrave_on(&written_view(&loaded.reduced.score), geometry)
     }
+}
+
+/// The page a score is set on: its canvas's layout defaults, which an import
+/// sets from its file's page, and which are the default page otherwise.
+pub fn page_of(score: &Score) -> PageGeometry {
+    PageGeometry::from(&score.canvas.layout_defaults)
+}
+
+/// Engraves a score on its own page ([`page_of`]): how a document is drawn.
+pub fn engrave_score(score: &Score) -> Engraved {
+    engrave_on(score, page_of(score))
 }
 
 /// The page a file sets its score on, in staff spaces, or the default page

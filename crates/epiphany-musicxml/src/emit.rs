@@ -10,23 +10,25 @@
 use std::collections::BTreeMap;
 
 use epiphany_core::{
-    AnchorOffset, Beam, BeamId, BeatGroup, Clef, ClefChange, Event, EventDuration, EventId,
-    EventPosition, ForeignFormatId, IdentifiedPitch, IdentityContext, Instrument, InstrumentId,
-    KeySignature, KeySignatureChange, Measure, MeasureId, MeasureNumberVisibility, MetricTimeModel,
-    MusicalDuration, MusicalPosition, OperationId, PitchId, PitchedEvent, PowerOfTwo, RationalTime,
-    Region, RegionContent, RegionEdge, RegionId, RegionTimeModel, ReplicaId, Rest, ScoreMetadata,
-    Slur, SlurId, SlurKind, Staff, StaffExtent, StaffGroup, StaffGroupId, StaffGroupKind, StaffId,
-    StaffInstance, StaffInstanceId, StaffLineConfiguration, StaffPosition, StemConfiguration, Tie,
-    TieClass, TieId, TimeAnchor, TimeExtent, TimeSignature, TimeSignatureDisplay, TimeSignatureId,
-    Timestamp, Tuplet, TupletRatio, UnpitchedEvent, UnpitchedMember, UnpitchedMemberId, Voice,
-    VoiceId, VoiceOrigin, WallClockTime,
+    AnchorOffset, Beam, BeamId, BeatGroup, CanvasLayoutDefaults, CanvasMargins, CanvasSize, Clef,
+    ClefChange, Event, EventDuration, EventId, EventPosition, ForeignFormatId, IdentifiedPitch,
+    IdentityContext, Instrument, InstrumentId, KeySignature, KeySignatureChange, Measure,
+    MeasureId, MeasureNumberVisibility, MetricTimeModel, MusicalDuration, MusicalPosition,
+    OperationId, PitchId, PitchedEvent, PowerOfTwo, RationalTime, Region, RegionContent,
+    RegionEdge, RegionId, RegionTimeModel, ReplicaId, Rest, ScoreMetadata, Slur, SlurId, SlurKind,
+    Staff, StaffExtent, StaffGroup, StaffGroupId, StaffGroupKind, StaffId, StaffInstance,
+    StaffInstanceId, StaffLineConfiguration, StaffPosition, StemConfiguration, Tie, TieClass,
+    TieId, TimeAnchor, TimeExtent, TimeSignature, TimeSignatureDisplay, TimeSignatureId, Timestamp,
+    Tuplet, TupletRatio, UnpitchedEvent, UnpitchedMember, UnpitchedMemberId, Voice, VoiceId,
+    VoiceOrigin, WallClockTime,
 };
+use epiphany_determinism::CanonicalF64;
 use epiphany_ops::{
     AuthorId, CausalContext, CreateCrossCuttingOp, CreateInstrumentOp, CreateMeasureOp,
     CreateRegionOp, CreateStaffGroupOp, CreateStaffInstanceOp, CreateStaffOp, CreateTupletOp,
     CreateVoiceOp, CrossCuttingValue, HybridLogicalClock, InsertEventOp, OperationEnvelope,
-    OperationKind, OperationPayload, OperationStamp, RespellPitchOp, SetMetadataOp,
-    SetTimeSignatureOp,
+    OperationKind, OperationPayload, OperationStamp, RespellPitchOp, SetCanvasLayoutDefaultsOp,
+    SetMetadataOp, SetTimeSignatureOp,
 };
 
 use crate::source::{Content, FeatureClass, GroupKind, Meter, Place, SourcePart, SourceScore};
@@ -311,6 +313,30 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
                     creation_timestamp: Timestamp(0),
                     modification_timestamp: Timestamp(0),
                     additional: Vec::new(),
+                },
+            }),
+        );
+    }
+
+    // The page the file sets the score on, as the score's layout defaults, so a
+    // document made from the import is drawn on it.
+    if let Some(page) = source.page {
+        let ss = |v: f32| CanonicalF64::new(f64::from(v)).expect("the reader keeps pages finite");
+        e.emit(
+            "SetCanvasLayoutDefaults",
+            Subject::Score,
+            OperationKind::SetCanvasLayoutDefaults(SetCanvasLayoutDefaultsOp {
+                layout_defaults: CanvasLayoutDefaults {
+                    page_size: CanvasSize {
+                        width: ss(page.width),
+                        height: ss(page.height),
+                    },
+                    margins: CanvasMargins {
+                        top: ss(page.top),
+                        right: ss(page.right),
+                        bottom: ss(page.bottom),
+                        left: ss(page.left),
+                    },
                 },
             }),
         );

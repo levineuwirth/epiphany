@@ -1,31 +1,40 @@
 #![forbid(unsafe_code)]
 //! `epiphany`: the first entry point a person can run on a file.
 //!
-//!     epiphany render <file.musicxml> [--page N] [-o out.svg]
+//!     epiphany render <file.musicxml|file.musc> [--page N] [-o out.svg]
 //!     epiphany import <file.musicxml>
+//!     epiphany new <file.musicxml> -o <file.musc>
 //!
-//! `render` imports the file through the operation API, engraves it and
-//! writes page N (default 1) as SVG to `out.svg`, or to standard output.
+//! `render` imports the file through the operation API, or opens it when it
+//! is a saved document, engraves it and writes page N (default 1) as SVG to
+//! `out.svg`, or to standard output. `new` imports a MusicXML file into a new
+//! document, which must not exist yet: the import's operations are its log.
 //! `import` prints what the import carried and what it could not: every
 //! operation that did not apply, with the reducer's reason; the source
 //! features not imported, by kind; the comparison against the source; and
 //! the score's invariant violations.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use epiphany_cli::{engrave_loaded, load, page, svg, Loaded};
+use epiphany_cli::{
+    engrave_loaded, engrave_score, is_document, load, new_document, open_document, page, svg,
+    Loaded,
+};
 use epiphany_musicxml::source::FeatureClass;
 
-const USAGE: &str = "usage: epiphany render <file.musicxml> [--page N] [-o out.svg]\n       \
-                     epiphany import <file.musicxml>";
+const USAGE: &str =
+    "usage: epiphany render <file.musicxml|file.musc> [--page N] [-o out.svg]\n       \
+                     epiphany import <file.musicxml>\n       \
+                     epiphany new <file.musicxml> -o <file.musc>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("render") => render_command(&args[1..]),
         Some("import") => import_command(&args[1..]),
+        Some("new") => new_command(&args[1..]),
         Some("-h" | "--help") => {
             println!("{USAGE}");
             ExitCode::SUCCESS
@@ -64,6 +73,11 @@ fn render_command(args: &[String]) -> ExitCode {
     let Some(file) = file else {
         return fail(USAGE);
     };
+    match is_document(&file) {
+        Ok(true) => return render_document(&file, number, output),
+        Ok(false) => {}
+        Err(e) => return fail(&format!("{}: {e}", file.display())),
+    }
     let loaded = match load(&file) {
         Ok(loaded) => loaded,
         Err(e) => return fail(&format!("{}: {e}", file.display())),
@@ -94,6 +108,75 @@ fn render_command(args: &[String]) -> ExitCode {
         },
     );
     ExitCode::SUCCESS
+}
+
+/// Writes `text` to `output`, or to standard output.
+fn write_output(output: Option<PathBuf>, text: &str) -> Result<(), ExitCode> {
+    match output {
+        Some(path) => {
+            std::fs::write(&path, text).map_err(|e| fail(&format!("{}: {e}", path.display())))
+        }
+        None => {
+            print!("{text}");
+            Ok(())
+        }
+    }
+}
+
+/// `render` on a saved document: its committed operations reduced and engraved
+/// on the document's page.
+fn render_document(file: &Path, number: usize, output: Option<PathBuf>) -> ExitCode {
+    let document = match open_document(file) {
+        Ok(document) => document,
+        Err(e) => return fail(&format!("{}: {e}", file.display())),
+    };
+    let engraved = engrave_score(&document.score());
+    let pages = engraved.layout.pages.len();
+    let Some(layout) = page(&engraved.layout, number) else {
+        return fail(&format!("{}: page {number} of {pages}", file.display()));
+    };
+    if let Err(code) = write_output(output, &svg(&layout)) {
+        return code;
+    }
+    eprintln!(
+        "{}: page {number} of {pages}; {} operations, generation {}{}",
+        file.display(),
+        document.committed_operations().len(),
+        document.generation(),
+        if document.is_read_only() {
+            format!("; read-only: {:?}", document.read_only_reasons())
+        } else {
+            String::new()
+        }
+    );
+    ExitCode::SUCCESS
+}
+
+fn new_command(args: &[String]) -> ExitCode {
+    let [source, flag, target] = args else {
+        return fail(USAGE);
+    };
+    if flag != "-o" {
+        return fail(USAGE);
+    }
+    let (source, target) = (PathBuf::from(source), PathBuf::from(target));
+    match new_document(&source, &target) {
+        Ok(document) => {
+            eprintln!(
+                "{}: {} operations into {}{}",
+                source.display(),
+                document.committed_operations().len(),
+                target.display(),
+                if document.is_read_only() {
+                    format!(" (read-only: {:?})", document.read_only_reasons())
+                } else {
+                    String::new()
+                }
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(&format!("{}: {e}", source.display())),
+    }
 }
 
 fn import_command(args: &[String]) -> ExitCode {
