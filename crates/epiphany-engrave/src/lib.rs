@@ -329,9 +329,10 @@ pub struct Engraver {
 /// to pass an accidental began taking a fuller arc, as far as a sixth of its
 /// span and three spaces at most, rather than running through it, to `48`
 /// when a slur or tie began passing the stems of its staff inside its span
-/// as it passes accidentals, and to `49` when a tie meeting its first
-/// note's flag began starting past it.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(49);
+/// as it passes accidentals, to `49` when a tie meeting its first note's
+/// flag began starting past it, and to `50` when a tie that cannot pass a
+/// stem began passing its accidentals still.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(50);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -729,12 +730,9 @@ impl HorizontalRemap {
                         let inside = |s: &&clearance::InkRect| {
                             s.left > x0 + STEM_END_MARGIN && s.right < x3 - STEM_END_MARGIN
                         };
-                        let obstacles: Vec<clearance::InkRect> = band(&accidentals)
-                            .iter()
-                            .chain(band(&stems).iter().filter(inside))
-                            .copied()
-                            .collect();
-                        clearance::clear_accidentals(spaced, &obstacles, tie)
+                        let inner: Vec<clearance::InkRect> =
+                            band(&stems).iter().filter(inside).copied().collect();
+                        clearance::clear_obstacles(spaced, band(&accidentals), &inner, tie)
                     }
                     _ => spaced,
                 };

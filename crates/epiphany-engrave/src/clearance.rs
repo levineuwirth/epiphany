@@ -136,6 +136,26 @@ pub(crate) fn clear_accidentals(cp: [Point; 4], accidentals: &[InkRect], tie: bo
     }
 }
 
+/// `cp` past the accidentals and the stems it would meet
+/// ([`clear_accidentals`] over both), except that a tie which cannot pass a
+/// stem so, under a beamed run whose stems reach a beam far above it, still
+/// passes the accidentals it can, as if the stem were not there, rather than
+/// being left running through both.
+pub(crate) fn clear_obstacles(
+    cp: [Point; 4],
+    accidentals: &[InkRect],
+    stems: &[InkRect],
+    tie: bool,
+) -> [Point; 4] {
+    let all: Vec<InkRect> = accidentals.iter().chain(stems).copied().collect();
+    let cleared = clear_accidentals(cp, &all, tie);
+    if tie && cleared == cp && !stems.is_empty() {
+        clear_accidentals(cp, accidentals, tie)
+    } else {
+        cleared
+    }
+}
+
 /// `cp`, a tie, starting past any flag at its start that it runs through: its
 /// first note's flag, standing on the tie's side of its head, which the tie
 /// would otherwise leave its head into. The start moves right to the flag's
@@ -408,6 +428,41 @@ mod tests {
         assert!(offset(&cleared) * 0.75 <= 15.0 * LONG_TIE_SHARE + 1e-3);
         let short = tie(8.0);
         assert_eq!(clear_accidentals(short, &[flat(4.0)], true), short);
+    }
+
+    /// A long tie that can pass an accidental in its path but not a stem
+    /// rising far past its reach passes the accidental, rather than being
+    /// left through both.
+    #[test]
+    fn a_tie_that_cannot_pass_a_stem_still_passes_its_accidental() {
+        let span = 15.0;
+        let tie = [
+            Point::new(0.0, 0.0),
+            Point::new(span / 4.0, 1.0),
+            Point::new(span * 3.0 / 4.0, 1.0),
+            Point::new(span, 0.0),
+        ];
+        let flat = InkRect {
+            left: 7.1,
+            right: 7.9,
+            bottom: 0.3,
+            top: 2.2,
+        };
+        let stem = InkRect {
+            left: 10.96,
+            right: 11.04,
+            bottom: -1.0,
+            top: 9.0,
+        };
+        assert!(clearance(&tie, &flat, 1.0) < 0.0, "the tie meets the flat");
+        assert_eq!(
+            clear_accidentals(tie, &[flat, stem], true),
+            tie,
+            "no arc within bounds passes both"
+        );
+        let cleared = clear_obstacles(tie, &[flat], &[stem], true);
+        assert!(clearance(&cleared, &flat, 1.0) >= ACCIDENTAL_CLEARANCE - 1e-3);
+        assert_eq!((cleared[0], cleared[3]), (tie[0], tie[3]), "its ends stay");
     }
 
     #[test]

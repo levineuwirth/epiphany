@@ -1849,3 +1849,17 @@ D5 into a 2/4) and, since a tie keeps a new shape only when it passes every
 obstacle, would have returned a tie that passes accidentals there to running
 through them. Room after the signature, a tie broken around the digits, or
 MuseScore's crossing is the owner's to choose. No golden changed.
+
+## ENGRAVER_VERSION 49 → 50: a tie that cannot pass a stem still passes its accidentals (X5c.3, 2026-10-10)
+
+Version 48 gave a curve its stems and accidentals as one set of obstacles,
+and a tie keeps a new shape only when it passes every obstacle, so a held
+chord's tie under a beamed run of another voice, whose stems reach a beam
+far above any arc the tie may take, was returned whole to its version 46
+shape and ran again through the accidentals version 47 had passed: the
+corpus sweep after version 48 counted two such ties and four more tie
+crossings of noteheads. `clearance::clear_obstacles` now passes both where
+the tie can and, where it cannot pass a stem, the accidentals alone, as at
+version 47. Slurs, which keep what they clear, are unchanged. Locked by
+`clearance`'s `a_tie_that_cannot_pass_a_stem_still_passes_its_accidental`.
+No golden changed.
