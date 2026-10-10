@@ -21,8 +21,9 @@
 //! It edits **files** (the `file` module): `epiphany-editor-gui [path]` opens a saved
 //! document or a MusicXML file (imported into a new document held in memory until it
 //! is saved as a file), or a new score with no path; the file bar opens, saves, saves
-//! as and exports every page as SVG and PDF. Ctrl/Cmd+S saves; Enter and
-//! Ctrl/Cmd+Enter toggle a line or page break after the selected note's measure.
+//! as and exports every page as SVG and PDF. Ctrl/Cmd+S saves; Shift+Enter and
+//! Ctrl/Cmd+Enter toggle a line or page break after the selected note's measure,
+//! and bare Enter toggles neither.
 //!
 //! It is a demo binary; there is no headless way to assert its rendering here, so the
 //! one piece of nontrivial logic — the screen↔world coordinate map a click depends on
@@ -300,6 +301,21 @@ fn resolve_letter(entry_mode: bool, nominal: CmnNominal) -> LetterAction {
         LetterAction::AddChordNote
     } else {
         LetterAction::None
+    }
+}
+
+/// The layout break an Enter press toggles after the selected note's measure,
+/// given the modifiers held: Shift+Enter a line break, Ctrl/Cmd+Enter a page
+/// break. Bare Enter, and any other combination, toggles none: a key that easy to
+/// press by accident does not restructure the layout (see `DECISIONS.md`).
+fn break_key(modifiers: egui::Modifiers, enter: bool) -> Option<LayoutBreak> {
+    if !enter || modifiers.alt {
+        return None;
+    }
+    match (modifiers.command, modifiers.shift) {
+        (false, true) => Some(LayoutBreak::System),
+        (true, false) => Some(LayoutBreak::Page),
+        _ => None,
     }
 }
 
@@ -942,7 +958,8 @@ impl EditorApp {
              (off) / enter A (entry mode) · B–G enter note (entry mode only) · I insert after · \
              R enter rest (entry mode) · ←/→ retreat/advance caret (entry mode) · P pencil · \
              N note-entry · Ctrl/Cmd+C copy · Ctrl/Cmd+V paste · Ctrl/Cmd+Z undo · \
-             Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y redo",
+             Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y redo · Ctrl/Cmd+S save · Shift+Enter line break \
+             / Ctrl/Cmd+Enter page break after the selected note's measure",
             if self.pencil {
                 "ON — click to insert"
             } else {
@@ -1006,21 +1023,17 @@ impl EditorApp {
             // key-press check cannot provide (see `handle_clipboard_events`).
             copy: i.modifiers.command && i.key_pressed(egui::Key::C),
             save: i.modifiers.command && i.key_pressed(egui::Key::S),
-            line_break: !i.modifiers.command && i.key_pressed(egui::Key::Enter),
-            page_break: i.modifiers.command && i.key_pressed(egui::Key::Enter),
+            layout_break: break_key(i.modifiers, i.key_pressed(egui::Key::Enter)),
         });
         if k.save {
             self.do_save();
         }
-        if k.line_break {
-            self.run("line break", |s| {
-                s.toggle_break_after_selection(LayoutBreak::System)
-            });
-        }
-        if k.page_break {
-            self.run("page break", |s| {
-                s.toggle_break_after_selection(LayoutBreak::Page)
-            });
+        if let Some(kind) = k.layout_break {
+            let name = match kind {
+                LayoutBreak::System => "line break",
+                LayoutBreak::Page => "page break",
+            };
+            self.run(name, |s| s.toggle_break_after_selection(kind));
         }
         if k.undo {
             self.run_history("undo", |s| s.undo());
@@ -1290,10 +1303,9 @@ struct Keys {
     copy: bool,
     /// Ctrl/Cmd+S, saves the document.
     save: bool,
-    /// Enter, toggles a line break after the selected note's measure.
-    line_break: bool,
-    /// Ctrl/Cmd+Enter, toggles a page break there.
-    page_break: bool,
+    /// Shift+Enter or Ctrl/Cmd+Enter, toggles a line or a page break after the
+    /// selected note's measure ([`break_key`]).
+    layout_break: Option<LayoutBreak>,
 }
 
 impl eframe::App for EditorApp {
@@ -1508,6 +1520,39 @@ mod tests {
                 "{nominal:?} has no binding outside entry mode"
             );
         }
+    }
+
+    #[test]
+    fn bare_enter_toggles_no_break_and_modified_enter_does() {
+        let held = |shift: bool, command: bool, alt: bool| egui::Modifiers {
+            alt,
+            ctrl: command,
+            shift,
+            mac_cmd: false,
+            command,
+        };
+        assert_eq!(
+            break_key(held(false, false, false), true),
+            None,
+            "bare Enter"
+        );
+        assert_eq!(
+            break_key(held(true, false, false), true),
+            Some(LayoutBreak::System),
+            "Shift+Enter, a line break"
+        );
+        assert_eq!(
+            break_key(held(false, true, false), true),
+            Some(LayoutBreak::Page),
+            "Ctrl/Cmd+Enter, a page break"
+        );
+        assert_eq!(break_key(held(true, true, false), true), None);
+        assert_eq!(break_key(held(true, false, true), true), None);
+        assert_eq!(
+            break_key(held(true, false, false), false),
+            None,
+            "no Enter, no break"
+        );
     }
 
     #[test]

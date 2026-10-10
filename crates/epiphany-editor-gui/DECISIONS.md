@@ -506,9 +506,16 @@ on its file (`File::try_lock`, which this crate may use: it is outside the
 MSRV floor). A window that cannot take it opens the document read-only. The
 lock is advisory, so it binds cooperating windows only.
 
-**Keys.** Ctrl/Cmd+S saves. Enter toggles a line break after the selected
-note's measure and Ctrl/Cmd+Enter a page break, as in MuseScore. No shortcut
-fires while the file bar's path has the keyboard.
+**Keys.** Ctrl/Cmd+S saves. Shift+Enter toggles a line break after the
+selected note's measure and Ctrl/Cmd+Enter a page break; bare Enter toggles
+neither (`break_key`). MuseScore puts the line break on bare Enter, but the
+owner, having run the window, ruled that bare Enter is not to be the default
+break key (D60): a key that easy to press by accident should not restructure
+the layout. Shift+Enter is the modified key nearest MuseScore's and reads as a
+line break, as it does in text; Ctrl/Cmd+Enter keeps MuseScore's page break.
+Any other combination with Enter does nothing. Bindings the user can set are a
+later keymap item. No shortcut fires while the file bar's path has the
+keyboard.
 
 **Concert pitch.** A transposed MusicXML file opened here is drawn at
 concert pitch: whether a score is shown transposed is not yet stored in it.
