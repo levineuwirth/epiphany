@@ -3677,3 +3677,26 @@ beyond the references D54 parks: curved and stepwise trajectories, a
 compound indeterminacy, and an indeterminate event's hints. Mutation:
 `held_pitch_mut`'s steps arm disabled (the transposed step keeps its value
 in the graph, and the test fails).
+
+**A generated redo restores something (review 3's L4).** The undo-and-redo
+gesture undid any transaction the view held and then undid its own undo. An
+undo of an undo that removed what its transaction minted has nothing to
+compensate, a tombstone being final, so most such redos were refused
+`TargetMissing` (991 of 1,196 per 3,000 histories of 64 authored), and an
+editor's redo restores what it undid. The gesture now draws its target among
+transactions that overwrote values: each member applied in the author's view,
+minting and deleting nothing, and none the frozen `Transpose`, which records
+no write and so is undone by nothing. Where the view holds none, its author
+first revalues a pitch in a transaction of its own, as an editor edits, undoes
+and redoes. A redo stays an undo of the undo, never the command authored
+again. A first form that only filtered the target fired less often and wrote
+fewer redos that applied (107 against 140) and fewer undos (3,898 against
+5,257); one that transposed by steps as its fallback edit found every undo
+of it refused, which the census showed and the catalog says. Measured with a
+census of the generated undos (`undo_census`, outside the repository) over the
+same 3,000 histories of 64 authored from seed `0xA3F80000`: undos authored
+5,257 to 7,626; redos 1,196 to 2,457, of which applied 140 to 1,560 and
+refused `TargetMissing` 991 to 648 (of those 648, 438 reverse an undo whose
+own transaction rolled back under concurrency); undos naming another
+replica's transaction 1,457 to 1,426. The CI budget and the committed
+histories pass at the new generator.

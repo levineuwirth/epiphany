@@ -25,9 +25,13 @@
 //! moved one end at a time in one transaction, a pitch entered with its
 //! spelling, a spanner moved to another staff as a command of its own (onto a
 //! staff added for it, onto one the view holds, or onto an added one and back
-//! again as two commands), an undo and its redo, the author's two latest
-//! commands reverted, the older first, and an unmeasured passage (a region, a
-//! staff, a voice and a note) set in free time by any anchoring discipline. A
+//! again as two commands), an undo and its redo (of a transaction that
+//! overwrote values, minting and deleting nothing, so the redo has values to
+//! restore, the author revaluing a pitch first where the view holds none; a
+//! redo is an undo of the undo, never the command authored again),
+//! the author's two latest commands reverted, the older first, and an
+//! unmeasured passage (a region, a staff, a voice and a note) set in free time
+//! by any anchoring discipline. A
 //! whole-event modify moves, resizes or revalues an event, writes a chord
 //! without a pitch its author sees, writes an event as another kind in its
 //! place, or mints a pitch, a chord written with a new one or another kind
@@ -2561,35 +2565,55 @@ fn make(
             out
         }
         53 => {
-            // An undo and its redo: a transaction the view declares undone in
-            // a transaction of its own, which is then undone in turn.
+            // An undo and its redo: a transaction that overwrote values
+            // (`overwrite_target`) undone in a transaction of its own, which
+            // is then undone in turn. Where the view holds no such
+            // transaction, its author makes one first, a pitch revalued in a
+            // transaction of its own, as an editor edits, undoes and redoes.
             if sim.replicas[r].open.is_some() {
                 return None;
             }
-            let target = undo_target(sim, r, h)?;
             let mut policy = || match sim.rng.below(3) {
                 0 => UndoPolicy::StrictInverse,
                 1 => UndoPolicy::BestEffort,
                 _ => UndoPolicy::Cascade,
             };
             let (undo_policy, redo_policy) = (policy(), policy());
-            let tx: TransactionId = sim.mint(r);
-            sim.replicas[r].open = Some((tx, 2));
-            vec![
+            let declare = |id: TransactionId, label: &str| {
                 prim(OperationKind::DeclareTransaction(TransactionDescriptor {
-                    id: tx,
-                    label: String::from("undo"),
+                    id,
+                    label: String::from(label),
                     category: None,
-                })),
-                OperationPayload::UndoTransaction(UndoTransactionPayload {
-                    target,
-                    policy: undo_policy,
-                }),
-                OperationPayload::UndoTransaction(UndoTransactionPayload {
-                    target: tx,
-                    policy: redo_policy,
-                }),
-            ]
+                }))
+            };
+            let tx: TransactionId = sim.mint(r);
+            let mut out = Vec::new();
+            let target = match overwrite_target(sim, r, h) {
+                Some(target) => {
+                    sim.replicas[r].open = Some((tx, 2));
+                    target
+                }
+                None => {
+                    // A pitch given a new value, which an undo restores.
+                    let edit = make(sim, r, 12, h)?;
+                    let edit_tx: TransactionId = sim.mint(r);
+                    sim.replicas[r].open = Some((edit_tx, 1 + edit.len() as u64));
+                    sim.replicas[r].queued.push((tx, 2));
+                    out.push(declare(edit_tx, "transpose"));
+                    out.extend(edit);
+                    edit_tx
+                }
+            };
+            out.push(declare(tx, "undo"));
+            out.push(OperationPayload::UndoTransaction(UndoTransactionPayload {
+                target,
+                policy: undo_policy,
+            }));
+            out.push(OperationPayload::UndoTransaction(UndoTransactionPayload {
+                target: tx,
+                policy: redo_policy,
+            }));
+            out
         }
         54 => {
             // Its author's two latest commands reverted from the undo history,
@@ -2704,6 +2728,82 @@ fn undo_target(sim: &mut Simulation, r: usize, h: &Holdings<'_>) -> Option<Trans
             }
             _ => None,
         })
+        .collect();
+    let own: Vec<TransactionId> = declared
+        .iter()
+        .filter(|(replica, _)| *replica == sim.replicas[r].id)
+        .map(|(_, tx)| *tx)
+        .collect();
+    let latest = &own[own.len().saturating_sub(3)..];
+    match sim.rng.pick(latest) {
+        Some(tx) if sim.rng.chance(2) => Some(*tx),
+        _ => sim.rng.pick(&declared).map(|(_, tx)| *tx),
+    }
+}
+
+/// A transaction the view holds that overwrote values, drawn as
+/// [`undo_target`] draws (half the time one of its author's three latest):
+/// each member writes a value over another that an undo restores (minting and
+/// deleting nothing, and not the frozen `Transpose`, which records no write),
+/// and applied in the view, so an undo of it restores the earlier values and a
+/// redo, an undo of that undo, restores the transaction's own. (An undo of a
+/// transaction that rolled back has nothing to restore, and its redo less.) A redo of an undo that removed what
+/// its transaction minted has nothing to restore, a tombstone being final, so
+/// drawn over any transaction most redos were refused `TargetMissing` (X4a
+/// review 3's L4: 991 of 1,196 per 3,000 histories of 64 authored). `None`
+/// where the view holds no such transaction.
+fn overwrite_target(sim: &mut Simulation, r: usize, h: &Holdings<'_>) -> Option<TransactionId> {
+    let effects: BTreeMap<OperationId, &OperationEffect> =
+        h.state.effects.iter().map(|(id, e)| (*id, e)).collect();
+    let overwrites = |tx: TransactionId| {
+        let mut members = h
+            .envelopes
+            .iter()
+            .filter(|e| e.transaction == Some(tx))
+            .filter(|e| {
+                !matches!(
+                    &e.payload,
+                    OperationPayload::Primitive(OperationKind::DeclareTransaction(_))
+                )
+            })
+            .peekable();
+        members.peek().is_some()
+            && members.all(|e| match &e.payload {
+                OperationPayload::Primitive(kind) => {
+                    !matches!(
+                        kind,
+                        OperationKind::DeleteEvent(_)
+                            | OperationKind::DeleteIdentifiedPitch(_)
+                            | OperationKind::DeleteCrossCutting(_)
+                            | OperationKind::DeleteRegion(_)
+                            | OperationKind::DeleteStaffInstance(_)
+                            | OperationKind::DeleteVoice(_)
+                            | OperationKind::DeleteRepeatStructure(_)
+                            // The frozen transposition records no write, so
+                            // its undo restores nothing (operation catalog).
+                            | OperationKind::Transpose(_)
+                    ) && mints_and_refs(&e.payload).0.is_empty()
+                        && matches!(
+                            effects.get(&e.id),
+                            Some(
+                                OperationEffect::Applied
+                                    | OperationEffect::AppliedWithRepair { .. }
+                            )
+                        )
+                }
+                _ => false,
+            })
+    };
+    let declared: Vec<(ReplicaId, TransactionId)> = h
+        .envelopes
+        .iter()
+        .filter_map(|e| match &e.payload {
+            OperationPayload::Primitive(OperationKind::DeclareTransaction(d)) => {
+                Some((e.id.replica, d.id))
+            }
+            _ => None,
+        })
+        .filter(|(_, tx)| overwrites(*tx))
         .collect();
     let own: Vec<TransactionId> = declared
         .iter()
