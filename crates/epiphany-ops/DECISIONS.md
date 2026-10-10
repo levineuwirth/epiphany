@@ -3700,3 +3700,24 @@ refused `TargetMissing` 991 to 648 (of those 648, 438 reverse an undo whose
 own transaction rolled back under concurrency); undos naming another
 replica's transaction 1,457 to 1,426. The CI budget and the committed
 histories pass at the new generator.
+
+**A pitch belongs to one event (review 3's F1; reduction version 4).** A
+`ModifyEvent` carrying a pitch id live in another event applied in both modes
+and left one pitch in two events (`PitchIdUnique`), one author, one
+operation. `InsertEvent` refuses a carried pitch id the ledger already holds;
+the modify had no check that a carried pitch was its own event's, and
+`f045d9f`'s mint skips any known id, so it neither caused nor fixed this.
+Neither the importer nor the editor writes such a modify, and the modes
+agreed, so review 3 graded it a follow-up. It is refused now, in both modes,
+read from `event_pitches`: a carried pitch the ledger holds live and the
+index places in another event, `RecreateContentMismatch`, the reason a
+create re-carrying a live id under a different parent already takes (a
+measure, pin 5), so no reason is appended and the wire is unchanged. A pitch
+of the event's own, a fresh one (minted by the modify) and one a delete
+removed (left out, delete wins) are unaffected. This changes a reduction
+verdict, so version 3 moves to 4, the version X4b's schema walk then shares.
+Locked by `a_modify_carrying_a_pitch_another_event_holds_is_refused_in_both_modes`
+(another event's pitch carried alone and beside a fresh one, refused with
+nothing minted; the event's own and a fresh one, applied; a deleted one,
+applied without it). Mutation: the check disabled (the pitch stands in two
+events, `PitchIdUnique`, and the test fails).

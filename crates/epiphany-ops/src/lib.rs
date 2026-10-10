@@ -626,6 +626,21 @@ pub mod vectors;
 ///   for an undone event's pitches,
 ///   `an_event_an_undo_removes_takes_its_pitches_in_both_modes`.
 ///
+/// * `4` — **X4b** (2026-10-10), expression and text in the model. X4b.0,
+///   closing X4a's follow-ups, makes one **reduction verdict** change, and
+///   with it the state the verdict produces:
+///   - a `ModifyEvent` whose value carries a pitch another event holds live
+///     is refused `RecreateContentMismatch` in both modes, read from the
+///     pitch index both keep, as a create re-carrying a live id under a
+///     different parent is, where version `3` applied it and the pitch stood
+///     in two events (`PitchIdUnique`; X4a review 3's F1). A carried pitch a
+///     delete removed is still left out of the value (delete wins).
+///
+///   Locked by
+///   `a_modify_carrying_a_pitch_another_event_holds_is_refused_in_both_modes`.
+///   X4b's schema walk (X4b.2) adds its own changes to this entry; version
+///   `4` does not move again before X4b merges.
+///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.
 ///
@@ -645,7 +660,7 @@ pub mod vectors;
 /// `epiphany-bundle` in order to use that crate's `ReductionAlgorithmVersion`
 /// wrapper. The wrapper is constructed at the composition boundary by whoever
 /// depends on both (P13-S27 pin 1, §0.3).
-pub const CURRENT_REDUCTION_ALGORITHM_VERSION: u32 = 3;
+pub const CURRENT_REDUCTION_ALGORITHM_VERSION: u32 = 4;
 
 pub use anomaly::{
     AnomalousReplicaSegment, IntegrityAnomaly, IntegrityAnomalyKind, ReplicaAnomalyReason,

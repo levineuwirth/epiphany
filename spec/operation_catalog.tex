@@ -231,7 +231,7 @@
   {\Large\scshape\color{epiphanyslate}Operation Catalog}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.19.0 --- The two reduction modes agree}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.20.0 --- A pitch belongs to one event}\\[4pt]
   {\small\color{epiphanyslate}Normative for the operation kinds it defines}
   \vfill
 \end{titlepage}
@@ -821,6 +821,15 @@ Accordingly
 \texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION}
 moves \texttt{2}~$\rightarrow$~\texttt{3}.
 
+\noindent\textbf{Version 0.20.0 (X4b.0, a pitch belongs to one event).} A
+\texttt{ModifyEvent} whose value carries a pitch another event holds live is
+refused with \texttt{RecreateContentMismatch} in both reduction modes
+(Section~\ref{sec:k0:modify-event}), where it applied and left the pitch in two
+events (\texttt{PitchIdUnique}, Chapter~5 invariant~12). No
+payload, discriminant or \texttt{PreconditionFailureReason} changes.
+Accordingly \texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION}
+moves \texttt{3}~$\rightarrow$~\texttt{4}.
+
 % ===========================================================================
 \chapter{The Catalog Framework}
 \label{ch:framework}
@@ -1078,7 +1087,13 @@ is read from the value.
 \textbf{Canonical encoding.} The length-framed canonical bytes of \texttt{event}.
 
 \textbf{Reduction rule.} A last-writer-wins field overwrite keyed by event id.
-Precondition: the event is live. The resolved value is the one carried by the
+Precondition: the event is live. A pitch belongs to one event: a modification
+whose value carries a pitch another event holds live is refused as a clean
+precondition no-op (\texttt{RecreateContentMismatch}), as a create re-carrying a
+live identifier under a different parent is, read from the pitch index both
+reduction modes keep (since version~0.20.0, before which it applied and the
+pitch stood in two events, breaking Chapter~5 invariant~12). The resolved value
+is the one carried by the
 operation latest in canonical order; two causally ordered modifications overwrite
 intentionally, and two \emph{concurrent} modifications with \emph{equal} value
 reduce idempotently. Graph-aware reduction overwrites the event in place, and a

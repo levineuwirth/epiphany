@@ -9457,6 +9457,21 @@ impl<'a> Reducer<'a> {
                 },
             };
         }
+        // A pitch belongs to one event (invariant `PitchIdUnique`): a value
+        // carrying a pitch another event holds live is refused, as a create
+        // re-carrying a live id under a different parent is (reduction
+        // version 4: before it the modify applied and put the pitch in both
+        // events). Read from `event_pitches`, which both modes keep.
+        if carried
+            .iter()
+            .any(|ip| self.pitch_live_in_another_event(ip.id, event_id))
+        {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::RecreateContentMismatch,
+                },
+            };
+        }
         // A `ModifyEvent` that moves a metric event's span (a trim or move) is now
         // materialized, but it must keep invariant 3 (`VoiceEventsSortedNonOverlap`):
         // refuse a move onto another live event in the voice, or one with a
@@ -9543,6 +9558,25 @@ impl<'a> Reducer<'a> {
                 })
                 .collect(),
         )
+    }
+
+    /// Whether `pitch` is live and held by an event other than `event`, as the
+    /// pitch index both modes keep (`event_pitches`) records it.
+    fn pitch_live_in_another_event(&self, pitch: PitchId, event: EventId) -> bool {
+        if self
+            .event_pitches
+            .get(&event)
+            .is_some_and(|own| own.contains(&pitch))
+            || !matches!(
+                self.objects.get(&TypedObjectId::Pitch(pitch)),
+                Some(ObjectState::Live)
+            )
+        {
+            return false;
+        }
+        self.event_pitches
+            .iter()
+            .any(|(other, pitches)| *other != event && pitches.contains(&pitch))
     }
 
     /// A whole-event modify mints each pitch its value carries that no

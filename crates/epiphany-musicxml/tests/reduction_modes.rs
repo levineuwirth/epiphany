@@ -5203,6 +5203,93 @@ fn a_migration_admits_an_event_as_its_targets_discipline_does_in_both_modes() {
     }
 }
 
+/// A whole-event modify carrying a pitch another event holds live is refused
+/// `RecreateContentMismatch`, in both modes, as a create re-carrying a live id
+/// under a different parent is: a pitch belongs to one event. One author
+/// writes the second quarter as a chord of its own pitch and the first
+/// quarter's, by itself and with a new pitch beside them; neither applies,
+/// nothing is minted, and the first quarter keeps its pitch. A chord of its
+/// own pitch and a new one applies, as does one carrying a pitch a delete
+/// removed from the first quarter, which stays out (delete wins). Before
+/// reduction version 4 the modify applied in both modes and the pitch stood
+/// in two events (`PitchIdUnique`); X4a review 3 found it (its F1).
+#[test]
+fn a_modify_carrying_a_pitch_another_event_holds_is_refused_in_both_modes() {
+    use epiphany_core::{IdentifiedPitch, PitchId};
+    use epiphany_ops::DeleteIdentifiedPitchOp;
+    let m = Measure::new();
+    let own = |i: usize| match &m.quarters[i] {
+        Event::Pitched(e) => e.pitches[0].clone(),
+        other => panic!("a note, not {other:?}"),
+    };
+    let chord = |pitches: Vec<IdentifiedPitch>| {
+        let Event::Pitched(mut second) = m.quarters[1].clone() else {
+            unreachable!("a note");
+        };
+        second.pitches = pitches;
+        primitive(OperationKind::ModifyEvent(ModifyEventOp {
+            event: Event::Pitched(second),
+        }))
+    };
+    let fresh = |counter: u64| IdentifiedPitch {
+        id: PitchId::new(A, counter),
+        pitch: valuegen::pitch_value_nth(4),
+    };
+    let mismatch = refused(PreconditionFailureReason::RecreateContentMismatch);
+    let graph = |authored: &[OperationEnvelope]| {
+        let mut set = OperationSet::new();
+        set.accept_all(m.import.envelopes.iter().chain(authored).cloned());
+        set.reduce_onto(&Score::empty(IdentityContext::new(m.import.replica)))
+            .score
+    };
+
+    // The first quarter's pitch carried, alone and beside a new pitch.
+    for (n, carried) in [vec![own(1), own(0)], vec![own(1), own(0), fresh(3600)]]
+        .into_iter()
+        .enumerate()
+    {
+        let authored = vec![m.op(A, n as u64, 1, &[], chord(carried))];
+        let state = m.agree("a chord carrying another event's pitch", &authored);
+        assert_eq!(effect(&state, authored[0].id), mismatch);
+        assert!(
+            !state
+                .objects
+                .contains_key(&TypedObjectId::Pitch(PitchId::new(A, 3600))),
+            "nothing minted"
+        );
+        let score = graph(&authored);
+        assert_eq!(score.events.get(m.q(0)), Some(&m.quarters[0]));
+        assert_eq!(score.events.get(m.q(1)), Some(&m.quarters[1]));
+    }
+
+    // Its own pitch and a new one: applies.
+    let authored = vec![m.op(A, 0, 1, &[], chord(vec![own(1), fresh(3601)]))];
+    let state = m.agree("a chord of its own pitch and a new one", &authored);
+    assert_eq!(
+        effect(&state, authored[0].id),
+        Some(OperationEffect::Applied)
+    );
+
+    // The first quarter's pitch deleted, then carried: applies without it.
+    let deleted = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::DeleteIdentifiedPitch(
+            DeleteIdentifiedPitchOp { pitch: own(0).id },
+        )),
+    );
+    let written = m.op(A, 1, 2, &[deleted.id], chord(vec![own(1), own(0)]));
+    let authored = vec![deleted, written.clone()];
+    let state = m.agree("a chord carrying a deleted pitch", &authored);
+    assert_eq!(effect(&state, written.id), Some(OperationEffect::Applied));
+    let Some(Event::Pitched(second)) = graph(&authored).events.get(m.q(1)).cloned() else {
+        panic!("a note");
+    };
+    assert_eq!(second.pitches, vec![own(1)]);
+}
+
 /// A whole-event modify mints each pitch its value carries that no operation
 /// has minted, in both modes, as an insert mints its event's pitches: the
 /// pitch is live, operations naming it apply, the tie check reads it, and an
