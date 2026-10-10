@@ -28,7 +28,7 @@ use epiphany_ops::{
     CreateRegionOp, CreateStaffGroupOp, CreateStaffInstanceOp, CreateStaffOp, CreateTupletOp,
     CreateVoiceOp, CrossCuttingValue, HybridLogicalClock, InsertEventOp, OperationEnvelope,
     OperationKind, OperationPayload, OperationStamp, RespellPitchOp, SetMetadataOp,
-    SetTempoSegmentOp, SetTimeSignatureOp, TransactionDescriptor,
+    SetTempoSegmentOp, SetTimeSignatureOp, SetVoiceHomeOp, TransactionDescriptor,
 };
 
 use crate::source::{
@@ -75,6 +75,8 @@ pub enum Subject {
     /// A tempo, its mark and its transaction: part and index into its
     /// tempos.
     Tempo(usize, usize),
+    /// A visiting voice's home staff: part, staff and the file's voice.
+    VoiceHome(usize, usize, String),
 }
 
 /// What one emitted operation carries.
@@ -231,7 +233,7 @@ fn staff_lines(lines: Option<u8>) -> StaffLineConfiguration {
 /// holding as many; a number that sounds on two staves at once names a voice
 /// on each, as where a file numbers each staff's voices afresh, and is at
 /// home on both.
-fn staff_voices(part: &SourcePart) -> Vec<Vec<&str>> {
+fn staff_voices(part: &SourcePart) -> (Vec<Vec<&str>>, BTreeMap<&str, Option<usize>>) {
     let mut counts: BTreeMap<&str, BTreeMap<usize, usize>> = BTreeMap::new();
     let mut spans: BTreeMap<&str, Vec<(&RationalTime, RationalTime, usize)>> = BTreeMap::new();
     for event in &part.events {
@@ -270,7 +272,7 @@ fn staff_voices(part: &SourcePart) -> Vec<Vec<&str>> {
             (voice, most.filter(|_| !at_once))
         })
         .collect();
-    (0..part.staves.len())
+    let orders = (0..part.staves.len())
         .map(|staff| {
             let mut voices: Vec<&str> = counts
                 .iter()
@@ -284,7 +286,8 @@ fn staff_voices(part: &SourcePart) -> Vec<Vec<&str>> {
             });
             voices
         })
-        .collect()
+        .collect();
+    (orders, homes)
 }
 
 /// The events of a part by staff and onset, each list in source order.
@@ -496,10 +499,19 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
         }
     }
 
-    // Staff instances with their clefs and keys, then voices.
+    // Staff instances with their clefs and keys, then voices; a voice
+    // visiting a staff from its home on another names that home (D46).
+    let mut visitors: Vec<(usize, usize, String, usize)> = Vec::new();
     for (p, part) in source.parts.iter().enumerate() {
         let mut instances = Vec::new();
-        let staff_voices = staff_voices(part);
+        let (staff_voices, homes) = staff_voices(part);
+        for (s, voices) in staff_voices.iter().enumerate() {
+            for voice in voices {
+                if let Some(home) = homes[voice].filter(|home| *home != s) {
+                    visitors.push((p, s, (*voice).to_owned(), home));
+                }
+            }
+        }
         for (s, staff) in part.staves.iter().enumerate() {
             let instance_id: StaffInstanceId = e.identity.mint();
             let mut instance = StaffInstance::new(instance_id, ids.staves[p][s]);
@@ -551,6 +563,17 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
             }
         }
         ids.instances.push(instances);
+    }
+    for (p, s, voice, home) in visitors {
+        let id = ids.voices[&(p, s, voice.clone())];
+        e.emit(
+            "SetVoiceHome",
+            Subject::VoiceHome(p, s, voice),
+            OperationKind::SetVoiceHome(SetVoiceHomeOp {
+                voice: id,
+                home: Some(ids.staves[p][home]),
+            }),
+        );
     }
 
     // Measures, on every staff.

@@ -318,8 +318,12 @@ pub struct Engraver {
 /// a courtesy, where a key change inside a system had drawn nothing, and to
 /// `44` when a slur or tie began passing over the accidentals of its staff
 /// it would meet, after spacing: a slur by raising its arc or, near an end,
-/// lifting that end, a tie by raising its arc within bounds.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(44);
+/// lifting that end, a tie by raising its arc within bounds, and to `45`
+/// when a voice visiting a staff from its home on another began standing on
+/// its home's side, above when its home is above, and the staff's own first
+/// voice beside it alone, where the visitor had been ranked among the
+/// staff's own voices and drawn below (D46).
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(45);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.

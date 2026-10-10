@@ -1384,8 +1384,31 @@ fn event_content(
 /// upper, lower and so on; a voice stating its stem direction is upper or
 /// lower by it throughout. Only a note, an unpitched note or a visible rest at
 /// a musical position with a musical duration shows ink.
+///
+/// A voice visiting from its home on another staff (`Score::voice_homes`,
+/// schema major 5) is not ranked with the staff's own: it stands on its
+/// home's side throughout, upper when its home staff stands above this one in
+/// the region and lower when below, and its ink is no company for the staff's
+/// first voice (D46).
 fn voice_places(score: &Score, si: &epiphany_core::StaffInstance) -> BTreeMap<EventId, VoicePlace> {
-    let mut voices: Vec<&epiphany_core::Voice> = si.voices.iter().collect();
+    let staves: Vec<epiphany_core::StaffId> = score
+        .canvas
+        .regions
+        .iter()
+        .find(|region| region.staff_instances().iter().any(|i| i.id == si.id))
+        .map(|region| region.staff_instances().iter().map(|i| i.staff).collect())
+        .unwrap_or_default();
+    let home_side = |voice: &epiphany_core::Voice| -> Option<VoicePlace> {
+        let home = score.voice_homes.get(&voice.id)?;
+        let here = staves.iter().position(|staff| *staff == si.staff)?;
+        match staves.iter().position(|staff| staff == home)? {
+            at if at < here => Some(VoicePlace::Upper),
+            at if at > here => Some(VoicePlace::Lower),
+            _ => None,
+        }
+    };
+    let (mut voices, visitors): (Vec<&epiphany_core::Voice>, Vec<&epiphany_core::Voice>) =
+        si.voices.iter().partition(|v| home_side(v).is_none());
     voices.sort_by_key(|v| !v.is_primary);
     let span = |eid: &EventId| -> Option<(MusicalPosition, MusicalPosition)> {
         let (position, duration, visible) = match score.events.get(*eid)? {
@@ -1426,6 +1449,16 @@ fn voice_places(score: &Score, si: &epiphany_core::StaffInstance) -> BTreeMap<Ev
         })
     };
     let mut places = BTreeMap::new();
+    for voice in visitors {
+        let side = match voice.default_stem_direction {
+            Some(epiphany_core::StemDirection::Up) => Some(VoicePlace::Upper),
+            Some(epiphany_core::StemDirection::Down) => Some(VoicePlace::Lower),
+            None => home_side(voice),
+        };
+        for eid in &voice.events {
+            places.insert(*eid, side.unwrap_or(VoicePlace::Alone));
+        }
+    }
     for (k, voice) in voices.iter().enumerate() {
         for eid in &voice.events {
             let place = match voice.default_stem_direction {

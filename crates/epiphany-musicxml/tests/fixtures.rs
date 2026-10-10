@@ -524,6 +524,89 @@ fn each_staff_ranks_its_own_voices_before_a_visiting_one() {
     assert_eq!(ranked(1, &numbered), ["s1: 9* 10"]);
 }
 
+/// A voice visiting a staff from its home on another names that home
+/// (schema major 5) and is drawn on its home's side, upper when visiting from
+/// above; the staff's own voice beside it is drawn alone, as MuseScore draws
+/// it (D46). The upper staff's voice 1 writes a quarter on the lower staff in
+/// each measure: in the first where the lower staff's own voice 5 writes
+/// nothing, in the second beside its whole note.
+#[test]
+fn a_visiting_voice_names_its_home_and_draws_on_its_side() {
+    use epiphany_layout_ir::{LayoutContent, LayoutObject, VoicePlace};
+    let note = |step: &str, octave: u8, duration: u8, voice: &str, staff: u8| {
+        format!(
+            "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+             <duration>{duration}</duration><voice>{voice}</voice><staff>{staff}</staff></note>"
+        )
+    };
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\">\
+         <measure number=\"1\"><attributes><divisions>1</divisions><time><beats>4</beats>\
+         <beat-type>4</beat-type></time><staves>2</staves></attributes>\
+         {}{}{}{}<backup><duration>4</duration></backup>{}<forward><duration>2</duration></forward>\
+         </measure><measure number=\"2\">{}{}{}{}<backup><duration>4</duration></backup>{}</measure>\
+         </part></score-partwise>",
+        note("C", 5, 1, "1", 1),
+        note("D", 5, 1, "1", 1),
+        note("G", 3, 1, "1", 2),
+        note("E", 5, 1, "1", 1),
+        note("C", 3, 2, "5", 2),
+        note("G", 3, 1, "1", 2),
+        note("C", 5, 1, "1", 1),
+        note("D", 5, 1, "1", 1),
+        note("E", 5, 1, "1", 1),
+        note("C", 3, 4, "5", 2),
+    );
+    let import = import(&xml).expect("imports");
+    let reduced = reduce(&import);
+    assert!(compare(&import, &reduced).passed());
+    assert!(reduced.verdicts.iter().all(Verdict::applied));
+    let score = &reduced.score;
+    let staves = &import.ids.staves[0];
+    let visitor = import.ids.voices[&(0, 1, String::from("1"))];
+    let own = import.ids.voices[&(0, 1, String::from("5"))];
+    assert_eq!(
+        score.voice_homes.iter().collect::<Vec<_>>(),
+        [(&visitor, &staves[0])],
+        "only the visiting voice names a home"
+    );
+    let logical = to_logical(score);
+    let place = |voice: epiphany_core::VoiceId| -> Vec<VoicePlace> {
+        let events: Vec<epiphany_core::EventId> = score
+            .voices()
+            .find(|(_, _, v)| v.id == voice)
+            .map(|(_, _, v)| v.events.clone())
+            .expect("the voice");
+        events
+            .iter()
+            .map(|id| {
+                logical
+                    .regions
+                    .iter()
+                    .flat_map(|r| &r.objects)
+                    .find_map(|object| match object {
+                        LayoutObject::Note(c) | LayoutObject::Rest(c)
+                            if c.provenance.source == epiphany_core::TypedObjectId::Event(*id) =>
+                        {
+                            match &c.content {
+                                LayoutContent::Note(n) => Some(n.voice),
+                                LayoutContent::Rest(r) => Some(r.voice),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    })
+                    .expect("laid out")
+            })
+            .collect()
+    };
+    // The visitor stands above, alone or beside the staff's own voice.
+    assert_eq!(place(visitor), [VoicePlace::Upper, VoicePlace::Upper]);
+    // The staff's own voice is alone beside it.
+    assert_eq!(place(own), [VoicePlace::Alone, VoicePlace::Alone]);
+}
+
 #[test]
 fn a_key_written_before_the_staves_reaches_each_staff_it_names() {
     let run = run("keyed_grand_staves.musicxml");

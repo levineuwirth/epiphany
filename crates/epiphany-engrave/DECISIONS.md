@@ -1698,3 +1698,21 @@ through them as well, keeps its shape. Key-signature glyphs are accidentals
 too, so a curve across a key change passes them. Locked by the module's unit
 tests and `a_slur_clears_the_accidentals_under_it` (`epiphany-cli`); no golden
 draws a curve through an accidental, so none changed.
+
+## ENGRAVER_VERSION 44 → 45: a visiting voice on its home's side (X4b.5, 2026-10-10)
+
+A voice the importer splits across staves is a voice on each, the staff's own
+voices ranked first and a visitor after them, so a visitor drew as a lower
+voice: an upper-staff voice writing unbeamed notes on its part's lower staff
+turned their stems down where MuseScore turns them up, and the lower staff's
+own voice beside such a note drew as an upper voice where MuseScore draws it
+alone (D46). Schema major 5 gives the score each visiting voice's
+home staff (`Score::voice_homes`, written by `SetVoiceHome`, which the
+importer emits for every voice at home on another staff). The projection's
+voice rule (`voice_places`, `epiphany-layout-ir`) now leaves a visitor out of
+its staff's ranking: it stands on its home's side throughout, above when its
+home staff stands above in the region, below when below, its own stated stem
+direction still winning; and its ink is no company for the staff's first
+voice. Locked by `a_visiting_voice_names_its_home_and_draws_on_its_side`
+(`epiphany-musicxml`), failing with the home unread, inverted, or not
+emitted.

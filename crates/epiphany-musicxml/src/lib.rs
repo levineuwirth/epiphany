@@ -83,6 +83,9 @@
 //! - A lyric is one syllable an event and verse, its text in NFC; a syllable
 //!   only continuing its verse's extender line is the earlier syllable's
 //!   extension.
+//! - A voice at home on one staff that writes on another is a voice on each,
+//!   and the visiting one names its home staff (`SetVoiceHome`), which the
+//!   layout reads to draw it on its home's side (D46).
 //!
 //! ```text
 //! let import = epiphany_musicxml::import(&xml)?;
