@@ -140,6 +140,8 @@ fn a_notehead_removed_is_counted_and_a_dot_supplied_is_not() {
     let spoiled = Engraved {
         layout: without,
         diagnostics: engraved.diagnostics.clone(),
+        geometry: engraved.geometry,
+        staff_space_mm: engraved.staff_space_mm,
         time: engraved.time,
     };
     assert_eq!(count(&loaded, &spoiled, "notehead not drawn"), before + 1);

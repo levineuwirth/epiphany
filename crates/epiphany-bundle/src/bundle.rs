@@ -610,6 +610,15 @@ impl<S: BlockStore> Bundle<S> {
         self.store
     }
 
+    /// Runs a fresh durability barrier over the store (its `flush`), writing
+    /// nothing. A writer reconciling a commit whose commit-point flush failed
+    /// reopens the store and reads the generation it now selects, but a
+    /// generation readable after that failure may still be held only in the
+    /// page cache; it is reported durable only once this barrier succeeds.
+    pub fn sync(&mut self) -> Result<(), BundleError> {
+        Ok(self.store.flush()?)
+    }
+
     /// Reads and fully verifies a chunk against its reference: that it lies in
     /// the body (not the prelude), that its schema major is supported, its
     /// declared length, its BLAKE3 content hash, and the `id == hash` redundancy

@@ -115,6 +115,20 @@ pub struct SourceMeasure {
     pub length: Time,
     /// `implicit="yes"`: a measure that does not count (a pickup).
     pub implicit: bool,
+    /// A line or page break the file makes before this measure (any part's
+    /// `<print new-system="yes">` or `new-page="yes"`, a page break winning):
+    /// where its writer broke the score. `None` for the first measure, which
+    /// starts the score anyway.
+    pub break_before: Option<SourceBreak>,
+}
+
+/// A break a file makes before a measure.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SourceBreak {
+    /// `<print new-system="yes">`: the measure starts a system.
+    System,
+    /// `<print new-page="yes">`: the measure starts a page.
+    Page,
 }
 
 /// A meter: `numerators` over `denominator` (`3+2` over 8 is `[3, 2]`, 8).
@@ -1177,6 +1191,11 @@ pub struct SourceScore {
     /// `<defaults><page-layout>`: the page the file sets the score on, when
     /// it gives one whole.
     pub page: Option<SourcePage>,
+    /// `<defaults><scaling>`: millimeters to the staff space on the file's
+    /// paper. The score graph holds no physical scale, so it stays with the
+    /// source (and is recorded as not imported): an export straight from the
+    /// file prints at it.
+    pub scaling: Option<SourceScaling>,
     pub parts: Vec<SourcePart>,
     pub measures: Vec<SourceMeasure>,
     /// The meter changes of the first part, which govern the score.
@@ -1210,6 +1229,16 @@ pub struct SourcePage {
 
 // Every field is finite (`read` admits no other), so equality is total.
 impl Eq for SourcePage {}
+
+/// The physical scale `<defaults><scaling>` sets.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SourceScaling {
+    /// Millimeters to the staff space on the file's paper.
+    pub staff_space_mm: f32,
+}
+
+// Finite by construction (`scaling` admits no other), so equality is total.
+impl Eq for SourceScaling {}
 
 impl SourcePage {
     /// The page of a `<page-layout>`: its size and its first margins (the
@@ -1254,6 +1283,19 @@ impl SourceScore {
 }
 
 // --- Small readers. ---------------------------------------------------------
+
+/// The scale a `<scaling>` sets: its millimeters for its tenths, a staff space
+/// being ten tenths. `None` unless both are positive and finite.
+fn scaling(node: Node) -> Option<SourceScaling> {
+    let value = |name: &str| -> Option<f32> {
+        let v: f32 = child_text(node, name)?.trim().parse().ok()?;
+        (v.is_finite() && v > 0.0).then_some(v)
+    };
+    let staff_space_mm = value("millimeters")? / value("tenths")? * 10.0;
+    staff_space_mm
+        .is_finite()
+        .then_some(SourceScaling { staff_space_mm })
+}
 
 fn line_of(doc: &Document, node: Node) -> u32 {
     doc.text_pos_at(node.range().start).row
@@ -1474,6 +1516,8 @@ struct WrittenPitch {
 struct Reader<'d, 'i> {
     doc: &'d Document<'i>,
     features: Features,
+    /// The breaks the parts' `<print>`s make, by measure index.
+    breaks: BTreeMap<usize, SourceBreak>,
 }
 
 /// A part read with measure-relative times; onsets are made absolute once
@@ -1497,6 +1541,7 @@ impl<'d, 'i> Reader<'d, 'i> {
         Reader {
             doc,
             features: Features::default(),
+            breaks: BTreeMap::new(),
         }
     }
 
@@ -1521,6 +1566,7 @@ impl<'d, 'i> Reader<'d, 'i> {
         let mut composer = None;
         let mut concert = false;
         let mut page = None;
+        let mut scaling_mm = None;
         let mut score_parts: BTreeMap<String, Node> = BTreeMap::new();
         let mut part_nodes = Vec::new();
         // The part-list in order: each part's id, and each group start
@@ -1568,15 +1614,20 @@ impl<'d, 'i> Reader<'d, 'i> {
                         if name(part) == "concert-score" {
                             concert = true;
                         } else if name(part) == "page-layout" && page.is_none() {
-                            // The page is the renderer's to cast off against;
-                            // the score graph does not hold it.
+                            // A whole page is imported as the score's layout
+                            // defaults; one missing a size or margin is not.
                             page = SourcePage::read(part);
-                            self.features.record(
-                                FeatureClass::Presentation,
-                                "defaults: page-layout",
-                                score_place(),
-                            );
+                            if page.is_none() {
+                                self.features.record(
+                                    FeatureClass::Presentation,
+                                    "defaults: page-layout",
+                                    score_place(),
+                                );
+                            }
                         } else {
+                            if name(part) == "scaling" {
+                                scaling_mm = scaling(part);
+                            }
                             self.features.record(
                                 FeatureClass::Presentation,
                                 format!("defaults: {}", name(part)),
@@ -1657,6 +1708,7 @@ impl<'d, 'i> Reader<'d, 'i> {
                 onset: onset.clone(),
                 length: length.clone(),
                 implicit,
+                break_before: self.breaks.get(&index).copied().filter(|_| index > 0),
             });
             onset = onset.add(&length);
         }
@@ -1735,6 +1787,7 @@ impl<'d, 'i> Reader<'d, 'i> {
             composer,
             concert,
             page,
+            scaling: scaling_mm,
             parts,
             measures,
             meters,
@@ -1999,13 +2052,18 @@ impl<'d, 'i> Reader<'d, 'i> {
                     "direction" => self.read_direction(item, &place),
                     "barline" => self.read_barline(item, &place),
                     "print" => {
-                        for attr in ["new-system", "new-page"] {
-                            if item.attribute(attr) == Some("yes") {
-                                self.features.record(
-                                    FeatureClass::Notation,
-                                    format!("print: {attr}"),
-                                    place.clone(),
-                                );
+                        // A line or page break, imported as the score's user
+                        // break before this measure.
+                        let page = item.attribute("new-page") == Some("yes");
+                        if page || item.attribute("new-system") == Some("yes") {
+                            let kind = if page {
+                                SourceBreak::Page
+                            } else {
+                                SourceBreak::System
+                            };
+                            let entry = self.breaks.entry(index).or_insert(kind);
+                            if kind == SourceBreak::Page {
+                                *entry = SourceBreak::Page;
                             }
                         }
                         if elements(item).next().is_some() {

@@ -85,6 +85,11 @@ pub struct RenderOptions {
     /// display-only mode that the emitted SVG's metadata comment *declares*, so the
     /// absence of traces is announced rather than silently produced.
     pub emit_provenance: bool,
+    /// The world rectangle the SVG shows: a page, for an export framed by its
+    /// page rather than cropped to its ink. `None` (the default) frames the
+    /// content's bounds padded by [`Self::margin`]. A frame is shown whole, even
+    /// over an empty layout.
+    pub frame: Option<Frame>,
 }
 
 impl Default for RenderOptions {
@@ -94,6 +99,30 @@ impl Default for RenderOptions {
             margin: 2.0,
             glyph_mode: GlyphMode::PathOutline,
             emit_provenance: true,
+            frame: None,
+        }
+    }
+}
+
+/// A rectangle of the layout's world, in staff spaces, y-up: its left and bottom
+/// edges and its size. A page's frame is where the engraver stacked that page.
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub struct Frame {
+    pub left: f32,
+    pub bottom: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+impl From<epiphany_layout_ir::Rect> for Frame {
+    /// A world rectangle whose origin is its bottom-left corner, as a page's
+    /// frame is (`epiphany_engrave::PageGeometry::page_frame`).
+    fn from(rect: epiphany_layout_ir::Rect) -> Self {
+        Frame {
+            left: rect.origin.x.0,
+            bottom: rect.origin.y.0,
+            width: rect.size.width.0,
+            height: rect.size.height.0,
         }
     }
 }
@@ -226,8 +255,16 @@ pub fn render(resolved: &ResolvedLayoutIR, options: &RenderOptions) -> RenderOut
     }
 
     // World bounds over each glyph's drawn extent (its outline bbox, or the IR
-    // bounding box for a glyph with no bundled outline).
-    let bounds = content_bounds(resolved, options.margin);
+    // bounding box for a glyph with no bundled outline), unless a frame is given.
+    let bounds = match options.frame {
+        Some(frame) => Some((
+            num_f(frame.left),
+            num_f(frame.bottom),
+            num_f(frame.width.max(f32::EPSILON)),
+            num_f(frame.height.max(f32::EPSILON)),
+        )),
+        None => content_bounds(resolved, options.margin),
+    };
 
     let (min_x, min_y, width, height) = match bounds {
         Some(b) => b,
@@ -494,6 +531,18 @@ pub fn render(resolved: &ResolvedLayoutIR, options: &RenderOptions) -> RenderOut
         svg: s,
         diagnostics,
     }
+}
+
+/// The world rectangle a layout's ink fills, as the renderer draws it (each
+/// glyph's outline, each stroke's and curve's width), unpadded; `None` when
+/// there is nothing to draw.
+pub fn ink_frame(resolved: &ResolvedLayoutIR) -> Option<Frame> {
+    content_bounds(resolved, 0.0).map(|(left, bottom, width, height)| Frame {
+        left,
+        bottom,
+        width,
+        height,
+    })
 }
 
 /// The content bounds `(min_x, min_y, width, height)` in staff spaces, padded by
@@ -962,6 +1011,36 @@ mod tests {
         );
         assert!(out.svg.contains("<svg"));
         assert!(out.svg.contains("data-prov="));
+    }
+
+    /// A frame is the view: the viewBox is its size, its bottom-left corner
+    /// is mapped to the view's, and it holds even over nothing to draw.
+    #[test]
+    fn a_frame_sets_the_view_whatever_the_ink() {
+        let layout = stub_layout(4);
+        let frame = Frame {
+            left: -5.0,
+            bottom: -50.0,
+            width: 100.0,
+            height: 70.0,
+        };
+        let options = RenderOptions {
+            frame: Some(frame),
+            ..RenderOptions::default()
+        };
+        let out = render(&layout, &options);
+        assert!(out.svg.contains("viewBox=\"0 0 100 70\""));
+        assert!(out
+            .svg
+            .contains("<g transform=\"translate(5 20) scale(1 -1)\">"));
+        assert_eq!(out.stats.view_box, [-5.0, -50.0, 100.0, 70.0]);
+        let mut nothing = layout.clone();
+        nothing.glyphs.clear();
+        nothing.strokes.clear();
+        nothing.curves.clear();
+        let empty = render(&nothing, &options);
+        assert!(empty.svg.contains("viewBox=\"0 0 100 70\""));
+        assert!(empty.is_well_formed());
     }
 
     #[test]

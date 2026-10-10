@@ -1938,3 +1938,91 @@ fn the_fidelity_comparison_catches_a_spoiled_score() {
         );
     }
 }
+
+/// A file's line and page breaks are the score's user breaks before the
+/// measures that start the systems and pages, one per measure whichever parts
+/// mark it, a page break winning; and the score lays out there.
+#[test]
+fn breaks_are_imported_where_the_file_makes_them_and_laid_out_there() {
+    let run = run("breaks.musicxml");
+    all_applied(&run);
+    let breaks: Vec<(&str, String)> = run
+        .import
+        .envelopes
+        .iter()
+        .filter_map(|e| match &e.payload {
+            epiphany_ops::OperationPayload::Primitive(
+                epiphany_ops::OperationKind::SetUserSystemBreak(op),
+            ) => Some(("system", offset(&op.anchor))),
+            epiphany_ops::OperationPayload::Primitive(
+                epiphany_ops::OperationKind::SetUserPageBreak(op),
+            ) => Some(("page", offset(&op.anchor))),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        breaks,
+        vec![("system", "2".to_owned()), ("page", "4".to_owned())],
+        "a line break before measure 3, a page break before measure 5"
+    );
+    assert!(
+        run.import
+            .source
+            .features
+            .of_class(FeatureClass::Notation)
+            .all(|(kind, _)| !kind.starts_with("print: new-")),
+        "the breaks are imported, not recorded as missing"
+    );
+    let region = &run.reduced.score.canvas.regions[0];
+    let content = region.content.staff_based().expect("staff based");
+    assert_eq!(content.user_system_breaks.len(), 1);
+    assert_eq!(content.user_page_breaks.len(), 1);
+
+    let constrained = to_constrained(&to_logical(&run.reduced.score));
+    let layout = Engraver::default()
+        .solve(&constrained, &SolverConfig::default())
+        .layout;
+    let first = |system: &epiphany_layout_ir::ResolvedSystem| {
+        system
+            .measures
+            .iter()
+            .map(|m| m.measure)
+            .find(|m| run.import.ids.measures[0][0].contains(m))
+    };
+    let starts: Vec<Vec<usize>> = layout
+        .pages
+        .iter()
+        .map(|page| {
+            page.systems
+                .iter()
+                .filter_map(first)
+                .map(|m| {
+                    run.import.ids.measures[0][0]
+                        .iter()
+                        .position(|id| *id == m)
+                        .expect("a first-staff measure")
+                        + 1
+                })
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        starts,
+        vec![vec![1, 3], vec![5]],
+        "systems open at measures 1 and 3, and a page at measure 5"
+    );
+    // The tie into measure 3 crosses the imported line break: the break holds
+    // (D30's room for a continued tie widens the next system's lead rather
+    // than moving an imported break), and the tie is drawn in two halves.
+    assert_eq!(run.reduced.score.cross_cutting.ties.len(), 1);
+    let tie = run.reduced.score.cross_cutting.ties[0].id;
+    let halves = layout
+        .curves
+        .iter()
+        .filter(|c| c.provenance.source == epiphany_core::TypedObjectId::Tie(tie))
+        .count();
+    assert_eq!(
+        halves, 2,
+        "the tie's two halves, one each side of the break"
+    );
+}

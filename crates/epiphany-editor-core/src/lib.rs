@@ -45,9 +45,13 @@
 //! produces a [`RenderIR`]; turning that into pixels is the renderer's job.
 
 mod barriers;
+mod document;
 mod fragment;
 
 pub use barriers::ActiveExtension;
+pub use document::{
+    DocumentError, EditorDocument, ReadOnlyReason, Reconciled, Saved, ScoreSetup, StaffSetup,
+};
 pub use fragment::{
     FragmentError, MAX_FRAGMENT_BYTES, MAX_FRAGMENT_EVENTS, MAX_FRAGMENT_NESTING_DEPTH,
 };
@@ -58,13 +62,15 @@ use std::fmt;
 
 use epiphany_core::prepass::{derive_annotations, DerivedAnnotations, PrePassProfile};
 use epiphany_core::{
-    AcousticPitch, AcousticRealization, Clef, CmnNominal, Event, EventDuration, EventId,
-    EventPosition, IdentifiedPitch, MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId,
-    PitchSpaceId, PitchSpacePosition, PitchSpelling, PitchedEvent, RationalTime, RegionId,
-    RegionTimeModel, ReplicaId, ScalePosition, Score, Slur, SlurId, SpellingDirective,
+    AcousticPitch, AcousticRealization, AnchorOffset, Clef, CmnNominal, Event, EventDuration,
+    EventId, EventPosition, IdentifiedPitch, Measure, MeasureId, MeasureNumberVisibility,
+    MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId, PitchSpaceId,
+    PitchSpacePosition, PitchSpelling, PitchedEvent, RationalTime, RegionEdge, RegionId,
+    RegionTimeModel, ReplicaId, ScalePosition, Score, Slur, SlurId, SpanStyle, SpellingDirective,
     SpellingNominal, SpellingScope, SpellingSourceKind, StaffId, StaffInstance, StaffInstanceId,
-    StemConfiguration, Tie, TieId, TimeSignature, TimeSignatureDisplay, TransactionId,
-    TranspositionInterval, TuningReference, TupletId, TypedObjectId, VoiceId, WallClockTime,
+    StemConfiguration, Tie, TieClass, TieId, TimeAnchor, TimeSignature, TimeSignatureDisplay,
+    TransactionId, TranspositionInterval, TuningReference, TupletId, TypedObjectId, VoiceId,
+    WallClockTime,
 };
 use epiphany_layout_ir::{
     active_clef_or, manifestation_layout_id, staff_step_pitch, to_constrained, to_logical,
@@ -74,11 +80,11 @@ use epiphany_layout_ir::{
 };
 use epiphany_ops::{
     advisory_violations, AcceptOutcome, AuthorId, CausalContext, CreateCrossCuttingOp,
-    CrossCuttingValue, DeleteEventOp, DeleteIdentifiedPitchOp, HybridLogicalClock, InsertEventOp,
-    InsertIdentifiedPitchOp, ModifyEventOp, ModifyIdentifiedPitchOp, OperationEnvelope,
-    OperationKind, OperationKindTag, OperationPayload, OperationSet, OperationStamp,
-    RespellPitchOp, TransactionCategory, TransactionDescriptor, TransposeIntervalOp,
-    TupletCompensation,
+    CreateMeasureOp, CrossCuttingValue, DeleteEventOp, DeleteIdentifiedPitchOp, HybridLogicalClock,
+    InsertEventOp, InsertIdentifiedPitchOp, ModifyEventOp, ModifyIdentifiedPitchOp,
+    OperationEnvelope, OperationKind, OperationKindTag, OperationPayload, OperationStamp,
+    RespellPitchOp, SetUserPageBreakOp, SetUserSystemBreakOp, TransactionCategory,
+    TransactionDescriptor, TransposeIntervalOp, TupletCompensation,
 };
 
 /// The current selection: the score-graph object to act on, plus the stable layout
@@ -297,6 +303,16 @@ pub struct Caret {
     pub entry_duration: MusicalDuration,
 }
 
+/// A layout break the editor sets or clears: before a measure, a new system
+/// (a line break) or a new page.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum LayoutBreak {
+    /// The measure starts a system.
+    System,
+    /// The measure starts a page.
+    Page,
+}
+
 /// What an [`EditorSession::apply`] did.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct EditOutcome {
@@ -491,6 +507,10 @@ pub enum EditorError {
     /// requires a non-empty selection); this guards a hand-crafted or
     /// corrupt fragment.
     EmptyFragment,
+    /// A line or page break was asked for where no measure starts: a break is
+    /// set before a measure, and not before the region's first, which starts a
+    /// system anyway; or a break was asked after the last measure.
+    NotAMeasureStart,
 }
 
 impl fmt::Display for EditorError {
@@ -559,6 +579,9 @@ impl fmt::Display for EditorError {
             EditorError::EmptyFragment => {
                 f.write_str("the fragment names no events to paste")
             }
+            EditorError::NotAMeasureStart => {
+                f.write_str("a line or page break goes before a measure after the first")
+            }
         }
     }
 }
@@ -592,6 +615,11 @@ pub struct EditorSession {
     // `(region, staff)`, since one staff can be tiled into several regions. The
     // vertical half of click-to-insert reads this to spell the clicked height.
     start_clefs: BTreeMap<(RegionId, StaffId), Clef>,
+    // Where each measure starts, resolved by the logical layout from its anchor:
+    // what note entry reads to find the barlines a note crosses and the measure it
+    // must open (see `measure_plan`). A measure whose start is not a musical
+    // position is absent.
+    measure_starts: MeasureStarts,
     selection: SelectionSet,
     // The note-entry caret (contract: `spec/CONTRACT_EDITOR_T3_CARET.md` §W1) —
     // session-local, never in the op log. `reresolve_caret` (called alongside
@@ -601,13 +629,29 @@ pub struct EditorSession {
     caret: Option<Caret>,
     // Operation-minting identity. A real client supplies its own replica/author.
     // Minted operations form this replica's monotonic local history; the next op's
-    // counter is `authored.len()` (never reused across undo), so a failed apply consumes
-    // no id. The causal context covers the active prefix, not a fixed counter range, so a
-    // fork (undo + new edit) does not strand a later op pending behind a removed unit.
+    // counter is `op_floor + authored.len()` (never reused across undo), so a failed
+    // apply consumes no id. The causal context covers the active prefix, not a fixed
+    // counter range, so a fork (undo + new edit) does not strand a later op pending
+    // behind a removed unit.
     replica: ReplicaId,
     author: AuthorId,
+    // The first counter this session mints under `replica`: one past the committed
+    // partition's highest counter for that replica, or 0 when it holds none (always
+    // so for a fresh replica). A session resuming a replica the document already
+    // holds therefore never re-mints one of its operation ids.
+    op_floor: u64,
+    // The document's committed partition (`spec/PLAN_EDITOR_APP.md` §Ruling B): the
+    // envelopes a save has made durable, immutable to the session. Every
+    // materialization reduces it together with `applied` onto `base`, and undo never
+    // reaches into it. Empty for a session opened on a bare score (probe mode).
+    committed: document::Committed,
+    // The lease a document granted this session, which `EditorDocument::save`
+    // validates. `None` for a probe-mode session, which nothing can save.
+    lease: Option<document::Lease>,
     // The currently-applied envelopes, in order — the log the session re-reduces onto
-    // `base` to materialize `score`. One user action appends one unit (a primitive is
+    // `base`, after the committed partition, to materialize `score`. A save promotes
+    // every applied unit into `committed`, emptying this. One user action appends one
+    // unit (a primitive is
     // one envelope; a transaction is its descriptor plus members). Undo moves the last
     // unit to `redo_stack` and re-reduces the shorter prefix; a new edit clears the redo
     // stack. (A delete tombstones permanently in the CRDT, so undo cannot invert it —
@@ -624,9 +668,10 @@ pub struct EditorSession {
     // undone, and forked-away. It never shrinks, so it is the monotonic high-water source
     // for new operation, event, pitch, and transaction ids: undoing an edit must not let
     // a later edit re-mint its ids (which would equivocate a streamed op or collide an
-    // entity id). A new op's counter is `authored.len()`; minting scans this, not the
-    // active prefix. (`applied` is always a — possibly non-contiguous, after a fork —
-    // subsequence of `authored`.)
+    // entity id). A new op's counter is `op_floor + authored.len()`; minting scans
+    // this, not the active prefix. (`applied` is always a — possibly non-contiguous,
+    // after a fork — subsequence of `authored`.) A save promotes the applied units
+    // into `committed` and leaves this record whole.
     authored: Vec<OperationEnvelope>,
     // The active extension declarations whose edit barriers gate edits (Chapter 8
     // §"Behavior Under Unknown Extensions"). Injected via `set_active_extensions`
@@ -645,30 +690,61 @@ pub struct EditorSession {
 /// disagree with the score). Produced by [`EditorSession::materialize`].
 struct Materialization {
     score: Score,
-    start_clefs: BTreeMap<(RegionId, StaffId), Clef>,
-    resolved: ResolvedLayoutIR,
-    render: RenderIR,
-    map: HitTestMap,
+    rendered: Rendered,
 }
 
 impl EditorSession {
     /// Opens a session on `score` with `solver`, rendering immediately. Errors with
     /// [`EditorError::NotRenderable`] if the initial layout is diagnostic-only.
     pub fn open(score: Score, solver: Box<dyn ConstraintSolver>) -> Result<Self, EditorError> {
-        let (start_clefs, resolved, render, map) =
-            render_score(&score, solver.as_ref()).ok_or(EditorError::NotRenderable)?;
+        Self::open_over(
+            score.clone(),
+            score,
+            document::Committed::default(),
+            solver,
+            ReplicaId(1),
+            None,
+        )
+    }
+
+    /// Opens a session whose materialization reduces `committed` and its own edits
+    /// onto `base`, starting from `score`, the reduction of `committed` onto `base`
+    /// the caller has already made: the shared constructor of a probe-mode session
+    /// ([`Self::open`], whose partition is empty) and of one a document leases or
+    /// views ([`EditorDocument::lease`], [`EditorDocument::view`]), which passes the
+    /// committed partition it owns, a fresh replica and the lease it grants, if any.
+    pub(crate) fn open_over(
+        base: Score,
+        score: Score,
+        committed: document::Committed,
+        solver: Box<dyn ConstraintSolver>,
+        replica: ReplicaId,
+        lease: Option<document::Lease>,
+    ) -> Result<Self, EditorError> {
+        let Rendered {
+            start_clefs,
+            measure_starts,
+            resolved,
+            render,
+            map,
+        } = render_score(&score, solver.as_ref()).ok_or(EditorError::NotRenderable)?;
+        let op_floor = committed.next_counter(replica);
         Ok(EditorSession {
-            base: score.clone(),
+            base,
             score,
             solver,
             resolved,
             render,
             map,
             start_clefs,
+            measure_starts,
             selection: SelectionSet::default(),
             caret: None,
-            replica: ReplicaId(1),
+            replica,
             author: AuthorId(0),
+            op_floor,
+            committed,
+            lease,
             applied: Vec::new(),
             undo_units: Vec::new(),
             redo_stack: Vec::new(),
@@ -679,14 +755,16 @@ impl EditorSession {
     }
 
     /// Overrides the replica/author the session mints operations under (a GUI sets
-    /// these to the local editing identity). Defaults to `ReplicaId(1)` / author 0.
+    /// these to the local editing identity). Defaults to `ReplicaId(1)` / author 0 for
+    /// a probe-mode session, and to a fresh random replica for one a document leases.
     ///
     /// **Pre-edit only** — panics if called after any edit (including ones since undone).
     /// A session's op ids are one replica's monotonic history; switching identity
     /// mid-stream would continue the counter under a new replica, leaving a
     /// `(new_replica, 0)` hole that the missing-predecessor rule would hold pending. The
     /// guard is on the **authored** history (every id ever minted), not the active
-    /// prefix, so undoing back to an empty prefix does not reopen it.
+    /// prefix, so undoing back to an empty prefix does not reopen it. A replica the
+    /// committed partition already holds resumes one past its highest counter there.
     pub fn with_identity(mut self, replica: ReplicaId, author: AuthorId) -> Self {
         assert!(
             self.authored.is_empty(),
@@ -695,7 +773,34 @@ impl EditorSession {
         );
         self.replica = replica;
         self.author = author;
+        self.op_floor = self.committed.next_counter(replica);
         self
+    }
+
+    /// The replica this session mints operations under.
+    pub fn replica(&self) -> ReplicaId {
+        self.replica
+    }
+
+    /// The committed partition: every envelope a save has made durable in the
+    /// document this session was leased from, in commit order. Empty for a session
+    /// opened on a bare score. The materialized score is the reduction of these
+    /// together with [`Self::applied_operations`].
+    pub fn committed_operations(&self) -> &[OperationEnvelope] {
+        self.committed.envelopes()
+    }
+
+    /// Whether the session holds applied edits a save has not made durable: the
+    /// dirty state, which lives with the session, not the document (Ruling B). A
+    /// redo after a save makes the session dirty again; undoing back to the save
+    /// makes it clean.
+    pub fn is_dirty(&self) -> bool {
+        !self.applied.is_empty()
+    }
+
+    /// The counter the next minted operation takes.
+    fn next_counter(&self) -> u64 {
+        self.op_floor + self.authored.len() as u64
     }
 
     /// The current document.
@@ -1115,6 +1220,35 @@ impl EditorSession {
         Ok(caret)
     }
 
+    /// Places the caret at a musical `position` in `voice`, entering with
+    /// `entry_duration` — the caret [`Self::set_caret_at`] would place from a click,
+    /// named directly (a new document's first entry point, or a keyboard command
+    /// that moves to a measure). Errors with [`EditorError::InvalidDuration`] for a
+    /// non-positive duration, and [`EditorError::NoInsertTarget`] when `voice` is
+    /// not in a metric region or `position` is before the region's origin.
+    pub fn set_caret(
+        &mut self,
+        voice: VoiceId,
+        position: MusicalPosition,
+        entry_duration: MusicalDuration,
+    ) -> Result<Caret, EditorError> {
+        if !entry_duration.is_positive() {
+            return Err(EditorError::InvalidDuration);
+        }
+        if self.metric_staff_instance_of_voice(voice).is_none()
+            || position < MusicalPosition::origin()
+        {
+            return Err(EditorError::NoInsertTarget);
+        }
+        let caret = Caret {
+            voice,
+            position,
+            entry_duration,
+        };
+        self.caret = Some(caret.clone());
+        Ok(caret)
+    }
+
     /// Sets the caret's entry duration — the written value
     /// [`Self::enter_nominal`]/[`Self::enter_pitch`]/[`Self::enter_rest`] insert,
     /// and the step [`Self::advance`]/[`Self::retreat`] move by. The duration is
@@ -1379,10 +1513,12 @@ impl EditorSession {
     /// otherwise leave the new op held pending behind a missing predecessor. Empty when
     /// nothing is applied (a root op). The compact contiguous form is preserved while
     /// the active prefix has no holes (the common case); a fork records the active tail
-    /// as dots (see [`extend_context`]).
+    /// as dots (see [`extend_context`]). With nothing applied it is the committed
+    /// partition's frontier (Ruling B: the first edit after an open or a save extends
+    /// the stored frontier), which is empty for a session over a bare score.
     fn active_prior_context(&self) -> CausalContext {
         match self.applied.last() {
-            None => CausalContext::new(),
+            None => self.committed.frontier().clone(),
             Some(head) => extend_context(head.causal_context.clone(), head.id),
         }
     }
@@ -1476,6 +1612,19 @@ impl EditorSession {
         })
     }
 
+    /// Moves every applied unit into the committed partition once a save has made
+    /// it durable (Ruling B's promotion): a partition move, never a re-reduction,
+    /// since the operation set is unchanged, so the score, layout, selection and
+    /// caret stand. Undo stops at the save. The redo stack survives it: each undone
+    /// unit's causal predecessors are the applied prefix it was undone from, which
+    /// the save committed, so a redo still reduces with every predecessor present.
+    pub(crate) fn promote(&mut self, committed: document::Committed, lease: document::Lease) {
+        self.committed = committed;
+        self.applied.clear();
+        self.undo_units.clear();
+        self.lease = Some(lease);
+    }
+
     /// Whether there is an applied edit to [`undo`](Self::undo).
     pub fn can_undo(&self) -> bool {
         !self.undo_units.is_empty()
@@ -1492,7 +1641,9 @@ impl EditorSession {
     /// back as a conflict yet still returns a score), or [`EditorError::NotRenderable`]
     /// for a diagnostic-only layout.
     fn materialize(&self, log: &[OperationEnvelope]) -> Result<Materialization, EditorError> {
-        let mut set = OperationSet::new();
+        // The committed partition, already accepted once (its envelopes hashed and
+        // checked), then the session's own log on top.
+        let mut set = self.committed.set().clone();
         for env in log {
             if !matches!(set.accept(env.clone()), AcceptOutcome::Accepted) {
                 return Err(EditorError::RejectedOperation);
@@ -1503,24 +1654,19 @@ impl EditorSession {
             return Err(EditorError::RejectedOperation);
         }
         let score = materialized.score;
-        let (start_clefs, resolved, render, map) =
+        let rendered =
             render_score(&score, self.solver.as_ref()).ok_or(EditorError::NotRenderable)?;
-        Ok(Materialization {
-            score,
-            start_clefs,
-            resolved,
-            render,
-            map,
-        })
+        Ok(Materialization { score, rendered })
     }
 
     /// Installs a materialization as the session's current score, layout, and render.
     fn install(&mut self, materialized: Materialization) {
         self.score = materialized.score;
-        self.start_clefs = materialized.start_clefs;
-        self.resolved = materialized.resolved;
-        self.render = materialized.render;
-        self.map = materialized.map;
+        self.start_clefs = materialized.rendered.start_clefs;
+        self.measure_starts = materialized.rendered.measure_starts;
+        self.resolved = materialized.rendered.resolved;
+        self.render = materialized.rendered.render;
+        self.map = materialized.rendered.map;
     }
 
     /// Applies a single primitive operation: mints an envelope and commits it. A
@@ -1583,7 +1729,7 @@ impl EditorSession {
         }
         // The next id is one past every id ever minted (monotonic across undo), and the
         // context covers the currently-applied ops.
-        let counter = self.authored.len() as u64;
+        let counter = self.next_counter();
         let envelope = self.envelope_at(
             counter,
             OperationPayload::Primitive(kind),
@@ -1721,7 +1867,7 @@ impl EditorSession {
         category: Option<TransactionCategory>,
         kinds: Vec<OperationKind>,
     ) -> Vec<OperationEnvelope> {
-        let base = self.authored.len() as u64;
+        let base = self.next_counter();
         let tx_id = self.mint_transaction_id();
         let descriptor = TransactionDescriptor {
             id: tx_id,
@@ -1755,14 +1901,16 @@ impl EditorSession {
     }
 
     /// Mints a fresh [`TransactionId`] in the session's replica namespace, one past the
-    /// highest transaction counter declared in this session's **authored** history
-    /// (so an undone transaction's id is never reused). Transaction ids live only in the
-    /// op stream — the materialized score retains no trace — so the log is the sole
-    /// source.
+    /// highest transaction counter declared in the committed partition and this
+    /// session's **authored** history (so an undone transaction's id is never reused).
+    /// Transaction ids live only in the op stream — the materialized score retains no
+    /// trace — so the log is the sole source.
     fn mint_transaction_id(&self) -> TransactionId {
         let next = self
-            .authored
+            .committed
+            .envelopes()
             .iter()
+            .chain(&self.authored)
             .filter_map(declared_transaction_id)
             .filter(|t| t.replica() == self.replica)
             .map(|t| t.counter())
@@ -2204,28 +2352,15 @@ impl EditorSession {
             return Err(EditorError::NoInsertTarget);
         }
 
-        // The new note's half-open span; make room over whatever it overlaps.
-        let start = placed.position;
-        let duration = grid.step.clone();
-        let end = start.clone() + duration.clone();
-        let room = self.make_room(voice, &start, &end, None)?;
-
-        let mut minter = self.minter();
-        let mut ops = self.make_room_ops(room, pitch.staff_instance, &mut minter);
-        let new_note = note_event(
-            minter.event(),
+        // The new note's half-open span: measures opened, room made, and the note
+        // split and tied at any barline it crosses (see `entry_ops`).
+        let ops = self.entry_ops(
             voice,
-            start,
-            duration,
-            vec![IdentifiedPitch {
-                id: minter.pitch(),
-                pitch: cmn_pitch(pitch.nominal, pitch.octave),
-            }],
-        );
-        ops.push(OperationKind::InsertEvent(InsertEventOp {
-            staff_instance: pitch.staff_instance,
-            event: new_note,
-        }));
+            pitch.staff_instance,
+            placed.position,
+            grid.step.clone(),
+            vec![cmn_pitch(pitch.nominal, pitch.octave)],
+        )?;
 
         // A bare insert needs no transaction; a make-room insert is atomic.
         if ops.len() == 1 {
@@ -2308,31 +2443,14 @@ impl EditorSession {
         let staff_instance = self
             .metric_staff_instance_of_voice(caret.voice)
             .ok_or(EditorError::NoInsertTarget)?;
-        let start = caret.position.clone();
         let duration = caret.entry_duration.clone();
-        let end = start.clone() + duration.clone();
-        let room = self.make_room(caret.voice, &start, &end, None)?;
-
-        let mut minter = self.minter();
-        let mut ops = self.make_room_ops(room, staff_instance, &mut minter);
-        let pitches = match pitch {
-            Some(p) => vec![IdentifiedPitch {
-                id: minter.pitch(),
-                pitch: p,
-            }],
-            None => Vec::new(),
-        };
-        let new_event = note_event(
-            minter.event(),
+        let ops = self.entry_ops(
             caret.voice,
-            start,
-            duration.clone(),
-            pitches,
-        );
-        ops.push(OperationKind::InsertEvent(InsertEventOp {
             staff_instance,
-            event: new_event,
-        }));
+            caret.position.clone(),
+            duration.clone(),
+            pitch.into_iter().collect(),
+        )?;
 
         // A bare insert needs no transaction; a make-room insert is atomic.
         let outcome = if ops.len() == 1 {
@@ -2345,6 +2463,120 @@ impl EditorSession {
             c.position = c.position.clone() + duration;
         }
         Ok(outcome)
+    }
+
+    /// Sets (`present`) or clears a line or page break before the measure that
+    /// starts at `at` in `region`, through `SetUserSystemBreak` or
+    /// `SetUserPageBreak`. The break is anchored at its musical offset from the
+    /// region's start, the reducer's key for it, so setting and clearing at one
+    /// place name one break (until breaks are keyed by their anchors, it does
+    /// not move with music inserted before it). Errors with
+    /// [`EditorError::NotAMeasureStart`] unless a measure of the region starts
+    /// at `at`, after the region's start.
+    pub fn set_break(
+        &mut self,
+        kind: LayoutBreak,
+        region: RegionId,
+        at: MusicalPosition,
+        present: bool,
+    ) -> Result<EditOutcome, EditorError> {
+        if at <= MusicalPosition::origin() || !self.measure_starts_in(region).contains(&at) {
+            return Err(EditorError::NotAMeasureStart);
+        }
+        let anchor = TimeAnchor::Region {
+            id: region,
+            edge: RegionEdge::Start,
+            offset: AnchorOffset::Musical(MusicalDuration(at.0)),
+        };
+        self.apply(match kind {
+            LayoutBreak::System => OperationKind::SetUserSystemBreak(SetUserSystemBreakOp {
+                region,
+                anchor,
+                present,
+            }),
+            LayoutBreak::Page => OperationKind::SetUserPageBreak(SetUserPageBreakOp {
+                region,
+                anchor,
+                present,
+            }),
+        })
+    }
+
+    /// Whether a line or page break stands before `at` in `region`: a break
+    /// written as a musical offset from the region's start, as the editor and
+    /// the importer write them.
+    pub fn has_break(&self, kind: LayoutBreak, region: RegionId, at: &MusicalPosition) -> bool {
+        let Some(content) = self
+            .score
+            .canvas
+            .regions
+            .iter()
+            .find(|r| r.id == region)
+            .and_then(|r| r.content.staff_based())
+        else {
+            return false;
+        };
+        let breaks = match kind {
+            LayoutBreak::System => &content.user_system_breaks,
+            LayoutBreak::Page => &content.user_page_breaks,
+        };
+        breaks.iter().any(|anchor| {
+            matches!(anchor, TimeAnchor::Region {
+                id,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Musical(d),
+            } if *id == region && d.0 == at.0)
+        })
+    }
+
+    /// Toggles a line or page break after the measure that holds the anchor
+    /// selection's note or rest, as MuseScore's line-break key does: the next
+    /// measure then starts a system (or a page). Errors with
+    /// [`EditorError::NoSelection`] or [`EditorError::WrongSelection`] without a
+    /// selected event, and [`EditorError::NotAMeasureStart`] after the last
+    /// measure.
+    pub fn toggle_break_after_selection(
+        &mut self,
+        kind: LayoutBreak,
+    ) -> Result<EditOutcome, EditorError> {
+        let anchor = self.selection.anchor().ok_or(EditorError::NoSelection)?;
+        let event = match anchor.source {
+            TypedObjectId::Event(event) => event,
+            TypedObjectId::Pitch(pitch) => {
+                self.event_and_pitch_of(pitch)
+                    .ok_or(EditorError::WrongSelection { expected: "note" })?
+                    .0
+            }
+            _ => return Err(EditorError::WrongSelection { expected: "note" }),
+        };
+        let wrong = EditorError::WrongSelection { expected: "note" };
+        let event = self.score.events.get(event).ok_or(wrong.clone())?;
+        let EventPosition::Musical(onset) = event.position() else {
+            return Err(wrong);
+        };
+        let (region, _, _) = self
+            .score
+            .voices()
+            .find(|(_, _, v)| v.id == event.voice())
+            .ok_or(wrong)?;
+        let after = self
+            .measure_starts_in(region)
+            .into_iter()
+            .filter(|start| start > onset)
+            .min()
+            .ok_or(EditorError::NotAMeasureStart)?;
+        let present = !self.has_break(kind, region, &after);
+        self.set_break(kind, region, after, present)
+    }
+
+    /// Every measure start of `region`'s staves, as the layout resolved them.
+    fn measure_starts_in(&self, region: RegionId) -> BTreeSet<MusicalPosition> {
+        self.score
+            .staff_instances()
+            .filter(|(r, _)| *r == region)
+            .flat_map(|(_, si)| si.measures.iter())
+            .filter_map(|m| self.measure_starts.get(&m.id).cloned())
+            .collect()
     }
 
     /// Copies the current selection to the clipboard fragment projection
@@ -2907,6 +3139,187 @@ impl EditorSession {
         }
     }
 
+    /// The operations entering one note (or, with no `pitches`, a rest) at
+    /// `[start, start + duration)` in `voice`, as MuseScore enters it: the measures
+    /// the span runs past the staff's last are opened on every staff of the region,
+    /// room is made over whatever the span overlaps, and the entry is split at each
+    /// barline it crosses into events tied in turn (a rest's parts are not tied). The
+    /// shared core of caret entry and the pencil. Errors as [`Self::make_room`] does.
+    fn entry_ops(
+        &self,
+        voice: VoiceId,
+        staff_instance: StaffInstanceId,
+        start: MusicalPosition,
+        duration: MusicalDuration,
+        pitches: Vec<Pitch>,
+    ) -> Result<Vec<OperationKind>, EditorError> {
+        let end = start.clone() + duration;
+        let plan = self.measure_plan(staff_instance, &start, &end);
+        let room = self.make_room(voice, &start, &end, None)?;
+        let mut minter = self.minter();
+        let mut ops = self.open_measures_ops(staff_instance, &plan.open, &mut minter);
+        ops.extend(self.make_room_ops(room, staff_instance, &mut minter));
+        let mut bounds = vec![start];
+        bounds.extend(plan.barlines);
+        bounds.push(end);
+        let mut previous: Option<EventId> = None;
+        for part in bounds.windows(2) {
+            let id = minter.event();
+            let identified = pitches
+                .iter()
+                .map(|pitch| IdentifiedPitch {
+                    id: minter.pitch(),
+                    pitch: pitch.clone(),
+                })
+                .collect();
+            ops.push(OperationKind::InsertEvent(InsertEventOp {
+                staff_instance,
+                event: note_event(
+                    id,
+                    voice,
+                    part[0].clone(),
+                    span_between(&part[0], &part[1]),
+                    identified,
+                ),
+            }));
+            if let (Some(start_event), false) = (previous, pitches.is_empty()) {
+                ops.push(OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                    structure: CrossCuttingValue::Tie(Tie {
+                        id: minter.tie(),
+                        start_event,
+                        end_event: id,
+                        pitch_pairing: None,
+                        class: TieClass::Standard,
+                        style: SpanStyle::default(),
+                    }),
+                }));
+            }
+            previous = Some(id);
+        }
+        Ok(ops)
+    }
+
+    /// Where `[start, end)` meets the measures of `staff_instance`: the barlines
+    /// strictly inside it, and the starts of the measures to open after the last so
+    /// that the span ends inside one. A measure ends where the next starts; the last
+    /// ends one bar of the latest meter a measure names after its start, as the
+    /// layout draws it, or, where no measure names a meter, as long after it as the
+    /// measure before it lasted. A staff with neither, or whose starts are not
+    /// musical, plans nothing: the entry is made whole, where it is.
+    fn measure_plan(
+        &self,
+        staff_instance: StaffInstanceId,
+        start: &MusicalPosition,
+        end: &MusicalPosition,
+    ) -> MeasurePlan {
+        let mut plan = MeasurePlan::default();
+        let Some((_, si)) = self
+            .score
+            .staff_instances()
+            .find(|(_, si)| si.id == staff_instance)
+        else {
+            return plan;
+        };
+        let mut bar: Option<MusicalDuration> = None;
+        let mut starts: Vec<MusicalPosition> = Vec::with_capacity(si.measures.len());
+        for measure in &si.measures {
+            if let Some(signature) = measure
+                .time_signature
+                .and_then(|id| self.score.time_signatures.iter().find(|t| t.id == id))
+            {
+                bar = Some(signature.measure_duration().clone());
+            }
+            if let Some(at) = self.measure_starts.get(&measure.id) {
+                starts.push(at.clone());
+            }
+        }
+        starts.sort();
+        let Some(last) = starts.last().cloned() else {
+            return plan;
+        };
+        let bar = bar.or_else(|| {
+            let previous = starts.iter().rev().nth(1)?;
+            Some(span_between(previous, &last))
+        });
+        let Some(bar) = bar else {
+            return plan;
+        };
+        if !bar.is_positive() {
+            return plan;
+        }
+        plan.barlines = starts
+            .into_iter()
+            .filter(|at| start < at && at < end)
+            .collect();
+        let mut next = last + bar.clone();
+        while &next < end {
+            if start < &next {
+                plan.barlines.push(next.clone());
+            }
+            plan.open.push(next.clone());
+            next = next + bar.clone();
+        }
+        plan.barlines.sort();
+        plan.barlines.dedup();
+        plan
+    }
+
+    /// `CreateMeasure` operations opening a measure at each of `starts` on every
+    /// staff instance of `staff_instance`'s region that has none starting there, so
+    /// the staves keep one barline grid. Each is anchored at its offset from the
+    /// region's start and names no meter, so the meter in force continues.
+    fn open_measures_ops(
+        &self,
+        staff_instance: StaffInstanceId,
+        starts: &[MusicalPosition],
+        minter: &mut Minter,
+    ) -> Vec<OperationKind> {
+        let mut ops = Vec::new();
+        if starts.is_empty() {
+            return ops;
+        }
+        let Some((region, _)) = self
+            .score
+            .staff_instances()
+            .find(|(_, si)| si.id == staff_instance)
+        else {
+            return ops;
+        };
+        let instances: Vec<&StaffInstance> = self
+            .score
+            .staff_instances()
+            .filter(|(r, _)| *r == region)
+            .map(|(_, si)| si)
+            .collect();
+        for instance in instances {
+            let held: BTreeSet<&MusicalPosition> = instance
+                .measures
+                .iter()
+                .filter_map(|m| self.measure_starts.get(&m.id))
+                .collect();
+            for at in starts {
+                if held.contains(at) {
+                    continue;
+                }
+                ops.push(OperationKind::CreateMeasure(CreateMeasureOp {
+                    instance: instance.id,
+                    measure: Measure {
+                        id: minter.measure(),
+                        start: TimeAnchor::Region {
+                            id: region,
+                            edge: RegionEdge::Start,
+                            offset: AnchorOffset::Musical(MusicalDuration(at.0.clone())),
+                        },
+                        time_signature: None,
+                        explicit_number: None,
+                        number_visibility: MeasureNumberVisibility::Auto,
+                    },
+                }));
+            }
+        }
+        ops
+    }
+
     /// The events make-room must change to clear `[start, end)` in `voice` (other than
     /// `exclude`, the event being inserted/resized): whole-event deletes, in-place
     /// trims, splits, and whole-tuplet cascade deletes. A tuplet is **atomic** — an
@@ -3110,6 +3523,7 @@ impl EditorSession {
             next_pitch: self.mint_pitch_id().counter(),
             next_slur: self.mint_slur_id().counter(),
             next_tie: self.mint_tie_id().counter(),
+            next_measure: self.mint_measure_id().counter(),
         }
     }
 
@@ -3167,9 +3581,10 @@ impl EditorSession {
     }
 
     /// Mints a fresh [`EventId`] in the session's replica namespace, on the same
-    /// three-source high-water-mark basis as [`Self::mint_pitch_id`]: the pristine
-    /// `base`, the current score (each live or tombstoned), and this session's
-    /// **authored** history (so an id from an undone insert is never reused).
+    /// high-water-mark basis as [`Self::mint_pitch_id`]: the pristine `base`, the
+    /// current score (each live or tombstoned), the committed partition and this
+    /// session's **authored** history (so an id from an undone insert is never
+    /// reused).
     fn mint_event_id(&self) -> EventId {
         let ids = self
             .base
@@ -3179,7 +3594,7 @@ impl EditorSession {
             .chain(self.base.tombstoned_events.iter().copied())
             .chain(self.score.events.iter().map(Event::id))
             .chain(self.score.tombstoned_events.iter().copied())
-            .chain(self.authored.iter().flat_map(inserted_event_ids));
+            .chain(self.committed_and_authored().flat_map(inserted_event_ids));
         let next = ids
             .filter(|e| e.replica() == self.replica)
             .map(|e| e.counter())
@@ -3214,10 +3629,11 @@ impl EditorSession {
     /// highest pitch counter this replica has ever named. A pitch can leave the
     /// *current* score without being recorded anywhere in it — `DeleteIdentifiedPitch`
     /// tombstones only reducer state, never `Score.tombstoned_pitches` — so the
-    /// high-water mark is taken over three sources: the pristine open-time `base`
+    /// high-water mark is taken over four sources: the pristine open-time `base`
     /// (catches an opened pitch since deleted), the current score (catches anything a
-    /// future reducer change records), and this session's **authored** history (catches
-    /// a session-inserted pitch since deleted *or undone*). Reusing an id would make a
+    /// future reducer change records), the committed partition (catches a saved pitch
+    /// since deleted), and this session's **authored** history (catches a
+    /// session-inserted pitch since deleted *or undone*). Reusing an id would make a
     /// later insert no-op against a tombstone under whole-log reduction. Pitches authored
     /// by other replicas occupy disjoint namespaces and do not constrain it.
     fn mint_pitch_id(&self) -> PitchId {
@@ -3228,7 +3644,7 @@ impl EditorSession {
             .chain(self.base.tombstoned_pitches.iter().copied())
             .chain(self.score.live_pitch_ids())
             .chain(self.score.tombstoned_pitches.iter().copied())
-            .chain(self.authored.iter().flat_map(inserted_pitch_ids));
+            .chain(self.committed_and_authored().flat_map(inserted_pitch_ids));
         let next = ids
             .filter(|p| p.replica() == self.replica)
             .map(|p| p.counter())
@@ -3255,7 +3671,7 @@ impl EditorSession {
             .iter()
             .map(|s| s.id)
             .chain(self.score.cross_cutting.slurs.iter().map(|s| s.id))
-            .chain(self.authored.iter().flat_map(inserted_slur_ids));
+            .chain(self.committed_and_authored().flat_map(inserted_slur_ids));
         let next = ids
             .filter(|s| s.replica() == self.replica)
             .map(|s| s.counter())
@@ -3276,7 +3692,7 @@ impl EditorSession {
             .iter()
             .map(|t| t.id)
             .chain(self.score.cross_cutting.ties.iter().map(|t| t.id))
-            .chain(self.authored.iter().flat_map(inserted_tie_ids));
+            .chain(self.committed_and_authored().flat_map(inserted_tie_ids));
         let next = ids
             .filter(|t| t.replica() == self.replica)
             .map(|t| t.counter())
@@ -3285,6 +3701,38 @@ impl EditorSession {
                 c.checked_add(1).expect("tie id counter overflowed u64")
             });
         TieId::new(self.replica, next)
+    }
+
+    /// Mints a fresh [`MeasureId`], the measure analogue of [`Self::mint_tie_id`]:
+    /// one past every measure counter of this replica in the pristine `base`, the
+    /// current score, the committed partition and the authored history.
+    fn mint_measure_id(&self) -> MeasureId {
+        let measures = |score: &Score| -> Vec<MeasureId> {
+            score
+                .staff_instances()
+                .flat_map(|(_, si)| si.measures.iter().map(|m| m.id))
+                .collect()
+        };
+        let ids = measures(&self.base)
+            .into_iter()
+            .chain(measures(&self.score))
+            .chain(self.committed_and_authored().flat_map(inserted_measure_ids));
+        let next = ids
+            .filter(|m| m.replica() == self.replica)
+            .map(|m| m.counter())
+            .max()
+            .map_or(0, |c| {
+                c.checked_add(1).expect("measure id counter overflowed u64")
+            });
+        MeasureId::new(self.replica, next)
+    }
+
+    /// The committed partition followed by this session's authored history: every
+    /// envelope whose ids a new mint must stay clear of. Under a fresh replica the
+    /// committed partition holds none of the session's namespace; a session that
+    /// resumes a replica the document holds needs it.
+    fn committed_and_authored(&self) -> impl Iterator<Item = &OperationEnvelope> {
+        self.committed.envelopes().iter().chain(&self.authored)
     }
 
     /// Re-resolves the whole selection set against the current layout — see
@@ -3690,6 +4138,16 @@ fn time_signature_beat(ts: &TimeSignature) -> Option<MusicalDuration> {
 /// trims (a `ModifyEvent` value), and splits (the original event plus the tail's onset
 /// and duration, for re-inserting the tail with fresh ids). Built by
 /// [`EditorSession::make_room`], turned into ops by [`EditorSession::make_room_ops`].
+/// Where a span of note entry meets its staff's measures (see
+/// [`EditorSession::measure_plan`]).
+#[derive(Default)]
+struct MeasurePlan {
+    /// The barlines strictly inside the span, in order: where the entry splits.
+    barlines: Vec<MusicalPosition>,
+    /// The starts of the measures to open after the staff's last, in order.
+    open: Vec<MusicalPosition>,
+}
+
 #[derive(Default)]
 struct MakeRoom {
     trims: Vec<Event>,
@@ -3713,6 +4171,7 @@ struct Minter {
     next_pitch: u64,
     next_slur: u64,
     next_tie: u64,
+    next_measure: u64,
 }
 
 impl Minter {
@@ -3749,6 +4208,15 @@ impl Minter {
             .next_tie
             .checked_add(1)
             .expect("tie id counter overflowed u64");
+        id
+    }
+
+    fn measure(&mut self) -> MeasureId {
+        let id = MeasureId::new(self.replica, self.next_measure);
+        self.next_measure = self
+            .next_measure
+            .checked_add(1)
+            .expect("measure id counter overflowed u64");
         id
     }
 }
@@ -3965,6 +4433,15 @@ fn inserted_tie_ids(env: &OperationEnvelope) -> Vec<TieId> {
     }
 }
 
+/// The measure ids a session envelope brought into being — the measure analogue of
+/// [`inserted_event_ids`].
+fn inserted_measure_ids(env: &OperationEnvelope) -> Vec<MeasureId> {
+    match &env.payload {
+        OperationPayload::Primitive(OperationKind::CreateMeasure(op)) => vec![op.measure.id],
+        _ => Vec::new(),
+    }
+}
+
 /// The transaction id a session envelope declares, if it is a `DeclareTransaction`.
 fn declared_transaction_id(env: &OperationEnvelope) -> Option<TransactionId> {
     match &env.payload {
@@ -4071,26 +4548,62 @@ fn staff_step_spelling(spelling: &PitchSpelling, steps: i32) -> Option<PitchSpel
     })
 }
 
+type StartClefs = BTreeMap<(RegionId, StaffId), Clef>;
+type MeasureStarts = BTreeMap<MeasureId, MusicalPosition>;
+
+/// A score's render, and the tables the editor reads from its logical layout.
+struct Rendered {
+    start_clefs: StartClefs,
+    measure_starts: MeasureStarts,
+    resolved: ResolvedLayoutIR,
+    render: RenderIR,
+    map: HitTestMap,
+}
+
 /// Renders a score with `solver` to its `RenderIR` + hit-test map, or `None` if the
 /// solver's report is diagnostic-only (not renderable).
-type StartClefs = BTreeMap<(RegionId, StaffId), Clef>;
-
-fn render_score(
-    score: &Score,
-    solver: &dyn ConstraintSolver,
-) -> Option<(StartClefs, ResolvedLayoutIR, RenderIR, HitTestMap)> {
+fn render_score(score: &Score, solver: &dyn ConstraintSolver) -> Option<Rendered> {
     // Build the start-clef table from the logical layout, where anchor resolution has
     // already placed each `PlacedClef` at a concrete time — the editor's vertical
-    // inverse spells the clicked height against this, not against vector order.
+    // inverse spells the clicked height against this, not against vector order. The
+    // measure starts come from the same resolution.
     let logical = to_logical(score);
     let start_clefs = staff_start_clefs(&logical);
+    let measure_starts = measure_starts(&logical);
     let report = solver.solve(&to_constrained(&logical), &SolverConfig::default());
     if !report.status.is_renderable() {
         return None;
     }
     let render = to_render(&report.layout);
     let map = render.hit_test_map();
-    Some((start_clefs, report.layout, render, map))
+    Some(Rendered {
+        start_clefs,
+        measure_starts,
+        resolved: report.layout,
+        render,
+        map,
+    })
+}
+
+/// Each measure's start as the logical layout resolved its anchor, where that is a
+/// musical position.
+fn measure_starts(logical: &LogicalLayoutIR) -> MeasureStarts {
+    let mut starts = MeasureStarts::new();
+    for region in &logical.regions {
+        for object in &region.objects {
+            if let (
+                TypedObjectId::Measure(id),
+                LayoutContent::Measure(epiphany_layout_ir::MeasureContent {
+                    start: TimePoint::Musical(start),
+                    ..
+                }),
+            ) = (object.provenance().source, object.content())
+            {
+                starts.insert(id, start.clone());
+            }
+        }
+    }
+    starts
 }
 
 /// The clef in force at each manifested staff's start, resolved by time from the
@@ -4131,7 +4644,7 @@ mod tests {
         ConstrainedLayoutIR, HitShape, InvalidationSet, SolveReport, SolveStatus, SolverState,
         SolverTier, SolverVersion, StubSolver,
     };
-    use epiphany_ops::TransposeOp;
+    use epiphany_ops::{OperationSet, TransposeOp};
 
     fn open_rich(seed: u64) -> EditorSession {
         EditorSession::open(valid_score_rich(seed), Box::new(StubSolver)).expect("rich renders")

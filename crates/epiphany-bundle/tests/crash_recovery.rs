@@ -129,3 +129,24 @@ fn unique_temp_path(stem: &str) -> std::path::PathBuf {
     let name = format!("{stem}-{}-{}.musc", std::process::id(), n);
     std::env::temp_dir().join(name)
 }
+
+/// `FileStore::create_new` refuses a path that already holds a file and leaves
+/// that file's bytes alone, where `create` would truncate it.
+#[cfg(unix)]
+#[test]
+fn file_store_create_new_never_truncates() {
+    use epiphany_bundle::{BlockStore, FileStore};
+
+    let path = unique_temp_path("epiphany-bundle-create-new");
+    {
+        let mut store = FileStore::create_new(&path).expect("a fresh path is created");
+        store.write_at(0, b"kept").unwrap();
+        store.flush().unwrap();
+    }
+    let refused = FileStore::create_new(&path)
+        .err()
+        .expect("an existing file is refused");
+    assert_eq!(refused.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(std::fs::read(&path).unwrap(), b"kept");
+    std::fs::remove_file(&path).ok();
+}
