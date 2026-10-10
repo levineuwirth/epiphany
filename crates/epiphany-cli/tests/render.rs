@@ -5624,3 +5624,96 @@ fn a_long_tie_clears_an_accidental_in_its_path() {
     assert!(passes_over, "the tie arcs over the flat");
     assert_eq!((ties[0].p0, ties[0].p3), (p0, p3));
 }
+
+/// A curve passes the stems of its staff that stand inside its span, as it
+/// passes accidentals: at a voice crossing, the lower voice's whole-note tie,
+/// arcing down, passes under the stem the upper voice's E4 raises through
+/// its path. No point of the tie stands inside the stem's ink. Before
+/// `ENGRAVER_VERSION` 48 the tie ran through it.
+#[test]
+fn a_tie_passes_a_stem_standing_in_its_path() {
+    let note = |pitch: Option<(&str, u8)>, duration: u8, kind: &str, voice: u8, tie: &str| {
+        let body = match pitch {
+            None => "<rest/>".to_string(),
+            Some((step, octave)) => {
+                format!("<pitch><step>{step}</step><octave>{octave}</octave></pitch>")
+            }
+        };
+        let (tie_el, tied) = match tie {
+            "" => (String::new(), String::new()),
+            kind => (
+                format!("<tie type=\"{kind}\"/>"),
+                format!("<notations><tied type=\"{kind}\"/></notations>"),
+            ),
+        };
+        let stem = if voice == 1 { "up" } else { "down" };
+        format!(
+            "<note>{body}<duration>{duration}</duration>{tie_el}<voice>{voice}</voice>\
+             <type>{kind}</type><stem>{stem}</stem>{tied}</note>"
+        )
+    };
+    let backup = "<backup><duration>8</duration></backup>";
+    let first = format!(
+        "<attributes><divisions>2</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time><clef><sign>G</sign><line>2</line></clef></attributes>{}{}{}{}{}{backup}{}",
+        note(None, 2, "quarter", 1, ""),
+        note(None, 1, "eighth", 1, ""),
+        note(Some(("E", 4)), 1, "eighth", 1, ""),
+        note(Some(("E", 4)), 2, "quarter", 1, ""),
+        note(None, 2, "quarter", 1, ""),
+        note(Some(("B", 4)), 8, "whole", 2, "start"),
+    );
+    let second = format!(
+        "{}{backup}{}",
+        note(None, 8, "whole", 1, ""),
+        note(Some(("B", 4)), 8, "whole", 2, "stop"),
+    );
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">{first}\
+         </measure><measure number=\"2\">{second}</measure></part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("tie_past_a_stem.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = engrave(&loaded.reduced.score).layout;
+    let ties: Vec<_> = layout
+        .curves
+        .iter()
+        .filter(|c| matches!(c.provenance.source, epiphany_core::TypedObjectId::Tie(_)))
+        .collect();
+    assert_eq!(ties.len(), 1, "one tie");
+    let [p0, p1, p2, p3] = [ties[0].p0, ties[0].p1, ties[0].p2, ties[0].p3];
+    // The upright strokes inside the tie's span, clear of its ends: the
+    // upper voice's stems.
+    let stems: Vec<[f32; 4]> = layout
+        .strokes
+        .iter()
+        .filter(|s| {
+            matches!(s.provenance.source, epiphany_core::TypedObjectId::Event(_))
+                && (s.from.x.0 - s.to.x.0).abs() < 1e-6
+                && (s.from.y.0 - s.to.y.0).abs() > 0.3
+                && s.from.x.0 > p0.x.0 + 0.6
+                && s.from.x.0 < p3.x.0 - 0.6
+        })
+        .map(stroke_box)
+        .collect();
+    assert_eq!(stems.len(), 2, "the two E4s' stems stand inside the tie");
+    let at = |a: f32, b: f32, c: f32, d: f32, t: f32| {
+        let u = 1.0 - t;
+        u * u * u * a + 3.0 * u * u * t * b + 3.0 * u * t * t * c + t * t * t * d
+    };
+    for k in 0..=800 {
+        let t = k as f32 / 800.0;
+        let (x, y) = (
+            at(p0.x.0, p1.x.0, p2.x.0, p3.x.0, t),
+            at(p0.y.0, p1.y.0, p2.y.0, p3.y.0, t),
+        );
+        for b in &stems {
+            assert!(
+                !(x > b[0] && x < b[2] && y > b[1] && y < b[3]),
+                "the tie runs through a stem at ({x:.2}, {y:.2})"
+            );
+        }
+    }
+}

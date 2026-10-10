@@ -327,8 +327,10 @@ pub struct Engraver {
 /// began reserving its line there, so ink in the gap keeps a barline's
 /// clearance, and to `47` when a tie that must arc further than 1.5 spaces
 /// to pass an accidental began taking a fuller arc, as far as a sixth of its
-/// span and three spaces at most, rather than running through it.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(47);
+/// span and three spaces at most, rather than running through it, and to
+/// `48` when a slur or tie began passing the stems of its staff inside its
+/// span as it passes accidentals.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(48);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -687,12 +689,14 @@ impl HorizontalRemap {
     /// Re-maps each curve's four control-point x's through the same coordinate
     /// map as a spanning stroke's endpoints (a slur is never rigid-width), so
     /// the arc stretches with the spacing between its endpoint columns, then
-    /// passes it over the accidentals of its staff it would meet
+    /// passes it over the accidentals of its staff it would meet, and the
+    /// stems of its staff that stand inside its span
     /// ([`clearance::clear_accidentals`]): a slur by its arc or, near an end,
     /// by lifting that end, a tie by its arc alone. Its y is otherwise kept.
     fn curves(&self, input: &ConstrainedLayoutIR) -> Vec<Curve> {
         let anchors = span_anchors(input);
         let accidentals = self.accidentals(input);
+        let stems = self.stems(input, &anchors);
         input
             .curves
             .iter()
@@ -707,13 +711,31 @@ impl HorizontalRemap {
                         .map(|point| Point::new(self.map(point.x.0), point.y.0)),
                 };
                 let [p0, p1, p2, p3] = match c.provenance.source {
-                    TypedObjectId::Slur(_) | TypedObjectId::Tie(_) => clearance::clear_accidentals(
-                        spaced,
-                        accidentals
+                    TypedObjectId::Slur(_) | TypedObjectId::Tie(_) => {
+                        // The stems inside the span, clear of the stems of the
+                        // notes the curve joins, which stand at its ends.
+                        let (x0, x3) = (spaced[0].x.0, spaced[3].x.0);
+                        let inside =
+                            stems
+                                .get(&c.vertical_band)
+                                .into_iter()
+                                .flatten()
+                                .filter(|s| {
+                                    s.left > x0 + STEM_END_MARGIN && s.right < x3 - STEM_END_MARGIN
+                                });
+                        let obstacles: Vec<clearance::InkRect> = accidentals
                             .get(&c.vertical_band)
-                            .map_or(&[][..], Vec::as_slice),
-                        matches!(c.provenance.source, TypedObjectId::Tie(_)),
-                    ),
+                            .into_iter()
+                            .flatten()
+                            .chain(inside)
+                            .copied()
+                            .collect();
+                        clearance::clear_accidentals(
+                            spaced,
+                            &obstacles,
+                            matches!(c.provenance.source, TypedObjectId::Tie(_)),
+                        )
+                    }
                     _ => spaced,
                 };
                 Curve {
@@ -733,7 +755,48 @@ impl HorizontalRemap {
     }
 }
 
+/// How far inside a curve's span, from either end, a stem must stand for the
+/// curve to pass it, in staff spaces: the stems of the notes a curve joins
+/// stand at its ends.
+const STEM_END_MARGIN: f32 = 0.6;
+
 impl HorizontalRemap {
+    /// Every stem's ink where the spacing sets it, by its band: an event's
+    /// upright stroke whose ends ride one slot.
+    fn stems(
+        &self,
+        input: &ConstrainedLayoutIR,
+        anchors: &BTreeMap<GlyphObjectId, (SpringSlotId, SpringSlotId)>,
+    ) -> BTreeMap<epiphany_layout_ir::VerticalBandId, Vec<clearance::InkRect>> {
+        let mut by_band: BTreeMap<_, Vec<clearance::InkRect>> = BTreeMap::new();
+        for s in &input.strokes {
+            if !matches!(s.provenance.source, TypedObjectId::Event(_))
+                || (s.from.x.0 - s.to.x.0).abs() > 1e-6
+                || (s.from.y.0 - s.to.y.0).abs() < 0.3
+            {
+                continue;
+            }
+            let Some(delta) = anchors
+                .get(&s.id())
+                .filter(|(start, end)| start == end)
+                .and_then(|(start, _)| self.slot_delta.get(start))
+            else {
+                continue;
+            };
+            let (x, half) = (s.from.x.0 + delta, s.thickness.0 * 0.5);
+            by_band
+                .entry(s.vertical_band)
+                .or_default()
+                .push(clearance::InkRect {
+                    left: x - half,
+                    right: x + half,
+                    bottom: s.from.y.0.min(s.to.y.0),
+                    top: s.from.y.0.max(s.to.y.0),
+                });
+        }
+        by_band
+    }
+
     /// Every accidental glyph's ink where the spacing sets it, by its band.
     fn accidentals(
         &self,

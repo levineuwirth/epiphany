@@ -1,4 +1,6 @@
-//! A slur or tie clears the accidentals under it (`ENGRAVER_VERSION` 44).
+//! A slur or tie clears the accidentals under it (`ENGRAVER_VERSION` 44), and
+//! the stems of its staff inside its span (`ENGRAVER_VERSION` 48, X5c.3): a
+//! stem's ink is passed as an accidental's is.
 //!
 //! The constrained pass shapes a slur over the heads and stems of the columns
 //! it spans and a tie between its heads, in a frame where columns stand closer

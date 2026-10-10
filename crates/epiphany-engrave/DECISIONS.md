@@ -1807,3 +1807,22 @@ note's tie over the other voice's A-flat a step above it). The
 `arrow_accidentals` golden's whole-note tie, which ran through the arrow of
 an arrowed natural, now arcs over it; re-blessed with renders before and
 after for the owner's reading.
+
+## ENGRAVER_VERSION 47 → 48: a curve passes the stems inside its span (X5c.3, 2026-10-10)
+
+A slur or tie passed the accidentals of its staff after spacing but not its
+stems, so a curve whose columns spacing had moved, or a tie at a voice
+crossing, ran through a stem standing inside its span: the long stem of
+another voice's note rising through a held note's tie, mostly, and a slur
+ending past a beamed group's last stem. `HorizontalRemap::stems` gathers
+each event's upright stroke whose ends ride one slot, where the spacing
+sets it, by band, and a curve passes those of its own band standing more
+than `STEM_END_MARGIN` (0.6 spaces) inside either end, the stems of the
+notes it joins standing at its ends, with the accidentals and by the same
+rules: a slur by its arc or by lifting an end, a tie by its arc within its
+bounds, a long tie by a fuller arc. A tie that cannot pass a stem so, under
+a beamed run whose stems reach a beam far above it, is left as it was.
+Stems of another staff, which casting lengthens to their beams, are not
+gathered. Locked by `a_tie_passes_a_stem_standing_in_its_path`
+(`epiphany-cli`: a lower voice's whole-note tie under the stems an upper
+voice's E4 raises through it at a crossing). No golden changed.
