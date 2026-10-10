@@ -87,7 +87,9 @@ use crate::stamp::{HybridLogicalClock, OperationStamp};
 use crate::support::AuthorId;
 use crate::undo::{UndoPolicy, UndoTransactionPayload};
 use crate::valuegen;
-use crate::{GraphMaterialization, MaterializedState, OperationEffect, OperationKindRegistryId};
+use crate::{
+    GraphMaterialization, MaterializedState, ObjectState, OperationEffect, OperationKindRegistryId,
+};
 
 /// The identity of the empty base both modes start from.
 const BASE: ReplicaId = ReplicaId(0);
@@ -400,21 +402,28 @@ fn compare(
             }
         }
     }
-    out.extend(invariant_findings(history, &aware_effects, &aware.score));
+    out.extend(invariant_findings(
+        history,
+        &aware_effects,
+        &aware.score,
+        &aware.state.objects,
+    ));
     out
 }
 
 /// The deferred class (D48, D50 to D52) is every `RegionExtents` overlap made
 /// by creating or filling regions, whatever its cause and however many
-/// authors: read from the graph, two regions whose time extents overlap, each
-/// holding a live instance of a common staff (`overlap_made_by_regions`).
+/// authors: two regions whose time extents overlap, each holding an instance
+/// of a common staff that the graph holds and the ledger holds live
+/// (`overlap_made_by_regions`).
 /// Refusing a region's creation or fill where it would overlap one the merged
 /// history keeps needs region extents compared in both modes; X5 does so and
 /// closes the class. The causes the classifier knows are named apart
 /// ([`REGION_NEVER_SEEN`], [`REGION_SEEN_DELETED`], [`REGION_SEEN_UNDONE`]),
 /// the rest under one general name ([`REGION_OVERLAP`]). An overlap of
 /// another making (a region's staff extent naming a staff it holds no live
-/// instance of) keeps the invariant's plain class, which nothing excepts.
+/// instance of, or an instance the graph keeps that the ledger tombstoned)
+/// keeps the invariant's plain class, which nothing excepts.
 /// This constant is the prefix the three named causes share.
 pub const DEFERRED_REGIONS: &str = "invariant Invariant(RegionExtents: a region created at the place of one its author's view did not hold live";
 
@@ -451,6 +460,7 @@ fn invariant_findings(
     history: &[OperationEnvelope],
     effects: &BTreeMap<OperationId, OperationEffect>,
     score: &Score,
+    objects: &BTreeMap<TypedObjectId, ObjectState>,
 ) -> Vec<Finding> {
     let mut seen = BTreeSet::new();
     check_invariants(score)
@@ -463,7 +473,7 @@ fn invariant_findings(
                     epiphany_core::GraphInvariant::RegionExtents
                 )
             )
-            .then(|| deferred_region_cause(history, effects, score, &violation.witness))
+            .then(|| deferred_region_cause(history, effects, score, objects, &violation.witness))
             .flatten();
             let class = match named {
                 Some(cause) => String::from(cause),
@@ -573,12 +583,19 @@ fn witness_regions(witness: &str) -> Vec<RegionId> {
 }
 
 /// Whether a `RegionExtents` witness is an overlap made by creating or
-/// filling regions (D52), read from the graph: it names two regions, both in
-/// `score`, whose time extents overlap (where both are wall-clock; the
-/// invariant has judged any other), each holding a live staff instance of a
-/// common staff. A staff extent naming a staff of no live instance is another
-/// making.
-fn overlap_made_by_regions(score: &Score, witness: &str) -> bool {
+/// filling regions (D52): it names two regions, both in `score`, whose time
+/// extents overlap (where both are wall-clock; the invariant has judged any
+/// other), each holding a staff instance of a common staff that the graph
+/// holds and the ledger (`objects`) holds live. A staff extent naming a staff
+/// of no live instance is another making, and so is an instance the graph
+/// keeps after the ledger tombstoned it, a removal the graph failed to make
+/// (X4a review 3's L1: read from the graph alone, such an overlap was
+/// deferred under a named cause).
+fn overlap_made_by_regions(
+    score: &Score,
+    objects: &BTreeMap<TypedObjectId, ObjectState>,
+    witness: &str,
+) -> bool {
     let [a, b] = witness_regions(witness)[..] else {
         return false;
     };
@@ -596,8 +613,18 @@ fn overlap_made_by_regions(score: &Score, witness: &str) -> bool {
             return false;
         }
     }
-    let staves =
-        |r: &Region| -> BTreeSet<StaffId> { r.staff_instances().iter().map(|i| i.staff).collect() };
+    let staves = |r: &Region| -> BTreeSet<StaffId> {
+        r.staff_instances()
+            .iter()
+            .filter(|i| {
+                matches!(
+                    objects.get(&TypedObjectId::StaffInstance(i.id)),
+                    Some(ObjectState::Live)
+                )
+            })
+            .map(|i| i.staff)
+            .collect()
+    };
     !staves(a).is_disjoint(&staves(b))
 }
 
@@ -608,9 +635,10 @@ fn deferred_region_cause(
     history: &[OperationEnvelope],
     effects: &BTreeMap<OperationId, OperationEffect>,
     score: &Score,
+    objects: &BTreeMap<TypedObjectId, ObjectState>,
     witness: &str,
 ) -> Option<&'static str> {
-    overlap_made_by_regions(score, witness)
+    overlap_made_by_regions(score, objects, witness)
         .then(|| region_cause(history, effects, witness).unwrap_or(REGION_OVERLAP))
 }
 
@@ -3435,7 +3463,8 @@ mod tests {
         set.accept_all(history.iter().cloned());
         let aware = set.reduce_onto(&empty_base());
         let effects = aware.state.effects.iter().cloned().collect();
-        let reduced: Vec<String> = invariant_findings(&history, &effects, &aware.score)
+        let objects = &aware.state.objects;
+        let reduced: Vec<String> = invariant_findings(&history, &effects, &aware.score, objects)
             .into_iter()
             .map(|f| f.class)
             .collect();
@@ -3452,7 +3481,7 @@ mod tests {
             other => panic!("a staff-based region, not {other:?}"),
         }
         assert!(!first.staff_extent.staves.is_empty(), "the stale extent");
-        let classes: Vec<String> = invariant_findings(&history, &effects, &score)
+        let classes: Vec<String> = invariant_findings(&history, &effects, &score, objects)
             .into_iter()
             .map(|f| f.class)
             .collect();
@@ -3460,6 +3489,58 @@ mod tests {
             classes
                 .iter()
                 .any(|c| c.starts_with("invariant Invariant(RegionExtents: ")),
+            "{classes:?}"
+        );
+        assert!(classes.iter().all(|c| !deferred(c)), "{classes:?}");
+    }
+
+    /// An overlap left by a removal the graph failed to make stays out of the
+    /// deferred class (X4a review 3's L1): the never-seen history's graph as
+    /// reduced, with one region's staff instance tombstoned in the ledger and
+    /// kept in the graph, as review 3's plant D2 (a delete leaving the
+    /// instance in the graph) leaves it, overlaps the other region by an
+    /// instance the ledger does not hold live, so the finding is the
+    /// invariant's plain class. Read from the graph alone, it was deferred as
+    /// never seen.
+    #[test]
+    fn an_overlap_by_an_instance_the_ledger_removed_is_not_the_deferred_class() {
+        use super::{
+            deferred, empty_base, invariant_findings, ObjectState, OperationSet, TypedObjectId,
+        };
+        let history = super::parse(include_str!(
+            "../../tests/two_modes/110-invariant-region-extents.txt"
+        ))
+        .expect("parses");
+        let mut set = OperationSet::new();
+        set.accept_all(history.iter().cloned());
+        let aware = set.reduce_onto(&empty_base());
+        let effects = aware.state.effects.iter().cloned().collect();
+        let instance = aware
+            .score
+            .canvas
+            .regions
+            .iter()
+            .find_map(|region| region.staff_instances().first().map(|i| i.id))
+            .expect("a filled region");
+        let mut objects = aware.state.objects.clone();
+        let deleted_by = history.last().expect("a history").id;
+        let minted_by = history.first().expect("a history").id;
+        let slot = objects
+            .get_mut(&TypedObjectId::StaffInstance(instance))
+            .expect("the ledger holds the instance");
+        assert_eq!(*slot, ObjectState::Live);
+        *slot = ObjectState::Tombstoned {
+            deleted_by,
+            minted_by,
+        };
+        let classes: Vec<String> = invariant_findings(&history, &effects, &aware.score, &objects)
+            .into_iter()
+            .map(|f| f.class)
+            .collect();
+        assert!(
+            classes
+                .iter()
+                .any(|c| c.starts_with("invariant Invariant(RegionExtents: ") && !deferred(c)),
             "{classes:?}"
         );
         assert!(classes.iter().all(|c| !deferred(c)), "{classes:?}");

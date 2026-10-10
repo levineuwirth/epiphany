@@ -3626,3 +3626,24 @@ kept where they stand. With M3's fix reverted the fuzz finds its break at the
 fifth of 10,000 histories of 64 authored (seed `0x62640004`); at the tip the
 gesture's wall-clock migration conflicts naming the note and the others
 apply.
+
+## X4b.0 — X4a's follow-ups (2026-10-10)
+
+Review 3 of C4a converged with four Lows and one follow-up found by hand,
+which the owner sent to X4b.0 (D55). Each is closed in its own commit.
+
+**The deferred class reads liveness from the ledger (review 3's L1).**
+`overlap_made_by_regions` counted every staff instance the graph-aware score
+holds, so an overlap left by a removal the graph failed to make (a delete
+that tombstones an instance in the ledger and leaves it in the graph, review
+3's plant D2) fell into the deferred class under a named cause, history by
+history, although the same plant showed plainly as `StaffInstanceResolves`
+within the budget. An instance now counts only when the graph holds it and
+the ledger (`objects`) holds it live, so such an overlap keeps the
+invariant's plain class; an overlap made by creating or filling regions is
+unchanged, since each instance it fills is live in both. Locked by
+`an_overlap_by_an_instance_the_ledger_removed_is_not_the_deferred_class`:
+the never-seen history's graph with one region's instance tombstoned in the
+ledger alone gives a plain `RegionExtents` finding and no deferred one.
+Mutation: the ledger's liveness ignored (the finding is "never seen", the
+test fails).
