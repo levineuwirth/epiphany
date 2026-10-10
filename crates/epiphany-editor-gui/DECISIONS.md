@@ -484,6 +484,13 @@ edits, copies the bundle's bytes to a new file (never over an existing one:
 history goes with the old lease, which a save ends anyway; the redo stack and
 the selection do not carry over.
 
+**An unsettled save is settled at once.** A save whose commit point's flush
+failed, or a save asked for while an earlier one is unsettled, reconciles the
+document there and then (`EditorDocument::reconcile`), and the status line
+says how it settled: landed (with any edits undone since that are back, and
+any later ones dropped), not landed (the edits unsaved), or still unknown
+(save again to retry).
+
 **One window writes a file.** Opening a saved document takes an advisory lock
 on its file (`File::try_lock`, which this crate may use: it is outside the
 MSRV floor). A window that cannot take it opens the document read-only. The

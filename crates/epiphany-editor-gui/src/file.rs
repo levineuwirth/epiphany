@@ -15,7 +15,9 @@ use std::path::{Path, PathBuf};
 use epiphany_bundle::{BlockStore, FileStore, MemStore};
 use epiphany_cli::{export, is_document, page_of, Engraved, ExportOptions};
 use epiphany_core::ReplicaId;
-use epiphany_editor_core::{EditorDocument, EditorSession, ScoreSetup};
+use epiphany_editor_core::{
+    DocumentError, EditorDocument, EditorSession, Reconciled, Saved, ScoreSetup,
+};
 use epiphany_engrave::Engraver;
 
 /// A document behind either kind of store.
@@ -126,22 +128,82 @@ fn view(document: Document, path: &Path, why: &str) -> Result<(Opened, EditorSes
 
 impl Opened {
     /// Saves the session's edits into the document's file. A document with no
-    /// file yet is saved with [`save_as`].
+    /// file yet is saved with [`save_as`]. A save whose outcome is unknown (its
+    /// commit point's flush failed), or one made while an earlier such save is
+    /// unsettled, reconciles the document there and then and says how it settled.
     pub fn save(&mut self, session: &mut EditorSession) -> Result<String, String> {
         if !self.writable {
             return Err("the document is read-only here".to_owned());
         }
-        let Some(path) = &self.path else {
+        let Some(path) = self.path.clone() else {
             return Err("not saved yet: give a path and save as".to_owned());
         };
-        let saved = self.document.save(session).map_err(|e| e.to_string())?;
-        Ok(format!(
-            "saved {} operation(s) to {} (generation {})",
-            saved.envelopes,
-            path.display(),
-            saved.generation
-        ))
+        match self.document.save(session) {
+            Ok(saved) => Ok(saved_to(&path, saved)),
+            Err(DocumentError::Indeterminate(e)) => self.reconcile(
+                session,
+                &path,
+                &format!("the save's commit point failed ({e})"),
+            ),
+            Err(DocumentError::RecoveryRequired) => {
+                self.reconcile(session, &path, "an earlier save's outcome was unknown")
+            }
+            Err(e) => Err(e.to_string()),
+        }
     }
+
+    /// Settles an unsettled save and says how, after `why`: `Ok` when what it
+    /// staged is saved, `Err` when it is not, or is still unknown.
+    fn reconcile(
+        &mut self,
+        session: &mut EditorSession,
+        path: &Path,
+        why: &str,
+    ) -> Result<String, String> {
+        match self.document.reconcile(session) {
+            Ok(Reconciled::Saved {
+                saved,
+                restored,
+                dropped,
+            }) => {
+                let mut message = format!("{why}; it landed: {}", saved_to(path, saved));
+                if restored > 0 {
+                    message.push_str(&format!(
+                        "; {restored} edit(s) undone since are in the file and drawn again"
+                    ));
+                }
+                if dropped > 0 {
+                    message.push_str(&format!(
+                        "; {dropped} later edit(s) conflicted with them and were discarded"
+                    ));
+                }
+                if session.is_dirty() {
+                    message.push_str("; the edits made since are unsaved");
+                }
+                Ok(message)
+            }
+            Ok(Reconciled::NotSaved) => Err(format!(
+                "{why}; it did not land: the edits are unsaved, save again"
+            )),
+            Ok(Reconciled::StillIndeterminate) => Err(format!(
+                "{why}; whether it landed is still unknown, and nothing more is saved until it \
+                 is: save again to retry"
+            )),
+            Err(e) => Err(format!(
+                "{why}; it could not be settled ({e}): save again to retry"
+            )),
+        }
+    }
+}
+
+/// What a save reports.
+fn saved_to(path: &Path, saved: Saved) -> String {
+    format!(
+        "saved {} operation(s) to {} (generation {})",
+        saved.envelopes,
+        path.display(),
+        saved.generation
+    )
 }
 
 /// Saves the document as a new file at `path`, which must not exist: the
@@ -245,11 +307,16 @@ mod tests {
 
     /// Enters a C at the start of the first voice.
     fn edit(session: &mut EditorSession) {
+        edit_at(session, 0);
+    }
+
+    /// Enters a C quarter on beat `beat` (from 0) of the first voice.
+    fn edit_at(session: &mut EditorSession, beat: i64) {
         let voice = session.score().voices().next().expect("a voice").2.id;
         session
             .set_caret(
                 voice,
-                MusicalPosition::origin(),
+                MusicalPosition(RationalTime::new(beat, 4).unwrap()),
                 MusicalDuration(RationalTime::new(1, 4).unwrap()),
             )
             .unwrap();
@@ -314,6 +381,91 @@ mod tests {
         let (third, _) = open(&target).unwrap();
         assert!(third.writable, "the lock is released with its window");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A store whose chosen flushes fail, the writes they were to make durable
+    /// staying readable.
+    struct FlakyStore {
+        bytes: Vec<u8>,
+        flushes: u32,
+        fail: Vec<u32>,
+    }
+
+    impl BlockStore for FlakyStore {
+        fn len(&self) -> u64 {
+            self.bytes.len() as u64
+        }
+
+        fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
+            let end = offset as usize + buf.len();
+            buf.copy_from_slice(&self.bytes[offset as usize..end]);
+            Ok(())
+        }
+
+        fn write_at(&mut self, offset: u64, data: &[u8]) -> std::io::Result<()> {
+            let end = offset as usize + data.len();
+            if self.bytes.len() < end {
+                self.bytes.resize(end, 0);
+            }
+            self.bytes[offset as usize..end].copy_from_slice(data);
+            Ok(())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.flushes += 1;
+            if self.fail.contains(&self.flushes) {
+                return Err(std::io::Error::other("injected flush failure"));
+            }
+            Ok(())
+        }
+    }
+
+    /// A window on a saved new score whose store fails the flushes `fail`
+    /// names. A save's commit flushes three times, the third its commit point,
+    /// and reconciling flushes once more.
+    fn flaky_window(fail: Vec<u32>) -> (Opened, EditorSession) {
+        let operations = ScoreSetup::single_staff("Piano", 2)
+            .operations(ReplicaId::generate())
+            .unwrap();
+        let created = EditorDocument::create(MemStore::new(), operations).unwrap();
+        let store = FlakyStore {
+            bytes: created.into_store().into_bytes(),
+            flushes: 0,
+            fail,
+        };
+        let document = EditorDocument::open(Box::new(store) as Box<dyn BlockStore>).unwrap();
+        lease(document, Some(PathBuf::from("flaky.musc")), None, None).unwrap()
+    }
+
+    #[test]
+    fn a_save_whose_outcome_is_unknown_is_settled_and_reported() {
+        let (mut opened, mut session) = flaky_window(vec![3]);
+        edit(&mut session);
+        let message = opened
+            .save(&mut session)
+            .expect("the save landed, and says so");
+        assert!(message.contains("commit point failed"), "{message}");
+        assert!(message.contains("it landed"), "{message}");
+        assert!(!session.is_dirty());
+        assert_eq!(opened.document.generation(), 2);
+        edit_at(&mut session, 1);
+        let message = opened
+            .save(&mut session)
+            .expect("the next save is ordinary");
+        assert!(message.starts_with("saved"), "{message}");
+    }
+
+    #[test]
+    fn a_save_still_unsettled_is_settled_at_the_next_save() {
+        // The commit point fails, and so does the fresh barrier after it.
+        let (mut opened, mut session) = flaky_window(vec![3, 4]);
+        edit(&mut session);
+        let message = opened.save(&mut session).expect_err("still unknown");
+        assert!(message.contains("still unknown"), "{message}");
+        assert!(session.is_dirty(), "nothing is claimed saved");
+        let message = opened.save(&mut session).expect("the next save settles it");
+        assert!(message.contains("it landed"), "{message}");
+        assert!(!session.is_dirty());
     }
 
     #[test]

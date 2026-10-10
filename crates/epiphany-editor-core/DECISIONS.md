@@ -620,10 +620,24 @@ historical layout (`UnsupportedHistoricalEncoding`, the interim boundary).
 
 **Three commit outcomes.** A failure before the commit point leaves the units
 unsaved and undoable. A failed commit-point flush poisons the bundle; the
-document then saves nothing until `reconcile` reopens the store, checks that
-every staged block is a root of the generation it selects, and runs a fresh
-durability barrier (`Bundle::sync`) that must succeed before the units are
-reported saved.
+document keeps exactly the units it staged and then saves nothing until
+`reconcile` reopens the store in place (`Bundle::reopen`, so a failed read
+leaves the document in recovery to be tried again), checks that every staged
+block is a root of the generation it selects, and runs a fresh durability
+barrier (`Bundle::sync`) that must succeed before the save is reported.
+
+**Reconciling promotes what the save staged, not what the session holds.**
+Between an indeterminate save and its reconciliation the session is an
+ordinary editor. When the staged blocks landed, exactly the staged units are
+promoted. Units entered since stay applied, unsaved and undoable. A staged
+unit undone since is in the file all the same, so it leaves the redo stack for
+the committed partition and the session is materialized again with it: the
+screen shows what the file holds. If a later edit forked the undone unit away,
+the units entered after the fork never saw it; the longest run of them that
+still reduces cleanly beside it is kept, the rest are dropped, and the redo
+stack, built on that forked history, is cleared. Two entries past the last
+measure, each opening the same measure without having seen the other, are
+such a pair. The outcome counts the restored and the dropped units.
 
 **Not here.** Creation never truncates (`FileStore::create_new`); the
 cross-process lock is taken where a document is opened from a path, in the

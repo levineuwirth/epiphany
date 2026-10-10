@@ -1625,6 +1625,82 @@ impl EditorSession {
         self.lease = Some(lease);
     }
 
+    /// The applied envelopes split into their units, oldest first: what a save
+    /// stages.
+    pub(crate) fn applied_units(&self) -> Vec<Vec<OperationEnvelope>> {
+        let mut units = Vec::with_capacity(self.undo_units.len());
+        let mut at = 0;
+        for &size in &self.undo_units {
+            units.push(self.applied[at..at + size].to_vec());
+            at += size;
+        }
+        units
+    }
+
+    /// Settles the session after an indeterminate save whose blocks landed
+    /// ([`EditorDocument::reconcile`]): `committed` now holds `staged`, exactly the
+    /// units that save staged, whatever the session has done since.
+    ///
+    /// A unit entered since stays applied and undoable. A unit of the save undone
+    /// since is in the file all the same: it leaves the redo stack for the
+    /// committed partition, and the session is materialized again with it. If a
+    /// later edit forked it away instead, the units entered after the fork never
+    /// saw it: the longest run of them that still reduces cleanly with it is kept
+    /// and the rest dropped, and the redo stack, built on the same forked history,
+    /// is cleared. Returns how many staged units were restored and how many later
+    /// units were dropped.
+    pub(crate) fn settle(
+        &mut self,
+        committed: document::Committed,
+        lease: document::Lease,
+        staged: &[Vec<OperationEnvelope>],
+    ) -> (usize, usize) {
+        // A unit is named by its first envelope: a primitive, or a transaction's
+        // descriptor.
+        let head = |unit: &Vec<OperationEnvelope>| unit.first().map(|envelope| envelope.id);
+        let staged_heads: BTreeSet<_> = staged.iter().filter_map(head).collect();
+        let applied_heads: BTreeSet<_> = self.applied_units().iter().filter_map(head).collect();
+        let redo_heads: BTreeSet<_> = self.redo_stack.iter().filter_map(head).collect();
+        let restored: Vec<_> = staged_heads.difference(&applied_heads).copied().collect();
+        let forked = restored.iter().any(|id| !redo_heads.contains(id));
+        let later: Vec<Vec<OperationEnvelope>> = self
+            .applied_units()
+            .into_iter()
+            .filter(|unit| head(unit).is_some_and(|id| !staged_heads.contains(&id)))
+            .collect();
+        self.redo_stack
+            .retain(|unit| head(unit).is_some_and(|id| !staged_heads.contains(&id)));
+        if forked {
+            self.redo_stack.clear();
+        }
+        self.committed = committed;
+        self.lease = Some(lease);
+        if restored.is_empty() {
+            // Every staged unit is still applied, ahead of the later ones, so the
+            // operation set is unchanged: a partition move, as at a save.
+            self.undo_units = later.iter().map(Vec::len).collect();
+            self.applied = later.concat();
+            return (0, 0);
+        }
+        let mut keep = later.len();
+        let materialized = loop {
+            let log = later[..keep].concat();
+            match self.materialize(&log) {
+                Ok(materialized) => break materialized,
+                // With no later unit the log is the partition alone: what the save
+                // staged, which the session drew when it saved.
+                Err(_) if keep > 0 => keep -= 1,
+                Err(err) => panic!("the saved state no longer materializes: {err:?}"),
+            }
+        };
+        self.undo_units = later[..keep].iter().map(Vec::len).collect();
+        self.applied = later[..keep].concat();
+        self.install(materialized);
+        self.reresolve_selection();
+        self.reresolve_caret();
+        (restored.len(), later.len() - keep)
+    }
+
     /// Whether there is an applied edit to [`undo`](Self::undo).
     pub fn can_undo(&self) -> bool {
         !self.undo_units.is_empty()

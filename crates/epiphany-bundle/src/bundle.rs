@@ -251,6 +251,16 @@ pub struct Bundle<S: BlockStore> {
     caps: BundleCapabilities,
 }
 
+/// What the cold-open procedure selects from a store.
+struct ColdOpen {
+    header: FixedHeader,
+    active_slot: Slot,
+    superblock: Superblock,
+    manifest: Manifest,
+    read_only: bool,
+    anomalies: Vec<IntegrityAnomaly>,
+}
+
 impl<S: BlockStore> Bundle<S> {
     /// Creates a brand-new bundle in `store` with the given file UUID and
     /// initial manifest (its generation is forced to 0). Writes the manifest
@@ -371,19 +381,56 @@ impl<S: BlockStore> Bundle<S> {
     /// (generation gap, divergent same-generation slots, a non-committed slot)
     /// opens the bundle **read-only** and is recorded in [`Bundle::anomalies`].
     pub fn open(store: S, caps: BundleCapabilities) -> Result<Self, BundleError> {
+        let opened = Self::cold_open(&store, &caps)?;
+        let write_cursor = store.len();
+        Ok(Bundle {
+            store,
+            header: opened.header,
+            active_slot: opened.active_slot,
+            superblock: opened.superblock,
+            manifest: opened.manifest,
+            write_cursor,
+            read_only: opened.read_only,
+            anomalies: opened.anomalies,
+            caps,
+        })
+    }
+
+    /// Runs the cold open again over this bundle's own store and takes what it
+    /// now selects: the header, the active superblock and its manifest, and the
+    /// read-only status and anomalies, as [`Bundle::open`] would find them. A
+    /// writer reconciling a commit whose commit-point flush failed, which left
+    /// this bundle poisoned read-only, reads this way which generation the store
+    /// now selects. On an error the bundle is left as it was, so the read can be
+    /// retried.
+    pub fn reopen(&mut self) -> Result<(), BundleError> {
+        let opened = Self::cold_open(&self.store, &self.caps)?;
+        self.header = opened.header;
+        self.active_slot = opened.active_slot;
+        self.superblock = opened.superblock;
+        self.manifest = opened.manifest;
+        self.write_cursor = self.store.len();
+        self.read_only = opened.read_only;
+        self.anomalies = opened.anomalies;
+        Ok(())
+    }
+
+    /// The cold-open procedure over `store`, reading only: what [`Bundle::open`]
+    /// and [`Bundle::reopen`] select.
+    fn cold_open(store: &S, caps: &BundleCapabilities) -> Result<ColdOpen, BundleError> {
         // 1. Header.
-        let header_bytes = read_vec(&store, 0, crate::header::HEADER_LEN)?;
+        let header_bytes = read_vec(store, 0, crate::header::HEADER_LEN)?;
         let header = FixedHeader::decode(&header_bytes)?;
 
         // 2. Both slots.
-        let slot_a_bytes = read_vec(&store, SLOT_A_OFFSET, SUPERBLOCK_LEN)?;
-        let slot_b_bytes = read_vec(&store, SLOT_B_OFFSET, SUPERBLOCK_LEN)?;
+        let slot_a_bytes = read_vec(store, SLOT_A_OFFSET, SUPERBLOCK_LEN)?;
+        let slot_b_bytes = read_vec(store, SLOT_B_OFFSET, SUPERBLOCK_LEN)?;
         let mut anomalies = Vec::new();
 
         // 3. Parse + manifest-hash-verify each slot. A slot survives only if it
         //    is a valid, committed superblock whose manifest chunk verifies.
-        let a = verified_slot(&store, &slot_a_bytes, &mut anomalies);
-        let b = verified_slot(&store, &slot_b_bytes, &mut anomalies);
+        let a = verified_slot(store, &slot_a_bytes, &mut anomalies);
+        let b = verified_slot(store, &slot_b_bytes, &mut anomalies);
 
         // 4–6. Apply the selection rule. A *selection-level* anomaly (a
         // generation gap > 1, or divergent slots at the same generation) forces
@@ -414,7 +461,7 @@ impl<S: BlockStore> Bundle<S> {
         // placement (in-body, within the size limit) and hash were already
         // checked by `verified_slot`; `Manifest::decode` additionally rejects
         // non-canonical bytes.
-        let manifest_payload = read_manifest_payload(&store, &superblock)?;
+        let manifest_payload = read_manifest_payload(store, &superblock)?;
         let manifest = Manifest::decode(&manifest_payload)?;
 
         // The manifest's self-declared generation must match the superblock that
@@ -532,17 +579,13 @@ impl<S: BlockStore> Bundle<S> {
             });
         }
 
-        let write_cursor = store.len();
-        Ok(Bundle {
-            store,
+        Ok(ColdOpen {
             header,
             active_slot: selection.slot,
             superblock,
             manifest,
-            write_cursor,
             read_only,
             anomalies,
-            caps,
         })
     }
 

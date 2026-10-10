@@ -13,7 +13,7 @@ use epiphany_core::{
     RationalTime, ReplicaId, Score, VoiceId,
 };
 use epiphany_editor_core::{
-    DocumentError, EditorDocument, EditorSession, ReadOnlyReason, Reconciled, ScoreSetup,
+    DocumentError, EditorDocument, EditorSession, ReadOnlyReason, Reconciled, Saved, ScoreSetup,
 };
 use epiphany_layout_ir::StubSolver;
 use epiphany_ops::{OperationEnvelope, OperationSet, CURRENT_REDUCTION_ALGORITHM_VERSION};
@@ -503,13 +503,16 @@ fn an_extension_bearing_document_is_read_only() {
 /// A store whose chosen flushes fail. `keep` decides what a failed flush leaves:
 /// with it, the writes it was to make durable stay readable (an `fsync` that
 /// reports an error after the data reached the page cache); without it, they are
-/// lost (the kernel dropped them).
+/// lost (the kernel dropped them). `unreadable` reads fail after each failed
+/// flush.
 struct FlakyStore {
     live: Vec<u8>,
     durable: Vec<u8>,
     flushes: u32,
     fail: Vec<u32>,
     keep: bool,
+    unreadable: u32,
+    refuse: std::cell::Cell<u32>,
 }
 
 impl FlakyStore {
@@ -520,6 +523,8 @@ impl FlakyStore {
             flushes: 0,
             fail,
             keep,
+            unreadable: 0,
+            refuse: std::cell::Cell::new(0),
         }
     }
 }
@@ -530,6 +535,10 @@ impl BlockStore for FlakyStore {
     }
 
     fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        if self.refuse.get() > 0 {
+            self.refuse.set(self.refuse.get() - 1);
+            return Err(io::Error::other("injected read failure"));
+        }
         let end = offset as usize + buf.len();
         let bytes = self
             .live
@@ -554,6 +563,7 @@ impl BlockStore for FlakyStore {
             if !self.keep {
                 self.live = self.durable.clone();
             }
+            self.refuse.set(self.unreadable);
             return Err(io::Error::other("injected flush failure"));
         }
         self.durable = self.live.clone();
@@ -605,8 +615,8 @@ fn an_indeterminate_commit_that_landed_is_saved_after_a_fresh_barrier() {
         document.save(&mut session),
         Err(DocumentError::RecoveryRequired)
     ));
-    let (document, outcome) = document.reconcile(&mut session).expect("reopens");
-    assert!(matches!(outcome, Reconciled::Saved(saved) if saved.generation == 2));
+    let outcome = document.reconcile(&mut session).expect("reopens");
+    assert!(matches!(outcome, Reconciled::Saved { saved, .. } if saved.generation == 2));
     assert!(!session.is_dirty() && !session.can_undo());
     assert_eq!(document.generation(), 2);
 }
@@ -618,7 +628,7 @@ fn an_indeterminate_commit_that_did_not_land_leaves_the_units_unsaved() {
         document.save(&mut session),
         Err(DocumentError::Indeterminate(_))
     ));
-    let (mut document, outcome) = document.reconcile(&mut session).expect("reopens");
+    let outcome = document.reconcile(&mut session).expect("reopens");
     assert_eq!(outcome, Reconciled::NotSaved);
     assert!(session.is_dirty() && session.can_undo());
     assert_eq!(document.generation(), 1);
@@ -633,18 +643,271 @@ fn a_failing_fresh_barrier_stays_indeterminate() {
         document.save(&mut session),
         Err(DocumentError::Indeterminate(_))
     ));
-    let (mut document, outcome) = document.reconcile(&mut session).expect("reopens");
+    let outcome = document.reconcile(&mut session).expect("reopens");
     assert_eq!(outcome, Reconciled::StillIndeterminate);
     assert!(session.is_dirty(), "neither saved nor unsaved is claimed");
     assert!(matches!(
         document.save(&mut session),
         Err(DocumentError::RecoveryRequired)
     ));
-    let (_, outcome) = document.reconcile(&mut session).expect("reopens");
+    let outcome = document.reconcile(&mut session).expect("reopens");
     assert!(
-        matches!(outcome, Reconciled::Saved(_)),
+        matches!(outcome, Reconciled::Saved { .. }),
         "a later barrier settles it"
     );
+}
+
+/// The file's committed envelopes, reopened from `document`'s store as it
+/// stands.
+fn reopened(document: &EditorDocument<FlakyStore>) -> EditorDocument<MemStore> {
+    EditorDocument::open(MemStore::from_bytes(document.bundle().store().live.clone()))
+        .expect("the file reopens")
+}
+
+/// An indeterminate save that landed, with two notes entered before it is
+/// reconciled: reconciling promotes exactly the one note the save staged, and
+/// the two entered since stay applied, unsaved and undoable. The file holds what
+/// is reported saved, and once the later notes are saved too it holds what the
+/// session draws.
+#[test]
+fn reconciling_promotes_exactly_what_the_indeterminate_save_staged() {
+    let (mut document, mut session) = flaky_document(vec![3], true);
+    let staged = session.applied_operations().to_vec();
+    assert!(matches!(
+        document.save(&mut session),
+        Err(DocumentError::Indeterminate(_))
+    ));
+    session.enter_nominal(CmnNominal::D).unwrap();
+    session.enter_nominal(CmnNominal::E).unwrap();
+    let later = session.applied_operations()[staged.len()..].to_vec();
+    let on_screen = music(session.score());
+    assert_eq!(on_screen.len(), 3);
+
+    let outcome = document.reconcile(&mut session).expect("reconciles");
+    assert_eq!(
+        outcome,
+        Reconciled::Saved {
+            saved: Saved {
+                generation: 2,
+                envelopes: staged.len(),
+            },
+            restored: 0,
+            dropped: 0,
+        },
+        "exactly the staged envelopes are reported saved"
+    );
+    assert_eq!(
+        membership(session.applied_operations()),
+        membership(&later),
+        "the notes entered since stay applied"
+    );
+    assert!(session.is_dirty(), "and unsaved");
+    assert_eq!(music(session.score()), on_screen, "nothing moves on screen");
+
+    // The file holds exactly the session's committed partition.
+    let file = reopened(&document);
+    assert_eq!(
+        membership(file.committed_operations()),
+        membership(session.committed_operations()),
+        "what is reported saved is in the file, and nothing more"
+    );
+    assert_eq!(
+        reduced(file.committed_operations()),
+        reduced(session.committed_operations())
+    );
+
+    // The later notes undo, back to the save, and redo.
+    session.undo().expect("E undoes");
+    session.undo().expect("D undoes");
+    assert!(!session.can_undo(), "undo stops at what was saved");
+    assert_eq!(music(session.score()), music(&file.score()));
+    session.redo().unwrap();
+    session.redo().unwrap();
+
+    // Saved too, the file holds what the session draws.
+    let saved = document.save(&mut session).expect("the later notes save");
+    assert_eq!(saved.envelopes, later.len());
+    let file = reopened(&document);
+    let (state, graph) = reduced(file.committed_operations());
+    let (expected_state, expected_graph) = reduced(&session_log(&session));
+    assert_eq!(state, expected_state, "the reducer state");
+    assert_eq!(graph, expected_graph, "the graph");
+    assert_eq!(music(&file.score()), on_screen);
+}
+
+/// An indeterminate save that landed, its note undone before it is reconciled:
+/// the note is in the file all the same, so reconciling commits it and draws it
+/// again, and the screen and the file agree.
+#[test]
+fn a_unit_undone_since_an_indeterminate_save_that_landed_is_restored() {
+    let (mut document, mut session) = flaky_document(vec![3], true);
+    let staged = session.applied_operations().len();
+    let with_the_note = music(session.score());
+    assert!(matches!(
+        document.save(&mut session),
+        Err(DocumentError::Indeterminate(_))
+    ));
+    session.undo().expect("the note undoes");
+    assert!(music(session.score()).is_empty());
+
+    let outcome = document.reconcile(&mut session).expect("reconciles");
+    assert_eq!(
+        outcome,
+        Reconciled::Saved {
+            saved: Saved {
+                generation: 2,
+                envelopes: staged,
+            },
+            restored: 1,
+            dropped: 0,
+        }
+    );
+    assert!(
+        !session.is_dirty() && !session.can_undo() && !session.can_redo(),
+        "the restored note is committed, neither applied nor redoable"
+    );
+    assert_eq!(music(session.score()), with_the_note, "and drawn again");
+
+    let file = reopened(&document);
+    let (state, graph) = reduced(file.committed_operations());
+    let (expected_state, expected_graph) = reduced(&session_log(&session));
+    assert_eq!(state, expected_state, "the reducer state");
+    assert_eq!(graph, expected_graph, "the graph");
+    assert_eq!(music(&file.score()), music(session.score()));
+}
+
+/// The save's note undone and another entered in its place before the save is
+/// reconciled: the undone note is in the file, so it is restored, and the note
+/// entered since, on a history that had undone it, is kept because the two
+/// reduce cleanly together. It stays unsaved; saved, the file holds what the
+/// session draws.
+#[test]
+fn a_unit_entered_after_undoing_an_indeterminate_save_is_kept_beside_it() {
+    let (mut document, mut session) = flaky_document(vec![3], true);
+    assert!(matches!(
+        document.save(&mut session),
+        Err(DocumentError::Indeterminate(_))
+    ));
+    session.undo().expect("C undoes");
+    let voice = the_voice(&session);
+    session.set_caret(voice, at(1, 2), whole(1, 4)).unwrap();
+    session.enter_nominal(CmnNominal::G).unwrap();
+    let later = session.applied_operations().to_vec();
+
+    let outcome = document.reconcile(&mut session).expect("reconciles");
+    assert!(
+        matches!(
+            outcome,
+            Reconciled::Saved {
+                restored: 1,
+                dropped: 0,
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(membership(session.applied_operations()), membership(&later));
+    assert_eq!(
+        music(session.score()),
+        vec![(at(0, 1), whole(1, 4), true), (at(1, 2), whole(1, 4), true)],
+        "the restored C and the G entered since"
+    );
+    document.save(&mut session).expect("G saves");
+    let file = reopened(&document);
+    assert_eq!(
+        reduced(file.committed_operations()),
+        reduced(&session_log(&session))
+    );
+}
+
+/// The save's entry opened a measure past the end; it is undone, and another
+/// entry opens that measure again before the save is reconciled. Two openings of
+/// one measure, neither having seen the other, do not reduce cleanly together.
+/// The restored entry is in the file, so it stands; the later one is dropped and
+/// reported, applied or waiting to be redone, and the screen and the file agree.
+#[test]
+fn a_later_unit_that_does_not_reduce_with_a_restored_one_is_dropped() {
+    for undone in [false, true] {
+        let created = EditorDocument::create(MemStore::new(), setup_operations(1)).unwrap();
+        let store = FlakyStore::new(created.into_store().into_bytes(), vec![3], true);
+        let mut document = EditorDocument::open(store).unwrap();
+        let mut session = lease(&mut document);
+        let voice = the_voice(&session);
+        session.set_caret(voice, at(1, 1), whole(1, 4)).unwrap();
+        session.enter_nominal(CmnNominal::C).unwrap();
+        let saved_music = music(session.score());
+        assert!(matches!(
+            document.save(&mut session),
+            Err(DocumentError::Indeterminate(_))
+        ));
+        session.undo().expect("C undoes, and its measure with it");
+        session.set_caret(voice, at(1, 1), whole(1, 2)).unwrap();
+        session
+            .enter_nominal(CmnNominal::D)
+            .expect("D opens the measure again");
+        if undone {
+            session.undo().expect("D undoes");
+        }
+
+        let outcome = document.reconcile(&mut session).expect("reconciles");
+        assert!(
+            matches!(
+                outcome,
+                Reconciled::Saved {
+                    restored: 1,
+                    dropped,
+                    ..
+                } if dropped == usize::from(!undone)
+            ),
+            "{outcome:?}"
+        );
+        assert!(!session.is_dirty() && !session.can_undo());
+        assert!(
+            !session.can_redo(),
+            "nothing built on the forked history waits to be redone"
+        );
+        assert_eq!(music(session.score()), saved_music, "the restored C alone");
+        let file = reopened(&document);
+        assert_eq!(
+            reduced(file.committed_operations()),
+            reduced(&session_log(&session))
+        );
+    }
+}
+
+/// A store that cannot be read just after its failed flush: reconciling fails,
+/// the document stays in recovery as it was, and a later reconcile settles it.
+#[test]
+fn a_reconcile_that_cannot_read_the_store_leaves_the_document_in_recovery() {
+    let created = EditorDocument::create(MemStore::new(), setup_operations(1)).unwrap();
+    let mut store = FlakyStore::new(created.into_store().into_bytes(), vec![3], true);
+    store.unreadable = 1;
+    let mut document = EditorDocument::open(store).unwrap();
+    let mut session = lease(&mut document);
+    let voice = the_voice(&session);
+    session.set_caret(voice, at(0, 1), whole(1, 4)).unwrap();
+    session.enter_nominal(CmnNominal::C).unwrap();
+    assert!(matches!(
+        document.save(&mut session),
+        Err(DocumentError::Indeterminate(_))
+    ));
+    assert!(matches!(
+        document.reconcile(&mut session),
+        Err(DocumentError::Bundle(_))
+    ));
+    assert!(
+        matches!(
+            document.save(&mut session),
+            Err(DocumentError::RecoveryRequired)
+        ),
+        "the document is still in recovery"
+    );
+    assert!(session.is_dirty());
+    let outcome = document
+        .reconcile(&mut session)
+        .expect("the store reads again");
+    assert!(matches!(outcome, Reconciled::Saved { saved, .. } if saved.generation == 2));
+    assert!(!session.is_dirty());
 }
 
 /// A log holding an operation pending on a missing predecessor does not reduce

@@ -25,9 +25,10 @@
 //! the units unsaved and undoable ([`DocumentError::Bundle`]). One that
 //! succeeds promotes them ([`Saved`]). One whose commit-point flush fails is
 //! indeterminate: the bundle poisons itself read-only, the units stay unsaved,
-//! and [`EditorDocument::reconcile`] reopens the store, checks whether the
-//! staged blocks are reachable and, only after a fresh durability barrier
-//! succeeds, reports them saved.
+//! the document keeps exactly the units it staged, and
+//! [`EditorDocument::reconcile`] reopens the store, checks whether the staged
+//! blocks are reachable and, only after a fresh durability barrier succeeds,
+//! reports those units saved, whatever the session has done since.
 //!
 //! Reopen reads what the current writer writes. An envelope in a recognized
 //! historical layout is refused by name
@@ -323,14 +324,34 @@ pub struct Saved {
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Reconciled {
     /// The staged blocks are reachable from the selected generation and a fresh
-    /// durability barrier succeeded: the units are saved and promoted.
-    Saved(Saved),
+    /// durability barrier succeeded: exactly the units that save staged are
+    /// saved and promoted. Units entered since stay applied, unsaved and
+    /// undoable.
+    Saved {
+        /// What the save committed.
+        saved: Saved,
+        /// Units of the save the session had undone since: they are in the file
+        /// all the same, so they are committed and drawn again.
+        restored: usize,
+        /// Units entered since that no longer reduce cleanly once the restored
+        /// units are back (they were entered on a history that had undone them),
+        /// and are dropped. Always 0 when nothing was restored.
+        dropped: usize,
+    },
     /// The selected generation does not reach the staged blocks: the units are
     /// unsaved and undoable, and the document is writable again.
     NotSaved,
     /// The fresh durability barrier failed: neither saved nor unsaved can be
     /// claimed, and the document stays in recovery.
     StillIndeterminate,
+}
+
+/// What an indeterminate save staged, kept until it is reconciled: the content
+/// ids of its blocks, and the units it committed, exactly as the session held
+/// them when it saved.
+struct Unconfirmed {
+    chunks: Vec<ChunkId>,
+    units: Vec<Vec<OperationEnvelope>>,
 }
 
 /// The committed partition reduced for the first lease, kept from the open so a
@@ -350,8 +371,8 @@ pub struct EditorDocument<S: BlockStore> {
     /// The number of the current lease; 0 before any is granted.
     lease_number: u64,
     read_only: Vec<ReadOnlyReason>,
-    /// The chunk ids an indeterminate commit staged, until reconciled.
-    unconfirmed: Option<Vec<ChunkId>>,
+    /// What an indeterminate commit staged, until reconciled.
+    unconfirmed: Option<Unconfirmed>,
     prepared: Option<Prepared>,
 }
 
@@ -569,8 +590,8 @@ impl<S: BlockStore> EditorDocument<S> {
     ///
     /// A commit that fails before its commit point returns
     /// [`DocumentError::Bundle`] with nothing promoted; one whose commit-point flush
-    /// fails returns [`DocumentError::Indeterminate`], and the document then saves
-    /// nothing until [`Self::reconcile`] settles it.
+    /// fails returns [`DocumentError::Indeterminate`], keeping the units it staged,
+    /// and the document then saves nothing until [`Self::reconcile`] settles it.
     pub fn save(&mut self, session: &mut EditorSession) -> Result<Saved, DocumentError> {
         // An unsettled commit is the document's state, whichever session asks.
         if self.unconfirmed.is_some() {
@@ -595,7 +616,10 @@ impl<S: BlockStore> EditorDocument<S> {
         {
             Ok(()) => Ok(self.promote(session, lease, &units)),
             Err(e) if self.bundle.is_read_only() => {
-                self.unconfirmed = Some(staged_ids(&staged));
+                self.unconfirmed = Some(Unconfirmed {
+                    chunks: staged_ids(&staged),
+                    units: session.applied_units(),
+                });
                 Err(DocumentError::Indeterminate(e))
             }
             Err(e) => Err(DocumentError::Bundle(e)),
@@ -624,65 +648,89 @@ impl<S: BlockStore> EditorDocument<S> {
         }
     }
 
-    /// Settles an indeterminate save (Ruling B's reconciliation): reopens the store
-    /// and reads the selected generation, confirms whether every block the save
-    /// staged is reachable from it, and only then runs a fresh durability barrier,
-    /// which must succeed before the units are reported saved and promoted. A
-    /// reopen that fails consumes the document, which is reopened from storage.
-    pub fn reconcile(
-        self,
-        session: &mut EditorSession,
-    ) -> Result<(Self, Reconciled), DocumentError> {
-        let Some(staged) = self.unconfirmed else {
-            return Ok((self, Reconciled::NotSaved));
+    /// Settles an indeterminate save (Ruling B's reconciliation) for `session`,
+    /// the session that made it: reopens the store in place and reads the
+    /// generation it now selects, confirms whether every block the save staged is
+    /// reachable from it, and only then runs a fresh durability barrier, which
+    /// must succeed before the save is reported. What it promotes is exactly the
+    /// units that save staged, never what the session holds now: a unit entered
+    /// since stays applied, unsaved and undoable, and a unit of the save undone
+    /// since is in the file all the same, so it is committed and drawn again
+    /// ([`Reconciled::Saved`]).
+    ///
+    /// Nothing is leased while a save is unsettled, so only the session that made
+    /// it holds the lease; any other is refused. A refused session, or a reopen
+    /// that fails, leaves the document in recovery as it was, and reconciling can
+    /// be tried again.
+    pub fn reconcile(&mut self, session: &mut EditorSession) -> Result<Reconciled, DocumentError> {
+        if self.unconfirmed.is_none() {
+            return Ok(Reconciled::NotSaved);
+        }
+        let lease = match session.lease {
+            Some(lease) if lease.instance == self.instance && lease.number == self.lease_number => {
+                lease
+            }
+            Some(lease) if lease.instance == self.instance => {
+                return Err(DocumentError::LeaseRevoked)
+            }
+            Some(_) => return Err(DocumentError::ForeignLease),
+            None => return Err(DocumentError::NotLeased),
         };
-        let EditorDocument {
-            bundle,
-            committed,
-            instance,
-            lease_number,
-            read_only,
-            ..
-        } = self;
-        let bundle = Bundle::open(bundle.into_store(), production_caps())?;
-        let reachable: std::collections::BTreeSet<ChunkId> = bundle
+        self.bundle.reopen()?;
+        if self.bundle.is_read_only()
+            && !self
+                .read_only
+                .iter()
+                .any(|reason| matches!(reason, ReadOnlyReason::Bundle { .. }))
+        {
+            self.read_only.push(ReadOnlyReason::Bundle {
+                anomalies: self.bundle.anomalies().to_vec(),
+            });
+        }
+        let reachable: std::collections::BTreeSet<ChunkId> = self
+            .bundle
             .manifest()
             .operation_roots
             .iter()
             .map(|r| r.id)
             .collect();
-        let landed = staged.iter().all(|id| reachable.contains(id));
-        let mut document = EditorDocument {
-            bundle,
-            committed,
-            instance,
-            lease_number,
-            read_only,
-            unconfirmed: None,
-            prepared: None,
+        let Some(staged) = self.unconfirmed.take() else {
+            return Ok(Reconciled::NotSaved);
         };
-        if !landed {
+        if !staged.chunks.iter().all(|id| reachable.contains(id)) {
             // The selected generation is the one before the save; the session keeps
             // its units, under a lease renewed for that generation.
-            if let Some(lease) = session.lease.as_mut() {
-                if lease.instance == instance && lease.number == lease_number {
-                    lease.generation = document.generation();
-                }
-            }
-            return Ok((document, Reconciled::NotSaved));
+            session.lease = Some(Lease {
+                generation: self.generation(),
+                ..lease
+            });
+            return Ok(Reconciled::NotSaved);
         }
-        if document.bundle.sync().is_err() {
-            document.unconfirmed = Some(staged);
-            return Ok((document, Reconciled::StillIndeterminate));
+        if self.bundle.sync().is_err() {
+            self.unconfirmed = Some(staged);
+            return Ok(Reconciled::StillIndeterminate);
         }
-        let lease = match session.lease {
-            Some(lease) if lease.instance == instance && lease.number == lease_number => lease,
-            Some(_) => return Err(DocumentError::LeaseRevoked),
-            None => return Err(DocumentError::NotLeased),
-        };
-        let units = session.applied.clone();
-        let saved = document.promote(session, lease, &units);
-        Ok((document, Reconciled::Saved(saved)))
+        let Unconfirmed { units, .. } = staged;
+        let envelopes = units.concat();
+        self.committed = self.committed.extended(&envelopes);
+        self.prepared = None;
+        let generation = self.generation();
+        let (restored, dropped) = session.settle(
+            self.committed.clone(),
+            Lease {
+                generation,
+                ..lease
+            },
+            &units,
+        );
+        Ok(Reconciled::Saved {
+            saved: Saved {
+                generation,
+                envelopes: envelopes.len(),
+            },
+            restored,
+            dropped,
+        })
     }
 }
 
