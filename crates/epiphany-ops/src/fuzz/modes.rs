@@ -43,6 +43,14 @@
 //! anchored to events only: one anchored to a region a delete or undo removes
 //! is a class the owner has parked (P13-D3).
 //!
+//! Some shapes of those kinds are not written either, though none names
+//! another object: a trajectory is linear or exponential, never curved or
+//! stepwise, so a step is never drawn (the reducer reads and writes a step as
+//! a note's pitch, held by the trajectory test in `epiphany-musicxml`'s
+//! `reduction_modes`); an indeterminate event's kind is pitch, duration or
+//! choice, never compound; and its hints are empty (no duration bounds, no
+//! alternatives, no textual instruction).
+//!
 //! Everything is seeded: [`generate`] is a function of its seed and length, so
 //! a finding reproduces from both. [`minimize`] shrinks a failing history to
 //! one that fails the same way, for a committed regression test.

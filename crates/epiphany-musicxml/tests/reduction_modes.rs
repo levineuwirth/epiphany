@@ -5596,6 +5596,68 @@ fn a_trajectorys_own_pitches_are_read_and_written_as_a_notes_in_both_modes() {
             DeleteIdentifiedPitchOp { pitch: id },
         ))
     };
+
+    // A stepwise trajectory's steps, minted by the write, transposed by steps,
+    // given a new value, and one deleted (X4a review 3's L3: no test wrote a
+    // step).
+    let steps = vec![
+        pitch(PitchId::new(A, 3230), 5),
+        pitch(PitchId::new(A, 3231), 6),
+    ];
+    let Event::Trajectory(mut stepwise) = trajectory(2, third.clone(), third_upper.clone()) else {
+        unreachable!("a trajectory");
+    };
+    stepwise.shape = TrajectoryShape::Stepwise(steps.clone());
+    let revalued = valuegen::pitch_value_nth(7);
+    let walked = vec![
+        (add(2, third_upper.clone()), None),
+        (modify(Event::Trajectory(stepwise)), None),
+        (
+            primitive(OperationKind::Transpose(TransposeOp {
+                targets: vec![steps[0].id],
+                chromatic_steps: 2,
+            })),
+            None,
+        ),
+        (
+            primitive(OperationKind::ModifyIdentifiedPitch(
+                epiphany_ops::ModifyIdentifiedPitchOp {
+                    pitch: steps[1].id,
+                    value: revalued.clone(),
+                },
+            )),
+            None,
+        ),
+    ];
+    let authored = serial(walked.clone());
+    let state = m.agree("a stepwise trajectory's steps written", &authored);
+    for op in &authored {
+        assert_eq!(effect(&state, op.id), Some(OperationEffect::Applied));
+    }
+    for step in &steps {
+        assert!(
+            live(&state, TypedObjectId::Pitch(step.id)),
+            "a step is minted"
+        );
+    }
+    let Some(Event::Trajectory(held)) = graph(&authored).events.get(m.q(2)).cloned() else {
+        panic!("a trajectory");
+    };
+    let TrajectoryShape::Stepwise(held_steps) = held.shape else {
+        panic!("stepwise");
+    };
+    assert_eq!(held_steps.len(), 2);
+    assert_ne!(held_steps[0].pitch, steps[0].pitch, "the first step moved");
+    assert_eq!(held_steps[1].pitch, revalued, "the second step revalued");
+    let mut deleted = walked;
+    deleted.push((delete_pitch(steps[0].id), None));
+    let authored = serial(deleted);
+    m.agree("a stepwise trajectory's step deleted", &authored);
+    let Some(Event::Pitched(left)) = graph(&authored).events.get(m.q(2)).cloned() else {
+        panic!("a note");
+    };
+    let ids: Vec<PitchId> = left.pitches.iter().map(|ip| ip.id).collect();
+    assert_eq!(ids, vec![third.id, third_upper.id, steps[1].id]);
     let authored = serial(vec![
         (add(2, third_upper.clone()), None),
         (

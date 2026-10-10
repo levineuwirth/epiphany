@@ -3664,3 +3664,16 @@ Locked by
 `a_best_effort_undo_keeps_a_signature_its_dropped_grid_restoration_leaves_named_in_both_modes`.
 Mutation: the grid arm disabled (the undo removes the signature the grid
 names, `CrossCuttingRefsResolve`, and the test fails).
+
+**A stepwise trajectory's steps are tested, and the shapes the fuzz leaves
+out are named (review 3's L3).** `34a8d0a` reads and writes a trajectory's
+own pitches as a note's, its stepwise steps among them, and neither the
+generator nor any test wrote a step. The trajectory test now writes a
+stepwise trajectory over a note, minting its two steps, transposes the first
+by steps, gives the second a new value and deletes the first, which leaves a
+note of the pitches it still holds, in both modes. The module doc of
+`fuzz::modes` now names what the generator leaves out of the kinds it writes,
+beyond the references D54 parks: curved and stepwise trajectories, a
+compound indeterminacy, and an indeterminate event's hints. Mutation:
+`held_pitch_mut`'s steps arm disabled (the transposed step keeps its value
+in the graph, and the test fails).
