@@ -1698,3 +1698,70 @@ through them as well, keeps its shape. Key-signature glyphs are accidentals
 too, so a curve across a key change passes them. Locked by the module's unit
 tests and `a_slur_clears_the_accidentals_under_it` (`epiphany-cli`); no golden
 draws a curve through an accidental, so none changed.
+
+## ENGRAVER_VERSION 44 → 45: time columns spaced by their durations (X5c.1, 2026-10-10)
+
+Every time column had the same natural width (`COLUMN_PREFERRED_WIDTH`, 1.5
+spaces), and the spacing pass kept between two columns at least the widest
+ink any staff had in the first plus the widest overhang any staff had in the
+second, so a half note and an eighth took the same room, and in a full score
+every onset of any staff, a septuplet's beside a sextuplet's, took a whole
+column's width; justification then stretched every gap of a system alike,
+and a region's last system stayed ragged however full. Four changes,
+together:
+
+- A note column's spring takes the width its durations ask
+  (`duration_widths` in `epiphany-layout-ir`'s constrained stage): the
+  shortest duration `s` sounding through the column, any staff's note or rest
+  that has begun and not ended, asks `QUARTER_SPACE · (s / quarter)^log2(1.5)`
+  for its whole length, each doubling half again as wide; a column that holds
+  only part of it, because another staff's note begins before it ends, takes
+  its part in proportion, `dt / s`. The ratio is MuseScore's default
+  ("measure spacing", 1.5). The scale is fixed, a quarter's column 5 spaces,
+  chosen by measuring the systems it casts against MuseScore's own; MuseScore
+  instead takes each system's shortest note as its unit, so a full score,
+  whose systems nearly always hold a short note somewhere, spreads wider
+  there than here, while a measure's natural width here does not depend on
+  where the line breaks. The power is taken from square roots and products
+  (`ratio_power`), which IEEE rounds exactly, rather than a library `powf`,
+  which need not agree across platforms. The constrained stage's own frame
+  steps a note column by that width too, where it is more than
+  `COLUMN_X_STEP`, so the slurs, ties and beams shaped there keep their
+  proportions once spaced (a slur's arc is a share of its span, and with
+  columns 1.6 apart and the spacing setting them wider, every slur came out
+  flatter than its rule); the stub solver, which draws that frame, changes
+  with it.
+- The spacing pass clears earlier ink by its height (`spacing::space_slots`):
+  each glyph, ledger line and slot-anchored stroke (a stem) widens its slot's
+  extent in every quarter-space band its height reaches, give or take
+  `SKYLINE_MARGIN`, and a slot stands clear of the rightmost ink already set
+  in each band its own ink reaches by the clearance that ink's slot asks: a
+  note column's `SLOT_GAP`, a barline's `BARLINE_CLEARANCE` (MuseScore's
+  distance from a barline to an accidental), and a lead's, signature's or
+  change's the gap its spring reserves after its ink, so an accidental after
+  a time signature keeps the signature's whole gap. Columns whose ink stands
+  on different staves may stand as close as their onsets ask; a stem reaching
+  another staff's beam is cleared where it reaches.
+- A justified system's slack goes to its note columns by their springs
+  (`stretch_factor · preferred_width`; the lead's, a signature's, a change's
+  and a barline's springs have `stretch_factor` 0), through a piecewise map
+  (`Placement`), not one affine stretch: a note keeps its distance after its
+  barline, and the durations keep their proportions, however much a system
+  stretches.
+- A region's last system is justified like the others once its natural ink
+  fills `LAST_SYSTEM_FILL` (three tenths) of the content width, MuseScore's
+  default ("last system fill threshold"); a shorter one stays ragged.
+
+Locked by `columns_space_by_the_durations_sounding_through_them`,
+`ink_on_one_staff_need_not_clear_ink_on_another`,
+`a_justified_system_stretches_its_note_columns_and_not_its_barlines`,
+`an_accidental_keeps_the_gap_a_signature_or_barline_asks` and
+`a_last_system_filled_past_three_tenths_is_justified` (`epiphany-cli`, on the
+hand-written `spacing.musicxml` and generated parts), and the constrained
+stage's `ratio_power` and `duration_widths` unit tests. `spacing_distortion`,
+the quality catalog's spacing axis, measures how far a system's rhythmic
+advances depart from even, so it now reports the proportions duration
+spacing makes on purpose; a duration-relative definition is the catalog's
+open question (quality decision 8) and a change to the catalog, not made
+here. Every engraving golden changed and was re-blessed with renders before
+and after for the owner's reading.

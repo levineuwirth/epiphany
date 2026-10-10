@@ -8,17 +8,18 @@
 //! the coordinate-map control points the caller ([`crate::HorizontalRemap`])
 //! applies to glyph baselines *and* the strokes that track them.
 //!
-//! The advance from one slot to the next is the larger of the slot's
-//! `preferred_width` (the spring's natural width — a uniform placeholder in v0)
-//! and a **collision minimum** derived from real glyph bounding boxes: the slot's
-//! right content extent, plus a gap, plus the *next* slot's left overhang (its
-//! accidental zone). Reserving the next slot's left overhang against *this* slot's
-//! advance is what protects a note's accidental from overlapping the previous
-//! note — a single per-slot `preferred_width` could only reserve space to the
-//! right of a slot's source. The casting-off pass (`crate::casting`) then breaks
-//! this spaced line into systems and pages; the vertical soft-spring
-//! stretch/compress solve and per-system justification remain deferred (see
-//! `DECISIONS.md`).
+//! A slot stands at least its predecessor's `preferred_width` after it (the
+//! spring's natural width: a note column's comes from the durations sounding
+//! through it, the lead's and a signature's from their ink and the gap after
+//! it), and far enough right that its ink clears the ink already set at the
+//! same height by the gap that ink's slot asks: a skyline of the rightmost ink
+//! set so far in each quarter-space band of height, so a column whose notes
+//! stand on one staff can sit close after a column whose notes stand on
+//! another, as their onsets ask, while a note's accidental never overlaps the
+//! previous note it would meet, keeps a signature's gap after it, and a stem
+//! reaching across to another staff's beam is cleared there. The casting-off
+//! pass (`crate::casting`) then breaks this spaced line into systems and pages
+//! and justifies each system by stretching its note columns' springs.
 
 use std::collections::BTreeMap;
 
@@ -26,9 +27,27 @@ use epiphany_layout_ir::{is_rigid_width_stroke, ConstrainedLayoutIR, SpringSlotI
 
 use crate::owning_glyph;
 
-/// Inter-slot gap (staff spaces) reserved between one slot's right content and
-/// the next slot's left content.
+/// Inter-slot gap (staff spaces) reserved between a note column's right
+/// content and a later slot's left content at the same height.
 const SLOT_GAP: f32 = 0.3;
+
+/// The least a barline's ink stands clear of the ink after it, an
+/// accidental's mostly: MuseScore's default distance from a barline to an
+/// accidental (0.65 spaces). The note itself stands further, by the
+/// barline's spring.
+const BARLINE_CLEARANCE: f32 = 0.65;
+
+/// The height of one band of the skyline, in staff spaces.
+const SKYLINE_BAND: f32 = 0.25;
+
+/// How far above and below its ink a slot's content keeps clear of earlier
+/// ink: heads a third apart in neighbouring columns still clear each other
+/// sideways, while a head an octave from the previous may stand under it.
+const SKYLINE_MARGIN: f32 = 0.2;
+
+/// The least advance from one slot to the next, whatever their springs and
+/// ink: two onsets a hair apart on different staves still read in order.
+const MIN_ADVANCE: f32 = 0.1;
 
 /// The least a tie runs between its ends, which stand clear of their
 /// columns' ink, in staff spaces.
@@ -54,67 +73,107 @@ pub(crate) struct SpacedSlots {
 }
 
 /// Spaces the glyph-bearing slots left to right. Each slot's source is its
-/// column reference (its first member glyph's baseline); the target
-/// accumulates collision-aware advances so neighbouring slots' content —
-/// including left-overhanging accidentals — never overlaps, and a wide lead
-/// (clef + key signature) reserves real space. Deterministic: a pure function
-/// of the glyphs and their bounding boxes.
+/// column reference (its first member glyph's baseline); its target is the
+/// least that keeps its predecessor's spring, clears the ink set so far at
+/// each height its own ink reaches (its accidentals and other left overhang
+/// included) by the clearance that ink's slot asks, and gives each tie and
+/// cross-staff beam ending there its least span.
+/// Deterministic: a pure function of the glyphs, their bounding boxes and the
+/// slots' springs.
 pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
     let anchors = crate::span_anchors(input);
-    /// One slot's horizontal extent, from its member glyphs.
+    /// One slot's horizontal extent, from its member glyphs and the strokes
+    /// that ride it, by height.
     struct Extent {
         /// Column reference x (the first member's baseline).
         source: f32,
-        /// Leftmost / rightmost content edge across the slot's glyphs.
-        min_left: f32,
-        max_right: f32,
+        /// Each skyline band's leftmost and rightmost content edge.
+        bands: BTreeMap<i32, (f32, f32)>,
         /// The spring's natural width.
         preferred: f32,
+        /// Whether the spring keeps its width when a system is justified:
+        /// a lead's, a signature's, a change's or a barline's.
+        fixed: bool,
+        /// Whether every member is a barline or a repeat sign.
+        barline: bool,
     }
 
-    let preferred_of: BTreeMap<SpringSlotId, f32> = input
+    let preferred_of: BTreeMap<SpringSlotId, (f32, bool)> = input
         .horizontal_slots
         .iter()
-        .map(|s| (s.id, s.preferred_width.0))
+        .map(|s| (s.id, (s.preferred_width.0, s.stretch_factor == 0.0)))
         .collect();
     let mut by_slot: BTreeMap<SpringSlotId, Extent> = BTreeMap::new();
+    // Widens a slot's extent by a box of ink, in every band its height (and
+    // the margin about it) reaches.
+    let widen = |extent: &mut Extent, (left, right): (f32, f32), (bottom, top): (f32, f32)| {
+        let lo = ((bottom - SKYLINE_MARGIN) / SKYLINE_BAND).floor() as i32;
+        let hi = ((top + SKYLINE_MARGIN) / SKYLINE_BAND).floor() as i32;
+        for band in lo..=hi.max(lo) {
+            extent
+                .bands
+                .entry(band)
+                .and_modify(|e| {
+                    e.0 = e.0.min(left);
+                    e.1 = e.1.max(right);
+                })
+                .or_insert((left, right));
+        }
+    };
     for glyph in &input.glyphs {
-        let left = glyph.baseline.x.0 + glyph.bounding_box.left.0;
-        let right = glyph.baseline.x.0 + glyph.bounding_box.right.0;
-        by_slot
-            .entry(glyph.horizontal_slot)
-            .and_modify(|e| {
-                e.min_left = e.min_left.min(left);
-                e.max_right = e.max_right.max(right);
-            })
-            .or_insert(Extent {
-                source: glyph.baseline.x.0,
-                min_left: left,
-                max_right: right,
-                preferred: preferred_of
-                    .get(&glyph.horizontal_slot)
-                    .copied()
-                    .unwrap_or(0.0),
-            });
+        let x = glyph.baseline.x.0;
+        let y = glyph.baseline.y.0;
+        let b = glyph.bounding_box;
+        let (preferred, fixed) = preferred_of
+            .get(&glyph.horizontal_slot)
+            .copied()
+            .unwrap_or((0.0, false));
+        let extent = by_slot.entry(glyph.horizontal_slot).or_insert(Extent {
+            source: x,
+            bands: BTreeMap::new(),
+            preferred,
+            fixed,
+            barline: true,
+        });
+        let name = glyph.glyph.as_str();
+        extent.barline &= name.starts_with("barline") || name.starts_with("repeat");
+        widen(
+            extent,
+            (x + b.left.0, x + b.right.0),
+            (y + b.bottom.0, y + b.top.0),
+        );
     }
 
-    // Fold each ledger line (a fixed-width stroke) into its notehead's slot extent,
-    // so a ledger that overhangs the notehead reserves room — otherwise adjacent
-    // off-staff notes' ledgers can overlap even though glyph spacing is collision-
-    // aware. The owning notehead is the same-source glyph whose baseline lies within
-    // the stroke's span (its accidentals sit outside it, to the left).
+    // Fold into its slot's extent each ledger line (a fixed-width stroke, by its
+    // notehead: the same-source glyph whose baseline lies within the stroke's
+    // span, its accidentals standing outside it to the left), so a ledger that
+    // overhangs the notehead reserves room, and each stroke that rides one
+    // slot at both ends (a stem), so a stem reaching another staff's beam is
+    // cleared where it reaches.
     for stroke in &input.strokes {
-        if !is_rigid_width_stroke(stroke) {
+        let slot = if is_rigid_width_stroke(stroke) {
+            owning_glyph(stroke, &input.glyphs).map(|glyph| glyph.horizontal_slot)
+        } else {
+            anchors
+                .get(&stroke.id())
+                .filter(|(start, end)| start == end)
+                .map(|(start, _)| *start)
+        };
+        let Some(extent) = slot.and_then(|slot| by_slot.get_mut(&slot)) else {
             continue;
-        }
-        if let Some(glyph) = owning_glyph(stroke, &input.glyphs) {
-            let lo = stroke.from.x.0.min(stroke.to.x.0);
-            let hi = stroke.from.x.0.max(stroke.to.x.0);
-            if let Some(extent) = by_slot.get_mut(&glyph.horizontal_slot) {
-                extent.min_left = extent.min_left.min(lo);
-                extent.max_right = extent.max_right.max(hi);
-            }
-        }
+        };
+        let half = stroke.thickness.0 * 0.5;
+        widen(
+            extent,
+            (
+                stroke.from.x.0.min(stroke.to.x.0) - half,
+                stroke.from.x.0.max(stroke.to.x.0) + half,
+            ),
+            (
+                stroke.from.y.0.min(stroke.to.y.0) - half,
+                stroke.from.y.0.max(stroke.to.y.0) + half,
+            ),
+        );
     }
 
     let mut slots: Vec<(SpringSlotId, Extent)> = by_slot.into_iter().collect();
@@ -167,24 +226,45 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
 
     let mut points = Vec::with_capacity(slots.len());
     let mut placed: BTreeMap<SpringSlotId, (f32, f32)> = BTreeMap::new();
-    let mut target = 0.0_f32;
-    for i in 0..slots.len() {
-        let (id, extent) = &slots[i];
+    // Each band's rightmost ink set so far, in the target frame, with the
+    // clearance its slot asks after it: a note column `SLOT_GAP`, a barline
+    // `BARLINE_CLEARANCE`, and a lead, signature or change the gap its spring
+    // reserves after its ink, so a following accidental keeps that gap too.
+    let mut frontier: BTreeMap<i32, f32> = BTreeMap::new();
+    // The previous slot's target and spring.
+    let mut previous: Option<(f32, f32)> = None;
+    for (id, extent) in &slots {
+        let mut target = previous.map_or(0.0, |(at, preferred)| at + preferred.max(MIN_ADVANCE));
+        for (band, (left, _)) in &extent.bands {
+            if let Some(&edge) = frontier.get(band) {
+                target = target.max(edge + (extent.source - left));
+            }
+        }
         for (start, need) in ties.get(id).into_iter().flatten() {
             if let Some(&(_, at)) = placed.get(start) {
                 target = target.max(at + need);
             }
         }
+        let bearing = extent
+            .bands
+            .values()
+            .map(|(_, right)| right - extent.source)
+            .fold(0.0_f32, f32::max);
+        let clearance = match (extent.fixed, extent.barline) {
+            (false, _) => SLOT_GAP,
+            (true, true) => BARLINE_CLEARANCE,
+            (true, false) => (extent.preferred - bearing).max(SLOT_GAP),
+        };
+        for (band, (_, right)) in &extent.bands {
+            let edge = target + (right - extent.source) + clearance;
+            frontier
+                .entry(*band)
+                .and_modify(|e| *e = e.max(edge))
+                .or_insert(edge);
+        }
         points.push((extent.source, target));
         placed.insert(*id, (extent.source, target));
-        let right_bearing = extent.max_right - extent.source;
-        // The next slot's left overhang must be cleared by *this* slot's advance.
-        let next_left = slots
-            .get(i + 1)
-            .map(|(_, next)| next.source - next.min_left)
-            .unwrap_or(0.0);
-        let advance = extent.preferred.max(right_bearing + SLOT_GAP + next_left);
-        target += advance;
+        previous = Some((target, extent.preferred));
     }
     points.dedup_by(|a, b| a.0 == b.0);
     SpacedSlots {
