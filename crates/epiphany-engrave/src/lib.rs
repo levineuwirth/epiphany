@@ -322,8 +322,11 @@ pub struct Engraver {
 /// time columns began spacing by the durations sounding through them, a
 /// column's ink clearing only the earlier ink at its height, a justified
 /// system's slack going to its note columns by their springs, and a region's
-/// last system justifying once it fills three tenths of the width.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(45);
+/// last system justifying once it fills three tenths of the width, and to
+/// `46` when a barline joined across the gap between two staves of a group
+/// began reserving its line there, so ink in the gap keeps a barline's
+/// clearance.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(46);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.

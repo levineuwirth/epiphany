@@ -2508,7 +2508,7 @@ fn ink_before(
 /// thickness)`: a single barline's thin line; a final barline's thin and
 /// thick; a repeat sign's thick and thin on the side its dots do not take.
 /// Any other glyph has none.
-fn barline_lines(name: &str, b: &epiphany_layout_ir::BoundingBox) -> Vec<(f32, f32)> {
+pub(crate) fn barline_lines(name: &str, b: &epiphany_layout_ir::BoundingBox) -> Vec<(f32, f32)> {
     let (left, right) = (b.left.0, b.right.0);
     let thin = THIN_BARLINE / 2.0;
     let thick = BRACKET_THICKNESS / 2.0;

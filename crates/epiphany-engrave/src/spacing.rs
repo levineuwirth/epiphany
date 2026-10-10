@@ -23,8 +23,11 @@
 
 use std::collections::BTreeMap;
 
-use epiphany_layout_ir::{is_rigid_width_stroke, ConstrainedLayoutIR, SpringSlotId};
+use epiphany_layout_ir::{
+    is_barline_glyph, is_rigid_width_stroke, ConstrainedLayoutIR, SpringSlotId, VerticalBandKind,
+};
 
+use crate::casting::barline_lines;
 use crate::owning_glyph;
 
 /// Inter-slot gap (staff spaces) reserved between a note column's right
@@ -142,6 +145,59 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
             (x + b.left.0, x + b.right.0),
             (y + b.bottom.0, y + b.top.0),
         );
+    }
+
+    // A group whose barlines join from staff to staff has each joined across
+    // the gap between two of its staves by the casting stage, after spacing,
+    // so the joining line is reserved here: a barline slot's extent takes,
+    // in each such gap, each line of the upper staff's barline at its own
+    // thickness, from the lower staff's barline to the upper's, as casting
+    // draws it, and an accidental on a note above or below its staff keeps a
+    // barline's clearance in the gap as on the staff.
+    let staff_of_band: BTreeMap<_, _> = input
+        .vertical_bands
+        .iter()
+        .filter_map(|band| match band.kind {
+            VerticalBandKind::Staff(staff) => Some((band.id, staff)),
+            _ => None,
+        })
+        .collect();
+    for group in input
+        .staff_groups
+        .iter()
+        .filter(|group| group.joined && group.staves.len() > 1)
+    {
+        // Each barline slot's barlines on the group's staves, top first.
+        let mut barlines: BTreeMap<SpringSlotId, Vec<&epiphany_layout_ir::GlyphObject>> =
+            BTreeMap::new();
+        for glyph in &input.glyphs {
+            if is_barline_glyph(glyph.glyph.as_str())
+                && staff_of_band
+                    .get(&glyph.vertical_band)
+                    .is_some_and(|staff| group.staves.contains(staff))
+            {
+                barlines
+                    .entry(glyph.horizontal_slot)
+                    .or_default()
+                    .push(glyph);
+            }
+        }
+        for (slot, mut glyphs) in barlines {
+            let Some(extent) = by_slot.get_mut(&slot) else {
+                continue;
+            };
+            glyphs.sort_by(|a, b| b.baseline.y.0.total_cmp(&a.baseline.y.0));
+            for pair in glyphs.windows(2) {
+                let (upper, lower) = (pair[0], pair[1]);
+                let (x, b) = (upper.baseline.x.0, &upper.bounding_box);
+                let from = lower.baseline.y.0 + lower.bounding_box.top.0;
+                let to = upper.baseline.y.0 + b.bottom.0;
+                for (dx, thickness) in barline_lines(upper.glyph.as_str(), b) {
+                    let half = thickness / 2.0;
+                    widen(extent, (x + dx - half, x + dx + half), (from, to));
+                }
+            }
+        }
     }
 
     // Fold into its slot's extent each ledger line (a fixed-width stroke, by its

@@ -1765,3 +1765,23 @@ spacing makes on purpose; a duration-relative definition is the catalog's
 open question (quality decision 8) and a change to the catalog, not made
 here. Every engraving golden changed and was re-blessed with renders before
 and after for the owner's reading.
+
+## ENGRAVER_VERSION 45 → 46: a joined barline reserves its line in the gap (X5c.1, 2026-10-10)
+
+Version 45's skyline took a barline's extent from its glyph on each staff,
+while a group whose barlines join from staff to staff has the casting stage
+draw each joining line across the gap between two staves, after spacing.
+Ink in the gap after a barline, mostly an accidental on a note above or
+below its staff, then stood only as far from the line as from earlier ink
+there, and could stand on it: the column-wide clearance of version 44 had
+kept it off. `spacing::space_slots` now reserves each joining line in its
+barline slot's extent, in the gap between each two staves of a joined
+group, from the lower staff's barline to the upper's, at each line's
+thickness as `casting::barline_lines` gives it, so ink in the gap keeps a
+barline's clearance as on the staff. Locked by
+`an_accidental_in_a_gap_keeps_clear_of_the_barline_joined_across_it`
+(`epiphany-cli`, a piano part whose bass staff's E-flat on its second ledger
+line opens a measure). Two goldens moved, `notation` by at most 0.008 of a
+space and `arrow_accidentals` by less, where a joining line's band within
+the skyline's margin of a staff is a hair wider than the barline glyph's
+box; re-blessed with renders before and after for the owner's reading.

@@ -5444,3 +5444,85 @@ fn an_accidental_keeps_the_gap_a_signature_or_barline_asks() {
         accidentals[1][0] - barline[0][2]
     );
 }
+
+/// A barline joined from staff to staff within a group is drawn across the
+/// gap between them after spacing, and an accidental standing in that gap,
+/// on a note above the lower staff that opens its measure, keeps the
+/// barline's clearance from the joining line as from the barline itself.
+#[test]
+fn an_accidental_in_a_gap_keeps_clear_of_the_barline_joined_across_it() {
+    use epiphany_engrave::casting::JOINED_BARLINE_SYNTHESIS;
+    use epiphany_layout_ir::SynthesisKind;
+
+    let note = |step: &str, alter: i8, octave: u8, duration: u8, kind: &str, staff: u8| {
+        let (alter, accidental) = match alter {
+            0 => (String::new(), String::new()),
+            a => (
+                format!("<alter>{a}</alter>"),
+                "<accidental>flat</accidental>".to_string(),
+            ),
+        };
+        format!(
+            "<note><pitch><step>{step}</step>{alter}<octave>{octave}</octave></pitch>\
+             <duration>{duration}</duration><voice>{staff}</voice><type>{kind}</type>\
+             {accidental}<staff>{staff}</staff></note>"
+        )
+    };
+    let backup = "<backup><duration>8</duration></backup>";
+    let first = format!(
+        "<attributes><divisions>2</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time><staves>2</staves><clef number=\"1\"><sign>G</sign><line>2</line></clef>\
+         <clef number=\"2\"><sign>F</sign><line>4</line></clef></attributes>{}{backup}{}",
+        note("B", 0, 4, 8, "whole", 1),
+        note("C", 0, 3, 8, "whole", 2),
+    );
+    // The lower staff's E-flat stands on its second ledger line above the
+    // staff, its flat in the gap under the upper staff.
+    let second = format!(
+        "{}{backup}{}{}{}",
+        note("B", 0, 4, 8, "whole", 1),
+        note("E", -1, 4, 2, "quarter", 2),
+        note("C", 0, 3, 2, "quarter", 2),
+        note("C", 0, 3, 4, "half", 2),
+    );
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>Piano\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">{first}\
+         </measure><measure number=\"2\">{second}</measure></part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("joined_barline_gap.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = engrave(&loaded.reduced.score).layout;
+    let flat = layout
+        .glyphs
+        .iter()
+        .find(|g| g.glyph.as_str() == "accidentalFlat")
+        .map(glyph_box)
+        .expect("the E-flat's flat");
+    let joined: Vec<[f32; 4]> = layout
+        .strokes
+        .iter()
+        .filter(|s| {
+            s.provenance.synthesis == Some(SynthesisKind::Registered(JOINED_BARLINE_SYNTHESIS))
+        })
+        .map(stroke_box)
+        .collect();
+    // The joining line of the barline before the flat, which spans the gap
+    // the flat stands in.
+    let line = joined
+        .iter()
+        .filter(|b| b[0] < flat[0] + 0.5)
+        .max_by(|a, b| a[0].total_cmp(&b[0]))
+        .copied()
+        .expect("a barline joined across the gap before the flat");
+    assert!(
+        line[1] < flat[1] && flat[3] < line[3],
+        "the flat {flat:?} stands in the gap the line {line:?} joins"
+    );
+    assert!(
+        flat[0] - line[2] >= 0.65 - 1e-3,
+        "the flat stands {} after the joined barline",
+        flat[0] - line[2]
+    );
+}
