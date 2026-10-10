@@ -9,9 +9,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::{
-    AccidentalId, AcousticPitch, AcousticRealization, Clef, ClefShape, CmnNominal, Pitch,
-    PitchSpaceId, PitchSpacePosition, PitchSpelling, RationalTime, ScalePosition, SpellingNominal,
-    TranspositionInterval, TuningReference, TupletBracket, TupletDisplay, TupletNumber,
+    AccidentalId, AcousticPitch, AcousticRealization, ArpeggioDirection, BracketKind, BreathMark,
+    CaesuraMark, Clef, ClefShape, CmnNominal, Dynamic, EventMark, Fermata, FermataShape, Grace,
+    GraceKind, HairpinDirection, LineStyle, MarkerKind, Metronome, NoteValue, OctaveOffset,
+    Ornament, OrnamentKind, PedalKind, Pitch, PitchSpaceId, PitchSpacePosition, PitchSpelling,
+    RationalTime, ScalePosition, SpannerKind, SpellingNominal, Syllabic, TempoMark, Text,
+    TextLineDefinition, TranspositionInterval, TuningReference, TupletBracket, TupletDisplay,
+    TupletNumber,
 };
 use roxmltree::{Document, Node, ParsingOptions};
 
@@ -214,7 +218,70 @@ pub struct SourceEvent {
     /// The byte offset of the event's first `<note>` in the file (a line
     /// number would cost a scan of the file per event).
     pub offset: usize,
+    /// The marks its notes carry, one of each kind (schema major 5).
+    pub marks: Vec<EventMark>,
+    /// A note's ornaments, one of each kind.
+    pub ornaments: Vec<Ornament>,
+    /// A grace note's notation; its duration is then zero, and it stands at
+    /// the position of the note it precedes.
+    pub grace: Option<Grace>,
+    /// Its lyric syllables, one per verse.
+    pub lyrics: Vec<SourceLyric>,
 }
+
+/// A lyric syllable on an event.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SourceLyric {
+    pub verse: u16,
+    pub text: Text,
+    pub syllabic: Syllabic,
+    pub extension: bool,
+}
+
+/// Where a mark the file places stands: on an event of the part, or at a
+/// staff's position, which the emitter puts on an event of the staff that
+/// starts there or, where none does, at the position itself. A position is
+/// read as an offset into its measure and placed once the measures are.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum SourcePoint {
+    Event(usize),
+    At {
+        staff: usize,
+        measure: usize,
+        onset: Time,
+    },
+}
+
+/// A point mark: a dynamic, a fermata, a breath mark, a caesura, staff text,
+/// a tempo mark, a rehearsal mark, a segno or a coda.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SourceMarker {
+    pub at: SourcePoint,
+    pub kind: MarkerKind,
+}
+
+/// A line on one staff from one point to another: a hairpin, a pedal line,
+/// an ottava, a trill line, a glissando, a text line or a bracket.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SourceSpanner {
+    pub kind: SpannerKind,
+    pub line: LineStyle,
+    pub staff: usize,
+    pub start: SourcePoint,
+    pub end: SourcePoint,
+}
+
+/// A tempo the file sets (`<sound tempo>`), in quarter notes per minute, and
+/// the tempo mark its direction shows, if it shows one.
+#[derive(Clone, PartialEq, Debug)]
+pub struct SourceTempo {
+    pub at: SourcePoint,
+    pub bpm: f64,
+    pub mark: Option<TempoMark>,
+}
+
+// The reader admits only a finite positive tempo, so equality is total.
+impl Eq for SourceTempo {}
 
 /// A tuplet of a part's events, by index into [`SourcePart::events`]: the
 /// notes and rests of one voice from a `<tuplet type="start">` to the stop of
@@ -306,6 +373,10 @@ pub struct SourcePart {
     pub dropped_quarter_tones: Vec<QuarterTone>,
     /// Of the dropped notes, those carrying a tie start.
     pub dropped_tie_starts: usize,
+    /// Its point marks, its lines and its tempos (schema major 5).
+    pub markers: Vec<SourceMarker>,
+    pub spanners: Vec<SourceSpanner>,
+    pub tempos: Vec<SourceTempo>,
 }
 
 /// A quarter-tone: where it falls, and the pitch it sounds.
@@ -360,7 +431,8 @@ pub struct Census {
     /// Of the tie starts the file ends, those on a quarter-tone, each of
     /// which the score ties or a refused tie explains.
     pub quarter_tone_ties: usize,
-    /// Grace and cue notes, which are not imported.
+    /// Grace and cue notes, which this walk does not count among the notes:
+    /// a cue note is not imported, and the expression census counts graces.
     pub grace_or_cue: usize,
     /// Primary beams (`<beam number="1">`) the file begins and ends in one
     /// voice, paired by a walk of the notes not joining a chord.
@@ -374,6 +446,13 @@ pub struct Census {
     /// primary beam from its begin to its end. A beam whose members sit on
     /// two staves is a cross-staff beam.
     pub beam_places: Vec<CensusBeam>,
+    /// The expression and text the model can hold, counted by class by a walk
+    /// of its own (schema major 5): each event's marks and ornaments, its
+    /// grace notes, point marks, lyric syllables, lines begun and ended, and
+    /// the places a tempo is set ([`expression_census`]).
+    pub expression: BTreeMap<String, usize>,
+    /// Where the part sets a tempo: the measure and the offset in it.
+    pub tempo_places: BTreeSet<(usize, Time)>,
     /// Tuplets the file begins and stops in one voice, outside any other, by
     /// the ratio (`actual`, `normal`) their first note's
     /// `<time-modification>` gives, paired by number by a walk of the notes
@@ -552,6 +631,400 @@ fn note_census(part: Node) -> Census {
 /// reader loses at its stop, a chord note it drops, or a note it takes for
 /// the other kind differs from these counts, rather than passing as a
 /// feature of the source.
+/// The expression and text of a part the model can hold, by class, counted by
+/// a walk of the part's elements that shares none of the reader's code, the
+/// classes named as the score's values are (`mark staccato`, `marker
+/// dynamic`, `spanner hairpin`): a note's marks and ornaments once per kind
+/// over its chord, a chord note on another staff, or not pitched, not among
+/// them; an ornament only on a pitched note, a mark not on a rest; each grace
+/// note; each point mark of a known value; each lyric syllable, one per verse
+/// of an event; each line a start and a stop of its kind and number make;
+/// and, timed by its own walk, where a tempo is set.
+pub fn expression_census(part: Node) -> (BTreeMap<String, usize>, BTreeSet<(usize, Time)>) {
+    // The event a note starts and its chord notes join: its staff, whether it
+    // is pitched, whether it is a rest, the mark and ornament kinds gathered,
+    // and the verses its syllables take.
+    type Gathered = (String, bool, bool, BTreeSet<String>, BTreeSet<u16>);
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut add = |class: &str| *counts.entry(class.to_owned()).or_default() += 1;
+    let mut tempos: BTreeSet<(usize, Time)> = BTreeSet::new();
+    let mut open: BTreeMap<(String, String), ()> = BTreeMap::new();
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = |key: (String, String), begins: bool, ends: bool, class: &str| {
+        if ends && open.remove(&key).is_some() {
+            lines.push(class.to_owned());
+        }
+        if begins {
+            open.insert(key, ());
+        }
+    };
+    let mut divisions: i64 = 1;
+    for (m, measure) in children(part, "measure").enumerate() {
+        let mut cursor: i64 = 0;
+        let mut event: Option<Gathered> = None;
+        let flush = |event: &mut Option<Gathered>, add: &mut dyn FnMut(&str)| {
+            if let Some((_, _, _, kinds, _)) = event.take() {
+                for kind in kinds {
+                    add(&kind);
+                }
+            }
+        };
+        for item in elements(measure) {
+            match name(item) {
+                "attributes" => {
+                    if let Some(d) = child_text(item, "divisions").and_then(|d| d.parse().ok()) {
+                        divisions = d;
+                    }
+                }
+                "backup" | "forward" => {
+                    let d: i64 = child_text(item, "duration")
+                        .and_then(|d| d.trim().parse().ok())
+                        .unwrap_or(0);
+                    cursor += if name(item) == "backup" { -d } else { d };
+                }
+                "sound"
+                    if item
+                        .attribute("tempo")
+                        .and_then(|t| t.trim().parse::<f64>().ok())
+                        .is_some_and(|t| t.is_finite() && t > 0.0) =>
+                {
+                    tempos.insert((
+                        m,
+                        RationalTime::new(cursor.max(0), 4 * divisions).unwrap_or_else(zero),
+                    ));
+                }
+                "barline" => {
+                    for f in children(item, "fermata") {
+                        if matches!(
+                            text(f).trim(),
+                            "" | "normal" | "angled" | "square" | "double-angled" | "double-square"
+                        ) {
+                            add("marker fermata");
+                        }
+                    }
+                }
+                "direction" => {
+                    let offset: i64 = child_text(item, "offset")
+                        .and_then(|o| o.trim().parse().ok())
+                        .unwrap_or(0);
+                    let types: Vec<Node> = children(item, "direction-type")
+                        .flat_map(elements)
+                        .collect();
+                    let sound = child(item, "sound")
+                        .and_then(|s| s.attribute("tempo"))
+                        .and_then(|t| t.trim().parse::<f64>().ok())
+                        .is_some_and(|t| t.is_finite() && t > 0.0);
+                    if sound {
+                        tempos.insert((
+                            m,
+                            RationalTime::new((cursor + offset).max(0), 4 * divisions)
+                                .unwrap_or_else(zero),
+                        ));
+                    }
+                    let metronome =
+                        types
+                            .iter()
+                            .find(|t| name(**t) == "metronome")
+                            .is_some_and(|t| {
+                                children(*t, "beat-unit").count() == 1
+                                    && child(*t, "beat-unit-tied").is_none()
+                                    && child_text(*t, "per-minute")
+                                        .is_some_and(|p| !p.trim().is_empty())
+                                    && child_text(*t, "beat-unit").is_some_and(|u| {
+                                        matches!(
+                                            u.trim(),
+                                            "whole"
+                                                | "half"
+                                                | "quarter"
+                                                | "eighth"
+                                                | "16th"
+                                                | "32nd"
+                                                | "64th"
+                                        )
+                                    })
+                            });
+                    let words = types
+                        .iter()
+                        .filter(|t| name(**t) == "words")
+                        .any(|t| !text(*t).trim().is_empty());
+                    let dashes = types
+                        .iter()
+                        .any(|t| name(*t) == "dashes" && t.attribute("type") == Some("start"));
+                    if metronome || (sound && words && !dashes) {
+                        add("marker tempo");
+                    } else if words && !dashes && !metronome {
+                        add("marker text");
+                    }
+                    for t in &types {
+                        let number = t.attribute("number").unwrap_or("1").to_owned();
+                        let kind = t.attribute("type").unwrap_or("");
+                        match name(*t) {
+                            "dynamics" => {
+                                for _ in elements(*t) {
+                                    add("marker dynamic");
+                                }
+                            }
+                            "rehearsal" => add("marker rehearsal"),
+                            "segno" => add("marker segno"),
+                            "coda" => add("marker coda"),
+                            "wedge" => line(
+                                ("wedge".into(), number),
+                                kind == "crescendo" || kind == "diminuendo",
+                                kind == "stop",
+                                "spanner hairpin",
+                            ),
+                            "pedal" if t.attribute("line") != Some("no") => line(
+                                ("pedal".into(), number),
+                                kind == "start" || kind == "change",
+                                kind == "stop" || kind == "change",
+                                "spanner pedal",
+                            ),
+                            "octave-shift"
+                                if matches!(
+                                    t.attribute("size").unwrap_or("8"),
+                                    "8" | "15" | "22"
+                                ) || kind == "stop" =>
+                            {
+                                line(
+                                    ("octave".into(), number),
+                                    kind == "up" || kind == "down",
+                                    kind == "stop",
+                                    "spanner ottava",
+                                )
+                            }
+                            "dashes" => line(
+                                ("dashes".into(), number),
+                                kind == "start",
+                                kind == "stop",
+                                "spanner text line",
+                            ),
+                            "bracket" => line(
+                                ("bracket".into(), number),
+                                kind == "start",
+                                kind == "stop",
+                                "spanner bracket",
+                            ),
+                            _ => {}
+                        }
+                    }
+                }
+                "note" => {
+                    if child(item, "cue").is_some() {
+                        if child(item, "chord").is_none() && child(item, "grace").is_none() {
+                            cursor += child_text(item, "duration")
+                                .and_then(|d| d.trim().parse::<i64>().ok())
+                                .unwrap_or(0);
+                        }
+                        continue;
+                    }
+                    let staff = child_text(item, "staff").unwrap_or("1").to_owned();
+                    let pitched = child(item, "pitch").is_some();
+                    let rest = child(item, "rest").is_some();
+                    let grace = child(item, "grace").is_some();
+                    let graced = grace
+                        && child_text(item, "type").is_some_and(|u| {
+                            matches!(
+                                u.trim(),
+                                "whole" | "half" | "quarter" | "eighth" | "16th" | "32nd" | "64th"
+                            )
+                        })
+                        && !rest;
+                    if grace && !graced {
+                        continue;
+                    }
+                    let chord = child(item, "chord").is_some();
+                    let held = match (&event, chord) {
+                        (Some((s, p, _, _, _)), true) => *s == staff && *p && pitched,
+                        _ => true,
+                    };
+                    if !chord {
+                        flush(&mut event, &mut add);
+                        event = Some((
+                            staff.clone(),
+                            pitched,
+                            rest,
+                            BTreeSet::new(),
+                            BTreeSet::new(),
+                        ));
+                        if graced {
+                            add("grace");
+                        }
+                        if !grace {
+                            cursor += child_text(item, "duration")
+                                .and_then(|d| d.trim().parse::<i64>().ok())
+                                .unwrap_or(0);
+                        }
+                    }
+                    let Some((_, event_pitched, event_rest, kinds, verses)) = event.as_mut() else {
+                        continue;
+                    };
+                    for lyric in children(item, "lyric") {
+                        let numbered = lyric
+                            .attribute("number")
+                            .is_none_or(|n| n.trim().parse::<u16>().is_ok_and(|v| v >= 1));
+                        let sung: String = children(lyric, "text").map(text).collect();
+                        let verse = lyric
+                            .attribute("number")
+                            .and_then(|n| n.trim().parse::<u16>().ok())
+                            .unwrap_or(1);
+                        if held
+                            && numbered
+                            && child(lyric, "elision").is_none()
+                            && !sung.is_empty()
+                            && verses.insert(verse)
+                        {
+                            add("lyric");
+                        }
+                    }
+                    for notations in children(item, "notations") {
+                        for n in elements(notations) {
+                            match name(n) {
+                                "articulations" | "technical" if held && !*event_rest => {
+                                    for a in elements(n) {
+                                        let class = match name(a) {
+                                            "accent" => "mark accent",
+                                            "strong-accent" => "mark marcato",
+                                            "staccato" => "mark staccato",
+                                            "tenuto" => "mark tenuto",
+                                            "detached-legato" => "mark detached legato",
+                                            "staccatissimo" => "mark staccatissimo",
+                                            "spiccato" => "mark spiccato",
+                                            "scoop" => "mark scoop",
+                                            "plop" => "mark plop",
+                                            "doit" => "mark doit",
+                                            "falloff" => "mark falloff",
+                                            "stress" => "mark stress",
+                                            "unstress" => "mark unstress",
+                                            "up-bow" => "mark up-bow",
+                                            "down-bow" => "mark down-bow",
+                                            "harmonic" => "mark harmonic",
+                                            "open-string" | "open" => "mark open",
+                                            "stopped" => "mark stopped",
+                                            "snap-pizzicato" => "mark snap pizzicato",
+                                            _ => continue,
+                                        };
+                                        kinds.insert(class.to_owned());
+                                    }
+                                }
+                                _ => {}
+                            }
+                            match name(n) {
+                                "articulations" => {
+                                    for a in elements(n) {
+                                        match (name(a), text(a).trim()) {
+                                            ("breath-mark", "" | "comma" | "tick") if held => {
+                                                add("marker breath")
+                                            }
+                                            (
+                                                "caesura",
+                                                "" | "normal" | "single" | "thick" | "short"
+                                                | "curved",
+                                            ) if held => add("marker caesura"),
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                                "ornaments" if held => {
+                                    for o in elements(n) {
+                                        let number =
+                                            o.attribute("number").unwrap_or("1").to_owned();
+                                        match name(o) {
+                                            "trill-mark" | "mordent" | "inverted-mordent"
+                                            | "turn" | "inverted-turn"
+                                                if *event_pitched =>
+                                            {
+                                                kinds.insert(format!("ornament {}", name(o)));
+                                            }
+                                            "tremolo" if !*event_rest => {
+                                                let strokes = text(o)
+                                                    .trim()
+                                                    .parse::<u8>()
+                                                    .ok()
+                                                    .filter(|s| (1..=8).contains(s));
+                                                match (
+                                                    o.attribute("type").unwrap_or("single"),
+                                                    strokes,
+                                                ) {
+                                                    ("single", Some(_)) => {
+                                                        kinds.insert(String::from("mark tremolo"));
+                                                    }
+                                                    ("start", Some(_)) => {
+                                                        kinds.insert(String::from(
+                                                            "mark two-note tremolo",
+                                                        ));
+                                                    }
+                                                    _ => {}
+                                                }
+                                            }
+                                            "other-ornament"
+                                                if o.attribute("smufl")
+                                                    == Some("brassMuteClosed")
+                                                    && !*event_rest =>
+                                            {
+                                                kinds.insert(String::from("mark stopped"));
+                                            }
+                                            "wavy-line" => line(
+                                                ("wavy".into(), number),
+                                                o.attribute("type") == Some("start"),
+                                                o.attribute("type") == Some("stop"),
+                                                "spanner trill line",
+                                            ),
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                                "fermata" if held => {
+                                    if matches!(
+                                        text(n).trim(),
+                                        "" | "normal"
+                                            | "angled"
+                                            | "square"
+                                            | "double-angled"
+                                            | "double-square"
+                                    ) {
+                                        add("marker fermata");
+                                    }
+                                }
+                                "arpeggiate" if held && !*event_rest => {
+                                    kinds.insert(String::from("mark arpeggio"));
+                                }
+                                "dynamics" if held => {
+                                    for _ in elements(n) {
+                                        add("marker dynamic");
+                                    }
+                                }
+                                "slide" | "glissando" if held => {
+                                    let kind = n.attribute("type").unwrap_or("");
+                                    let known = matches!(
+                                        n.attribute("line-type"),
+                                        None | Some("solid" | "dashed" | "dotted" | "wavy")
+                                    );
+                                    line(
+                                        (
+                                            name(n).to_owned(),
+                                            n.attribute("number").unwrap_or("1").to_owned(),
+                                        ),
+                                        kind == "start" && known,
+                                        kind == "stop",
+                                        "spanner glissando",
+                                    );
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        flush(&mut event, &mut add);
+    }
+    for class in lines {
+        add(&class);
+    }
+    (counts, tempos)
+}
+
 fn timed_census(part: Node, census: &mut Census) {
     /// Semitones above C of the naturals, C to B.
     const NATURALS: [i32; 7] = [0, 2, 4, 5, 7, 9, 11];
@@ -1443,6 +1916,19 @@ struct PartState {
     written: Vec<WrittenPitch>,
     /// The pitches tied over the last barline, by staff, nominal and octave.
     tied_over: BTreeMap<(usize, u8, i8), Tied>,
+    /// The next grace note's order at each place: measure, staff, voice and
+    /// position in divisions.
+    grace_orders: BTreeMap<(usize, usize, String, i64), u16>,
+    /// Lines begun and not yet ended, by kind and number.
+    open_lines: BTreeMap<(&'static str, String), OpenLine>,
+}
+
+/// A line begun: where, on which staff, and what it is.
+struct OpenLine {
+    start: SourcePoint,
+    staff: usize,
+    kind: SpannerKind,
+    line: LineStyle,
 }
 
 /// Tied pitches at one place: each one's voice, its alteration in
@@ -1713,6 +2199,22 @@ impl<'d, 'i> Reader<'d, 'i> {
             for (event, offset) in part.events.iter_mut().zip(&read.event_offsets) {
                 event.onset = measures[event.measure].onset.add(offset);
             }
+            // A mark placed by time was read as an offset into its measure.
+            let place = |point: &mut SourcePoint| {
+                if let SourcePoint::At { measure, onset, .. } = point {
+                    *onset = measures[*measure].onset.add(onset);
+                }
+            };
+            for marker in &mut part.markers {
+                place(&mut marker.at);
+            }
+            for spanner in &mut part.spanners {
+                place(&mut spanner.start);
+                place(&mut spanner.end);
+            }
+            for tempo in &mut part.tempos {
+                place(&mut tempo.at);
+            }
             for (staff, offsets) in part.staves.iter_mut().zip(&read.clef_offsets) {
                 for (clef, offset) in staff.clefs.iter_mut().zip(offsets) {
                     clef.onset = measures[clef.measure].onset.add(offset);
@@ -1915,6 +2417,8 @@ impl<'d, 'i> Reader<'d, 'i> {
             last_event: None,
             written: Vec::new(),
             tied_over: BTreeMap::new(),
+            grace_orders: BTreeMap::new(),
+            open_lines: BTreeMap::new(),
         };
         let mut part = SourcePart {
             id,
@@ -1932,6 +2436,9 @@ impl<'d, 'i> Reader<'d, 'i> {
             dropped_notes: 0,
             dropped_quarter_tones: Vec::new(),
             dropped_tie_starts: 0,
+            markers: Vec::new(),
+            spanners: Vec::new(),
+            tempos: Vec::new(),
         };
         let mut read = PartRead {
             part: part.clone(),
@@ -1996,8 +2503,12 @@ impl<'d, 'i> Reader<'d, 'i> {
                             concert,
                         )?;
                     }
-                    "direction" => self.read_direction(item, &place),
-                    "barline" => self.read_barline(item, &place),
+                    "direction" => {
+                        self.read_direction(item, &place, index, cursor, &mut state, &mut part)
+                    }
+                    "barline" => {
+                        self.read_barline(item, &place, index, cursor, state.divisions, &mut part)
+                    }
                     "print" => {
                         for attr in ["new-system", "new-page"] {
                             if item.attribute(attr) == Some("yes") {
@@ -2016,19 +2527,28 @@ impl<'d, 'i> Reader<'d, 'i> {
                             );
                         }
                     }
-                    "sound" => {
-                        let class = if item.attribute("tempo").is_some() {
-                            FeatureClass::Content
-                        } else {
-                            FeatureClass::Presentation
-                        };
-                        let kind = if class == FeatureClass::Content {
-                            "sound: tempo"
-                        } else {
-                            "sound: playback"
-                        };
-                        self.features.record(class, kind, place.clone());
-                    }
+                    "sound" => match sound_tempo(item) {
+                        Some(bpm) => part.tempos.push(SourceTempo {
+                            at: SourcePoint::At {
+                                staff: 0,
+                                measure: index,
+                                onset: RationalTime::new(cursor, 4 * state.divisions)
+                                    .unwrap_or_else(zero),
+                            },
+                            bpm,
+                            mark: None,
+                        }),
+                        None if item.attribute("tempo").is_some() => self.features.record(
+                            FeatureClass::Content,
+                            "sound: tempo not a positive number",
+                            place.clone(),
+                        ),
+                        None => self.features.record(
+                            FeatureClass::Presentation,
+                            "sound: playback",
+                            place.clone(),
+                        ),
+                    },
                     "harmony" => {
                         self.features
                             .record(FeatureClass::Content, "chord symbol", place.clone())
@@ -2068,11 +2588,16 @@ impl<'d, 'i> Reader<'d, 'i> {
         {
             part.members = members;
         }
-        for _ in state.open_beams {
-            part.unmade_beams += 1;
+        for lane in state.open_beams.into_keys() {
+            let grace = lane.ends_with("\u{1}grace");
+            part.unmade_beams += usize::from(!grace);
             self.features.record(
                 FeatureClass::Notation,
-                "beam without an end",
+                if grace {
+                    "grace beam without an end"
+                } else {
+                    "beam without an end"
+                },
                 Place {
                     part: part_name.clone(),
                     measure: String::new(),
@@ -2093,6 +2618,16 @@ impl<'d, 'i> Reader<'d, 'i> {
                 },
             );
         }
+        for (kind, _) in std::mem::take(&mut state.open_lines).into_keys() {
+            self.features.record(
+                FeatureClass::Content,
+                format!("{kind} without an end"),
+                Place {
+                    part: part_name.clone(),
+                    measure: String::new(),
+                },
+            );
+        }
         for (number, _) in state.open_slurs {
             self.features.record(
                 FeatureClass::Content,
@@ -2105,6 +2640,7 @@ impl<'d, 'i> Reader<'d, 'i> {
         }
         read.part = part;
         read.census = note_census(node);
+        (read.census.expression, read.census.tempo_places) = expression_census(node);
         (read.census.keys, read.census.clefs) = attribute_census(node, concert);
         timed_census(node, &mut read.census);
         Ok(read)
@@ -2255,14 +2791,12 @@ impl<'d, 'i> Reader<'d, 'i> {
         last_onset: &mut i64,
     ) -> Result<(), ReadError> {
         let is_chord = child(note, "chord").is_some();
-        let grace = child(note, "grace").is_some();
-        let cue = child(note, "cue").is_some();
-        if grace || cue {
-            let kind = if grace { "grace note" } else { "cue note" };
+        let grace_mark = child(note, "grace");
+        if child(note, "cue").is_some() {
             self.features
-                .record(FeatureClass::Content, kind, place.clone());
-            // A cue note occupies time in its voice; a grace note does not.
-            if cue && !is_chord {
+                .record(FeatureClass::Content, "cue note", place.clone());
+            // A cue note occupies time in its voice.
+            if !is_chord && grace_mark.is_none() {
                 *last_onset = *cursor;
                 *cursor += self.duration(note)?;
             }
@@ -2283,8 +2817,41 @@ impl<'d, 'i> Reader<'d, 'i> {
                 self.malformed(note, "a note needs exactly one of pitch, unpitched or rest")
             );
         }
+        // A grace note is an event of zero duration at the position of the
+        // note it precedes, its notated value and its place among the graces
+        // there its payload's (schema major 5).
+        let grace = match grace_mark {
+            None => None,
+            Some(mark) => {
+                let value = child_text(note, "type").and_then(note_value);
+                match value {
+                    Some(value) if has_rest.is_none() => Some(Grace {
+                        kind: if mark.attribute("slash") == Some("yes") {
+                            GraceKind::Acciaccatura
+                        } else {
+                            GraceKind::Appoggiatura
+                        },
+                        value,
+                        dots: children(note, "dot").count().min(usize::from(u8::MAX)) as u8,
+                        order: 0,
+                    }),
+                    _ => {
+                        self.features.record(
+                            FeatureClass::Content,
+                            "grace note with no value the model holds",
+                            place.clone(),
+                        );
+                        return Ok(());
+                    }
+                }
+            }
+        };
 
-        let duration_div = self.duration(note)?;
+        let duration_div = if grace.is_some() {
+            0
+        } else {
+            self.duration(note)?
+        };
         let staff = match child_text(note, "staff") {
             None => 0,
             Some(s) => {
@@ -2308,6 +2875,15 @@ impl<'d, 'i> Reader<'d, 'i> {
         let voice = child_text(note, "voice").unwrap_or("1").to_owned();
         let tie_start = children(note, "tie").any(|t| t.attribute("type") == Some("start"));
         let tie_stop = children(note, "tie").any(|t| t.attribute("type") == Some("stop"));
+        // A tie on a grace note would pair it with its own principal, at the
+        // same position: not read.
+        let (tie_start, tie_stop) = if grace.is_some() && (tie_start || tie_stop) {
+            self.features
+                .record(FeatureClass::Content, "tie on a grace note", place.clone());
+            (false, false)
+        } else {
+            (tie_start, tie_stop)
+        };
 
         let onset_div = if is_chord { *last_onset } else { *cursor };
         let visible = note.attribute("print-object") != Some("no");
@@ -2317,8 +2893,8 @@ impl<'d, 'i> Reader<'d, 'i> {
             match name(item) {
                 "chord" | "pitch" | "unpitched" | "rest" | "duration" | "voice" | "staff"
                 | "tie" | "type" | "dot" | "accidental" | "time-modification" | "instrument"
-                | "beam" => {}
-                "notations" => {}
+                | "beam" | "grace" => {}
+                "notations" | "lyric" => {}
                 "stem" => {
                     self.features
                         .record(FeatureClass::Notation, "stem direction", place.clone())
@@ -2332,9 +2908,6 @@ impl<'d, 'i> Reader<'d, 'i> {
                         );
                     }
                 }
-                "lyric" => self
-                    .features
-                    .record(FeatureClass::Content, "lyric", place.clone()),
                 "play" | "listen" => self.features.record(
                     FeatureClass::Presentation,
                     format!("note: {}", name(item)),
@@ -2368,6 +2941,7 @@ impl<'d, 'i> Reader<'d, 'i> {
             );
         }
         let mut slur_marks: Vec<(String, String)> = Vec::new();
+        let mut marks = NoteMarks::default();
         for notations in children(note, "notations") {
             for item in elements(notations) {
                 match name(item) {
@@ -2376,37 +2950,13 @@ impl<'d, 'i> Reader<'d, 'i> {
                         item.attribute("type").unwrap_or("").to_owned(),
                         item.attribute("number").unwrap_or("1").to_owned(),
                     )),
-                    "articulations" | "ornaments" | "technical" => {
-                        for mark in elements(item) {
-                            let spanning = matches!(name(mark), "wavy-line")
-                                && mark.attribute("type") != Some("start");
-                            if !spanning && name(mark) != "accidental-mark" {
-                                self.features.record(
-                                    FeatureClass::Content,
-                                    format!("{}: {}", name(item), name(mark)),
-                                    place.clone(),
-                                );
-                            } else if name(mark) == "accidental-mark" {
-                                self.features.record(
-                                    FeatureClass::Content,
-                                    "ornament accidental",
-                                    place.clone(),
-                                );
+                    "articulations" | "technical" | "ornaments" | "fermata" | "arpeggiate"
+                    | "dynamics" | "slide" | "glissando" => {
+                        if let Err(kind) = marks.read(item) {
+                            for kind in kind {
+                                self.features
+                                    .record(FeatureClass::Content, kind, place.clone());
                             }
-                        }
-                    }
-                    "dynamics" => self.features.record(
-                        FeatureClass::Content,
-                        "dynamics on a note",
-                        place.clone(),
-                    ),
-                    "slide" | "glissando" => {
-                        if item.attribute("type") == Some("start") {
-                            self.features.record(
-                                FeatureClass::Content,
-                                name(item).to_owned(),
-                                place.clone(),
-                            );
                         }
                     }
                     other => {
@@ -2416,6 +2966,9 @@ impl<'d, 'i> Reader<'d, 'i> {
                 }
             }
         }
+        let lyrics: Vec<Result<SourceLyric, String>> = children(note, "lyric")
+            .filter_map(|lyric| read_lyric(lyric).transpose())
+            .collect();
 
         let mut written = None;
         let content = if let Some(pitch) = has_pitch {
@@ -2495,6 +3048,7 @@ impl<'d, 'i> Reader<'d, 'i> {
             None
         };
         let mut kept_at = None;
+        let mut joined = !is_chord;
 
         let event_index = if is_chord {
             let Some(last) = state.last_event else {
@@ -2505,6 +3059,7 @@ impl<'d, 'i> Reader<'d, 'i> {
                 (Content::Pitched(pitches), Some(pitch)) if event.staff == staff => {
                     pitches.push(pitch);
                     kept_at = Some((last, pitches.len() - 1));
+                    joined = true;
                     if RationalTime::new(duration_div, 4 * state.divisions).as_ref()
                         != Some(&event.duration)
                     {
@@ -2582,6 +3137,15 @@ impl<'d, 'i> Reader<'d, 'i> {
             };
             let duration = RationalTime::new(duration_div, 4 * state.divisions)
                 .ok_or_else(|| self.malformed(note, "a duration out of range"))?;
+            let grace = grace.map(|grace| {
+                let next = state
+                    .grace_orders
+                    .entry((measure, staff, voice.clone(), *cursor))
+                    .or_insert(0);
+                let order = *next;
+                *next = next.saturating_add(1);
+                Grace { order, ..grace }
+            });
             part.events.push(SourceEvent {
                 measure,
                 staff,
@@ -2590,6 +3154,10 @@ impl<'d, 'i> Reader<'d, 'i> {
                 duration,
                 content,
                 offset: note.range().start,
+                marks: Vec::new(),
+                ornaments: Vec::new(),
+                grace,
+                lyrics: Vec::new(),
             });
             read.event_offsets.push(
                 RationalTime::new(onset_div, 4 * state.divisions)
@@ -2612,7 +3180,11 @@ impl<'d, 'i> Reader<'d, 'i> {
             .find(|b| b.attribute("number").unwrap_or("1") == "1")
             .map(text);
         if let (false, Some(beam)) = (is_chord, beam) {
-            let voice = child_text(note, "voice").unwrap_or("1").to_owned();
+            // Graces beam among themselves, apart from their voice's notes.
+            let voice = match grace_mark {
+                Some(_) => format!("{}\u{1}grace", child_text(note, "voice").unwrap_or("1")),
+                None => child_text(note, "voice").unwrap_or("1").to_owned(),
+            };
             match beam {
                 "begin"
                     if state
@@ -2620,10 +3192,15 @@ impl<'d, 'i> Reader<'d, 'i> {
                         .insert(voice.clone(), vec![event_index])
                         .is_some() =>
                 {
-                    part.unmade_beams += 1;
+                    let grace = grace_mark.is_some();
+                    part.unmade_beams += usize::from(!grace);
                     self.features.record(
                         FeatureClass::Notation,
-                        "beam begun again before its end",
+                        if grace {
+                            "grace beam begun again before its end"
+                        } else {
+                            "beam begun again before its end"
+                        },
                         place.clone(),
                     );
                 }
@@ -2691,8 +3268,11 @@ impl<'d, 'i> Reader<'d, 'i> {
                     display: tuplet_display(*notations, *mark),
                 });
             }
-            for open in stack.iter_mut().filter(|open| open.ratio.is_some()) {
-                open.events.push(event_index);
+            // A grace note occupies no time, so it is no tuplet's member.
+            if grace_mark.is_none() {
+                for open in stack.iter_mut().filter(|open| open.ratio.is_some()) {
+                    open.events.push(event_index);
+                }
             }
             for mark in marks.iter().filter(|t| t.attribute("type") == Some("stop")) {
                 let number = mark.attribute("number").unwrap_or("1");
@@ -2746,7 +3326,124 @@ impl<'d, 'i> Reader<'d, 'i> {
                 _ => {}
             }
         }
+
+        // The marks, lyrics and lines the note carries, on its event; a note
+        // the reader drops carries them nowhere, and each is recorded.
+        if !joined {
+            for kind in marks
+                .kinds()
+                .chain(lyrics.iter().map(|_| String::from("lyric")))
+            {
+                self.features.record(
+                    FeatureClass::Content,
+                    format!("{kind} on a dropped chord note"),
+                    place.clone(),
+                );
+            }
+            return Ok(());
+        }
+        let event = &mut part.events[event_index];
+        let rest = matches!(event.content, Content::Rest { .. });
+        if rest && !marks.event.is_empty() {
+            for mark in &marks.event {
+                self.features.record(
+                    FeatureClass::Content,
+                    format!("{} on a rest", mark_name(mark)),
+                    place.clone(),
+                );
+            }
+        } else {
+            event.marks = epiphany_core::canonical_marks(event.marks.drain(..).chain(marks.event));
+        }
+        if !marks.ornaments.is_empty() {
+            if matches!(event.content, Content::Pitched(_)) {
+                event.ornaments = epiphany_core::canonical_ornaments(
+                    event.ornaments.drain(..).chain(marks.ornaments),
+                );
+            } else {
+                for _ in &marks.ornaments {
+                    self.features.record(
+                        FeatureClass::Content,
+                        "ornament on an unpitched note or a rest",
+                        place.clone(),
+                    );
+                }
+            }
+        }
+        for lyric in lyrics {
+            match lyric {
+                Ok(lyric) if event.lyrics.iter().all(|l| l.verse != lyric.verse) => {
+                    event.lyrics.push(lyric)
+                }
+                Ok(_) => self.features.record(
+                    FeatureClass::Content,
+                    "second lyric syllable in one verse",
+                    place.clone(),
+                ),
+                Err(kind) => self
+                    .features
+                    .record(FeatureClass::Content, kind, place.clone()),
+            }
+        }
+        for kind in marks.points {
+            part.markers.push(SourceMarker {
+                at: SourcePoint::Event(event_index),
+                kind,
+            });
+        }
+        for (begins, key, kind, line) in marks.lines {
+            let point = SourcePoint::Event(event_index);
+            if begins {
+                let begun_again = state
+                    .open_lines
+                    .insert(
+                        key.clone(),
+                        OpenLine {
+                            start: point,
+                            staff,
+                            kind,
+                            line,
+                        },
+                    )
+                    .is_some();
+                if begun_again {
+                    self.features.record(
+                        FeatureClass::Content,
+                        format!("{} begun again before its end", key.0),
+                        place.clone(),
+                    );
+                }
+            } else {
+                self.end_line(state, part, key, point, place);
+            }
+        }
         Ok(())
+    }
+
+    /// Ends the line open under `key` at `end`, or records a stop with no
+    /// start.
+    fn end_line(
+        &mut self,
+        state: &mut PartState,
+        part: &mut SourcePart,
+        key: (&'static str, String),
+        end: SourcePoint,
+        place: &Place,
+    ) {
+        match state.open_lines.remove(&key) {
+            Some(open) => part.spanners.push(SourceSpanner {
+                kind: open.kind,
+                line: open.line,
+                staff: open.staff,
+                start: open.start,
+                end,
+            }),
+            None => self.features.record(
+                FeatureClass::Content,
+                format!("{} stop without a start", key.0),
+                place.clone(),
+            ),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3071,46 +3768,228 @@ impl<'d, 'i> Reader<'d, 'i> {
         Ok(())
     }
 
-    fn read_direction(&mut self, direction: Node, place: &Place) {
-        for item in elements(direction) {
-            match name(item) {
-                "direction-type" => {
-                    for kind in elements(item) {
-                        let starts = match name(kind) {
-                            "wedge" => kind
-                                .attribute("type")
-                                .is_some_and(|t| t == "crescendo" || t == "diminuendo"),
-                            "octave-shift" => kind
-                                .attribute("type")
-                                .is_some_and(|t| t == "up" || t == "down"),
-                            "pedal" | "dashes" | "bracket" => {
-                                kind.attribute("type") == Some("start")
+    /// A direction's marks, at its staff and its position in the measure
+    /// (schema major 5): dynamics, staff text, tempo and metronome marks,
+    /// rehearsal marks, segno and coda as point marks; hairpins, pedal lines,
+    /// ottavas, text lines and brackets as lines from their start to their
+    /// stop; a tempo it sets, with the mark it shows.
+    #[allow(clippy::too_many_arguments)]
+    fn read_direction(
+        &mut self,
+        direction: Node,
+        place: &Place,
+        measure: usize,
+        cursor: i64,
+        state: &mut PartState,
+        part: &mut SourcePart,
+    ) {
+        let staff = child_text(direction, "staff")
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .filter(|s| (1..=part.staves.len()).contains(s))
+            .map_or(0, |s| s - 1);
+        let offset = child_text(direction, "offset")
+            .and_then(|o| o.trim().parse::<i64>().ok())
+            .unwrap_or(0);
+        let at = SourcePoint::At {
+            staff,
+            measure,
+            onset: RationalTime::new((cursor + offset).max(0), 4 * state.divisions)
+                .unwrap_or_else(zero),
+        };
+        let kinds: Vec<Node> = children(direction, "direction-type")
+            .flat_map(elements)
+            .collect();
+        // A run of `<words>` is one text, as MuseScore splits a text by font.
+        let words: String = kinds
+            .iter()
+            .filter(|k| name(**k) == "words")
+            .map(|k| text(*k))
+            .collect();
+        let words = (!words.trim().is_empty()).then(|| Text::new(words.trim()));
+        let metronome = match kinds.iter().find(|k| name(**k) == "metronome") {
+            Some(node) => match metronome(*node) {
+                Some(m) => Some(m),
+                None => {
+                    self.features.record(
+                        FeatureClass::Content,
+                        "metronome the model cannot hold",
+                        place.clone(),
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+        let tempo = child(direction, "sound").and_then(sound_tempo);
+        let text_line = kinds
+            .iter()
+            .any(|k| name(*k) == "dashes" && k.attribute("type") == Some("start"));
+        // The words a tempo or a text line takes are its own, not staff text.
+        let mut words_taken = false;
+        let mark = (tempo.is_some() || metronome.is_some())
+            .then(|| {
+                words_taken = !text_line;
+                TempoMark {
+                    text: if text_line { None } else { words.clone() },
+                    metronome,
+                }
+            })
+            .filter(|m| m.text.is_some() || m.metronome.is_some());
+        match (tempo, mark) {
+            (Some(bpm), mark) => part.tempos.push(SourceTempo {
+                at: at.clone(),
+                bpm,
+                mark,
+            }),
+            (None, Some(mark)) => part.markers.push(SourceMarker {
+                at: at.clone(),
+                kind: MarkerKind::Tempo(mark),
+            }),
+            (None, None) => {}
+        }
+        for kind in &kinds {
+            let number = kind.attribute("number").unwrap_or("1").to_owned();
+            match name(*kind) {
+                "words" | "metronome" => {}
+                "dynamics" => {
+                    for mark in elements(*kind) {
+                        part.markers.push(SourceMarker {
+                            at: at.clone(),
+                            kind: MarkerKind::Dynamic(dynamic(mark)),
+                        });
+                    }
+                }
+                "rehearsal" => part.markers.push(SourceMarker {
+                    at: at.clone(),
+                    kind: MarkerKind::Rehearsal(Text::new(text(*kind).trim())),
+                }),
+                "segno" => part.markers.push(SourceMarker {
+                    at: at.clone(),
+                    kind: MarkerKind::Segno,
+                }),
+                "coda" => part.markers.push(SourceMarker {
+                    at: at.clone(),
+                    kind: MarkerKind::Coda,
+                }),
+                "wedge" | "pedal" | "octave-shift" | "dashes" | "bracket" => {
+                    let begins = match (name(*kind), kind.attribute("type")) {
+                        ("wedge", Some("crescendo")) => {
+                            Some(SpannerKind::Hairpin(HairpinDirection::Crescendo))
+                        }
+                        ("wedge", Some("diminuendo")) => {
+                            Some(SpannerKind::Hairpin(HairpinDirection::Diminuendo))
+                        }
+                        ("pedal", Some("start" | "change")) => {
+                            if kind.attribute("line") == Some("no") {
+                                self.features.record(
+                                    FeatureClass::Content,
+                                    "pedal sign with no line",
+                                    place.clone(),
+                                );
+                                continue;
                             }
-                            _ => true,
+                            Some(if kind.attribute("sign") == Some("no") {
+                                SpannerKind::PedalBracket(PedalKind::Sustain)
+                            } else {
+                                SpannerKind::PedalLine(PedalKind::Sustain)
+                            })
+                        }
+                        // An ottava is written an octave or two from where it
+                        // sounds: shifted down, it sounds above (8va).
+                        ("octave-shift", Some(shift @ ("up" | "down"))) => {
+                            let octaves = match kind.attribute("size").unwrap_or("8") {
+                                "8" => 1,
+                                "15" => 2,
+                                "22" => 3,
+                                _ => {
+                                    self.features.record(
+                                        FeatureClass::Content,
+                                        "octave shift of another size",
+                                        place.clone(),
+                                    );
+                                    continue;
+                                }
+                            };
+                            Some(SpannerKind::OctaveLine(OctaveOffset(if shift == "down" {
+                                octaves
+                            } else {
+                                -octaves
+                            })))
+                        }
+                        ("dashes", Some("start")) => {
+                            words_taken = true;
+                            Some(SpannerKind::TextLine(TextLineDefinition {
+                                text: words.clone().unwrap_or_default(),
+                            }))
+                        }
+                        ("bracket", Some("start")) => {
+                            Some(SpannerKind::Bracket(BracketKind::Square))
+                        }
+                        _ => None,
+                    };
+                    let key = (line_kind(name(*kind)), number);
+                    let ends = matches!(kind.attribute("type"), Some("stop" | "change"));
+                    if ends {
+                        self.end_line(state, part, key.clone(), at.clone(), place);
+                    }
+                    if let Some(spanner) = begins {
+                        let line = match name(*kind) {
+                            "dashes" => LineStyle::Dashed,
+                            "bracket" => match kind.attribute("line-type") {
+                                Some("dashed") => LineStyle::Dashed,
+                                Some("dotted") => LineStyle::Dotted,
+                                Some("wavy") => LineStyle::Wavy,
+                                _ => LineStyle::Solid,
+                            },
+                            _ => LineStyle::Solid,
                         };
-                        if starts {
+                        let begun_again = state
+                            .open_lines
+                            .insert(
+                                key.clone(),
+                                OpenLine {
+                                    start: at.clone(),
+                                    staff,
+                                    kind: spanner,
+                                    line,
+                                },
+                            )
+                            .is_some();
+                        if begun_again {
                             self.features.record(
                                 FeatureClass::Content,
-                                format!("direction: {}", name(kind)),
+                                format!("{} begun again before its end", key.0),
                                 place.clone(),
                             );
                         }
                     }
                 }
+                other => self.features.record(
+                    FeatureClass::Content,
+                    format!("direction: {other}"),
+                    place.clone(),
+                ),
+            }
+        }
+        if let (Some(words), false) = (words, words_taken) {
+            part.markers.push(SourceMarker {
+                at,
+                kind: MarkerKind::Text(words),
+            });
+        }
+        for item in elements(direction) {
+            match name(item) {
+                "direction-type" | "offset" | "staff" | "voice" | "listening" => {}
                 "sound" => {
-                    let class = if item.attribute("tempo").is_some() {
-                        FeatureClass::Content
-                    } else {
-                        FeatureClass::Presentation
-                    };
-                    let kind = if class == FeatureClass::Content {
-                        "sound: tempo"
-                    } else {
-                        "sound: playback"
-                    };
-                    self.features.record(class, kind, place.clone());
+                    if sound_tempo(item).is_none() {
+                        let (class, kind) = if item.attribute("tempo").is_some() {
+                            (FeatureClass::Content, "sound: tempo not a positive number")
+                        } else {
+                            (FeatureClass::Presentation, "sound: playback")
+                        };
+                        self.features.record(class, kind, place.clone());
+                    }
                 }
-                "offset" | "staff" | "voice" | "listening" => {}
                 other => self.features.record(
                     FeatureClass::Presentation,
                     format!("direction: {other}"),
@@ -3120,7 +3999,17 @@ impl<'d, 'i> Reader<'d, 'i> {
         }
     }
 
-    fn read_barline(&mut self, barline: Node, place: &Place) {
+    /// A barline's marks: a fermata, at the barline on the part's first staff
+    /// (schema major 5); its style, repeat or ending, recorded.
+    fn read_barline(
+        &mut self,
+        barline: Node,
+        place: &Place,
+        measure: usize,
+        cursor: i64,
+        divisions: i64,
+        part: &mut SourcePart,
+    ) {
         for item in elements(barline) {
             let (class, kind) = match name(item) {
                 "bar-style" => (FeatureClass::Notation, format!("barline {}", text(item))),
@@ -3131,11 +4020,423 @@ impl<'d, 'i> Reader<'d, 'i> {
                     }
                     (FeatureClass::Content, String::from("ending (volta)"))
                 }
+                "fermata" => match fermata_shape(text(item)) {
+                    Some(shape) => {
+                        let at_start = barline.attribute("location") == Some("left");
+                        part.markers.push(SourceMarker {
+                            at: SourcePoint::At {
+                                staff: 0,
+                                measure,
+                                onset: if at_start {
+                                    zero()
+                                } else {
+                                    RationalTime::new(cursor, 4 * divisions).unwrap_or_else(zero)
+                                },
+                            },
+                            kind: MarkerKind::Fermata(Fermata {
+                                shape,
+                                inverted: item.attribute("type") == Some("inverted"),
+                            }),
+                        });
+                        continue;
+                    }
+                    None => (FeatureClass::Content, format!("fermata {:?}", text(item))),
+                },
                 other => (FeatureClass::Content, format!("barline: {other}")),
             };
             self.features.record(class, kind, place.clone());
         }
     }
+}
+
+/// A line's kind, keyed with its number while it is open.
+fn line_kind(element: &str) -> &'static str {
+    match element {
+        "wedge" => "wedge",
+        "pedal" => "pedal",
+        "octave-shift" => "octave shift",
+        "dashes" => "text line",
+        _ => "bracket",
+    }
+}
+
+/// A `<sound tempo>`, where it is a finite positive number of quarter notes
+/// per minute.
+fn sound_tempo(sound: Node) -> Option<f64> {
+    sound
+        .attribute("tempo")?
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|t| t.is_finite() && *t > 0.0)
+}
+
+/// A `<metronome>` the model holds: one beat unit, dotted or not, at a
+/// number per minute kept as its text.
+fn metronome(node: Node) -> Option<Metronome> {
+    let units: Vec<Node> = children(node, "beat-unit").collect();
+    let [unit] = units.as_slice() else {
+        return None;
+    };
+    let per_minute = child_text(node, "per-minute")?.trim();
+    if per_minute.is_empty() || child(node, "beat-unit-tied").is_some() {
+        return None;
+    }
+    Some(Metronome {
+        beat: note_value(text(*unit))?,
+        dots: children(node, "beat-unit-dot")
+            .count()
+            .min(usize::from(u8::MAX)) as u8,
+        per_minute: Text::new(per_minute),
+    })
+}
+
+/// What a note's `<notations>` carry, mapped (schema major 5): its event's
+/// marks and ornaments, its point marks (a fermata, a breath mark, a caesura,
+/// dynamics), and the lines it begins or ends (a trill line, a glissando).
+#[derive(Default)]
+struct NoteMarks {
+    event: Vec<EventMark>,
+    ornaments: Vec<Ornament>,
+    points: Vec<MarkerKind>,
+    /// Whether it begins the line, the line's kind and number, and the line.
+    lines: Vec<(bool, (&'static str, String), SpannerKind, LineStyle)>,
+}
+
+impl NoteMarks {
+    /// Reads one child of `<notations>`, returning the kinds it holds that
+    /// the model cannot, for the caller to record.
+    fn read(&mut self, item: Node) -> Result<(), Vec<String>> {
+        let mut unmapped = Vec::new();
+        match name(item) {
+            "articulations" => {
+                for mark in elements(item) {
+                    let mapped = match name(mark) {
+                        "accent" => EventMark::Accent,
+                        "strong-accent" => EventMark::Marcato,
+                        "staccato" => EventMark::Staccato,
+                        "tenuto" => EventMark::Tenuto,
+                        "detached-legato" => EventMark::DetachedLegato,
+                        "staccatissimo" => EventMark::Staccatissimo,
+                        "spiccato" => EventMark::Spiccato,
+                        "scoop" => EventMark::Scoop,
+                        "plop" => EventMark::Plop,
+                        "doit" => EventMark::Doit,
+                        "falloff" => EventMark::Falloff,
+                        "stress" => EventMark::Stress,
+                        "unstress" => EventMark::Unstress,
+                        "breath-mark" => {
+                            match breath_mark(text(mark)) {
+                                Some(b) => self.points.push(MarkerKind::Breath(b)),
+                                None => unmapped.push(format!("breath mark {:?}", text(mark))),
+                            }
+                            continue;
+                        }
+                        "caesura" => {
+                            match caesura(text(mark)) {
+                                Some(c) => self.points.push(MarkerKind::Caesura(c)),
+                                None => unmapped.push(format!("caesura {:?}", text(mark))),
+                            }
+                            continue;
+                        }
+                        other => {
+                            unmapped.push(format!("articulations: {other}"));
+                            continue;
+                        }
+                    };
+                    self.event.push(mapped);
+                }
+            }
+            "technical" => {
+                for mark in elements(item) {
+                    let mapped = match name(mark) {
+                        "up-bow" => EventMark::UpBow,
+                        "down-bow" => EventMark::DownBow,
+                        "harmonic" => EventMark::Harmonic,
+                        "open-string" | "open" => EventMark::OpenString,
+                        "stopped" => EventMark::Stopped,
+                        "snap-pizzicato" => EventMark::SnapPizzicato,
+                        other => {
+                            unmapped.push(format!("technical: {other}"));
+                            continue;
+                        }
+                    };
+                    self.event.push(mapped);
+                }
+            }
+            "ornaments" => {
+                for mark in elements(item) {
+                    let kind = match name(mark) {
+                        "trill-mark" => OrnamentKind::Trill,
+                        "mordent" => OrnamentKind::Mordent,
+                        "inverted-mordent" => OrnamentKind::InvertedMordent,
+                        "turn" => OrnamentKind::Turn,
+                        "inverted-turn" => OrnamentKind::InvertedTurn,
+                        "accidental-mark" => {
+                            let id = accidental_mark(text(mark));
+                            match (self.ornaments.last_mut(), id) {
+                                (Some(ornament), Some(id)) => {
+                                    if mark.attribute("placement") == Some("below") {
+                                        ornament.accidental_below = Some(id);
+                                    } else {
+                                        ornament.accidental_above = Some(id);
+                                    }
+                                }
+                                _ => unmapped.push(String::from("ornament accidental")),
+                            }
+                            continue;
+                        }
+                        "tremolo" => {
+                            let strokes = text(mark)
+                                .trim()
+                                .parse::<u8>()
+                                .ok()
+                                .filter(|s| (1..=8).contains(s));
+                            match (mark.attribute("type").unwrap_or("single"), strokes) {
+                                ("single", Some(strokes)) => {
+                                    self.event.push(EventMark::Tremolo { strokes })
+                                }
+                                // The pairing is positional: the mark is on the
+                                // first note, with the next of its voice.
+                                ("start", Some(strokes)) => {
+                                    self.event.push(EventMark::TremoloWithNext { strokes })
+                                }
+                                ("stop", _) => {}
+                                (kind, _) => unmapped.push(format!("tremolo {kind}")),
+                            }
+                            continue;
+                        }
+                        "wavy-line" => {
+                            let number = mark.attribute("number").unwrap_or("1").to_owned();
+                            let key = ("trill line", number);
+                            match mark.attribute("type") {
+                                Some("start") => self.lines.push((
+                                    true,
+                                    key,
+                                    SpannerKind::TrillExtension,
+                                    LineStyle::Solid,
+                                )),
+                                Some("stop") => self.lines.push((
+                                    false,
+                                    key,
+                                    SpannerKind::TrillExtension,
+                                    LineStyle::Solid,
+                                )),
+                                _ => {}
+                            }
+                            continue;
+                        }
+                        // The closed "+" MuseScore writes as an ornament.
+                        "other-ornament" if mark.attribute("smufl") == Some("brassMuteClosed") => {
+                            self.event.push(EventMark::Stopped);
+                            continue;
+                        }
+                        other => {
+                            unmapped.push(format!("ornaments: {other}"));
+                            continue;
+                        }
+                    };
+                    self.ornaments.push(Ornament {
+                        kind,
+                        accidental_above: None,
+                        accidental_below: None,
+                    });
+                }
+            }
+            "fermata" => match fermata_shape(text(item)) {
+                Some(shape) => self.points.push(MarkerKind::Fermata(Fermata {
+                    shape,
+                    inverted: item.attribute("type") == Some("inverted"),
+                })),
+                None => unmapped.push(format!("fermata {:?}", text(item))),
+            },
+            "arpeggiate" => self.event.push(EventMark::Arpeggio {
+                direction: match item.attribute("direction") {
+                    Some("up") => ArpeggioDirection::Up,
+                    Some("down") => ArpeggioDirection::Down,
+                    _ => ArpeggioDirection::Plain,
+                },
+            }),
+            "dynamics" => {
+                for mark in elements(item) {
+                    self.points.push(MarkerKind::Dynamic(dynamic(mark)));
+                }
+            }
+            "slide" | "glissando" => {
+                let kind = if name(item) == "slide" {
+                    "slide"
+                } else {
+                    "glissando"
+                };
+                let line = match item.attribute("line-type") {
+                    Some("solid") => Some(LineStyle::Solid),
+                    Some("dashed") => Some(LineStyle::Dashed),
+                    Some("dotted") => Some(LineStyle::Dotted),
+                    Some("wavy") => Some(LineStyle::Wavy),
+                    None if kind == "slide" => Some(LineStyle::Solid),
+                    None => Some(LineStyle::Wavy),
+                    Some(_) => None,
+                };
+                let key = (kind, item.attribute("number").unwrap_or("1").to_owned());
+                match (item.attribute("type"), line) {
+                    (Some("start"), Some(line)) => {
+                        self.lines.push((true, key, SpannerKind::Glissando, line))
+                    }
+                    (Some("stop"), _) => {
+                        self.lines
+                            .push((false, key, SpannerKind::Glissando, LineStyle::Solid))
+                    }
+                    (Some("start"), None) => unmapped.push(format!("{kind} line")),
+                    _ => {}
+                }
+            }
+            other => unmapped.push(other.to_owned()),
+        }
+        if unmapped.is_empty() {
+            Ok(())
+        } else {
+            Err(unmapped)
+        }
+    }
+
+    /// A name for each thing it holds, for a note that carries them nowhere.
+    fn kinds(&self) -> impl Iterator<Item = String> + '_ {
+        self.event
+            .iter()
+            .map(mark_name)
+            .chain(self.ornaments.iter().map(|_| String::from("ornament")))
+            .chain(self.points.iter().map(|_| String::from("point mark")))
+            .chain(self.lines.iter().map(|(_, key, ..)| key.0.to_owned()))
+    }
+}
+
+/// An event mark's name in a recorded kind.
+fn mark_name(mark: &EventMark) -> String {
+    format!("mark {mark:?}")
+}
+
+/// A grace note's or a metronome's `<type>` or `<beat-unit>`, where the model
+/// holds it.
+fn note_value(value: &str) -> Option<NoteValue> {
+    Some(match value.trim() {
+        "whole" => NoteValue::Whole,
+        "half" => NoteValue::Half,
+        "quarter" => NoteValue::Quarter,
+        "eighth" => NoteValue::Eighth,
+        "16th" => NoteValue::Sixteenth,
+        "32nd" => NoteValue::ThirtySecond,
+        "64th" => NoteValue::SixtyFourth,
+        _ => return None,
+    })
+}
+
+fn breath_mark(value: &str) -> Option<BreathMark> {
+    match value.trim() {
+        "" | "comma" => Some(BreathMark::Comma),
+        "tick" => Some(BreathMark::Tick),
+        _ => None,
+    }
+}
+
+fn caesura(value: &str) -> Option<CaesuraMark> {
+    match value.trim() {
+        "" | "normal" | "single" => Some(CaesuraMark::Normal),
+        "thick" => Some(CaesuraMark::Thick),
+        "short" => Some(CaesuraMark::Short),
+        "curved" => Some(CaesuraMark::Curved),
+        _ => None,
+    }
+}
+
+fn fermata_shape(value: &str) -> Option<FermataShape> {
+    match value.trim() {
+        "" | "normal" => Some(FermataShape::Normal),
+        "angled" => Some(FermataShape::Short),
+        "square" => Some(FermataShape::Long),
+        "double-angled" => Some(FermataShape::VeryShort),
+        "double-square" => Some(FermataShape::VeryLong),
+        _ => None,
+    }
+}
+
+/// An ornament's accidental, by the name a spelling's accidental uses.
+fn accidental_mark(value: &str) -> Option<AccidentalId> {
+    match value.trim() {
+        name @ ("sharp" | "flat" | "natural" | "double-sharp" | "sharp-sharp" | "flat-flat") => {
+            Some(AccidentalId::new(name))
+        }
+        _ => None,
+    }
+}
+
+/// One mark of a `<dynamics>`: a standard dynamic, or its text.
+fn dynamic(mark: Node) -> Dynamic {
+    match name(mark) {
+        "pppppp" => Dynamic::Pppppp,
+        "ppppp" => Dynamic::Ppppp,
+        "pppp" => Dynamic::Pppp,
+        "ppp" => Dynamic::Ppp,
+        "pp" => Dynamic::Pp,
+        "p" => Dynamic::P,
+        "mp" => Dynamic::Mp,
+        "mf" => Dynamic::Mf,
+        "f" => Dynamic::F,
+        "ff" => Dynamic::Ff,
+        "fff" => Dynamic::Fff,
+        "ffff" => Dynamic::Ffff,
+        "fffff" => Dynamic::Fffff,
+        "ffffff" => Dynamic::Ffffff,
+        "fp" => Dynamic::Fp,
+        "sf" => Dynamic::Sf,
+        "sfz" => Dynamic::Sfz,
+        "sffz" => Dynamic::Sffz,
+        "sfp" => Dynamic::Sfp,
+        "sfpp" => Dynamic::Sfpp,
+        "rf" => Dynamic::Rf,
+        "rfz" => Dynamic::Rfz,
+        "fz" => Dynamic::Fz,
+        "n" => Dynamic::Niente,
+        "other-dynamics" => Dynamic::Other(Text::new(text(mark))),
+        other => Dynamic::Other(Text::new(other)),
+    }
+}
+
+/// A `<lyric>`: its syllable, nothing where it only continues an extender
+/// line its verse's earlier syllable began, or the kind it holds that the
+/// model cannot.
+fn read_lyric(lyric: Node) -> Result<Option<SourceLyric>, String> {
+    let verse = match lyric.attribute("number") {
+        None => 1,
+        Some(n) => n
+            .trim()
+            .parse::<u16>()
+            .ok()
+            .filter(|v| *v >= 1)
+            .ok_or_else(|| String::from("lyric verse not numbered"))?,
+    };
+    if child(lyric, "elision").is_some() {
+        return Err(String::from("lyric elision"));
+    }
+    let syllable: String = children(lyric, "text").map(text).collect();
+    let extend = child(lyric, "extend");
+    if syllable.is_empty() {
+        return match extend {
+            Some(_) => Ok(None),
+            None => Err(String::from("lyric with no syllable")),
+        };
+    }
+    Ok(Some(SourceLyric {
+        verse,
+        text: Text::new(&syllable),
+        syllabic: match child_text(lyric, "syllabic") {
+            Some("begin") => Syllabic::Begin,
+            Some("middle") => Syllabic::Middle,
+            Some("end") => Syllabic::End,
+            _ => Syllabic::Single,
+        },
+        extension: extend
+            .is_some_and(|e| !matches!(e.attribute("type"), Some("stop") | Some("continue"))),
+    }))
 }
 
 /// The fifths a transposition adds to a key: `7` per semitone less `12` per

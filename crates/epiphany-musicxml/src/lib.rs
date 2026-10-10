@@ -51,6 +51,38 @@
 //!   between two of the same member and step pairs no pitch.
 //! - Every operation comes from one replica in one causal chain, so the import
 //!   is deterministic and reduces as one author's history.
+//! - Expression and text import through the operations (schema major 5). A
+//!   note's articulations, technical marks and arpeggio become its event's
+//!   marks, one of each kind over its chord; its trills, mordents and turns,
+//!   with an accidental mark above or below, its ornaments; a single-note
+//!   tremolo its strokes, and a two-note tremolo's start a mark on the first
+//!   note, the pairing being positional. MuseScore's closed "+" written as
+//!   `other-ornament` is the stopped mark, once with `<stopped/>`.
+//! - A grace note is an event of zero duration at the position of the note it
+//!   precedes, its slash, notated value and dots in its payload and its place
+//!   among the graces there its order. It beams with graces alone and is no
+//!   tuplet's member; a tie on one is recorded, not read.
+//! - Dynamics, fermatas (on a note, a rest or a barline), breath marks,
+//!   caesuras, staff text, tempo and metronome marks, rehearsal marks, segno
+//!   and coda are markers. One a direction places stands on the first note or
+//!   rest of its staff starting where it stands (the note, not a grace before
+//!   it), or where none starts, at the position in the region. A run of
+//!   `<words>` is one text; the words of a text line are its text, and those
+//!   of a tempo its mark's.
+//! - A `<sound tempo>` sets a segment of the score's tempo map, in quarter
+//!   notes per minute, once at each place any part sets one; the mark its
+//!   direction shows is written in the same transaction, with no link
+//!   stored (D58, Q7).
+//! - Hairpins, pedal lines (without their sign where the file says so),
+//!   ottavas (`down` sounds above), text lines, brackets, trill lines and
+//!   glissandi (a slide straight, a glissando wavy unless the file says
+//!   otherwise) are spanners from the point their start stands to their
+//!   stop's, paired by kind and number; a start of a line already open, a
+//!   stop with none open, or a line never stopped is recorded, since the
+//!   file does not say which stop ends which.
+//! - A lyric is one syllable an event and verse, its text in NFC; a syllable
+//!   only continuing its verse's extender line is the earlier syllable's
+//!   extension.
 //!
 //! ```text
 //! let import = epiphany_musicxml::import(&xml)?;
