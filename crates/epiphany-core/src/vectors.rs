@@ -23,13 +23,13 @@
 //!   [`CanonicalValue::decode_canonical`] — the same public, production API a
 //!   value-typed operation payload uses — never a decoder reimplemented here.
 //! * **Whole `Score`, one per schema major** — `core.score_v0` through
-//!   `core.score_v4`, routed through [`Score::decode_canonical_versioned`].
-//!   Majors 0–3 are **not** literal-byte-locked at the *current* layout: a
+//!   `core.score_v5`, routed through [`Score::decode_canonical_versioned`].
+//!   Majors 0–4 are **not** literal-byte-locked at the *current* layout: a
 //!   migration deliberately rewrites bytes (that is the point of
 //!   default-filling), so injectivity there means the input was already
 //!   canonical *at its own major* — `decode_vN_score` re-encodes through the
 //!   frozen `encode_vN_score` and rejects a mismatch, so a successful decode
-//!   already proves that. Only `core.score_v4` compares
+//!   already proves that. Only `core.score_v5` compares
 //!   `decoded.canonical_bytes() == bytes`. See the contract's "trap" section;
 //!   getting this backwards (comparing v0–v2 against the *current* encoding)
 //!   would fail on every vector, and "fixing" it by relaxing the check would
@@ -39,11 +39,14 @@ use epiphany_determinism::CanonicalF64;
 
 use crate::accidental::{SmuflVersion, SmuflVersionRequirement};
 use crate::codec::Codec;
-use crate::event::{Event, PitchedEvent, StemConfiguration};
-use crate::graph::{
-    ScoreTuningContext, Slur, SlurKind, SpanStyle, Tuplet, TupletDisplay, TupletRatio,
+use crate::event::{
+    Event, EventMark, Grace, GraceKind, Ornament, OrnamentKind, PitchedEvent, StemConfiguration,
 };
-use crate::ids::{EventId, PitchId, ReplicaId, SlurId, TupletId, VoiceId};
+use crate::graph::{
+    Dynamic, Lyric, Marker, MarkerKind, ScoreTuningContext, Slur, SlurKind, SpanStyle, Syllabic,
+    Tuplet, TupletDisplay, TupletRatio,
+};
+use crate::ids::{EventId, LyricLineId, MarkerId, PitchId, ReplicaId, SlurId, TupletId, VoiceId};
 use crate::pitch::{
     AcousticPitch, AcousticRealization, CmnNominal, IdentifiedPitch, Pitch, PitchSpaceId,
     PitchSpacePosition, ScalePosition, TuningReference, TuningSystemId,
@@ -106,7 +109,7 @@ fn simple_event() -> Event {
             id: PitchId::new(ReplicaId(1), 1),
             pitch: pitch_with_cents(0.0),
         }],
-        articulations: vec![],
+        marks: vec![],
         dynamic: None,
         ornaments: vec![],
         stem: StemConfiguration,
@@ -291,12 +294,51 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
     // --- Event -----------------------------------------------------------------
     const EVENT: &str = "core.event";
     let event_bytes = simple_event().canonical_bytes();
+    // Schema major 5: a note with marks, an ornament and a grace payload, and
+    // the same marks out of order, which no canonical set writes.
+    let Event::Pitched(mut marked) = simple_event() else {
+        unreachable!("a note")
+    };
+    marked.marks = vec![
+        EventMark::Staccato,
+        EventMark::Accent,
+        EventMark::Tremolo { strokes: 3 },
+    ];
+    marked.ornaments = vec![Ornament {
+        kind: OrnamentKind::Trill,
+        accidental_above: Some(crate::pitch::AccidentalId::new("sharp")),
+        accidental_below: None,
+    }];
+    marked.grace = Some(Grace {
+        kind: GraceKind::Acciaccatura,
+        value: crate::graph::NoteValue::Eighth,
+        dots: 0,
+        order: 0,
+    });
+    let marked_bytes = Event::Pitched(marked.clone()).canonical_bytes();
+    let mut unordered = marked;
+    unordered.marks.swap(0, 1);
+    let unordered_bytes = Event::Pitched(unordered).canonical_bytes();
     v.push(row(
         EVENT,
         "accept",
         "-",
         "pitched_event",
         event_bytes.clone(),
+    ));
+    v.push(row(
+        EVENT,
+        "accept",
+        "-",
+        "with_marks_and_grace",
+        marked_bytes,
+    ));
+    v.push(row(
+        EVENT,
+        "reject",
+        "marks-out-of-order",
+        "with_marks_out_of_order",
+        unordered_bytes,
     ));
     v.push(row(
         EVENT,
@@ -418,7 +460,8 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
     let v1 = crate::codec::encode_v1_score(&score);
     let v2 = crate::codec::encode_v2_score(&score);
     let v3 = crate::codec::encode_v3_score(&score);
-    let v4 = score.canonical_bytes();
+    let v4 = crate::codec::encode_v4_score(&score);
+    let v5 = score.canonical_bytes();
 
     const SV0: &str = "core.score_v0";
     v.push(row(SV0, "accept", "-", "valid_score_seed_7", v0.clone()));
@@ -495,7 +538,7 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         "accept",
         "-",
         "with_a_hidden_tuplet",
-        tupled.canonical_bytes(),
+        crate::codec::encode_v4_score(&tupled),
     ));
     v.push(row(
         SV4,
@@ -503,6 +546,167 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         "truncated",
         "with_a_major_3_tuplet",
         tupled_v3,
+    ));
+
+    // Schema major 5 appends `voice_homes` to the score and gives a marker its
+    // kind, a lyric its syllable and an event its marks. A major-4 form of a
+    // score holding a marker is refused by name: no major before 5 gave a
+    // marker a meaning.
+    let mut expressive = score.clone();
+    let first = expressive.events.iter().next().expect("an event").id();
+    expressive.cross_cutting.markers.push(Marker {
+        id: MarkerId::new(ReplicaId(1), 77),
+        anchor: TimeAnchor::Event {
+            id: first,
+            offset: AnchorOffset::Zero,
+        },
+        kind: MarkerKind::Dynamic(Dynamic::Mf),
+    });
+    expressive.cross_cutting.lyrics.push(Lyric {
+        id: LyricLineId::new(ReplicaId(1), 78),
+        event: first,
+        verse: 1,
+        text: crate::Text::new("la"),
+        syllabic: Syllabic::Single,
+        extension: false,
+    });
+    let (_, _, voice) = expressive.voices().next().expect("a voice");
+    let (voice, staff) = (voice.id, expressive.staves[0].id);
+    expressive.voice_homes.insert(voice, staff);
+    v.push(row(
+        SV4,
+        "reject",
+        "major-5-value",
+        "with_a_marker",
+        crate::codec::encode_v4_score(&expressive),
+    ));
+    // Each other value only major 5 can hold, alone in a major-4 form.
+    let mut lyric = score.clone();
+    lyric.cross_cutting.lyrics = expressive.cross_cutting.lyrics.clone();
+    v.push(row(
+        SV4,
+        "reject",
+        "major-5-value",
+        "with_a_lyric",
+        crate::codec::encode_v4_score(&lyric),
+    ));
+    let line = |kind: crate::graph::SpannerKind, style: crate::graph::LineStyle| {
+        let mut lined = score.clone();
+        lined.cross_cutting.spanners.push(crate::graph::Spanner {
+            id: crate::ids::SpannerId::new(ReplicaId(1), 79),
+            start: TimeAnchor::Event {
+                id: first,
+                offset: AnchorOffset::Zero,
+            },
+            end: TimeAnchor::Event {
+                id: first,
+                offset: AnchorOffset::Zero,
+            },
+            staves: vec![lined.staves[0].id],
+            kind,
+            style: SpanStyle {
+                line: style,
+                thickness: None,
+            },
+        });
+        crate::codec::encode_v4_score(&lined)
+    };
+    v.push(row(
+        SV4,
+        "reject",
+        "major-5-value",
+        "with_a_wavy_line",
+        line(
+            crate::graph::SpannerKind::TrillExtension,
+            crate::graph::LineStyle::Wavy,
+        ),
+    ));
+    v.push(row(
+        SV4,
+        "reject",
+        "major-5-value",
+        "with_a_pedal_bracket",
+        line(
+            crate::graph::SpannerKind::PedalBracket(crate::graph::PedalKind::Sustain),
+            crate::graph::LineStyle::Solid,
+        ),
+    ));
+    // A major-4 event's placeholder slots, filled: the frozen encoder writes
+    // them empty, so the filled forms are the empty ones with a count or a
+    // presence byte set. A note's slots end its bytes: the marks' count, the
+    // dynamic's presence, the ornaments' count, the unit stem and the
+    // grace's presence (4 + 1 + 4 + 0 + 1 bytes).
+    let note = score
+        .events
+        .iter()
+        .find(|e| matches!(e, Event::Pitched(_)))
+        .expect("a note")
+        .canonical_bytes();
+    let tail = note.len() - 10;
+    assert_eq!(
+        &note[tail..],
+        &[0; 10],
+        "a note's empty slots end its bytes"
+    );
+    let refill = |at: usize, value: u8| {
+        let mut filled = note.clone();
+        filled[at] = value;
+        let mut bytes = v4.clone();
+        let start = bytes
+            .windows(note.len())
+            .position(|w| w == note.as_slice())
+            .expect("the note is in the score's major-4 bytes");
+        bytes.splice(start..start + note.len(), filled);
+        bytes
+    };
+    v.push(row(
+        SV4,
+        "reject",
+        "major-5-value",
+        "with_an_articulation_placeholder",
+        refill(tail, 1),
+    ));
+    v.push(row(
+        SV4,
+        "reject",
+        "major-5-value",
+        "with_a_grace_kind",
+        refill(note.len() - 1, 1),
+    ));
+
+    const SV5: &str = "core.score_v5";
+    v.push(row(SV5, "accept", "-", "valid_score_seed_7", v5.clone()));
+    v.push(row(
+        SV5,
+        "reject",
+        "trailing-bytes",
+        "valid_score_seed_7_trailing",
+        with_trailing_byte(&v5),
+    ));
+    v.push(row(
+        SV5,
+        "accept",
+        "-",
+        "with_expression_and_text",
+        expressive.canonical_bytes(),
+    ));
+    // Text is held to NFC: U+2002 EN SPACE is the composition of U+2000 EN
+    // QUAD, both three bytes in UTF-8, so the decomposed form is the same
+    // length with its last byte changed.
+    let mut spaced = expressive.clone();
+    spaced.cross_cutting.lyrics[0].text = crate::Text::new("la\u{2002}la");
+    let mut unnormalized = spaced.canonical_bytes();
+    let at = unnormalized
+        .windows(3)
+        .position(|w| w == [0xE2, 0x80, 0x82])
+        .expect("the composed space is in the score's bytes");
+    unnormalized[at + 2] = 0x80;
+    v.push(row(
+        SV5,
+        "reject",
+        "text-not-nfc",
+        "with_a_lyric_not_in_nfc",
+        unnormalized,
     ));
 
     // --- Tuplet ----------------------------------------------------------
@@ -560,13 +764,13 @@ fn leaf_check<T: CanonicalValue>(bytes: &[u8]) -> Result<bool, String> {
 /// against the *current* `canonical_bytes()` would fail on every vector, and
 /// `decode_vN_score`'s own re-encode-through-`encode_vN_score` guard already
 /// proved the input canonical at *its own* major before returning `Ok` at all
-/// (see the module doc's account of the contract's "trap"). Only major 4
+/// (see the module doc's account of the contract's "trap"). Only major 5
 /// compares `decoded.canonical_bytes() == bytes` — the live layout, where that
 /// comparison is exactly what injectivity means.
 fn score_check(bytes: &[u8], major: u16) -> Result<bool, String> {
     match Score::decode_canonical_versioned(bytes, major) {
         Ok(decoded) => {
-            if major == 4 {
+            if major == 5 {
                 Ok(decoded.canonical_bytes() == bytes)
             } else {
                 Ok(true)
@@ -596,6 +800,7 @@ pub fn check(surface: &str, bytes: &[u8]) -> Option<Result<bool, String>> {
         "core.score_v2" => Some(score_check(bytes, 2)),
         "core.score_v3" => Some(score_check(bytes, 3)),
         "core.score_v4" => Some(score_check(bytes, 4)),
+        "core.score_v5" => Some(score_check(bytes, 5)),
         "core.tuplet" => Some(leaf_check::<Tuplet>(bytes)),
         _ => None,
     }
@@ -636,7 +841,7 @@ mod tests {
                 other => panic!("unknown verdict {other}"),
             }
         }
-        assert_eq!(seen.len(), 16, "surfaces: {:?}", seen.keys());
+        assert_eq!(seen.len(), 17, "surfaces: {:?}", seen.keys());
         for (surface, (accept, reject)) in seen {
             assert!(accept, "{surface} has no accept vector");
             assert!(reject, "{surface} has no reject vector");
@@ -693,6 +898,45 @@ mod tests {
         }
         assert!(checked.contains(&("core.tuplet", "major_3_form".to_string())));
         assert!(checked.contains(&("core.score_v4", "with_a_major_3_tuplet".to_string())));
+    }
+
+    /// X4b: each core vector classed `major-5-value` or `text-not-nfc` is
+    /// refused by the name its value has, not by some other error a malformed
+    /// vector would raise.
+    #[test]
+    fn major_5_refusals_name_their_value() {
+        use crate::codec::ScoreDecodeError;
+        let expected = |name: &str| -> &'static str {
+            match name {
+                "with_a_marker" => "a marker before schema major 5 has no kind",
+                "with_a_lyric" => "a lyric line before schema major 5 has no syllable",
+                "with_a_wavy_line" => "a wavy line style before schema major 5",
+                "with_a_pedal_bracket" => "a pedal line without its sign before schema major 5",
+                "with_an_articulation_placeholder" => {
+                    "an articulation placeholder before schema major 5"
+                }
+                "with_a_grace_kind" => "a grace kind before schema major 5",
+                "with_a_lyric_not_in_nfc" => "Text: not in Unicode NFC",
+                other => panic!("{other}: a refusal this test does not name"),
+            }
+        };
+        let mut checked = 0;
+        for (surface, verdict, class, name, bytes) in decode_vectors() {
+            if verdict != "reject" || !matches!(class, "major-5-value" | "text-not-nfc") {
+                continue;
+            }
+            let major = surface
+                .strip_prefix("core.score_v")
+                .and_then(|m| m.parse::<u16>().ok())
+                .expect("a score surface");
+            assert_eq!(
+                Score::decode_canonical_versioned(&bytes, major).err(),
+                Some(ScoreDecodeError::InvalidValue(expected(&name))),
+                "{surface}/{name}"
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 7, "every major-5 refusal is checked");
     }
 
     /// The mandatory regression vector for the 3b-i defect is present: it is

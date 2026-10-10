@@ -56,7 +56,7 @@ fn hand_built_score() -> Score {
                     },
                 },
             }],
-            articulations: vec![],
+            marks: vec![],
             dynamic: None,
             ornaments: vec![],
             stem: StemConfiguration,

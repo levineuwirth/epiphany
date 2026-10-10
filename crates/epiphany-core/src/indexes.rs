@@ -206,10 +206,7 @@ impl ScoreIndexes {
             }
         }
         for ly in &cc.lyrics {
-            let who = TypedObjectId::LyricLine(ly.id);
-            for e in &ly.events {
-                add(ev(*e), who);
-            }
+            add(ev(ly.event), TypedObjectId::LyricLine(ly.id));
         }
         for cs in &cc.chord_symbols {
             if let Some(o) = anchor_object(&cs.anchor) {

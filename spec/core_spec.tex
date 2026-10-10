@@ -4304,6 +4304,11 @@ pub struct Score {
 
     /// Replica identifier and identifier generation state.
     pub identity: IdentityContext,
+
+    /// Each visiting voice's home staff, the staff it belongs to
+    /// whatever staff its notes are drawn on (schema major 5). A voice
+    /// absent here is at home on its instance's staff.
+    pub voice_homes: BTreeMap<VoiceId, StaffId>,
 }
 
 pub struct StaffGroup {
@@ -4989,32 +4994,91 @@ pub struct PitchedEvent {
     /// single-note event; multiple pitches are a chord.
     pub pitches: Vec<IdentifiedPitch>,
 
-    /// Articulations attached directly to the event.
-    pub articulations: Vec<ArticulationMark>,
+    /// The marks the event carries, a canonical set (schema
+    /// major 5): articulations, bowings, technical, brass and jazz
+    /// marks, tremolo and arpeggio.
+    pub marks: Vec<EventMark>,
 
-    /// Single-event dynamic marking (e.g., sfz, fp). Spanning
-    /// dynamics are cross-cutting structures, not event fields.
+    /// Reserved: a dynamic is a point marker (Marker, kind
+    /// Dynamic), not an event field, so no writer fills this slot.
     pub dynamic: Option<DynamicMark>,
 
-    /// Ornaments attached to the event. Ornament resolutions (the
-    /// realized notes of a trill, mordent, etc.) are cross-cutting
-    /// structures.
-    pub ornaments: Vec<OrnamentMark>,
+    /// Ornaments attached to the event, a canonical set (schema
+    /// major 5). Ornament resolutions (the realized notes of a
+    /// trill, mordent, etc.) are a playback concern.
+    pub ornaments: Vec<Ornament>,
 
     /// Stem configuration: direction, length adjustment, hidden.
     pub stem: StemConfiguration,
 
-    /// Whether this event is a grace note, and if so its kind.
-    pub grace: Option<GraceKind>,
+    /// Whether this event is a grace note, and if so how it is
+    /// notated (schema major 5).
+    pub grace: Option<Grace>,
+}
+
+/// A mark an event carries (schema major 5). Growth is by appended
+/// variant.
+pub enum EventMark {
+    Staccato, Staccatissimo, Spiccato, Tenuto, DetachedLegato,
+    Accent, Marcato, Stress, Unstress,
+    UpBow, DownBow, Harmonic, OpenString, Stopped, SnapPizzicato,
+    Scoop, Plop, Doit, Falloff,
+    /// A single-note tremolo, its strokes through the stem.
+    Tremolo { strokes: u8 },
+    /// A two-note tremolo with the next event of the voice.
+    TremoloWithNext { strokes: u8 },
+    /// A chord's arpeggio.
+    Arpeggio { direction: ArpeggioDirection },
+}
+
+pub enum ArpeggioDirection { Plain, Up, Down }
+
+/// An ornament with the accidentals shown above and below it.
+pub struct Ornament {
+    pub kind: OrnamentKind,
+    pub accidental_above: Option<AccidentalId>,
+    pub accidental_below: Option<AccidentalId>,
+}
+
+pub enum OrnamentKind { Trill, Mordent, InvertedMordent, Turn, InvertedTurn }
+
+/// A grace note's notation: its kind, its notated value and dots
+/// (its duration being zero), and its order among the graces at
+/// its position.
+pub struct Grace {
+    pub kind: GraceKind,
+    pub value: NoteValue,
+    pub dots: u8,
+    pub order: u16,
 }
 
 pub enum GraceKind {
+    /// Slashed.
     Acciaccatura,
     Appoggiatura,
-    Unmeasured,
-    MeasuredFraction(MusicalDuration),
 }
 \end{lstlisting}
+
+\begin{requirement}
+  \label{req:graph:grace-timing}
+  A grace note (an event whose \texttt{grace} is present) \MUST{} have a
+  musical duration of zero, and an event whose \texttt{grace} is absent
+  \MUST{} have a positive one. A grace note occupies no voice time: it
+  stands at an event's onset and never strictly inside another event's
+  span in its voice, and a voice's events at one position stand with its
+  graces first, in ascending \texttt{order} and then by identifier, before
+  the event of positive duration there. Its principal is positional: a
+  grace whose position holds no other event stands alone, drawn before
+  that column.
+\end{requirement}
+
+\begin{requirement}
+  \label{req:graph:event-mark-sets}
+  An event's \texttt{marks} and \texttt{ornaments} \MUST{} be canonical
+  sets: at most one of each kind, in ascending order of kind (the
+  discriminant of an \texttt{EventMark}, the \texttt{kind} of an
+  \texttt{Ornament}).
+\end{requirement}
 
 \begin{requirement}
   \label{req:graph:pitched-event-nonempty}
@@ -5039,10 +5103,10 @@ pub struct UnpitchedEvent {
     /// The unpitched instrument identifier, for sound mapping.
     pub instrument_member: UnpitchedMemberId,
 
-    pub articulations: Vec<ArticulationMark>,
+    pub marks: Vec<EventMark>,
     pub dynamic: Option<DynamicMark>,
     pub stem: StemConfiguration,
-    pub grace: Option<GraceKind>,
+    pub grace: Option<Grace>,
 }
 \end{lstlisting}
 
@@ -5694,6 +5758,8 @@ pub enum LineStyle {
     Solid,
     Dashed,
     Dotted,
+    /// A trill's or a glissando's wave (schema major 5).
+    Wavy,
 }
 
 /// A per-staff bracket adornment (defined schema major 2), distinct
@@ -5920,7 +5986,7 @@ pub struct CrossCuttingRegistry {
     pub analytical: Vec<AnalyticalAnnotation>,
     pub comments: Vec<Comment>,
     pub graphic_gestures: Vec<GraphicGesture>,
-    pub lyrics: Vec<LyricLine>,
+    pub lyrics: Vec<Lyric>,
     pub chord_symbols: Vec<ChordSymbol>,
 }
 \end{lstlisting}
@@ -6157,6 +6223,9 @@ pub enum SpannerKind {
     Portamento,
     TextLine(TextLineDefinition),
     Bracket(BracketKind),
+    /// A pedal line drawn without its sign, the line alone (schema
+    /// major 5); PedalLine is drawn with it.
+    PedalBracket(PedalKind),
 }
 
 /// Hairpin orientation (defined schema major 2).
@@ -6181,7 +6250,7 @@ pub enum PedalKind {
 /// A text line's content (defined schema major 2); the dash pattern
 /// comes from the spanner's style.
 pub struct TextLineDefinition {
-    pub text: String,
+    pub text: Text,
 }
 
 /// A bracket spanner's shape (defined schema major 2). Growth is by
@@ -6193,30 +6262,88 @@ pub enum BracketKind {
 
 \subsection{Markers}
 
-A marker is a point annotation: rehearsal marks, section labels,
-tempo text, fermatas (which technically attach to events but may
-also be region-level), and similar.
+A marker is a point mark (schema major 5): a dynamic, a fermata, a
+breath mark, a caesura, staff text, a tempo mark, a rehearsal mark, a
+segno or a coda. Its placement is the engraver's, not stored.
 
 \begin{lstlisting}[language=Rust]
 pub struct Marker {
     pub id: MarkerId,
     pub anchor: TimeAnchor,
     pub kind: MarkerKind,
-    pub display: MarkerDisplay,
 }
 
+/// Growth is by appended variant.
 pub enum MarkerKind {
-    Rehearsal(RehearsalMark),
-    Section(SectionLabel),
-    Tempo(TempoMarking),
-    Coda,
+    Dynamic(Dynamic),
+    Fermata(Fermata),
+    Breath(BreathMark),
+    Caesura(CaesuraMark),
+    /// Staff text.
+    Text(Text),
+    /// Tempo text and an optional metronome mark, beside the tempo
+    /// map's SetTempoSegment with no stored link.
+    Tempo(TempoMark),
+    Rehearsal(Text),
     Segno,
-    DalSegno,
-    DaCapo,
-    Fine,
-    Custom(CustomMarkerId),
+    Coda,
+}
+
+pub enum Dynamic {
+    Pppppp, Ppppp, Pppp, Ppp, Pp, P, Mp, Mf, F, Ff, Fff, Ffff,
+    Fffff, Ffffff, Fp, Sf, Sfz, Sffz, Sfp, Sfpp, Rf, Rfz, Fz, Niente,
+    Other(Text),
+}
+
+pub struct Fermata { pub shape: FermataShape, pub inverted: bool }
+pub enum FermataShape { Normal, Short, Long, VeryShort, VeryLong }
+pub enum BreathMark { Comma, Tick }
+pub enum CaesuraMark { Normal, Thick, Short, Curved }
+
+pub struct TempoMark {
+    pub text: Option<Text>,
+    pub metronome: Option<Metronome>,
+}
+
+pub struct Metronome {
+    pub beat: NoteValue,
+    pub dots: u8,
+    pub per_minute: Text,
 }
 \end{lstlisting}
+
+\subsection{Lyrics}
+
+A lyric is one syllable on an event (schema major 5).
+
+\begin{lstlisting}[language=Rust]
+pub struct Lyric {
+    pub id: LyricLineId,
+    pub event: EventId,
+    /// The verse, from 1.
+    pub verse: u16,
+    pub text: Text,
+    pub syllabic: Syllabic,
+    /// Whether an extender line follows the syllable.
+    pub extension: bool,
+}
+
+pub enum Syllabic { Single, Begin, Middle, End }
+
+/// Text held to Unicode Normalization Form C.
+pub struct Text(String);
+\end{lstlisting}
+
+\begin{requirement}
+  \label{req:graph:lyric-syllable}
+  An event \MUST{} carry at most one \texttt{Lyric} per verse.
+\end{requirement}
+
+\begin{requirement}
+  \label{req:graph:text-nfc}
+  Every \texttt{Text} value \MUST{} be in Unicode Normalization Form C; a
+  decoder \MUST{} reject any other form.
+\end{requirement}
 
 \subsection{Repeat Structures}
 \label{sec:graph:repeats}
@@ -6621,7 +6748,10 @@ The score graph maintains a set of structural invariants. Implementations
     \item Every event in a voice's events list has its \texttt{voice}
       field pointing back to that voice.
     \item Events within a voice are sorted by position and do not
-      overlap in time.
+      overlap in time; a grace note has zero duration and only a grace
+      note does, and a position's graces stand before its event of
+      positive duration, in their order and then by identifier
+      (Requirement~\ref{req:graph:grace-timing}).
     \item Every event's \texttt{EventPosition} and
       \texttt{EventDuration} variants agree with the time model of
       its enclosing region (Section~\ref{sec:graph:event-time}). For
@@ -6683,7 +6813,7 @@ The score graph maintains a set of structural invariants. Implementations
         \item \texttt{Comment.anchor} --- anchor target, extant region, live event.
         \item \texttt{GraphicGesture.objects} --- stored graphic object.
         \item \texttt{GraphicGesture.anchoring} --- anchor target, declared staff, live event.
-        \item \texttt{LyricLine.events} --- live event.
+        \item \texttt{Lyric.event} --- live event.
         \item \texttt{Staff.instrument} --- declared instrument.
         \item \texttt{StaffInstance.instrument\_override} --- declared instrument.
         \item \texttt{Staff.group} --- declared staff group.
@@ -6702,6 +6832,7 @@ The score graph maintains a set of structural invariants. Implementations
         \item \texttt{CueEvent.source} --- live event.
         \item \texttt{TempoSegment.start} --- anchor target.
         \item \texttt{TempoSegment.end} --- anchor target.
+        \item \texttt{Score.voice\_homes} --- declared staff, extant voice.
       \end{itemize}
     \item Every identifier in the graph is unique within its kind.
       Identifiers reserved for system-derived objects (notably
@@ -6865,7 +6996,7 @@ construct additional indexes provided they are kept consistent.
   \item The on-disk serialization of every type introduced in this
     chapter is defined in Chapter~\ref{ch:format}.
   \item Some engraving-specific types (\texttt{StemConfiguration},
-    \texttt{ArticulationMark}, and similar) are introduced informally
+    \texttt{DynamicMark}, and similar) are introduced informally
     here and fully defined in Chapter~\ref{ch:layout-ir} where their
     interaction with the engraver is specified. The clef/key content
     model (\texttt{Clef}, \texttt{ClefShape}, \texttt{KeySignature},
@@ -7189,6 +7320,10 @@ pub enum OperationKind {
     // by instance and position, like a meter change).
     SetClef(SetClefOp),
     SetKeySignature(SetKeySignatureOp),
+
+    // X4b: set or clear a voice's home staff (structural LWW, keyed by
+    // the voice).
+    SetVoiceHome(SetVoiceHomeOp),
 
     // Layout-semantic operations
     SetUserSystemBreak(SetUserSystemBreakOp),
@@ -8469,6 +8604,10 @@ table is normative.
   Marker & Anchor &
   Re-anchor to nearest event in same staff instance &
   proximity max: same staff instance; orphan on failure \\
+
+  Lyric & Event &
+  Cascade-delete &
+  a syllable belongs to its event (schema major 5) \\
 
   Comment & Anchor &
   Orphan &
@@ -14275,7 +14414,9 @@ The notation grammar layer supports extension at several points:
     operation framework's requirements (preconditions, effects,
     inverse, reduction rule, re-anchoring).
   \item[\texttt{CustomMarkerId}] (Chapter~\ref{ch:graph}).
-    Custom marker kinds beyond the core's standard catalog.
+    Custom marker kinds beyond the core's standard catalog. Not yet
+    defined: \texttt{MarkerKind} grows by appended variant, and schema
+    major~5 defines none for a custom kind.
   \item[\texttt{CustomAnalyticalKindId}] (Chapter~\ref{ch:graph}).
     Custom analytical annotation kinds.
   \item[\texttt{Custom event variants}] (Chapter~\ref{ch:graph}).
@@ -17190,6 +17331,28 @@ layouts they own versus inherit:
   the order its listing here declares (\texttt{req:textproj:value-projection}),
   so the listing now agrees with the text form, which always followed the
   binary layout. No byte and no requirement changes.
+  \\
+  \today & \sectionsc{Pitched Events}, \sectionsc{Markers},
+  \sectionsc{Lyrics}, \sectionsc{Graph Invariants} &
+  \textbf{X4b: expression and text} (roadmap D58). An event's
+  \texttt{articulations}, \texttt{ornaments} and \texttt{grace}, listed
+  since the first revision over placeholder types, take their types:
+  \texttt{marks} (\texttt{EventMark}), \texttt{Ornament} and \texttt{Grace},
+  marks and ornaments canonical sets
+  (Requirement~\ref{req:graph:event-mark-sets}); \texttt{GraceKind} keeps
+  its first two variants. A grace note has zero duration
+  (Requirement~\ref{req:graph:grace-timing}), which invariant~3 now states.
+  The \texttt{Marker} listing, which named kinds no writer produced and a
+  display the engraver owns, becomes the point marks the ruling defines;
+  \texttt{LyricLine} becomes \texttt{Lyric}, one syllable an event and verse
+  (Requirement~\ref{req:graph:lyric-syllable}, invariant~10, and a
+  cascade-delete row in the rule table); \texttt{Text} is held to NFC
+  (Requirement~\ref{req:graph:text-nfc}); \texttt{LineStyle} gains
+  \texttt{Wavy}, \texttt{SpannerKind} \texttt{PedalBracket}, and
+  \texttt{Score} \texttt{voice\_homes}, written by \texttt{SetVoiceHome}. On
+  the wire from schema major~5 (Binary Format companion
+  \sectionsc{Schema Major 5}); the reduction algorithm version is
+  \texttt{4}, which X4b opened.
   \\
   \bottomrule
 \end{longtable}

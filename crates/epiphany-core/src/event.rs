@@ -29,8 +29,8 @@ use std::collections::HashMap;
 use slotmap::{new_key_type, SlotMap};
 
 use crate::ids::{EventId, GraphicObjectId, VoiceId};
-use crate::pitch::IdentifiedPitch;
-use crate::time::{DurationBounds, EventDuration, EventPosition, MusicalDuration};
+use crate::pitch::{AccidentalId, IdentifiedPitch};
+use crate::time::{DurationBounds, EventDuration, EventPosition};
 
 // --- Forward-declared engraving placeholders (Chapter 7 / Agent E). ---------
 
@@ -44,17 +44,145 @@ pub struct StaffPosition(pub i16);
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub struct UnpitchedMemberId(pub u32);
 
-/// An articulation attached to an event. Placeholder (Chapter 7).
-#[derive(Clone, PartialEq, Eq, Hash, Debug, Default)]
-pub struct ArticulationMark;
+/// A mark written on a note or an unpitched note (schema major 5): an
+/// articulation, a string, brass or jazz technique, a tremolo, or an
+/// arpeggio. The event's `marks` are a set, one per kind, in ascending order
+/// of [`EventMark::tag`]; the codec refuses any other order or a repeat, so
+/// two authors writing the same marks write equal values ([`canonical_marks`]).
+/// Placement above or below the note is the engraver's, not stored.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub enum EventMark {
+    Staccato,
+    Staccatissimo,
+    Spiccato,
+    Tenuto,
+    /// Louré: a tenuto line over a staccato dot.
+    DetachedLegato,
+    Accent,
+    /// The strong accent (MusicXML's `strong-accent`).
+    Marcato,
+    Stress,
+    Unstress,
+    UpBow,
+    DownBow,
+    Harmonic,
+    OpenString,
+    /// The closed "+" (MusicXML's `stopped`, a brass mute closed).
+    Stopped,
+    SnapPizzicato,
+    Scoop,
+    Plop,
+    Doit,
+    Falloff,
+    /// A single-note tremolo of `strokes` strokes through the stem.
+    Tremolo {
+        strokes: u8,
+    },
+    /// A two-note tremolo between this event and the next event of its voice,
+    /// of `strokes` strokes. The pairing is positional, as a standard tie's
+    /// is, so the mark names no other object.
+    TremoloWithNext {
+        strokes: u8,
+    },
+    /// An arpeggio sign before a chord.
+    Arpeggio {
+        direction: ArpeggioDirection,
+    },
+}
 
-/// A single-event dynamic marking. Placeholder (Chapter 7).
+impl EventMark {
+    /// The mark's kind as its wire tag: the set's order and its uniqueness
+    /// key.
+    pub fn tag(&self) -> u8 {
+        match self {
+            EventMark::Staccato => 0,
+            EventMark::Staccatissimo => 1,
+            EventMark::Spiccato => 2,
+            EventMark::Tenuto => 3,
+            EventMark::DetachedLegato => 4,
+            EventMark::Accent => 5,
+            EventMark::Marcato => 6,
+            EventMark::Stress => 7,
+            EventMark::Unstress => 8,
+            EventMark::UpBow => 9,
+            EventMark::DownBow => 10,
+            EventMark::Harmonic => 11,
+            EventMark::OpenString => 12,
+            EventMark::Stopped => 13,
+            EventMark::SnapPizzicato => 14,
+            EventMark::Scoop => 15,
+            EventMark::Plop => 16,
+            EventMark::Doit => 17,
+            EventMark::Falloff => 18,
+            EventMark::Tremolo { .. } => 19,
+            EventMark::TremoloWithNext { .. } => 20,
+            EventMark::Arpeggio { .. } => 21,
+        }
+    }
+}
+
+/// The direction an arpeggio rolls: a plain wavy line, or one with an arrow.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub enum ArpeggioDirection {
+    Plain,
+    Up,
+    Down,
+}
+
+/// `marks` as the canonical set an event holds: ascending by
+/// [`EventMark::tag`], the first of each kind kept.
+pub fn canonical_marks(marks: impl IntoIterator<Item = EventMark>) -> Vec<EventMark> {
+    let mut out: Vec<EventMark> = Vec::new();
+    for mark in marks {
+        if !out.iter().any(|m| m.tag() == mark.tag()) {
+            out.push(mark);
+        }
+    }
+    out.sort_by_key(EventMark::tag);
+    out
+}
+
+/// A single-event dynamic marking. Reserved since schema major 5: a dynamic is
+/// a point mark (`MarkerKind::Dynamic`), anchored where it stands, so this
+/// slot stays `None` (Chapter 7 placeholder).
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub struct DynamicMark;
 
-/// An ornament attached to an event. Placeholder (Chapter 7).
-#[derive(Clone, PartialEq, Eq, Hash, Debug, Default)]
-pub struct OrnamentMark;
+/// An ornament on a note (schema major 5), with the accidentals written above
+/// or below it. A note's `ornaments` are a set, one per kind, ascending by
+/// kind ([`canonical_ornaments`]); the codec refuses any other order or a
+/// repeat. A trill's wavy extension is a spanner, not part of the ornament.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct Ornament {
+    pub kind: OrnamentKind,
+    pub accidental_above: Option<AccidentalId>,
+    pub accidental_below: Option<AccidentalId>,
+}
+
+/// An ornament's kind; its order is the order of an event's ornament set.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum OrnamentKind {
+    Trill,
+    /// The lower mordent.
+    Mordent,
+    /// The upper mordent (pralltriller).
+    InvertedMordent,
+    Turn,
+    InvertedTurn,
+}
+
+/// `ornaments` as the canonical set a note holds: ascending by kind, the
+/// first of each kind kept.
+pub fn canonical_ornaments(ornaments: impl IntoIterator<Item = Ornament>) -> Vec<Ornament> {
+    let mut out: Vec<Ornament> = Vec::new();
+    for ornament in ornaments {
+        if !out.iter().any(|o| o.kind == ornament.kind) {
+            out.push(ornament);
+        }
+    }
+    out.sort_by_key(|o| o.kind);
+    out
+}
 
 /// Stem configuration (direction, length adjustment, hidden). Placeholder
 /// (Chapter 7).
@@ -86,13 +214,26 @@ pub struct CueRendering;
 
 // --- The event taxonomy (Chapter 5 §"The Event Type"). ----------------------
 
-/// Whether a note is a grace note, and of what kind (Chapter 5).
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+/// A grace note's kind (Chapter 5): slashed or not.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum GraceKind {
+    /// Slashed.
     Acciaccatura,
     Appoggiatura,
-    Unmeasured,
-    MeasuredFraction(MusicalDuration),
+}
+
+/// What makes an event a grace note (schema major 5). A grace note has zero
+/// duration, so it occupies no time in its voice; it stands at the position
+/// of the event it precedes, its principal, which is found by position, not
+/// stored. Its notated value and dots are held here, since the duration is
+/// zero, and `order` places the graces at one position, before the event of
+/// positive duration there (then by id). Playback's steal-time is not modeled.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct Grace {
+    pub kind: GraceKind,
+    pub value: crate::graph::NoteValue,
+    pub dots: u8,
+    pub order: u16,
 }
 
 /// A pitched event: one or more identified pitches sounding together
@@ -107,11 +248,15 @@ pub struct PitchedEvent {
     /// One or more identified pitches. Must be non-empty (use [`Rest`] for the
     /// no-pitch case); enforced by [`PitchedEvent::is_well_formed`].
     pub pitches: Vec<IdentifiedPitch>,
-    pub articulations: Vec<ArticulationMark>,
+    /// The marks written on the note, a canonical set ([`EventMark`]).
+    pub marks: Vec<EventMark>,
+    /// Reserved: always `None` (see [`DynamicMark`]).
     pub dynamic: Option<DynamicMark>,
-    pub ornaments: Vec<OrnamentMark>,
+    /// The ornaments on the note, a canonical set ([`Ornament`]).
+    pub ornaments: Vec<Ornament>,
     pub stem: StemConfiguration,
-    pub grace: Option<GraceKind>,
+    /// `Some` for a grace note, which has zero duration ([`Grace`]).
+    pub grace: Option<Grace>,
 }
 
 impl PitchedEvent {
@@ -131,10 +276,13 @@ pub struct UnpitchedEvent {
     pub duration: EventDuration,
     pub staff_position: StaffPosition,
     pub instrument_member: UnpitchedMemberId,
-    pub articulations: Vec<ArticulationMark>,
+    /// The marks written on the note, a canonical set ([`EventMark`]).
+    pub marks: Vec<EventMark>,
+    /// Reserved: always `None` (see [`DynamicMark`]).
     pub dynamic: Option<DynamicMark>,
     pub stem: StemConfiguration,
-    pub grace: Option<GraceKind>,
+    /// `Some` for a grace note, which has zero duration ([`Grace`]).
+    pub grace: Option<Grace>,
 }
 
 /// A rest: a duration without a sounding event (Chapter 5 §"Rests").
@@ -291,6 +439,20 @@ impl Event {
             Event::Graphic(e) => &e.duration,
             Event::Cue(e) => &e.duration,
         }
+    }
+
+    /// The event's grace payload, if it is a grace note (schema major 5).
+    pub fn grace(&self) -> Option<&Grace> {
+        match self {
+            Event::Pitched(e) => e.grace.as_ref(),
+            Event::Unpitched(e) => e.grace.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Whether the event's duration is zero, as a grace note's is.
+    pub fn has_zero_duration(&self) -> bool {
+        matches!(self.duration(), EventDuration::Musical(d) if d.0.is_zero())
     }
 
     /// Sets the voice membership (used by generators and edit operations).
@@ -515,6 +677,7 @@ mod tests {
         AcousticPitch, AcousticRealization, CmnNominal, Pitch, PitchSpaceId, PitchSpacePosition,
         ScalePosition, TuningReference,
     };
+    use crate::time::MusicalDuration;
     use crate::time::{MusicalPosition, RationalTime};
 
     fn rest(id: EventId, voice: VoiceId, beat: i64) -> Event {
@@ -559,7 +722,7 @@ mod tests {
             position: EventPosition::Musical(MusicalPosition::origin()),
             duration: EventDuration::Musical(MusicalDuration::whole()),
             pitches: vec![],
-            articulations: vec![],
+            marks: vec![],
             dynamic: None,
             ornaments: vec![],
             stem: StemConfiguration,
@@ -609,7 +772,7 @@ mod tests {
             position: EventPosition::Musical(MusicalPosition::origin()),
             duration: EventDuration::Musical(MusicalDuration::whole()),
             pitches: vec![mk_ip(10), mk_ip(11)],
-            articulations: vec![],
+            marks: vec![],
             dynamic: None,
             ornaments: vec![],
             stem: StemConfiguration,

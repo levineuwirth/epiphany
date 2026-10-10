@@ -1160,12 +1160,13 @@ mod tests {
         // genesis G2b's `SetTuningContext` 34, genesis G3a's
         // `CreateStaffGroup`/`CreatePartDefinition`/`CreateAnalysisLayer`/
         // `CreateView` 35..=38, genesis G3b's `CreateMeasure` 39, X3.1's
-        // `CreateTuplet` 40, X3.6's `SetClef` and `SetKeySignature` 41/42;
-        // encodings are append-only).
+        // `CreateTuplet` 40, X3.6's `SetClef` and `SetKeySignature` 41/42,
+        // X4b's `SetVoiceHome` 43; encodings are append-only).
         //
         // This assertion named 30 until Push 5 / P4, 31 until genesis G1, 32
         // until genesis G2a, 34 until genesis G2b, 35 until genesis G3a, 39
-        // until genesis G3b, 40 until X3.1, and 41 until X3.6 — each time, by then, the
+        // until genesis G3b, 40 until X3.1, 41 until X3.6, and 43 until X4b —
+        // each time, by then, the
         // number had become a real kind, so the test was pinning a bug: a
         // barrier that prohibited the new operation encoded fine and would
         // not read back. It must be bumped by every tranche that appends a
@@ -1173,13 +1174,13 @@ mod tests {
         // `PAYLOAD_FREE.len()` so the bump is a conscious act.
         let mut bytes = vec![0u8];
         bytes.extend(set_blob(&[]));
-        bytes.extend(set_blob(&[vec![43u8]]));
+        bytes.extend(set_blob(&[vec![44u8]]));
         bytes.push(0);
         assert_eq!(
             EditBarrier::decode_canonical_bytes(&bytes),
             Err(BarrierDecodeError::InvalidTag {
                 kind: "OperationKindTag",
-                tag: 43
+                tag: 44
             })
         );
     }

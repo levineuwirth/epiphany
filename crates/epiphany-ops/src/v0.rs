@@ -133,6 +133,8 @@ pub enum V0OperationKind {
     // X3.6 — born at wire-discs 41 and 42; identity round-trips.
     SetClef(crate::payload::SetClefOp),
     SetKeySignature(crate::payload::SetKeySignatureOp),
+    // X4b — born at wire-disc 43; identity round-trips.
+    SetVoiceHome(crate::payload::SetVoiceHomeOp),
 }
 
 /// v0 `InsertEvent`: the event was a bare [`EventId`] plus the reduction-relevant

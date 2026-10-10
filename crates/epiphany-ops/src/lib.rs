@@ -638,8 +638,37 @@ pub mod vectors;
 ///
 ///   Locked by
 ///   `a_modify_carrying_a_pitch_another_event_holds_is_refused_in_both_modes`.
-///   X4b's schema walk (X4b.2) adds its own changes to this entry; version
-///   `4` does not move again before X4b merges.
+///
+///   X4b.2, the schema walk to schema major 5, adds verdicts and reduced
+///   state over the values it introduces, each the same in both modes:
+///   - a grace note has zero duration and only a grace note does: an
+///     `InsertEvent` or a `ModifyEvent` whose value breaks either is refused
+///     `EventDurationInvalid`; a grace stands at an event's onset, never
+///     strictly inside another's span in its voice, and an insert or a move
+///     that would put one inside, or a span over one, is refused alike;
+///   - a voice's events stand by position, a position's graces in their
+///     `order` and then by id before its event of positive duration, and a
+///     modify that changes a grace's order re-sorts the voice;
+///   - a grace is no tuplet's member: a `CreateTuplet` naming one is refused
+///     `EventDurationInvalid`;
+///   - a standard tie's ends are adjacent among the voice's events of
+///     positive duration, the graces before either taking no place;
+///   - one lyric syllable per event and verse: a create or modify that would
+///     put a second is refused `SlotOccupied` (reason 19, epoch 15), and an
+///     event's delete cascade-deletes its syllables;
+///   - a marker an operation anchors to an event is re-anchored at the
+///     event's delete in both modes, base-free reduction reading the event's
+///     place from the occupancy index (graph-only before, as no operation
+///     created a marker);
+///   - a voice's home staff (`SetVoiceHome`, kind 43) is a last-writer-wins
+///     register keyed by the voice: a dead voice or a dead staff refuses it,
+///     concurrent differing writes conflict, an undo restores the earlier
+///     home (superseded where its staff was removed since), an undo cannot
+///     remove a staff a live voice's home names, and a voice's delete takes
+///     its home with it.
+///
+///   Locked by `crates/epiphany-musicxml/tests/expression_modes.rs`, one test
+///   per verdict.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.
@@ -693,8 +722,8 @@ pub use payload::{
     ResolveEquivocationPayload, RespellPitchOp, SetCanvasLayoutDefaultsOp, SetClefOp,
     SetKeySignatureOp, SetMetadataOp, SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp,
     SetTempoSegmentOp, SetTimeSignatureOp, SetTuningContextOp, SetUserPageBreakOp,
-    SetUserSystemBreakOp, TransactionCategory, TransactionDescriptor, TransposeIntervalOp,
-    TransposeOp, TupletCompensation,
+    SetUserSystemBreakOp, SetVoiceHomeOp, TransactionCategory, TransactionDescriptor,
+    TransposeIntervalOp, TransposeOp, TupletCompensation,
 };
 pub use reduce::{
     canonical_reduction_order, measure_anchor_relation_for_agreement_test, GraphMaterialization,

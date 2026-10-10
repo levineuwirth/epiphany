@@ -4299,7 +4299,7 @@ fn a_pitch_inserted_into_an_unpitched_event_makes_it_a_note_in_both_modes() {
         duration: m.quarters[0].duration().clone(),
         staff_position: StaffPosition(-1),
         instrument_member: UnpitchedMemberId(0),
-        articulations: Vec::new(),
+        marks: Vec::new(),
         dynamic: None,
         stem: epiphany_core::StemConfiguration,
         grace: None,

@@ -34,13 +34,13 @@
 use epiphany_core::{
     AnalysisLayer, AnalysisLayerId, Beam, CanonicalValue, CanvasLayoutDefaults, Clef, Event,
     EventDuration, EventId, EventPosition, IdentifiedPitch, Instrument, InstrumentId, KeySignature,
-    Measure, MeasureId, MetricGrid, MusicalDuration, MusicalPosition, OperationId, PartDefinition,
-    PartDefinitionId, Pitch, PitchId, PitchSpelling, RationalTime, Region, RegionId,
-    RegionTimeModel, RepeatStructure, RepeatStructureId, Rest, ScoreMetadata, Slur, Spanner,
-    SpellingPrecedence, Staff, StaffGroup, StaffGroupId, StaffId, StaffInstance, StaffInstanceId,
-    StaffLineConfiguration, TempoSegment, Tie, TimeAnchor, TimeSignature, TransactionId,
-    TranspositionInterval, TuningContextSettings, Tuplet, TupletId, TypedObjectId, ViewDefinition,
-    ViewId, Voice, VoiceId,
+    LineStyle, Lyric, Marker, Measure, MeasureId, MetricGrid, MusicalDuration, MusicalPosition,
+    OperationId, PartDefinition, PartDefinitionId, Pitch, PitchId, PitchSpelling, RationalTime,
+    Region, RegionId, RegionTimeModel, RepeatStructure, RepeatStructureId, Rest, ScoreMetadata,
+    Slur, Spanner, SpannerKind, SpellingPrecedence, Staff, StaffGroup, StaffGroupId, StaffId,
+    StaffInstance, StaffInstanceId, StaffLineConfiguration, TempoSegment, Tie, TimeAnchor,
+    TimeSignature, TransactionId, TranspositionInterval, TuningContextSettings, Tuplet, TupletId,
+    TypedObjectId, ViewDefinition, ViewId, Voice, VoiceId,
 };
 use epiphany_determinism::{
     sorted_canonical, CanonicalDecode, CanonicalEncode, CanonicalSet, DecodeError,
@@ -322,6 +322,9 @@ pub enum OperationKind {
     /// Set, replace, or remove the key-signature change at a musical offset
     /// in a staff instance's region (LWW structural overwrite).
     SetKeySignature(SetKeySignatureOp),
+    // --- Schema major 5 (X4b). ---
+    /// Set or clear a voice's home staff (LWW structural overwrite).
+    SetVoiceHome(SetVoiceHomeOp),
 }
 
 impl OperationKind {
@@ -338,6 +341,50 @@ impl OperationKind {
     /// are value-dependent.
     pub fn schema_major(&self) -> u16 {
         match self {
+            // Value-dependent at schema major 5 (X4b): a value holding a mark,
+            // an ornament, a grace note, a point mark, a lyric, a wavy line or
+            // a pedal line without its sign has no lower-major layout; every
+            // other value encodes as it did, and stamps as it did.
+            OperationKind::InsertEvent(op) if event_holds_major_5(&op.event) => 5,
+            OperationKind::ModifyEvent(op) if event_holds_major_5(&op.event) => 5,
+            OperationKind::CreateCrossCutting(op) if cross_cutting_holds_major_5(&op.structure) => {
+                5
+            }
+            OperationKind::ModifyCrossCutting(op) if cross_cutting_holds_major_5(&op.structure) => {
+                5
+            }
+            OperationKind::CreateStaff(op) if wavy(&op.staff.default_staff_lines.line_style) => 5,
+            OperationKind::CreateInstrument(op)
+                if wavy(&op.instrument.default_staff_lines.line_style) =>
+            {
+                5
+            }
+            OperationKind::CreateStaffInstance(op)
+                if op
+                    .instance
+                    .staff_lines_override
+                    .as_ref()
+                    .is_some_and(|l| wavy(&l.line_style)) =>
+            {
+                5
+            }
+            OperationKind::SetStaffLayout(op)
+                if op
+                    .staff_lines_override
+                    .as_ref()
+                    .is_some_and(|l| wavy(&l.line_style)) =>
+            {
+                5
+            }
+            OperationKind::CreateRegion(op)
+                if op.region.content.staff_instances().iter().any(|si| {
+                    si.staff_lines_override
+                        .as_ref()
+                        .is_some_and(|l| wavy(&l.line_style))
+                }) =>
+            {
+                5
+            }
             // Mandatory v2 appends: CrossCuttingValue (Slur/Tie/Beam/Spanner
             // bodies), Staff (default_clef + filled line config),
             // ScoreMetadata (six appended fields), and Instrument
@@ -455,6 +502,7 @@ impl OperationKind {
             // X3.6; appended past 40.
             OperationKind::SetClef(_) => 41,
             OperationKind::SetKeySignature(_) => 42,
+            OperationKind::SetVoiceHome(_) => 43,
         }
     }
 
@@ -528,6 +576,8 @@ impl OperationKind {
             OperationKind::CreateTuplet(_) => Some(13),
             // Minor 14 (X3.6).
             OperationKind::SetClef(_) | OperationKind::SetKeySignature(_) => Some(14),
+            // Minor 15 (X4b).
+            OperationKind::SetVoiceHome(_) => Some(15),
         }
     }
 
@@ -589,6 +639,7 @@ impl OperationKind {
             OperationKind::CreateTuplet(_) => OperationKindTag::CreateTuplet,
             OperationKind::SetClef(_) => OperationKindTag::SetClef,
             OperationKind::SetKeySignature(_) => OperationKindTag::SetKeySignature,
+            OperationKind::SetVoiceHome(_) => OperationKindTag::SetVoiceHome,
         }
     }
 }
@@ -643,6 +694,7 @@ impl CanonicalEncode for OperationKind {
             OperationKind::CreateTuplet(op) => op.encode_canonical(out),
             OperationKind::SetClef(op) => op.encode_canonical(out),
             OperationKind::SetKeySignature(op) => op.encode_canonical(out),
+            OperationKind::SetVoiceHome(op) => op.encode_canonical(out),
         }
     }
 }
@@ -715,6 +767,8 @@ pub enum OperationKindTag {
     SetClef,
     /// X3.6.
     SetKeySignature,
+    /// X4b.
+    SetVoiceHome,
 }
 
 /// The discriminant of [`OperationKindTag::Registered`], the one tag that
@@ -838,6 +892,7 @@ operation_kind_tag_vocabulary! {
     CreateTuplet = 40 => "create-tuplet" @ Some(13),
     SetClef = 41 => "set-clef" @ Some(14),
     SetKeySignature = 42 => "set-key-signature" @ Some(14),
+    SetVoiceHome = 43 => "set-voice-home" @ Some(15),
 }
 
 impl CanonicalEncode for OperationKindTag {
@@ -1051,6 +1106,10 @@ pub enum CrossCuttingValue {
     Slur(Slur),
     Beam(Beam),
     Spanner(Spanner),
+    /// A point mark (schema major 5).
+    Marker(Marker),
+    /// A lyric syllable on an event (schema major 5).
+    Lyric(Lyric),
 }
 
 impl CrossCuttingValue {
@@ -1060,6 +1119,8 @@ impl CrossCuttingValue {
             CrossCuttingValue::Slur(_) => 1,
             CrossCuttingValue::Beam(_) => 2,
             CrossCuttingValue::Spanner(_) => 3,
+            CrossCuttingValue::Marker(_) => 4,
+            CrossCuttingValue::Lyric(_) => 5,
         }
     }
 
@@ -1070,6 +1131,8 @@ impl CrossCuttingValue {
             CrossCuttingValue::Slur(s) => TypedObjectId::Slur(s.id),
             CrossCuttingValue::Beam(b) => TypedObjectId::Beam(b.id),
             CrossCuttingValue::Spanner(s) => TypedObjectId::Spanner(s.id),
+            CrossCuttingValue::Marker(m) => TypedObjectId::Marker(m.id),
+            CrossCuttingValue::Lyric(l) => TypedObjectId::LyricLine(l.id),
         }
     }
 
@@ -1096,6 +1159,11 @@ impl CrossCuttingValue {
                     _ => None,
                 })
                 .collect(),
+            CrossCuttingValue::Marker(m) => match &m.anchor {
+                TimeAnchor::Event { id, .. } => vec![TypedObjectId::Event(*id)],
+                _ => Vec::new(),
+            },
+            CrossCuttingValue::Lyric(l) => vec![TypedObjectId::Event(l.event)],
         }
     }
 
@@ -1110,9 +1178,16 @@ impl CrossCuttingValue {
     pub fn anchor_object_refs(&self) -> Vec<TypedObjectId> {
         match self {
             // Event-anchored kinds reference exactly their endpoint events.
-            CrossCuttingValue::Tie(_) | CrossCuttingValue::Slur(_) | CrossCuttingValue::Beam(_) => {
-                self.endpoints()
-            }
+            CrossCuttingValue::Tie(_)
+            | CrossCuttingValue::Slur(_)
+            | CrossCuttingValue::Beam(_)
+            | CrossCuttingValue::Lyric(_) => self.endpoints(),
+            CrossCuttingValue::Marker(m) => match &m.anchor {
+                TimeAnchor::Event { id, .. } => vec![TypedObjectId::Event(*id)],
+                TimeAnchor::Measure { id, .. } => vec![TypedObjectId::Measure(*id)],
+                TimeAnchor::Region { id, .. } => vec![TypedObjectId::Region(*id)],
+                TimeAnchor::WallClock { .. } => Vec::new(),
+            },
             CrossCuttingValue::Spanner(s) => [&s.start, &s.end]
                 .into_iter()
                 .filter_map(|anchor| match anchor {
@@ -1134,6 +1209,8 @@ impl CanonicalEncode for CrossCuttingValue {
             CrossCuttingValue::Slur(s) => s.canonical_bytes(),
             CrossCuttingValue::Beam(b) => b.canonical_bytes(),
             CrossCuttingValue::Spanner(s) => s.canonical_bytes(),
+            CrossCuttingValue::Marker(m) => m.canonical_bytes(),
+            CrossCuttingValue::Lyric(l) => l.canonical_bytes(),
         };
         push_lp_bytes(out, &bytes);
     }
@@ -2053,6 +2130,56 @@ impl CanonicalEncode for SetKeySignatureOp {
     }
 }
 
+/// Set (`Some`) or clear (`None`) a voice's home staff (operation_catalog
+/// §SetVoiceHome): the staff on which a visiting voice, a cross-staff part of a
+/// voice homed there, is at home. LWW structural overwrite keyed by the voice.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SetVoiceHomeOp {
+    pub voice: VoiceId,
+    pub home: Option<StaffId>,
+}
+
+impl CanonicalEncode for SetVoiceHomeOp {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        push_canon(out, &self.voice);
+        match &self.home {
+            None => push_tag(out, 0),
+            Some(staff) => {
+                push_tag(out, 1);
+                push_canon(out, staff);
+            }
+        }
+    }
+}
+
+/// Whether an event holds a value only schema major 5 encodes: a mark, an
+/// ornament or a grace payload.
+fn event_holds_major_5(event: &Event) -> bool {
+    match event {
+        Event::Pitched(e) => !e.marks.is_empty() || !e.ornaments.is_empty() || e.grace.is_some(),
+        Event::Unpitched(e) => !e.marks.is_empty() || e.grace.is_some(),
+        _ => false,
+    }
+}
+
+fn wavy(line: &LineStyle) -> bool {
+    matches!(line, LineStyle::Wavy)
+}
+
+/// Whether a cross-cutting value holds a value only schema major 5 encodes: a
+/// point mark, a lyric, a wavy line or a pedal line without its sign.
+fn cross_cutting_holds_major_5(value: &CrossCuttingValue) -> bool {
+    match value {
+        CrossCuttingValue::Marker(_) | CrossCuttingValue::Lyric(_) => true,
+        CrossCuttingValue::Tie(t) => wavy(&t.style.line),
+        CrossCuttingValue::Slur(s) => wavy(&s.style.line),
+        CrossCuttingValue::Beam(_) => false,
+        CrossCuttingValue::Spanner(s) => {
+            wavy(&s.style.line) || matches!(s.kind, SpannerKind::PedalBracket(_))
+        }
+    }
+}
+
 /// Set, replace, or (`None`) remove the single meter change at the anchor's
 /// resolved musical position in a region's default metric grid
 /// (operation_catalog §"Meter and Tempo Overwrites"). Carries the full
@@ -2374,7 +2501,7 @@ mod tests {
         let anchor = || valuegen::region_start_anchor(region, MusicalPosition::origin());
 
         let repeat_id = RepeatStructureId::new(r, 12);
-        let table: [(OperationKind, u8); 43] = [
+        let table: [(OperationKind, u8); 44] = [
             (
                 OperationKind::InsertEvent(InsertEventOp {
                     staff_instance: instance,
@@ -2657,6 +2784,13 @@ mod tests {
                 }),
                 42,
             ),
+            (
+                OperationKind::SetVoiceHome(SetVoiceHomeOp {
+                    voice,
+                    home: Some(staff),
+                }),
+                43,
+            ),
         ];
         for (kind, expected) in &table {
             assert_eq!(
@@ -2929,7 +3063,7 @@ mod tests {
         // break that locality. This table replaces only
         // `phase3_tag_discriminants_are_golden` (retired), whose entire
         // subject was tag→byte for 24–29 and nothing else.
-        let table: [(OperationKindTag, u8); 43] = [
+        let table: [(OperationKindTag, u8); 44] = [
             (OperationKindTag::InsertEvent, 0),
             (OperationKindTag::DeleteEvent, 1),
             (OperationKindTag::ModifyEvent, 2),
@@ -2978,6 +3112,7 @@ mod tests {
             (OperationKindTag::CreateTuplet, 40),
             (OperationKindTag::SetClef, 41),
             (OperationKindTag::SetKeySignature, 42),
+            (OperationKindTag::SetVoiceHome, 43),
         ];
 
         // --- Coverage (derived; see the header comment above) ---
@@ -2986,8 +3121,8 @@ mod tests {
             expected.push(OperationKindTag::Registered(OperationKindRegistryId(0)));
             assert_eq!(
                 expected.len(),
-                43,
-                "sanity: the vocabulary itself is 43 wide"
+                44,
+                "sanity: the vocabulary itself is 44 wide"
             );
 
             // Tag-set equality with `Registered`'s payload id normalized
@@ -3009,15 +3144,15 @@ mod tests {
             );
             assert_eq!(
                 table_tags.len(),
-                43,
+                44,
                 "duplicate rows would satisfy the length without covering the vocabulary"
             );
 
             let byte_set: std::collections::BTreeSet<u8> = table.iter().map(|(_, b)| *b).collect();
             assert_eq!(
                 byte_set,
-                (0u8..43).collect::<std::collections::BTreeSet<u8>>(),
-                "the table's byte set must be exactly 0..=42, no gaps, no repeats"
+                (0u8..44).collect::<std::collections::BTreeSet<u8>>(),
+                "the table's byte set must be exactly 0..=43, no gaps, no repeats"
             );
         }
 
@@ -3268,6 +3403,186 @@ mod tests {
         });
         assert_eq!(kind.introduced_minor(), Some(12));
         assert_eq!(OperationKindTag::CreateMeasure.introduced_minor(), Some(12));
+    }
+
+    /// X4b: a payload stamps schema major 5 exactly where its value holds
+    /// something only major 5 encodes, and as before otherwise: an event with
+    /// a mark, an ornament or a grace; a marker or a lyric; a wavy line or a
+    /// pedal line without its sign. `SetVoiceHome` embeds no such value and
+    /// stamps 0, at its epoch 15.
+    ///
+    /// **Mutation:** drop the `InsertEvent` arm of `schema_major()`'s
+    /// value-dependent block, or make `cross_cutting_holds_major_5` false;
+    /// must fail.
+    #[test]
+    fn x4b_payloads_stamp_major_5_by_value() {
+        use epiphany_core::{
+            EventMark, LineStyle, Lyric, LyricLineId, Marker, MarkerId, MarkerKind, PedalKind,
+            Spanner, SpannerId, SpannerKind, StaffId, Syllabic, Text, TimeAnchor, VoiceId,
+        };
+        let r = ReplicaId(1);
+        let voice = VoiceId::new(r, 1);
+        let plain = valuegen_event(r, voice);
+        let mut marked = plain.clone();
+        if let Event::Pitched(p) = &mut marked {
+            p.marks = vec![EventMark::Staccato];
+        }
+        let insert = |event: Event| {
+            OperationKind::InsertEvent(InsertEventOp {
+                staff_instance: StaffInstanceId::new(r, 1),
+                event,
+            })
+        };
+        let modify = |event: Event| OperationKind::ModifyEvent(ModifyEventOp { event });
+        assert_eq!(insert(plain.clone()).schema_major(), 0);
+        assert_eq!(insert(marked.clone()).schema_major(), 5);
+        assert_eq!(modify(plain).schema_major(), 0);
+        assert_eq!(modify(marked).schema_major(), 5);
+
+        let anchor = TimeAnchor::Event {
+            id: EventId::new(r, 1),
+            offset: epiphany_core::AnchorOffset::Zero,
+        };
+        let create = |structure: CrossCuttingValue| {
+            OperationKind::CreateCrossCutting(CreateCrossCuttingOp { structure })
+        };
+        let marker = CrossCuttingValue::Marker(Marker {
+            id: MarkerId::new(r, 1),
+            anchor: anchor.clone(),
+            kind: MarkerKind::Segno,
+        });
+        let lyric = CrossCuttingValue::Lyric(Lyric {
+            id: LyricLineId::new(r, 1),
+            event: EventId::new(r, 1),
+            verse: 1,
+            text: Text::new("la"),
+            syllabic: Syllabic::Single,
+            extension: false,
+        });
+        let spanner = |kind: SpannerKind, line: LineStyle| {
+            CrossCuttingValue::Spanner(Spanner {
+                id: SpannerId::new(r, 1),
+                start: anchor.clone(),
+                end: anchor.clone(),
+                staves: vec![StaffId::new(r, 1)],
+                kind,
+                style: epiphany_core::SpanStyle {
+                    line,
+                    thickness: None,
+                },
+            })
+        };
+        assert_eq!(create(marker.clone()).schema_major(), 5);
+        assert_eq!(create(lyric).schema_major(), 5);
+        assert_eq!(
+            OperationKind::ModifyCrossCutting(ModifyCrossCuttingOp { structure: marker })
+                .schema_major(),
+            5
+        );
+        assert_eq!(
+            create(spanner(SpannerKind::TrillExtension, LineStyle::Wavy)).schema_major(),
+            5
+        );
+        assert_eq!(
+            create(spanner(
+                SpannerKind::PedalBracket(PedalKind::Sustain),
+                LineStyle::Solid
+            ))
+            .schema_major(),
+            5
+        );
+        assert_eq!(
+            create(spanner(
+                SpannerKind::PedalLine(PedalKind::Sustain),
+                LineStyle::Solid
+            ))
+            .schema_major(),
+            2,
+            "a pedal line with its sign stamps as before"
+        );
+
+        let home = OperationKind::SetVoiceHome(SetVoiceHomeOp {
+            voice,
+            home: Some(StaffId::new(r, 2)),
+        });
+        assert_eq!(home.schema_major(), 0);
+        assert_eq!(home.tag().introduced_minor(), Some(15));
+    }
+
+    /// GOLDEN LOCK: the `CrossCuttingValue` discriminant leads a
+    /// cross-cutting create's or modify's value. 0 to 3 are the ratified
+    /// structures; X4b appends the marker (4) and the lyric (5).
+    /// Append-only; never renumber.
+    #[test]
+    fn cross_cutting_value_discriminants_are_golden() {
+        use epiphany_core::{
+            Lyric, LyricLineId, Marker, MarkerId, MarkerKind, Syllabic, Text, TimeAnchor,
+        };
+        let r = ReplicaId(1);
+        let event = EventId::new(r, 1);
+        let values = [
+            (
+                CrossCuttingValue::Tie(crate::valuegen::tie(
+                    epiphany_core::TieId::new(r, 1),
+                    event,
+                    EventId::new(r, 2),
+                )),
+                0u8,
+            ),
+            (
+                CrossCuttingValue::Slur(crate::valuegen::slur(
+                    SlurId::new(r, 1),
+                    event,
+                    EventId::new(r, 2),
+                )),
+                1,
+            ),
+            (
+                CrossCuttingValue::Beam(crate::valuegen::beam(
+                    epiphany_core::BeamId::new(r, 1),
+                    vec![event, EventId::new(r, 2)],
+                )),
+                2,
+            ),
+            (
+                CrossCuttingValue::Marker(Marker {
+                    id: MarkerId::new(r, 1),
+                    anchor: TimeAnchor::Event {
+                        id: event,
+                        offset: epiphany_core::AnchorOffset::Zero,
+                    },
+                    kind: MarkerKind::Coda,
+                }),
+                4,
+            ),
+            (
+                CrossCuttingValue::Lyric(Lyric {
+                    id: LyricLineId::new(r, 1),
+                    event,
+                    verse: 1,
+                    text: Text::new("la"),
+                    syllabic: Syllabic::Single,
+                    extension: false,
+                }),
+                5,
+            ),
+        ];
+        for (value, expected) in values {
+            assert_eq!(value.discriminant(), expected, "{:?} moved", value.id());
+            let mut bytes = Vec::new();
+            value.encode_canonical(&mut bytes);
+            assert_eq!(bytes[0], expected, "the discriminant leads the bytes");
+        }
+    }
+
+    fn valuegen_event(r: ReplicaId, voice: epiphany_core::VoiceId) -> Event {
+        crate::valuegen::insert_event_value(
+            EventId::new(r, 1),
+            voice,
+            epiphany_core::MusicalPosition::origin(),
+            epiphany_core::MusicalDuration::whole(),
+            &[epiphany_core::PitchId::new(r, 1)],
+        )
     }
 
     /// (M11) `CreateMeasure` gains NO `schema_major()` arm (pin 2: `Measure`

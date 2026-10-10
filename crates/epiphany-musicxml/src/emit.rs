@@ -571,7 +571,7 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
                             }
                         })
                         .collect(),
-                    articulations: Vec::new(),
+                    marks: Vec::new(),
                     dynamic: None,
                     ornaments: Vec::new(),
                     stem: StemConfiguration,
@@ -584,7 +584,7 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
                     duration,
                     staff_position: StaffPosition(*step),
                     instrument_member: UnpitchedMemberId(*member as u32),
-                    articulations: Vec::new(),
+                    marks: Vec::new(),
                     dynamic: None,
                     stem: StemConfiguration,
                     grace: None,

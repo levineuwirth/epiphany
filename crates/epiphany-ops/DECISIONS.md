@@ -3721,3 +3721,51 @@ Locked by `a_modify_carrying_a_pitch_another_event_holds_is_refused_in_both_mode
 nothing minted; the event's own and a fresh one, applied; a deleted one,
 applied without it). Mutation: the check disabled (the pitch stands in two
 events, `PitchIdUnique`, and the test fails).
+
+## X4b.2 — schema major 5 in the operations (2026-10-10)
+
+The ruled shapes (D58) reach the payloads, the decoder, reduction and the
+text projection.
+
+**The wire.** `SetVoiceHome` is kind/tag 43 at epoch 15, its payload a voice
+and an optional staff. `CrossCuttingValue` appends `Marker` (4) and `Lyric`
+(5); `PreconditionFailureReason` appends `SlotOccupied` (19, epoch 15).
+`InsertEvent`, `ModifyEvent`, `CreateCrossCutting` and `ModifyCrossCutting`
+stamp major 5 by value, where the value holds a mark, an ornament, a grace,
+a marker, a lyric, a wavy line or a pedal bracket, and as before otherwise;
+so do the staff, instrument, instance and region payloads where a staff-line
+style is wavy. The op-block and snapshot accept-sets rise to `[0, 5]`. The
+text projection moves to 0.18.0, its `kind` production gaining
+`set-voice-home` and its `cross-cutting` production `marker` and `lyric`.
+Locked by `x4b_payloads_stamp_major_5_by_value`,
+`cross_cutting_value_discriminants_are_golden` and the vocabulary goldens.
+
+**Reduction.** Version 4's `Bumps` entry gains X4b.2's verdicts, each held
+alike in both modes by `epiphany-musicxml`'s `expression_modes`, one test a
+verdict, each observed failing with its rule disabled (eighteen mutations):
+a grace's zero duration and a non-grace's positive one, refused
+`EventDurationInvalid` at an insert or a modify; a grace never strictly
+inside another event's span; a voice's order by position, then a position's
+graces by `(order, id)`, then its event of positive duration, re-sorted when
+a modify changes only a grace's order; a grace no tuplet's member; a tie's
+adjacency over events of positive duration; one syllable per event and
+verse, `SlotOccupied`, and a syllable cascade-deleted with its event; a
+marker an operation anchored to an event re-anchored at its delete in
+base-free reduction too, from the occupancy index (`indexed_referent`); and
+the voice home's register, guard and undo.
+
+**A voice's home is a register.** `SetVoiceHome` writes a last-writer-wins
+value keyed by the voice, seeded with no home at the voice's create and from
+a base's `voice_homes`. A dead voice refuses it `TargetTombstoned` or
+`TargetMissing`, a dead staff `TargetMissing`; concurrent differing writes
+are a `StructuralFieldCollision`. An undo restores the earlier home, a home
+naming a staff removed since being superseded; an undo cannot remove a staff
+a live voice's home names (the strand guard, as for a part or a spanner);
+a voice's delete takes its home with it.
+
+**What an editor's clipboard carries.** The fragment format's note carries
+the real marks, ornaments and grace. An empty value projects as before, so
+the fragment version is unchanged.
+
+**The fuzz writes `SetVoiceHome`** (arm 56), so the every-kind test holds;
+X4b.4 adds the arms for the new values.

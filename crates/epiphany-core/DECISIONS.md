@@ -1717,3 +1717,72 @@ puts a `cmn-12` and a `cmn-24` pitch in one frame (twice the semitone, or the
 moves a spelling in it, the sibling of `PitchSpelling::transposed`. The
 engraver's glyph table is held to these names and alterations by
 `the_cores_quarter_tone_accidentals_are_drawn_at_their_alterations`.
+
+## Schema major 5: expression and text (X4b.2, 2026-10-10)
+
+The owner's ruling on the payload shapes (roadmap D58) fills the slots an
+event already carried and gives the score's point marks, lyrics and a voice's
+home staff their values. Every value an operation carried before encodes as
+it did (D58's Q1(a)); a field added to a value only the snapshot carries
+moves the snapshot to major 5.
+
+**The event's slots.** `articulations` becomes `marks: Vec<EventMark>`, one
+union of the marks an event carries (articulations, bowings, technical, brass
+and jazz marks, a single-note or two-note tremolo with its strokes, an
+arpeggio with its direction; tags 0 to 21, Q9). `ornaments` holds `Ornament`
+(trill, mordents, turns, each with the accidentals above and below it), and
+`grace` holds `Grace` (kind, notated value, dots, `order`). Marks and
+ornaments are canonical sets (Q10): one of each kind, ascending by kind, a
+repeated kind or an unordered pair refused by name. `DynamicMark` stays a reserved unit: a
+dynamic is a point marker (Q2), not an event's field. An empty slot encodes
+byte-identically to the placeholder it replaces, so an operation written
+before major 5 decodes unchanged.
+
+**Grace notes have zero duration** (Q5). The notated value lives in the
+payload; the duration is zero, and only a grace's is. Invariant 3 gains the
+zero-duration rule and the order of a position's graces, `(order, id)`,
+before its event of positive duration; a tie's adjacency counts only events
+of positive duration, so graces take no place between a tie's ends. The
+decomposition pre-pass already skipped a zero-length event.
+
+**Markers and lyrics.** `Marker` gains `kind: MarkerKind`: a dynamic (the 24
+standard marks and `Other(Text)`), a fermata (five shapes, inverted or not),
+a breath mark, a caesura, staff text, a tempo mark (its text and an optional
+metronome, beside `SetTempoSegment` with no stored link, Q7), a rehearsal
+mark, segno and coda (Q2, Q3). Placement is not stored (Q8). `LyricLine`
+becomes `Lyric`, one syllable per event and verse (Q4): event, verse, text,
+syllabic form and extension; invariant 10 refuses a second syllable on one
+event and verse. Text is `Text`, a string held to Unicode NFC (Q6),
+`TextLineDefinition`'s text among it; the decoder refuses any other form.
+
+**A wavy line and a pedal bracket (Q12).** `LineStyle::Wavy` (tag 3) and
+`SpannerKind::PedalBracket(PedalKind)` (tag 9), a pedal line drawn without
+its sign; `PedalLine` is unchanged and means a line with its sign. Both tags
+are new, so no earlier document holds either; no writer in any of the three
+working trees created a `PedalLine`, and no committed history, decode vector
+or text vector held one.
+
+**The home staff lives in `Score.voice_homes`, not on `Voice`.** The design
+note put it on `Voice`, but a `Voice` is also carried inside the values of
+`CreateVoice`, `CreateStaffInstance` and `CreateRegion`, so a field on it
+would append to values operations already carry, against Q1(a). The map
+`voice_homes: BTreeMap<VoiceId, StaffId>` is appended to `Score` (empty
+encodes as a zero count), written by `SetVoiceHome` (Q11). Invariant 10
+holds its keys to the voices the score holds and its values to declared
+staves.
+
+**The frozen major-4 forms.** `encode_v4_score` and `decode_v4_score` hold
+the major-4 layout; every older major's decoder now reads events through
+`dec_events_v4`. A value no major before 5 gave a meaning is refused by
+name, never defaulted: a filled placeholder list or grace kind, a marker
+(it had no kind), a lyric line (it had no syllable). The unions the older
+decoders read with the live codec, `LineStyle` and `SpannerKind`, are held
+by `refuse_major_5_values`. The decode corpus pins each refusal
+(`major_5_refusals_name_their_value`) and
+`schema_major_5_wire_bytes_are_frozen` pins the new values' bytes.
+
+**The canonical base is unchanged.** `MaterializedState` holds effects,
+conflicts, anomalies, objects, spellings, breaks and pending; every write
+chain is reducer state, rebuilt from the operations and seeded from a base
+graph. The new chains (a voice's home; a marker's and a lyric's values in
+the cross-cutting chain) stay out of it, and the base stays major 0.

@@ -384,7 +384,7 @@ pub fn assert_score_serialization_stable(score: &Score, frontier: &[u8], seed: u
     .expect("create bundle");
     let snapshot = StagedChunk {
         kind: ChunkKind::Snapshot,
-        schema_version: SchemaVersion::for_major(4),
+        schema_version: SchemaVersion::for_major(5),
         payload: canonical.clone(),
     };
     let frontier = frontier.to_vec();
@@ -424,7 +424,7 @@ pub fn assert_score_serialization_stable(score: &Score, frontier: &[u8], seed: u
         .acceleration_snapshots
         .first()
         .expect("an acceleration snapshot");
-    assert_eq!(accel.root.schema_version, SchemaVersion::for_major(4));
+    assert_eq!(accel.root.schema_version, SchemaVersion::for_major(5));
     let loaded = reopened
         .read_chunk(&accel.root)
         .expect("read snapshot chunk back");
@@ -811,7 +811,7 @@ mod tests {
         let reopened = reopen_with_op_block(0xD2_0004, staged);
         assert!(
             !reopened.is_read_only(),
-            "major 4 is inside the raised op-block accept-set [0, 4], so the \
+            "major 4 is inside the raised op-block accept-set [0, 5], so the \
              bundle must open read-write"
         );
         // Read back through the accept-set gate and decoded: the envelope,
@@ -829,18 +829,19 @@ mod tests {
     #[test]
     fn op_block_beyond_the_accept_set_opens_read_only() {
         use epiphany_bundle::IntegrityAnomaly;
-        // A newer writer's op block, stamped schema major 5 — beyond the reader's
-        // op-block accept-set [0,4]. The bundle opens read-only preservation (the
+        // A newer writer's op block, stamped schema major 6 — beyond the reader's
+        // op-block accept-set [0,5]. The bundle opens read-only preservation (the
         // canonical base and manifest still read) rather than hard-rejecting.
         //
-        // Major 5: genesis tranche G2b raised the op-block accept-set to
-        // [0, 3] (`SetTuningContext` is born at major 3) and X3c to [0, 4]
-        // (`CreateTuplet` is born at major 4), so this test's "beyond the
-        // accept-set" major must move past both to stay an actual test of
-        // the read-only-on-overflow path.
+        // Major 6: genesis tranche G2b raised the op-block accept-set to
+        // [0, 3] (`SetTuningContext` is born at major 3), X3c to [0, 4]
+        // (`CreateTuplet` is born at major 4) and X4b to [0, 5] (an event's
+        // marks, a marker and a lyric are born at major 5), so this test's
+        // "beyond the accept-set" major must move past each to stay an
+        // actual test of the read-only-on-overflow path.
         let block = StagedChunk::operation_block_versioned(
             encode_block(&[vec![1u8, 2, 3, 4]]),
-            SchemaVersion::new(5, 0),
+            SchemaVersion::new(6, 0),
         );
         let reopened = reopen_with_op_block(0xD2_0002, block);
         assert!(
@@ -849,7 +850,7 @@ mod tests {
         );
         assert!(reopened.anomalies().iter().any(|a| matches!(
             a,
-            IntegrityAnomaly::UnsupportedCanonicalChunkMajor { schema_major: 5 }
+            IntegrityAnomaly::UnsupportedCanonicalChunkMajor { schema_major: 6 }
         )));
     }
 

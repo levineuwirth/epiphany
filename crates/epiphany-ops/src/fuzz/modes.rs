@@ -92,7 +92,7 @@ use crate::payload::{
     ResolveEquivocationPayload, RespellPitchOp, SetCanvasLayoutDefaultsOp, SetClefOp,
     SetKeySignatureOp, SetMetadataOp, SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp,
     SetTempoSegmentOp, SetTimeSignatureOp, SetTuningContextOp, SetUserPageBreakOp,
-    SetUserSystemBreakOp, TransactionDescriptor, TransposeIntervalOp, TransposeOp,
+    SetUserSystemBreakOp, SetVoiceHomeOp, TransactionDescriptor, TransposeIntervalOp, TransposeOp,
     TupletCompensation,
 };
 use crate::stamp::{HybridLogicalClock, OperationStamp};
@@ -1063,7 +1063,7 @@ fn event_value(
                 position,
                 duration,
                 pitches,
-                articulations: Vec::new(),
+                marks: Vec::new(),
                 dynamic: None,
                 ornaments: Vec::new(),
                 stem: StemConfiguration,
@@ -1085,7 +1085,7 @@ fn event_value(
             duration,
             staff_position: StaffPosition(sim.rng.range(-4, 4) as i16),
             instrument_member: UnpitchedMemberId(0),
-            articulations: Vec::new(),
+            marks: Vec::new(),
             dynamic: None,
             stem: StemConfiguration,
             grace: None,
@@ -1309,7 +1309,7 @@ fn genesis(sim: &mut Simulation) {
                             id: pid,
                             pitch: random_pitch(&mut sim.rng, 1000),
                         }],
-                        articulations: Vec::new(),
+                        marks: Vec::new(),
                         dynamic: None,
                         ornaments: Vec::new(),
                         stem: StemConfiguration,
@@ -1808,12 +1808,7 @@ fn make(
             live.extend(cc.spanners.iter().cloned().map(CrossCuttingValue::Spanner));
             let chosen = sim.rng.pick(&live)?.clone();
             if kind == 13 {
-                let structure = match &chosen {
-                    CrossCuttingValue::Slur(s) => TypedObjectId::Slur(s.id),
-                    CrossCuttingValue::Tie(t) => TypedObjectId::Tie(t.id),
-                    CrossCuttingValue::Beam(b) => TypedObjectId::Beam(b.id),
-                    CrossCuttingValue::Spanner(s) => TypedObjectId::Spanner(s.id),
-                };
+                let structure = chosen.id();
                 vec![prim(OperationKind::DeleteCrossCutting(
                     DeleteCrossCuttingOp { structure },
                 ))]
@@ -1871,6 +1866,8 @@ fn make(
                         }
                         CrossCuttingValue::Spanner(s)
                     }
+                    // Not drawn from the view's live list yet (X4b.4's arms).
+                    other @ (CrossCuttingValue::Marker(_) | CrossCuttingValue::Lyric(_)) => other,
                 };
                 vec![prim(OperationKind::ModifyCrossCutting(
                     ModifyCrossCuttingOp { structure },
@@ -2440,7 +2437,7 @@ fn make(
                         duration: duration.clone(),
                         staff_position: StaffPosition(sim.rng.range(-4, 4) as i16),
                         instrument_member: UnpitchedMemberId(0),
-                        articulations: Vec::new(),
+                        marks: Vec::new(),
                         dynamic: None,
                         stem: StemConfiguration,
                         grace: None,
@@ -2476,7 +2473,7 @@ fn make(
                     position: other.position().clone(),
                     duration: other.duration().clone(),
                     pitches: vec![pitch.clone()],
-                    articulations: Vec::new(),
+                    marks: Vec::new(),
                     dynamic: None,
                     ornaments: Vec::new(),
                     stem: StemConfiguration,
@@ -2711,6 +2708,21 @@ fn make(
             )));
             out
         }
+        56 => {
+            // SetVoiceHome: a voice's home set to a staff the view holds, or
+            // cleared.
+            let voices: Vec<VoiceId> = h.score.voices().map(|(_, _, v)| v.id).collect();
+            let voice = *sim.rng.pick(&voices)?;
+            let home = if sim.rng.chance(4) {
+                None
+            } else {
+                Some(sim.rng.pick(&h.score.staves)?.id)
+            };
+            vec![prim(OperationKind::SetVoiceHome(SetVoiceHomeOp {
+                voice,
+                home,
+            }))]
+        }
         _ => return None,
     })
 }
@@ -2855,7 +2867,7 @@ fn tie_entry(
         position: EventPosition::Musical(end),
         duration: EventDuration::Musical(length),
         pitches,
-        articulations: Vec::new(),
+        marks: Vec::new(),
         dynamic: None,
         ornaments: Vec::new(),
         stem: StemConfiguration,
@@ -2880,7 +2892,7 @@ fn tie_entry(
 /// Each arm of [`make`] and how often it is drawn: the editing of notes,
 /// pitches and their marks three times as often as the score's structure and
 /// settings, as an editor's history runs.
-const ARMS: [(u64, u64); 56] = [
+const ARMS: [(u64, u64); 57] = [
     (0, 4),
     (1, 3),
     (2, 3),
@@ -2937,6 +2949,7 @@ const ARMS: [(u64, u64); 56] = [
     (53, 1),
     (54, 1),
     (55, 1),
+    (56, 1),
 ];
 
 fn draw_arm(rng: &mut Rng) -> u64 {
@@ -3205,6 +3218,12 @@ fn mints_and_refs(payload: &OperationPayload) -> (Vec<TypedObjectId>, Vec<TypedO
                     anchor(&x.end, &mut named);
                     (T::Spanner(x.id), named)
                 }
+                CrossCuttingValue::Marker(x) => {
+                    let mut named = Vec::new();
+                    anchor(&x.anchor, &mut named);
+                    (T::Marker(x.id), named)
+                }
+                CrossCuttingValue::Lyric(x) => (T::LyricLine(x.id), vec![T::Event(x.event)]),
             };
             if creating {
                 mints.push(own);
@@ -3313,6 +3332,10 @@ fn mints_and_refs(payload: &OperationPayload) -> (Vec<TypedObjectId>, Vec<TypedO
         }
         OperationKind::SetClef(op) => refs.push(T::StaffInstance(op.instance)),
         OperationKind::SetKeySignature(op) => refs.push(T::StaffInstance(op.instance)),
+        OperationKind::SetVoiceHome(op) => {
+            refs.push(T::Voice(op.voice));
+            refs.extend(op.home.map(T::Staff));
+        }
         _ => {}
     }
     (mints, refs)

@@ -66,8 +66,8 @@ use std::fmt;
 
 use epiphany_core::textvalue::{read_sexp, Sexp, TextError, TextValue};
 use epiphany_core::{
-    ArticulationMark, CurvatureOverride, DynamicMark, GraceKind, MusicalDuration, OrnamentMark,
-    Pitch, PitchSpelling, SlurKind, SpanStyle, StaffPosition, StemConfiguration, TieClass,
+    CurvatureOverride, DynamicMark, EventMark, Grace, MusicalDuration, Ornament, Pitch,
+    PitchSpelling, SlurKind, SpanStyle, StaffPosition, StemConfiguration, TieClass,
 };
 
 /// The one fragment major version this build encodes and accepts. Ruling E:
@@ -250,11 +250,11 @@ pub(crate) enum FragmentEventContent {
     },
     Pitched {
         pitches: Vec<FragmentPitch>,
-        articulations: Vec<ArticulationMark>,
+        marks: Vec<EventMark>,
         dynamic: Option<DynamicMark>,
-        ornaments: Vec<OrnamentMark>,
+        ornaments: Vec<Ornament>,
         stem: StemConfiguration,
-        grace: Option<GraceKind>,
+        grace: Option<Grace>,
     },
 }
 
@@ -271,7 +271,7 @@ impl TextValue for FragmentEventContent {
             ]),
             FragmentEventContent::Pitched {
                 pitches,
-                articulations,
+                marks,
                 dynamic,
                 ornaments,
                 stem,
@@ -279,7 +279,7 @@ impl TextValue for FragmentEventContent {
             } => Sexp::List(vec![
                 Sexp::sym("pitched"),
                 pitches.project(),
-                articulations.project(),
+                marks.project(),
                 dynamic.project(),
                 ornaments.project(),
                 stem.project(),
@@ -316,11 +316,11 @@ impl TextValue for FragmentEventContent {
                 }
                 Ok(FragmentEventContent::Pitched {
                     pitches,
-                    articulations: Vec::<ArticulationMark>::parse(&fields[1])?,
+                    marks: Vec::<EventMark>::parse(&fields[1])?,
                     dynamic: Option::<DynamicMark>::parse(&fields[2])?,
-                    ornaments: Vec::<OrnamentMark>::parse(&fields[3])?,
+                    ornaments: Vec::<Ornament>::parse(&fields[3])?,
                     stem: StemConfiguration::parse(&fields[4])?,
-                    grace: Option::<GraceKind>::parse(&fields[5])?,
+                    grace: Option::<Grace>::parse(&fields[5])?,
                 })
             }
             found => Err(TextError::UnknownConstructor {
@@ -674,7 +674,7 @@ mod tests {
                     pitch: a_pitch(),
                     spelling_override: Some(PitchSpelling::cmn(CmnNominal::D, 4)),
                 }],
-                articulations: vec![],
+                marks: vec![],
                 dynamic: None,
                 ornaments: vec![],
                 stem: StemConfiguration,

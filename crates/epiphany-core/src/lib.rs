@@ -77,6 +77,7 @@ mod invariants;
 mod pitch;
 mod pitch_space;
 mod tempo;
+mod text;
 mod textvalue_event;
 mod textvalue_graph;
 mod textvalue_impls;
@@ -140,31 +141,34 @@ pub use prepass::{
 };
 
 pub use event::{
-    ArenaError, ArticulationMark, CueEvent, CueRendering, DynamicMark, Event, EventArena, EventKey,
-    GraceKind, GraphicEvent, IndeterminacyHints, IndeterminacyKind, IndeterminateEvent,
-    OrnamentMark, PitchedEvent, PlaybackBinding, Rest, StaffPosition, StemConfiguration,
-    TrajectoryDisplay, TrajectoryEndpoint, TrajectoryEvent, TrajectoryShape, UnpitchedEvent,
-    UnpitchedMemberId,
+    canonical_marks, canonical_ornaments, ArenaError, ArpeggioDirection, CueEvent, CueRendering,
+    DynamicMark, Event, EventArena, EventKey, EventMark, Grace, GraceKind, GraphicEvent,
+    IndeterminacyHints, IndeterminacyKind, IndeterminateEvent, Ornament, OrnamentKind,
+    PitchedEvent, PlaybackBinding, Rest, StaffPosition, StemConfiguration, TrajectoryDisplay,
+    TrajectoryEndpoint, TrajectoryEvent, TrajectoryShape, UnpitchedEvent, UnpitchedMemberId,
 };
+
+pub use text::Text;
 
 pub use graph::{
     derive_promoted_voice_id, AleatoricAnchoringDiscipline, AleatoricTimeModel, AnalysisLayer,
     AnalyticalAnnotation, AnnotationAnchor, BarlineAlignmentGroup, BarlineAlignmentMember, Beam,
-    BeamGeometryOverride, BeatGroup, BracketKind, Canvas, CanvasLayoutDefaults, CanvasMargins,
-    CanvasSize, ChordSymbol, Clef, ClefChange, ClefShape, Comment, CoordinateDiscipline,
-    CrossCuttingRegistry, CurvatureOverride, CurveDirection, DecompositionAttachment,
-    DecompositionSource, EventOrderingDAG, GestureAnchoring, GraphicContent, GraphicGesture,
-    GraphicObject, HairpinDirection, Instrument, KeySignature, KeySignatureChange, LineStyle,
-    LyricLine, Marker, Measure, MeasureNumberVisibility, MetadataEntry, MetadataValue, MeterChange,
-    MetricGrid, MetricTimeModel, NotatedComponent, NoteValue, OctaveOffset, PartDefinition,
+    BeamGeometryOverride, BeatGroup, BracketKind, BreathMark, CaesuraMark, Canvas,
+    CanvasLayoutDefaults, CanvasMargins, CanvasSize, ChordSymbol, Clef, ClefChange, ClefShape,
+    Comment, CoordinateDiscipline, CrossCuttingRegistry, CurvatureOverride, CurveDirection,
+    DecompositionAttachment, DecompositionSource, Dynamic, EventOrderingDAG, Fermata, FermataShape,
+    GestureAnchoring, GraphicContent, GraphicGesture, GraphicObject, HairpinDirection, Instrument,
+    KeySignature, KeySignatureChange, LineStyle, Lyric, Marker, MarkerKind, Measure,
+    MeasureNumberVisibility, MetadataEntry, MetadataValue, MeterChange, MetricGrid,
+    MetricTimeModel, Metronome, NotatedComponent, NoteValue, OctaveOffset, PartDefinition,
     PedalKind, PowerOfTwo, ProportionalTimeModel, Region, RegionContent, RegionTimeModel,
     RepeatKind, RepeatStructure, Score, ScoreMetadata, ScoreTuningContext, Slur, SlurKind,
     SoundConfiguration, SpaceUnit, SpanStyle, Spanner, SpannerKind, Staff, StaffBasedContent,
     StaffBracketKind, StaffExtent, StaffGroup, StaffGroupKind, StaffInstance,
-    StaffLineConfiguration, StemDirection, SubBeam, TempoMapReference, TextLineDefinition, Tie,
-    TieClass, TimeExtent, TimeSignature, TimeSignatureDisplay, Timestamp, TuningContextSettings,
-    Tuplet, TupletBracket, TupletDisplay, TupletNumber, TupletRatio, UnpitchedMember,
-    ViewDefinition, Voice, VoiceOrigin, Volta,
+    StaffLineConfiguration, StemDirection, SubBeam, Syllabic, TempoMapReference, TempoMark,
+    TextLineDefinition, Tie, TieClass, TimeExtent, TimeSignature, TimeSignatureDisplay, Timestamp,
+    TuningContextSettings, Tuplet, TupletBracket, TupletDisplay, TupletNumber, TupletRatio,
+    UnpitchedMember, ViewDefinition, Voice, VoiceOrigin, Volta,
 };
 
 pub use tempo::{

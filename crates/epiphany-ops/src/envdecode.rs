@@ -40,7 +40,8 @@ use epiphany_core::{
     Voice, VoiceId, WallClockTime,
 };
 use epiphany_core::{
-    Beam, Event, IdentifiedPitch, Pitch, Region, RepeatStructure, Rest, Slur, Spanner, Tie,
+    Beam, Event, IdentifiedPitch, Lyric, Marker, Pitch, Region, RepeatStructure, Rest, Slur,
+    Spanner, StaffId, Tie,
 };
 use epiphany_core::{CanonicalValue, Clef, KeySignature, RationalTime, TempoSegment};
 use epiphany_determinism::{CanonicalDecode, CanonicalEncode};
@@ -271,6 +272,7 @@ id_reader!(pitch_id, PitchId, "PitchId");
 id_reader!(region_id, RegionId, "RegionId");
 id_reader!(staff_instance_id, StaffInstanceId, "StaffInstanceId");
 id_reader!(voice_id, VoiceId, "VoiceId");
+id_reader!(staff_id, StaffId, "StaffId");
 id_reader!(instrument_id, InstrumentId, "InstrumentId");
 id_reader!(repeat_id, RepeatStructureId, "RepeatStructureId");
 id_reader!(transaction_id, TransactionId, "TransactionId");
@@ -355,6 +357,8 @@ fn cross_cutting(r: &mut Reader<'_>) -> Result<CrossCuttingValue> {
         1 => CrossCuttingValue::Slur(value::<Slur>(r, "Slur")?),
         2 => CrossCuttingValue::Beam(value::<Beam>(r, "Beam")?),
         3 => CrossCuttingValue::Spanner(value::<Spanner>(r, "Spanner")?),
+        4 => CrossCuttingValue::Marker(value::<Marker>(r, "Marker")?),
+        5 => CrossCuttingValue::Lyric(value::<Lyric>(r, "Lyric")?),
         tag => {
             return Err(EnvelopeDecodeError::InvalidTag {
                 kind: "CrossCuttingValue",
@@ -650,6 +654,10 @@ fn operation_kind(r: &mut Reader<'_>) -> Result<OperationKind> {
             instance: staff_instance_id(r)?,
             offset: value::<RationalTime>(r, "RationalTime")?,
             key: opt(r, |r| value::<KeySignature>(r, "KeySignature"))?,
+        }),
+        43 => OperationKind::SetVoiceHome(SetVoiceHomeOp {
+            voice: voice_id(r)?,
+            home: opt(r, staff_id)?,
         }),
         tag => {
             return Err(EnvelopeDecodeError::InvalidTag {
@@ -1015,6 +1023,12 @@ pub(crate) mod tests {
                     instance: StaffInstanceId::new(ReplicaId(7), 1),
                     offset: epiphany_core::RationalTime::new(3, 4).expect("a valid offset"),
                     key: epiphany_core::KeySignature::new(3),
+                })
+            }
+            OperationKindTag::SetVoiceHome => {
+                OperationKind::SetVoiceHome(crate::payload::SetVoiceHomeOp {
+                    voice: VoiceId::new(ReplicaId(7), 1),
+                    home: Some(StaffId::new(ReplicaId(7), 2)),
                 })
             }
         }

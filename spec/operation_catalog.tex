@@ -231,7 +231,7 @@
   {\Large\scshape\color{epiphanyslate}Operation Catalog}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.20.0 --- A pitch belongs to one event}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.21.0 --- Expression and text}\\[4pt]
   {\small\color{epiphanyslate}Normative for the operation kinds it defines}
   \vfill
 \end{titlepage}
@@ -830,6 +830,22 @@ payload, discriminant or \texttt{PreconditionFailureReason} changes.
 Accordingly \texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION}
 moves \texttt{3}~$\rightarrow$~\texttt{4}.
 
+\noindent\textbf{Version 0.21.0 (X4b.2, expression and text).} Schema
+major~5 (Binary Format companion \sectionsc{Schema Major 5}) reaches the
+operations. An event's marks, ornaments and grace ride \texttt{InsertEvent}
+and \texttt{ModifyEvent}, which stamp major~5 where their value holds one; a
+grace note's timing is ruled in both reduction modes
+(Section~\ref{sec:k0:insert-event}). \texttt{CrossCuttingValue} appends
+\texttt{Marker} (discriminant~4) and \texttt{Lyric} (5), stamped major~5,
+with one syllable per event and verse
+(Section~\ref{sec:k0:create-cross-cutting}).
+\texttt{PreconditionFailureReason} appends \texttt{SlotOccupied}
+(discriminant~19, epoch~15). \texttt{SetVoiceHome} (kind and tag~43,
+epoch~15) writes a voice's home staff
+(Section~\ref{sec:k0:set-voice-home}). The new verdicts join reduction
+version~\texttt{4}, which X4b.0 opened and which does not move again before
+X4b merges.
+
 % ===========================================================================
 \chapter{The Catalog Framework}
 \label{ch:framework}
@@ -958,7 +974,8 @@ derivation is total without a containment walk.
 canonical bytes of \texttt{event}.
 
 \textbf{Reduction rule.} A position-keyed insert. Preconditions: the event's
-duration is positive; its position is musical, a wall-clock one refused with
+duration is positive, or zero for a grace note, and zero only for one (see
+\emph{Grace notes} below); its position is musical, a wall-clock one refused with
 \texttt{WrongRegionTimeModel} in both modes (since version~0.19.0, before which
 it was admitted into a metric region at the region's origin); the event id is
 neither live nor tombstoned; the region of
@@ -981,6 +998,27 @@ instance the insert names, in the reducer's index as in the graph, so the
 instance's delete is refused with \texttt{ContainerNotEmpty} while it holds an
 event (since version~0.19.0, before which the index left it out and the
 instance's delete applied over it).
+
+\textbf{Grace notes (since version~0.21.0).} A grace note is an event whose
+\texttt{grace} is present (core specification, schema major~5); it occupies
+no voice time. Its duration is zero and only a grace note's is: an insert or
+a modification whose value breaks either is refused with
+\texttt{EventDurationInvalid}, in both modes. A zero-length span overlaps
+nothing, so graces at one position from any number of authors all stand,
+with no promotion; but a grace stands at an event's onset, never strictly
+inside another event's span in its voice, and an insert or a move that would
+put a grace there, or an event's span over a standing grace, is refused with
+\texttt{EventDurationInvalid}. A voice's events stand by position, a
+position's graces before its event of positive duration in their
+\texttt{order} and then by identifier. A grace's principal is positional, not
+a reference: a grace survives its note's delete, standing alone. A grace is
+no tuplet's member (Section~\ref{sec:k0:create-tuplet}), and a standard tie's
+ends are adjacent among the voice's events of positive duration, the graces
+before either taking no place.
+
+\textbf{Schema major.} An insert whose event holds a mark, an ornament or a
+grace is stamped schema major~5; any other is stamped as before, its bytes
+unchanged.
 
 \textbf{Conflict cases.} None at reduction time; promotion is a deterministic
 repair, not a conflict.
@@ -1035,7 +1073,11 @@ rule table over every cross-cutting structure that referenced it: a tie
 cascade-deletes; a comment or analytical annotation orphans (user content is
 never silently deleted); a beam truncates while $\geq 2$ members survive and
 otherwise cascade-deletes; a slur or spanner re-anchors to the nearest surviving
-endpoint while $\geq 1$ survives and otherwise cascade-deletes.
+endpoint while $\geq 1$ survives and otherwise cascade-deletes; a lyric
+cascade-deletes, and a marker re-anchors to the nearest live event of its
+staff instance or orphans to its region's start, in both modes (since
+version~0.21.0). A grace note before the event is not a referent: it stands
+alone.
 
 \section{RespellPitch}
 \label{sec:k0:respell-pitch}
@@ -1106,7 +1148,11 @@ invariant~3). To keep that invariant, a placement change carries a
 index (graph-independent, so graph-free and graph-aware reduction agree): a move
 with a non-positive span, or one that would overlap another live event in the
 voice, is refused as a clean precondition no-op (\texttt{EventDurationInvalid})
-rather than skipped silently. A materialised move updates the occupancy index,
+rather than skipped silently. A grace note's value is held to the grace rules
+of Section~\ref{sec:k0:insert-event} (since version~0.21.0): a modification
+giving a grace a positive duration, or an event of positive duration a grace,
+is refused with \texttt{EventDurationInvalid}, and one that changes only a
+grace's \texttt{order} re-sorts its voice. A materialised move updates the occupancy index,
 so a later insert sees the freed or changed span. A placement change of a
 \emph{non-metric} event is recorded in the bookkeeping but not applied to the
 graph (re-sorting a non-metric voice is a deferred refinement); a malformed
@@ -1469,11 +1515,18 @@ rely on it.
 
 \textbf{Payload schema.} \texttt{CreateCrossCuttingOp \{ structure:
 CrossCuttingValue \}}, where \texttt{CrossCuttingValue} is the typed value of a
-\texttt{Tie}, \texttt{Slur}, \texttt{Beam}, or \texttt{Spanner}. Its identity and
+\texttt{Tie}, \texttt{Slur}, \texttt{Beam}, \texttt{Spanner}, or, since
+version~0.21.0, a \texttt{Marker} (a point mark: a dynamic, fermata, breath
+mark, caesura, staff text, tempo mark, rehearsal mark, segno or coda) or a
+\texttt{Lyric} (one syllable on an event). Its identity and
 referenced endpoints are read from the value.
 
-\textbf{Canonical encoding.} A discriminant for the structure kind, then the
-length-framed canonical bytes of the structure value.
+\textbf{Canonical encoding.} A discriminant for the structure kind
+(\texttt{0} tie, \texttt{1} slur, \texttt{2} beam, \texttt{3} spanner,
+\texttt{4} marker, \texttt{5} lyric), then the length-framed canonical bytes
+of the structure value. A value holding a marker, a lyric, a wavy line or a
+pedal line without its sign is stamped schema major~5; any other is stamped
+major~2, as before.
 
 \textbf{Reduction rule.} Set-union creation: the structure is minted live if its
 id is not already live and every referenced endpoint is live; a second create of
@@ -1481,7 +1534,10 @@ a live id is idempotent. A spanner's staves are referents, each checked in both
 modes as Requirement~\ref{req:catalog:base-free-referents} reads one (since
 version~0.19.0), a dead staff refusing the create, as it does a
 \texttt{ModifyCrossCutting}, with \texttt{TargetMissing}. Graph-aware reduction materialises the structure with
-its full fields.
+its full fields. An event carries one syllable per verse: a create or a
+modification of a lyric whose event and verse a live lyric already holds is
+refused with \texttt{SlotOccupied}, in both modes, and of two concurrent
+ones the later in canonical order is refused (since version~0.21.0).
 
 \textbf{Conflict cases.} None (all-or-nothing creation; union is deterministic).
 
@@ -1489,7 +1545,11 @@ its full fields.
 policy.
 
 \textbf{Re-anchoring.} The structure participates in the re-anchoring rule table
-when one of its endpoints is later tombstoned (see DeleteEvent).
+when one of its endpoints is later tombstoned (see DeleteEvent). A lyric
+cascade-deletes with its event; a marker anchored to an event re-anchors to
+the nearest live event of its staff instance, or orphans to its region's
+start, in both modes, base-free reduction reading the event's place from the
+occupancy index (since version~0.21.0).
 
 \textbf{A tie gives way (since version~0.19.0).} A tie holds only while its
 class's validation holds (core specification,
@@ -1548,7 +1608,7 @@ anchors --- a Phase-3 / Pass-12 extension, not yet implemented.
 \textbf{Payload schema.} \texttt{DeleteCrossCuttingOp \{ structure: TypedObjectId
 \}} --- the structure named by the same key the set-union creation and the
 re-anchoring table use; it \MUST{} be a cross-cutting kind
-(\texttt{Tie}/\texttt{Slur}/\texttt{Beam}/\texttt{Spanner}).
+(\texttt{Tie}/\texttt{Slur}/\texttt{Beam}/\texttt{Spanner}/\texttt{Marker}/\texttt{LyricLine}).
 
 \textbf{Canonical encoding.} The canonical bytes of \texttt{structure}.
 
@@ -2335,7 +2395,9 @@ into the registry.
 Preconditions, checked graph-aware and base-free alike from the
 graph-independent indices, so the two modes never disagree: the tuplet has at
 least one member, every member is a live event and a carried parent is a live
-tuplet (else \texttt{TargetMissing}); and the members' sounding durations sum
+tuplet (else \texttt{TargetMissing}); no member is a grace note, which
+occupies no time (else \texttt{EventDurationInvalid}, since version~0.21.0);
+and the members' sounding durations sum
 to exactly \texttt{required\_total} (else \texttt{EventDurationInvalid}), the
 core specification's tuplet duration consistency
 (\texttt{req:time:tuplet-duration-consistency}), which a create
@@ -2425,6 +2487,44 @@ superseded the undone one.
 
 \textbf{Re-anchoring.} None: the change names only its staff instance, whose
 deletion takes the sequence with it.
+
+\section{SetVoiceHome}
+\label{sec:k0:set-voice-home}
+
+Ratified with X4b (roadmap D58, Q11): a voice that visits another staff, as
+a cross-staff passage does, names its home staff, the one it belongs to
+whatever staff its notes are drawn on (core specification, schema major~5).
+
+\textbf{Payload schema.} \texttt{SetVoiceHomeOp \{ voice: VoiceId, home:
+Option<StaffId> \}}: the voice's home staff, \texttt{None} to clear it.
+
+\textbf{Canonical encoding.} The voice's id (16 bytes), then an option tag
+(\texttt{0} absent, \texttt{1} present) and, when present, the staff's id (16
+bytes). It embeds no versioned value, so it is schema major~0, at epoch~15.
+
+\textbf{Reduction rule.} A structural last-writer-wins register keyed by the
+voice, seeded with no home at the voice's create and from a base's
+\texttt{voice\_homes}. The voice must be live: missing, the operation is a
+precondition no-op with \texttt{TargetMissing}; tombstoned, with
+\texttt{TargetTombstoned}. A staff it names is a referent, checked in both
+modes as Requirement~\ref{req:catalog:base-free-referents} reads one, a dead
+one refusing it with \texttt{TargetMissing}. Graph-aware reduction writes
+\texttt{Score.voice\_homes}; a voice's delete takes its home with it.
+
+\textbf{Conflict cases.} A write concurrent with the voice's last write and
+carrying a different value records a \texttt{StructuralFieldCollision} on
+\texttt{home\_staff}, the later write in canonical order winning; carrying the
+same value, it is a no-op (\texttt{AlreadyApplied}).
+
+\textbf{Undo semantics.} Value-restoring: undo writes back the voice's earlier
+home, or none, unless a later write superseded the undone one or the earlier
+home's staff was removed since. An undo cannot remove a staff a live voice's
+home names, read as the undo leaves the home: \texttt{StrictInverse}
+conflicts and \texttt{BestEffort} keeps the staff, as for a part or a
+spanner naming it.
+
+\textbf{Re-anchoring.} None: the home names a staff, which no operation but an
+undo removes, and the guard above holds it.
 
 \section{Repeat Structures}
 \label{sec:k0:repeat-structures}

@@ -1964,7 +1964,7 @@ pub(crate) fn cross_cutting_objects(score: &Score) -> Vec<(TypedObjectId, Vec<Ty
     for ly in &cc.lyrics {
         out.push((
             TypedObjectId::LyricLine(ly.id),
-            ly.events.iter().map(|e| TypedObjectId::Event(*e)).collect(),
+            vec![TypedObjectId::Event(ly.event)],
         ));
     }
     for ch in &cc.chord_symbols {

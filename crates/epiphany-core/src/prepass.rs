@@ -1365,7 +1365,8 @@ fn infer_decompositions(
             continue;
         };
         if lengths.is_empty() {
-            // Zero-duration determinate event: nothing to decompose, but it is a
+            // Zero-duration determinate event (a grace note, whose notated
+            // value is its payload's): nothing to decompose, but it is a
             // determinate musical duration, so do not mis-count it.
             taxonomy.decomposition_skipped_nonmusical += 1;
             continue;
