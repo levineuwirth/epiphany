@@ -50,7 +50,8 @@ mod fragment;
 
 pub use barriers::ActiveExtension;
 pub use document::{
-    DocumentError, EditorDocument, ReadOnlyReason, Reconciled, Saved, ScoreSetup, StaffSetup,
+    DocumentCopy, DocumentError, EditorDocument, ReadOnlyReason, Reconciled, Saved, ScoreSetup,
+    StaffSetup,
 };
 pub use fragment::{
     FragmentError, MAX_FRAGMENT_BYTES, MAX_FRAGMENT_EVENTS, MAX_FRAGMENT_NESTING_DEPTH,
@@ -646,7 +647,8 @@ pub struct EditorSession {
     // reaches into it. Empty for a session opened on a bare score (probe mode).
     committed: document::Committed,
     // The lease a document granted this session, which `EditorDocument::save`
-    // validates. `None` for a probe-mode session, which nothing can save.
+    // validates. `None` for a probe-mode session, which nothing can save; a view's
+    // is not writable and only names the document it draws, for a save as.
     lease: Option<document::Lease>,
     // The currently-applied envelopes, in order — the log the session re-reduces onto
     // `base`, after the committed partition, to materialize `score`. A save promotes

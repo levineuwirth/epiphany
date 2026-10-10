@@ -581,8 +581,9 @@ frontier, so `open` replays every envelope graph-aware from an empty score.
 **The lease is a private token inside the session.** Of Ruling B's three
 shapes this is the third: `EditorDocument::lease` returns an ordinary
 `EditorSession` carrying a crate-private `Lease` (the document instance, a
-lease number, the committed generation), and `save` refuses a session whose
-token is absent (`NotLeased`: a probe-mode session or a `view`), another
+lease number, the committed generation, and whether it is writable), and
+`save` refuses a session whose token is absent or not writable (`NotLeased`: a
+probe-mode session, or a `view`, whose token only names its document), another
 instance's (`ForeignLease`), or superseded (`LeaseRevoked`). A borrowing
 guard was not chosen because a GUI holds the document and its session side
 by side for the life of a window. Replacing a leased session with another
@@ -638,6 +639,15 @@ still reduces cleanly beside it is kept, the rest are dropped, and the redo
 stack, built on that forked history, is cleared. Two entries past the last
 measure, each opening the same measure without having seen the other, are
 such a pair. The outcome counts the restored and the dropped units.
+
+**Save As copies; it never writes the source.** `EditorDocument::save_as`
+returns a `DocumentCopy` of what a session draws (its committed partition and
+applied units), which `DocumentCopy::create` writes into an empty store as a
+new document: a fresh `file_uuid`, the source's `document_id`, lineage and
+profiles (`req:format:file-document-lineage-identity`). The session must be one
+this document leased or drew: a view now carries a non-writable token naming
+its document, which no save accepts. A read-only document, and one holding
+blobs, are refused rather than copied with something dropped.
 
 **Not here.** Creation never truncates (`FileStore::create_new`); the
 cross-process lock is taken where a document is opened from a path, in the

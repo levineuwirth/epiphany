@@ -30,6 +30,10 @@
 //! blocks are reachable and, only after a fresh durability barrier succeeds,
 //! reports those units saved, whatever the session has done since.
 //!
+//! Save As ([`EditorDocument::save_as`]) never writes the document's own bundle:
+//! it copies what a session draws, saved and unsaved, into a new document under
+//! a fresh file identity.
+//!
 //! Reopen reads what the current writer writes. An envelope in a recognized
 //! historical layout is refused by name
 //! ([`DocumentError::UnsupportedHistoricalEncoding`], Ruling B's interim); the
@@ -76,14 +80,17 @@ fn production_caps() -> BundleCapabilities {
 static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 
 /// The private token a document grants with a session: which document instance
-/// granted it, which of that document's leases it is, and the committed
-/// generation the session's partition reflects. Only this module constructs one,
-/// so no caller can forge a savable session.
+/// granted it, which of that document's leases it is, the committed generation
+/// the session's partition reflects, and whether it is a lease at all. A view
+/// carries one that is not (`writable` false), which no save accepts and which
+/// names the document for a save as. Only this module constructs one, so no
+/// caller can forge a savable session.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(crate) struct Lease {
     instance: u64,
     number: u64,
     generation: u64,
+    writable: bool,
 }
 
 /// The committed partition a session reduces under its own edits: the envelopes,
@@ -258,6 +265,12 @@ pub enum DocumentError {
     Indeterminate(BundleError),
     /// The session over the document could not be built.
     Editor(EditorError),
+    /// The document holds blobs, which a copy made of its operations would not
+    /// carry, so it is not saved as one.
+    Blobs {
+        /// How many.
+        count: usize,
+    },
 }
 
 impl std::fmt::Display for DocumentError {
@@ -292,6 +305,11 @@ impl std::fmt::Display for DocumentError {
                  document is reconciled"
             ),
             DocumentError::Editor(e) => write!(f, "{e}"),
+            DocumentError::Blobs { count } => write!(
+                f,
+                "the document holds {count} blob(s), which a copy of its operations would not \
+                 carry"
+            ),
         }
     }
 }
@@ -382,7 +400,21 @@ impl<S: BlockStore> EditorDocument<S> {
     /// import's whole log. The operations are written as they are; a log that does
     /// not reduce cleanly yields a read-only document.
     pub fn create(store: S, operations: Vec<OperationEnvelope>) -> Result<Self, DocumentError> {
-        let manifest = Manifest::empty(DocumentId(random_bytes()));
+        Self::create_with(
+            store,
+            Manifest::empty(DocumentId(random_bytes())),
+            operations,
+        )
+    }
+
+    /// [`Self::create`] under `manifest`'s identity and profiles: a new bundle,
+    /// always under a fresh `file_uuid`, whose first generation commits
+    /// `operations`.
+    fn create_with(
+        store: S,
+        manifest: Manifest,
+        operations: Vec<OperationEnvelope>,
+    ) -> Result<Self, DocumentError> {
         let mut bundle =
             Bundle::create(store, FileUuid(random_bytes()), manifest, production_caps())?;
         if !operations.is_empty() {
@@ -528,6 +560,7 @@ impl<S: BlockStore> EditorDocument<S> {
             instance: self.instance,
             number: self.lease_number,
             generation: self.generation(),
+            writable: true,
         };
         Ok(EditorSession::open_over(
             base,
@@ -540,7 +573,8 @@ impl<S: BlockStore> EditorDocument<S> {
     }
 
     /// A session over the committed partition that no save accepts: how a
-    /// read-only document is drawn. Its edits apply locally and are never saved.
+    /// read-only document is drawn. Its edits apply locally and are never saved
+    /// into this document; [`Self::save_as`] can carry them into a copy.
     pub fn view(&self, solver: Box<dyn ConstraintSolver>) -> Result<EditorSession, DocumentError> {
         let replica = ReplicaId::generate();
         let base = Score::empty(IdentityContext::new(replica));
@@ -551,7 +585,12 @@ impl<S: BlockStore> EditorDocument<S> {
             self.committed.clone(),
             solver,
             replica,
-            None,
+            Some(Lease {
+                instance: self.instance,
+                number: 0,
+                generation: self.generation(),
+                writable: false,
+            }),
         )?)
     }
 
@@ -572,7 +611,10 @@ impl<S: BlockStore> EditorDocument<S> {
 
     /// Checks that `session` holds this document's current lease.
     fn check_lease(&self, session: &EditorSession) -> Result<Lease, DocumentError> {
-        let lease = session.lease.ok_or(DocumentError::NotLeased)?;
+        let lease = session
+            .lease
+            .filter(|lease| lease.writable)
+            .ok_or(DocumentError::NotLeased)?;
         if lease.instance != self.instance {
             return Err(DocumentError::ForeignLease);
         }
@@ -666,7 +708,7 @@ impl<S: BlockStore> EditorDocument<S> {
         if self.unconfirmed.is_none() {
             return Ok(Reconciled::NotSaved);
         }
-        let lease = match session.lease {
+        let lease = match session.lease.filter(|lease| lease.writable) {
             Some(lease) if lease.instance == self.instance && lease.number == self.lease_number => {
                 lease
             }
@@ -731,6 +773,68 @@ impl<S: BlockStore> EditorDocument<S> {
             restored,
             dropped,
         })
+    }
+
+    /// Save As (`req:format:file-document-lineage-identity`): what `session` draws,
+    /// as a copy for [`DocumentCopy::create`] to write as a new document. The copy
+    /// holds the session's committed partition and its applied units, so every
+    /// edit on screen, saved or not, a view's included. It keeps this document's
+    /// `document_id`, lineage and profiles (the default: a working copy of the same
+    /// work) and is written under a fresh `file_uuid`. This document and its store
+    /// are never touched.
+    ///
+    /// Refused: a session this document neither leased nor drew
+    /// ([`DocumentError::NotLeased`], [`DocumentError::ForeignLease`]); a read-only
+    /// document, whose copy could not carry it faithfully
+    /// ([`DocumentError::ReadOnly`]); and one holding blobs, which a copy of its
+    /// operations would drop ([`DocumentError::Blobs`]).
+    pub fn save_as(&self, session: &EditorSession) -> Result<DocumentCopy, DocumentError> {
+        let token = session.lease.ok_or(DocumentError::NotLeased)?;
+        if token.instance != self.instance {
+            return Err(DocumentError::ForeignLease);
+        }
+        if self.is_read_only() {
+            return Err(DocumentError::ReadOnly(self.read_only.clone()));
+        }
+        let source = self.bundle.manifest();
+        if !source.blob_roots.is_empty() {
+            return Err(DocumentError::Blobs {
+                count: source.blob_roots.len(),
+            });
+        }
+        let mut manifest = Manifest::empty(source.document_id);
+        manifest.lineage_id = source.lineage_id;
+        manifest.profile_declarations = source.profile_declarations.clone();
+        Ok(DocumentCopy {
+            manifest,
+            envelopes: session
+                .committed_operations()
+                .iter()
+                .chain(session.applied_operations())
+                .cloned()
+                .collect(),
+        })
+    }
+}
+
+/// A copy of what a session draws, made by [`EditorDocument::save_as`]: its
+/// envelopes and the source's identity, to be written as a new document.
+pub struct DocumentCopy {
+    manifest: Manifest,
+    envelopes: Vec<OperationEnvelope>,
+}
+
+impl DocumentCopy {
+    /// Every envelope the copy holds.
+    pub fn operations(&self) -> &[OperationEnvelope] {
+        &self.envelopes
+    }
+
+    /// Writes the copy into `store`, which must be empty: a new bundle under a
+    /// fresh `file_uuid` and the source's `document_id`, whose first generation
+    /// commits every envelope.
+    pub fn create<T: BlockStore>(self, store: T) -> Result<EditorDocument<T>, DocumentError> {
+        EditorDocument::create_with(store, self.manifest, self.envelopes)
     }
 }
 

@@ -4,9 +4,9 @@
 use std::io;
 
 use epiphany_bundle::{
-    encode_block, BlockStore, Bundle, BundleCapabilities, DocumentId, ExtensionDeclaration,
-    ExtensionId, FileUuid, Manifest, MemStore, ReductionAlgorithmVersion, SchemaVersion, SemVer,
-    StagedChunk,
+    encode_block, BlobId, BlobRef, BlockStore, Bundle, BundleCapabilities, ChunkKind,
+    CompressionAlgorithm, DocumentId, ExtensionDeclaration, ExtensionId, FileUuid, Manifest,
+    MemStore, ReductionAlgorithmVersion, SchemaVersion, SemVer, StagedChunk,
 };
 use epiphany_core::{
     CmnNominal, EventDuration, EventPosition, IdentityContext, MusicalDuration, MusicalPosition,
@@ -873,6 +873,106 @@ fn a_later_unit_that_does_not_reduce_with_a_restored_one_is_dropped() {
             reduced(&session_log(&session))
         );
     }
+}
+
+/// Save As copies what a session draws, saved and unsaved, into a new document
+/// under a fresh file identity and the same work's, and writes nothing into the
+/// source. A view's edits are carried too; a session the document neither
+/// leased nor drew is refused.
+#[test]
+fn save_as_copies_what_the_session_draws_into_a_new_document() {
+    let mut document = EditorDocument::create(MemStore::new(), setup_operations(1)).unwrap();
+    let mut session = lease(&mut document);
+    let voice = the_voice(&session);
+    session.set_caret(voice, at(0, 1), whole(1, 4)).unwrap();
+    session.enter_nominal(CmnNominal::C).unwrap();
+    document.save(&mut session).expect("C saves");
+    session.enter_nominal(CmnNominal::D).unwrap();
+
+    let copy = document
+        .save_as(&session)
+        .expect("the leased session copies");
+    assert_eq!(
+        membership(copy.operations()),
+        membership(&session_log(&session)),
+        "the copy holds the committed envelopes and the unsaved edit"
+    );
+    let copied = copy.create(MemStore::new()).expect("the copy is written");
+    assert_eq!(copied.generation(), 1);
+    assert_ne!(copied.bundle().file_uuid(), document.bundle().file_uuid());
+    assert_eq!(
+        copied.bundle().manifest().document_id,
+        document.bundle().manifest().document_id
+    );
+    assert_eq!(
+        reduced(copied.committed_operations()),
+        reduced(&session_log(&session))
+    );
+    assert_eq!(document.generation(), 2, "the source is not written");
+    assert!(session.is_dirty(), "and its session keeps its unsaved edit");
+
+    let mut view = document.view(Box::new(StubSolver)).unwrap();
+    let voice = the_voice(&view);
+    view.set_caret(voice, at(1, 2), whole(1, 4)).unwrap();
+    view.enter_nominal(CmnNominal::E).unwrap();
+    let copy = document.save_as(&view).expect("a view copies");
+    assert_eq!(
+        membership(copy.operations()),
+        membership(&session_log(&view))
+    );
+
+    let probe = EditorSession::open(document.score(), Box::new(StubSolver)).unwrap();
+    assert!(matches!(
+        document.save_as(&probe),
+        Err(DocumentError::NotLeased)
+    ));
+    let other = EditorDocument::create(MemStore::new(), setup_operations(1)).unwrap();
+    let foreign = other.view(Box::new(StubSolver)).unwrap();
+    assert!(matches!(
+        document.save_as(&foreign),
+        Err(DocumentError::ForeignLease)
+    ));
+}
+
+/// A document holding a blob is not saved as a copy of its operations, which
+/// would not carry it.
+#[test]
+fn a_document_holding_blobs_is_not_saved_as() {
+    let created = EditorDocument::create(MemStore::new(), setup_operations(1)).unwrap();
+    let mut bundle = Bundle::open(created.into_store(), caps()).unwrap();
+    let blob = StagedChunk {
+        kind: ChunkKind::Blob,
+        schema_version: SchemaVersion::V0,
+        payload: b"an image".to_vec(),
+    };
+    bundle
+        .commit(&[blob], |ctx| {
+            let mut m = ctx.previous_manifest.clone();
+            let r = ctx.new_chunks[0];
+            m.blob_roots.push(BlobRef {
+                blob_id: BlobId(r.hash),
+                media_type: "application/octet-stream".to_string(),
+                offset: r.offset,
+                compressed_length: r.compressed_length,
+                uncompressed_length: r.uncompressed_length,
+                compression: CompressionAlgorithm::None,
+                hash: r.hash,
+                declared_max_uncompressed_length: None,
+            });
+            m
+        })
+        .unwrap();
+    let mut document =
+        EditorDocument::open(MemStore::from_bytes(bundle.into_store().into_bytes())).unwrap();
+    assert!(
+        !document.is_read_only(),
+        "a blob does not make it read-only"
+    );
+    let session = lease(&mut document);
+    assert!(matches!(
+        document.save_as(&session),
+        Err(DocumentError::Blobs { count: 1 })
+    ));
 }
 
 /// A store that cannot be read just after its failed flush: reconciling fails,

@@ -7,8 +7,9 @@
 //! opened from its file under an advisory lock on that file, so a second
 //! window does not write the same document; a document another window holds,
 //! or one that opens read-only, is drawn and not leased. Saving commits the
-//! session's edits; saving as saves, writes the document's bytes to a new
-//! file and opens that, under a fresh lease (undo stops at a save anyway).
+//! session's edits; saving as writes what the window draws into a new
+//! document at a new path and opens that under a fresh lease, never writing
+//! the file the document came from.
 
 use std::path::{Path, PathBuf};
 
@@ -206,37 +207,58 @@ fn saved_to(path: &Path, saved: Saved) -> String {
     )
 }
 
-/// Saves the document as a new file at `path`, which must not exist: the
-/// session's edits are committed, the document's bytes written there, and the
-/// new file opened under a fresh lease, which replaces `opened` and `session`.
-/// On an error they are left as they were.
+/// Saves what the window draws as a new document at `path`, which must not
+/// exist: everything on screen, saved and unsaved edits alike, a read-only
+/// window's included, written there under a fresh file identity and opened under
+/// a fresh lease, which replaces `opened` and `session`. The file the document
+/// was opened from is never written. A document read-only for a reason of its
+/// own, rather than because another window holds its file, is refused: its copy
+/// could not carry it faithfully. On an error `opened` and `session` are left as
+/// they were.
 pub fn save_as(
     opened: &mut Opened,
     session: &mut EditorSession,
     path: &Path,
 ) -> Result<(), String> {
-    if path.exists() {
-        return Err(format!("{} exists; save as a new file", path.display()));
-    }
-    if opened.writable {
-        opened.document.save(session).map_err(|e| e.to_string())?;
-    }
-    let store = opened.document.bundle().store();
-    let mut bytes = vec![0; store.len() as usize];
-    store
-        .read_exact_at(0, &mut bytes)
-        .map_err(|e| e.to_string())?;
-    FileStore::create_new(path)
-        .and_then(|mut file| {
-            file.write_at(0, &bytes)?;
-            file.flush()
+    let copy = opened
+        .document
+        .save_as(session)
+        .map_err(|e| format!("not saved as: {e}"))?;
+    let store = FileStore::create_new(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::AlreadyExists => {
+            format!("{} exists; save as a new file", path.display())
+        }
+        _ => format!("{}: {e}", path.display()),
+    })?;
+    // The file is this window's from here: one it cannot finish is removed.
+    let written = std::fs::File::open(path)
+        .map_err(|e| e.to_string())
+        .and_then(|lock| match lock.try_lock() {
+            Ok(()) => Ok(lock),
+            Err(e) => Err(e.to_string()),
         })
-        .map_err(|e| e.to_string())?;
-    // The old document stays open until the new file reopens, so a failure
+        .and_then(|lock| {
+            let document = copy
+                .create(Box::new(store) as Box<dyn BlockStore>)
+                .map_err(|e| e.to_string())?;
+            Ok((document, lock))
+        });
+    let (document, lock) = match written {
+        Ok(written) => written,
+        Err(e) => {
+            let _ = std::fs::remove_file(path);
+            return Err(format!("{} could not be written: {e}", path.display()));
+        }
+    };
+    // The old document stays open until the new one is leased, so a failure
     // leaves the window as it was.
-    let (mut reopened, reopened_session) = open(path)
-        .map_err(|e| format!("{} was written but did not reopen: {e}", path.display()))?;
-    reopened.staff_space_mm = opened.staff_space_mm;
+    let (reopened, reopened_session) = lease(
+        document,
+        Some(path.to_path_buf()),
+        opened.staff_space_mm,
+        Some(lock),
+    )
+    .map_err(|e| format!("{} was written but did not open: {e}", path.display()))?;
     *opened = reopened;
     *session = reopened_session;
     Ok(())
@@ -478,6 +500,139 @@ mod tests {
             save_as(&mut opened, &mut session, &target).expect_err("an existing file is refused");
         assert!(message.contains("exists"));
         assert_eq!(std::fs::read(&target).unwrap(), b"someone's work");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A saved document's generation and number of events, read from its file
+    /// without the window's lock.
+    fn on_disk(path: &Path) -> (u64, usize) {
+        let document = EditorDocument::open(FileStore::open(path).unwrap()).unwrap();
+        (
+            document.generation(),
+            document.score().events.iter().count(),
+        )
+    }
+
+    /// A saved document's file and document identities.
+    fn identity(path: &Path) -> (epiphany_bundle::FileUuid, epiphany_bundle::DocumentId) {
+        let document = EditorDocument::open(FileStore::open(path).unwrap()).unwrap();
+        (
+            document.bundle().file_uuid(),
+            document.bundle().manifest().document_id,
+        )
+    }
+
+    /// A new score saved as `name` in `dir`, the window closed.
+    fn saved_score(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(name);
+        let (mut opened, mut session) = new_score().unwrap();
+        save_as(&mut opened, &mut session, &path).unwrap();
+        path
+    }
+
+    #[test]
+    fn save_as_writes_a_new_file_and_never_the_one_opened() {
+        let dir = scratch("never-source");
+        let a = saved_score(&dir, "a.musc");
+        let before = on_disk(&a);
+        assert_eq!(before, (1, 0));
+        let (mut opened, mut session) = open(&a).unwrap();
+        edit(&mut session);
+        let drawn = graph(session.score());
+        let b = dir.join("b.musc");
+        save_as(&mut opened, &mut session, &b).unwrap();
+        assert_eq!(on_disk(&a), before, "the file opened from is unchanged");
+        assert_eq!(on_disk(&b), (1, 1), "the new file holds the edit");
+        let (a_file, a_document) = identity(&a);
+        let (b_file, b_document) = identity(&b);
+        assert_ne!(b_file, a_file, "a fresh file identity");
+        assert_eq!(b_document, a_document, "the same work");
+        assert_eq!(opened.path.as_deref(), Some(b.as_path()));
+        assert!(opened.writable && !session.is_dirty());
+        assert_eq!(graph(session.score()), drawn, "the window draws the copy");
+        drop((opened, session));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_window_read_only_for_the_lock_saves_its_edits_as_a_new_file() {
+        let dir = scratch("held");
+        let held = saved_score(&dir, "held.musc");
+        let (first, _first_session) = open(&held).unwrap();
+        assert!(first.writable);
+        let (mut second, mut session) = open(&held).unwrap();
+        assert!(!second.writable, "the first window holds the lock");
+        edit(&mut session);
+        let copy = dir.join("copy.musc");
+        save_as(&mut second, &mut session, &copy).expect("the edit goes into the copy");
+        assert_eq!(on_disk(&copy), (1, 1), "the copy holds the edit");
+        assert_eq!(on_disk(&held), (1, 0), "the held file is unchanged");
+        assert!(second.writable, "the copy is the second window's own");
+        assert_eq!(session.score().events.iter().count(), 1);
+        drop((first, second, session));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_refused_save_as_leaves_the_file_and_the_edits() {
+        let dir = scratch("refused");
+        let a = saved_score(&dir, "a.musc");
+        let existing = dir.join("existing.musc");
+        std::fs::write(&existing, b"someone's work").unwrap();
+        let (mut opened, mut session) = open(&a).unwrap();
+        edit(&mut session);
+        let before = on_disk(&a);
+        save_as(&mut opened, &mut session, &existing).expect_err("an existing file is refused");
+        assert_eq!(on_disk(&a), before, "a refused save as writes nothing");
+        assert_eq!(std::fs::read(&existing).unwrap(), b"someone's work");
+        assert_eq!(opened.path.as_deref(), Some(a.as_path()));
+        assert!(session.is_dirty(), "the edit is still the window's");
+        drop((opened, session));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_document_read_only_of_itself_is_not_saved_as() {
+        use epiphany_bundle::{
+            Bundle, BundleCapabilities, ExtensionDeclaration, ExtensionId,
+            ReductionAlgorithmVersion, SemVer,
+        };
+        let dir = scratch("read-only");
+        let path = saved_score(&dir, "extended.musc");
+        // A manifest declaring an extension: the document opens read-only.
+        let caps = BundleCapabilities {
+            current_reduction_version: ReductionAlgorithmVersion(
+                epiphany_ops::CURRENT_REDUCTION_ALGORITHM_VERSION,
+            ),
+        };
+        let mut bundle = Bundle::open(FileStore::open(&path).unwrap(), caps).unwrap();
+        bundle
+            .commit(&[], |ctx| {
+                let mut m = ctx.previous_manifest.clone();
+                m.extension_declarations.push(ExtensionDeclaration {
+                    extension_id: ExtensionId([5; 16]),
+                    version: SemVer {
+                        major: 1,
+                        minor: 0,
+                        patch: 0,
+                    },
+                    required: false,
+                    preserved_chunk_roots: Vec::new(),
+                    affected_object_kinds: Vec::new(),
+                    edit_barriers: Vec::new(),
+                });
+                m
+            })
+            .unwrap();
+        drop(bundle);
+        let (mut opened, mut session) = open(&path).unwrap();
+        assert!(!opened.writable && opened.document.is_read_only());
+        let target = dir.join("copy.musc");
+        let message = save_as(&mut opened, &mut session, &target)
+            .expect_err("its copy would not carry the extension");
+        assert!(message.contains("read-only"), "{message}");
+        assert!(!target.exists(), "nothing is written");
+        drop((opened, session));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

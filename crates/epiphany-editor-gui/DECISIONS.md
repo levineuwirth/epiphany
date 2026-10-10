@@ -478,11 +478,21 @@ imported into a new document held in memory (`Box<dyn BlockStore>` holds
 either store), or, with no path, a new score of one staff. The goldens still
 open the fixture directly, so they are unchanged.
 
-**Save as writes the document's bytes.** Saving as commits the session's
-edits, copies the bundle's bytes to a new file (never over an existing one:
-`FileStore::create_new`) and opens that file under a fresh lease. The undo
-history goes with the old lease, which a save ends anyway; the redo stack and
-the selection do not carry over.
+**Save as writes a new document and never the one opened.** As editors
+conventionally do, saving as leaves the file the document was opened from
+exactly as it was. The window asks the document for a copy of what it draws
+(`EditorDocument::save_as`: the committed envelopes and the session's applied
+units, saved and unsaved edits alike), writes it as a new bundle at the path
+(`FileStore::create_new`, never over an existing file; a file it cannot finish
+is removed), under a fresh `file_uuid` and the source's `document_id`
+(`req:format:file-document-lineage-identity`'s default, a working copy of the
+same work), and leases the new document in place of the old. A window
+read-only because another holds the file carries its edits into the copy and
+is writable on it. A document read-only for a reason of its own (extensions,
+an anomaly, an unclean log), or holding blobs, is refused, since a copy of its
+operations would not carry it faithfully; save as never reports success with
+something dropped. The undo history goes with the old lease; the redo stack
+and the selection do not carry over.
 
 **An unsettled save is settled at once.** A save whose commit point's flush
 failed, or a save asked for while an earlier one is unsettled, reconciles the
