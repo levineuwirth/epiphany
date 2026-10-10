@@ -1826,3 +1826,26 @@ Stems of another staff, which casting lengthens to their beams, are not
 gathered. Locked by `a_tie_passes_a_stem_standing_in_its_path`
 (`epiphany-cli`: a lower voice's whole-note tie under the stems an upper
 voice's E4 raises through it at a crossing). No golden changed.
+
+## ENGRAVER_VERSION 48 → 49: a tie starts past its first note's flag (X5c.4, 2026-10-10)
+
+A tie leaves its head from the head's side, and where its first note is an
+unbeamed note whose flag stands on the tie's side (an upper voice's eighth,
+its stem up and its tie above), the tie ran into the flag.
+`clearance::start_past_flag` now starts such a tie past the flag it would
+run through, by `ACCIDENTAL_CLEARANCE`, at the same height, its inner
+control points keeping their shares of the shorter span, before it passes
+accidentals and stems; a tie the move would leave shorter than a space is
+kept as it was. Locked by `a_tie_starts_past_its_first_notes_flag`
+(`epiphany-cli`).
+
+Not done: a tie across a barline still runs through a time signature
+standing there, as MuseScore draws it. The signature's digits fill the staff
+and stand about a space before the note the tie reaches, so a tie from a
+note inside the staff would have to rise past the staff's edge and fall
+back within that space; taking the digits as obstacles of the clearance
+cleared none in the cases tried (a quarter's and a whole note's tie from a
+D5 into a 2/4) and, since a tie keeps a new shape only when it passes every
+obstacle, would have returned a tie that passes accidentals there to running
+through them. Room after the signature, a tie broken around the digits, or
+MuseScore's crossing is the owner's to choose. No golden changed.

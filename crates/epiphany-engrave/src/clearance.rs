@@ -1,6 +1,8 @@
-//! A slur or tie clears the accidentals under it (`ENGRAVER_VERSION` 44), and
+//! A slur or tie clears the accidentals under it (`ENGRAVER_VERSION` 44) and
 //! the stems of its staff inside its span (`ENGRAVER_VERSION` 48, X5c.3): a
-//! stem's ink is passed as an accidental's is.
+//! stem's ink is passed as an accidental's is. A tie whose start runs through
+//! its first note's flag starts past the flag first ([`start_past_flag`],
+//! `ENGRAVER_VERSION` 49, X5c.4).
 //!
 //! The constrained pass shapes a slur over the heads and stems of the columns
 //! it spans and a tie between its heads, in a frame where columns stand closer
@@ -60,6 +62,10 @@ const LONG_TIE_SHARE: f32 = 1.0 / 6.0;
 
 /// The most a long tie arcs, in staff spaces, however long it is.
 const MAX_LONG_TIE_ARC: f32 = 3.0;
+
+/// The least a tie runs once it starts past its first note's flag, in staff
+/// spaces.
+const MIN_TIE_SPAN: f32 = 1.0;
 
 /// How many accidentals one curve passes, at most.
 const MAX_PASSES: usize = 24;
@@ -128,6 +134,43 @@ pub(crate) fn clear_accidentals(cp: [Point; 4], accidentals: &[InkRect], tie: bo
             }
         }
     }
+}
+
+/// `cp`, a tie, starting past any flag at its start that it runs through: its
+/// first note's flag, standing on the tie's side of its head, which the tie
+/// would otherwise leave its head into. The start moves right to the flag's
+/// right edge and [`ACCIDENTAL_CLEARANCE`] beyond, at the same height, and the
+/// inner control points keep their shares of the shorter span; a tie the move
+/// would leave shorter than [`MIN_TIE_SPAN`] is kept as it was.
+pub(crate) fn start_past_flag(cp: [Point; 4], flags: &[InkRect]) -> [Point; 4] {
+    let (x0, x3) = (cp[0].x.0, cp[3].x.0);
+    let span = x3 - x0;
+    if span <= 1e-3 {
+        return cp;
+    }
+    let meets = |b: &InkRect| {
+        (1..64).any(|k| {
+            let t = k as f32 / 64.0;
+            let x = bezier(cp[0].x.0, cp[1].x.0, cp[2].x.0, cp[3].x.0, t);
+            let y = bezier(cp[0].y.0, cp[1].y.0, cp[2].y.0, cp[3].y.0, t);
+            x > b.left && x < b.right && y > b.bottom && y < b.top
+        })
+    };
+    let start = flags
+        .iter()
+        .filter(|b| b.left < x0 + 0.5 && b.right > x0 && meets(b))
+        .map(|b| b.right + ACCIDENTAL_CLEARANCE)
+        .fold(x0, f32::max);
+    if start <= x0 || x3 - start < MIN_TIE_SPAN {
+        return cp;
+    }
+    let along = |x: f32| start + (x - x0) * (x3 - start) / span;
+    [
+        Point::new(start, cp[0].y.0),
+        Point::new(along(cp[1].x.0), cp[1].y.0),
+        Point::new(along(cp[2].x.0), cp[2].y.0),
+        cp[3],
+    ]
 }
 
 /// The inner control points' offsets from the chord, at its thirds.

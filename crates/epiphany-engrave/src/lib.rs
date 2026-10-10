@@ -327,10 +327,11 @@ pub struct Engraver {
 /// began reserving its line there, so ink in the gap keeps a barline's
 /// clearance, and to `47` when a tie that must arc further than 1.5 spaces
 /// to pass an accidental began taking a fuller arc, as far as a sixth of its
-/// span and three spaces at most, rather than running through it, and to
-/// `48` when a slur or tie began passing the stems of its staff inside its
-/// span as it passes accidentals.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(48);
+/// span and three spaces at most, rather than running through it, to `48`
+/// when a slur or tie began passing the stems of its staff inside its span
+/// as it passes accidentals, and to `49` when a tie meeting its first
+/// note's flag began starting past it.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(49);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -692,10 +693,13 @@ impl HorizontalRemap {
     /// passes it over the accidentals of its staff it would meet, and the
     /// stems of its staff that stand inside its span
     /// ([`clearance::clear_accidentals`]): a slur by its arc or, near an end,
-    /// by lifting that end, a tie by its arc alone. Its y is otherwise kept.
+    /// by lifting that end, a tie by its arc alone, a tie meeting its first
+    /// note's flag starting past it first ([`clearance::start_past_flag`]).
+    /// Its y is otherwise kept.
     fn curves(&self, input: &ConstrainedLayoutIR) -> Vec<Curve> {
         let anchors = span_anchors(input);
-        let accidentals = self.accidentals(input);
+        let accidentals = self.glyph_ink(input, "accidental");
+        let flags = self.glyph_ink(input, "flag");
         let stems = self.stems(input, &anchors);
         input
             .curves
@@ -712,29 +716,25 @@ impl HorizontalRemap {
                 };
                 let [p0, p1, p2, p3] = match c.provenance.source {
                     TypedObjectId::Slur(_) | TypedObjectId::Tie(_) => {
-                        // The stems inside the span, clear of the stems of the
+                        let tie = matches!(c.provenance.source, TypedObjectId::Tie(_));
+                        let band = |of| in_band(of, &c.vertical_band);
+                        let spaced = if tie {
+                            clearance::start_past_flag(spaced, band(&flags))
+                        } else {
+                            spaced
+                        };
+                        // The stems inside the span, clear of those of the
                         // notes the curve joins, which stand at its ends.
                         let (x0, x3) = (spaced[0].x.0, spaced[3].x.0);
-                        let inside =
-                            stems
-                                .get(&c.vertical_band)
-                                .into_iter()
-                                .flatten()
-                                .filter(|s| {
-                                    s.left > x0 + STEM_END_MARGIN && s.right < x3 - STEM_END_MARGIN
-                                });
-                        let obstacles: Vec<clearance::InkRect> = accidentals
-                            .get(&c.vertical_band)
-                            .into_iter()
-                            .flatten()
-                            .chain(inside)
+                        let inside = |s: &&clearance::InkRect| {
+                            s.left > x0 + STEM_END_MARGIN && s.right < x3 - STEM_END_MARGIN
+                        };
+                        let obstacles: Vec<clearance::InkRect> = band(&accidentals)
+                            .iter()
+                            .chain(band(&stems).iter().filter(inside))
                             .copied()
                             .collect();
-                        clearance::clear_accidentals(
-                            spaced,
-                            &obstacles,
-                            matches!(c.provenance.source, TypedObjectId::Tie(_)),
-                        )
+                        clearance::clear_accidentals(spaced, &obstacles, tie)
                     }
                     _ => spaced,
                 };
@@ -753,6 +753,14 @@ impl HorizontalRemap {
             })
             .collect()
     }
+}
+
+/// The ink of `band` in a by-band table, or none.
+fn in_band<'a>(
+    of: &'a BTreeMap<epiphany_layout_ir::VerticalBandId, Vec<clearance::InkRect>>,
+    band: &epiphany_layout_ir::VerticalBandId,
+) -> &'a [clearance::InkRect] {
+    of.get(band).map_or(&[][..], Vec::as_slice)
 }
 
 /// How far inside a curve's span, from either end, a stem must stand for the
@@ -797,14 +805,16 @@ impl HorizontalRemap {
         by_band
     }
 
-    /// Every accidental glyph's ink where the spacing sets it, by its band.
-    fn accidentals(
+    /// Every glyph's ink whose name begins `prefix`, where the spacing sets
+    /// it, by its band.
+    fn glyph_ink(
         &self,
         input: &ConstrainedLayoutIR,
+        prefix: &str,
     ) -> BTreeMap<epiphany_layout_ir::VerticalBandId, Vec<clearance::InkRect>> {
         let mut by_band: BTreeMap<_, Vec<clearance::InkRect>> = BTreeMap::new();
         for g in &input.glyphs {
-            if !g.glyph.as_str().starts_with("accidental") {
+            if !g.glyph.as_str().starts_with(prefix) {
                 continue;
             }
             let x = match self.slot_delta.get(&g.horizontal_slot) {

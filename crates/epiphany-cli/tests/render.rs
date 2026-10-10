@@ -5717,3 +5717,86 @@ fn a_tie_passes_a_stem_standing_in_its_path() {
         }
     }
 }
+
+/// The four control points of every tie of a layout, with a sampler.
+fn ties_of(layout: &epiphany_layout_ir::ResolvedLayoutIR) -> Vec<[(f32, f32); 4]> {
+    layout
+        .curves
+        .iter()
+        .filter(|c| matches!(c.provenance.source, epiphany_core::TypedObjectId::Tie(_)))
+        .map(|c| [c.p0, c.p1, c.p2, c.p3].map(|p| (p.x.0, p.y.0)))
+        .collect()
+}
+
+/// Whether a curve's stroke, sampled finely, enters `b`.
+fn curve_enters(cp: &[(f32, f32); 4], b: [f32; 4]) -> bool {
+    (0..=800).any(|k| {
+        let t = k as f32 / 800.0;
+        let u = 1.0 - t;
+        let at = |i: usize| {
+            let v = |p: (f32, f32)| if i == 0 { p.0 } else { p.1 };
+            u * u * u * v(cp[0])
+                + 3.0 * u * u * t * v(cp[1])
+                + 3.0 * u * t * t * v(cp[2])
+                + t * t * t * v(cp[3])
+        };
+        let (x, y) = (at(0), at(1));
+        x > b[0] && x < b[2] && y > b[1] && y < b[3]
+    })
+}
+
+/// A tie on its note's stem side, where an unbeamed eighth's flag stands,
+/// starts past the flag rather than running into it: the upper voice's
+/// eighth C5, tied to a quarter above the lower voice. Before
+/// `ENGRAVER_VERSION` 49 the tie left the head through the flag.
+#[test]
+fn a_tie_starts_past_its_first_notes_flag() {
+    let note = |pitch: &str, duration: u8, kind: &str, voice: u8, tie: &str| {
+        let (step, octave) = pitch.split_at(1);
+        let (tie_el, tied) = match tie {
+            "" => (String::new(), String::new()),
+            kind => (
+                format!("<tie type=\"{kind}\"/>"),
+                format!("<notations><tied type=\"{kind}\"/></notations>"),
+            ),
+        };
+        let stem = if voice == 1 { "up" } else { "down" };
+        format!(
+            "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+             <duration>{duration}</duration>{tie_el}<voice>{voice}</voice><type>{kind}</type>\
+             <stem>{stem}</stem>{tied}</note>"
+        )
+    };
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
+         <attributes><divisions>2</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time><clef><sign>G</sign><line>2</line></clef></attributes>{}{}{}{}\
+         <backup><duration>8</duration></backup>{}</measure></part></score-partwise>",
+        note("C5", 1, "eighth", 1, "start"),
+        note("C5", 2, "quarter", 1, "stop"),
+        note("A4", 1, "eighth", 1, ""),
+        note("B4", 4, "half", 1, ""),
+        note("F4", 8, "whole", 2, ""),
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("tie_past_a_flag.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = engrave(&loaded.reduced.score).layout;
+    let ties = ties_of(&layout);
+    assert_eq!(ties.len(), 1, "one tie");
+    let flags: Vec<[f32; 4]> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("flag"))
+        .map(glyph_box)
+        .collect();
+    let first = flags
+        .iter()
+        .find(|b| b[0] < ties[0][0].0 + 0.5 && b[2] > ties[0][0].0 - 1.5)
+        .expect("the tied eighth's flag at the tie's start");
+    assert!(
+        !curve_enters(&ties[0], *first),
+        "the tie runs through the flag {first:?}"
+    );
+}
