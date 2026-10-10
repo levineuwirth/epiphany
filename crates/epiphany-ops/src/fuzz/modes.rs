@@ -746,16 +746,20 @@ impl Coverage {
     fn record(&mut self, authored: &[OperationEnvelope], state: &MaterializedState) {
         let effects: BTreeMap<_, _> = state.effects.iter().cloned().collect();
         for envelope in authored {
-            let name = kind_name(&envelope.payload);
-            *self.authored.entry(name.clone()).or_default() += 1;
             let effect = effects.get(&envelope.id);
-            if matches!(
+            let applied = matches!(
                 effect,
                 Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
-            ) {
-                *self.applied.entry(name).or_default() += 1;
-            } else {
-                *self.other.entry((name, effect_shape(effect))).or_default() += 1;
+            );
+            let names = std::iter::once(kind_name(&envelope.payload))
+                .chain(shape_names(&envelope.payload).into_iter().map(String::from));
+            for name in names {
+                *self.authored.entry(name.clone()).or_default() += 1;
+                if applied {
+                    *self.applied.entry(name).or_default() += 1;
+                } else {
+                    *self.other.entry((name, effect_shape(effect))).or_default() += 1;
+                }
             }
         }
     }
@@ -773,7 +777,105 @@ impl Coverage {
                 .iter()
                 .map(|s| (*s).to_owned()),
         );
+        kinds.extend(SHAPES.iter().map(|s| (*s).to_owned()));
         kinds
+    }
+}
+
+/// The payload shapes schema major 5 adds, each counted beside its kind.
+const SHAPES: [&str; 14] = [
+    "InsertEvent+marks",
+    "InsertEvent+ornaments",
+    "InsertEvent+grace",
+    "ModifyEvent+marks",
+    "ModifyEvent+ornaments",
+    "ModifyEvent+grace",
+    "CreateCrossCutting+Marker",
+    "CreateCrossCutting+Lyric",
+    "CreateCrossCutting+wavy line",
+    "CreateCrossCutting+pedal bracket",
+    "ModifyCrossCutting+Marker",
+    "ModifyCrossCutting+Lyric",
+    "DeleteCrossCutting+Marker",
+    "DeleteCrossCutting+Lyric",
+];
+
+/// Which of [`SHAPES`] a payload has.
+fn shape_names(payload: &OperationPayload) -> Vec<&'static str> {
+    let OperationPayload::Primitive(kind) = payload else {
+        return Vec::new();
+    };
+    let event = |event: &Event, prefix: [&'static str; 3]| {
+        let (marks, ornaments, grace) = match event {
+            Event::Pitched(p) => (
+                !p.marks.is_empty(),
+                !p.ornaments.is_empty(),
+                p.grace.is_some(),
+            ),
+            Event::Unpitched(u) => (!u.marks.is_empty(), false, u.grace.is_some()),
+            _ => (false, false, false),
+        };
+        [marks, ornaments, grace]
+            .iter()
+            .zip(prefix)
+            .filter(|(has, _)| **has)
+            .map(|(_, name)| name)
+            .collect::<Vec<_>>()
+    };
+    let structure = |value: &CrossCuttingValue, marker: &'static str, lyric: &'static str| {
+        let mut out = Vec::new();
+        match value {
+            CrossCuttingValue::Marker(_) => out.push(marker),
+            CrossCuttingValue::Lyric(_) => out.push(lyric),
+            CrossCuttingValue::Spanner(s) => {
+                if matches!(s.style.line, epiphany_core::LineStyle::Wavy)
+                    && marker.starts_with("Create")
+                {
+                    out.push("CreateCrossCutting+wavy line");
+                }
+                if matches!(s.kind, epiphany_core::SpannerKind::PedalBracket(_))
+                    && marker.starts_with("Create")
+                {
+                    out.push("CreateCrossCutting+pedal bracket");
+                }
+            }
+            _ => {}
+        }
+        out
+    };
+    match kind {
+        OperationKind::InsertEvent(op) => event(
+            &op.event,
+            [
+                "InsertEvent+marks",
+                "InsertEvent+ornaments",
+                "InsertEvent+grace",
+            ],
+        ),
+        OperationKind::ModifyEvent(op) => event(
+            &op.event,
+            [
+                "ModifyEvent+marks",
+                "ModifyEvent+ornaments",
+                "ModifyEvent+grace",
+            ],
+        ),
+        OperationKind::CreateCrossCutting(op) => structure(
+            &op.structure,
+            "CreateCrossCutting+Marker",
+            "CreateCrossCutting+Lyric",
+        ),
+        OperationKind::ModifyCrossCutting(op) => structure(
+            &op.structure,
+            "ModifyCrossCutting+Marker",
+            "ModifyCrossCutting+Lyric",
+        ),
+        OperationKind::DeleteCrossCutting(op) => match op.structure {
+            TypedObjectId::Marker(_) => vec!["DeleteCrossCutting+Marker"],
+            TypedObjectId::LyricLine(_) => vec!["DeleteCrossCutting+Lyric"],
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
     }
 }
 
@@ -1031,6 +1133,172 @@ fn random_duration(rng: &mut Rng) -> MusicalDuration {
     }
 }
 
+/// A few marks of any kinds, as a canonical set (schema major 5).
+fn random_marks(rng: &mut Rng) -> Vec<epiphany_core::EventMark> {
+    use epiphany_core::{ArpeggioDirection, EventMark as M};
+    let count = 1 + rng.below(3);
+    let marks: Vec<M> = (0..count)
+        .map(|_| match rng.below(22) {
+            0 => M::Staccato,
+            1 => M::Staccatissimo,
+            2 => M::Spiccato,
+            3 => M::Tenuto,
+            4 => M::DetachedLegato,
+            5 => M::Accent,
+            6 => M::Marcato,
+            7 => M::Stress,
+            8 => M::Unstress,
+            9 => M::UpBow,
+            10 => M::DownBow,
+            11 => M::Harmonic,
+            12 => M::OpenString,
+            13 => M::Stopped,
+            14 => M::SnapPizzicato,
+            15 => M::Scoop,
+            16 => M::Plop,
+            17 => M::Doit,
+            18 => M::Falloff,
+            19 => M::Tremolo {
+                strokes: 1 + rng.below(4) as u8,
+            },
+            20 => M::TremoloWithNext {
+                strokes: 1 + rng.below(4) as u8,
+            },
+            _ => M::Arpeggio {
+                direction: [
+                    ArpeggioDirection::Plain,
+                    ArpeggioDirection::Up,
+                    ArpeggioDirection::Down,
+                ][rng.below(3) as usize],
+            },
+        })
+        .collect();
+    epiphany_core::canonical_marks(marks)
+}
+
+/// An ornament, with an accidental above it a third of the time.
+fn random_ornaments(rng: &mut Rng) -> Vec<epiphany_core::Ornament> {
+    use epiphany_core::OrnamentKind as K;
+    let kind = [
+        K::Trill,
+        K::Mordent,
+        K::InvertedMordent,
+        K::Turn,
+        K::InvertedTurn,
+    ][rng.below(5) as usize];
+    let accidental_above = rng.chance(3).then(|| {
+        epiphany_core::AccidentalId::new(["flat", "sharp", "natural"][rng.below(3) as usize])
+    });
+    vec![epiphany_core::Ornament {
+        kind,
+        accidental_above,
+        accidental_below: None,
+    }]
+}
+
+/// A grace note's notation, in an order among its position's graces.
+fn random_grace(rng: &mut Rng) -> epiphany_core::Grace {
+    use epiphany_core::{GraceKind, NoteValue};
+    epiphany_core::Grace {
+        kind: if rng.chance(2) {
+            GraceKind::Acciaccatura
+        } else {
+            GraceKind::Appoggiatura
+        },
+        value: [NoteValue::Eighth, NoteValue::Sixteenth, NoteValue::Quarter][rng.below(3) as usize],
+        dots: u8::from(rng.chance(6)),
+        order: rng.below(3) as u16,
+    }
+}
+
+/// A short text, one of them composed (an NFC `é`).
+fn random_text(rng: &mut Rng) -> epiphany_core::Text {
+    epiphany_core::Text::new(["la", "lo", "\u{e9}", "cresc."][rng.below(4) as usize])
+}
+
+/// A point mark of any kind.
+fn random_marker_kind(rng: &mut Rng) -> epiphany_core::MarkerKind {
+    use epiphany_core::{
+        BreathMark, CaesuraMark, Dynamic, Fermata, FermataShape, MarkerKind, Metronome, NoteValue,
+        TempoMark,
+    };
+    match rng.below(9) {
+        0 => MarkerKind::Dynamic(
+            [Dynamic::P, Dynamic::Mf, Dynamic::Sfz, Dynamic::Niente][rng.below(4) as usize].clone(),
+        ),
+        1 => MarkerKind::Fermata(Fermata {
+            shape: [FermataShape::Normal, FermataShape::Long][rng.below(2) as usize],
+            inverted: rng.chance(4),
+        }),
+        2 => MarkerKind::Breath(BreathMark::Comma),
+        3 => MarkerKind::Caesura(CaesuraMark::Thick),
+        4 => MarkerKind::Text(random_text(rng)),
+        5 => MarkerKind::Tempo(TempoMark {
+            text: rng.chance(2).then(|| random_text(rng)),
+            metronome: Some(Metronome {
+                beat: NoteValue::Quarter,
+                dots: 0,
+                per_minute: epiphany_core::Text::new("96"),
+            }),
+        }),
+        6 => MarkerKind::Rehearsal(epiphany_core::Text::new("A")),
+        7 => MarkerKind::Segno,
+        _ => MarkerKind::Coda,
+    }
+}
+
+/// A lyric syllable on `event`, in one of two verses.
+fn random_lyric(
+    id: epiphany_core::LyricLineId,
+    event: EventId,
+    rng: &mut Rng,
+) -> epiphany_core::Lyric {
+    use epiphany_core::Syllabic;
+    epiphany_core::Lyric {
+        id,
+        event,
+        verse: 1 + rng.below(2) as u16,
+        text: random_text(rng),
+        syllabic: [
+            Syllabic::Single,
+            Syllabic::Begin,
+            Syllabic::Middle,
+            Syllabic::End,
+        ][rng.below(4) as usize],
+        extension: rng.chance(4),
+    }
+}
+
+/// A spanner's kind and line, the wavy line and the pedal bracket among them.
+fn random_spanner_look(rng: &mut Rng) -> (epiphany_core::SpannerKind, epiphany_core::SpanStyle) {
+    use epiphany_core::{HairpinDirection, LineStyle, OctaveOffset, PedalKind, SpannerKind};
+    let kind = match rng.below(8) {
+        0 => SpannerKind::Generic,
+        1 => SpannerKind::Hairpin(HairpinDirection::Crescendo),
+        2 => SpannerKind::PedalLine(PedalKind::Sustain),
+        3 => SpannerKind::PedalBracket(PedalKind::Sostenuto),
+        4 => SpannerKind::TrillExtension,
+        5 => SpannerKind::Glissando,
+        6 => SpannerKind::OctaveLine(OctaveOffset(1)),
+        _ => SpannerKind::TextLine(epiphany_core::TextLineDefinition {
+            text: random_text(rng),
+        }),
+    };
+    let line = [
+        LineStyle::Solid,
+        LineStyle::Dashed,
+        LineStyle::Dotted,
+        LineStyle::Wavy,
+    ][rng.below(4) as usize];
+    (
+        kind,
+        epiphany_core::SpanStyle {
+            line,
+            thickness: None,
+        },
+    )
+}
+
 /// An event value of a random kind in `voice`.
 fn event_value(
     sim: &mut Simulation,
@@ -1063,9 +1331,17 @@ fn event_value(
                 position,
                 duration,
                 pitches,
-                marks: Vec::new(),
+                marks: if sim.rng.chance(3) {
+                    random_marks(&mut sim.rng)
+                } else {
+                    Vec::new()
+                },
                 dynamic: None,
-                ornaments: Vec::new(),
+                ornaments: if sim.rng.chance(6) {
+                    random_ornaments(&mut sim.rng)
+                } else {
+                    Vec::new()
+                },
                 stem: StemConfiguration,
                 grace: None,
             })
@@ -1085,7 +1361,11 @@ fn event_value(
             duration,
             staff_position: StaffPosition(sim.rng.range(-4, 4) as i16),
             instrument_member: UnpitchedMemberId(0),
-            marks: Vec::new(),
+            marks: if sim.rng.chance(3) {
+                random_marks(&mut sim.rng)
+            } else {
+                Vec::new()
+            },
             dynamic: None,
             stem: StemConfiguration,
             grace: None,
@@ -1551,13 +1831,14 @@ fn make(
                         .iter()
                         .find(|(_, inst)| Some(inst.id) == h.instance_of_voice.get(&voice).copied())
                         .map(|(_, inst)| inst.staff)?;
+                    let (kind, style) = random_spanner_look(&mut sim.rng);
                     CrossCuttingValue::Spanner(epiphany_core::Spanner {
                         id: sim.mint(r),
                         start: valuegen::event_anchor(a),
                         end: valuegen::event_anchor(b),
                         staves: vec![staff],
-                        kind: Default::default(),
-                        style: Default::default(),
+                        kind,
+                        style,
                     })
                 }
             };
@@ -1806,6 +2087,8 @@ fn make(
             live.extend(cc.ties.iter().cloned().map(CrossCuttingValue::Tie));
             live.extend(cc.beams.iter().cloned().map(CrossCuttingValue::Beam));
             live.extend(cc.spanners.iter().cloned().map(CrossCuttingValue::Spanner));
+            live.extend(cc.markers.iter().cloned().map(CrossCuttingValue::Marker));
+            live.extend(cc.lyrics.iter().cloned().map(CrossCuttingValue::Lyric));
             let chosen = sim.rng.pick(&live)?.clone();
             if kind == 13 {
                 let structure = chosen.id();
@@ -1866,8 +2149,25 @@ fn make(
                         }
                         CrossCuttingValue::Spanner(s)
                     }
-                    // Not drawn from the view's live list yet (X4b.4's arms).
-                    other @ (CrossCuttingValue::Marker(_) | CrossCuttingValue::Lyric(_)) => other,
+                    // A point mark of another kind, or moved to another event.
+                    CrossCuttingValue::Marker(mut m) => {
+                        if sim.rng.chance(2) {
+                            m.kind = random_marker_kind(&mut sim.rng);
+                        } else {
+                            m.anchor = valuegen::event_anchor(other);
+                        }
+                        CrossCuttingValue::Marker(m)
+                    }
+                    // A syllable in another verse, of another text, or moved
+                    // to another event, where one may stand already.
+                    CrossCuttingValue::Lyric(mut l) => {
+                        match sim.rng.below(3) {
+                            0 => l.verse = 1 + sim.rng.below(2) as u16,
+                            1 => l.text = random_text(&mut sim.rng),
+                            _ => l.event = other,
+                        }
+                        CrossCuttingValue::Lyric(l)
+                    }
                 };
                 vec![prim(OperationKind::ModifyCrossCutting(
                     ModifyCrossCuttingOp { structure },
@@ -2723,6 +3023,95 @@ fn make(
                 home,
             }))]
         }
+        57 => {
+            // A grace note in an event's voice: at the event's onset, before
+            // it, or alone where it ends; marked a quarter of the time.
+            let event = rng_event(sim)?;
+            let (start, end) = span(event)?;
+            let voice = event.voice();
+            let instance = *h.instance_of_voice.get(&voice)?;
+            let at = if sim.rng.chance(4) { end } else { start };
+            let id: EventId = sim.mint(r);
+            let pitch = IdentifiedPitch {
+                id: sim.mint(r),
+                pitch: random_pitch(&mut sim.rng, 6),
+            };
+            let value = Event::Pitched(PitchedEvent {
+                id,
+                voice,
+                position: EventPosition::Musical(at),
+                duration: EventDuration::Musical(MusicalDuration::zero()),
+                pitches: vec![pitch],
+                marks: if sim.rng.chance(4) {
+                    random_marks(&mut sim.rng)
+                } else {
+                    Vec::new()
+                },
+                dynamic: None,
+                ornaments: Vec::new(),
+                stem: StemConfiguration,
+                grace: Some(random_grace(&mut sim.rng)),
+            });
+            vec![prim(OperationKind::InsertEvent(InsertEventOp {
+                staff_instance: instance,
+                event: value,
+            }))]
+        }
+        58 => {
+            // ModifyEvent: a grace's order, or an event's marks or ornaments,
+            // rewritten.
+            let mut value = rng_event(sim)?.clone();
+            match &mut value {
+                Event::Pitched(p) => match p.grace.as_mut() {
+                    Some(grace) if sim.rng.chance(2) => grace.order = sim.rng.below(3) as u16,
+                    _ if sim.rng.chance(2) => p.marks = random_marks(&mut sim.rng),
+                    _ if sim.rng.chance(3) => p.ornaments = Vec::new(),
+                    _ => p.ornaments = random_ornaments(&mut sim.rng),
+                },
+                Event::Unpitched(u) => {
+                    u.marks = if sim.rng.chance(3) {
+                        Vec::new()
+                    } else {
+                        random_marks(&mut sim.rng)
+                    }
+                }
+                _ => return None,
+            }
+            vec![prim(OperationKind::ModifyEvent(ModifyEventOp {
+                event: value,
+            }))]
+        }
+        59 => {
+            // A point mark on an event, or at a position of a region.
+            let anchor = if sim.rng.chance(3) {
+                let regions = h.metric();
+                let (region, _, _) = sim.rng.pick(&regions)?;
+                valuegen::region_start_anchor(*region, position(sim.rng.below(16) as i64, 8))
+            } else {
+                valuegen::event_anchor(rng_event(sim)?.id())
+            };
+            let marker = epiphany_core::Marker {
+                id: sim.mint(r),
+                anchor,
+                kind: random_marker_kind(&mut sim.rng),
+            };
+            vec![prim(OperationKind::CreateCrossCutting(
+                CreateCrossCuttingOp {
+                    structure: CrossCuttingValue::Marker(marker),
+                },
+            ))]
+        }
+        60 => {
+            // A lyric syllable on an event, in one of two verses, where
+            // another may stand already.
+            let event = rng_event(sim)?.id();
+            let id = sim.mint(r);
+            vec![prim(OperationKind::CreateCrossCutting(
+                CreateCrossCuttingOp {
+                    structure: CrossCuttingValue::Lyric(random_lyric(id, event, &mut sim.rng)),
+                },
+            ))]
+        }
         _ => return None,
     })
 }
@@ -2892,7 +3281,7 @@ fn tie_entry(
 /// Each arm of [`make`] and how often it is drawn: the editing of notes,
 /// pitches and their marks three times as often as the score's structure and
 /// settings, as an editor's history runs.
-const ARMS: [(u64, u64); 57] = [
+const ARMS: [(u64, u64); 61] = [
     (0, 4),
     (1, 3),
     (2, 3),
@@ -2950,6 +3339,10 @@ const ARMS: [(u64, u64); 57] = [
     (54, 1),
     (55, 1),
     (56, 1),
+    (57, 2),
+    (58, 2),
+    (59, 2),
+    (60, 2),
 ];
 
 fn draw_arm(rng: &mut Rng) -> u64 {

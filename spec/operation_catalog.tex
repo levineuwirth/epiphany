@@ -1151,7 +1151,8 @@ voice, is refused as a clean precondition no-op (\texttt{EventDurationInvalid})
 rather than skipped silently. A grace note's value is held to the grace rules
 of Section~\ref{sec:k0:insert-event} (since version~0.21.0): a modification
 giving a grace a positive duration, or an event of positive duration a grace,
-is refused with \texttt{EventDurationInvalid}, and one that changes only a
+is refused with \texttt{EventDurationInvalid}, as is one that would leave a
+grace no pitch (Section~\ref{sec:k0:identified-pitch}); one that changes only a
 grace's \texttt{order} re-sorts its voice. A materialised move updates the occupancy index,
 so a later insert sees the freed or changed span. A placement change of a
 \emph{non-metric} event is recorded in the bookkeeping but not applied to the
@@ -1246,7 +1247,14 @@ that loses one of its pitches becomes a note of the others, or a rest when
 none remain (since version~0.19.0, before which graph-aware reduction read and
 wrote a note's pitches alone). This preserves
 the delete-wins / mint disciplines and keeps the graph consistent with the
-bookkeeping, which tombstones or mints the pitch object either way.
+bookkeeping, which tombstones or mints the pitch object either way. A grace
+note keeps a pitch, since without one it would be a rest of no length (since
+version~0.21.0): a delete of its last live pitch is refused
+\texttt{EventDurationInvalid}, as is a whole-event modification that would
+leave it none (Section~\ref{sec:k0:modify-event}); an undo taking its last,
+the grace staying, conflicts under \texttt{StrictInverse} and keeps the pitch
+under \texttt{BestEffort}, read as the undo leaves the event, a pitch the
+undo brings back counting. A delete of the grace removes it.
 
 \textbf{Conflict cases.} Insert and delete: none (mint is set-union; delete-wins
 is idempotent). Modify: two concurrent differing writes of one pitch produce a
@@ -1537,7 +1545,13 @@ version~0.19.0), a dead staff refusing the create, as it does a
 its full fields. An event carries one syllable per verse: a create or a
 modification of a lyric whose event and verse a live lyric already holds is
 refused with \texttt{SlotOccupied}, in both modes, and of two concurrent
-ones the later in canonical order is refused (since version~0.21.0).
+ones the later in canonical order is refused (since version~0.21.0). A
+marker or spanner anchored to a region by a musical offset is held to the
+region's time, as a clef or key change is: a create or modification placing
+one in a region that admits no musical offset is refused
+\texttt{WrongRegionTimeModel}, and a live one strands its region's migration
+out of musical time, the conflict naming it (since version~0.21.0, before
+which the value applied there or stayed, breaking \texttt{AnchorOffsetModel}).
 
 \textbf{Conflict cases.} None (all-or-nothing creation; union is deterministic).
 
@@ -1742,7 +1756,9 @@ voices or measures; a voice: no events), since those carry distinct
 \texttt{TypedObjectId}s the reducer mints separately --- so contents are added by
 subsequent operations. A delete is a delete-wins tombstone, but a
 \emph{precondition no-op} (\texttt{ContainerNotEmpty}) unless the container has no
-live children --- the caller deletes contents first. Graph-aware reduction adds
+live children --- the caller deletes contents first. A region is held so by a
+live tempo segment of another map anchored to it and, since version~0.21.0, by
+a live marker or spanner anchored to it. Graph-aware reduction adds
 or removes the container and maintains the region's staff extent so
 \texttt{RegionExtents} stays satisfied.
 
@@ -1757,7 +1773,9 @@ version~0.19.0, if a live child the undo leaves is in it (a region's staff
 instance, an instance's voice, a voice's event), which it would leave naming
 nothing, or a live tempo segment of another map is anchored to a region it
 would remove, as a \texttt{DeleteRegion} is refused (the conflict naming the
-region, the segment having no identifier). An undone region or staff instance leaves the graph-aware score, as a
+region, the segment having no identifier), or, since version~0.21.0, a live
+marker or spanner the undo leaves is anchored to it (the conflict naming the
+structure). An undone region or staff instance leaves the graph-aware score, as a
 deleted one does, and an undone staff instance or voice leaves its container's
 place in the reducer's indices, so a region or instance the undo emptied is
 empty to a later \texttt{DeleteRegion} or \texttt{DeleteStaffInstance}

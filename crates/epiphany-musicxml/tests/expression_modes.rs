@@ -582,6 +582,359 @@ fn a_tie_passes_over_graces_in_both_modes() {
     }
 }
 
+/// A grace note keeps a pitch, with none being a rest of no length: a delete
+/// of its last is refused, as is a modify leaving it none and an undo taking
+/// its last; a delete of one of two applies, and an undo that brings back a
+/// pitch a modify replaced applies. In both modes.
+#[test]
+fn a_grace_note_keeps_a_pitch_in_both_modes() {
+    use epiphany_ops::{DeleteIdentifiedPitchOp, InsertIdentifiedPitchOp};
+    let m = Measure::of(MEASURE);
+    let invalid = refused(PreconditionFailureReason::EventDurationInvalid);
+    let grace = m.grace(3600, m.position(1), 0);
+    let first = PitchId::new(A, 3600);
+    let second = IdentifiedPitch {
+        id: PitchId::new(A, 3601),
+        pitch: valuegen::pitch_value_nth(5),
+    };
+    let delete = |pitch: PitchId| {
+        primitive(OperationKind::DeleteIdentifiedPitch(
+            DeleteIdentifiedPitchOp { pitch },
+        ))
+    };
+    let inserted = m.op(A, 0, 1, &[], m.insert(grace.clone()));
+
+    // Its only pitch: refused.
+    let only = m.op(A, 1, 2, &[inserted.id], delete(first));
+    let (state, score) = m.agree(
+        "a grace's only pitch deleted",
+        &[inserted.clone(), only.clone()],
+    );
+    assert_eq!(effect(&state, only.id), invalid);
+    assert_eq!(score.events.get(grace.id()), Some(&grace));
+
+    // One of two: applies; then the other: refused; then a modify carrying
+    // the deleted one alone: refused.
+    let added = m.op(
+        A,
+        1,
+        2,
+        &[inserted.id],
+        primitive(OperationKind::InsertIdentifiedPitch(
+            InsertIdentifiedPitchOp {
+                event: grace.id(),
+                pitch: second.clone(),
+            },
+        )),
+    );
+    let one = m.op(A, 2, 3, &[added.id], delete(first));
+    let other = m.op(A, 3, 4, &[one.id], delete(second.id));
+    let mut emptied = grace.clone();
+    if let Event::Pitched(p) = &mut emptied {
+        p.pitches[0].id = first;
+    }
+    let written = m.op(
+        A,
+        4,
+        5,
+        &[other.id],
+        primitive(OperationKind::ModifyEvent(ModifyEventOp { event: emptied })),
+    );
+    let (state, _) = m.agree(
+        "a grace's pitches deleted",
+        &[
+            inserted.clone(),
+            added.clone(),
+            one.clone(),
+            other.clone(),
+            written.clone(),
+        ],
+    );
+    assert_eq!(effect(&state, one.id), applied());
+    assert_eq!(effect(&state, other.id), invalid);
+    assert_eq!(effect(&state, written.id), invalid);
+    assert!(live(&state, TypedObjectId::Pitch(second.id)));
+
+    // An undo of the pitch's insert, the first deleted since: a strict undo
+    // conflicts and a best-effort one keeps it.
+    let tx = TransactionId::new(A, 700);
+    let mut declare = m.op(
+        A,
+        1,
+        2,
+        &[inserted.id],
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("pitch"),
+            category: None,
+        })),
+    );
+    declare.transaction = Some(tx);
+    let mut in_tx = m.op(
+        A,
+        2,
+        3,
+        &[declare.id],
+        primitive(OperationKind::InsertIdentifiedPitch(
+            InsertIdentifiedPitchOp {
+                event: grace.id(),
+                pitch: second.clone(),
+            },
+        )),
+    );
+    in_tx.transaction = Some(tx);
+    let gone = m.op(A, 3, 4, &[in_tx.id], delete(first));
+    for (policy, conflicts) in [
+        (UndoPolicy::StrictInverse, true),
+        (UndoPolicy::BestEffort, false),
+    ] {
+        let undo = m.op(
+            A,
+            4,
+            5,
+            &[gone.id],
+            OperationPayload::UndoTransaction(UndoTransactionPayload { target: tx, policy }),
+        );
+        let (state, score) = m.agree(
+            "an undo taking a grace's last pitch",
+            &[
+                inserted.clone(),
+                declare.clone(),
+                in_tx.clone(),
+                gone.clone(),
+                undo.clone(),
+            ],
+        );
+        assert_eq!(
+            matches!(
+                effect(&state, undo.id),
+                Some(OperationEffect::Conflicted { .. })
+            ),
+            conflicts,
+            "{policy:?}"
+        );
+        assert!(live(&state, TypedObjectId::Pitch(second.id)), "{policy:?}");
+        assert!(matches!(
+            score.events.get(grace.id()),
+            Some(Event::Pitched(_))
+        ));
+    }
+
+    // A modify replacing its pitch, undone: the pitch comes back, and the
+    // undo applies.
+    let mut replaced = grace.clone();
+    if let Event::Pitched(p) = &mut replaced {
+        p.pitches = vec![second.clone()];
+    }
+    let mut modified = m.op(
+        A,
+        2,
+        3,
+        &[declare.id],
+        primitive(OperationKind::ModifyEvent(ModifyEventOp {
+            event: replaced,
+        })),
+    );
+    modified.transaction = Some(tx);
+    let undo = m.op(
+        A,
+        3,
+        4,
+        &[modified.id],
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::StrictInverse,
+        }),
+    );
+    let (state, score) = m.agree(
+        "a grace's replaced pitch restored",
+        &[
+            inserted.clone(),
+            declare.clone(),
+            modified.clone(),
+            undo.clone(),
+        ],
+    );
+    assert!(matches!(
+        effect(&state, modified.id),
+        Some(OperationEffect::AppliedWithRepair { .. })
+    ));
+    assert!(matches!(
+        effect(&state, undo.id),
+        Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
+    ));
+    assert_eq!(score.events.get(grace.id()), Some(&grace));
+}
+
+/// A marker anchored to a region by a musical offset is held to the
+/// region's time, as a clef or key change is: refused in a region out of
+/// musical time; a live one holds its region against a delete, and strands
+/// a migration out of musical time. In both modes.
+#[test]
+fn a_marker_on_a_region_is_held_to_its_time_in_both_modes() {
+    use epiphany_core::RegionId;
+    use epiphany_ops::{
+        ChangeRegionTimeModelOp, ConflictKind, CreateRegionOp, DeleteRegionOp, PositionRemapping,
+    };
+    let m = Measure::of(MEASURE);
+    let region = RegionId::new(A, 900);
+    let created = |counter: u64, proportional: bool| {
+        let mut value = valuegen::region(region);
+        if proportional {
+            value.time_model = valuegen::proportional_model();
+        }
+        m.op(
+            A,
+            counter,
+            1,
+            &[],
+            primitive(OperationKind::CreateRegion(CreateRegionOp {
+                region: value,
+            })),
+        )
+    };
+    let marker = |at: &OperationEnvelope| {
+        m.op(
+            A,
+            1,
+            2,
+            &[at.id],
+            create(CrossCuttingValue::Marker(Marker {
+                id: MarkerId::new(A, 901),
+                anchor: TimeAnchor::Region {
+                    id: region,
+                    edge: epiphany_core::RegionEdge::Start,
+                    offset: AnchorOffset::Musical(eighth()),
+                },
+                kind: MarkerKind::Segno,
+            })),
+        )
+    };
+
+    // Into a region out of musical time: refused.
+    let proportional = created(0, true);
+    let refused_mark = marker(&proportional);
+    let (state, _) = m.agree(
+        "a marker at a musical offset in proportional time",
+        &[proportional, refused_mark.clone()],
+    );
+    assert_eq!(
+        effect(&state, refused_mark.id),
+        refused(PreconditionFailureReason::WrongRegionTimeModel)
+    );
+
+    // In a metric region: applies, and holds the region against a delete
+    // and a migration out of musical time.
+    let metric = created(0, false);
+    let mark = marker(&metric);
+    let deleted = m.op(
+        A,
+        2,
+        3,
+        &[mark.id],
+        primitive(OperationKind::DeleteRegion(DeleteRegionOp { region })),
+    );
+    let migrated = m.op(
+        A,
+        3,
+        4,
+        &[deleted.id],
+        primitive(OperationKind::ChangeRegionTimeModel(
+            ChangeRegionTimeModelOp {
+                region,
+                new_time_model: valuegen::proportional_model(),
+                declared_incompatible: Vec::new(),
+                remapping: PositionRemapping::PreserveTime,
+            },
+        )),
+    );
+    let (state, _) = m.agree(
+        "a marker holding its region",
+        &[metric, mark.clone(), deleted.clone(), migrated.clone()],
+    );
+    assert_eq!(effect(&state, mark.id), applied());
+    assert_eq!(
+        effect(&state, deleted.id),
+        refused(PreconditionFailureReason::ContainerNotEmpty)
+    );
+    let Some(OperationEffect::Conflicted { conflict }) = effect(&state, migrated.id) else {
+        panic!("the migration conflicts");
+    };
+    let record = state
+        .conflicts
+        .records()
+        .iter()
+        .find(|r| r.id == conflict)
+        .expect("recorded");
+    assert!(
+        matches!(&record.kind, ConflictKind::TimeModelMigrationFailure { incompatible_events, .. }
+        if incompatible_events.contains(&TypedObjectId::Marker(MarkerId::new(A, 901))))
+    );
+
+    // An undo of the region's create, another author's marker on it: a
+    // strict undo conflicts, and the region stays.
+    let tx = TransactionId::new(A, 700);
+    let mut declare = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("region"),
+            category: None,
+        })),
+    );
+    declare.transaction = Some(tx);
+    let mut value = valuegen::region(region);
+    value.time_model = valuegen::metric_model();
+    let mut in_tx = m.op(
+        A,
+        1,
+        2,
+        &[declare.id],
+        primitive(OperationKind::CreateRegion(CreateRegionOp {
+            region: value,
+        })),
+    );
+    in_tx.transaction = Some(tx);
+    let by_b = m.op(
+        B,
+        0,
+        3,
+        &[in_tx.id],
+        create(CrossCuttingValue::Marker(Marker {
+            id: MarkerId::new(B, 902),
+            anchor: TimeAnchor::Region {
+                id: region,
+                edge: epiphany_core::RegionEdge::Start,
+                offset: AnchorOffset::Musical(eighth()),
+            },
+            kind: MarkerKind::Coda,
+        })),
+    );
+    let undo = m.op(
+        A,
+        2,
+        4,
+        &[in_tx.id, by_b.id],
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::StrictInverse,
+        }),
+    );
+    let (state, _) = m.agree(
+        "an undo of a marked region's create",
+        &[declare, in_tx, by_b.clone(), undo.clone()],
+    );
+    assert_eq!(effect(&state, by_b.id), applied());
+    assert!(matches!(
+        effect(&state, undo.id),
+        Some(OperationEffect::Conflicted { .. })
+    ));
+    assert!(live(&state, TypedObjectId::Region(region)));
+}
+
 fn lyric(counter: u64, event: EventId, verse: u16) -> Lyric {
     Lyric {
         id: LyricLineId::new(A, counter),

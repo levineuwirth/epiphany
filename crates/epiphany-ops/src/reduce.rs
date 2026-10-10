@@ -1491,6 +1491,16 @@ fn voice_order(score: &Score, a: EventId, b: EventId) -> Ordering {
     }
 }
 
+/// A marker's anchor, or a spanner's start and end: the anchors a region
+/// holds a cross-cutting value by.
+fn region_anchors(structure: &CrossCuttingValue) -> Vec<&TimeAnchor> {
+    match structure {
+        CrossCuttingValue::Marker(marker) => vec![&marker.anchor],
+        CrossCuttingValue::Spanner(spanner) => vec![&spanner.start, &spanner.end],
+        _ => Vec::new(),
+    }
+}
+
 /// Whether an event's value agrees on grace and duration: a grace note's
 /// duration is musical and zero, and any other event's is not zero (schema
 /// major 5, reduction version 4). A non-musical duration is judged elsewhere.
@@ -4636,7 +4646,10 @@ impl<'a> Reducer<'a> {
                 };
             }
         }
-        if let Some(effect) = self.spanner_staves_slot(&op.structure) {
+        if let Some(effect) = self
+            .spanner_staves_slot(&op.structure)
+            .or_else(|| self.region_anchor_slot(&op.structure))
+        {
             return effect;
         }
         if let Some(effect) = self.lyric_slot_taken(&op.structure) {
@@ -4680,6 +4693,46 @@ impl<'a> Reducer<'a> {
                     reason: PreconditionFailureReason::TargetMissing,
                 },
             })
+    }
+
+    /// A marker's or spanner's anchors to a region by a musical offset, where
+    /// the region admits none: refused `WrongRegionTimeModel`, as a clef or
+    /// key change written there is (schema major 5, reduction version 4:
+    /// before it the value applied, `AnchorOffsetModel`).
+    fn region_anchor_slot(&self, structure: &CrossCuttingValue) -> Option<OperationEffect> {
+        region_anchors(structure)
+            .into_iter()
+            .find_map(|anchor| match anchor {
+                TimeAnchor::Region { id, .. } => self.musical_slot(*id, Some(anchor)),
+                _ => None,
+            })
+    }
+
+    /// The live markers and spanners anchored to `region` (by a musical
+    /// offset only, with `musical`), read from the values both modes keep,
+    /// those `except` names aside.
+    fn anchored_to_region(
+        &self,
+        region: RegionId,
+        musical: bool,
+        except: &[TypedObjectId],
+    ) -> Vec<TypedObjectId> {
+        self.cross_cutting_modify_chain
+            .iter()
+            .filter(|(sid, _)| {
+                !except.contains(sid) && matches!(self.objects.get(*sid), Some(ObjectState::Live))
+            })
+            .filter(|(_, chain)| {
+                chain.current().is_some_and(|value| {
+                    region_anchors(value).into_iter().any(|anchor| {
+                        matches!(anchor, TimeAnchor::Region { id, offset, .. }
+                            if *id == region
+                                && (!musical || matches!(offset, AnchorOffset::Musical(_))))
+                    })
+                })
+            })
+            .map(|(sid, _)| *sid)
+            .collect()
     }
 
     /// An event holds at most one lyric syllable per verse (schema major 5,
@@ -5033,7 +5086,10 @@ impl<'a> Reducer<'a> {
                 };
             }
         }
-        if let Some(effect) = self.spanner_staves_slot(&op.structure) {
+        if let Some(effect) = self
+            .spanner_staves_slot(&op.structure)
+            .or_else(|| self.region_anchor_slot(&op.structure))
+        {
             return effect;
         }
         if let Some(effect) = self.lyric_slot_taken(&op.structure) {
@@ -7447,10 +7503,14 @@ impl<'a> Reducer<'a> {
                             || segment.end.as_ref().is_some_and(anchors_here)
                 )
         });
-        let minted_by = match self.delete_precondition(robj, env, has_instances || tempo_anchored) {
-            Ok(minter) => minter,
-            Err(effect) => return effect,
-        };
+        // A live marker or spanner anchored to the region holds it likewise
+        // (schema major 5, reduction version 4).
+        let marked = !self.anchored_to_region(op.region, false, &[]).is_empty();
+        let minted_by =
+            match self.delete_precondition(robj, env, has_instances || tempo_anchored || marked) {
+                Ok(minter) => minter,
+                Err(effect) => return effect,
+            };
         self.objects.insert(
             robj,
             ObjectState::Tombstoned {
@@ -7810,6 +7870,9 @@ impl<'a> Reducer<'a> {
                     Some(ObjectState::Live)
                 ) && (holds_clef || holds_key)
             });
+            // A live marker or spanner anchored here by a musical offset
+            // strands itself (schema major 5, reduction version 4).
+            let anchored = self.anchored_to_region(op.region, true, &[]);
             self.measure_values
                 .iter()
                 .filter(|(_, (instance, _))| instances.is_some_and(|set| set.contains(instance)))
@@ -7817,6 +7880,7 @@ impl<'a> Reducer<'a> {
                 .filter(|m| matches!(self.objects.get(m), Some(ObjectState::Live)))
                 .chain(changes_stranded.map(|i| TypedObjectId::StaffInstance(*i)))
                 .chain(tempo_stranded.then_some(TypedObjectId::Region(op.region)))
+                .chain(anchored)
                 .collect()
         };
         if !incompatible_events.is_empty() || !stranded_measures.is_empty() {
@@ -8436,6 +8500,13 @@ impl<'a> Reducer<'a> {
                             })
                         })
                         .then_some((*target, *target))
+                })
+                // A live marker or spanner anchored to the region the undo
+                // does not remove (schema major 5, reduction version 4).
+                .or_else(|| {
+                    self.anchored_to_region(*region, false, targets)
+                        .first()
+                        .map(|sid| (*target, *sid))
                 }),
             TypedObjectId::StaffInstance(instance) => {
                 self.instance_voices.get(instance).and_then(|voices| {
@@ -8828,8 +8899,109 @@ impl<'a> Reducer<'a> {
                             })
                     })
             }
+            // A grace note keeps a pitch (schema major 5, reduction version
+            // 4): an undo removing its last, the grace staying, is held. Read
+            // as the undo leaves the event: a value it restores, and the
+            // pitches that value carries which the undone modifies removed
+            // and the undo brings back.
+            TypedObjectId::Pitch(pitch) => {
+                let (event, held) = self
+                    .event_pitches
+                    .iter()
+                    .find(|(_, pitches)| pitches.contains(pitch))?;
+                let eobj = TypedObjectId::Event(*event);
+                let stays = !targets.contains(&eobj)
+                    && matches!(self.objects.get(&eobj), Some(ObjectState::Live));
+                let restored = restorations.iter().find_map(|restoration| match restoration {
+                    ValueRestoration::Event { event: e, value } if e == event => value.as_ref(),
+                    _ => None,
+                });
+                let grace = match restored {
+                    Some(value) => value.grace().is_some(),
+                    None => self.event_is_grace(*event),
+                };
+                let mut revived = Vec::new();
+                if let Some(value) = restored {
+                    value.collect_identified_pitches(&mut revived);
+                }
+                let another = held.iter().any(|p| {
+                    p != pitch
+                        && !targets.contains(&TypedObjectId::Pitch(*p))
+                        && matches!(
+                            self.objects.get(&TypedObjectId::Pitch(*p)),
+                            Some(ObjectState::Live)
+                        )
+                }) || revived.iter().any(|ip| {
+                    self.removed_pitches
+                        .get(&ip.id)
+                        .is_some_and(|removed| removed.event == *event)
+                });
+                (stays && grace && !another).then_some((*target, eobj))
+            }
             _ => None,
         }
+    }
+
+    /// Whether `event`'s value, as both modes hold it, is a grace note.
+    fn event_is_grace(&self, event: EventId) -> bool {
+        self.event_modify_chain
+            .get(&event)
+            .and_then(WriteChain::current)
+            .is_some_and(|value| value.grace().is_some())
+    }
+
+    /// Whether `pitch` is the last live pitch of a grace note.
+    fn last_pitch_of_grace(&self, pitch: PitchId) -> bool {
+        let Some((event, held)) = self
+            .event_pitches
+            .iter()
+            .find(|(_, pitches)| pitches.contains(&pitch))
+        else {
+            return false;
+        };
+        self.event_is_grace(*event)
+            && held.iter().all(|p| {
+                *p == pitch
+                    || !matches!(
+                        self.objects.get(&TypedObjectId::Pitch(*p)),
+                        Some(ObjectState::Live)
+                    )
+            })
+    }
+
+    /// Whether a whole-event `value` written as `env` would leave its grace
+    /// note no pitch: none it carries stands (each removed since), and its
+    /// author saw every live pitch it leaves out, so observed-remove takes
+    /// them all.
+    fn grace_left_without_pitch(&self, env: &OperationEnvelope, value: &Event) -> bool {
+        if value.grace().is_none() {
+            return false;
+        }
+        let mut carried = Vec::new();
+        value.collect_identified_pitches(&mut carried);
+        let carried_stands = carried.iter().any(|ip| {
+            !matches!(
+                self.objects.get(&TypedObjectId::Pitch(ip.id)),
+                Some(ObjectState::Tombstoned { .. })
+            )
+        });
+        let unseen_kept = self
+            .event_pitches
+            .get(&value.id())
+            .into_iter()
+            .flatten()
+            .filter(|p| !carried.iter().any(|ip| ip.id == **p))
+            .filter(|p| {
+                matches!(
+                    self.objects.get(&TypedObjectId::Pitch(**p)),
+                    Some(ObjectState::Live)
+                )
+            })
+            .any(|p| match self.minted_by.get(&TypedObjectId::Pitch(*p)) {
+                Some(insert) => *insert != env.id && !env.causal_context.covers(*insert),
+                None => false,
+            });
+        !carried_stands && !unseen_kept
     }
 
     /// Walks every write chain and collects, for the target transaction: the
@@ -9757,8 +9929,8 @@ impl<'a> Reducer<'a> {
         // that never took effect). The verdict reads `voice_occupancy`, the
         // graph-independent index, so `reduce()` and `reduce_onto()` agree on it.
         // A grace note has zero duration and only a grace note does, as at an
-        // insert (reduction version 4).
-        if !grace_duration_agrees(&op.event) {
+        // insert (reduction version 4); and it keeps a pitch.
+        if !grace_duration_agrees(&op.event) || self.grace_left_without_pitch(env, &op.event) {
             return OperationEffect::NoOp {
                 reason: NoOpReason::PreconditionFailedUnderReduction {
                     reason: PreconditionFailureReason::EventDurationInvalid,
@@ -10596,6 +10768,16 @@ impl<'a> Reducer<'a> {
             }
             Some(ObjectState::Live) => self.minted_by.get(&p_obj).copied().unwrap_or(env.id),
         };
+        // A grace note keeps a pitch (schema major 5, reduction version 4):
+        // with none it would be a rest of no length. Its last is not deleted;
+        // a delete of the grace removes it.
+        if self.last_pitch_of_grace(op.pitch) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::EventDurationInvalid,
+                },
+            };
+        }
         self.objects.insert(
             p_obj,
             ObjectState::Tombstoned {

@@ -3769,3 +3769,29 @@ the fragment version is unchanged.
 
 **The fuzz writes `SetVoiceHome`** (arm 56), so the every-kind test holds;
 X4b.4 adds the arms for the new values.
+
+## X4b.4 — the fuzz writes schema major 5 (2026-10-10)
+
+**New arms.** The two-mode fuzz now writes every new payload and operation:
+an inserted note or unpitched note carries marks a third of the time and a
+note an ornament a sixth (`random_marks`, `random_ornaments`); arm 57 inserts
+a grace note at an event's onset, or alone where it ends; arm 58 rewrites an
+event's marks or ornaments or a grace's order; arms 59 and 60 create a marker
+(on an event or at a region's position) and a lyric (in one of two verses,
+so a second syllable is often refused); the delete and modify arms draw
+markers and lyrics among the live structures, moving a marker or giving it
+another kind and moving a syllable to another verse, text or event; a created
+spanner takes any kind and line, the wavy line and the pedal bracket among
+them; arm 56 sets a voice's home. `Coverage` counts each new payload shape
+beside its kind (`InsertEvent+grace`, `CreateCrossCutting+Lyric` and so on),
+so `the_ci_budget_authors_and_applies_every_kind` holds each shape authored
+and applied as it holds each kind.
+
+**What it found.** Two single-author breaks, each now a verdict under
+reduction version 4 with its test: a grace note whose last pitch was deleted
+became a rest of no length (`VoiceEventsSortedNonOverlap`), so a grace keeps
+a pitch; and a marker anchored to a region by a musical offset stayed when the
+region left musical time (`AnchorOffsetModel`) or was deleted
+(`CrossCuttingRefsResolve`), so a marker or spanner is held to its region as
+a clef, key or tempo segment is. Each rule was observed failing its test with
+the rule disabled (eight mutations).

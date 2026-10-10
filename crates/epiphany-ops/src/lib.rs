@@ -667,6 +667,19 @@ pub mod vectors;
 ///     remove a staff a live voice's home names, and a voice's delete takes
 ///     its home with it.
 ///
+///   X4b.4's fuzz, writing those values, found two more, now held:
+///   - a grace note keeps a pitch, as with none it would be a rest of no
+///     length: a `DeleteIdentifiedPitch` of its last live pitch, and a
+///     `ModifyEvent` leaving it none, are refused `EventDurationInvalid`, and
+///     an undo taking its last, the grace staying, is held by the strand
+///     guard, read as the undo leaves the event;
+///   - a marker or spanner anchored to a region by a musical offset is held
+///     to the region's time: written into a region out of musical time it is
+///     refused `WrongRegionTimeModel`, a live one strands its region's
+///     migration out of musical time, and a live one anchored to a region
+///     holds it against a `DeleteRegion` (`ContainerNotEmpty`) and an undo of
+///     its create.
+///
 ///   Locked by `crates/epiphany-musicxml/tests/expression_modes.rs`, one test
 ///   per verdict.
 ///
