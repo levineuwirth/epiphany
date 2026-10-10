@@ -306,7 +306,8 @@ pub(crate) fn event_starts(
 
 /// Where a mark the file places stands: on its event, or on the first event
 /// of its staff starting at its position (a note or rest before a grace
-/// note there), or, where none starts there, at the position in the region.
+/// note there), or, where none starts there, at the position in the region;
+/// a barline's mark at its position always.
 fn point_anchor(
     part: &SourcePart,
     events: &[EventId],
@@ -330,6 +331,7 @@ fn point_anchor(
                 None => region_anchor(region, onset),
             }
         }
+        SourcePoint::Barline { onset, .. } => region_anchor(region, onset),
     }
 }
 

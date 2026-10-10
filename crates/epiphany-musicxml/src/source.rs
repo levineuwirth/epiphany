@@ -250,6 +250,12 @@ pub enum SourcePoint {
         measure: usize,
         onset: Time,
     },
+    /// A barline's place, which stands at the position whatever event starts
+    /// there: a fermata over a barline is not over the next measure's note.
+    Barline {
+        measure: usize,
+        onset: Time,
+    },
 }
 
 /// A point mark: a dynamic, a fermata, a breath mark, a caesura, staff text,
@@ -2201,7 +2207,9 @@ impl<'d, 'i> Reader<'d, 'i> {
             }
             // A mark placed by time was read as an offset into its measure.
             let place = |point: &mut SourcePoint| {
-                if let SourcePoint::At { measure, onset, .. } = point {
+                if let SourcePoint::At { measure, onset, .. }
+                | SourcePoint::Barline { measure, onset } = point
+                {
                     *onset = measures[*measure].onset.add(onset);
                 }
             };
@@ -4024,8 +4032,7 @@ impl<'d, 'i> Reader<'d, 'i> {
                     Some(shape) => {
                         let at_start = barline.attribute("location") == Some("left");
                         part.markers.push(SourceMarker {
-                            at: SourcePoint::At {
-                                staff: 0,
+                            at: SourcePoint::Barline {
                                 measure,
                                 onset: if at_start {
                                     zero()

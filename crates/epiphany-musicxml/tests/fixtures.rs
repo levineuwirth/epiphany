@@ -1574,6 +1574,35 @@ fn features_without_an_operation_are_recorded_by_kind_and_not_imported() {
     assert_eq!(run.import.source.census[0].grace_or_cue, 2);
 }
 
+/// A fermata over a barline stands at the barline, not on the note the next
+/// measure starts with there.
+#[test]
+fn a_barline_fermata_stands_at_the_barline() {
+    use epiphany_core::{MarkerKind, TimeAnchor};
+    let xml = "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+               </part-name></score-part></part-list><part id=\"P1\">\
+               <measure number=\"1\"><attributes><divisions>1</divisions><time><beats>1</beats>\
+               <beat-type>4</beat-type></time></attributes>\
+               <note><pitch><step>C</step><octave>5</octave></pitch><duration>1</duration>\
+               <voice>1</voice><type>quarter</type></note>\
+               <barline location=\"right\"><fermata type=\"upright\"/></barline></measure>\
+               <measure number=\"2\"><note><pitch><step>D</step><octave>5</octave></pitch>\
+               <duration>1</duration><voice>1</voice><type>quarter</type></note></measure>\
+               </part></score-partwise>";
+    let import = import(xml).expect("imports");
+    let reduced = reduce(&import);
+    assert!(compare(&import, &reduced).passed());
+    let markers = &reduced.score.cross_cutting.markers;
+    assert_eq!(markers.len(), 1);
+    assert!(matches!(markers[0].kind, MarkerKind::Fermata(_)));
+    assert_eq!(
+        offset(&markers[0].anchor),
+        "1/4",
+        "at the barline, not on the second measure's note"
+    );
+    assert!(!matches!(markers[0].anchor, TimeAnchor::Event { .. }));
+}
+
 /// A grace note inside a tuplet's span occupies no time, so it is no member:
 /// the tuplet holds its three eighths and applies.
 #[test]
