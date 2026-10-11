@@ -1073,7 +1073,12 @@ pub fn try_to_constrained(
             match (object.provenance().source, object.content()) {
                 (TypedObjectId::Event(eid), LayoutContent::Note(note)) => {
                     event_staff.extend(staff.map(|st| (eid, st)));
-                    spans.extend(component_spans(&note.position, &note.components, false));
+                    spans.extend(component_spans(
+                        &note.position,
+                        &note.components,
+                        false,
+                        note.duration.as_ref(),
+                    ));
                     let mut stems = Vec::new();
                     for (comp, (offset, value, dots, tied)) in
                         components_of(&note.components).enumerate()
@@ -1175,6 +1180,7 @@ pub fn try_to_constrained(
                         &unpitched.position,
                         &unpitched.components,
                         false,
+                        unpitched.duration.as_ref(),
                     ));
                     let mut stems = Vec::new();
                     let step = StaffStep::from(unpitched.staff_position.0);
@@ -1238,6 +1244,7 @@ pub fn try_to_constrained(
                         &rest.position,
                         &rest.components,
                         rest.whole_measure,
+                        rest.duration.as_ref(),
                     ));
                     let mut segs = Vec::new();
                     for (comp, (offset, value, dots, _)) in
@@ -4174,16 +4181,25 @@ fn time_digit(digit: u8) -> &'static str {
 /// event carries no decomposition.
 /// The musical spans a note's, unpitched note's or rest's components sound
 /// through, each `[start, end)` in the region's musical time. A rest filling
-/// its measure is one span, as it is one glyph. Components in wall-clock time
-/// give none.
+/// its measure is one span, as it is one glyph, and an event the pre-pass
+/// gives no components sounds through its own duration, though it is drawn
+/// as an implicit quarter. Components in wall-clock time give none.
 fn component_spans(
     position: &TimePoint,
     components: &[crate::logical::PlacedComponent],
     whole_measure: bool,
+    duration: Option<&MusicalDuration>,
 ) -> Vec<(RationalTime, RationalTime)> {
     let TimePoint::Musical(position) = position else {
         return Vec::new();
     };
+    if components.is_empty() {
+        return duration
+            .map(|duration| (position.0.clone(), (position.clone() + duration.clone()).0))
+            .filter(|(start, end)| end > start)
+            .into_iter()
+            .collect();
+    }
     let spans = components.iter().map(|c| {
         let start = position.clone() + c.offset.clone();
         let end = start.clone() + c.component.sounding_duration(c.tuplet);
@@ -6559,6 +6575,7 @@ mod tests {
             voice: crate::logical::VoicePlace::Alone,
             position: TimePoint::Musical(MusicalPosition::origin()),
             components: vec![],
+            duration: None,
             pitches: vec![],
         });
         let logical = LogicalLayoutIR {
@@ -6677,6 +6694,7 @@ mod tests {
             voice: crate::logical::VoicePlace::Alone,
             position: TimePoint::Musical(MusicalPosition::origin()),
             components: vec![],
+            duration: None,
             pitches: vec![NotePitch {
                 pitch,
                 spelling: Some(spelling),
@@ -6756,6 +6774,7 @@ mod tests {
             voice: crate::logical::VoicePlace::Alone,
             position: TimePoint::Musical(MusicalPosition::origin()),
             components: vec![],
+            duration: None,
             pitches: vec![NotePitch {
                 pitch,
                 spelling: Some(spelling),
@@ -6880,6 +6899,7 @@ mod tests {
                     voice: crate::logical::VoicePlace::Alone,
                     position: at(start),
                     components: vec![component(NoteValue::Quarter, 0, false)],
+                    duration: None,
                     pitches,
                 }),
             ));
@@ -6910,6 +6930,7 @@ mod tests {
                     component(NoteValue::Half, 0, true),
                     component(NoteValue::Eighth, 4, false),
                 ],
+                duration: None,
                 pitches: vec![NotePitch {
                     pitch: split,
                     spelling: Some(PitchSpelling::cmn(CmnNominal::A, 4)),
@@ -7035,6 +7056,7 @@ mod tests {
                         voice: crate::logical::VoicePlace::Alone,
                         position: TimePoint::Musical(MusicalPosition::origin()),
                         components: vec![component(value, dots)],
+                        duration: None,
                         pitches: vec![NotePitch {
                             pitch,
                             spelling: Some(PitchSpelling::cmn(CmnNominal::E, 4)),
@@ -7104,6 +7126,7 @@ mod tests {
                 voice: crate::logical::VoicePlace::Alone,
                 position: TimePoint::Musical(MusicalPosition::origin()),
                 components: vec![component(NoteValue::Sixteenth, 0)],
+                duration: None,
                 staff_position: StaffPosition(4),
             }),
         )]);
@@ -7352,6 +7375,7 @@ mod tests {
                 component(NoteValue::Quarter, 0, 1, true),
                 component(NoteValue::Eighth, 1, 4, false),
             ],
+            duration: None,
             pitches: vec![NotePitch {
                 pitch,
                 spelling: Some(PitchSpelling::cmn(CmnNominal::C, 4)),
@@ -7545,6 +7569,7 @@ mod tests {
             voice: crate::logical::VoicePlace::Alone,
             position: TimePoint::Musical(MusicalPosition::origin()),
             components: vec![component(0, 1), component(1, 16)],
+            duration: None,
             staff_position: None,
             visible: false,
             whole_measure: false,
@@ -7611,6 +7636,7 @@ mod tests {
                     voice: crate::logical::VoicePlace::Alone,
                     position: TimePoint::Musical(MusicalPosition::origin()),
                     components,
+                    duration: None,
                     staff_position: None,
                     visible: true,
                     whole_measure,
@@ -7718,6 +7744,7 @@ mod tests {
             voice: crate::logical::VoicePlace::Alone,
             position: TimePoint::Musical(MusicalPosition::origin()),
             components: vec![],
+            duration: None,
             pitches: vec![
                 NotePitch {
                     pitch: pitch_a,
@@ -7854,6 +7881,7 @@ mod tests {
                         voice: crate::logical::VoicePlace::Alone,
                         position: TimePoint::Musical(MusicalPosition::origin()),
                         components: vec![],
+                        duration: None,
                         pitches: vec![NotePitch {
                             pitch,
                             spelling: Some(PitchSpelling::cmn(CmnNominal::C, 4)),
@@ -8692,6 +8720,7 @@ mod tests {
                             voice: crate::logical::VoicePlace::Alone,
                             position: TimePoint::Musical(MusicalPosition::origin()),
                             components: vec![],
+                            duration: None,
                             pitches: vec![NotePitch {
                                 pitch,
                                 spelling: Some(spelling),

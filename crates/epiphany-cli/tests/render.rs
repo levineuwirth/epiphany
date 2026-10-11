@@ -5682,6 +5682,58 @@ fn triplet_notes_alone_space_by_their_own_duration() {
     );
 }
 
+/// An event the pre-pass does not decompose spaces by its own sounding
+/// duration, though it is drawn as an implicit quarter: triplet eighths
+/// whose file gives their time modification but no tuplet, over a quarter
+/// on the other staff, take the beat a notated triplet takes, three
+/// triplet eighths' widths, rather than the quarter's.
+#[test]
+fn an_undecomposed_event_spaces_by_its_own_duration() {
+    let triplet = |k: usize, notated: bool| {
+        let notation = match (notated, k) {
+            (true, 0) => "<notations><tuplet type=\"start\" bracket=\"yes\"/></notations>",
+            (true, 2) => "<notations><tuplet type=\"stop\"/></notations>",
+            _ => "",
+        };
+        staff_note(
+            Some("C5"),
+            2,
+            "eighth",
+            1,
+            &format!(
+                "<time-modification><actual-notes>3</actual-notes><normal-notes>2</normal-notes>\
+                 </time-modification>{notation}"
+            ),
+        )
+    };
+    let measure = |notated: bool| {
+        let upper: String = (0..3).map(|k| triplet(k, notated)).collect::<String>()
+            + &staff_note(Some("C5"), 18, "half", 1, "<dot/>");
+        let lower = staff_note(Some("C3"), 6, "quarter", 2, "")
+            + &staff_note(Some("C3"), 18, "half", 2, "<dot/>");
+        format!("{upper}<backup><duration>24</duration></backup>{lower}")
+    };
+    let loaded = ragged_piano(
+        "undecomposed.musicxml",
+        6,
+        (4, 4),
+        &[measure(false), measure(true)],
+    );
+    let layout = epiphany_cli::engrave_loaded(&loaded).layout;
+    let heads = heads_by_onset(&loaded.reduced.score, &layout);
+    let x = |onset: f64| head_x_at(&heads, onset);
+    let (undecomposed, notated) = (x(0.25) - x(0.0), x(1.25) - x(1.0));
+    let expected = 3.0 * 5.0 * (1.0f32 / 3.0).powf(1.5f32.log2());
+    assert!(
+        (notated - expected).abs() < 0.01,
+        "the notated triplet's beat {notated}, where three triplet eighths ask {expected}"
+    );
+    assert!(
+        (undecomposed - notated).abs() < 0.01,
+        "the undecomposed triplet's beat {undecomposed}, the notated one's {notated}"
+    );
+}
+
 /// A barline joined from staff to staff within a group is drawn across the
 /// gap between them after spacing, and an accidental standing in that gap,
 /// on a note above the lower staff that opens its measure, keeps the

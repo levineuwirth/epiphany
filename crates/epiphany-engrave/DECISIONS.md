@@ -1883,3 +1883,24 @@ and every other curve, is placed as before. Locked by
 review's shape, six measures on a page fifty spaces wide) and
 `a_tie_restarted_past_its_flag_passes_its_accidentals_again` (a tie the
 move brings onto a flat its old shape passed).
+
+## ENGRAVER_VERSION 51 → 52: an undecomposed event spaces by its own duration (X5c fix round 1, 2026-10-11)
+
+Duration spacing (version 45) took an event's spans from its placed
+components, and an event the pre-pass does not decompose has none, though
+the constrained stage still draws it, as an implicit quarter: notes whose
+file gives a tuplet's time modification without the tuplet, or the notes of
+an aleatoric region of musical discipline, whose decomposition is deferred.
+Its column then took its width from another staff's durations, or the
+uniform 1.5 spaces when nothing else sounded (C5c review 1's L2: a triplet
+eighth's beat over a quarter took 5.0 spaces where the notated triplet
+takes 7.89). The logical IR's note, rest and unpitched content now carries
+the event's sounding duration in musical time (`duration`, `None` in
+wall-clock time), and `component_spans` gives an event with no components
+the span of that duration. Wall-clock columns still take none. Locked by
+`an_undecomposed_event_spaces_by_its_own_duration` (`epiphany-cli`:
+triplet eighths with and without their tuplet, over a quarter on the other
+staff, take the same beat). The renderer's `valid_score_rich` goldens, by
+engraver and by stub, moved: the two quarters of its aleatoric region now
+stand a quarter's column apart; re-blessed with renders before and after
+for the owner's reading.

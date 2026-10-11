@@ -333,8 +333,10 @@ pub struct Engraver {
 /// flag began starting past it, to `50` when a tie that cannot pass a stem
 /// began passing its accidentals still, and to `51` when a tie the spaced
 /// line left too short to start past its first note's flag began starting
-/// past it where its system's justification gives it the span.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(51);
+/// past it where its system's justification gives it the span, and to `52`
+/// when an event the pre-pass does not decompose began spacing by its own
+/// sounding duration.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(52);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -1191,6 +1193,7 @@ mod tests {
                             voice: epiphany_layout_ir::VoicePlace::Alone,
                             position: TimePoint::Musical(MusicalPosition::origin()),
                             components: vec![],
+                            duration: None,
                             pitches: vec![NotePitch {
                                 pitch,
                                 spelling: Some(PitchSpelling::cmn(CmnNominal::C, 5)),
@@ -1610,6 +1613,7 @@ mod tests {
                         voice: epiphany_layout_ir::VoicePlace::Alone,
                         position: TimePoint::Musical(pos),
                         components: whole(),
+                        duration: None,
                         // C6 is a step above the treble staff, so each head earns
                         // ledger lines.
                         pitches: vec![NotePitch {
@@ -2044,6 +2048,7 @@ mod tests {
                 voice: epiphany_layout_ir::VoicePlace::Alone,
                 position: time,
                 components: vec![],
+                duration: None,
                 pitches: vec![NotePitch {
                     pitch: pid,
                     spelling: Some(spelling),
@@ -2158,6 +2163,7 @@ mod tests {
                             voice: epiphany_layout_ir::VoicePlace::Alone,
                             position: TimePoint::Musical(MusicalPosition::origin()),
                             components: vec![],
+                            duration: None,
                             pitches: vec![NotePitch {
                                 pitch,
                                 spelling: Some(PitchSpelling::cmn(CmnNominal::C, 5)),
