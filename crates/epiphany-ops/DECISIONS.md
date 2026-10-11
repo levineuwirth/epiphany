@@ -3795,3 +3795,23 @@ region left musical time (`AnchorOffsetModel`) or was deleted
 (`CrossCuttingRefsResolve`), so a marker or spanner is held to its region as
 a clef, key or tempo segment is. Each rule was observed failing its test with
 the rule disabled (eight mutations).
+
+## X4b fix round 1 — C4b review 1's findings (2026-10-11)
+
+Each a verdict of reduction version 4, still open, with its line in the
+`Bumps` entry and its two-mode test, each observed failing with its rule
+disabled.
+
+**An undo restores no syllable into a taken slot (M1).** One syllable per
+event and verse held at a create and a modify, but an undo of a syllable's
+move restored its earlier value through the write chain without asking
+whether the slot was free: one author moving a syllable, writing a second
+into the slot it left and undoing the move had two syllables in one slot in
+both modes (`req:graph:lyric-syllable`). `collect_restorations` now reads
+each restored syllable's slot against every other live syllable as the undo
+leaves it (a restored one at its restored value, any other at its current one,
+the undo's own mints at none) and supersedes a colliding restoration by the
+write that put the other syllable there, its create or the last write that
+moved it; a superseded syllable stays where it stands and the slots are read
+again until none collides, so a swap one undo moves back restores whole.
+

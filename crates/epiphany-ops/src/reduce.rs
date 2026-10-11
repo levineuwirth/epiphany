@@ -9137,6 +9137,7 @@ impl<'a> Reducer<'a> {
                 }
             }
         }
+        self.supersede_restored_syllables(&mut restorations, &mut superseded, targets);
         match self.metadata_chain.undo_verdict(tx) {
             ChainUndoVerdict::NotWritten => {}
             ChainUndoVerdict::Superseded { by } => superseded.push(by),
@@ -9489,6 +9490,73 @@ impl<'a> Reducer<'a> {
         superseded.sort();
         superseded.dedup();
         (restorations, superseded)
+    }
+
+    /// A lyric syllable an undo would restore to an event and verse another
+    /// live syllable holds, as the undo leaves it, is superseded by the write
+    /// that put that syllable there (its create, or the last write that moved
+    /// it), so `StrictInverse` conflicts and `BestEffort` leaves the syllable
+    /// where it stands (schema major 5, reduction version 4: before it the
+    /// undo restored a second syllable into the slot,
+    /// `req:graph:lyric-syllable`). A syllable the undo restores holds its
+    /// restored slot, every other live one its current one, and the undo's own
+    /// mints none, so syllables one undo moves back among themselves restore
+    /// together; each superseded restoration leaves its syllable where it
+    /// stands, and the slots are read again until none collides. Read from the
+    /// write chains both modes keep.
+    fn supersede_restored_syllables(
+        &self,
+        restorations: &mut Vec<ValueRestoration>,
+        superseded: &mut Vec<OperationId>,
+        targets: &[TypedObjectId],
+    ) {
+        loop {
+            let restored: BTreeMap<TypedObjectId, (EventId, u16)> = restorations
+                .iter()
+                .filter_map(|restoration| match restoration {
+                    ValueRestoration::CrossCutting {
+                        id,
+                        value: Some(CrossCuttingValue::Lyric(lyric)),
+                    } => Some((*id, (lyric.event, lyric.verse))),
+                    _ => None,
+                })
+                .collect();
+            let collision = restored.iter().find_map(|(own, slot)| {
+                self.cross_cutting_modify_chain
+                    .iter()
+                    .filter(|(sid, _)| {
+                        *sid != own
+                            && !targets.contains(sid)
+                            && matches!(self.objects.get(sid), Some(ObjectState::Live))
+                    })
+                    .find_map(|(sid, chain)| {
+                        let held = match restored.get(sid) {
+                            Some(slot) => Some(*slot),
+                            None => match chain.current() {
+                                Some(CrossCuttingValue::Lyric(lyric)) => {
+                                    Some((lyric.event, lyric.verse))
+                                }
+                                _ => None,
+                            },
+                        };
+                        if held != Some(*slot) {
+                            return None;
+                        }
+                        chain
+                            .last_write()
+                            .map(|write| write.op)
+                            .or_else(|| self.minted_by.get(sid).copied())
+                    })
+                    .map(|by| (*own, by))
+            });
+            let Some((own, by)) = collision else {
+                return;
+            };
+            restorations.retain(|restoration| {
+                !matches!(restoration, ValueRestoration::CrossCutting { id, .. } if *id == own)
+            });
+            superseded.push(by);
+        }
     }
 
     /// Applies the collected restorations to the bookkeeping and the graph,

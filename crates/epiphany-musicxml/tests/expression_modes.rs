@@ -1308,3 +1308,155 @@ fn a_home_holds_its_staff_against_an_undo_in_both_modes() {
     );
     assert!(score.voice_homes.is_empty());
 }
+
+/// An undo restores no syllable into an event and verse another live
+/// syllable holds: one author moves a syllable to another verse (R1) or
+/// another event (R2) in a transaction, writes a second syllable into the slot
+/// it left, and undoes the move. A strict undo conflicts and a best-effort one
+/// leaves the moved syllable where it stands, one syllable a slot, in both
+/// modes. Syllables one undo moves back among themselves restore together:
+/// a swap through a third verse undoes to where it began.
+#[test]
+fn an_undo_restores_no_syllable_into_a_taken_slot_in_both_modes() {
+    let m = Measure::of(MEASURE);
+    let modify = |value: Lyric| {
+        primitive(OperationKind::ModifyCrossCutting(ModifyCrossCuttingOp {
+            structure: CrossCuttingValue::Lyric(value),
+        }))
+    };
+    let seen = |history: &[OperationEnvelope]| -> Vec<OperationId> {
+        history.iter().map(|e| e.id).collect()
+    };
+    let slot_of = |score: &Score, id: LyricLineId| {
+        score
+            .cross_cutting
+            .lyrics
+            .iter()
+            .find(|l| l.id == id)
+            .map(|l| (l.event, l.verse))
+    };
+    let first = LyricLineId::new(A, 1);
+    let second = LyricLineId::new(A, 2);
+    for (name, moved_to) in [
+        ("R1, another verse", (m.q(0), 2)),
+        ("R2, another event", (m.q(1), 1)),
+    ] {
+        for policy in [UndoPolicy::StrictInverse, UndoPolicy::BestEffort] {
+            let history_name = format!("{name}, {policy:?}");
+            let tx = TransactionId::new(A, 800);
+            let mut h = vec![m.op(
+                A,
+                0,
+                1,
+                &[],
+                create(CrossCuttingValue::Lyric(lyric(1, m.q(0), 1))),
+            )];
+            let mut declare = m.op(
+                A,
+                1,
+                2,
+                &seen(&h),
+                primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                    id: tx,
+                    label: String::from("move"),
+                    category: None,
+                })),
+            );
+            declare.transaction = Some(tx);
+            h.push(declare);
+            let mut moved = m.op(A, 2, 3, &seen(&h), modify(lyric(1, moved_to.0, moved_to.1)));
+            moved.transaction = Some(tx);
+            h.push(moved);
+            let filled = m.op(
+                A,
+                3,
+                4,
+                &seen(&h),
+                create(CrossCuttingValue::Lyric(lyric(2, m.q(0), 1))),
+            );
+            h.push(filled.clone());
+            let undo = m.op(
+                A,
+                4,
+                5,
+                &seen(&h),
+                OperationPayload::UndoTransaction(UndoTransactionPayload { target: tx, policy }),
+            );
+            h.push(undo.clone());
+            let (state, score) = m.agree(&history_name, &h);
+            assert_eq!(effect(&state, filled.id), applied(), "{history_name}");
+            if policy == UndoPolicy::StrictInverse {
+                assert!(
+                    matches!(
+                        effect(&state, undo.id),
+                        Some(OperationEffect::Conflicted { .. })
+                    ),
+                    "{history_name}: {:?}",
+                    effect(&state, undo.id)
+                );
+            }
+            assert_eq!(slot_of(&score, first), Some(moved_to), "{history_name}");
+            assert_eq!(slot_of(&score, second), Some((m.q(0), 1)), "{history_name}");
+            assert_eq!(score.cross_cutting.lyrics.len(), 2, "{history_name}");
+        }
+    }
+
+    // A swap of two syllables' verses through a third, in one transaction,
+    // undone: each restores to the slot the other leaves.
+    let tx = TransactionId::new(A, 801);
+    let mut h = vec![m.op(
+        A,
+        0,
+        1,
+        &[],
+        create(CrossCuttingValue::Lyric(lyric(1, m.q(0), 1))),
+    )];
+    h.push(m.op(
+        A,
+        1,
+        2,
+        &seen(&h),
+        create(CrossCuttingValue::Lyric(lyric(2, m.q(0), 2))),
+    ));
+    let mut declare = m.op(
+        A,
+        2,
+        3,
+        &seen(&h),
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("swap"),
+            category: None,
+        })),
+    );
+    declare.transaction = Some(tx);
+    h.push(declare);
+    for (counter, value) in [
+        (3, lyric(1, m.q(0), 3)),
+        (4, lyric(2, m.q(0), 1)),
+        (5, lyric(1, m.q(0), 2)),
+    ] {
+        let mut step = m.op(A, counter, counter as i64 + 1, &seen(&h), modify(value));
+        step.transaction = Some(tx);
+        h.push(step);
+    }
+    let (state, score) = m.agree("a swap", &h);
+    assert!(h.iter().all(|e| effect(&state, e.id) == applied()));
+    assert_eq!(slot_of(&score, first), Some((m.q(0), 2)));
+    assert_eq!(slot_of(&score, second), Some((m.q(0), 1)));
+    let undo = m.op(
+        A,
+        6,
+        7,
+        &seen(&h),
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::StrictInverse,
+        }),
+    );
+    h.push(undo.clone());
+    let (state, score) = m.agree("a swap undone", &h);
+    assert_eq!(effect(&state, undo.id), applied());
+    assert_eq!(slot_of(&score, first), Some((m.q(0), 1)));
+    assert_eq!(slot_of(&score, second), Some((m.q(0), 2)));
+}

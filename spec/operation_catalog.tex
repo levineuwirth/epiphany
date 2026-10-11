@@ -844,7 +844,9 @@ with one syllable per event and verse
 epoch~15) writes a voice's home staff
 (Section~\ref{sec:k0:set-voice-home}). The new verdicts join reduction
 version~\texttt{4}, which X4b.0 opened and which does not move again before
-X4b merges.
+X4b merges. X4b's first fix round, after its first review, adds to it under
+this version: an undo restores no lyric syllable into a slot another holds
+(Section~\ref{sec:k0:modify-cross-cutting}).
 
 % ===========================================================================
 \chapter{The Catalog Framework}
@@ -1662,7 +1664,13 @@ Graph-aware reduction overwrites the structure in place.
 produce a \texttt{StructuralFieldCollision} on the field \texttt{cross\_cutting}.
 
 \textbf{Undo semantics.} Value-restoring (Section~\ref{sec:k0:undo}): undo
-restores the structure's chain-predecessor value unless superseded.
+restores the structure's chain-predecessor value unless superseded. A lyric
+restored to an event and verse another live syllable holds, as the undo leaves
+it, is superseded by the write that put that syllable there, so
+\texttt{StrictInverse} conflicts and \texttt{BestEffort} leaves the syllable
+where it stands; syllables one undo moves back among themselves restore
+together (since version~0.21.0, after its first review, before which the undo
+restored a second syllable into the slot).
 
 \textbf{Re-anchoring.} If the target structure is tombstoned, the modification is
 a no-op; re-deriving the endpoints lets a subsequent endpoint tombstone re-anchor

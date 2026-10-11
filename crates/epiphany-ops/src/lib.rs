@@ -683,6 +683,17 @@ pub mod vectors;
 ///   Locked by `crates/epiphany-musicxml/tests/expression_modes.rs`, one test
 ///   per verdict.
 ///
+///   X4b's first fix round (C4b review 1, 2026-10-11) holds more, each the
+///   same in both modes:
+///   - an undo restores no lyric syllable to an event and verse another live
+///     syllable holds as the undo leaves it: the restoration is superseded by
+///     the write that put that syllable there, so a strict undo conflicts and
+///     a best-effort one leaves the syllable where it stands, where version
+///     `4` as reviewed restored it beside the other (two syllables in one
+///     slot, `req:graph:lyric-syllable`). Syllables one undo moves back among
+///     themselves restore together. Locked by
+///     `an_undo_restores_no_syllable_into_a_taken_slot_in_both_modes`.
+///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.
 ///
