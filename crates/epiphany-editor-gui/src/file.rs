@@ -287,7 +287,11 @@ pub fn export_pages(
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
     use super::*;
+    use epiphany_bundle::{FailedFlush, PageCacheStore};
     use epiphany_core::{CmnNominal, MusicalDuration, MusicalPosition, RationalTime};
 
     fn scratch(name: &str) -> PathBuf {
@@ -391,58 +395,69 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// A store whose chosen flushes fail, the writes they were to make durable
-    /// staying readable.
-    struct FlakyStore {
-        bytes: Vec<u8>,
-        flushes: u32,
-        fail: Vec<u32>,
+    /// A store whose chosen flushes fail as ext4's and XFS's do: the writes
+    /// they were making durable stay readable but are marked clean, so they
+    /// reach the disk only if written again ([`PageCacheStore`]). Shared, so a
+    /// test reads the disk while the window holds the store.
+    #[derive(Clone)]
+    struct FlakyStore(Rc<RefCell<PageCacheStore>>);
+
+    impl FlakyStore {
+        /// The file's bytes as the disk holds them: what a crash, or a page
+        /// evicted and read again, leaves.
+        fn disk(&self) -> Vec<u8> {
+            self.0.borrow().durable().to_vec()
+        }
+
+        /// The document as the disk holds it.
+        fn on_disk(&self) -> EditorDocument<MemStore> {
+            EditorDocument::open(MemStore::from_bytes(self.disk())).unwrap()
+        }
     }
 
     impl BlockStore for FlakyStore {
         fn len(&self) -> u64 {
-            self.bytes.len() as u64
+            self.0.borrow().len()
         }
 
         fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
-            let end = offset as usize + buf.len();
-            buf.copy_from_slice(&self.bytes[offset as usize..end]);
-            Ok(())
+            self.0.borrow().read_exact_at(offset, buf)
         }
 
         fn write_at(&mut self, offset: u64, data: &[u8]) -> std::io::Result<()> {
-            let end = offset as usize + data.len();
-            if self.bytes.len() < end {
-                self.bytes.resize(end, 0);
-            }
-            self.bytes[offset as usize..end].copy_from_slice(data);
-            Ok(())
+            self.0.borrow_mut().write_at(offset, data)
         }
 
         fn flush(&mut self) -> std::io::Result<()> {
-            self.flushes += 1;
-            if self.fail.contains(&self.flushes) {
-                return Err(std::io::Error::other("injected flush failure"));
-            }
-            Ok(())
+            self.0.borrow_mut().flush()
         }
     }
 
     /// A window on a saved new score whose store fails the flushes `fail`
-    /// names. A save's commit flushes three times, the third its commit point,
-    /// and reconciling flushes once more.
-    pub(crate) fn flaky_window(fail: Vec<u32>) -> (Opened, EditorSession) {
+    /// names, and that store. A save's commit flushes three times, the third
+    /// its commit point, and reconciling flushes once more.
+    fn flaky_window_with_store(fail: Vec<u32>) -> (Opened, EditorSession, FlakyStore) {
         let operations = ScoreSetup::single_staff("Piano", 2)
             .operations(ReplicaId::generate())
             .unwrap();
         let created = EditorDocument::create(MemStore::new(), operations).unwrap();
-        let store = FlakyStore {
-            bytes: created.into_store().into_bytes(),
-            flushes: 0,
+        let image = created.into_store().into_bytes();
+        let store = FlakyStore(Rc::new(RefCell::new(PageCacheStore::new(
+            image,
             fail,
-        };
-        let document = EditorDocument::open(Box::new(store) as Box<dyn BlockStore>).unwrap();
-        lease(document, Some(PathBuf::from("flaky.musc")), None, None).unwrap()
+            FailedFlush::MarksClean,
+        ))));
+        let document =
+            EditorDocument::open(Box::new(store.clone()) as Box<dyn BlockStore>).unwrap();
+        let (opened, session) =
+            lease(document, Some(PathBuf::from("flaky.musc")), None, None).unwrap();
+        (opened, session, store)
+    }
+
+    /// [`flaky_window_with_store`]'s window alone.
+    pub(crate) fn flaky_window(fail: Vec<u32>) -> (Opened, EditorSession) {
+        let (opened, session, _) = flaky_window_with_store(fail);
+        (opened, session)
     }
 
     #[test]
@@ -463,17 +478,51 @@ pub(crate) mod tests {
         assert!(message.starts_with("saved"), "{message}");
     }
 
+    /// Review 2's W8: on ext4 or XFS the commit point's failed flush leaves the
+    /// new superblock readable and its page clean. The save the window reports
+    /// landed is on disk, and after the next save the file as the disk holds it
+    /// opens writable in a window, with both edits. A bare barrier left the
+    /// disk a generation behind and that file opening read-only, its slots
+    /// three generations apart.
+    #[test]
+    fn a_save_reported_landed_is_on_disk_and_the_file_reopens_writable() {
+        let dir = scratch("on-disk");
+        let (mut opened, mut session, store) = flaky_window_with_store(vec![3]);
+        edit(&mut session);
+        let message = opened.save(&mut session).expect("it landed");
+        assert!(message.contains("it landed"), "{message}");
+        assert_eq!(store.on_disk().generation(), 2, "what landed is on disk");
+        edit_at(&mut session, 1);
+        let message = opened.save(&mut session).expect("the next save");
+        assert!(message.starts_with("saved"), "{message}");
+
+        let path = dir.join("as-on-disk.musc");
+        std::fs::write(&path, store.disk()).unwrap();
+        let (reopened, reopened_session) = open(&path).unwrap();
+        assert!(
+            reopened.writable,
+            "{:?}",
+            reopened.document.read_only_reasons()
+        );
+        assert_eq!(reopened.document.generation(), 3);
+        assert_eq!(graph(reopened_session.score()), graph(session.score()));
+        drop((reopened, reopened_session));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn a_save_still_unsettled_is_settled_at_the_next_save() {
         // The commit point fails, and so does the fresh barrier after it.
-        let (mut opened, mut session) = flaky_window(vec![3, 4]);
+        let (mut opened, mut session, store) = flaky_window_with_store(vec![3, 4]);
         edit(&mut session);
         let message = opened.save(&mut session).expect_err("still unknown");
         assert!(message.contains("still unknown"), "{message}");
         assert!(session.is_dirty(), "nothing is claimed saved");
+        assert_eq!(store.on_disk().generation(), 1, "and the disk is behind");
         let message = opened.save(&mut session).expect("the next save settles it");
         assert!(message.contains("it landed"), "{message}");
         assert!(!session.is_dirty());
+        assert_eq!(store.on_disk().generation(), 2, "what landed is on disk");
     }
 
     #[test]

@@ -779,7 +779,10 @@ stated in the contract. Writes in every case stamp blocks via
   cache, not durable state. Reconciliation therefore: (1) reopen and
   identify the selected generation; (2) confirm whether the exact staged
   envelope set is reachable; (3) execute a **fresh durability barrier** and
-  require it to succeed *before* reporting saved and promoting units; (4) if
+  require it to succeed *before* reporting saved and promoting units, with
+  the selected superblock written again in its slot first, since on ext4
+  and XFS a failed `fsync` marks its pages clean and a bare second `fsync`
+  writes nothing (amended 2026-10-11, X5a; `Bundle::sync`); (4) if
   that barrier fails, remain in an indeterminate / recovery-required state —
   never declare saved *or* unsaved. The injected-fault tests distinguish
   "visible after reopen" from "confirmed durable".

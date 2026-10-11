@@ -5,8 +5,9 @@ use std::io;
 
 use epiphany_bundle::{
     encode_block, BlobId, BlobRef, BlockStore, Bundle, BundleCapabilities, ChunkKind,
-    CompressionAlgorithm, DocumentId, ExtensionDeclaration, ExtensionId, FileUuid, Manifest,
-    MemStore, ReductionAlgorithmVersion, SchemaVersion, SemVer, StagedChunk,
+    CompressionAlgorithm, DocumentId, ExtensionDeclaration, ExtensionId, FailedFlush, FileUuid,
+    Manifest, MemStore, PageCacheStore, ReductionAlgorithmVersion, SchemaVersion, SemVer,
+    StagedChunk,
 };
 use epiphany_core::{
     CmnNominal, EventDuration, EventPosition, IdentityContext, MusicalDuration, MusicalPosition,
@@ -501,29 +502,26 @@ fn an_extension_bearing_document_is_read_only() {
     assert!(document.view(Box::new(StubSolver)).is_ok());
 }
 
-/// A store whose chosen flushes fail. `keep` decides what a failed flush leaves:
-/// with it, the writes it was to make durable stay readable (an `fsync` that
-/// reports an error after the data reached the page cache); without it, they are
-/// lost (the kernel dropped them). `unreadable` reads fail after each failed
-/// flush.
+/// A store whose chosen flushes fail, a page cache over a disk
+/// ([`PageCacheStore`]). `keep` decides what a failed flush leaves: with it, the
+/// writes it was to make durable stay readable but are marked clean, so they
+/// reach the disk only if written again (ext4 and XFS); without it, reads see
+/// the disk again (Btrfs). `unreadable` reads fail after each failed flush.
 struct FlakyStore {
-    live: Vec<u8>,
-    durable: Vec<u8>,
-    flushes: u32,
-    fail: Vec<u32>,
-    keep: bool,
+    cache: PageCacheStore,
     unreadable: u32,
     refuse: std::cell::Cell<u32>,
 }
 
 impl FlakyStore {
     fn new(image: Vec<u8>, fail: Vec<u32>, keep: bool) -> Self {
+        let on_failure = if keep {
+            FailedFlush::MarksClean
+        } else {
+            FailedFlush::Reverts
+        };
         FlakyStore {
-            live: image.clone(),
-            durable: image,
-            flushes: 0,
-            fail,
-            keep,
+            cache: PageCacheStore::new(image, fail, on_failure),
             unreadable: 0,
             refuse: std::cell::Cell::new(0),
         }
@@ -532,7 +530,7 @@ impl FlakyStore {
 
 impl BlockStore for FlakyStore {
     fn len(&self) -> u64 {
-        self.live.len() as u64
+        self.cache.len()
     }
 
     fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
@@ -540,35 +538,19 @@ impl BlockStore for FlakyStore {
             self.refuse.set(self.refuse.get() - 1);
             return Err(io::Error::other("injected read failure"));
         }
-        let end = offset as usize + buf.len();
-        let bytes = self
-            .live
-            .get(offset as usize..end)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "past the end"))?;
-        buf.copy_from_slice(bytes);
-        Ok(())
+        self.cache.read_exact_at(offset, buf)
     }
 
     fn write_at(&mut self, offset: u64, data: &[u8]) -> io::Result<()> {
-        let end = offset as usize + data.len();
-        if self.live.len() < end {
-            self.live.resize(end, 0);
-        }
-        self.live[offset as usize..end].copy_from_slice(data);
-        Ok(())
+        self.cache.write_at(offset, data)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.flushes += 1;
-        if self.fail.contains(&self.flushes) {
-            if !self.keep {
-                self.live = self.durable.clone();
-            }
+        let flushed = self.cache.flush();
+        if flushed.is_err() {
             self.refuse.set(self.unreadable);
-            return Err(io::Error::other("injected flush failure"));
         }
-        self.durable = self.live.clone();
-        Ok(())
+        flushed
     }
 }
 
@@ -584,24 +566,68 @@ fn flaky_document(fail: Vec<u32>, keep: bool) -> (EditorDocument<FlakyStore>, Ed
     (document, session)
 }
 
+/// The file as the disk holds it: what a crash, or a page evicted and read
+/// again, leaves of `document`'s store.
+fn on_disk(document: &EditorDocument<FlakyStore>) -> EditorDocument<MemStore> {
+    let disk = document.bundle().store().cache.durable().to_vec();
+    EditorDocument::open(MemStore::from_bytes(disk)).expect("the disk opens")
+}
+
+/// The file reopened from `document`'s store as the store reads it, checked
+/// against the file on disk: once a save has settled, the two hold one
+/// generation and one set of envelopes, and the disk's opens writable.
+fn reopened(document: &EditorDocument<FlakyStore>) -> EditorDocument<MemStore> {
+    let live = document.bundle().store().cache.live().to_vec();
+    let file = EditorDocument::open(MemStore::from_bytes(live)).expect("the file reopens");
+    let disk = on_disk(document);
+    assert_eq!(
+        disk.generation(),
+        file.generation(),
+        "the disk holds the generation the store reads"
+    );
+    assert_eq!(
+        membership(disk.committed_operations()),
+        membership(file.committed_operations())
+    );
+    assert!(
+        disk.read_only_reasons().is_empty(),
+        "the file on disk opens writable: {:?}",
+        disk.read_only_reasons()
+    );
+    file
+}
+
 // A save's commit runs three flushes: after the chunks, after the manifest, and
 // at the superblock, the commit point.
 
+/// A commit whose chunks' or manifest's flush fails saves nothing, and the next
+/// save commits. It appends its chunks and manifest where the failed commit did
+/// and writes its superblock into the same slot, so everything it names is
+/// written again and reaches the disk, whether the failed flush left those
+/// writes readable or not.
 #[test]
 fn a_commit_failing_before_its_commit_point_saves_nothing() {
-    let (mut document, mut session) = flaky_document(vec![2], false);
-    assert!(matches!(
-        document.save(&mut session),
-        Err(DocumentError::Bundle(_))
-    ));
-    assert!(
-        session.is_dirty() && session.can_undo(),
-        "the units stay unsaved"
-    );
-    assert_eq!(document.generation(), 1);
-    // The store recovers, and the next save commits.
-    let saved = document.save(&mut session).expect("a later save commits");
-    assert_eq!(saved.generation, 2);
+    for (fail, keep) in [(1, true), (1, false), (2, true), (2, false)] {
+        let (mut document, mut session) = flaky_document(vec![fail], keep);
+        assert!(matches!(
+            document.save(&mut session),
+            Err(DocumentError::Bundle(_))
+        ));
+        assert!(
+            session.is_dirty() && session.can_undo(),
+            "the units stay unsaved"
+        );
+        assert_eq!(document.generation(), 1);
+        // The store recovers, and the next save commits.
+        let saved = document.save(&mut session).expect("a later save commits");
+        assert_eq!(saved.generation, 2);
+        let file = reopened(&document);
+        assert_eq!(file.generation(), 2, "flush {fail} failed, keep {keep}");
+        assert_eq!(
+            reduced(file.committed_operations()),
+            reduced(&session_log(&session))
+        );
+    }
 }
 
 #[test]
@@ -620,6 +646,7 @@ fn an_indeterminate_commit_that_landed_is_saved_after_a_fresh_barrier() {
     assert!(matches!(outcome, Reconciled::Saved(saved) if saved.generation == 2));
     assert!(!session.is_dirty() && !session.can_undo());
     assert_eq!(document.generation(), 2);
+    assert_eq!(reopened(&document).generation(), 2);
 }
 
 #[test]
@@ -635,8 +662,63 @@ fn an_indeterminate_commit_that_did_not_land_leaves_the_units_unsaved() {
     assert_eq!(document.generation(), 1);
     let saved = document.save(&mut session).expect("the units save later");
     assert_eq!(saved.generation, 2);
+    assert_eq!(reopened(&document).generation(), 2);
 }
 
+/// Review 2's F8: the commit point's flush fails on ext4 or XFS, which leave
+/// the new superblock readable and mark its page clean, so the disk keeps the
+/// generation before. A reconcile reports the save landed only once that
+/// superblock is on disk, and the next save leaves a disk that opens writable,
+/// holding both notes. A bare barrier wrote nothing: the save was reported
+/// landed with the disk a generation behind, and the next left the disk's slots
+/// three generations apart, read-only.
+#[test]
+fn a_save_reconciled_as_landed_is_on_disk_though_its_failed_flush_left_it_readable() {
+    let (mut document, mut session) = flaky_document(vec![3], true);
+    let staged = session.applied_operations().len();
+    assert!(matches!(
+        document.save(&mut session),
+        Err(DocumentError::Indeterminate(_))
+    ));
+    assert_eq!(
+        on_disk(&document).generation(),
+        1,
+        "the disk keeps the generation before"
+    );
+
+    let outcome = document.reconcile(&mut session).expect("reconciles");
+    assert_eq!(
+        outcome,
+        Reconciled::Saved(Saved {
+            generation: 2,
+            envelopes: staged,
+        })
+    );
+    let disk = on_disk(&document);
+    assert_eq!(disk.generation(), 2, "what is reported saved is on disk");
+    assert_eq!(
+        reduced(disk.committed_operations()),
+        reduced(&session_log(&session))
+    );
+
+    session.enter_nominal(CmnNominal::D).unwrap();
+    let saved = document.save(&mut session).expect("the next save");
+    assert_eq!(saved.generation, 3);
+    let disk = on_disk(&document);
+    assert_eq!(disk.generation(), 3);
+    assert!(
+        disk.read_only_reasons().is_empty(),
+        "the disk opens writable: {:?}",
+        disk.read_only_reasons()
+    );
+    assert_eq!(music(&disk.score()), music(session.score()));
+    assert_eq!(music(&disk.score()).len(), 2, "holding both notes");
+}
+
+/// The fresh barrier fails too. With the selected superblock written again it
+/// has something to write, so its failure is reported and the save stays
+/// unsettled, the disk a generation behind, until a barrier succeeds; then the
+/// save is on disk, and so is the next.
 #[test]
 fn a_failing_fresh_barrier_stays_indeterminate() {
     let (mut document, mut session) = flaky_document(vec![3, 4], true);
@@ -646,23 +728,26 @@ fn a_failing_fresh_barrier_stays_indeterminate() {
     ));
     let outcome = document.reconcile(&mut session).expect("reopens");
     assert_eq!(outcome, Reconciled::StillIndeterminate);
-    assert!(session.is_dirty(), "neither saved nor unsaved is claimed");
+    assert!(
+        session.is_dirty() && session.has_unsettled_save(),
+        "neither saved nor unsaved is claimed"
+    );
+    assert_eq!(on_disk(&document).generation(), 1, "the disk is behind");
     assert!(matches!(
         document.save(&mut session),
         Err(DocumentError::RecoveryRequired)
     ));
     let outcome = document.reconcile(&mut session).expect("reopens");
     assert!(
-        matches!(outcome, Reconciled::Saved(_)),
+        matches!(outcome, Reconciled::Saved(saved) if saved.generation == 2),
         "a later barrier settles it"
     );
-}
-
-/// The file's committed envelopes, reopened from `document`'s store as it
-/// stands.
-fn reopened(document: &EditorDocument<FlakyStore>) -> EditorDocument<MemStore> {
-    EditorDocument::open(MemStore::from_bytes(document.bundle().store().live.clone()))
-        .expect("the file reopens")
+    assert_eq!(reopened(&document).generation(), 2, "on disk");
+    session.enter_nominal(CmnNominal::D).unwrap();
+    document.save(&mut session).expect("the next save");
+    let file = reopened(&document);
+    assert_eq!(file.generation(), 3);
+    assert_eq!(music(&file.score()), music(session.score()));
 }
 
 /// An indeterminate save that landed, with two notes entered before it is

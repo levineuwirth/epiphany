@@ -627,6 +627,23 @@ leaves the document in recovery to be tried again), checks that every staged
 block is a root of the generation it selects, and runs a fresh durability
 barrier (`Bundle::sync`) that must succeed before the save is reported.
 
+**The barrier writes before it flushes.** A failed flush can leave its writes
+readable and not on disk: on ext4 and XFS it marks their pages clean with the
+new bytes in them, and a later `fsync` writes nothing of them and succeeds
+(Rebello et al., USENIX ATC 2020, §4). The commit flushed after its chunks and
+after its manifest, so its failed commit-point flush covered only the
+superblock it wrote, which the reopen selects when the save landed.
+`Bundle::sync` therefore writes the selected superblock's bytes again in their
+slot and then flushes, so the barrier has that slot to write, and a barrier
+that fails again keeps the save unsettled. A bare barrier reported such a save
+landed with the disk a generation behind, and the next save left the disk's
+slots three generations apart, which opens read-only. The tests' stores fail
+as those filesystems do (`epiphany_bundle::PageCacheStore`), and read the disk
+as well as the page cache. A failure before the commit point needs no
+rewrite: the next commit appends its chunks and manifest again where the
+failed one did and writes the same slot, so every range it names is written
+again before its own flushes.
+
 **Reconciling promotes what the save staged, not what the session holds.**
 While a save is unsettled, undo stops at the units it staged, as it stops at
 the units any save commits (D64). The session counts them as its oldest

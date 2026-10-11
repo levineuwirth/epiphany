@@ -28,8 +28,9 @@
 //! the document keeps exactly the units it staged, and undo stops at them, as it
 //! stops at a save, until [`EditorDocument::reconcile`] settles it. Reconciling
 //! reopens the store and checks whether the staged blocks are reachable; if they
-//! are, and a fresh durability barrier succeeds, those units are reported saved
-//! and committed, and if they are not, they are ordinary unsaved units again.
+//! are, and a fresh durability barrier succeeds with the selected superblock
+//! written again first ([`Bundle::sync`]), those units are reported saved and
+//! committed, and if they are not, they are ordinary unsaved units again.
 //!
 //! Save As ([`EditorDocument::save_as`]) never writes the document's own bundle:
 //! it copies what a session draws, saved and unsaved, into a new document under
@@ -687,7 +688,10 @@ impl<S: BlockStore> EditorDocument<S> {
     /// the session that made it: reopens the store in place and reads the
     /// generation it now selects, confirms whether every block the save staged is
     /// reachable from it, and only then runs a fresh durability barrier, which
-    /// must succeed before the save is reported. What it promotes is exactly the
+    /// must succeed before the save is reported. The barrier writes the selected
+    /// superblock again first ([`Bundle::sync`]): the failed flush can leave it
+    /// readable and not on disk, and a bare barrier would then write nothing and
+    /// succeed. What it promotes is exactly the
     /// units that save staged, never what the session holds now: a unit entered
     /// since stays applied, unsaved and undoable ([`Reconciled::Saved`]). Undo
     /// could not reach a staged unit while the save was unsettled, so none was

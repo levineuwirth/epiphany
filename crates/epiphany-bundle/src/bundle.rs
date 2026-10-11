@@ -653,12 +653,24 @@ impl<S: BlockStore> Bundle<S> {
         self.store
     }
 
-    /// Runs a fresh durability barrier over the store (its `flush`), writing
-    /// nothing. A writer reconciling a commit whose commit-point flush failed
-    /// reopens the store and reads the generation it now selects, but a
-    /// generation readable after that failure may still be held only in the
-    /// page cache; it is reported durable only once this barrier succeeds.
+    /// Makes the selected generation durable: writes the selected superblock's
+    /// bytes again in their slot, as the store reads them, then runs a durability
+    /// barrier (the store's `flush`).
+    ///
+    /// A writer reconciling a commit whose commit-point flush failed calls this
+    /// once [`Bundle::reopen`] has selected the generation that commit wrote. The
+    /// commit flushed after its chunks and after its manifest, so the failed
+    /// flush covered only the superblock it wrote into the slot now selected. A
+    /// generation readable after that failure may be held only in the page
+    /// cache, and a bare barrier proves nothing of it: on ext4 and XFS a failed
+    /// `fsync` leaves the new bytes readable and marks their pages clean, so a
+    /// second `fsync` writes nothing and succeeds ([`crate::FailedFlush`]).
+    /// Written again, the slot is dirty, so the barrier writes it, and a barrier
+    /// that fails again is an error.
     pub fn sync(&mut self) -> Result<(), BundleError> {
+        let slot = self.active_slot.offset();
+        let superblock = read_vec(&self.store, slot, SUPERBLOCK_LEN)?;
+        self.store.write_at(slot, &superblock)?;
         Ok(self.store.flush()?)
     }
 
@@ -3077,6 +3089,62 @@ mod tests {
         // The bundle is poisoned: further commits are refused (the durable state
         // is indeterminate and must be reloaded).
         assert!(bundle.is_read_only());
+    }
+
+    /// A commit-point flush that fails over a store that, as ext4 and XFS do,
+    /// leaves the new superblock readable and its page clean: a reopen selects
+    /// the new generation from the page cache while the disk holds the one
+    /// before. `sync` puts the selected generation on disk, or fails while the
+    /// disk cannot take it; a bare barrier would write nothing and succeed.
+    #[test]
+    fn sync_puts_on_disk_the_generation_a_failed_commit_point_left_readable() {
+        use crate::store::{FailedFlush, PageCacheStore};
+
+        let caps = || BundleCapabilities::synthetic_for_fixture(0);
+        let add = |bundle: &mut Bundle<PageCacheStore>, payload: &[u8]| {
+            bundle.commit(
+                &[StagedChunk::operation_block(block::encode_block(&[
+                    payload.to_vec(),
+                ]))],
+                |ctx| {
+                    let mut m = ctx.previous_manifest.clone();
+                    m.operation_roots.extend(ctx.new_chunks.iter().copied());
+                    m
+                },
+            )
+        };
+        let on_disk = |bundle: &Bundle<PageCacheStore>| {
+            Bundle::open(
+                MemStore::from_bytes(bundle.store().durable().to_vec()),
+                caps(),
+            )
+            .expect("the disk opens")
+        };
+        // A commit flushes three times, the third its commit point; the barriers
+        // `sync` runs come after.
+        for (failing, barriers) in [(vec![3], 1), (vec![3, 4], 2)] {
+            let image = fresh_bundle().into_store().into_bytes();
+            let store = PageCacheStore::new(image, failing.clone(), FailedFlush::MarksClean);
+            let mut bundle = Bundle::open(store, caps()).unwrap();
+            assert!(add(&mut bundle, b"e").is_err() && bundle.is_read_only());
+            bundle.reopen().expect("the store reads");
+            assert_eq!(bundle.generation(), 1, "the page cache holds the new one");
+            assert_eq!(on_disk(&bundle).generation(), 0, "the disk the one before");
+            for _ in 1..barriers {
+                assert!(bundle.sync().is_err(), "{failing:?}: a failed barrier");
+                assert_eq!(on_disk(&bundle).generation(), 0);
+            }
+            bundle.sync().expect("a barrier that succeeds");
+            assert_eq!(
+                on_disk(&bundle).generation(),
+                1,
+                "{failing:?}: the generation selected is on disk"
+            );
+            add(&mut bundle, b"f").expect("the next commit");
+            let disk = on_disk(&bundle);
+            assert_eq!(disk.generation(), 2);
+            assert!(!disk.is_read_only(), "{failing:?}: {:?}", disk.anomalies());
+        }
     }
 
     #[test]

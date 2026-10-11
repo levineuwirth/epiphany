@@ -96,7 +96,7 @@ pub use manifest::{
 pub use opindex::{
     IndexedBlock, OperationIdBytes, OperationIndex, OperationIndexBuildError, OperationIndexEntry,
 };
-pub use store::{BlockStore, CrashPoint, FaultStore, MemStore, Tear};
+pub use store::{BlockStore, CrashPoint, FailedFlush, FaultStore, MemStore, PageCacheStore, Tear};
 pub use superblock::{
     select_active, CommitState, ProfileId, Selection, Slot, SlotParse, SlotReject, Superblock,
     SUPERBLOCK_LEN,
