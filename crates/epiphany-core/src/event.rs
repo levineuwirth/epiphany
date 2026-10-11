@@ -144,7 +144,8 @@ pub fn canonical_marks(marks: impl IntoIterator<Item = EventMark>) -> Vec<EventM
 
 /// A single-event dynamic marking. Reserved since schema major 5: a dynamic is
 /// a point mark (`MarkerKind::Dynamic`), anchored where it stands, so this
-/// slot stays `None` (Chapter 7 placeholder).
+/// slot stays `None` (Chapter 7 placeholder), and a filled one is refused by
+/// name at every major and in the projection.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub struct DynamicMark;
 

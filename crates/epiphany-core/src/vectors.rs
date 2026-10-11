@@ -648,17 +648,18 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         &[0; 10],
         "a note's empty slots end its bytes"
     );
-    let refill = |at: usize, value: u8| {
+    let refill_in = |score_bytes: &Vec<u8>, at: usize, value: u8| {
         let mut filled = note.clone();
         filled[at] = value;
-        let mut bytes = v4.clone();
+        let mut bytes = score_bytes.clone();
         let start = bytes
             .windows(note.len())
             .position(|w| w == note.as_slice())
-            .expect("the note is in the score's major-4 bytes");
+            .expect("the note is in the score's bytes");
         bytes.splice(start..start + note.len(), filled);
         bytes
     };
+    let refill = |at: usize, value: u8| refill_in(&v4, at, value);
     v.push(row(
         SV4,
         "reject",
@@ -672,6 +673,17 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         "major-5-value",
         "with_a_grace_kind",
         refill(note.len() - 1, 1),
+    ));
+    // The reserved `dynamic` slot filled: its presence byte follows the
+    // marks' count. It has no meaning at any major (a dynamic is a point
+    // mark), so it is refused by name at major 4 and at major 5 alike, where
+    // an empty note's bytes are the same.
+    v.push(row(
+        SV4,
+        "reject",
+        "dynamic-placeholder",
+        "with_a_dynamic_placeholder",
+        refill(tail + 4, 1),
     ));
 
     const SV5: &str = "core.score_v5";
@@ -689,6 +701,13 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         "-",
         "with_expression_and_text",
         expressive.canonical_bytes(),
+    ));
+    v.push(row(
+        SV5,
+        "reject",
+        "dynamic-placeholder",
+        "with_a_dynamic_placeholder",
+        refill_in(&v5, tail + 4, 1),
     ));
     // Text is held to NFC: U+2002 EN SPACE is the composition of U+2000 EN
     // QUAD, both three bytes in UTF-8, so the decomposed form is the same
@@ -917,12 +936,18 @@ mod tests {
                 }
                 "with_a_grace_kind" => "a grace kind before schema major 5",
                 "with_a_lyric_not_in_nfc" => "Text: not in Unicode NFC",
+                "with_a_dynamic_placeholder" => "a dynamic placeholder: a dynamic is a point mark",
                 other => panic!("{other}: a refusal this test does not name"),
             }
         };
         let mut checked = 0;
         for (surface, verdict, class, name, bytes) in decode_vectors() {
-            if verdict != "reject" || !matches!(class, "major-5-value" | "text-not-nfc") {
+            if verdict != "reject"
+                || !matches!(
+                    class,
+                    "major-5-value" | "text-not-nfc" | "dynamic-placeholder"
+                )
+            {
                 continue;
             }
             let major = surface
@@ -936,7 +961,7 @@ mod tests {
             );
             checked += 1;
         }
-        assert_eq!(checked, 7, "every major-5 refusal is checked");
+        assert_eq!(checked, 9, "every major-5 refusal is checked");
     }
 
     /// The mandatory regression vector for the 3b-i defect is present: it is

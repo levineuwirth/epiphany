@@ -1786,3 +1786,20 @@ conflicts, anomalies, objects, spellings, breaks and pending; every write
 chain is reducer state, rebuilt from the operations and seeded from a base
 graph. The new chains (a voice's home; a marker's and a lyric's values in
 the cross-cutting chain) stay out of it, and the base stays major 0.
+
+## The dynamic slot refused by name (X4b fix round 1, 2026-10-11)
+
+C4b review 1's L3: of the four placeholder slots an event carried before
+schema major 5, the frozen decoders refused a filled marks list, ornaments
+list and grace kind by name, but `dynamic` (`Option<DynamicMark>`, a unit
+encoding no bytes) read as `Some` at every major and at 5, meaning nothing,
+since a dynamic is a point mark (`MarkerKind::Dynamic`). `DynamicMark`'s codec
+now refuses itself ("a dynamic placeholder: a dynamic is a point mark"), so a
+present slot is refused wherever an event is read, at every major and in
+the live layout, and its text value parses its symbol and refuses it, so the
+projection and the editor's clipboard fragment refuse it too; the empty slot
+reads as before. No writer filled it (the core's own exotic-variant test did,
+and now leaves it empty). The decode corpus gains the refusal under
+`core.score_v4` and `core.score_v5` (class `dynamic-placeholder`). Locked by
+`a_dynamic_placeholder_is_refused_by_name_at_every_major` and
+`major_5_refusals_name_their_value`.

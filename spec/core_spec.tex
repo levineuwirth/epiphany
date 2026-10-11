@@ -5000,7 +5000,8 @@ pub struct PitchedEvent {
     pub marks: Vec<EventMark>,
 
     /// Reserved: a dynamic is a point marker (Marker, kind
-    /// Dynamic), not an event field, so no writer fills this slot.
+    /// Dynamic), not an event field, so no writer fills this
+    /// slot, and a decoder refuses a filled one by name.
     pub dynamic: Option<DynamicMark>,
 
     /// Ornaments attached to the event, a canonical set (schema

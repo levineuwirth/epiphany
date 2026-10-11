@@ -666,8 +666,36 @@ macro_rules! catalog_id_codec {
     };
 }
 
+/// The reserved `dynamic` slot of a note or unpitched note holds no value: a
+/// dynamic is a point mark since schema major 5 (`MarkerKind::Dynamic`), and
+/// no writer ever wrote one here, so a value in the slot is refused by name,
+/// at every major and in the projection (X4b fix round 1: before it `Some`
+/// read at every major and meant nothing, the one placeholder of the four
+/// that was not refused).
+const DYNAMIC_PLACEHOLDER: &str = "a dynamic placeholder: a dynamic is a point mark";
+
+impl Codec for DynamicMark {
+    fn enc(&self, _out: &mut Vec<u8>) {}
+    fn dec(_r: &mut Reader<'_>) -> Result<Self> {
+        Err(ScoreDecodeError::InvalidValue(DYNAMIC_PLACEHOLDER))
+    }
+}
+
+impl crate::textvalue::TextValue for DynamicMark {
+    fn project(&self) -> crate::textvalue::Sexp {
+        crate::textvalue_impls::project_unit("DynamicMark")
+    }
+    fn parse(
+        s: &crate::textvalue::Sexp,
+    ) -> core::result::Result<Self, crate::textvalue::TextError> {
+        crate::textvalue_impls::parse_unit(s, "DynamicMark")?;
+        Err(crate::textvalue::TextError::NotCanonical(
+            DYNAMIC_PLACEHOLDER,
+        ))
+    }
+}
+
 unit_codec!(
-    DynamicMark,
     StemConfiguration,
     TrajectoryDisplay,
     PlaybackBinding,
@@ -5673,6 +5701,54 @@ mod tests {
         assert_eq!((ok.actual(), ok.notated()), (3, 2));
     }
 
+    /// The reserved `dynamic` slot is refused by name wherever a value fills
+    /// it: in a score written at every major, each read by its own decoder,
+    /// and in the text projection; the empty slot reads at every major.
+    #[test]
+    fn a_dynamic_placeholder_is_refused_by_name_at_every_major() {
+        use crate::textvalue::{read_sexp, TextError, TextValue};
+        let plain = valid_score(7);
+        let mut filled = plain.clone();
+        let id = filled
+            .events
+            .iter()
+            .find(|e| matches!(e, Event::Pitched(_)))
+            .expect("a note")
+            .id();
+        let Some(Event::Pitched(note)) = filled.events.get_mut(id) else {
+            unreachable!("a note");
+        };
+        note.dynamic = Some(DynamicMark);
+        type Encoder = fn(&Score) -> Vec<u8>;
+        let encoders: [(u16, Encoder); 6] = [
+            (0, encode_v0_score),
+            (1, encode_v1_score),
+            (2, encode_v2_score),
+            (3, encode_v3_score),
+            (4, encode_v4_score),
+            (5, |s: &Score| s.canonical_bytes()),
+        ];
+        for (major, encode) in encoders {
+            assert!(
+                Score::decode_canonical_versioned(&encode(&plain), major).is_ok(),
+                "major {major}: the empty slot reads"
+            );
+            assert_eq!(
+                Score::decode_canonical_versioned(&encode(&filled), major).err(),
+                Some(ScoreDecodeError::InvalidValue(DYNAMIC_PLACEHOLDER)),
+                "major {major}"
+            );
+        }
+        assert_eq!(
+            Option::<DynamicMark>::parse(&read_sexp("(some dynamic-mark)").unwrap()),
+            Err(TextError::NotCanonical(DYNAMIC_PLACEHOLDER))
+        );
+        assert_eq!(
+            Option::<DynamicMark>::parse(&read_sexp("()").unwrap()),
+            Ok(None)
+        );
+    }
+
     #[test]
     fn exotic_event_and_pitch_variants_round_trip() {
         // Round-trip is structural, so this need not satisfy graph invariants —
@@ -5714,7 +5790,7 @@ mod tests {
                 staff_position: crate::event::StaffPosition(2),
                 instrument_member: crate::event::UnpitchedMemberId(7),
                 marks: vec![EventMark::Accent, EventMark::Tremolo { strokes: 4 }],
-                dynamic: Some(crate::event::DynamicMark),
+                dynamic: None,
                 stem: crate::event::StemConfiguration,
                 grace: Some(Grace {
                     kind: GraceKind::Appoggiatura,

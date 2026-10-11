@@ -3355,7 +3355,10 @@ slot keeps its place:
     ornaments are canonical sets: at most one of each kind, ascending by
     kind (a mark's discriminant, an ornament's \texttt{kind}), a repeated
     kind or an unordered pair rejected (class \texttt{marks-out-of-order}). \texttt{dynamic} stays the reserved unit
-    \texttt{DynamicMark}: a dynamic is a marker.
+    \texttt{DynamicMark}: a dynamic is a marker, so the slot is absent, and a
+    present one is rejected by name at every major (class
+    \texttt{dynamic-placeholder}, under \texttt{core.score\_v4} and
+    \texttt{core.score\_v5}).
   \item \texttt{Marker} $=$ \texttt{id} \cat{} \texttt{anchor} \cat{}
     \textbf{\texttt{kind}} (\texttt{MarkerKind}).
   \item \texttt{Lyric} $=$ \texttt{id} (\texttt{LyricLineId}) \cat{}
@@ -4111,8 +4114,9 @@ only}: implementations need not agree on an error taxonomy.
   \texttt{Snapshot} accept-sets rise to \tablenums{5}. The canonical base
   stays major~0. The decode corpus gains \texttt{core.score\_v5}, a refusal
   of each major-5 value under \texttt{core.score\_v4}, an event with marks
-  and a grace, an unordered mark set, and a lyric not in NFC. Semantics:
-  Operation Catalog, 0.21.0. \\
+  and a grace, an unordered mark set, a lyric not in NFC, and a filled
+  \texttt{dynamic} slot under both majors. Semantics: Operation Catalog,
+  0.21.0. \\
 \bottomrule
 \end{longtable}
 
