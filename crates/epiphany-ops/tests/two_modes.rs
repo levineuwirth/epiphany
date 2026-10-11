@@ -523,3 +523,123 @@ fn a_region_created_where_its_authors_blocked_undo_left_none_is_deferred() {
     let found = classes(&modes::compact(&without));
     assert!(general(&found), "{found:?}");
 }
+
+/// The committed history `name` (`tests/two_modes/<name>`), parsed.
+fn committed_history(name: &str) -> Vec<epiphany_ops::OperationEnvelope> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/two_modes")
+        .join(name);
+    let text = std::fs::read_to_string(&path).expect("readable");
+    modes::parse(&text).expect("parses")
+}
+
+/// A marker its event's delete orphans is anchored to its region's start
+/// where the verdicts read it, so it holds the region as any marker anchored
+/// there does, in both modes (C4b review 1's M2, found at `0xc41ea269`): the
+/// region's undo, by a concurrent author or by one who saw the delete,
+/// conflicts under `Cascade` and `StrictInverse`, a `BestEffort` one keeps the
+/// region, and a `DeleteRegion` is refused `ContainerNotEmpty`, the marker
+/// standing at the region's start in the graph each time; and so when the
+/// marker was first re-anchored to another note, whose delete then orphans it
+/// (`173`). Before the fix the repair moved the graph's anchor alone, and each
+/// removed the region from under the marker.
+#[test]
+fn an_orphaned_marker_holds_its_region_in_both_modes() {
+    use epiphany_core::{
+        AnchorOffset, IdentityContext, RegionEdge, ReplicaId, Score, TimeAnchor, TypedObjectId,
+    };
+    use epiphany_ops::{
+        NoOpReason, ObjectState, OperationEffect, OperationSet, PreconditionFailureReason,
+    };
+    for (name, last) in [
+        ("168-invariant-cross-cutting-refs-resolve.txt", "conflicted"),
+        ("169-invariant-cross-cutting-refs-resolve.txt", "conflicted"),
+        ("170-invariant-cross-cutting-refs-resolve.txt", "conflicted"),
+        ("171-invariant-cross-cutting-refs-resolve.txt", "repaired"),
+        ("172-invariant-cross-cutting-refs-resolve.txt", "refused"),
+        ("173-invariant-cross-cutting-refs-resolve.txt", "refused"),
+    ] {
+        let history = committed_history(name);
+        assert!(
+            modes::findings(&history).is_empty(),
+            "{name}: the modes agree"
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(history.iter().cloned());
+        let free = set.reduce();
+        let aware = set.reduce_onto(&Score::empty(IdentityContext::new(ReplicaId(0))));
+        for state in [&free, &aware.state] {
+            let effect = state
+                .effects
+                .iter()
+                .find(|(id, _)| *id == history.last().expect("a history").id)
+                .map(|(_, e)| e.clone());
+            match last {
+                "conflicted" => assert!(
+                    matches!(effect, Some(OperationEffect::Conflicted { .. })),
+                    "{name}: {effect:?}"
+                ),
+                "repaired" => assert!(
+                    matches!(effect, Some(OperationEffect::AppliedWithRepair { .. })),
+                    "{name}: {effect:?}"
+                ),
+                _ => assert_eq!(
+                    effect,
+                    Some(OperationEffect::NoOp {
+                        reason: NoOpReason::PreconditionFailedUnderReduction {
+                            reason: PreconditionFailureReason::ContainerNotEmpty,
+                        },
+                    }),
+                    "{name}"
+                ),
+            }
+        }
+        let repairs: Vec<_> = free
+            .effects
+            .iter()
+            .filter_map(|(_, e)| match e {
+                OperationEffect::AppliedWithRepair { repairs } => Some(repairs),
+                _ => None,
+            })
+            .flatten()
+            .map(|r| format!("{:?}", r.kind))
+            .filter(|kind| kind.starts_with("Reanchored") || kind.starts_with("Orphaned"))
+            .collect();
+        let reanchored = repairs
+            .iter()
+            .filter(|k| k.starts_with("Reanchored"))
+            .count();
+        assert_eq!(
+            (reanchored, repairs.len() - reanchored),
+            (usize::from(name.starts_with("173")), 1),
+            "{name}: {repairs:?}"
+        );
+        let markers = &aware.score.cross_cutting.markers;
+        assert_eq!(markers.len(), 1, "{name}");
+        let TimeAnchor::Region { id, edge, offset } = &markers[0].anchor else {
+            panic!(
+                "{name}: the orphan stands at its region, not {:?}",
+                markers[0].anchor
+            );
+        };
+        assert_eq!(
+            (edge, offset),
+            (&RegionEdge::Start, &AnchorOffset::Zero),
+            "{name}"
+        );
+        assert!(
+            matches!(
+                free.objects.get(&TypedObjectId::Region(*id)),
+                Some(ObjectState::Live)
+            ),
+            "{name}: the region stands"
+        );
+        assert!(
+            matches!(
+                free.objects.get(&TypedObjectId::Marker(markers[0].id)),
+                Some(ObjectState::Live)
+            ),
+            "{name}: the marker stands"
+        );
+    }
+}

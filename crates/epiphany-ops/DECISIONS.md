@@ -3815,3 +3815,22 @@ write that put the other syllable there, its create or the last write that
 moved it; a superseded syllable stays where it stands and the slots are read
 again until none collides, so a swap one undo moves back restores whole.
 
+**A repaired marker is read where the repair puts it (M2).** Found by the
+review's fuzz at D50's bar (seed `0xc41ea269`, 24 authored) and reached by one
+author: a marker its event's delete orphaned stood at its region's start in
+the graph, but `reanchor_marker` left its write chain naming the deleted
+event, and every verdict that holds a region by a marker reads the chain
+(`anchored_to_region`: the `DeleteRegion` hold, the migration's strand, the
+undo's strand guard), so the region could be deleted or undone from under
+it (`CrossCuttingRefsResolve`). The repair now rewrites the chain's current
+value in place (`WriteChain::current_mut`; a repair is no write, so the
+chain's writers and undo verdicts stand): a re-anchored marker names its new
+event, an orphan its region's start, the region read from the indices both
+modes keep (the deleted event's voice, its instance, the instance's region),
+so base-free reduction writes the same anchor whether or not it holds the
+event's placement. The minimized history and its causally linear forms (each
+undo policy, and deletes in place of the undo) are committed as `168` to
+`172`, and `173` adds a second note, so the marker is re-anchored once
+before its delete orphans it, which only holds if the first repair also
+rewrote the chain; each now agrees with the region held.
+

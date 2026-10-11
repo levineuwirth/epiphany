@@ -777,6 +777,16 @@ impl<V: Clone> WriteChain<V> {
             .or(self.base.as_ref())
     }
 
+    /// The current value, for a repair that rewrites it in place: a repair is
+    /// no write of its own, so the chain's writers and its undo verdicts
+    /// stand, and what a later undo restores past is the repaired value.
+    fn current_mut(&mut self) -> Option<&mut V> {
+        match self.writes.last_mut() {
+            Some(write) => Some(&mut write.value),
+            None => self.base.as_mut(),
+        }
+    }
+
     /// The undo verdict for transaction `tx` on this key (operation_catalog
     /// §UndoTransaction, "Value restoration").
     fn undo_verdict(&self, tx: TransactionId) -> ChainUndoVerdict<V> {
@@ -11844,6 +11854,10 @@ impl<'a> Reducer<'a> {
                     }
                 }
                 self.structures.insert(sid, vec![TypedObjectId::Event(to)]);
+                self.rewrite_marker_anchor(sid, deleted, |offset| TimeAnchor::Event {
+                    id: to,
+                    offset,
+                });
                 repairs.push(RepairRecord {
                     kind: RepairKind::Reanchored {
                         from: TypedObjectId::Event(deleted),
@@ -11878,11 +11892,63 @@ impl<'a> Reducer<'a> {
                     }
                 }
                 self.structures.remove(&sid);
+                self.orphan_marker_anchor(sid, deleted);
                 repairs.push(RepairRecord {
                     kind: RepairKind::Orphaned,
                     target: sid,
                 });
             }
+        }
+    }
+
+    /// Writes a marker's repaired anchor where the verdicts read a marker's
+    /// anchor: its write chain's current value, which both modes keep. An
+    /// anchor naming `deleted` becomes `anchor(offset)`, keeping its offset.
+    /// The region guards (a `DeleteRegion`'s hold, a migration's strand, an
+    /// undo's strand guard, [`Self::anchored_to_region`]) and an undo's
+    /// restoration read the chain, so a marker re-anchored or orphaned in the
+    /// graph is read where it stands (schema major 5, reduction version 4, X4b
+    /// fix round 1: before it the chain kept the deleted event, so an orphan
+    /// anchored to its region's start held nothing, and the region could be
+    /// deleted or undone from under it, `CrossCuttingRefsResolve`).
+    fn rewrite_marker_anchor(
+        &mut self,
+        sid: TypedObjectId,
+        deleted: EventId,
+        anchor: impl FnOnce(AnchorOffset) -> TimeAnchor,
+    ) {
+        let Some(CrossCuttingValue::Marker(value)) = self
+            .cross_cutting_modify_chain
+            .get_mut(&sid)
+            .and_then(WriteChain::current_mut)
+        else {
+            return;
+        };
+        if let TimeAnchor::Event { id, offset } = &value.anchor {
+            if *id == deleted {
+                value.anchor = anchor(offset.clone());
+            }
+        }
+    }
+
+    /// A marker orphaned by `deleted`'s delete is anchored to the start of
+    /// the event's region, as the graph anchors it, the region read from the
+    /// indices both modes keep (the event's voice, its instance, the
+    /// instance's region), so base-free and graph-aware reduction write the
+    /// same anchor whether or not either holds the event's placement.
+    fn orphan_marker_anchor(&mut self, sid: TypedObjectId, deleted: EventId) {
+        let region = self
+            .event_modify_chain
+            .get(&deleted)
+            .and_then(WriteChain::current)
+            .map(Event::voice)
+            .and_then(|voice| self.indexed_voice_region(voice));
+        if let Some(region) = region {
+            self.rewrite_marker_anchor(sid, deleted, |_| TimeAnchor::Region {
+                id: region,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Zero,
+            });
         }
     }
 
@@ -11915,6 +11981,7 @@ impl<'a> Reducer<'a> {
                 Some(referent) => self.reanchor_marker(deleted, referent, sid, &mut repairs),
                 None => {
                     self.structures.remove(&sid);
+                    self.orphan_marker_anchor(sid, deleted);
                     repairs.push(RepairRecord {
                         kind: RepairKind::Orphaned,
                         target: sid,

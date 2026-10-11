@@ -846,7 +846,8 @@ epoch~15) writes a voice's home staff
 version~\texttt{4}, which X4b.0 opened and which does not move again before
 X4b merges. X4b's first fix round, after its first review, adds to it under
 this version: an undo restores no lyric syllable into a slot another holds
-(Section~\ref{sec:k0:modify-cross-cutting}).
+(Section~\ref{sec:k0:modify-cross-cutting}), and a marker its event's
+delete orphans holds its region (Section~\ref{sec:k0:create-cross-cutting}).
 
 % ===========================================================================
 \chapter{The Catalog Framework}
@@ -1565,7 +1566,12 @@ when one of its endpoints is later tombstoned (see DeleteEvent). A lyric
 cascade-deletes with its event; a marker anchored to an event re-anchors to
 the nearest live event of its staff instance, or orphans to its region's
 start, in both modes, base-free reduction reading the event's place from the
-occupancy index (since version~0.21.0).
+occupancy index (since version~0.21.0). The repaired anchor is the one every
+later verdict reads: an orphan at its region's start holds the region as any
+marker anchored there does, against a \texttt{DeleteRegion} and an undo of the
+region's create (since version~0.21.0, after its first review, before which
+the repair moved the graph's anchor alone and the region could be removed from
+under the marker).
 
 \textbf{A tie gives way (since version~0.19.0).} A tie holds only while its
 class's validation holds (core specification,

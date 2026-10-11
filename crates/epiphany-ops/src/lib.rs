@@ -693,6 +693,17 @@ pub mod vectors;
 ///     slot, `req:graph:lyric-syllable`). Syllables one undo moves back among
 ///     themselves restore together. Locked by
 ///     `an_undo_restores_no_syllable_into_a_taken_slot_in_both_modes`.
+///   - a marker its event's delete re-anchors or orphans is read where the
+///     repair puts it: the repair writes the new anchor into the marker's
+///     write chain, which the region guards read, so an orphan anchored to
+///     its region's start holds the region against a `DeleteRegion`
+///     (`ContainerNotEmpty`) and an undo of the region's create (strict and
+///     cascading undos conflict, a best-effort one keeps the region), where
+///     version `4` as reviewed moved the graph's anchor alone and let the
+///     region go from under it (`CrossCuttingRefsResolve`, found by the fuzz
+///     at seed `0xc41ea269`, one author reaching it). Locked by
+///     `an_orphaned_marker_holds_its_region_in_both_modes` and the committed
+///     histories `168` to `173`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.
