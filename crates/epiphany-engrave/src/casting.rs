@@ -3016,6 +3016,47 @@ mod tests {
         }
     }
 
+    /// A justified system none of whose slots has a spring spreads its slack
+    /// over its intervals by their widths: here slots at 0, 10, 20 and 30,
+    /// each interval taking a third.
+    #[test]
+    fn a_system_without_springs_takes_its_slack_by_width() {
+        let slots: Vec<SlotInfo> = (0..4).map(measure_slot).collect();
+        let plan = SystemPlan {
+            region: 0,
+            local: 0,
+            slots: vec![0, 1, 2, 3],
+            boundary: None,
+            page_forced: false,
+            page_source: DecisionSource::Automatic,
+        };
+        let ext = Extent {
+            min_x: 0.0,
+            min_y: -4.0,
+            max_x: 39.0,
+            max_y: 0.0,
+            any: true,
+        };
+        let placement = justify_system(
+            &plan,
+            &ext,
+            0.0,
+            0.0,
+            &[slots],
+            &[vec![0, 1]],
+            &BTreeMap::new(),
+            48.0,
+        );
+        let taken: Vec<f32> = placement.knots.iter().map(|knot| knot.1).collect();
+        assert_eq!(taken.len(), 4, "a knot at each slot");
+        for (k, slack) in taken.iter().enumerate() {
+            assert!(
+                (slack - 3.0 * k as f32).abs() < 1e-4,
+                "the slack before slot {k} is {slack}: {taken:?}"
+            );
+        }
+    }
+
     #[test]
     fn optimal_breaks_balances_systems_and_avoids_a_final_widow() {
         // Six uniform measures; the content width fits four (4 measures span 39,

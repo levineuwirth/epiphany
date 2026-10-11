@@ -467,6 +467,51 @@ mod tests {
         assert_eq!((cleared[0], cleared[3]), (tie[0], tie[3]), "its ends stay");
     }
 
+    /// A tie arcing over its heads from 0 to `x3`, its arc a space high.
+    fn tie_to(x3: f32) -> [Point; 4] {
+        [
+            Point::new(0.0, 0.0),
+            Point::new(x3 / 3.0, 4.0 / 3.0),
+            Point::new(x3 * 2.0 / 3.0, 4.0 / 3.0),
+            Point::new(x3, 0.0),
+        ]
+    }
+
+    /// A flag's ink from `left` to `right` across the tie's height.
+    fn flag(left: f32, right: f32) -> InkRect {
+        InkRect {
+            left,
+            right,
+            bottom: 0.0,
+            top: 3.0,
+        }
+    }
+
+    /// Only a flag at a tie's start moves its start: one the tie meets
+    /// further along, another note's, leaves it where it was.
+    #[test]
+    fn only_a_flag_at_a_ties_start_moves_it() {
+        let tie = tie_to(10.0);
+        assert_eq!(start_past_flag(tie, &[flag(0.0, 0.8)])[0].x.0, 1.0);
+        let further = flag(4.0, 4.8);
+        assert!(
+            clearance(&tie, &further, 1.0) < 0.0,
+            "the tie meets the flag further along"
+        );
+        assert_eq!(start_past_flag(tie, &[further]), tie);
+    }
+
+    /// A tie that starting past its flag would leave shorter than
+    /// [`MIN_TIE_SPAN`] is kept as it was; a longer one with the same flag
+    /// starts past it.
+    #[test]
+    fn a_tie_too_short_to_start_past_its_flag_is_kept() {
+        let short = tie_to(1.5);
+        assert_eq!(start_past_flag(short, &[flag(0.0, 0.6)]), short);
+        let long = tie_to(3.0);
+        assert_eq!(start_past_flag(long, &[flag(0.0, 0.6)])[0].x.0, 0.8);
+    }
+
     #[test]
     fn an_accidental_beside_the_curve_moves_nothing() {
         let cp = slur(0.0, 10.0, 1.0, 1.0);

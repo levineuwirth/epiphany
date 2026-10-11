@@ -5445,6 +5445,243 @@ fn an_accidental_keeps_the_gap_a_signature_or_barline_asks() {
     );
 }
 
+/// A two-staff part of `measures`, each the raw notes of both staves (with
+/// their `<backup>`), at `divisions` to a quarter in `beats`/`beat_type`, on a
+/// page two thousand spaces wide, so its one system stays ragged.
+fn ragged_piano(
+    name: &str,
+    divisions: u32,
+    (beats, beat_type): (u32, u32),
+    measures: &[String],
+) -> epiphany_cli::Loaded {
+    let body: String = measures
+        .iter()
+        .enumerate()
+        .map(|(m, content)| {
+            let attributes = if m == 0 {
+                format!(
+                    "<attributes><divisions>{divisions}</divisions><time><beats>{beats}</beats>\
+                     <beat-type>{beat_type}</beat-type></time><staves>2</staves>\
+                     <clef number=\"1\"><sign>G</sign><line>2</line></clef>\
+                     <clef number=\"2\"><sign>F</sign><line>4</line></clef></attributes>"
+                )
+            } else {
+                String::new()
+            };
+            format!(
+                "<measure number=\"{}\">{attributes}{content}</measure>",
+                m + 1
+            )
+        })
+        .collect();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><defaults><scaling><millimeters>7</millimeters>\
+         <tenths>40</tenths></scaling><page-layout><page-height>3000</page-height>\
+         <page-width>20000</page-width><page-margins type=\"both\"><left-margin>40</left-margin>\
+         <right-margin>40</right-margin><top-margin>80</top-margin>\
+         <bottom-margin>80</bottom-margin></page-margins></page-layout></defaults><part-list>\
+         <score-part id=\"P1\"><part-name>Piano</part-name></score-part></part-list>\
+         <part id=\"P1\">{body}</part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    std::fs::write(&path, xml).expect("written");
+    load(&path).expect("loads")
+}
+
+/// A note of a two-staff part: `pitch` as a step and octave (a rest for
+/// `None`), `duration` in divisions, its value, its staff (its voice the
+/// same), and any `extra` elements after the value (a time modification,
+/// notations).
+fn staff_note(pitch: Option<&str>, duration: u32, kind: &str, staff: u8, extra: &str) -> String {
+    let body = pitch.map_or("<rest/>".to_string(), |pitch| {
+        let (step, octave) = pitch.split_at(1);
+        format!("<pitch><step>{step}</step><octave>{octave}</octave></pitch>")
+    });
+    format!(
+        "<note>{body}<duration>{duration}</duration><voice>{staff}</voice><type>{kind}</type>\
+         {extra}<staff>{staff}</staff></note>"
+    )
+}
+
+/// Two onsets a hair apart on two staves still stand in order, at least a
+/// tenth of a space apart, where the spring between them asks less:
+/// sixty-fourths on one staff over seventeen sixty-fourths in the time of
+/// sixteen on the other, each staff's notes in its second space with their
+/// stems up, so each staff's heads ask the same room of the heads before
+/// them. The lower staff's second note sounds a 1,088th of a whole before the
+/// upper staff's second, and the spring between them asks 0.06.
+#[test]
+fn two_onsets_a_hair_apart_on_two_staves_stand_in_order() {
+    // 272 divisions to a quarter: a sixty-fourth 17, a tuplet one 16.
+    let tuplet = |k: usize| {
+        let notation = match k {
+            0 => "<notations><tuplet type=\"start\" bracket=\"no\"/></notations>",
+            16 => "<notations><tuplet type=\"stop\"/></notations>",
+            _ => "",
+        };
+        staff_note(
+            Some("C3"),
+            16,
+            "64th",
+            2,
+            &format!(
+                "<time-modification><actual-notes>17</actual-notes>\
+                 <normal-notes>16</normal-notes></time-modification>{notation}"
+            ),
+        )
+    };
+    let upper: String = (0..16)
+        .map(|_| staff_note(Some("A4"), 17, "64th", 1, ""))
+        .collect::<String>()
+        + &staff_note(Some("A4"), 816, "half", 1, "<dot/>");
+    let lower: String =
+        (0..17).map(tuplet).collect::<String>() + &staff_note(Some("C3"), 816, "half", 2, "<dot/>");
+    let measure = format!("{upper}<backup><duration>1088</duration></backup>{lower}");
+    let loaded = ragged_piano("hair_apart.musicxml", 272, (4, 4), &[measure]);
+    let layout = epiphany_cli::engrave_loaded(&loaded).layout;
+    let heads = heads_by_onset(&loaded.reduced.score, &layout);
+    let x = |onset: f64| head_x_at(&heads, onset);
+    let apart = x(1.0 / 64.0) - x(1.0 / 68.0);
+    assert!(
+        apart >= 0.1 - 1e-4,
+        "the onsets a 1,088th apart stand {apart} apart"
+    );
+}
+
+/// A rest filling its measure is one span, as it is one glyph: a rest
+/// filling a measure of 5/4, which the pre-pass writes as a whole and a
+/// quarter, asks the width five quarters ask, `5 · 5^log2(1.5)` spaces from
+/// its column to the barline, not a whole's width stretched over the quarter
+/// after it.
+#[test]
+fn a_rest_filling_its_measure_is_one_span() {
+    let rest = |staff: u8| {
+        format!(
+            "<note><rest measure=\"yes\"/><duration>10</duration><voice>{staff}</voice>\
+             <staff>{staff}</staff></note>"
+        )
+    };
+    let measure = format!(
+        "{}<backup><duration>10</duration></backup>{}",
+        rest(1),
+        rest(2)
+    );
+    let loaded = ragged_piano(
+        "measure_rest_span.musicxml",
+        2,
+        (5, 4),
+        &[measure.clone(), measure],
+    );
+    let layout = epiphany_cli::engrave_loaded(&loaded).layout;
+    let first = |name: &str| {
+        layout
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str() == name)
+            .map(|g| g.position.x.0)
+            .fold(f32::INFINITY, f32::min)
+    };
+    let width = first("barlineSingle") - first("restWhole");
+    let expected = 5.0 * 5.0f32.powf(1.5f32.log2());
+    assert!(
+        (width - expected).abs() < 0.01,
+        "the measure's rest stands {width} before its barline, where five quarters ask \
+         {expected}"
+    );
+}
+
+/// A note column after which nothing timed follows runs to the end of what
+/// sounds through it: in a region's last measure, a half on one staff over
+/// a quarter and a hidden rest on the other, the last heads stand as far
+/// before the final barline as the same heads stand before the barline
+/// ending the measure before it.
+#[test]
+fn a_last_note_column_runs_to_the_end_of_what_sounds_through_it() {
+    let backup = "<backup><duration>8</duration></backup>";
+    let hidden = "<note print-object=\"no\"><rest/><duration>2</duration><voice>2</voice>\
+                  <type>quarter</type><staff>2</staff></note>";
+    let measure = format!(
+        "{}{}{backup}{}{}{hidden}",
+        staff_note(Some("C5"), 4, "half", 1, ""),
+        staff_note(Some("C5"), 4, "half", 1, ""),
+        staff_note(Some("C3"), 4, "half", 2, ""),
+        staff_note(Some("C3"), 2, "quarter", 2, ""),
+    );
+    let loaded = ragged_piano(
+        "last_column.musicxml",
+        2,
+        (4, 4),
+        &[measure.clone(), measure],
+    );
+    let layout = epiphany_cli::engrave_loaded(&loaded).layout;
+    let heads = heads_by_onset(&loaded.reduced.score, &layout);
+    let x = |onset: f64| head_x_at(&heads, onset);
+    let barline = |name: &str| {
+        layout
+            .glyphs
+            .iter()
+            .find(|g| g.glyph.as_str() == name)
+            .map(|g| g.position.x.0)
+            .unwrap_or_else(|| panic!("a {name}"))
+    };
+    let (inner, last) = (
+        barline("barlineSingle") - x(0.5),
+        barline("barlineFinal") - x(1.5),
+    );
+    assert!(
+        (inner - last).abs() < 0.01,
+        "the last heads stand {last} before the final barline, the first measure's {inner} \
+         before its barline"
+    );
+}
+
+/// A tuplet's notes space by their own sounding duration: on a staff alone,
+/// triplet eighths stand as far apart as a triplet eighth's column asks,
+/// `(1/3)^log2(1.5)` of a quarter's, with nothing on another staff to give
+/// the width.
+#[test]
+fn triplet_notes_alone_space_by_their_own_duration() {
+    let triplet = |k: usize| {
+        let notation = match k {
+            0 => "<notations><tuplet type=\"start\" bracket=\"yes\"/></notations>",
+            2 => "<notations><tuplet type=\"stop\"/></notations>",
+            _ => "",
+        };
+        format!(
+            "<note><pitch><step>B</step><octave>4</octave></pitch><duration>2</duration>\
+             <type>eighth</type><time-modification><actual-notes>3</actual-notes>\
+             <normal-notes>2</normal-notes></time-modification>{notation}</note>"
+        )
+    };
+    let quarter = "<note><pitch><step>B</step><octave>4</octave></pitch><duration>6</duration>\
+                   <type>quarter</type></note>";
+    let measure: String = (0..3).map(triplet).collect::<String>() + &quarter.repeat(3);
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
+         <attributes><divisions>6</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time><clef><sign>G</sign><line>2</line></clef></attributes>{measure}</measure>\
+         </part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("triplets_alone.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = engrave(&loaded.reduced.score).layout;
+    let heads = heads_by_onset(&loaded.reduced.score, &layout);
+    let x = |onset: f64| head_x_at(&heads, onset);
+    let (triplet, quarter) = (x(1.0 / 12.0) - x(0.0), x(0.5) - x(0.25));
+    let expected = (1.0f32 / 3.0).powf(1.5f32.log2());
+    assert!(
+        (triplet / quarter - expected).abs() < 0.01,
+        "a triplet eighth's column {triplet} against a quarter's {quarter}, \
+         where {expected} of it is asked"
+    );
+    assert!(
+        (x(0.25) - x(1.0 / 6.0) - triplet).abs() < 0.01,
+        "the last triplet eighth's column is as wide as the first's"
+    );
+}
+
 /// A barline joined from staff to staff within a group is drawn across the
 /// gap between them after spacing, and an accidental standing in that gap,
 /// on a note above the lower staff that opens its measure, keeps the

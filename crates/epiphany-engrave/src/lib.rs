@@ -3296,4 +3296,137 @@ mod tests {
         );
         assert_eq!(restart_past_flag(tie, &[], &[flat], &[]), tie);
     }
+
+    /// A tie arcing over its heads from 0 to 10, its arc a space high.
+    fn ten_space_tie() -> [Point; 4] {
+        let p = Point::new;
+        [
+            p(0.0, 0.0),
+            p(10.0 / 3.0, 4.0 / 3.0),
+            p(20.0 / 3.0, 4.0 / 3.0),
+            p(10.0, 0.0),
+        ]
+    }
+
+    /// Only a tie starts past its first note's flag: a slur meeting the same
+    /// flag keeps its start.
+    #[test]
+    fn a_slur_does_not_start_past_a_flag() {
+        let flag = clearance::InkRect {
+            left: 0.0,
+            right: 0.8,
+            bottom: 0.0,
+            top: 3.0,
+        };
+        let curve = ten_space_tie();
+        assert_eq!(clear_curve(curve, &[flag], &[], &[], true)[0].x.0, 1.0);
+        assert_eq!(clear_curve(curve, &[flag], &[], &[], false), curve);
+    }
+
+    /// A curve passes the stems inside its span, and not those standing
+    /// within [`STEM_END_MARGIN`] of its ends, its own notes' stems: a tie
+    /// with its last note's stem 0.3 inside its end, too tall to pass,
+    /// still passes the stem in its middle.
+    #[test]
+    fn a_curve_passes_its_inner_stems_and_not_its_own_notes() {
+        let stem = |x: f32, bottom: f32, top: f32| clearance::InkRect {
+            left: x - 0.06,
+            right: x + 0.06,
+            bottom,
+            top,
+        };
+        let inner = stem(5.0, -2.0, 1.2);
+        let own = stem(9.7, -0.5, 3.0);
+        let tie = ten_space_tie();
+        let cleared = clear_curve(tie, &[], &[], &[inner, own], true);
+        let height = |cp: &[Point; 4], t: f32| {
+            let u = 1.0 - t;
+            u * u * u * cp[0].y.0
+                + 3.0 * u * u * t * cp[1].y.0
+                + 3.0 * u * t * t * cp[2].y.0
+                + t * t * t * cp[3].y.0
+        };
+        assert!(
+            height(&tie, 0.5) < inner.top,
+            "the tie meets the inner stem"
+        );
+        assert!(
+            height(&cleared, 0.5) >= inner.top + clearance::ACCIDENTAL_CLEARANCE - 1e-3,
+            "the tie passes the inner stem"
+        );
+    }
+
+    /// A stem, for the curves that pass stems, is an event's upright stroke
+    /// riding one slot and at least 0.3 spaces long: the same stroke cut
+    /// shorter, or slanted, is none.
+    #[test]
+    fn a_stem_is_an_upright_stroke_on_one_slot_at_least_a_third_long() {
+        let input = fixture();
+        let anchors = span_anchors(&input);
+        let stem = input
+            .strokes
+            .iter()
+            .find(|s| stem_slot(s, &anchors).is_some())
+            .expect("the fixture draws a stem");
+        let with_to = |dx: f32, length: f32| {
+            let mut s = stem.clone();
+            let up = if s.to.y.0 >= s.from.y.0 { 1.0 } else { -1.0 };
+            s.to = Point::new(s.from.x.0 + dx, s.from.y.0 + up * length);
+            s
+        };
+        assert!(stem_slot(&with_to(0.0, 0.35), &anchors).is_some());
+        assert_eq!(stem_slot(&with_to(0.0, 0.25), &anchors), None);
+        assert_eq!(stem_slot(&with_to(0.5, 3.0), &anchors), None);
+    }
+
+    /// A note column with no duration width, a column of wall-clock time,
+    /// still takes its share of a justified system's slack, while the lead
+    /// keeps its width: the first head stands where it stands ragged, and the
+    /// heads stand further apart.
+    #[test]
+    fn a_column_without_a_duration_width_still_stretches() {
+        use epiphany_layout_ir::{Margins, Size2D, StaffSpace};
+        let score = epiphany_testkit::corpus::corpus()
+            .into_iter()
+            .find(|f| f.name == "proportional_region")
+            .map(|f| (f.build)())
+            .expect("the proportional fixture");
+        let input = to_constrained(&to_logical(&score));
+        let heads = |width: f32| {
+            let geometry = PageGeometry {
+                size: Size2D {
+                    width: StaffSpace(width),
+                    height: StaffSpace(100.0),
+                },
+                margins: Margins {
+                    top: StaffSpace(5.0),
+                    right: StaffSpace(5.0),
+                    bottom: StaffSpace(5.0),
+                    left: StaffSpace(5.0),
+                },
+            };
+            let report = Engraver::with_geometry(geometry).solve(&input, &SolverConfig::default());
+            let mut xs: Vec<f32> = report
+                .layout
+                .glyphs
+                .iter()
+                .filter(|g| g.glyph.as_str().starts_with("notehead"))
+                .map(|g| g.position.x.0)
+                .collect();
+            xs.sort_by(f32::total_cmp);
+            xs
+        };
+        let (ragged, justified) = (heads(1000.0), heads(40.0));
+        assert_eq!((ragged.len(), justified.len()), (3, 3), "three heads");
+        assert!(
+            (justified[0] - ragged[0]).abs() < 1e-3,
+            "the lead keeps its width: the first head at {} ragged, {} justified",
+            ragged[0],
+            justified[0]
+        );
+        assert!(
+            justified[2] - justified[0] > ragged[2] - ragged[0] + 1.0,
+            "the heads stretch: {ragged:?} ragged, {justified:?} justified"
+        );
+    }
 }
