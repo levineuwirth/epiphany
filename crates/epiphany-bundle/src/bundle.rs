@@ -3147,6 +3147,178 @@ mod tests {
         }
     }
 
+    /// `Bundle::reopen` takes exactly what a cold open of its store selects, and
+    /// on an error leaves the bundle as it was, so the read can be retried. A
+    /// poisoned live bundle, its store swapped for each image, is compared field
+    /// by field with `Bundle::open` of that image, over every image a small
+    /// bundle makes: a fourth commit crashed at each syscall, clean and torn;
+    /// every cut; every byte of the prelude and the newest manifest flipped, and
+    /// every seventh elsewhere; one slot over the other; an earlier generation;
+    /// a generation gap; and a required extension, with flips.
+    #[test]
+    fn reopen_selects_what_open_selects_and_a_failed_reopen_replaces_nothing() {
+        use crate::store::{CrashPoint, FaultStore, Tear};
+
+        fn add_block<S: BlockStore>(bundle: &mut Bundle<S>, n: u8) -> Result<(), BundleError> {
+            let payload = block::encode_block(&[vec![n; 40 + n as usize]]);
+            bundle.commit(&[StagedChunk::operation_block(payload)], |ctx| {
+                let mut m = ctx.previous_manifest.clone();
+                m.operation_roots.extend(ctx.new_chunks.iter().copied());
+                m
+            })
+        }
+        // Every field a cold open selects, and the rest of the bundle's state.
+        fn fields<S: BlockStore>(b: &Bundle<S>) -> String {
+            format!(
+                "{:?}|{:?}|{:?}|{:?}|{}|{}|{:?}|{:?}",
+                b.header,
+                b.active_slot,
+                b.superblock,
+                b.manifest,
+                b.write_cursor,
+                b.read_only,
+                b.anomalies,
+                b.caps
+            )
+        }
+        let caps = || BundleCapabilities::synthetic_for_fixture(0);
+
+        let mut base = fresh_bundle();
+        add_block(&mut base, 1).unwrap();
+        let earlier = base.store().as_bytes().to_vec();
+        add_block(&mut base, 2).unwrap();
+        add_block(&mut base, 3).unwrap();
+        let image = base.store().as_bytes().to_vec();
+
+        let mut images: Vec<(String, Vec<u8>)> = Vec::new();
+        let syscalls = {
+            let mut b = Bundle::open(FaultStore::no_fault(image.clone()), caps()).unwrap();
+            add_block(&mut b, 4).unwrap();
+            b.store().syscalls_issued()
+        };
+        for after_syscalls in 0..=syscalls {
+            for tear in [
+                Tear::Clean,
+                Tear::TornLastWrite { prefix: 0 },
+                Tear::TornLastWrite { prefix: 1 },
+                Tear::TornLastWrite { prefix: 8 },
+                Tear::TornLastWrite { prefix: 40 },
+                Tear::TornLastWrite { prefix: 100 },
+            ] {
+                let crash = CrashPoint {
+                    after_syscalls,
+                    tear,
+                };
+                let store = FaultStore::new(image.clone(), crash);
+                let mut b = Bundle::open(store, caps()).unwrap();
+                let _ = add_block(&mut b, 4);
+                images.push((
+                    format!("crash after {after_syscalls} {tear:?}"),
+                    b.store().durable_image(),
+                ));
+            }
+        }
+        for len in 0..image.len() {
+            images.push((format!("cut at {len}"), image[..len].to_vec()));
+        }
+        for at in 0..image.len() {
+            if at < BODY_START as usize + 64 || at + 600 > image.len() || at % 7 == 0 {
+                let mut x = image.clone();
+                x[at] ^= 0xFF;
+                images.push((format!("flip at {at}"), x));
+            }
+        }
+        let (a, b, len) = (
+            SLOT_A_OFFSET as usize,
+            SLOT_B_OFFSET as usize,
+            SUPERBLOCK_LEN as usize,
+        );
+        let mut x = image.clone();
+        x.copy_within(b..b + len, a);
+        images.push(("slot B over slot A".into(), x));
+        let mut x = image.clone();
+        x.copy_within(a..a + len, b);
+        images.push(("slot A over slot B".into(), x));
+        images.push(("an earlier generation".into(), earlier.clone()));
+        images.push(("empty".into(), Vec::new()));
+        // Generation 0 in slot A beside generation 3 in slot B: a gap.
+        let mut x = image.clone();
+        x[a..a + len].copy_from_slice(&earlier[a..a + len]);
+        images.push(("a generation gap".into(), x));
+        let mut x = image.clone();
+        x[b..b + len].copy_from_slice(&earlier[b..b + len]);
+        images.push(("slot B from an earlier generation".into(), x));
+        let mut ext = Bundle::open(MemStore::from_bytes(image.clone()), caps()).unwrap();
+        ext.commit(&[], |ctx| {
+            let mut m = ctx.previous_manifest.clone();
+            m.extension_declarations
+                .push(crate::manifest::ExtensionDeclaration {
+                    extension_id: crate::ExtensionId([5; 16]),
+                    version: crate::SemVer {
+                        major: 1,
+                        minor: 0,
+                        patch: 0,
+                    },
+                    required: true,
+                    preserved_chunk_roots: Vec::new(),
+                    affected_object_kinds: Vec::new(),
+                    edit_barriers: Vec::new(),
+                });
+            m
+        })
+        .unwrap();
+        let ext = ext.store().as_bytes().to_vec();
+        images.push(("a required extension".into(), ext.clone()));
+        for at in (BODY_START as usize..ext.len()).step_by(97) {
+            let mut x = ext.clone();
+            x[at] ^= 0x55;
+            images.push((format!("a required extension, flip at {at}"), x));
+        }
+
+        let (mut writable, mut read_only, mut refused) = (0, 0, 0);
+        let mut mismatches = Vec::new();
+        for (name, x) in &images {
+            let opened = Bundle::open(MemStore::from_bytes(x.clone()), caps());
+            // A live bundle poisoned, as after a failed commit point, then its
+            // store swapped for the image.
+            let mut live = Bundle::open(MemStore::from_bytes(earlier.clone()), caps()).unwrap();
+            live.read_only = true;
+            let before = fields(&live);
+            live.store = MemStore::from_bytes(x.clone());
+            match (&opened, live.reopen()) {
+                (Ok(opened), Ok(())) => {
+                    if fields(opened) != fields(&live) {
+                        mismatches.push(format!("{name}: reopen took other fields"));
+                    }
+                    if opened.read_only {
+                        read_only += 1;
+                    } else {
+                        writable += 1;
+                    }
+                }
+                (Err(open), Err(reopen)) => {
+                    if format!("{open:?}") != format!("{reopen:?}") {
+                        mismatches.push(format!("{name}: {open:?} against {reopen:?}"));
+                    }
+                    if fields(&live) != before {
+                        mismatches.push(format!("{name}: a failed reopen replaced state"));
+                    }
+                    refused += 1;
+                }
+                (open, reopen) => mismatches.push(format!(
+                    "{name}: open {:?}, reopen {reopen:?}",
+                    open.as_ref().map(|_| ())
+                )),
+            }
+        }
+        assert!(mismatches.is_empty(), "{mismatches:#?}");
+        // Each way an open ends is reached, so no comparison above is vacuous.
+        assert!(
+            writable > 0 && read_only > 0 && refused > 0,
+            "writable {writable}, read-only {read_only}, refused {refused}"
+        );
+    }
+
     #[test]
     fn create_with_required_extension_is_read_only_immediately() {
         // Finding 3: a freshly created bundle with a required extension is
