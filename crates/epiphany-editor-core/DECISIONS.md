@@ -569,3 +569,22 @@ also retreats the caret by one entry duration → `1/1` vs `5/4`, dies) and
 `caret_clears_when_its_voice_is_deleted` (mutation: empty out
 `reresolve_caret`'s body → caret stays `Some` after `DeleteVoice`
 succeeds, dies).
+
+## The clipboard fragment carries grace notes (X4b fix round 1, 2026-10-11)
+
+Schema major 5 makes a grace note an event of zero duration, and the fragment
+already carried a note's grace, but its decoder refused every duration that
+was not positive, so copying any passage holding a grace wrote a fragment the
+same build refused to paste. The decoder now admits a zero duration for an
+event carrying a grace and only then, and refuses a grace with a duration, as
+reduction does; `FRAGMENT_VERSION` moves to `(0 2 0)` (the note's marks,
+ornaments and grace, carried since X4b.2 with the version unchanged, are
+counted in it too), its major still `0`, so every `(0 1 0)` fragment reads as
+before. A copied note takes the grace notes of its voice standing at its
+onset (D58's Q5: graces go with their note), since until grace notes are drawn
+a selection cannot catch one, and a lane lists a position's graces in their
+order before its event. A paste carries each grace's order, and a lane's paste
+deletes the destination voice's graces in its span with the notes it
+replaces, so the pasted graces stand in their own order and no other's. Locked
+by `copy_and_paste_carry_a_passages_grace_notes_in_their_order` and
+`a_fragment_events_duration_is_zero_exactly_when_it_carries_a_grace`.

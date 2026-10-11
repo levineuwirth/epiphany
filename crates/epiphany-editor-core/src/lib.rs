@@ -327,7 +327,7 @@ pub enum DroppedItem {
 /// What [`EditorSession::copy_selection`] produced.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct CopyOutcome {
-    /// The fragment text (`(epiphany-fragment (0 1 0) …)`, Ruling E) — pass
+    /// The fragment text (`(epiphany-fragment (0 2 0) …)`, Ruling E) — pass
     /// this to [`EditorSession::paste_at`] / [`EditorSession::paste_over_selection`].
     pub fragment: String,
     /// Every slur/tie closure v1 dropped because only one endpoint was
@@ -2440,6 +2440,27 @@ impl EditorSession {
                 expected: "a metric note or rest",
             });
         }
+        // A copied note takes its grace notes with it, as an editor deletes
+        // them with it (D58's Q5): each grace of the voice standing at a
+        // copied event's onset. Until grace notes are drawn they cannot be
+        // selected, so this is the one way a copy carries them.
+        let onsets: BTreeSet<(VoiceId, MusicalPosition)> = located
+            .iter()
+            .map(|(_, voice, at)| (*voice, at.clone()))
+            .collect();
+        for event in self.score.events.iter() {
+            if event.grace().is_none() || event_ids.contains(&event.id()) {
+                continue;
+            }
+            if let EventPosition::Musical(at) = event.position() {
+                if matches!(event, Event::Pitched(_))
+                    && onsets.contains(&(event.voice(), at.clone()))
+                {
+                    event_ids.insert(event.id());
+                    located.push((event.id(), event.voice(), at.clone()));
+                }
+            }
+        }
         let origin = located
             .iter()
             .map(|(_, _, at)| at.clone())
@@ -2457,7 +2478,13 @@ impl EditorSession {
         let mut refs: BTreeMap<EventId, fragment::EventRef> = BTreeMap::new();
         let mut voices = Vec::with_capacity(by_voice.len());
         for (voice_ordinal, (_voice, mut events)) in by_voice.into_iter().enumerate() {
-            events.sort_by(|a, b| a.1.cmp(&b.1));
+            // As the voice orders them: by onset, a position's grace notes in
+            // their order before its event, so a paste restores them so.
+            let rank = |id: &EventId| match self.score.events.get(*id).and_then(Event::grace) {
+                Some(grace) => (0u8, grace.order),
+                None => (1u8, 0),
+            };
+            events.sort_by(|a, b| (&a.1, rank(&a.0), a.0).cmp(&(&b.1, rank(&b.0), b.0)));
             for (event_ordinal, (event_id, _)) in events.iter().enumerate() {
                 refs.insert(
                     *event_id,
@@ -2727,7 +2754,12 @@ impl EditorSession {
                 .map(|e| target_start.clone() + e.onset.clone() + e.duration.clone())
                 .max()
                 .expect("lane.events is non-empty, checked above");
-            let room = self.make_room(voice, &target_start, &lane_end, None)?;
+            let mut room = self.make_room(voice, &target_start, &lane_end, None)?;
+            // The destination's grace notes in the span go with the notes
+            // the paste replaces, so the pasted graces stand in their own
+            // order and no other's.
+            room.deletes
+                .extend(self.graces_within(voice, &target_start, &lane_end));
             ops.extend(self.make_room_ops(room, staff_instance, &mut minter));
             let mut lane_map = Vec::with_capacity(lane.events.len());
             for fe in &lane.events {
@@ -3005,6 +3037,24 @@ impl EditorSession {
             }
         }
         Ok(room)
+    }
+
+    /// The grace notes of `voice` standing in `[start, end)`, in id order.
+    fn graces_within(
+        &self,
+        voice: VoiceId,
+        start: &MusicalPosition,
+        end: &MusicalPosition,
+    ) -> Vec<EventId> {
+        self.score
+            .events
+            .iter()
+            .filter(|event| event.voice() == voice && event.grace().is_some())
+            .filter(|event| {
+                matches!(event.position(), EventPosition::Musical(at) if at >= start && at < end)
+            })
+            .map(Event::id)
+            .collect()
     }
 
     /// The ids of the tuplets `event` is a member of.
@@ -8960,6 +9010,193 @@ mod tests {
         );
         assert_eq!(new_slur.curvature_override, None);
         assert_eq!(new_slur.style, SpanStyle::default());
+    }
+
+    /// A copied note takes its grace notes with it, and a paste restores
+    /// them before their note in their order (schema major 5): the fragment
+    /// carries each grace at duration zero, and a second paste over the
+    /// first replaces the destination's graces rather than adding to them.
+    /// The graces cannot be selected (the layout leaves them undrawn until
+    /// grace notes are drawn), so the copy reaches them through their note.
+    /// The second grace in order is minted first, so order, not id, decides.
+    #[test]
+    fn copy_and_paste_carry_a_passages_grace_notes_in_their_order() {
+        use epiphany_core::{Grace, GraceKind, NoteValue, RegionContent};
+
+        let mut score = small_metric_score(4);
+        let (voice_id, principal, at) = {
+            let RegionContent::StaffBased(content) = &score.canvas.regions[0].content else {
+                panic!("region 0 is staff-based");
+            };
+            let voice = &content.staff_instances[0].voices[0];
+            let principal = voice.events[1];
+            let at = score.events.get(principal).unwrap().position().clone();
+            (voice.id, principal, at)
+        };
+        let mut graces = Vec::new();
+        for (order, nominal) in [(1u16, CmnNominal::B), (0u16, CmnNominal::A)] {
+            let id: EventId = score.identity.mint();
+            let pid: PitchId = score.identity.mint();
+            score
+                .events
+                .insert(Event::Pitched(PitchedEvent {
+                    id,
+                    voice: voice_id,
+                    position: at.clone(),
+                    duration: EventDuration::Musical(MusicalDuration::zero()),
+                    pitches: vec![IdentifiedPitch {
+                        id: pid,
+                        pitch: cmn_pitch(nominal, 4),
+                    }],
+                    marks: vec![],
+                    dynamic: None,
+                    ornaments: vec![],
+                    stem: StemConfiguration,
+                    grace: Some(Grace {
+                        kind: GraceKind::Acciaccatura,
+                        value: NoteValue::Eighth,
+                        dots: 0,
+                        order,
+                    }),
+                }))
+                .expect("fresh event id");
+            graces.push((order, id));
+        }
+        graces.sort();
+        {
+            let RegionContent::StaffBased(content) = &mut score.canvas.regions[0].content else {
+                panic!("region 0 is staff-based");
+            };
+            let events = &mut content.staff_instances[0].voices[0].events;
+            let i = events.iter().position(|e| *e == principal).unwrap();
+            events.splice(i..i, graces.iter().map(|(_, id)| *id));
+        }
+        assert!(epiphany_core::check_invariants(&score).is_empty());
+
+        let mut session = EditorSession::open(score, Box::new(StubSolver)).expect("renders");
+        let region = a_clean_metric_region(&session);
+        let voice = primary_voice(&session, region);
+        let source: BTreeSet<EventId> = voice_events(&session, voice)
+            .iter()
+            .map(|(id, _, _)| *id)
+            .collect();
+        let rect = rect_covering_pitches(
+            &session,
+            &[
+                first_pitch_of(
+                    &session,
+                    source
+                        .iter()
+                        .copied()
+                        .find(|e| {
+                            session.score().events.get(*e).unwrap().position()
+                                == &EventPosition::Musical(MusicalPosition::origin())
+                        })
+                        .unwrap(),
+                ),
+                first_pitch_of(&session, principal),
+            ],
+        );
+        session.select_within(rect);
+        let copy = session.copy_selection().expect("the selection copies");
+        assert_eq!(
+            copy.events_copied, 4,
+            "two notes and the second's two graces"
+        );
+        let decoded = fragment::decode(&copy.fragment).expect("well-formed");
+        let lane: Vec<(MusicalDuration, Option<u16>)> = decoded.voices[0]
+            .events
+            .iter()
+            .map(|e| {
+                let grace = match &e.content {
+                    fragment::FragmentEventContent::Pitched { grace, .. } => {
+                        grace.as_ref().map(|g| g.order)
+                    }
+                    _ => None,
+                };
+                (e.duration.clone(), grace)
+            })
+            .collect();
+        let quarter = MusicalDuration(RationalTime::new(1, 4).unwrap());
+        assert_eq!(
+            lane,
+            vec![
+                (quarter.clone(), None),
+                (MusicalDuration::zero(), Some(0)),
+                (MusicalDuration::zero(), Some(1)),
+                (quarter.clone(), None),
+            ],
+            "the lane holds the graces at duration zero, in order, before their note"
+        );
+
+        let far = MusicalPosition(RationalTime::new(50, 4).unwrap());
+        let mut first_pasted: Option<EventId> = None;
+        for paste in 0..2 {
+            // The first paste at a click, the second over the first's opening
+            // note, so it lands exactly on the first.
+            let outcome = match first_pasted {
+                None => {
+                    let (_, _, origin_y) = region_staff_line(&session, region);
+                    let click = click_for_position(&session, region, &far, origin_y + 1.0);
+                    session.paste_at(click, &grid(1, 4), &copy.fragment)
+                }
+                Some(opening) => {
+                    let pitch = first_pitch_of(&session, opening);
+                    select_pitch(&mut session, pitch);
+                    session.paste_over_selection(&copy.fragment)
+                }
+            }
+            .expect("the paste applies");
+            assert_eq!(outcome.events_inserted, 4, "paste {paste}");
+            assert!(
+                epiphany_core::check_invariants(session.score()).is_empty(),
+                "paste {paste}"
+            );
+            let pasted: Vec<EventId> = session
+                .score()
+                .voices()
+                .find(|(_, _, v)| v.id == voice)
+                .map(|(_, _, v)| v.events.clone())
+                .unwrap()
+                .into_iter()
+                .filter(|e| !source.contains(e))
+                .collect();
+            let onsets: BTreeSet<MusicalPosition> = pasted
+                .iter()
+                .filter_map(
+                    |e| match session.score().events.get(*e).unwrap().position() {
+                        EventPosition::Musical(at) => Some(at.clone()),
+                        _ => None,
+                    },
+                )
+                .collect();
+            assert_eq!(onsets.len(), 2, "paste {paste}: two onsets, {onsets:?}");
+            first_pasted = pasted.first().copied();
+            let shape: Vec<(Option<u16>, CmnNominal)> = pasted
+                .iter()
+                .map(|e| {
+                    let Event::Pitched(p) = session.score().events.get(*e).unwrap() else {
+                        panic!("a note");
+                    };
+                    let PitchSpacePosition::Cmn { nominal, .. } =
+                        &p.pitches[0].pitch.scale_position.position
+                    else {
+                        panic!("a CMN pitch");
+                    };
+                    (p.grace.as_ref().map(|g| g.order), *nominal)
+                })
+                .collect();
+            assert_eq!(
+                shape,
+                vec![
+                    (None, CmnNominal::G),
+                    (Some(0), CmnNominal::A),
+                    (Some(1), CmnNominal::B),
+                    (None, CmnNominal::G),
+                ],
+                "paste {paste}: the graces stand before their note in their order, once"
+            );
+        }
     }
 
     /// r2 (T2 W4b): the tie equivalent of r1. A tie fully inside the copied
