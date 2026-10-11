@@ -1354,6 +1354,7 @@ mod goldens;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use epiphany_core::{EventPosition, MusicalDuration, MusicalPosition, RationalTime};
 
     #[test]
     fn view_map_round_trips_screen_and_world() {
@@ -1568,6 +1569,190 @@ mod tests {
         );
     }
 
+    /// A window on a new score with a quarter C opening each of its first two
+    /// measures, the first selected, and the status line reset.
+    fn a_window_with_a_note_selected() -> EditorApp {
+        let mut app = EditorApp::new(None);
+        let voice = app.session.score().voices().next().expect("a voice").2.id;
+        let quarter = MusicalDuration(RationalTime::new(1, 4).unwrap());
+        for measure in [0, 1] {
+            let start = MusicalPosition(RationalTime::new(measure, 1).unwrap());
+            app.session
+                .set_caret(voice, start, quarter.clone())
+                .unwrap();
+            app.session.enter_nominal(CmnNominal::C).unwrap();
+        }
+        let first = app
+            .session
+            .score()
+            .events
+            .iter()
+            .find(|e| {
+                e.position()
+                    == &EventPosition::Musical(MusicalPosition(RationalTime::new(0, 1).unwrap()))
+            })
+            .map(|e| e.id())
+            .expect("the first note");
+        let object = app
+            .session
+            .hit_test()
+            .regions
+            .iter()
+            .find(|r| match r.source {
+                TypedObjectId::Event(e) => e == first,
+                TypedObjectId::Pitch(p) => app.session.score().events.get(first).is_some_and(|e| {
+                    let mut pitches = Vec::new();
+                    e.collect_identified_pitches(&mut pitches);
+                    pitches.iter().any(|ip| ip.id == p)
+                }),
+                _ => false,
+            })
+            .map(|r| r.layout_object)
+            .expect("the first note is drawn");
+        app.session.select(object).expect("it selects");
+        app.status = "ready".to_owned();
+        app
+    }
+
+    /// Whether a line break, and a page break, stand before the second measure.
+    fn breaks_before_the_second_measure(app: &EditorApp) -> (bool, bool) {
+        let region = app.session.score().voices().next().expect("a voice").0;
+        let at = MusicalPosition(RationalTime::new(1, 1).unwrap());
+        (
+            app.session.has_break(LayoutBreak::System, region, &at),
+            app.session.has_break(LayoutBreak::Page, region, &at),
+        )
+    }
+
+    /// One headless frame carrying an Enter press with `modifiers`, the key
+    /// handler first as `update` runs it. With `focused`, a single-line text
+    /// field (as the file bar's path is) took the keyboard the frame before.
+    fn press_enter(
+        app: &mut EditorApp,
+        ctx: &egui::Context,
+        modifiers: egui::Modifiers,
+        focused: bool,
+    ) {
+        let mut text = String::from("a path");
+        let field = egui::Id::new("path");
+        if focused {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut text).id(field))
+                        .request_focus();
+                });
+            });
+            assert!(ctx.wants_keyboard_input(), "the field has the keyboard");
+        }
+        let input = egui::RawInput {
+            modifiers,
+            events: vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: Some(egui::Key::Enter),
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }],
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |ctx| {
+            app.handle_keys(ctx);
+            if focused {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut text).id(field));
+                });
+            }
+        });
+    }
+
+    /// Enter through the window's key handler, in headless egui frames:
+    /// Shift+Enter toggles a line break after the selected note's measure, and
+    /// again clears it; Ctrl/Cmd+Enter toggles a page break; bare Enter and every
+    /// other chord change nothing and run nothing, and nor does any chord while
+    /// a text field has the keyboard. `break_key`'s own test pins the mapping;
+    /// this pins the handler's call to it and the focus gate before it.
+    #[test]
+    fn enter_through_the_key_handler_toggles_only_the_modified_breaks() {
+        let shift = egui::Modifiers::SHIFT;
+        let command = egui::Modifiers::COMMAND;
+        let alt = egui::Modifiers::ALT;
+        let ctrl_alone = egui::Modifiers {
+            ctrl: true,
+            ..egui::Modifiers::NONE
+        };
+        let mac_cmd_alone = egui::Modifiers {
+            mac_cmd: true,
+            ..egui::Modifiers::NONE
+        };
+        let chords = [
+            ("bare Enter", egui::Modifiers::NONE, false, (false, false)),
+            ("Shift+Enter", shift, false, (true, false)),
+            ("Ctrl/Cmd+Enter", command, false, (false, true)),
+            (
+                "Ctrl/Cmd+Shift+Enter",
+                command | shift,
+                false,
+                (false, false),
+            ),
+            ("Alt+Enter", alt, false, (false, false)),
+            ("Alt+Shift+Enter", alt | shift, false, (false, false)),
+            ("Alt+Ctrl/Cmd+Enter", alt | command, false, (false, false)),
+            (
+                "Ctrl without the command flag",
+                ctrl_alone,
+                false,
+                (false, false),
+            ),
+            (
+                "Cmd without the command flag",
+                mac_cmd_alone,
+                false,
+                (false, false),
+            ),
+            ("Shift+Enter in a text field", shift, true, (false, false)),
+            (
+                "Ctrl/Cmd+Enter in a text field",
+                command,
+                true,
+                (false, false),
+            ),
+        ];
+        for (name, modifiers, focused, expected) in chords {
+            let mut app = a_window_with_a_note_selected();
+            let before = app.session.score().clone();
+            press_enter(&mut app, &egui::Context::default(), modifiers, focused);
+            assert_eq!(breaks_before_the_second_measure(&app), expected, "{name}");
+            match expected {
+                (true, _) => assert!(
+                    app.status.starts_with("line break: ok"),
+                    "{name}: {}",
+                    app.status
+                ),
+                (_, true) => assert!(
+                    app.status.starts_with("page break: ok"),
+                    "{name}: {}",
+                    app.status
+                ),
+                _ => {
+                    assert_eq!(app.session.score(), &before, "{name}: nothing changes");
+                    assert_eq!(app.status, "ready", "{name}: nothing runs");
+                }
+            }
+        }
+        // Pressed again, Shift+Enter clears the line break.
+        let mut app = a_window_with_a_note_selected();
+        let ctx = egui::Context::default();
+        press_enter(&mut app, &ctx, shift, false);
+        assert_eq!(breaks_before_the_second_measure(&app), (true, false));
+        press_enter(&mut app, &ctx, shift, false);
+        assert_eq!(
+            breaks_before_the_second_measure(&app),
+            (false, false),
+            "{}",
+            app.status
+        );
+    }
+
     #[test]
     fn toggle_exclusive_turning_on_clears_the_other() {
         assert_eq!(toggle_exclusive(false, true), (true, false));
@@ -1586,9 +1771,9 @@ mod tests {
     // piece of clipboard-wiring logic with no `egui::Context`/native-backend
     // dependency, so it gets real unit tests (the surrounding egui-side
     // dispatch — reading `ctx.input`, calling `output_mut`, wiring the
-    // toolbar buttons — is review-only, per the packet's own gate; there is
-    // no headless way to synthesize an `egui::Context` frame or an OS
-    // clipboard gesture here).
+    // toolbar buttons — is review-only, per the packet's own gate; an OS
+    // clipboard gesture cannot be synthesized here, though a headless frame
+    // can be, as `press_enter` runs one).
 
     #[test]
     fn paste_event_text_finds_the_paste_events_own_text() {
