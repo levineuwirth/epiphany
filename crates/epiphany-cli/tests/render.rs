@@ -5085,3 +5085,151 @@ fn a_slur_clears_the_accidentals_under_it() {
         }
     }
 }
+
+/// What a layout draws, as a sorted list: each glyph by name and place, each
+/// stroke with extent and each curve by its points, rounded, with provenance
+/// left out, so two imports whose ids differ compare by their ink.
+fn ink(layout: &epiphany_layout_ir::ResolvedLayoutIR) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for g in &layout.glyphs {
+        out.push(format!(
+            "glyph {} {:.3} {:.3}",
+            g.glyph.as_str(),
+            g.position.x.0,
+            g.position.y.0
+        ));
+    }
+    for s in layout.strokes.iter().filter(|s| s.from != s.to) {
+        out.push(format!(
+            "stroke {:.3} {:.3} {:.3} {:.3} {:.3}",
+            s.from.x.0, s.from.y.0, s.to.x.0, s.to.y.0, s.thickness.0
+        ));
+    }
+    for c in &layout.curves {
+        out.push(format!(
+            "curve {:.3} {:.3} {:.3} {:.3} {:.3} {:.3} {:.3} {:.3}",
+            c.p0.x.0, c.p0.y.0, c.p1.x.0, c.p1.y.0, c.p2.x.0, c.p2.y.0, c.p3.x.0, c.p3.y.0
+        ));
+    }
+    out.sort();
+    out
+}
+
+/// Until grace notes are drawn (X4c), the layout leaves a grace note out of
+/// what it draws: no ink traces to a grace or its pitch, its principal draws
+/// one head on its stem rather than a chord with it, and the page draws what
+/// the same measure without its graces draws, a beam among the graces and a
+/// slur from one to its principal included. The report names each grace and
+/// the slur as left undrawn.
+#[test]
+fn a_grace_note_is_not_drawn_as_a_member_of_its_principals_chord() {
+    use epiphany_core::TypedObjectId;
+    let measure = |graces: &str| {
+        format!(
+            "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\">\
+             <part-name>Flute</part-name></score-part></part-list><part id=\"P1\">\
+             <measure number=\"1\"><attributes><divisions>1</divisions><time><beats>4</beats>\
+             <beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef>\
+             </attributes><note><pitch><step>C</step><octave>5</octave></pitch>\
+             <duration>1</duration><voice>1</voice><type>quarter</type></note>{graces}\
+             <note><pitch><step>F</step><octave>4</octave></pitch><duration>1</duration>\
+             <voice>1</voice><type>quarter</type></note>\
+             <note><pitch><step>G</step><octave>4</octave></pitch><duration>1</duration>\
+             <voice>1</voice><type>quarter</type></note>\
+             <note><pitch><step>A</step><octave>4</octave></pitch><duration>1</duration>\
+             <voice>1</voice><type>quarter</type></note></measure></part></score-partwise>"
+        )
+    };
+    let graces = "<note><grace slash=\"yes\"/><pitch><step>E</step><alter>-1</alter>\
+         <octave>4</octave></pitch><voice>1</voice><type>eighth</type>\
+         <accidental>flat</accidental><beam number=\"1\">begin</beam>\
+         <notations><slur type=\"start\" number=\"1\"/></notations></note>\
+         <note><grace slash=\"yes\"/><pitch><step>G</step><octave>4</octave></pitch>\
+         <voice>1</voice><type>eighth</type><beam number=\"1\">end</beam></note>";
+    let with_slur = measure(graces).replacen(
+        "<voice>1</voice><type>quarter</type></note>\
+             <note><pitch><step>G</step>",
+        "<voice>1</voice><type>quarter</type><notations><slur type=\"stop\" number=\"1\"/>\
+             </notations></note><note><pitch><step>G</step>",
+        1,
+    );
+    assert_ne!(with_slur, measure(graces), "the slur's stop was written");
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let (graced, plain) = (dir.join("graced.musicxml"), dir.join("graceless.musicxml"));
+    std::fs::write(&graced, &with_slur).expect("written");
+    std::fs::write(&plain, measure("")).expect("written");
+    let loaded = load(&graced).expect("loads");
+    let score = &loaded.reduced.score;
+    let grace_events: Vec<_> = score
+        .events
+        .iter()
+        .filter(|e| e.grace().is_some())
+        .collect();
+    assert_eq!(grace_events.len(), 2, "the import makes both graces events");
+    assert_eq!(score.cross_cutting.slurs.len(), 1, "the slur is imported");
+    assert_eq!(
+        score.cross_cutting.beams.len(),
+        1,
+        "the graces' beam is imported"
+    );
+
+    let engraved = engrave(score);
+    let layout = &engraved.layout;
+    let mut grace_sources = Vec::new();
+    for e in &grace_events {
+        grace_sources.push(TypedObjectId::Event(e.id()));
+        if let epiphany_core::Event::Pitched(p) = e {
+            grace_sources.extend(p.pitches.iter().map(|ip| TypedObjectId::Pitch(ip.id)));
+        }
+    }
+    let traced = layout
+        .glyphs
+        .iter()
+        .map(|g| &g.provenance)
+        .chain(
+            layout
+                .strokes
+                .iter()
+                .filter(|s| s.from != s.to)
+                .map(|s| &s.provenance),
+        )
+        .chain(layout.curves.iter().map(|c| &c.provenance))
+        .filter(|p| grace_sources.contains(&p.source))
+        .count();
+    assert_eq!(traced, 0, "no ink traces to a grace note or its pitch");
+    let heads = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("notehead"))
+        .count();
+    assert_eq!(heads, 4, "four heads, none of them a grace's");
+    assert!(
+        layout
+            .glyphs
+            .iter()
+            .all(|g| !g.glyph.as_str().starts_with("accidental")),
+        "the grace's flat is not drawn"
+    );
+    assert!(
+        layout.curves.is_empty(),
+        "the slur from a grace is not drawn"
+    );
+    let without = load(&plain).expect("loads");
+    assert_eq!(
+        ink(layout),
+        ink(&engrave(&without.reduced.score).layout),
+        "the measure draws what it draws without its graces"
+    );
+
+    let found = omissions(score, layout, &engraved.diagnostics);
+    assert_eq!(found.kinds.get("grace note left undrawn"), Some(&2));
+    assert_eq!(
+        found.kinds.get("slur on a grace note left undrawn"),
+        Some(&1)
+    );
+    assert_eq!(found.kinds.get("grace note drawn as a plain note"), None);
+    assert_eq!(found.kinds.get("slur not drawn"), None);
+    assert!(!found
+        .unchecked
+        .contains_key("note: duration not one notated value"));
+}

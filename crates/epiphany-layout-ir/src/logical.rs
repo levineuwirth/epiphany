@@ -13,6 +13,7 @@
 //! change should invalidate it, Chapter 7 §7.1's requirement), and that
 //! provenance survives the whole pipeline.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::prepass::{derive_annotations, DerivedAnnotations, PrePassProfile};
@@ -593,7 +594,13 @@ pub struct LogicalLayoutIR {
 /// layout objects — both visual staves are preserved, neither is dropped. A
 /// stable-id collision (the same `(source, region)` reached twice, e.g. a staff
 /// listed twice in one staff extent) is de-duplicated.
+///
+/// A grace note is left out ([`drawn_view`]): until grace notes are drawn
+/// (X4c), the layout lays out the score as it stood before schema major 5
+/// brought them in. The [`ScoreVersion`] is still the whole score's.
 pub fn to_logical(score: &Score) -> LogicalLayoutIR {
+    let source = derive_score_version(score);
+    let score = &*drawn_view(score);
     let mut regions = Vec::new();
     let mut engraving_decisions = Vec::new();
     // The projected break overrides, keyed by owning region for the final
@@ -962,7 +969,6 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
         ))
     });
 
-    let source = derive_score_version(score);
     LogicalLayoutIR {
         source,
         regions,
@@ -973,6 +979,48 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
             .collect(),
         cross_region,
     }
+}
+
+/// The score as the layout draws it: every grace note left out, with the
+/// beams, slurs and ties that name one, until grace notes are drawn (X4c).
+/// Before schema major 5 the importer skipped a grace note, so the layout never
+/// met one; drawn through the paths every other note takes, a grace of zero
+/// duration would stand in its principal's chord as a full-size quarter note.
+/// A beam keeps its other notes while two remain. Borrowed when the score
+/// holds no grace note.
+pub(crate) fn drawn_view(score: &Score) -> Cow<'_, Score> {
+    let graces: BTreeSet<EventId> = score
+        .events
+        .iter()
+        .filter(|event| event.grace().is_some())
+        .map(Event::id)
+        .collect();
+    if graces.is_empty() {
+        return Cow::Borrowed(score);
+    }
+    let mut view = score.clone();
+    for grace in &graces {
+        view.events.remove(*grace);
+    }
+    for region in &mut view.canvas.regions {
+        if let Some(instances) = region.content.staff_instances_mut() {
+            for voice in instances.iter_mut().flat_map(|si| si.voices.iter_mut()) {
+                voice.events.retain(|event| !graces.contains(event));
+            }
+        }
+    }
+    let cc = &mut view.cross_cutting;
+    for beam in &mut cc.beams {
+        beam.events.retain(|event| !graces.contains(event));
+    }
+    cc.beams.retain(|beam| beam.events.len() >= 2);
+    cc.slurs
+        .retain(|slur| !graces.contains(&slur.start_event) && !graces.contains(&slur.end_event));
+    cc.ties
+        .retain(|tie| !graces.contains(&tie.start_event) && !graces.contains(&tie.end_event));
+    view.decomposition_attachments
+        .retain(|attachment| !graces.contains(&attachment.target));
+    Cow::Owned(view)
 }
 
 /// The canonical bytes of a projected break override's anchor (its ordering

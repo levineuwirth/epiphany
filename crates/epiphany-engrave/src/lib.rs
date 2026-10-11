@@ -322,8 +322,11 @@ pub struct Engraver {
 /// when a voice visiting a staff from its home on another began standing on
 /// its home's side, above when its home is above, and the staff's own first
 /// voice beside it alone, where the visitor had been ranked among the
-/// staff's own voices and drawn below (D46).
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(45);
+/// staff's own voices and drawn below (D46), and to `46` when a grace note,
+/// which schema major 5 imports as an event of zero duration, began being
+/// left out of the drawing until grace notes are drawn, where it had stood in
+/// its principal's chord as a full-size quarter note.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(46);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
