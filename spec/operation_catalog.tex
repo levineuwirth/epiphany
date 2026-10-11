@@ -2398,7 +2398,8 @@ Ratified with X3.1: a \texttt{Tuplet} (core specification
 surfaces. Tuplets live in the cross-cutting registry
 (\texttt{CrossCuttingStructures.tuplets}) but, as repeats are not, they are
 \emph{not} \texttt{CrossCuttingValue} kinds on the wire --- the cross-cutting
-operations admit only \texttt{Tie}/\texttt{Slur}/\texttt{Beam}/\texttt{Spanner}
+operations admit only \texttt{Tie}/\texttt{Slur}/\texttt{Beam}/\texttt{Spanner},
+and since version~0.21.0 \texttt{Marker} and \texttt{Lyric}
 (Section~\ref{sec:k0:create-cross-cutting}) --- so the tuplet's mint is a
 first-class primitive. It takes the root-level mints' bare-value shape
 (Section~\ref{sec:k0:create-view}): a tuplet carries its members by
@@ -2574,7 +2575,8 @@ Ratified with the schema-major-2 revision: the dedicated authoring pair for
 \sectionsc{Repeat Structures}). Repeats live in the cross-cutting registry
 but are \emph{not} \texttt{CrossCuttingValue} kinds on the wire --- the
 cross-cutting operations admit only
-\texttt{Tie}/\texttt{Slur}/\texttt{Beam}/\texttt{Spanner}
+\texttt{Tie}/\texttt{Slur}/\texttt{Beam}/\texttt{Spanner}, and since
+version~0.21.0 \texttt{Marker} and \texttt{Lyric}
 (Section~\ref{sec:k0:create-cross-cutting}) --- so the pair is a
 first-class primitive mirroring the cross-cutting disciplines.
 

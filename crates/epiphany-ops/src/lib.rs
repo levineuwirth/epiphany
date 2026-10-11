@@ -710,6 +710,14 @@ pub mod vectors;
 ///     says so). Locked by
 ///     `a_home_naming_its_voices_own_staff_is_refused_in_both_modes`.
 ///
+///   One verdict change X4b.2 made and this entry did not name until the
+///   review found it: a `DeleteCrossCutting` naming a marker or a lyric a
+///   base graph holds applies in graph-aware reduction, where version `3`
+///   refused every marker or lyric id `TargetMissing`, the operation then
+///   deleting only ties, slurs, beams and spanners. Base-free reduction,
+///   holding no base, refuses it in both versions; only a canonical base,
+///   which exists in tests alone (D4), reaches it.
+///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.
 ///

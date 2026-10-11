@@ -1751,8 +1751,8 @@ a breath mark, a caesura, staff text, a tempo mark (its text and an optional
 metronome, beside `SetTempoSegment` with no stored link, Q7), a rehearsal
 mark, segno and coda (Q2, Q3). Placement is not stored (Q8). `LyricLine`
 becomes `Lyric`, one syllable per event and verse (Q4): event, verse, text,
-syllabic form and extension; invariant 10 refuses a second syllable on one
-event and verse. Text is `Text`, a string held to Unicode NFC (Q6),
+syllabic form and extension; a second syllable on one event and verse is
+reported under its own label, `req:graph:lyric-syllable`, not invariant 10's. Text is `Text`, a string held to Unicode NFC (Q6),
 `TextLineDefinition`'s text among it; the decoder refuses any other form.
 
 **A wavy line and a pedal bracket (Q12).** `LineStyle::Wavy` (tag 3) and

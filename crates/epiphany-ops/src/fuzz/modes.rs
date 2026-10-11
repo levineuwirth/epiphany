@@ -55,6 +55,18 @@
 //! choice, never compound; and its hints are empty (no duration bounds, no
 //! alternatives, no textual instruction).
 //!
+//! Of schema major 5's values (X4b), some are written only in part. A wavy
+//! line is a spanner's alone, never a slur's, a tie's, or a staff's,
+//! instrument's or staff instance's lines, though each stamps major 5; no
+//! verdict reads a line style. A marker is anchored to an event or to a
+//! region by a musical offset, never to a measure or a wall-clock time, so the
+//! measure strand guard never meets one. A dynamic is one of four (`p`, `mf`,
+//! `sfz`, `niente`), never another nor `Other` with its text; a fermata takes
+//! two of its five shapes, a breath mark and a caesura one kind each, and a
+//! tempo mark always a quarter's metronome. An ornament stands alone on its
+//! note, with an accidental above and never below; a grace is an eighth, a
+//! sixteenth or a quarter, of at most one dot.
+//!
 //! Everything is seeded: [`generate`] is a function of its seed and length, so
 //! a finding reproduces from both. [`minimize`] shrinks a failing history to
 //! one that fails the same way, for a committed regression test.

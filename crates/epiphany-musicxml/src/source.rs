@@ -402,7 +402,8 @@ pub struct QuarterTone {
 }
 
 /// Counts taken straight from a part's elements by walks the reader does not
-/// run, sharing none of its code, as an independent check on it: the
+/// run, as a check on it, sharing none of its code but the expression
+/// census's (below): the
 /// `<note>` elements by kind and their tie starts, with no timing logic; the
 /// keys and clefs its `<attributes>` state; and, timed by a reading of their
 /// own, the quarter-tones at their values, the chord notes the model cannot
@@ -453,7 +454,8 @@ pub struct Census {
     /// two staves is a cross-staff beam.
     pub beam_places: Vec<CensusBeam>,
     /// The expression and text the model can hold, counted by class by a walk
-    /// of its own (schema major 5): each event's marks and ornaments, its
+    /// of its own that shares the reader's element helpers and acceptance
+    /// rules (schema major 5): each event's marks and ornaments, its
     /// grace notes, point marks, lyric syllables, lines begun and ended, and
     /// the places a tempo is set ([`expression_census`]).
     pub expression: BTreeMap<String, usize>,
@@ -638,8 +640,13 @@ fn note_census(part: Node) -> Census {
 /// the other kind differs from these counts, rather than passing as a
 /// feature of the source.
 /// The expression and text of a part the model can hold, by class, counted by
-/// a walk of the part's elements that shares none of the reader's code, the
-/// classes named as the score's values are (`mark staccato`, `marker
+/// a walk of the part's elements apart from the reader's. It is not
+/// independent of the reader: it reads the file through the same element
+/// helpers (`child`, `child_text`, `elements`) and writes out the same
+/// acceptance rules (the fermata texts, the metronome units admitted), so a
+/// misreading the two make alike passes it; a reader that shares no code with
+/// the importer is an outside census, run beside the import. The
+/// classes are named as the score's values are (`mark staccato`, `marker
 /// dynamic`, `spanner hairpin`): a note's marks and ornaments once per kind
 /// over its chord, a chord note on another staff, or not pitched, not among
 /// them; an ornament only on a pitched note, a mark not on a rest; each grace
