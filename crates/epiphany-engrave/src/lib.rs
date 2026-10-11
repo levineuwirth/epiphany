@@ -330,9 +330,11 @@ pub struct Engraver {
 /// span and three spaces at most, rather than running through it, to `48`
 /// when a slur or tie began passing the stems of its staff inside its span
 /// as it passes accidentals, to `49` when a tie meeting its first note's
-/// flag began starting past it, and to `50` when a tie that cannot pass a
-/// stem began passing its accidentals still.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(50);
+/// flag began starting past it, to `50` when a tie that cannot pass a stem
+/// began passing its accidentals still, and to `51` when a tie the spaced
+/// line left too short to start past its first note's flag began starting
+/// past it where its system's justification gives it the span.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(51);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -695,7 +697,9 @@ impl HorizontalRemap {
     /// stems of its staff that stand inside its span
     /// ([`clearance::clear_accidentals`]): a slur by its arc or, near an end,
     /// by lifting that end, a tie by its arc alone, a tie meeting its first
-    /// note's flag starting past it first ([`clearance::start_past_flag`]).
+    /// note's flag starting past it first ([`clearance::start_past_flag`]),
+    /// where the spaced line gives it the span; casting decides again for a
+    /// tie this leaves in its flag, on the span its justified system gives it.
     /// Its y is otherwise kept.
     fn curves(&self, input: &ConstrainedLayoutIR) -> Vec<Curve> {
         let anchors = span_anchors(input);
@@ -719,20 +723,7 @@ impl HorizontalRemap {
                     TypedObjectId::Slur(_) | TypedObjectId::Tie(_) => {
                         let tie = matches!(c.provenance.source, TypedObjectId::Tie(_));
                         let band = |of| in_band(of, &c.vertical_band);
-                        let spaced = if tie {
-                            clearance::start_past_flag(spaced, band(&flags))
-                        } else {
-                            spaced
-                        };
-                        // The stems inside the span, clear of those of the
-                        // notes the curve joins, which stand at its ends.
-                        let (x0, x3) = (spaced[0].x.0, spaced[3].x.0);
-                        let inside = |s: &&clearance::InkRect| {
-                            s.left > x0 + STEM_END_MARGIN && s.right < x3 - STEM_END_MARGIN
-                        };
-                        let inner: Vec<clearance::InkRect> =
-                            band(&stems).iter().filter(inside).copied().collect();
-                        clearance::clear_obstacles(spaced, band(&accidentals), &inner, tie)
+                        clear_curve(spaced, band(&flags), band(&accidentals), band(&stems), tie)
                     }
                     _ => spaced,
                 };
@@ -766,6 +757,72 @@ fn in_band<'a>(
 /// stand at its ends.
 const STEM_END_MARGIN: f32 = 0.6;
 
+/// `cp`, a slur or a tie, past the ink of its band it would meet: a tie
+/// meeting its first note's flag starting past it first
+/// ([`clearance::start_past_flag`]), then the accidentals, and the stems
+/// standing more than [`STEM_END_MARGIN`] inside its span, passed
+/// ([`clearance::clear_obstacles`]).
+pub(crate) fn clear_curve(
+    cp: [Point; 4],
+    flags: &[clearance::InkRect],
+    accidentals: &[clearance::InkRect],
+    stems: &[clearance::InkRect],
+    tie: bool,
+) -> [Point; 4] {
+    let cp = if tie {
+        clearance::start_past_flag(cp, flags)
+    } else {
+        cp
+    };
+    // The stems inside the span, clear of those of the notes the curve joins,
+    // which stand at its ends.
+    let (x0, x3) = (cp[0].x.0, cp[3].x.0);
+    let inner: Vec<clearance::InkRect> = stems
+        .iter()
+        .filter(|s| s.left > x0 + STEM_END_MARGIN && s.right < x3 - STEM_END_MARGIN)
+        .copied()
+        .collect();
+    clearance::clear_obstacles(cp, accidentals, &inner, tie)
+}
+
+/// `cp`, a tie where casting places it, started past its first note's flag
+/// if it still runs into it with the span to start past it, and then passed
+/// over the accidentals and stems of its band again ([`clear_curve`]), since
+/// its shape has changed; a tie that does not start past a flag is returned
+/// as it was. The spacing pass decides on the spaced line, which a justified
+/// system lengthens, so a tie it left in its flag for want of span may have
+/// the span once placed.
+pub(crate) fn restart_past_flag(
+    cp: [Point; 4],
+    flags: &[clearance::InkRect],
+    accidentals: &[clearance::InkRect],
+    stems: &[clearance::InkRect],
+) -> [Point; 4] {
+    if clearance::start_past_flag(cp, flags) == cp {
+        cp
+    } else {
+        clear_curve(cp, flags, accidentals, stems, true)
+    }
+}
+
+/// The slot a stroke rides if it is a stem: an event's upright stroke, at
+/// least 0.3 spaces long, whose ends ride one slot.
+pub(crate) fn stem_slot(
+    s: &Stroke,
+    anchors: &BTreeMap<GlyphObjectId, (SpringSlotId, SpringSlotId)>,
+) -> Option<SpringSlotId> {
+    if !matches!(s.provenance.source, TypedObjectId::Event(_))
+        || (s.from.x.0 - s.to.x.0).abs() > 1e-6
+        || (s.from.y.0 - s.to.y.0).abs() < 0.3
+    {
+        return None;
+    }
+    anchors
+        .get(&s.id())
+        .filter(|(start, end)| start == end)
+        .map(|(start, _)| *start)
+}
+
 impl HorizontalRemap {
     /// Every stem's ink where the spacing sets it, by its band: an event's
     /// upright stroke whose ends ride one slot.
@@ -776,16 +833,7 @@ impl HorizontalRemap {
     ) -> BTreeMap<epiphany_layout_ir::VerticalBandId, Vec<clearance::InkRect>> {
         let mut by_band: BTreeMap<_, Vec<clearance::InkRect>> = BTreeMap::new();
         for s in &input.strokes {
-            if !matches!(s.provenance.source, TypedObjectId::Event(_))
-                || (s.from.x.0 - s.to.x.0).abs() > 1e-6
-                || (s.from.y.0 - s.to.y.0).abs() < 0.3
-            {
-                continue;
-            }
-            let Some(delta) = anchors
-                .get(&s.id())
-                .filter(|(start, end)| start == end)
-                .and_then(|(start, _)| self.slot_delta.get(start))
+            let Some(delta) = stem_slot(s, anchors).and_then(|slot| self.slot_delta.get(&slot))
             else {
                 continue;
             };
@@ -3191,5 +3239,61 @@ mod tests {
         let top = map.hit(click).into_iter().next().expect("the click hits");
         assert_eq!(top.layout_object, glyph.provenance.stable_id);
         assert_eq!(top.source, glyph.provenance.source);
+    }
+
+    /// A tie casting finds running into its first note's flag, with the span
+    /// to start past it, starts past it and passes again the accidental its
+    /// new shape meets: here one its old shape passed. A tie meeting no flag
+    /// comes back as it was.
+    #[test]
+    fn a_tie_restarted_past_its_flag_passes_its_accidentals_again() {
+        use clearance::InkRect;
+        let p = Point::new;
+        let tie = [
+            p(0.0, 0.0),
+            p(10.0 / 3.0, 4.0 / 3.0),
+            p(20.0 / 3.0, 4.0 / 3.0),
+            p(10.0, 0.0),
+        ];
+        let flag = InkRect {
+            left: 0.0,
+            right: 0.8,
+            bottom: 0.0,
+            top: 3.0,
+        };
+        let flat = InkRect {
+            left: 2.8,
+            right: 3.2,
+            bottom: -1.0,
+            top: 0.55,
+        };
+        // The least height of a curve over the flat's top, across its width.
+        let over = |cp: &[Point; 4]| {
+            let at = |a: f32, b: f32, c: f32, d: f32, t: f32| {
+                let u = 1.0 - t;
+                u * u * u * a + 3.0 * u * u * t * b + 3.0 * u * t * t * c + t * t * t * d
+            };
+            (0..=4000)
+                .map(|k| k as f32 / 4000.0)
+                .map(|t| {
+                    let x = at(cp[0].x.0, cp[1].x.0, cp[2].x.0, cp[3].x.0, t);
+                    let y = at(cp[0].y.0, cp[1].y.0, cp[2].y.0, cp[3].y.0, t);
+                    (x, y)
+                })
+                .filter(|(x, _)| *x >= flat.left && *x <= flat.right)
+                .map(|(_, y)| y - flat.top)
+                .fold(f32::INFINITY, f32::min)
+        };
+        assert!(over(&tie) >= 0.2, "the tie as it stood passes the flat");
+        let moved = clearance::start_past_flag(tie, &[flag]);
+        assert!(moved[0].x.0 >= 1.0 - 1e-4, "the tie starts past the flag");
+        assert!(over(&moved) < 0.2, "moved alone, it meets the flat");
+        let placed = restart_past_flag(tie, &[flag], &[flat], &[]);
+        assert_eq!((placed[0], placed[3]), (moved[0], tie[3]), "its ends");
+        assert!(
+            over(&placed) >= clearance::ACCIDENTAL_CLEARANCE - 1e-3,
+            "it passes the flat again"
+        );
+        assert_eq!(restart_past_flag(tie, &[], &[flat], &[]), tie);
     }
 }

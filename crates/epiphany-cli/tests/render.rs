@@ -5800,3 +5800,91 @@ fn a_tie_starts_past_its_first_notes_flag() {
         "the tie runs through the flag {first:?}"
     );
 }
+
+/// A tie starts past its first note's flag on the span the page gives it,
+/// not the span the spaced line did: an upper voice's unbeamed sixteenth C5,
+/// flag up, tied to a quarter over a whole note, in six measures on a page
+/// fifty spaces wide. The spaced line leaves each tie too short to start
+/// past its flag, but each system is justified, so on the page every tie
+/// has the room and starts past its flag. Before `ENGRAVER_VERSION` 51 the
+/// decision was taken on the spaced line, and every tie ran into its flag.
+#[test]
+fn a_tie_starts_past_its_flag_on_its_justified_span() {
+    let note = |pitch: Option<&str>, duration: u8, kind: &str, voice: u8, tie: &str| {
+        let body = pitch.map_or("<rest/>".to_string(), |pitch| {
+            let (step, octave) = pitch.split_at(1);
+            format!("<pitch><step>{step}</step><octave>{octave}</octave></pitch>")
+        });
+        let (tie_el, tied) = match tie {
+            "" => (String::new(), String::new()),
+            kind => (
+                format!("<tie type=\"{kind}\"/>"),
+                format!("<notations><tied type=\"{kind}\"/></notations>"),
+            ),
+        };
+        let stem = match (pitch, voice) {
+            (None, _) => "",
+            (_, 1) => "<stem>up</stem>",
+            _ => "<stem>down</stem>",
+        };
+        format!(
+            "<note>{body}<duration>{duration}</duration>{tie_el}<voice>{voice}</voice>\
+             <type>{kind}</type>{stem}{tied}</note>"
+        )
+    };
+    let mut measures = String::new();
+    for m in 1..=6 {
+        let attributes = if m == 1 {
+            "<attributes><divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+             </time><clef><sign>G</sign><line>2</line></clef></attributes>"
+        } else {
+            ""
+        };
+        measures.push_str(&format!(
+            "<measure number=\"{m}\">{attributes}{}{}{}{}{}<backup><duration>16</duration>\
+             </backup>{}</measure>",
+            note(Some("C5"), 1, "16th", 1, "start"),
+            note(Some("C5"), 4, "quarter", 1, "stop"),
+            note(None, 1, "16th", 1, ""),
+            note(Some("A4"), 2, "eighth", 1, ""),
+            note(Some("B4"), 8, "half", 1, ""),
+            note(Some("F4"), 16, "whole", 2, ""),
+        ));
+    }
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><defaults><scaling><millimeters>7</millimeters>\
+         <tenths>40</tenths></scaling><page-layout><page-height>3000</page-height>\
+         <page-width>500</page-width><page-margins type=\"both\"><left-margin>40</left-margin>\
+         <right-margin>40</right-margin><top-margin>80</top-margin>\
+         <bottom-margin>80</bottom-margin></page-margins></page-layout></defaults><part-list>\
+         <score-part id=\"P1\"><part-name>A</part-name></score-part></part-list>\
+         <part id=\"P1\">{measures}</part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("tie_past_a_flag_justified.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = epiphany_cli::engrave_loaded(&loaded).layout;
+    assert!(
+        layout.systems().count() > 2,
+        "the six measures wrap into justified systems"
+    );
+    let ties = ties_of(&layout);
+    assert_eq!(ties.len(), 6, "a tie in each measure");
+    let flags: Vec<[f32; 4]> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("flag"))
+        .map(glyph_box)
+        .collect();
+    for tie in &ties {
+        let (x0, y0) = tie[0];
+        let first = flags
+            .iter()
+            .find(|b| b[0] < x0 + 0.5 && b[2] > x0 - 1.5 && b[1] < y0 + 4.0 && b[3] > y0 - 4.0)
+            .expect("the tied sixteenth's flag at the tie's start");
+        assert!(
+            !curve_enters(tie, *first),
+            "the tie from ({x0:.2}, {y0:.2}) runs through the flag {first:?}"
+        );
+    }
+}

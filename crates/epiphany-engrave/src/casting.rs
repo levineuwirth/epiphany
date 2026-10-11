@@ -85,6 +85,7 @@ use epiphany_layout_ir::{
     Transform2D, VerticalBand, VerticalBandId, VerticalBandKind,
 };
 
+use crate::clearance::InkRect;
 use crate::owning_glyph;
 
 /// The registry id for the engraver's **system-continuation synthesis**: the
@@ -1553,6 +1554,15 @@ pub(crate) fn cast_off(
     let mut curve_continuations: Vec<Curve> = Vec::new();
     let mut curve_system: Vec<Option<usize>> = Vec::with_capacity(spaced_curves.len());
     let mut curve_continuation_system: Vec<Option<usize>> = Vec::new();
+    let ink = placed_ink(
+        input,
+        &glyphs,
+        &glyph_system,
+        &strokes,
+        &stroke_system,
+        &anchors,
+    );
+    let no_ink = PlacedInk::default();
     for (ci, (curve, fate)) in spaced_curves.iter().zip(&curve_fates).enumerate() {
         let curve_staff = curve_staff_of[ci];
         // A slur has no intra-slot structure, so its control points map straight
@@ -1573,10 +1583,21 @@ pub(crate) fn cast_off(
                     .get(&curve.id())
                     .filter(|_| system.is_some())
                     .and_then(|(start, end)| Some((slot_dx(start)?, slot_dx(end)?)));
-                let [p0, p1, p2, p3] = match anchored {
+                let placed = match anchored {
                     Some((start, end)) => crate::anchored_curve(curve.control_points(), start, end)
                         .map(|pt| Point::new(pt.x.0, pt.y.0 + p.dy)),
                     None => shift(curve.control_points(), &p),
+                };
+                // A tie the spacing left running into its first note's flag,
+                // the spaced line too short to start it past the flag, starts
+                // past it where its system's justification gives it the span,
+                // and passes the accidentals and stems of its band again there.
+                let [p0, p1, p2, p3] = match (system, curve.provenance.source) {
+                    (Some(s), TypedObjectId::Tie(_)) => {
+                        let ink = ink.get(&(*s, curve.vertical_band)).unwrap_or(&no_ink);
+                        crate::restart_past_flag(placed, &ink.flags, &ink.accidentals, &ink.stems)
+                    }
+                    _ => placed,
                 };
                 curves.push(Curve {
                     p0,
@@ -2651,6 +2672,68 @@ fn justify_system(
         dy,
         knots: Rc::from(knots),
     }
+}
+
+/// The ink a tie passes once its system is placed: the flags, accidentals and
+/// stems of one system's band where the page sets them.
+#[derive(Default)]
+struct PlacedInk {
+    flags: Vec<InkRect>,
+    accidentals: Vec<InkRect>,
+    stems: Vec<InkRect>,
+}
+
+/// Each system's [`PlacedInk`], by band, from the baked glyphs and strokes
+/// (each parallel to the input's for as many as the input holds).
+fn placed_ink(
+    input: &ConstrainedLayoutIR,
+    glyphs: &[ResolvedGlyph],
+    glyph_system: &[Option<usize>],
+    strokes: &[Stroke],
+    stroke_system: &[Option<usize>],
+    anchors: &BTreeMap<GlyphObjectId, (SpringSlotId, SpringSlotId)>,
+) -> BTreeMap<(usize, VerticalBandId), PlacedInk> {
+    let mut ink: BTreeMap<(usize, VerticalBandId), PlacedInk> = BTreeMap::new();
+    for ((glyph, placed), system) in input.glyphs.iter().zip(glyphs).zip(glyph_system) {
+        let name = glyph.glyph.as_str();
+        let flag = name.starts_with("flag");
+        let Some(s) = system.filter(|_| flag || name.starts_with("accidental")) else {
+            continue;
+        };
+        let (x, y, b) = (
+            placed.position.x.0,
+            placed.position.y.0,
+            placed.bounding_box,
+        );
+        let rect = InkRect {
+            left: x + b.left.0,
+            right: x + b.right.0,
+            bottom: y + b.bottom.0,
+            top: y + b.top.0,
+        };
+        let entry = ink.entry((s, glyph.vertical_band)).or_default();
+        if flag {
+            entry.flags.push(rect);
+        } else {
+            entry.accidentals.push(rect);
+        }
+    }
+    for ((stroke, placed), system) in input.strokes.iter().zip(strokes).zip(stroke_system) {
+        let (Some(s), Some(_)) = (system, crate::stem_slot(stroke, anchors)) else {
+            continue;
+        };
+        let (x, half) = (placed.from.x.0, placed.thickness.0 * 0.5);
+        ink.entry((*s, stroke.vertical_band))
+            .or_default()
+            .stems
+            .push(InkRect {
+                left: x - half,
+                right: x + half,
+                bottom: placed.from.y.0.min(placed.to.y.0),
+                top: placed.from.y.0.max(placed.to.y.0),
+            });
+    }
+    ink
 }
 
 /// Ends a staff line at `end`, the right edge of the barline closing its

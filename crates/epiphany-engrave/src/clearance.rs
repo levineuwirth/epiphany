@@ -2,7 +2,9 @@
 //! the stems of its staff inside its span (`ENGRAVER_VERSION` 48, X5c.3): a
 //! stem's ink is passed as an accidental's is. A tie whose start runs through
 //! its first note's flag starts past the flag first ([`start_past_flag`],
-//! `ENGRAVER_VERSION` 49, X5c.4).
+//! `ENGRAVER_VERSION` 49, X5c.4), and a tie the spaced line leaves too short
+//! for that starts past it once casting has justified its system, passing its
+//! accidentals and stems again there (`ENGRAVER_VERSION` 51).
 //!
 //! The constrained pass shapes a slur over the heads and stems of the columns
 //! it spans and a tie between its heads, in a frame where columns stand closer

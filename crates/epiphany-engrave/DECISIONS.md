@@ -1863,3 +1863,23 @@ the tie can and, where it cannot pass a stem, the accidentals alone, as at
 version 47. Slurs, which keep what they clear, are unchanged. Locked by
 `clearance`'s `a_tie_that_cannot_pass_a_stem_still_passes_its_accidental`.
 No golden changed.
+
+## ENGRAVER_VERSION 50 → 51: a tie starts past its flag on its justified span (X5c fix round 1, 2026-10-11)
+
+Version 49 decided a tie's start past its first note's flag in the spacing
+pass, on the spaced line, and kept a tie the move would leave shorter than a
+space running into its flag. Casting then justifies each system, giving its
+note columns their share of the slack, and carries an anchored tie between
+its end slots' new places, so on the page such a tie could have spaces past
+the flag and still run through it (C5c review 1's M1: a flagged sixteenth
+tied to a quarter, on every justified system). Casting now decides again for
+each tie of a system where it places it: one still running into its flag,
+with the span there to start past it, starts past it
+(`restart_past_flag`), and since its shape has changed it passes the
+accidentals and stems of its band again, gathered where the page sets them
+(`casting::placed_ink`). A tie the spacing already started past its flag,
+and every other curve, is placed as before. Locked by
+`a_tie_starts_past_its_flag_on_its_justified_span` (`epiphany-cli`: the
+review's shape, six measures on a page fifty spaces wide) and
+`a_tie_restarted_past_its_flag_passes_its_accidentals_again` (a tie the
+move brings onto a flat its old shape passed).
