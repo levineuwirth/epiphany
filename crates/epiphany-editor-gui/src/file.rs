@@ -162,22 +162,8 @@ impl Opened {
         why: &str,
     ) -> Result<String, String> {
         match self.document.reconcile(session) {
-            Ok(Reconciled::Saved {
-                saved,
-                restored,
-                dropped,
-            }) => {
+            Ok(Reconciled::Saved(saved)) => {
                 let mut message = format!("{why}; it landed: {}", saved_to(path, saved));
-                if restored > 0 {
-                    message.push_str(&format!(
-                        "; {restored} edit(s) undone since are in the file and drawn again"
-                    ));
-                }
-                if dropped > 0 {
-                    message.push_str(&format!(
-                        "; {dropped} later edit(s) conflicted with them and were discarded"
-                    ));
-                }
                 if session.is_dirty() {
                     message.push_str("; the edits made since are unsaved");
                 }
@@ -187,8 +173,8 @@ impl Opened {
                 "{why}; it did not land: the edits are unsaved, save again"
             )),
             Ok(Reconciled::StillIndeterminate) => Err(format!(
-                "{why}; whether it landed is still unknown, and nothing more is saved until it \
-                 is: save again to retry"
+                "{why}; whether it landed is still unknown, and until it is nothing more is \
+                 saved and its edits cannot be undone: save again to retry"
             )),
             Err(e) => Err(format!(
                 "{why}; it could not be settled ({e}): save again to retry"
@@ -300,7 +286,7 @@ pub fn export_pages(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use epiphany_core::{CmnNominal, MusicalDuration, MusicalPosition, RationalTime};
 
@@ -328,7 +314,7 @@ mod tests {
     }
 
     /// Enters a C at the start of the first voice.
-    fn edit(session: &mut EditorSession) {
+    pub(crate) fn edit(session: &mut EditorSession) {
         edit_at(session, 0);
     }
 
@@ -445,7 +431,7 @@ mod tests {
     /// A window on a saved new score whose store fails the flushes `fail`
     /// names. A save's commit flushes three times, the third its commit point,
     /// and reconciling flushes once more.
-    fn flaky_window(fail: Vec<u32>) -> (Opened, EditorSession) {
+    pub(crate) fn flaky_window(fail: Vec<u32>) -> (Opened, EditorSession) {
         let operations = ScoreSetup::single_staff("Piano", 2)
             .operations(ReplicaId::generate())
             .unwrap();

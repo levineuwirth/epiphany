@@ -619,7 +619,20 @@ impl EditorApp {
         self.needs_render = true;
     }
 
-    /// Runs an undo/redo step (which returns `None` when there is nothing to do),
+    /// Undoes the last edit, recording the outcome in the status line: while a save
+    /// is unsettled, undo stops at the edits it staged, and the line says why
+    /// (`EditorError::UnsettledSave`).
+    fn do_undo(&mut self) {
+        self.run("undo", |s| s.undo());
+    }
+
+    /// Whether the Undo button is pressable: an edit can be undone, or undo is
+    /// held at an unsettled save's edits, which a press reports.
+    fn undo_enabled(&self) -> bool {
+        self.session.can_undo() || self.session.has_unsettled_save()
+    }
+
+    /// Runs a redo step (which returns `None` when there is nothing to do),
     /// recording the outcome in the status line and scheduling a re-render.
     fn run_history(
         &mut self,
@@ -794,10 +807,10 @@ impl EditorApp {
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             if ui
-                .add_enabled(self.session.can_undo(), egui::Button::new("↶ Undo"))
+                .add_enabled(self.undo_enabled(), egui::Button::new("↶ Undo"))
                 .clicked()
             {
-                self.run_history("undo", |s| s.undo());
+                self.do_undo();
             }
             if ui
                 .add_enabled(self.session.can_redo(), egui::Button::new("↷ Redo"))
@@ -1036,7 +1049,7 @@ impl EditorApp {
             self.run(name, |s| s.toggle_break_after_selection(kind));
         }
         if k.undo {
-            self.run_history("undo", |s| s.undo());
+            self.do_undo();
         }
         if k.redo {
             self.run_history("redo", |s| s.redo());
@@ -1615,5 +1628,28 @@ mod tests {
             egui::Event::Paste("second".to_string()),
         ];
         assert_eq!(paste_event_text(&events), Some("second"));
+    }
+
+    /// While a save is unsettled, undo stops at the edits it staged and the status
+    /// line says why; the Undo button stays pressable, so a press can say it. Once
+    /// the next save settles it, the edit is saved and undo stops at the save.
+    #[test]
+    fn an_undo_held_at_an_unsettled_save_is_reported() {
+        let mut app = EditorApp::new(None);
+        // The commit point fails, and so does the fresh barrier after it.
+        app.install(file::tests::flaky_window(vec![3, 4]));
+        file::tests::edit(&mut app.session);
+        app.do_save();
+        assert!(app.status.contains("still unknown"), "{}", app.status);
+        let drawn = app.session.score().clone();
+        assert!(app.undo_enabled() && !app.session.can_undo());
+        app.do_undo();
+        assert_eq!(app.status, format!("undo: {}", EditorError::UnsettledSave));
+        assert_eq!(app.session.score(), &drawn, "the edit stays");
+        app.do_save();
+        assert!(app.status.contains("it landed"), "{}", app.status);
+        assert!(!app.undo_enabled());
+        app.do_undo();
+        assert_eq!(app.status, "undo: nothing to undo");
     }
 }

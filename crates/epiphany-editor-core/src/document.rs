@@ -25,10 +25,11 @@
 //! the units unsaved and undoable ([`DocumentError::Bundle`]). One that
 //! succeeds promotes them ([`Saved`]). One whose commit-point flush fails is
 //! indeterminate: the bundle poisons itself read-only, the units stay unsaved,
-//! the document keeps exactly the units it staged, and
-//! [`EditorDocument::reconcile`] reopens the store, checks whether the staged
-//! blocks are reachable and, only after a fresh durability barrier succeeds,
-//! reports those units saved, whatever the session has done since.
+//! the document keeps exactly the units it staged, and undo stops at them, as it
+//! stops at a save, until [`EditorDocument::reconcile`] settles it. Reconciling
+//! reopens the store and checks whether the staged blocks are reachable; if they
+//! are, and a fresh durability barrier succeeds, those units are reported saved
+//! and committed, and if they are not, they are ordinary unsaved units again.
 //!
 //! Save As ([`EditorDocument::save_as`]) never writes the document's own bundle:
 //! it copies what a session draws, saved and unsaved, into a new document under
@@ -261,7 +262,8 @@ pub enum DocumentError {
     /// settled it; nothing is saved meanwhile.
     RecoveryRequired,
     /// The commit-point flush failed, so whether the commit landed is unknown. The
-    /// session's units stay unsaved until [`EditorDocument::reconcile`] decides.
+    /// session's units stay unsaved, and its undo stops at them, until
+    /// [`EditorDocument::reconcile`] decides.
     Indeterminate(BundleError),
     /// The session over the document could not be built.
     Editor(EditorError),
@@ -345,19 +347,9 @@ pub enum Reconciled {
     /// durability barrier succeeded: exactly the units that save staged are
     /// saved and promoted. Units entered since stay applied, unsaved and
     /// undoable.
-    Saved {
-        /// What the save committed.
-        saved: Saved,
-        /// Units of the save the session had undone since: they are in the file
-        /// all the same, so they are committed and drawn again.
-        restored: usize,
-        /// Units entered since that no longer reduce cleanly once the restored
-        /// units are back (they were entered on a history that had undone them),
-        /// and are dropped. Always 0 when nothing was restored.
-        dropped: usize,
-    },
+    Saved(Saved),
     /// The selected generation does not reach the staged blocks: the units are
-    /// unsaved and undoable, and the document is writable again.
+    /// unsaved and undoable again, and the document is writable again.
     NotSaved,
     /// The fresh durability barrier failed: neither saved nor unsaved can be
     /// claimed, and the document stays in recovery.
@@ -633,7 +625,8 @@ impl<S: BlockStore> EditorDocument<S> {
     /// A commit that fails before its commit point returns
     /// [`DocumentError::Bundle`] with nothing promoted; one whose commit-point flush
     /// fails returns [`DocumentError::Indeterminate`], keeping the units it staged,
-    /// and the document then saves nothing until [`Self::reconcile`] settles it.
+    /// which the session's undo cannot then reach, and the document then saves
+    /// nothing until [`Self::reconcile`] settles it.
     pub fn save(&mut self, session: &mut EditorSession) -> Result<Saved, DocumentError> {
         // An unsettled commit is the document's state, whichever session asks.
         if self.unconfirmed.is_some() {
@@ -660,7 +653,7 @@ impl<S: BlockStore> EditorDocument<S> {
             Err(e) if self.bundle.is_read_only() => {
                 self.unconfirmed = Some(Unconfirmed {
                     chunks: staged_ids(&staged),
-                    units: session.applied_units(),
+                    units: session.hold_staged(),
                 });
                 Err(DocumentError::Indeterminate(e))
             }
@@ -696,9 +689,10 @@ impl<S: BlockStore> EditorDocument<S> {
     /// reachable from it, and only then runs a fresh durability barrier, which
     /// must succeed before the save is reported. What it promotes is exactly the
     /// units that save staged, never what the session holds now: a unit entered
-    /// since stays applied, unsaved and undoable, and a unit of the save undone
-    /// since is in the file all the same, so it is committed and drawn again
-    /// ([`Reconciled::Saved`]).
+    /// since stays applied, unsaved and undoable ([`Reconciled::Saved`]). Undo
+    /// could not reach a staged unit while the save was unsettled, so none was
+    /// undone or forked away. If the save did not land, its units become ordinary
+    /// unsaved units, undoable again ([`Reconciled::NotSaved`]).
     ///
     /// Nothing is leased while a save is unsettled, so only the session that made
     /// it holds the lease; any other is refused. A refused session, or a reopen
@@ -741,8 +735,8 @@ impl<S: BlockStore> EditorDocument<S> {
         };
         if !staged.chunks.iter().all(|id| reachable.contains(id)) {
             // The selected generation is the one before the save; the session keeps
-            // its units, under a lease renewed for that generation.
-            session.lease = Some(Lease {
+            // its units, released to undo, under a lease renewed for that generation.
+            session.release(Lease {
                 generation: self.generation(),
                 ..lease
             });
@@ -757,7 +751,7 @@ impl<S: BlockStore> EditorDocument<S> {
         self.committed = self.committed.extended(&envelopes);
         self.prepared = None;
         let generation = self.generation();
-        let (restored, dropped) = session.settle(
+        session.settle(
             self.committed.clone(),
             Lease {
                 generation,
@@ -765,14 +759,10 @@ impl<S: BlockStore> EditorDocument<S> {
             },
             &units,
         );
-        Ok(Reconciled::Saved {
-            saved: Saved {
-                generation,
-                envelopes: envelopes.len(),
-            },
-            restored,
-            dropped,
-        })
+        Ok(Reconciled::Saved(Saved {
+            generation,
+            envelopes: envelopes.len(),
+        }))
     }
 
     /// Save As (`req:format:file-document-lineage-identity`): what `session` draws,

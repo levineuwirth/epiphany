@@ -512,6 +512,15 @@ pub enum EditorError {
     /// set before a measure, and not before the region's first, which starts a
     /// system anyway; or a break was asked after the last measure.
     NotAMeasureStart,
+    /// [`EditorSession::undo`] found no applied edit: none was made since the
+    /// session opened or was last saved, or each has been undone.
+    NothingToUndo,
+    /// [`EditorSession::undo`] reached an edit a save staged whose outcome is
+    /// still unknown (its commit point's flush failed). Undo stops at the edits
+    /// that save staged, as it stops at any save, until
+    /// [`EditorDocument::reconcile`] settles it: they are committed if it
+    /// landed, and ordinary unsaved edits again if it did not. Nothing changes.
+    UnsettledSave,
 }
 
 impl fmt::Display for EditorError {
@@ -583,6 +592,11 @@ impl fmt::Display for EditorError {
             EditorError::NotAMeasureStart => {
                 f.write_str("a line or page break goes before a measure after the first")
             }
+            EditorError::NothingToUndo => f.write_str("nothing to undo"),
+            EditorError::UnsettledSave => f.write_str(
+                "this edit is in a save whose outcome is still unknown; undo stops there until \
+                 the save settles",
+            ),
         }
     }
 }
@@ -663,6 +677,13 @@ pub struct EditorSession {
     // The size (envelope count) of each applied unit, in order, so undo can drop a whole
     // unit at once. `undo_units.iter().sum() == applied.len()`.
     undo_units: Vec<usize>,
+    // How many applied units, oldest first, a save staged whose outcome is unknown:
+    // undo stops above them, as it stops at a save, until `EditorDocument::reconcile`
+    // commits them (the save landed) or releases them as ordinary unsaved units (it
+    // did not). 0 when no save is unsettled. No staged unit is undone meanwhile, so
+    // none is forked away by a later edit, and the staged units stay the oldest
+    // applied ones.
+    unsettled: usize,
     // Units undone and available to redo, most-recently-undone last (LIFO). Cleared by a
     // new edit; a redo re-appends the top unit and re-reduces.
     redo_stack: Vec<Vec<OperationEnvelope>>,
@@ -749,6 +770,7 @@ impl EditorSession {
             lease,
             applied: Vec::new(),
             undo_units: Vec::new(),
+            unsettled: 0,
             redo_stack: Vec::new(),
             authored: Vec::new(),
             active_extensions: Vec::new(),
@@ -1572,13 +1594,27 @@ impl EditorSession {
     /// Undoes the most recent edit (one user action — a primitive, or a whole
     /// transaction). Re-reduces the log without that unit, so even a delete is undone
     /// (its tombstone is simply never produced). The unit moves to the redo stack.
-    /// `None` if there is nothing to undo.
-    pub fn undo(&mut self) -> Option<EditOutcome> {
-        let unit = *self.undo_units.last()?;
+    ///
+    /// Refused, with nothing changed: [`EditorError::NothingToUndo`] when no edit is
+    /// applied (undo stops at a save), and [`EditorError::UnsettledSave`] when the
+    /// most recent edit is one a save staged whose outcome is still unknown, since
+    /// undo stops at those edits too until the save settles.
+    pub fn undo(&mut self) -> Result<EditOutcome, EditorError> {
+        if self.undo_units.len() <= self.unsettled {
+            return Err(if self.unsettled > 0 {
+                EditorError::UnsettledSave
+            } else {
+                EditorError::NothingToUndo
+            });
+        }
+        let unit = *self
+            .undo_units
+            .last()
+            .expect("a unit stands above the floor");
         let cut = self.applied.len() - unit;
         // A prefix of a valid log is itself valid (units are dropped from the end, so
         // every remaining op's causal predecessors are still present), so this succeeds.
-        let materialized = self.materialize(&self.applied[..cut]).ok()?;
+        let materialized = self.materialize(&self.applied[..cut])?;
         let graph_changed = materialized.score != self.score;
         let undone = self.applied.split_off(cut);
         self.redo_stack.push(undone);
@@ -1586,7 +1622,7 @@ impl EditorSession {
         self.install(materialized);
         let selection_preserved = self.reresolve_selection();
         self.reresolve_caret();
-        Some(EditOutcome {
+        Ok(EditOutcome {
             graph_changed,
             selection_preserved,
         })
@@ -1621,15 +1657,18 @@ impl EditorSession {
     /// unit's causal predecessors are the applied prefix it was undone from, which
     /// the save committed, so a redo still reduces with every predecessor present.
     pub(crate) fn promote(&mut self, committed: document::Committed, lease: document::Lease) {
+        debug_assert_eq!(
+            self.unsettled, 0,
+            "a document saves nothing while unsettled"
+        );
         self.committed = committed;
         self.applied.clear();
         self.undo_units.clear();
         self.lease = Some(lease);
     }
 
-    /// The applied envelopes split into their units, oldest first: what a save
-    /// stages.
-    pub(crate) fn applied_units(&self) -> Vec<Vec<OperationEnvelope>> {
+    /// The applied envelopes split into their units, oldest first.
+    fn applied_units(&self) -> Vec<Vec<OperationEnvelope>> {
         let mut units = Vec::with_capacity(self.undo_units.len());
         let mut at = 0;
         for &size in &self.undo_units {
@@ -1639,73 +1678,58 @@ impl EditorSession {
         units
     }
 
+    /// Holds every applied unit below undo's reach while the save that staged them
+    /// is unsettled, its commit point's flush having failed, and returns them, oldest
+    /// first, for the document to keep until it reconciles.
+    pub(crate) fn hold_staged(&mut self) -> Vec<Vec<OperationEnvelope>> {
+        self.unsettled = self.undo_units.len();
+        self.applied_units()
+    }
+
     /// Settles the session after an indeterminate save whose blocks landed
-    /// ([`EditorDocument::reconcile`]): `committed` now holds `staged`, exactly the
-    /// units that save staged, whatever the session has done since.
-    ///
-    /// A unit entered since stays applied and undoable. A unit of the save undone
-    /// since is in the file all the same: it leaves the redo stack for the
-    /// committed partition, and the session is materialized again with it. If a
-    /// later edit forked it away instead, the units entered after the fork never
-    /// saw it: the longest run of them that still reduces cleanly with it is kept
-    /// and the rest dropped, and the redo stack, built on the same forked history,
-    /// is cleared. Returns how many staged units were restored and how many later
-    /// units were dropped.
+    /// ([`EditorDocument::reconcile`]): `committed` now holds `staged`, the units
+    /// that save staged, which undo could not reach meanwhile and which are
+    /// therefore still the oldest applied units. They move into the committed
+    /// partition, as at a save; units entered since stay applied and undoable, and
+    /// the redo stack survives, as it survives a save.
     pub(crate) fn settle(
         &mut self,
         committed: document::Committed,
         lease: document::Lease,
         staged: &[Vec<OperationEnvelope>],
-    ) -> (usize, usize) {
-        // A unit is named by its first envelope: a primitive, or a transaction's
-        // descriptor.
-        let head = |unit: &Vec<OperationEnvelope>| unit.first().map(|envelope| envelope.id);
-        let staged_heads: BTreeSet<_> = staged.iter().filter_map(head).collect();
-        let applied_heads: BTreeSet<_> = self.applied_units().iter().filter_map(head).collect();
-        let redo_heads: BTreeSet<_> = self.redo_stack.iter().filter_map(head).collect();
-        let restored: Vec<_> = staged_heads.difference(&applied_heads).copied().collect();
-        let forked = restored.iter().any(|id| !redo_heads.contains(id));
-        let later: Vec<Vec<OperationEnvelope>> = self
-            .applied_units()
-            .into_iter()
-            .filter(|unit| head(unit).is_some_and(|id| !staged_heads.contains(&id)))
-            .collect();
-        self.redo_stack
-            .retain(|unit| head(unit).is_some_and(|id| !staged_heads.contains(&id)));
-        if forked {
-            self.redo_stack.clear();
-        }
+    ) {
+        assert_eq!(
+            self.applied_units().get(..staged.len()),
+            Some(staged),
+            "the units an unsettled save staged stay the oldest applied ones"
+        );
+        let envelopes: usize = staged.iter().map(Vec::len).sum();
+        self.applied.drain(..envelopes);
+        self.undo_units.drain(..staged.len());
+        self.unsettled = 0;
         self.committed = committed;
         self.lease = Some(lease);
-        if restored.is_empty() {
-            // Every staged unit is still applied, ahead of the later ones, so the
-            // operation set is unchanged: a partition move, as at a save.
-            self.undo_units = later.iter().map(Vec::len).collect();
-            self.applied = later.concat();
-            return (0, 0);
-        }
-        let mut keep = later.len();
-        let materialized = loop {
-            let log = later[..keep].concat();
-            match self.materialize(&log) {
-                Ok(materialized) => break materialized,
-                // With no later unit the log is the partition alone: what the save
-                // staged, which the session drew when it saved.
-                Err(_) if keep > 0 => keep -= 1,
-                Err(err) => panic!("the saved state no longer materializes: {err:?}"),
-            }
-        };
-        self.undo_units = later[..keep].iter().map(Vec::len).collect();
-        self.applied = later[..keep].concat();
-        self.install(materialized);
-        self.reresolve_selection();
-        self.reresolve_caret();
-        (restored.len(), later.len() - keep)
     }
 
-    /// Whether there is an applied edit to [`undo`](Self::undo).
+    /// Releases the units an unsettled save staged after it is found not to have
+    /// landed ([`EditorDocument::reconcile`]): they are ordinary unsaved units again,
+    /// undoable, under `lease`, renewed for the generation the document selected.
+    pub(crate) fn release(&mut self, lease: document::Lease) {
+        self.unsettled = 0;
+        self.lease = Some(lease);
+    }
+
+    /// Whether a save of this session's edits is unsettled: its commit point's flush
+    /// failed and [`EditorDocument::reconcile`] has not yet found whether it landed.
+    /// Undo stops at the edits it staged meanwhile ([`EditorError::UnsettledSave`]).
+    pub fn has_unsettled_save(&self) -> bool {
+        self.unsettled > 0
+    }
+
+    /// Whether there is an applied edit [`undo`](Self::undo) can take back: one
+    /// made since the last save, and above any an unsettled save staged.
     pub fn can_undo(&self) -> bool {
-        !self.undo_units.is_empty()
+        self.undo_units.len() > self.unsettled
     }
 
     /// Whether there is an undone edit to [`redo`](Self::redo).
@@ -7961,7 +7985,11 @@ mod tests {
     fn a_new_edit_after_undo_forks_history() {
         let mut session = open_rich(0x5EED);
         assert!(!session.can_undo() && !session.can_redo());
-        assert!(session.undo().is_none(), "nothing to undo");
+        assert_eq!(
+            session.undo(),
+            Err(EditorError::NothingToUndo),
+            "nothing to undo"
+        );
         assert!(session.redo().is_none(), "nothing to redo");
 
         click_a_notehead(&mut session);

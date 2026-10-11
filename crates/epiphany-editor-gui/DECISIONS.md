@@ -497,9 +497,11 @@ and the selection do not carry over.
 **An unsettled save is settled at once.** A save whose commit point's flush
 failed, or a save asked for while an earlier one is unsettled, reconciles the
 document there and then (`EditorDocument::reconcile`), and the status line
-says how it settled: landed (with any edits undone since that are back, and
-any later ones dropped), not landed (the edits unsaved), or still unknown
-(save again to retry).
+says how it settled: landed (any edits made since unsaved), not landed (the
+edits unsaved and undoable again), or still unknown (save again to retry).
+While it is still unknown, undo stops at the edits it staged (D64). The Undo
+button stays pressable then, and a press, like the key, puts the refusal in the
+status line.
 
 **One window writes a file.** Opening a saved document takes an advisory lock
 on its file (`File::try_lock`, which this crate may use: it is outside the

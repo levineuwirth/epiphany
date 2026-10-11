@@ -628,17 +628,22 @@ block is a root of the generation it selects, and runs a fresh durability
 barrier (`Bundle::sync`) that must succeed before the save is reported.
 
 **Reconciling promotes what the save staged, not what the session holds.**
-Between an indeterminate save and its reconciliation the session is an
-ordinary editor. When the staged blocks landed, exactly the staged units are
-promoted. Units entered since stay applied, unsaved and undoable. A staged
-unit undone since is in the file all the same, so it leaves the redo stack for
-the committed partition and the session is materialized again with it: the
-screen shows what the file holds. If a later edit forked the undone unit away,
-the units entered after the fork never saw it; the longest run of them that
-still reduces cleanly beside it is kept, the rest are dropped, and the redo
-stack, built on that forked history, is cleared. Two entries past the last
-measure, each opening the same measure without having seen the other, are
-such a pair. The outcome counts the restored and the dropped units.
+While a save is unsettled, undo stops at the units it staged, as it stops at
+the units any save commits (D64). The session counts them as its oldest
+applied units (`unsettled`), and `undo` refuses to reach them with
+`EditorError::UnsettledSave`. Units entered since undo and redo as ever, down
+to them, and redo of units undone before the save is unaffected. Since no
+staged unit is undone before the save settles, no later edit forks away from
+one and none is dropped. When the staged blocks landed, exactly those units
+move into the committed partition, a partition move as at a save that keeps
+the redo stack; units entered since stay applied, unsaved and undoable. When
+they did not land, the units become ordinary unsaved units again, undoable as
+before. Each way a unit leaves `applied` respects the floor: `undo` refuses;
+a failed edit or redo removes only its own unit; a save, which promotes,
+cannot run while the document is unsettled; and reconciling asserts that the
+staged units are still the oldest applied ones before it moves them. An
+earlier policy restored a staged unit undone since the save and dropped the
+later units that no longer reduced beside it; nothing reaches that case now.
 
 **Save As copies; it never writes the source.** `EditorDocument::save_as`
 returns a `DocumentCopy` of what a session draws (its committed partition and
