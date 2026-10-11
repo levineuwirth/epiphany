@@ -4154,13 +4154,13 @@ fn digits_of(value: u32) -> Vec<u8> {
     digits
 }
 
-/// The SMuFL time-signature glyph for a decimal digit.
 /// A bundled glyph's advance in staff spaces: how far the next glyph set
 /// beside it stands. Zero for a glyph the metrics do not carry.
 fn glyph_advance(name: &str) -> f32 {
     metrics(name).map_or(0.0, |m| m.advance as f32 / 1024.0)
 }
 
+/// The SMuFL time-signature glyph for a decimal digit.
 fn time_digit(digit: u8) -> &'static str {
     match digit {
         0 => "timeSig0",
@@ -4176,9 +4176,6 @@ fn time_digit(digit: u8) -> &'static str {
     }
 }
 
-/// The `(offset, base value, dots, tied to the next)` of each notated
-/// component, or a single implicit undotted quarter at offset zero when the
-/// event carries no decomposition.
 /// The musical spans a note's, unpitched note's or rest's components sound
 /// through, each `[start, end)` in the region's musical time. A rest filling
 /// its measure is one span, as it is one glyph, and an event the pre-pass
@@ -4330,6 +4327,9 @@ fn ratio_power(x: f64) -> f64 {
     power
 }
 
+/// The `(offset, base value, dots, tied to the next)` of each notated
+/// component, or a single implicit undotted quarter at offset zero when the
+/// event carries no decomposition.
 fn components_of(
     components: &[crate::logical::PlacedComponent],
 ) -> impl Iterator<Item = (MusicalDuration, NoteValue, u8, bool)> + '_ {
