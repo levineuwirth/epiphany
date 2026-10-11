@@ -3858,4 +3858,3 @@ region), the decode corpus's `with_ornaments_out_of_order` and
 `with_a_repeated_ornament` (the ornament set's decoder check), and core's
 `inv3_holds_graces_in_order_and_to_zero_duration` (the checker's two grace
 rules, which the reducer keeps, so only a graph built by hand reaches them).
-

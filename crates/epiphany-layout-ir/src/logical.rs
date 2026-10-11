@@ -595,7 +595,7 @@ pub struct LogicalLayoutIR {
 /// stable-id collision (the same `(source, region)` reached twice, e.g. a staff
 /// listed twice in one staff extent) is de-duplicated.
 ///
-/// A grace note is left out ([`drawn_view`]): until grace notes are drawn
+/// A grace note is left out (`drawn_view`): until grace notes are drawn
 /// (X4c), the layout lays out the score as it stood before schema major 5
 /// brought them in. The [`ScoreVersion`] is still the whole score's.
 pub fn to_logical(score: &Score) -> LogicalLayoutIR {
