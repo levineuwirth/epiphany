@@ -1672,7 +1672,7 @@ trailing bytes are decode errors.
     \tablenums{15} TranspositionOutOfRange (both Push~4a);
     \tablenums{16} MeasureMeterMismatch, \tablenums{17} MeasureOutOfOrder,
     \tablenums{18} MeasureOrderUnverifiable (genesis tranche G3b);
-    \tablenums{19} SlotOccupied (X4b). \\
+    \tablenums{19} SlotOccupied, \tablenums{20} HomeIsOwnStaff (both X4b). \\
   \texttt{RepairRecord} &
     (struct) \texttt{kind} (\texttt{RepairKind}) \cat{} \texttt{target}
     (\texttt{TypedObjectId}). \\
@@ -4105,7 +4105,8 @@ only}: implementations need not agree on an error taxonomy.
   Lyric, \texttt{OperationKind} and \texttt{OperationKindTag} append
   \tablenums{43} \texttt{SetVoiceHome}, and
   \texttt{PreconditionFailureReason} appends \tablenums{19}
-  \texttt{SlotOccupied}, at epoch~15. Operations whose values hold a new
+  \texttt{SlotOccupied} and \tablenums{20} \texttt{HomeIsOwnStaff}, at
+  epoch~15. Operations whose values hold a new
   value stamp major~5 by value; the \texttt{OperationEnvelopeBlock} and
   \texttt{Snapshot} accept-sets rise to \tablenums{5}. The canonical base
   stays major~0. The decode corpus gains \texttt{core.score\_v5}, a refusal

@@ -3834,3 +3834,11 @@ undo policy, and deletes in place of the undo) are committed as `168` to
 before its delete orphans it, which only holds if the first repair also
 rewrote the chain; each now agrees with the region held.
 
+**A home is never the voice's own staff (L2).** `SetVoiceHome` held a home
+naming the staff its voice's own instance manifests, so two graph states
+(`None` and the own staff) meant a voice at home, and the fuzz's arm 56 wrote
+the second. It is refused `HomeIsOwnStaff`, a reason appended at epoch 15
+(discriminant 20) beside `SlotOccupied`, since none of the existing reasons
+says it, read from the indices both modes keep (the voice's instance and
+the instance's staff).
+

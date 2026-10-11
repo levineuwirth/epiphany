@@ -1155,8 +1155,9 @@ fn a_voice_home_is_a_register_in_both_modes() {
     assert_eq!(score.voice_homes.get(&voice), None);
 
     // Two authors' differing homes, neither seeing the other: one conflict,
-    // the later in canonical order standing.
-    let by_a = m.op(A, 3, 4, &[], home(Some(upper)));
+    // the later in canonical order standing. (The voice stands on the upper
+    // staff, so its other home is none.)
+    let by_a = m.op(A, 3, 4, &[], home(None));
     let by_b = m.op(B, 0, 4, &[], home(Some(lower)));
     let (state, score) = m.agree("two concurrent homes", &[by_a.clone(), by_b.clone()]);
     let effects = [effect(&state, by_a.id), effect(&state, by_b.id)];
@@ -1167,7 +1168,8 @@ fn a_voice_home_is_a_register_in_both_modes() {
         "concurrent differing homes conflict: {effects:?}"
     );
     let standing = score.voice_homes.get(&voice).copied();
-    assert!(standing == Some(upper) || standing == Some(lower));
+    assert!(standing.is_none() || standing == Some(lower));
+    assert_ne!(standing, Some(upper));
 
     // A homed voice deleted, its note first: it loses its home, and a later
     // home is refused.
@@ -1459,4 +1461,42 @@ fn an_undo_restores_no_syllable_into_a_taken_slot_in_both_modes() {
     assert_eq!(effect(&state, undo.id), applied());
     assert_eq!(slot_of(&score, first), Some((m.q(0), 1)));
     assert_eq!(slot_of(&score, second), Some((m.q(0), 2)));
+}
+
+/// A home names the staff a voice visits from, so a home naming the voice's
+/// own staff is refused `HomeIsOwnStaff`, leaving no entry, while one naming
+/// the other staff applies, in both modes (C4b review 1's L2: before it the
+/// register held it, two graph states meaning a voice at home).
+#[test]
+fn a_home_naming_its_voices_own_staff_is_refused_in_both_modes() {
+    let m = Measure::of(TWO_STAVES);
+    let staves = &m.import.ids.staves[0];
+    let voice = m.events[0].voice();
+    let home = |counter: u64, at: i64, seen: &[OperationId], staff: StaffId| {
+        m.op(
+            A,
+            counter,
+            at,
+            seen,
+            primitive(OperationKind::SetVoiceHome(SetVoiceHomeOp {
+                voice,
+                home: Some(staff),
+            })),
+        )
+    };
+    let own = home(0, 1, &[], staves[0]);
+    let other = home(1, 2, &[own.id], staves[1]);
+    let back = home(2, 3, &[other.id], staves[0]);
+    let (state, score) = m.agree(
+        "homes naming either staff",
+        &[own.clone(), other.clone(), back.clone()],
+    );
+    let refused_own = refused(PreconditionFailureReason::HomeIsOwnStaff);
+    assert_eq!(effect(&state, own.id), refused_own);
+    assert_eq!(effect(&state, other.id), applied());
+    assert_eq!(effect(&state, back.id), refused_own);
+    assert_eq!(score.voice_homes.get(&voice), Some(&staves[1]));
+    let (state, score) = m.agree("a home naming its own staff", std::slice::from_ref(&own));
+    assert_eq!(effect(&state, own.id), refused_own);
+    assert!(score.voice_homes.is_empty());
 }

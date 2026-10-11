@@ -840,14 +840,18 @@ grace note's timing is ruled in both reduction modes
 with one syllable per event and verse
 (Section~\ref{sec:k0:create-cross-cutting}).
 \texttt{PreconditionFailureReason} appends \texttt{SlotOccupied}
-(discriminant~19, epoch~15). \texttt{SetVoiceHome} (kind and tag~43,
+(discriminant~19, epoch~15) and, after its first review,
+\texttt{HomeIsOwnStaff} (20, epoch~15). \texttt{SetVoiceHome} (kind and tag~43,
 epoch~15) writes a voice's home staff
 (Section~\ref{sec:k0:set-voice-home}). The new verdicts join reduction
 version~\texttt{4}, which X4b.0 opened and which does not move again before
 X4b merges. X4b's first fix round, after its first review, adds to it under
 this version: an undo restores no lyric syllable into a slot another holds
 (Section~\ref{sec:k0:modify-cross-cutting}), and a marker its event's
-delete orphans holds its region (Section~\ref{sec:k0:create-cross-cutting}).
+delete orphans holds its region (Section~\ref{sec:k0:create-cross-cutting}), and
+a home naming its voice's own staff is refused, \texttt{PreconditionFailureReason}
+appending \texttt{HomeIsOwnStaff} (discriminant~20, epoch~15;
+Section~\ref{sec:k0:set-voice-home}).
 
 % ===========================================================================
 \chapter{The Catalog Framework}
@@ -2540,7 +2544,11 @@ voice, seeded with no home at the voice's create and from a base's
 precondition no-op with \texttt{TargetMissing}; tombstoned, with
 \texttt{TargetTombstoned}. A staff it names is a referent, checked in both
 modes as Requirement~\ref{req:catalog:base-free-referents} reads one, a dead
-one refusing it with \texttt{TargetMissing}. Graph-aware reduction writes
+one refusing it with \texttt{TargetMissing}. A home names the staff a voice
+visits from, so one naming the staff the voice's own staff instance
+manifests is refused with \texttt{HomeIsOwnStaff}, read from the indices both
+modes keep (since version~0.21.0, after its first review; \texttt{None} is
+the voice at home). Graph-aware reduction writes
 \texttt{Score.voice\_homes}; a voice's delete takes its home with it.
 
 \textbf{Conflict cases.} A write concurrent with the voice's last write and

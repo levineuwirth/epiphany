@@ -5495,6 +5495,22 @@ impl<'a> Reducer<'a> {
                 },
             };
         }
+        // A home names the staff a voice visits from; its own instance's
+        // staff is no home (`None` says so), refused `HomeIsOwnStaff` in both
+        // modes from the indices both keep (schema major 5, reduction version
+        // 4, X4b fix round 1: before it the register held it, two values
+        // meaning one).
+        let own = self
+            .voice_instance(op.voice)
+            .and_then(|instance| self.instance_staff.get(&instance))
+            .copied();
+        if op.home.is_some() && op.home == own {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::HomeIsOwnStaff,
+                },
+            };
+        }
         let prev = self
             .voice_home_chain
             .get(&op.voice)

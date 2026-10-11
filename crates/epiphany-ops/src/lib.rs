@@ -704,6 +704,11 @@ pub mod vectors;
 ///     at seed `0xc41ea269`, one author reaching it). Locked by
 ///     `an_orphaned_marker_holds_its_region_in_both_modes` and the committed
 ///     histories `168` to `173`.
+///   - a `SetVoiceHome` naming the staff its voice's own instance manifests
+///     is refused `HomeIsOwnStaff` (reason 20, epoch 15), where version `4` as
+///     reviewed held it, a second graph state meaning a voice at home (`None`
+///     says so). Locked by
+///     `a_home_naming_its_voices_own_staff_is_refused_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

@@ -233,6 +233,7 @@ fn precondition_reason(reader: &mut Reader<'_>) -> Result<PreconditionFailureRea
         18 => Ok(PreconditionFailureReason::MeasureOrderUnverifiable),
         // Additive (X4b).
         19 => Ok(PreconditionFailureReason::SlotOccupied),
+        20 => Ok(PreconditionFailureReason::HomeIsOwnStaff),
         tag => Err(MaterializedDecodeError::InvalidTag {
             kind: "PreconditionFailureReason",
             tag,
@@ -628,7 +629,7 @@ mod tests {
             ReanchorReason::SameCanvasNearer
         );
         // The vocabularies stay bounded: one past the append rejects.
-        assert!(exact(&[20], precondition_reason).is_err());
+        assert!(exact(&[21], precondition_reason).is_err());
         assert!(exact(&[7], reanchor_reason).is_err());
     }
 
@@ -661,6 +662,10 @@ mod tests {
         assert_eq!(
             exact(&[19], precondition_reason).unwrap(),
             PreconditionFailureReason::SlotOccupied
+        );
+        assert_eq!(
+            exact(&[20], precondition_reason).unwrap(),
+            PreconditionFailureReason::HomeIsOwnStaff
         );
     }
 
