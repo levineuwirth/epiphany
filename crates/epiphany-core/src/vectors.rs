@@ -316,9 +316,25 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         order: 0,
     });
     let marked_bytes = Event::Pitched(marked.clone()).canonical_bytes();
-    let mut unordered = marked;
+    let mut unordered = marked.clone();
     unordered.marks.swap(0, 1);
     let unordered_bytes = Event::Pitched(unordered).canonical_bytes();
+    // A note's ornaments are a set too: two in descending order, and one
+    // kind twice, each rejected.
+    let ornament = |kind: OrnamentKind| Ornament {
+        kind,
+        accidental_above: None,
+        accidental_below: None,
+    };
+    let mut descending = marked.clone();
+    descending.ornaments = vec![
+        ornament(OrnamentKind::Mordent),
+        ornament(OrnamentKind::Trill),
+    ];
+    let descending_bytes = Event::Pitched(descending).canonical_bytes();
+    let mut repeated = marked;
+    repeated.ornaments = vec![ornament(OrnamentKind::Trill), ornament(OrnamentKind::Trill)];
+    let repeated_bytes = Event::Pitched(repeated).canonical_bytes();
     v.push(row(
         EVENT,
         "accept",
@@ -339,6 +355,20 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         "marks-out-of-order",
         "with_marks_out_of_order",
         unordered_bytes,
+    ));
+    v.push(row(
+        EVENT,
+        "reject",
+        "marks-out-of-order",
+        "with_ornaments_out_of_order",
+        descending_bytes,
+    ));
+    v.push(row(
+        EVENT,
+        "reject",
+        "marks-out-of-order",
+        "with_a_repeated_ornament",
+        repeated_bytes,
     ));
     v.push(row(
         EVENT,

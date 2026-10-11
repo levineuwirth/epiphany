@@ -3509,6 +3509,217 @@ mod tests {
         assert_eq!(home.tag().introduced_minor(), Some(15));
     }
 
+    /// Every value-dependent arm of schema major 5's stamp, each against the
+    /// same payload without the value: a note's grace or ornament, an
+    /// unpitched note's marks or grace, a wavy tie or slur, and a wavy line
+    /// style on a staff, an instrument, a staff instance, a staff layout or a
+    /// region's instance. A missed stamp would let a reader before major 5
+    /// decode the filled slot through its placeholder layout instead of
+    /// refusing the block (C4b review 1's L1, `mu05` to `mu09`).
+    #[test]
+    fn x4b_every_value_dependent_stamp_reads_its_value() {
+        use epiphany_core::{
+            Grace, GraceKind, LineStyle, NoteValue, Ornament, OrnamentKind, SpanStyle,
+            StaffLineConfiguration, UnpitchedEvent, UnpitchedMemberId,
+        };
+        let r = ReplicaId(1);
+        let voice = epiphany_core::VoiceId::new(r, 1);
+        let grace = Grace {
+            kind: GraceKind::Acciaccatura,
+            value: NoteValue::Eighth,
+            dots: 0,
+            order: 0,
+        };
+        let plain = valuegen_event(r, voice);
+        let with = |f: &dyn Fn(&mut epiphany_core::PitchedEvent)| {
+            let mut event = plain.clone();
+            if let Event::Pitched(p) = &mut event {
+                f(p);
+            }
+            event
+        };
+        let unpitched = Event::Unpitched(UnpitchedEvent {
+            id: EventId::new(r, 2),
+            voice,
+            position: epiphany_core::EventPosition::Musical(
+                epiphany_core::MusicalPosition::origin(),
+            ),
+            duration: epiphany_core::EventDuration::Musical(epiphany_core::MusicalDuration::whole()),
+            staff_position: epiphany_core::StaffPosition(0),
+            instrument_member: UnpitchedMemberId(0),
+            marks: Vec::new(),
+            dynamic: None,
+            stem: epiphany_core::StemConfiguration,
+            grace: None,
+        });
+        let unpitched_with = |f: &dyn Fn(&mut UnpitchedEvent)| {
+            let mut event = unpitched.clone();
+            if let Event::Unpitched(u) = &mut event {
+                f(u);
+            }
+            event
+        };
+        let events = [
+            (
+                "a grace",
+                with(&|p| {
+                    p.grace = Some(grace.clone());
+                }),
+            ),
+            (
+                "an ornament",
+                with(&|p| {
+                    p.ornaments = vec![Ornament {
+                        kind: OrnamentKind::Trill,
+                        accidental_above: None,
+                        accidental_below: None,
+                    }]
+                }),
+            ),
+            (
+                "an unpitched note's marks",
+                unpitched_with(&|u| u.marks = vec![epiphany_core::EventMark::Accent]),
+            ),
+            (
+                "an unpitched grace",
+                unpitched_with(&|u| u.grace = Some(grace.clone())),
+            ),
+        ];
+        let insert = |event: Event| {
+            OperationKind::InsertEvent(InsertEventOp {
+                staff_instance: StaffInstanceId::new(r, 1),
+                event,
+            })
+        };
+        let modify = |event: Event| OperationKind::ModifyEvent(ModifyEventOp { event });
+        assert_eq!(insert(plain.clone()).schema_major(), 0);
+        assert_eq!(insert(unpitched.clone()).schema_major(), 0);
+        for (what, event) in events {
+            assert_eq!(
+                insert(event.clone()).schema_major(),
+                5,
+                "an insert of {what}"
+            );
+            assert_eq!(modify(event).schema_major(), 5, "a modify of {what}");
+        }
+
+        let wavy_style = SpanStyle {
+            line: LineStyle::Wavy,
+            thickness: None,
+        };
+        let mut tie = crate::valuegen::tie(
+            epiphany_core::TieId::new(r, 1),
+            EventId::new(r, 1),
+            EventId::new(r, 2),
+        );
+        let mut slur = crate::valuegen::slur(
+            epiphany_core::SlurId::new(r, 1),
+            EventId::new(r, 1),
+            EventId::new(r, 2),
+        );
+        let create = |structure: CrossCuttingValue| {
+            OperationKind::CreateCrossCutting(CreateCrossCuttingOp { structure })
+        };
+        assert_eq!(
+            create(CrossCuttingValue::Tie(tie.clone())).schema_major(),
+            2
+        );
+        assert_eq!(
+            create(CrossCuttingValue::Slur(slur.clone())).schema_major(),
+            2
+        );
+        tie.style = wavy_style.clone();
+        slur.style = wavy_style;
+        assert_eq!(
+            create(CrossCuttingValue::Tie(tie)).schema_major(),
+            5,
+            "a wavy tie"
+        );
+        assert_eq!(
+            create(CrossCuttingValue::Slur(slur)).schema_major(),
+            5,
+            "a wavy slur"
+        );
+
+        let wavy = |mut lines: StaffLineConfiguration| {
+            lines.line_style = LineStyle::Wavy;
+            lines
+        };
+        let instrument_id = epiphany_core::InstrumentId::new(r, 1);
+        let staff = crate::valuegen::staff(epiphany_core::StaffId::new(r, 1), instrument_id);
+        let mut wavy_staff = staff.clone();
+        wavy_staff.default_staff_lines = wavy(wavy_staff.default_staff_lines.clone());
+        assert_eq!(
+            OperationKind::CreateStaff(CreateStaffOp { staff }).schema_major(),
+            2
+        );
+        assert_eq!(
+            OperationKind::CreateStaff(CreateStaffOp { staff: wavy_staff }).schema_major(),
+            5,
+            "a wavy staff"
+        );
+        let instrument = crate::valuegen::instrument(instrument_id);
+        let mut wavy_instrument = instrument.clone();
+        wavy_instrument.default_staff_lines = wavy(wavy_instrument.default_staff_lines.clone());
+        assert_eq!(
+            OperationKind::CreateInstrument(CreateInstrumentOp { instrument }).schema_major(),
+            2
+        );
+        assert_eq!(
+            OperationKind::CreateInstrument(CreateInstrumentOp {
+                instrument: wavy_instrument
+            })
+            .schema_major(),
+            5,
+            "a wavy instrument"
+        );
+        let lines = wavy(StaffLineConfiguration::default());
+        let mut instance = crate::valuegen::staff_instance(
+            StaffInstanceId::new(r, 1),
+            epiphany_core::StaffId::new(r, 1),
+        );
+        let region = epiphany_core::RegionId::new(r, 1);
+        let plain_instance = OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+            region,
+            instance: instance.clone(),
+        });
+        let plain_major = plain_instance.schema_major();
+        assert_ne!(plain_major, 5);
+        instance.staff_lines_override = Some(lines.clone());
+        assert_eq!(
+            OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                region,
+                instance: instance.clone(),
+            })
+            .schema_major(),
+            5,
+            "a wavy staff instance"
+        );
+        let layout = |staff_lines_override| {
+            OperationKind::SetStaffLayout(SetStaffLayoutOp {
+                staff_instance: StaffInstanceId::new(r, 1),
+                instrument_override: None,
+                staff_lines_override,
+                visible: true,
+            })
+        };
+        assert_ne!(layout(None).schema_major(), 5);
+        assert_eq!(layout(Some(lines)).schema_major(), 5, "a wavy staff layout");
+        let mut value = crate::valuegen::region(region);
+        let plain_region = OperationKind::CreateRegion(CreateRegionOp {
+            region: value.clone(),
+        });
+        assert_ne!(plain_region.schema_major(), 5);
+        if let Some(instances) = value.content.staff_instances_mut() {
+            instances.push(instance);
+        }
+        assert_eq!(
+            OperationKind::CreateRegion(CreateRegionOp { region: value }).schema_major(),
+            5,
+            "a region with a wavy staff instance"
+        );
+    }
+
     /// GOLDEN LOCK: the `CrossCuttingValue` discriminant leads a
     /// cross-cutting create's or modify's value. 0 to 3 are the ratified
     /// structures; X4b appends the marker (4) and the lyric (5).

@@ -1500,3 +1500,338 @@ fn a_home_naming_its_voices_own_staff_is_refused_in_both_modes() {
     assert_eq!(effect(&state, own.id), refused_own);
     assert!(score.voice_homes.is_empty());
 }
+
+/// An undo restores no home naming a staff removed since: a voice's home
+/// moved from a created staff to the lower one, the created staff's create
+/// undone, then the move undone. The restoration names the removed staff, so
+/// it is superseded by that undo: a strict undo conflicts and a best-effort
+/// one keeps the later home, in both modes (C4b review 1's L1, `mu01`).
+#[test]
+fn an_undo_restores_no_home_naming_a_staff_removed_since_in_both_modes() {
+    let m = Measure::of(TWO_STAVES);
+    let staves = &m.import.ids.staves[0];
+    let voice = m.events[0].voice();
+    let staff = StaffId::new(A, 900);
+    let seen = |history: &[OperationEnvelope]| -> Vec<OperationId> {
+        history.iter().map(|e| e.id).collect()
+    };
+    let declare = |counter: u64, at: i64, seen: &[OperationId], tx: TransactionId| {
+        let mut envelope = m.op(
+            A,
+            counter,
+            at,
+            seen,
+            primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                id: tx,
+                label: String::from("edit"),
+                category: None,
+            })),
+        );
+        envelope.transaction = Some(tx);
+        envelope
+    };
+    let home = |staff: StaffId| {
+        primitive(OperationKind::SetVoiceHome(SetVoiceHomeOp {
+            voice,
+            home: Some(staff),
+        }))
+    };
+    for policy in [UndoPolicy::StrictInverse, UndoPolicy::BestEffort] {
+        let name = format!("a home restoration naming a removed staff, {policy:?}");
+        let (tx_staff, tx_move) = (TransactionId::new(A, 810), TransactionId::new(A, 811));
+        let mut h = vec![declare(0, 1, &[], tx_staff)];
+        let mut created = m.op(
+            A,
+            1,
+            2,
+            &seen(&h),
+            primitive(OperationKind::CreateStaff(CreateStaffOp {
+                staff: valuegen::staff(staff, m.import.ids.instruments[0]),
+            })),
+        );
+        created.transaction = Some(tx_staff);
+        h.push(created);
+        h.push(m.op(A, 2, 3, &seen(&h), home(staff)));
+        h.push(declare(3, 4, &seen(&h), tx_move));
+        let mut moved = m.op(A, 4, 5, &seen(&h), home(staves[1]));
+        moved.transaction = Some(tx_move);
+        h.push(moved);
+        let removed = m.op(
+            A,
+            5,
+            6,
+            &seen(&h),
+            OperationPayload::UndoTransaction(UndoTransactionPayload {
+                target: tx_staff,
+                policy: UndoPolicy::StrictInverse,
+            }),
+        );
+        h.push(removed.clone());
+        let undo = m.op(
+            A,
+            6,
+            7,
+            &seen(&h),
+            OperationPayload::UndoTransaction(UndoTransactionPayload {
+                target: tx_move,
+                policy,
+            }),
+        );
+        h.push(undo.clone());
+        let (state, score) = m.agree(&name, &h);
+        assert!(
+            !live(&state, TypedObjectId::Staff(staff)),
+            "{name}: the staff is removed"
+        );
+        if policy == UndoPolicy::StrictInverse {
+            assert!(
+                matches!(
+                    effect(&state, undo.id),
+                    Some(OperationEffect::Conflicted { .. })
+                ),
+                "{name}: {:?}",
+                effect(&state, undo.id)
+            );
+        }
+        assert_eq!(score.voice_homes.get(&voice), Some(&staves[1]), "{name}");
+    }
+}
+
+/// A spanner anchored to a region by a musical offset is held to the
+/// region's time as a marker is: refused in a region out of musical time,
+/// and holding its region against a delete, a migration out of musical
+/// time, and an undo of the region's create, in both modes (C4b review 1's
+/// L1, `mu02`: the spanner half of the rule, on a shape older documents
+/// carry).
+#[test]
+fn a_spanner_on_a_region_is_held_to_its_time_in_both_modes() {
+    use epiphany_core::{RegionId, Spanner, SpannerId, SpannerKind};
+    use epiphany_ops::{
+        ChangeRegionTimeModelOp, CreateRegionOp, DeleteRegionOp, PositionRemapping,
+    };
+    let m = Measure::of(MEASURE);
+    let region = RegionId::new(A, 900);
+    let at = |offset: MusicalDuration| TimeAnchor::Region {
+        id: region,
+        edge: epiphany_core::RegionEdge::Start,
+        offset: AnchorOffset::Musical(offset),
+    };
+    let spanner = |id: SpannerId| {
+        create(CrossCuttingValue::Spanner(Spanner {
+            id,
+            start: at(eighth()),
+            end: at(MusicalDuration(RationalTime::new(1, 2).expect("a half"))),
+            staves: Vec::new(),
+            kind: SpannerKind::Generic,
+            style: Default::default(),
+        }))
+    };
+    let created = |counter: u64, proportional: bool| {
+        let mut value = valuegen::region(region);
+        value.time_model = if proportional {
+            valuegen::proportional_model()
+        } else {
+            valuegen::metric_model()
+        };
+        m.op(
+            A,
+            counter,
+            1,
+            &[],
+            primitive(OperationKind::CreateRegion(CreateRegionOp {
+                region: value,
+            })),
+        )
+    };
+
+    let proportional = created(0, true);
+    let refused_span = m.op(A, 1, 2, &[proportional.id], spanner(SpannerId::new(A, 901)));
+    let (state, _) = m.agree(
+        "a spanner at a musical offset in proportional time",
+        &[proportional, refused_span.clone()],
+    );
+    assert_eq!(
+        effect(&state, refused_span.id),
+        refused(PreconditionFailureReason::WrongRegionTimeModel)
+    );
+
+    let metric = created(0, false);
+    let span = m.op(A, 1, 2, &[metric.id], spanner(SpannerId::new(A, 901)));
+    let deleted = m.op(
+        A,
+        2,
+        3,
+        &[span.id],
+        primitive(OperationKind::DeleteRegion(DeleteRegionOp { region })),
+    );
+    let migrated = m.op(
+        A,
+        3,
+        4,
+        &[deleted.id],
+        primitive(OperationKind::ChangeRegionTimeModel(
+            ChangeRegionTimeModelOp {
+                region,
+                new_time_model: valuegen::proportional_model(),
+                declared_incompatible: Vec::new(),
+                remapping: PositionRemapping::PreserveTime,
+            },
+        )),
+    );
+    let (state, _) = m.agree(
+        "a spanner holding its region",
+        &[metric, span.clone(), deleted.clone(), migrated.clone()],
+    );
+    assert_eq!(effect(&state, span.id), applied());
+    assert_eq!(
+        effect(&state, deleted.id),
+        refused(PreconditionFailureReason::ContainerNotEmpty)
+    );
+    assert!(matches!(
+        effect(&state, migrated.id),
+        Some(OperationEffect::Conflicted { .. })
+    ));
+
+    let tx = TransactionId::new(A, 700);
+    let mut declare = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+            id: tx,
+            label: String::from("region"),
+            category: None,
+        })),
+    );
+    declare.transaction = Some(tx);
+    let mut value = valuegen::region(region);
+    value.time_model = valuegen::metric_model();
+    let mut in_tx = m.op(
+        A,
+        1,
+        2,
+        &[declare.id],
+        primitive(OperationKind::CreateRegion(CreateRegionOp {
+            region: value,
+        })),
+    );
+    in_tx.transaction = Some(tx);
+    let by_b = m.op(B, 0, 3, &[in_tx.id], spanner(SpannerId::new(B, 902)));
+    let undo = m.op(
+        A,
+        2,
+        4,
+        &[in_tx.id, by_b.id],
+        OperationPayload::UndoTransaction(UndoTransactionPayload {
+            target: tx,
+            policy: UndoPolicy::StrictInverse,
+        }),
+    );
+    let (state, _) = m.agree(
+        "an undo of a spanned region's create",
+        &[declare, in_tx, by_b.clone(), undo.clone()],
+    );
+    assert_eq!(effect(&state, by_b.id), applied());
+    assert!(matches!(
+        effect(&state, undo.id),
+        Some(OperationEffect::Conflicted { .. })
+    ));
+    assert!(live(&state, TypedObjectId::Region(region)));
+}
+
+/// A note inserted over a grace standing alone is refused: the grace would
+/// stand strictly inside the note's span. The first two quarters deleted, a
+/// grace inserted where the second stood, then a half note at the first's
+/// place, in both modes (C4b review 1's L1, `mu03b`: the insert's own span
+/// over a grace, beside the grace inside a note's span the reducer already
+/// held).
+#[test]
+fn a_note_inserted_over_a_grace_is_refused_in_both_modes() {
+    let m = Measure::of(MEASURE);
+    let delete = |counter: u64, at: i64, seen: &[OperationId], event: EventId| {
+        m.op(
+            A,
+            counter,
+            at,
+            seen,
+            primitive(OperationKind::DeleteEvent(DeleteEventOp {
+                event,
+                tuplet_compensation: TupletCompensation::NotInTuplet,
+            })),
+        )
+    };
+    let first = delete(0, 1, &[], m.q(0));
+    let second = delete(1, 2, &[first.id], m.q(1));
+    let grace = m.op(
+        A,
+        2,
+        3,
+        &[second.id],
+        m.insert(m.grace(3600, m.position(1), 0)),
+    );
+    let half = m.op(
+        A,
+        3,
+        4,
+        &[grace.id],
+        m.insert(note(
+            3601,
+            m.voice(),
+            m.position(0),
+            MusicalDuration(RationalTime::new(1, 2).expect("a half")),
+            None,
+        )),
+    );
+    let quarter = m.op(
+        A,
+        4,
+        5,
+        &[half.id],
+        m.insert(note(
+            3602,
+            m.voice(),
+            m.position(0),
+            MusicalDuration(RationalTime::new(1, 4).expect("a quarter")),
+            None,
+        )),
+    );
+    let (state, score) = m.agree(
+        "a note inserted over a grace",
+        &[first, second, grace.clone(), half.clone(), quarter.clone()],
+    );
+    assert_eq!(effect(&state, grace.id), applied());
+    assert_eq!(
+        effect(&state, half.id),
+        refused(PreconditionFailureReason::EventDurationInvalid)
+    );
+    assert_eq!(
+        effect(&state, quarter.id),
+        applied(),
+        "ending at the grace, it stands"
+    );
+    assert!(score.events.get(EventId::new(A, 3601)).is_none());
+}
+
+/// A grace note's duration is musical and zero: a grace whose duration is a
+/// wall-clock one is refused `EventDurationInvalid` in both modes, as one of
+/// a musical duration other than zero is (C4b review 1's L1, `mu11`).
+#[test]
+fn a_grace_of_a_duration_out_of_musical_time_is_refused_in_both_modes() {
+    use epiphany_core::WallClockDuration;
+    let m = Measure::of(MEASURE);
+    let mut clocked = m.grace(3600, m.position(1), 0);
+    if let Event::Pitched(p) = &mut clocked {
+        p.duration = EventDuration::WallClock(WallClockDuration(0));
+    }
+    let insert = m.op(A, 0, 1, &[], m.insert(clocked));
+    let (state, score) = m.agree(
+        "a grace of a wall-clock duration",
+        std::slice::from_ref(&insert),
+    );
+    assert_eq!(
+        effect(&state, insert.id),
+        refused(PreconditionFailureReason::EventDurationInvalid)
+    );
+    assert!(score.events.get(EventId::new(A, 3600)).is_none());
+}

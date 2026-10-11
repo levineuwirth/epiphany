@@ -3860,6 +3860,147 @@ mod review_fix_tests {
         });
         assert!(check_invariants(&s).is_empty());
     }
+
+    /// Invariant 3's two grace rules in the checker, each the only rule a
+    /// score breaks: graces at one position stand in their order, then by
+    /// id; and an event has zero duration exactly when it is a grace note,
+    /// a grace of positive duration standing alone at the voice's end and a
+    /// note of zero duration standing before its neighbour each flagged. The
+    /// reducer keeps both, so only the checker's own rule reaches a graph
+    /// that breaks them (C4b review 1's L1, `mu12` and `mu13`).
+    #[test]
+    fn inv3_holds_graces_in_order_and_to_zero_duration() {
+        use crate::event::{Grace, GraceKind};
+        use crate::graph::NoteValue;
+        let base = valid_score(1);
+        let r = base.identity.replica_id;
+        // The first voice whose first event is a note in musical time.
+        let (ri, si, vi, first) = base
+            .canvas
+            .regions
+            .iter()
+            .enumerate()
+            .flat_map(|(ri, region)| {
+                region
+                    .staff_instances()
+                    .iter()
+                    .enumerate()
+                    .flat_map(move |(si, instance)| {
+                        instance
+                            .voices
+                            .iter()
+                            .enumerate()
+                            .map(move |(vi, voice)| (ri, si, vi, voice.events.first().copied()))
+                    })
+            })
+            .find_map(|(ri, si, vi, first)| {
+                let first = first?;
+                matches!(
+                    base.events.get(first),
+                    Some(Event::Pitched(PitchedEvent {
+                        position: EventPosition::Musical(_),
+                        duration: EventDuration::Musical(_),
+                        ..
+                    }))
+                )
+                .then_some((ri, si, vi, first))
+            })
+            .expect("a voice opening with a note");
+        let Some(Event::Pitched(principal)) = base.events.get(first).cloned() else {
+            unreachable!("a note");
+        };
+        let note = |c: u64, position: EventPosition, d: MusicalDuration, order: Option<u16>| {
+            Event::Pitched(PitchedEvent {
+                id: crate::ids::EventId::new(r, c),
+                voice: principal.voice,
+                position,
+                duration: EventDuration::Musical(d),
+                pitches: vec![cmn_ip(r, c, CmnNominal::A, 4)],
+                marks: Vec::new(),
+                dynamic: None,
+                ornaments: Vec::new(),
+                stem: StemConfiguration,
+                grace: order.map(|order| Grace {
+                    kind: GraceKind::Acciaccatura,
+                    value: NoteValue::Eighth,
+                    dots: 0,
+                    order,
+                }),
+            })
+        };
+        // Two graces before the voice's first note, placed in `voice_order`.
+        let with = |events: Vec<Event>, voice_order: &[u64], at_end: bool| {
+            let mut s = base.clone();
+            for event in events {
+                s.events.insert(event).expect("a fresh id");
+            }
+            let voice = &mut s.canvas.regions[ri]
+                .content
+                .staff_instances_mut()
+                .expect("staff-based")[si]
+                .voices[vi];
+            let ids = voice_order.iter().map(|c| crate::ids::EventId::new(r, *c));
+            if at_end {
+                voice.events.extend(ids);
+            } else {
+                voice.events.splice(0..0, ids);
+            }
+            s
+        };
+        let at = principal.position.clone();
+        let zero = MusicalDuration::zero();
+        let graces = || {
+            vec![
+                note(9_100, at.clone(), zero.clone(), Some(0)),
+                note(9_101, at.clone(), zero.clone(), Some(1)),
+            ]
+        };
+        let inv3 = GraphInvariant::VoiceEventsSortedNonOverlap;
+        assert!(
+            !fires(&with(graces(), &[9_100, 9_101], false), inv3),
+            "in order"
+        );
+        assert!(
+            fires(&with(graces(), &[9_101, 9_100], false), inv3),
+            "out of order"
+        );
+
+        // A note of zero duration at the voice's first position, no grace.
+        let bare = note(9_102, at.clone(), zero.clone(), None);
+        assert!(
+            fires(&with(vec![bare], &[9_102], false), inv3),
+            "zero, not a grace"
+        );
+
+        // A grace of positive duration after the voice's last event.
+        let last = base.canvas.regions[ri].staff_instances()[si].voices[vi]
+            .events
+            .iter()
+            .filter_map(|e| base.events.get(*e))
+            .filter_map(|e| match (e.position(), e.duration()) {
+                (EventPosition::Musical(p), EventDuration::Musical(d)) => {
+                    Some(p.clone() + d.clone())
+                }
+                _ => None,
+            })
+            .max()
+            .expect("a metric event");
+        let long = note(
+            9_103,
+            EventPosition::Musical(last.clone()),
+            MusicalDuration::whole(),
+            Some(0),
+        );
+        assert!(
+            fires(&with(vec![long], &[9_103], true), inv3),
+            "a grace, not zero"
+        );
+        let fine = note(9_103, EventPosition::Musical(last), zero, Some(0));
+        assert!(
+            !fires(&with(vec![fine], &[9_103], true), inv3),
+            "a grace at zero, alone"
+        );
+    }
 }
 
 #[cfg(test)]

@@ -3842,3 +3842,20 @@ the second. It is refused `HomeIsOwnStaff`, a reason appended at epoch 15
 says it, read from the indices both modes keep (the voice's instance and
 the instance's staff).
 
+**Every verdict and stamp pinned (L1).** The review found twelve mutations of
+version 4's verdicts, stamps and checks that no test caught, though this file
+and the `Bumps` entry said each verdict was held by its own test. Each now
+has one that fails it: `an_undo_restores_no_home_naming_a_staff_removed_since_in_both_modes`
+(a home restoration superseded by its staff's removal),
+`a_spanner_on_a_region_is_held_to_its_time_in_both_modes` (the spanner half
+of the region rule, on a shape older documents carry),
+`a_note_inserted_over_a_grace_is_refused_in_both_modes` (an insert's span over
+a grace), `a_grace_of_a_duration_out_of_musical_time_is_refused_in_both_modes`,
+`x4b_every_value_dependent_stamp_reads_its_value` (each value-dependent arm of
+the major-5 stamp: a grace, an ornament, an unpitched note's marks and grace,
+a wavy tie or slur, a wavy line on a staff, instrument, instance, layout or
+region), the decode corpus's `with_ornaments_out_of_order` and
+`with_a_repeated_ornament` (the ornament set's decoder check), and core's
+`inv3_holds_graces_in_order_and_to_zero_duration` (the checker's two grace
+rules, which the reducer keeps, so only a graph built by hand reaches them).
+
