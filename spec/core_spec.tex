@@ -4342,6 +4342,13 @@ pub enum StaffGroupKind {
 }
 \end{lstlisting}
 
+\begin{requirement}
+  \label{req:graph:voice-home}
+  An entry of \texttt{Score.voice\_homes} \MUSTNOT{} name the staff its
+  voice's staff instance manifests: a voice at home on that staff has no
+  entry.
+\end{requirement}
+
 \subsection{Score Metadata}
 
 \begin{lstlisting}[language=Rust]
@@ -17350,7 +17357,8 @@ layouts they own versus inherit:
   cascade-delete row in the rule table); \texttt{Text} is held to NFC
   (Requirement~\ref{req:graph:text-nfc}); \texttt{LineStyle} gains
   \texttt{Wavy}, \texttt{SpannerKind} \texttt{PedalBracket}, and
-  \texttt{Score} \texttt{voice\_homes}, written by \texttt{SetVoiceHome}. On
+  \texttt{Score} \texttt{voice\_homes}, written by \texttt{SetVoiceHome},
+  a voice at home having no entry (Requirement~\ref{req:graph:voice-home}). On
   the wire from schema major~5 (Binary Format companion
   \sectionsc{Schema Major 5}); the reduction algorithm version is
   \texttt{4}, which X4b opened.

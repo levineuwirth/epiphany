@@ -1803,3 +1803,20 @@ and now leaves it empty). The decode corpus gains the refusal under
 `core.score_v4` and `core.score_v5` (class `dynamic-placeholder`). Locked by
 `a_dynamic_placeholder_is_refused_by_name_at_every_major` and
 `major_5_refusals_name_their_value`.
+
+## A home is never its voice's own staff, in the graph (X4b fix round 2, 2026-10-12)
+
+C4b review 2's L3: reduction refuses a `SetVoiceHome` naming the staff its
+voice's own instance manifests (`HomeIsOwnStaff`, the first fix round), but
+the checker read a home only for an extant voice and a declared staff, and
+the snapshot decoder takes any entry, so a graph or snapshot could hold the
+state the refusal removed, and a defect admitting it in both modes was
+invisible to the two-mode fuzz, which judges graphs by this checker. The
+checker now flags such an entry. It is a rule of its own, not a reference
+(invariant 10's surface is a closed table of reference targets), so, as one
+syllable an event and verse is, it reports under its own requirement,
+`req:graph:voice-home`, defined beside the `Score` listing: an entry
+`MUST NOT` name the staff its voice's staff instance manifests, a voice at
+home there having no entry. Locked by
+`inv10_flags_dangling_marker_lyric_and_gesture_refs`, whose home cases now
+name another declared staff where they mean a visiting voice.

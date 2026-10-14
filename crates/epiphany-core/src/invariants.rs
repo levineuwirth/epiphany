@@ -33,7 +33,7 @@
 //! extents) and never raise a false positive. This is documented per check.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::event::Event;
 use crate::graph::{
@@ -1325,18 +1325,31 @@ impl<'a> GraphIndex<'a> {
             }
         }
         // A visiting voice's home staff (schema major 5): the voice is one the
-        // score holds, the staff one it declares.
-        let voices: BTreeSet<crate::ids::VoiceId> =
-            self.score.voices().map(|(_, _, v)| v.id).collect();
+        // score holds, the staff one it declares. That the staff is not the one
+        // the voice's own instance manifests, a voice at home having no entry,
+        // is a rule of its own, not a reference (`req:graph:voice-home`, X4b
+        // fix round 2: before it a graph holding such an entry passed, though
+        // reduction refuses one `HomeIsOwnStaff`), reported after the surface.
+        let own_staff: BTreeMap<crate::ids::VoiceId, crate::ids::StaffId> = self
+            .score
+            .staff_instances()
+            .flat_map(|(_, si)| si.voices.iter().map(move |v| (v.id, si.staff)))
+            .collect();
+        let mut homes_at_home = Vec::new();
         for (voice, staff) in &self.score.voice_homes {
             flag(
-                voices.contains(voice),
+                own_staff.contains_key(voice),
                 format!("voice home of voice {voice:?} names no voice the score holds"),
             );
             flag(
                 self.declared_staves.contains(staff),
                 format!("voice {voice:?} home staff {staff:?} not declared"),
             );
+            if own_staff.get(voice) == Some(staff) {
+                homes_at_home.push(format!(
+                    "voice {voice:?} home staff {staff:?} is the staff its instance manifests"
+                ));
+            }
         }
 
         // Structural references: a staff's (and any per-instance override's)
@@ -1526,6 +1539,12 @@ impl<'a> GraphIndex<'a> {
         for witness in second_syllables {
             out.push(WellFormednessViolation::requirement(
                 "req:graph:lyric-syllable",
+                witness,
+            ));
+        }
+        for witness in homes_at_home {
+            out.push(WellFormednessViolation::requirement(
+                "req:graph:voice-home",
                 witness,
             ));
         }
@@ -3783,19 +3802,37 @@ mod review_fix_tests {
         assert!(!check_requirement(&s, "req:graph:lyric-syllable").is_empty());
         assert!(!fires(&s, GraphInvariant::CrossCuttingRefsResolve));
 
-        // A voice home naming no voice, or no staff.
-        let mut s = valid_score(51);
-        let staff = s.staves[0].id;
+        // A voice home naming no voice or no staff breaks invariant 10; one
+        // naming the staff the voice's own instance manifests breaks
+        // `req:graph:voice-home` alone; one naming another declared staff
+        // holds.
+        let with_other_staff = || {
+            let mut s = valid_score(51);
+            let mut other = s.staves[0].clone();
+            other.id = crate::ids::StaffId::new(r, 9_100_005);
+            s.staves.push(other);
+            s
+        };
+        let other = crate::ids::StaffId::new(r, 9_100_005);
+        let mut s = with_other_staff();
         s.voice_homes
-            .insert(crate::ids::VoiceId::new(r, 9_100_003), staff);
+            .insert(crate::ids::VoiceId::new(r, 9_100_003), other);
         assert!(fires(&s, GraphInvariant::CrossCuttingRefsResolve));
-        let mut s = valid_score(51);
-        let voice = s.voices().next().expect("a voice").2.id;
-        s.voice_homes.insert(voice, staff);
+        let mut s = with_other_staff();
+        let (voice, own) = s
+            .staff_instances()
+            .find_map(|(_, si)| si.voices.first().map(|v| (v.id, si.staff)))
+            .expect("a voice");
+        s.voice_homes.insert(voice, other);
         assert!(!fires(&s, GraphInvariant::CrossCuttingRefsResolve));
         s.voice_homes
             .insert(voice, crate::ids::StaffId::new(r, 9_100_004));
         assert!(fires(&s, GraphInvariant::CrossCuttingRefsResolve));
+        s.voice_homes.remove(&voice);
+        assert!(check_requirement(&s, "req:graph:voice-home").is_empty());
+        s.voice_homes.insert(voice, own);
+        assert!(!check_requirement(&s, "req:graph:voice-home").is_empty());
+        assert!(!fires(&s, GraphInvariant::CrossCuttingRefsResolve));
 
         // Graphic gesture anchored to a dangling event.
         let mut s = valid_score(52);
