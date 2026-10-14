@@ -1874,13 +1874,19 @@ impl EditorSession {
     /// "no transaction for one op" rule, applied to selection size instead of
     /// make-room size.
     ///
+    /// A note the delete removes, by its event or by its last notehead (the event
+    /// left a rest), takes the grace notes of its voice standing at its onset with
+    /// it, deleted in the same transaction (D58's Q5: graces go with their note); a
+    /// chord that keeps a notehead keeps them. So a single selected note with grace
+    /// notes deletes as one transaction too.
+    ///
     /// The selection does not survive a delete (every deleted member's layout
     /// object is gone), so the set is cleared.
     pub fn delete_selection(&mut self) -> Result<EditOutcome, EditorError> {
         if self.selection.members.is_empty() {
             return Err(EditorError::NoSelection);
         }
-        let kinds: Vec<OperationKind> = self
+        let mut kinds: Vec<OperationKind> = self
             .selection
             .members
             .iter()
@@ -1897,6 +1903,43 @@ impl EditorSession {
                 }),
             })
             .collect::<Result<_, _>>()?;
+        let selected: BTreeSet<TypedObjectId> = self
+            .selection
+            .members
+            .iter()
+            .map(|selection| selection.source)
+            .collect();
+        let mut removed_notes: BTreeSet<EventId> = BTreeSet::new();
+        for source in &selected {
+            let note = match *source {
+                TypedObjectId::Event(event) => Some(event),
+                TypedObjectId::Pitch(pitch) => self
+                    .event_and_pitch_of(pitch)
+                    .map(|(event, _)| event)
+                    .filter(|event| match self.score.events.get(*event) {
+                        Some(Event::Pitched(note)) => note
+                            .pitches
+                            .iter()
+                            .all(|ip| selected.contains(&TypedObjectId::Pitch(ip.id))),
+                        _ => false,
+                    }),
+                _ => None,
+            };
+            if let Some(note) = note.filter(|event| self.is_note(*event)) {
+                removed_notes.insert(note);
+            }
+        }
+        let graces: BTreeSet<EventId> = removed_notes
+            .iter()
+            .flat_map(|note| self.graces_at_onset_of(*note))
+            .filter(|grace| !selected.contains(&TypedObjectId::Event(*grace)))
+            .collect();
+        kinds.extend(graces.into_iter().map(|event| {
+            OperationKind::DeleteEvent(DeleteEventOp {
+                event,
+                tuplet_compensation: TupletCompensation::NotInTuplet,
+            })
+        }));
         if kinds.len() == 1 {
             self.apply(kinds.into_iter().next().expect("checked len == 1"))
         } else {
@@ -2442,10 +2485,11 @@ impl EditorSession {
         }
         // A copied note takes its grace notes with it, as an editor deletes
         // them with it (D58's Q5): each grace of the voice standing at a
-        // copied event's onset. Until grace notes are drawn they cannot be
-        // selected, so this is the one way a copy carries them.
+        // copied note's onset, a rest taking none. Until grace notes are drawn
+        // they cannot be selected, so this is the one way a copy carries them.
         let onsets: BTreeSet<(VoiceId, MusicalPosition)> = located
             .iter()
+            .filter(|(event, _, _)| self.is_note(*event))
             .map(|(_, voice, at)| (*voice, at.clone()))
             .collect();
         for event in self.score.events.iter() {
@@ -2754,12 +2798,10 @@ impl EditorSession {
                 .map(|e| target_start.clone() + e.onset.clone() + e.duration.clone())
                 .max()
                 .expect("lane.events is non-empty, checked above");
-            let mut room = self.make_room(voice, &target_start, &lane_end, None)?;
-            // The destination's grace notes in the span go with the notes
-            // the paste replaces, so the pasted graces stand in their own
-            // order and no other's.
-            room.deletes
-                .extend(self.graces_within(voice, &target_start, &lane_end));
+            // The destination's grace notes in the span go with the notes the
+            // paste replaces (`make_room`), so the pasted graces stand in their
+            // own order and no other's.
+            let room = self.make_room(voice, &target_start, &lane_end, None)?;
             ops.extend(self.make_room_ops(room, staff_instance, &mut minter));
             let mut lane_map = Vec::with_capacity(lane.events.len());
             for fe in &lane.events {
@@ -3036,7 +3078,50 @@ impl EditorSession {
                 room.cascade_deletes.push((member, compensation));
             }
         }
+        // The grace notes standing where the span replaces events go with them
+        // (D58's Q5: graces go with their note): the voice's graces in the span,
+        // but those at `exclude`'s onset, which a resize keeps with its note; and
+        // those at the onset of each tuplet member cascaded away whole, wherever
+        // it stands. Every caller (entry, the pencil, paste, a resize) deletes
+        // them with the events in its one transaction.
+        let kept = exclude
+            .and_then(|event| self.score.events.get(event))
+            .map(Event::position);
+        let mut graces: BTreeSet<EventId> = self
+            .graces_within(voice, start, end)
+            .into_iter()
+            .filter(|grace| self.score.events.get(*grace).map(Event::position) != kept)
+            .collect();
+        for (member, _) in &room.cascade_deletes {
+            graces.extend(self.graces_at_onset_of(*member));
+        }
+        room.deletes.extend(graces);
         Ok(room)
+    }
+
+    /// Whether `event` is a note: a pitched or unpitched event that is not
+    /// itself a grace note, the kind of event grace notes stand before.
+    fn is_note(&self, event: EventId) -> bool {
+        self.score.events.get(event).is_some_and(|event| {
+            matches!(event, Event::Pitched(_) | Event::Unpitched(_)) && event.grace().is_none()
+        })
+    }
+
+    /// The grace notes of `event`'s voice standing at its onset, in id order:
+    /// those a note there takes with it when it goes (D58's Q5).
+    fn graces_at_onset_of(&self, event: EventId) -> Vec<EventId> {
+        let Some(event) = self.score.events.get(event) else {
+            return Vec::new();
+        };
+        let (voice, at) = (event.voice(), event.position().clone());
+        self.score
+            .events
+            .iter()
+            .filter(|grace| {
+                grace.voice() == voice && grace.grace().is_some() && grace.position() == &at
+            })
+            .map(Event::id)
+            .collect()
     }
 
     /// The grace notes of `voice` standing in `[start, end)`, in id order.
@@ -9197,6 +9282,300 @@ mod tests {
                 "paste {paste}: the graces stand before their note in their order, once"
             );
         }
+    }
+
+    /// Inserts a grace note (an eighth acciaccatura, A4) into `score` before
+    /// `principal`, at its onset and after any grace already there, and
+    /// returns its id: a grace as the import makes one, which the editor
+    /// cannot select or draw until grace notes are drawn.
+    fn add_grace(score: &mut Score, principal: EventId) -> EventId {
+        use epiphany_core::{Grace, GraceKind, NoteValue};
+        let (voice, at) = {
+            let event = score.events.get(principal).expect("the principal");
+            (event.voice(), event.position().clone())
+        };
+        let order = score
+            .events
+            .iter()
+            .filter(|e| e.voice() == voice && e.grace().is_some() && e.position() == &at)
+            .count() as u16;
+        let id: EventId = score.identity.mint();
+        let pid: PitchId = score.identity.mint();
+        score
+            .events
+            .insert(Event::Pitched(PitchedEvent {
+                id,
+                voice,
+                position: at,
+                duration: EventDuration::Musical(MusicalDuration::zero()),
+                pitches: vec![IdentifiedPitch {
+                    id: pid,
+                    pitch: cmn_pitch(CmnNominal::A, 4),
+                }],
+                marks: vec![],
+                dynamic: None,
+                ornaments: vec![],
+                stem: StemConfiguration,
+                grace: Some(Grace {
+                    kind: GraceKind::Acciaccatura,
+                    value: NoteValue::Eighth,
+                    dots: 0,
+                    order,
+                }),
+            }))
+            .expect("fresh event id");
+        for region in &mut score.canvas.regions {
+            for instance in region.content.staff_instances_mut().into_iter().flatten() {
+                for v in &mut instance.voices {
+                    if let Some(i) = v.events.iter().position(|e| *e == principal) {
+                        v.events.insert(i, id);
+                    }
+                }
+            }
+        }
+        id
+    }
+
+    /// `small_metric_score(4)`'s four quarter notes, a grace note before the
+    /// second and before the third, the voice and the notes and graces' ids.
+    fn two_graced_notes() -> (Score, VoiceId, Vec<EventId>, [EventId; 2]) {
+        let mut score = small_metric_score(4);
+        let (_, _, voice) = score.voices().next().expect("one voice");
+        let (voice, notes) = (voice.id, voice.events.clone());
+        let graces = [
+            add_grace(&mut score, notes[1]),
+            add_grace(&mut score, notes[2]),
+        ];
+        assert!(epiphany_core::check_invariants(&score).is_empty());
+        (score, voice, notes, graces)
+    }
+
+    /// The grace notes standing in the session's score.
+    fn graces_in(session: &EditorSession) -> BTreeSet<EventId> {
+        session
+            .score()
+            .events
+            .iter()
+            .filter(|e| e.grace().is_some())
+            .map(Event::id)
+            .collect()
+    }
+
+    /// Selects `event` by the hit region its stem or rest draws.
+    fn select_event(session: &mut EditorSession, event: EventId) {
+        let lo = session
+            .hit_test()
+            .regions
+            .iter()
+            .find(|r| r.source == TypedObjectId::Event(event))
+            .map(|r| r.layout_object)
+            .expect("the event is in the hit map");
+        session.select(lo).expect("selects the event");
+    }
+
+    /// A notehead delete that leaves its note a rest takes the grace notes of
+    /// its voice at the note's onset, in the same transaction (D58's Q5: graces
+    /// go with their note; C4b review 2's M2), so one undo brings both back. A
+    /// chord that keeps a notehead keeps its graces, and another note's stay.
+    #[test]
+    fn deleting_a_notes_last_head_takes_its_grace_notes() {
+        let (mut score, _, notes, [first, second]) = two_graced_notes();
+        let added: PitchId = score.identity.mint();
+        let Some(Event::Pitched(chord)) = score.events.get_mut(notes[2]) else {
+            panic!("a note");
+        };
+        chord.pitches.push(IdentifiedPitch {
+            id: added,
+            pitch: cmn_pitch(CmnNominal::B, 4),
+        });
+        let mut session = EditorSession::open(score, Box::new(StubSolver)).expect("renders");
+
+        select_pitch(&mut session, added);
+        session.delete_selection().expect("a chord's head deletes");
+        assert_eq!(
+            graces_in(&session),
+            BTreeSet::from([first, second]),
+            "the chord is still a note, and keeps its grace"
+        );
+
+        select_first_pitch_of(&mut session, notes[1]);
+        session.delete_selection().expect("the last head deletes");
+        assert!(
+            matches!(session.score().events.get(notes[1]), Some(Event::Rest(_))),
+            "the note is left a rest"
+        );
+        assert_eq!(
+            graces_in(&session),
+            BTreeSet::from([second]),
+            "its grace went with it, the next note's stayed"
+        );
+        assert!(epiphany_core::check_invariants(session.score()).is_empty());
+
+        session.undo().expect("one unit to undo");
+        assert!(matches!(
+            session.score().events.get(notes[1]),
+            Some(Event::Pitched(_))
+        ));
+        assert_eq!(
+            graces_in(&session),
+            BTreeSet::from([first, second]),
+            "one undo restores the note and its grace: one transaction"
+        );
+    }
+
+    /// An event delete removing a note takes the grace notes of its voice at
+    /// its onset in the same transaction (C4b review 2's M2), and another
+    /// note's stay.
+    #[test]
+    fn deleting_a_note_event_takes_its_grace_notes() {
+        let (score, _, notes, [first, second]) = two_graced_notes();
+        let mut session = EditorSession::open(score, Box::new(StubSolver)).expect("renders");
+        select_event(&mut session, notes[1]);
+        session.delete_selection().expect("the event deletes");
+        assert!(session.score().events.get(notes[1]).is_none());
+        assert_eq!(graces_in(&session), BTreeSet::from([second]));
+        assert!(epiphany_core::check_invariants(session.score()).is_empty());
+        session.undo().expect("one unit to undo");
+        assert_eq!(graces_in(&session), BTreeSet::from([first, second]));
+    }
+
+    /// Entry over a note takes the grace notes at the onset of each note it
+    /// replaces or cuts the head from, in its one transaction (C4b review 2's
+    /// M2): at the caret over a note, where the new note would otherwise stand
+    /// after the old note's grace; at the caret across a note's onset, where
+    /// the grace would stand inside the new note and the entry be refused; and
+    /// with the pencil. A note whose tail the entry cuts keeps its graces.
+    #[test]
+    fn entry_over_a_note_takes_its_grace_notes() {
+        let eighths = |n: i64| MusicalPosition(RationalTime::new(n, 8).unwrap());
+
+        let (score, voice, notes, [_, second]) = two_graced_notes();
+        let mut session = EditorSession::open(score, Box::new(StubSolver)).expect("renders");
+        session.caret = Some(Caret {
+            voice,
+            position: eighths(2),
+            entry_duration: dur(1, 4),
+        });
+        session
+            .enter_nominal(CmnNominal::D)
+            .expect("enters over the note");
+        assert!(session.score().events.get(notes[1]).is_none());
+        assert_eq!(
+            graces_in(&session),
+            BTreeSet::from([second]),
+            "the replaced note's grace went with it"
+        );
+        assert!(epiphany_core::check_invariants(session.score()).is_empty());
+
+        let (score, voice, _, [first, _]) = two_graced_notes();
+        let mut session = EditorSession::open(score, Box::new(StubSolver)).expect("renders");
+        session.caret = Some(Caret {
+            voice,
+            position: eighths(3),
+            entry_duration: dur(1, 4),
+        });
+        session
+            .enter_nominal(CmnNominal::D)
+            .expect("enters across the third note's onset");
+        assert_eq!(
+            graces_in(&session),
+            BTreeSet::from([first]),
+            "the note whose head the entry took lost its grace; the one it cut short kept its own"
+        );
+        assert!(epiphany_core::check_invariants(session.score()).is_empty());
+
+        let (score, _, notes, [_, second]) = two_graced_notes();
+        let mut session = EditorSession::open(score, Box::new(StubSolver)).expect("renders");
+        let region = a_clean_metric_region(&session);
+        let (_, _, origin_y) = region_staff_line(&session, region);
+        let click = click_for_position(&session, region, &eighths(2), origin_y + 1.0);
+        session
+            .insert_note_at(click, &grid(1, 4))
+            .expect("the pencil writes over the note");
+        assert!(session.score().events.get(notes[1]).is_none());
+        assert_eq!(graces_in(&session), BTreeSet::from([second]));
+        assert!(epiphany_core::check_invariants(session.score()).is_empty());
+    }
+
+    /// A note lengthened over the next note takes that note's grace notes and
+    /// keeps its own (C4b review 2's M2, the resize's make-room).
+    #[test]
+    fn lengthening_a_note_takes_the_graces_of_the_note_it_covers() {
+        let (score, _, notes, [first, _]) = two_graced_notes();
+        let mut session = EditorSession::open(score, Box::new(StubSolver)).expect("renders");
+        select_first_pitch_of(&mut session, notes[1]);
+        session
+            .set_selection_duration(dur(1, 2))
+            .expect("the note lengthens over the next");
+        assert!(session.score().events.get(notes[2]).is_none());
+        assert_eq!(
+            graces_in(&session),
+            BTreeSet::from([first]),
+            "the covered note's grace went with it; the lengthened note kept its own"
+        );
+        assert!(epiphany_core::check_invariants(session.score()).is_empty());
+    }
+
+    /// A tuplet a make-room cascades away whole takes the grace notes at each
+    /// member's onset, inside the span or not (C4b review 2's M2): the pencil
+    /// over the first member of the rich fixture's triplet removes the grace
+    /// before its third.
+    #[test]
+    fn a_cascaded_tuplet_takes_its_members_grace_notes() {
+        let mut score = valid_score_rich(0x5EED);
+        let session = EditorSession::open(score.clone(), Box::new(StubSolver)).expect("renders");
+        let region = a_region_with(&session, true);
+        let voice = primary_voice(&session, region);
+        let members: Vec<EventId> = voice_events(&session, voice)
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .collect();
+        assert_eq!(members.len(), 3, "the region is a three-member triplet");
+        let grace = add_grace(&mut score, members[2]);
+        assert!(epiphany_core::check_invariants(&score).is_empty());
+        let mut session = EditorSession::open(score, Box::new(StubSolver)).expect("renders");
+        let (_, pos, dur) = voice_events(&session, voice)
+            .into_iter()
+            .find(|(id, _, _)| *id == members[0])
+            .unwrap();
+        let (_, _, origin_y) = region_staff_line(&session, region);
+        let at = click_for_position(&session, region, &pos, origin_y + 1.0);
+        session
+            .insert_note_at(at, &GridResolution { step: dur })
+            .expect("the overwrite cascades the tuplet");
+        assert!(session.score().events.get(members[2]).is_none());
+        assert!(
+            session.score().events.get(grace).is_none(),
+            "the third member's grace went with it"
+        );
+        assert!(epiphany_core::check_invariants(session.score()).is_empty());
+    }
+
+    /// Copy takes grace notes only at a copied note's onset (C4b review 2's
+    /// M2): a rest standing where a grace stands copies alone, a note with its
+    /// grace.
+    #[test]
+    fn copy_takes_grace_notes_only_at_a_copied_notes_onset() {
+        let (mut score, voice, notes, _) = two_graced_notes();
+        let Some(event) = score.events.get_mut(notes[1]) else {
+            panic!("the second note");
+        };
+        *event = Event::Rest(epiphany_core::Rest {
+            id: notes[1],
+            voice,
+            position: event.position().clone(),
+            duration: event.duration().clone(),
+            vertical_position: None,
+            visible: true,
+        });
+        assert!(epiphany_core::check_invariants(&score).is_empty());
+        let mut session = EditorSession::open(score, Box::new(StubSolver)).expect("renders");
+        select_event(&mut session, notes[1]);
+        let copy = session.copy_selection().expect("the rest copies");
+        assert_eq!(copy.events_copied, 1, "the rest alone, no grace");
+        select_first_pitch_of(&mut session, notes[2]);
+        let copy = session.copy_selection().expect("the note copies");
+        assert_eq!(copy.events_copied, 2, "the note and its grace");
     }
 
     /// r2 (T2 W4b): the tie equivalent of r1. A tie fully inside the copied
