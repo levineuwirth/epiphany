@@ -29,9 +29,16 @@
 //! overwrote values, minting and deleting nothing, so the redo has values to
 //! restore, the author revaluing a pitch first where the view holds none; a
 //! redo is an undo of the undo, never the command authored again),
-//! the author's two latest commands reverted, the older first, and an
+//! the author's two latest commands reverted, the older first, an
 //! unmeasured passage (a region, a staff, a voice and a note) set in free time
-//! by any anchoring discipline. A
+//! by any anchoring discipline, a syllable moved away in a transaction of its
+//! own, the slot it left written again (by a new syllable or another moved
+//! there) and the move undone, and a passage added and taken away again (a
+//! region, an instance of a staff and a voice created in one transaction, a
+//! note in it marked): the note entered after the transaction and deleted,
+//! orphaning its mark, then the voice, instance and region deleted in turn or
+//! the transaction undone; or one or two notes entered in the transaction,
+//! the first marked, and the transaction undone. A
 //! whole-event modify moves, resizes or revalues an event, writes a chord
 //! without a pitch its author sees, writes an event as another kind in its
 //! place, or mints a pitch, a chord written with a new one or another kind
@@ -3124,8 +3131,184 @@ fn make(
                 },
             ))]
         }
+        61 => {
+            // A syllable moved away in a transaction of its own, to another
+            // verse of its event or a free slot of another event; the slot it
+            // left written again, by a new syllable or another moved there;
+            // and the move undone, its restoration meeting the taken slot.
+            if sim.replicas[r].open.is_some() {
+                return None;
+            }
+            let lyrics = &h.score.cross_cutting.lyrics;
+            let moved = sim.rng.pick(lyrics)?.clone();
+            let taken: BTreeSet<(EventId, u16)> =
+                lyrics.iter().map(|l| (l.event, l.verse)).collect();
+            let free: Vec<(EventId, u16)> = h
+                .events
+                .iter()
+                .flat_map(|e| [(e.id(), 1), (e.id(), 2)])
+                .filter(|slot| !taken.contains(slot))
+                .collect();
+            let (event, verse) = *sim.rng.pick(&free)?;
+            let tx: TransactionId = sim.mint(r);
+            sim.replicas[r].open = Some((tx, 2));
+            let mut out = vec![
+                prim(OperationKind::DeclareTransaction(TransactionDescriptor {
+                    id: tx,
+                    label: String::from("move the syllable"),
+                    category: None,
+                })),
+                prim(OperationKind::ModifyCrossCutting(ModifyCrossCuttingOp {
+                    structure: CrossCuttingValue::Lyric(epiphany_core::Lyric {
+                        event,
+                        verse,
+                        ..moved.clone()
+                    }),
+                })),
+            ];
+            let others: Vec<&epiphany_core::Lyric> =
+                lyrics.iter().filter(|l| l.id != moved.id).collect();
+            let fill = match sim.rng.pick(&others) {
+                Some(other) if sim.rng.chance(3) => {
+                    OperationKind::ModifyCrossCutting(ModifyCrossCuttingOp {
+                        structure: CrossCuttingValue::Lyric(epiphany_core::Lyric {
+                            event: moved.event,
+                            verse: moved.verse,
+                            ..(**other).clone()
+                        }),
+                    })
+                }
+                _ => {
+                    let id = sim.mint(r);
+                    OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                        structure: CrossCuttingValue::Lyric(epiphany_core::Lyric {
+                            verse: moved.verse,
+                            ..random_lyric(id, moved.event, &mut sim.rng)
+                        }),
+                    })
+                }
+            };
+            out.push(prim(fill));
+            out.push(OperationPayload::UndoTransaction(UndoTransactionPayload {
+                target: tx,
+                policy: random_policy(&mut sim.rng),
+            }));
+            out
+        }
+        62 | 63 => {
+            // A passage an editor adds and then takes away, a point mark on its
+            // note: a metric region after every region the view holds, an
+            // instance of a staff the view holds in it, and a voice, created in
+            // one transaction. In 62 a note is entered after the transaction,
+            // marked, and deleted, which orphans the mark to the region's
+            // start; then the region is taken away, its voice, instance and
+            // region deleted in turn or its transaction undone, the orphan
+            // holding it. In 63 one or two notes are entered in the
+            // transaction, the first marked, and the transaction undone, which
+            // would orphan the mark to the region it removes.
+            if sim.replicas[r].open.is_some() {
+                return None;
+            }
+            let mut out = make(sim, r, 15, h)?;
+            let Some(OperationPayload::Primitive(OperationKind::CreateRegion(op))) =
+                out.first_mut()
+            else {
+                return None;
+            };
+            op.region.time_model = valuegen::metric_model();
+            let region = op.region.id;
+            let staff = sim.rng.pick(&h.score.staves)?.id;
+            let instance: StaffInstanceId = sim.mint(r);
+            let voice: VoiceId = sim.mint(r);
+            let tx: TransactionId = sim.mint(r);
+            out.insert(
+                0,
+                prim(OperationKind::DeclareTransaction(TransactionDescriptor {
+                    id: tx,
+                    label: String::from("add a passage"),
+                    category: None,
+                })),
+            );
+            out.push(prim(OperationKind::CreateStaffInstance(
+                CreateStaffInstanceOp {
+                    region,
+                    instance: valuegen::staff_instance(instance, staff),
+                },
+            )));
+            out.push(prim(OperationKind::CreateVoice(CreateVoiceOp {
+                staff_instance: instance,
+                voice: valuegen::voice(voice),
+            })));
+            let notes = if kind == 63 { 1 + sim.rng.below(2) } else { 1 };
+            let mut quarter_tones = Vec::new();
+            let mut at = MusicalPosition::origin();
+            let mut marked = None;
+            let mut entered = Vec::new();
+            for _ in 0..notes {
+                let event: EventId = sim.mint(r);
+                let length = random_duration(&mut sim.rng);
+                let value = event_value(
+                    sim,
+                    r,
+                    event,
+                    voice,
+                    at.clone(),
+                    length.clone(),
+                    &mut quarter_tones,
+                );
+                at = MusicalPosition(at.0.add(&length.0));
+                marked.get_or_insert(event);
+                entered.push(prim(OperationKind::InsertEvent(InsertEventOp {
+                    staff_instance: instance,
+                    event: value,
+                })));
+            }
+            let in_transaction = out.len() + if kind == 63 { entered.len() } else { 0 };
+            sim.replicas[r].open = Some((tx, in_transaction as u64));
+            out.extend(entered);
+            let note = marked?;
+            out.push(prim(OperationKind::CreateCrossCutting(
+                CreateCrossCuttingOp {
+                    structure: CrossCuttingValue::Marker(epiphany_core::Marker {
+                        id: sim.mint(r),
+                        anchor: valuegen::event_anchor(note),
+                        kind: random_marker_kind(&mut sim.rng),
+                    }),
+                },
+            )));
+            if kind == 62 {
+                out.push(prim(OperationKind::DeleteEvent(DeleteEventOp {
+                    event: note,
+                    tuplet_compensation: TupletCompensation::NotInTuplet,
+                })));
+                if sim.rng.chance(2) {
+                    out.push(prim(OperationKind::DeleteVoice(DeleteVoiceOp { voice })));
+                    out.push(prim(OperationKind::DeleteStaffInstance(
+                        DeleteStaffInstanceOp {
+                            staff_instance: instance,
+                        },
+                    )));
+                    out.push(prim(OperationKind::DeleteRegion(DeleteRegionOp { region })));
+                    return Some(out);
+                }
+            }
+            out.push(OperationPayload::UndoTransaction(UndoTransactionPayload {
+                target: tx,
+                policy: random_policy(&mut sim.rng),
+            }));
+            out
+        }
         _ => return None,
     })
+}
+
+/// An undo's policy, each of the three alike.
+fn random_policy(rng: &mut Rng) -> UndoPolicy {
+    match rng.below(3) {
+        0 => UndoPolicy::StrictInverse,
+        1 => UndoPolicy::BestEffort,
+        _ => UndoPolicy::Cascade,
+    }
 }
 
 /// The transaction an undo names: half the time one of its author's three
@@ -3293,7 +3476,7 @@ fn tie_entry(
 /// Each arm of [`make`] and how often it is drawn: the editing of notes,
 /// pitches and their marks three times as often as the score's structure and
 /// settings, as an editor's history runs.
-const ARMS: [(u64, u64); 61] = [
+const ARMS: [(u64, u64); 64] = [
     (0, 4),
     (1, 3),
     (2, 3),
@@ -3355,6 +3538,9 @@ const ARMS: [(u64, u64); 61] = [
     (58, 2),
     (59, 2),
     (60, 2),
+    (61, 1),
+    (62, 1),
+    (63, 1),
 ];
 
 fn draw_arm(rng: &mut Rng) -> u64 {
