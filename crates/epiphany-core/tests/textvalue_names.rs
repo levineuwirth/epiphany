@@ -58,9 +58,10 @@ fn projects_under_its_own_name<T: TextValue + std::fmt::Debug>(value: &T) {
 mod event {
     use super::projects_under_its_own_name;
     use epiphany_core::{
-        Event, EventDuration, EventPosition, GraceKind, IndeterminacyKind, MusicalDuration,
-        MusicalPosition, PitchId, RationalTime, ReplicaId, Rest, StaffPosition, TrajectoryEndpoint,
-        TrajectoryShape,
+        ArpeggioDirection, BreathMark, CaesuraMark, Dynamic, Event, EventDuration, EventMark,
+        EventPosition, Fermata, FermataShape, GraceKind, IndeterminacyKind, MarkerKind,
+        MusicalDuration, MusicalPosition, PitchId, RationalTime, ReplicaId, Rest, SpannerKind,
+        StaffPosition, TempoMark, Text, TrajectoryEndpoint, TrajectoryShape,
     };
 
     fn replica() -> ReplicaId {
@@ -82,13 +83,94 @@ mod event {
 
     #[test]
     fn grace_kind_variants_project_under_their_own_names() {
+        for value in [GraceKind::Acciaccatura, GraceKind::Appoggiatura] {
+            projects_under_its_own_name(&value);
+        }
+    }
+
+    /// Schema major 5's hand-written unions: every event mark, every marker
+    /// kind, every dynamic and the pedal bracket.
+    #[test]
+    fn mark_marker_and_dynamic_variants_project_under_their_own_names() {
         for value in [
-            GraceKind::Acciaccatura,
-            GraceKind::Appoggiatura,
-            GraceKind::Unmeasured,
+            EventMark::Staccato,
+            EventMark::Staccatissimo,
+            EventMark::Spiccato,
+            EventMark::Tenuto,
+            EventMark::DetachedLegato,
+            EventMark::Accent,
+            EventMark::Marcato,
+            EventMark::Stress,
+            EventMark::Unstress,
+            EventMark::UpBow,
+            EventMark::DownBow,
+            EventMark::Harmonic,
+            EventMark::OpenString,
+            EventMark::Stopped,
+            EventMark::SnapPizzicato,
+            EventMark::Scoop,
+            EventMark::Plop,
+            EventMark::Doit,
+            EventMark::Falloff,
+            EventMark::Tremolo { strokes: 1 },
+            EventMark::TremoloWithNext { strokes: 2 },
+            EventMark::Arpeggio {
+                direction: ArpeggioDirection::Down,
+            },
         ] {
             projects_under_its_own_name(&value);
         }
+        for value in [
+            MarkerKind::Dynamic(Dynamic::Mf),
+            MarkerKind::Fermata(Fermata {
+                shape: FermataShape::Long,
+                inverted: false,
+            }),
+            MarkerKind::Breath(BreathMark::Comma),
+            MarkerKind::Caesura(CaesuraMark::Thick),
+            MarkerKind::Text(Text::new("dolce")),
+            MarkerKind::Tempo(TempoMark {
+                text: Some(Text::new("Adagio")),
+                metronome: None,
+            }),
+            MarkerKind::Rehearsal(Text::new("A")),
+            MarkerKind::Segno,
+            MarkerKind::Coda,
+        ] {
+            projects_under_its_own_name(&value);
+        }
+        for value in [
+            Dynamic::Pppppp,
+            Dynamic::Ppppp,
+            Dynamic::Pppp,
+            Dynamic::Ppp,
+            Dynamic::Pp,
+            Dynamic::P,
+            Dynamic::Mp,
+            Dynamic::Mf,
+            Dynamic::F,
+            Dynamic::Ff,
+            Dynamic::Fff,
+            Dynamic::Ffff,
+            Dynamic::Fffff,
+            Dynamic::Ffffff,
+            Dynamic::Fp,
+            Dynamic::Sf,
+            Dynamic::Sfz,
+            Dynamic::Sffz,
+            Dynamic::Sfp,
+            Dynamic::Sfpp,
+            Dynamic::Rf,
+            Dynamic::Rfz,
+            Dynamic::Fz,
+            Dynamic::Niente,
+            Dynamic::Other(Text::new("sfffz")),
+        ] {
+            projects_under_its_own_name(&value);
+        }
+        projects_under_its_own_name(&SpannerKind::PedalBracket(
+            epiphany_core::PedalKind::Sustain,
+        ));
     }
 
     #[test]

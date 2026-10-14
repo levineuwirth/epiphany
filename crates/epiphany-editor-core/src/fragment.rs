@@ -12,7 +12,7 @@
 //! voice     ::= "(voice (" event* "))"
 //! event     ::= "(event" onset duration content ")"
 //! onset     ::= <MusicalDuration>                     ; relative to the fragment origin
-//! duration  ::= <MusicalDuration>
+//! duration  ::= <MusicalDuration>                     ; zero exactly when it carries a grace
 //! content   ::= "rest" fields | "pitched" fields
 //! pitches   ::= "(" pitch-entry* ")"
 //! pitch-entry ::= "(pitch-entry" <Pitch> spelling-override ")"
@@ -66,13 +66,15 @@ use std::fmt;
 
 use epiphany_core::textvalue::{read_sexp, Sexp, TextError, TextValue};
 use epiphany_core::{
-    ArticulationMark, CurvatureOverride, DynamicMark, GraceKind, MusicalDuration, OrnamentMark,
-    Pitch, PitchSpelling, SlurKind, SpanStyle, StaffPosition, StemConfiguration, TieClass,
+    CurvatureOverride, DynamicMark, EventMark, Grace, MusicalDuration, Ornament, Pitch,
+    PitchSpelling, SlurKind, SpanStyle, StaffPosition, StemConfiguration, TieClass,
 };
 
 /// The one fragment major version this build encodes and accepts. Ruling E:
-/// starting `(0 1 0)`.
-pub const FRAGMENT_VERSION: (u32, u32, u32) = (0, 1, 0);
+/// starting `(0 1 0)`; `(0 2 0)` since a note carries its marks, ornaments and
+/// grace (schema major 5), a grace note's duration zero. Its major is still
+/// `0`: every `(0 1 0)` fragment reads here as it always did.
+pub const FRAGMENT_VERSION: (u32, u32, u32) = (0, 2, 0);
 
 /// Hard cap on a fragment's encoded byte length. Checked first, on the raw
 /// text, before any parsing — the cheapest possible rejection of an
@@ -250,11 +252,11 @@ pub(crate) enum FragmentEventContent {
     },
     Pitched {
         pitches: Vec<FragmentPitch>,
-        articulations: Vec<ArticulationMark>,
+        marks: Vec<EventMark>,
         dynamic: Option<DynamicMark>,
-        ornaments: Vec<OrnamentMark>,
+        ornaments: Vec<Ornament>,
         stem: StemConfiguration,
-        grace: Option<GraceKind>,
+        grace: Option<Grace>,
     },
 }
 
@@ -271,7 +273,7 @@ impl TextValue for FragmentEventContent {
             ]),
             FragmentEventContent::Pitched {
                 pitches,
-                articulations,
+                marks,
                 dynamic,
                 ornaments,
                 stem,
@@ -279,7 +281,7 @@ impl TextValue for FragmentEventContent {
             } => Sexp::List(vec![
                 Sexp::sym("pitched"),
                 pitches.project(),
-                articulations.project(),
+                marks.project(),
                 dynamic.project(),
                 ornaments.project(),
                 stem.project(),
@@ -316,11 +318,11 @@ impl TextValue for FragmentEventContent {
                 }
                 Ok(FragmentEventContent::Pitched {
                     pitches,
-                    articulations: Vec::<ArticulationMark>::parse(&fields[1])?,
+                    marks: Vec::<EventMark>::parse(&fields[1])?,
                     dynamic: Option::<DynamicMark>::parse(&fields[2])?,
-                    ornaments: Vec::<OrnamentMark>::parse(&fields[3])?,
+                    ornaments: Vec::<Ornament>::parse(&fields[3])?,
                     stem: StemConfiguration::parse(&fields[4])?,
-                    grace: Option::<GraceKind>::parse(&fields[5])?,
+                    grace: Option::<Grace>::parse(&fields[5])?,
                 })
             }
             found => Err(TextError::UnknownConstructor {
@@ -358,12 +360,24 @@ impl TextValue for FragmentEvent {
             ));
         }
         let duration = MusicalDuration::parse(&fields[1])?;
-        if !duration.is_positive() {
+        let content = FragmentEventContent::parse(&fields[2])?;
+        // A grace note occupies no time (schema major 5): its duration is
+        // zero, and only a grace note's is.
+        let grace = matches!(
+            content,
+            FragmentEventContent::Pitched { grace: Some(_), .. }
+        );
+        if grace {
+            if duration.0 != epiphany_core::RationalTime::zero() {
+                return Err(TextError::NotCanonical(
+                    "a fragment grace note's duration must be zero",
+                ));
+            }
+        } else if !duration.is_positive() {
             return Err(TextError::NotCanonical(
                 "a fragment event's duration must be positive",
             ));
         }
-        let content = FragmentEventContent::parse(&fields[2])?;
         Ok(FragmentEvent {
             onset,
             duration,
@@ -497,7 +511,7 @@ fn parse_version(s: &Sexp) -> Result<(u32, u32, u32), FragmentError> {
     Ok((u32::parse(major)?, u32::parse(minor)?, u32::parse(patch)?))
 }
 
-/// Renders `document` as fragment text: `(epiphany-fragment (0 1 0) …)`.
+/// Renders `document` as fragment text: `(epiphany-fragment (0 2 0) …)`.
 /// Never fails — it is built from a live, already-valid session selection,
 /// not untrusted input (the caps in [`decode`] are a **read**-side
 /// discipline; [`crate::EditorSession::copy_selection`] does not need them on
@@ -674,7 +688,7 @@ mod tests {
                     pitch: a_pitch(),
                     spelling_override: Some(PitchSpelling::cmn(CmnNominal::D, 4)),
                 }],
-                articulations: vec![],
+                marks: vec![],
                 dynamic: None,
                 ornaments: vec![],
                 stem: StemConfiguration,
@@ -704,9 +718,60 @@ mod tests {
             }],
         };
         let text = encode(&document);
-        assert!(text.starts_with("(epiphany-fragment (0 1 0) "));
+        assert!(text.starts_with("(epiphany-fragment (0 2 0) "));
         let decoded = decode(&text).expect("a well-formed fragment decodes");
         assert_eq!(decoded, document);
+    }
+
+    /// A grace note's duration is zero, and only a grace note's: the decoder
+    /// admits a zero duration for an event carrying a grace and refuses it
+    /// for any other, and refuses a grace with a duration.
+    #[test]
+    fn a_fragment_events_duration_is_zero_exactly_when_it_carries_a_grace() {
+        use epiphany_core::{Grace, GraceKind, NoteValue};
+        let graced = |duration: MusicalDuration| {
+            let mut event = pitched_event(1);
+            event.duration = duration;
+            if let FragmentEventContent::Pitched { grace, .. } = &mut event.content {
+                *grace = Some(Grace {
+                    kind: GraceKind::Appoggiatura,
+                    value: NoteValue::Sixteenth,
+                    dots: 0,
+                    order: 2,
+                });
+            }
+            event
+        };
+        let document = |events: Vec<FragmentEvent>| FragmentDocument {
+            voices: vec![FragmentVoice { events }],
+            slurs: vec![],
+            ties: vec![],
+        };
+        let grace = document(vec![graced(MusicalDuration::zero()), pitched_event(1)]);
+        let text = encode(&grace);
+        assert!(text.starts_with("(epiphany-fragment (0 2 0) "));
+        assert_eq!(decode(&text).expect("a grace at zero decodes"), grace);
+        for (what, bad) in [
+            (
+                "a grace with a duration",
+                document(vec![graced(a_duration(1, 8))]),
+            ),
+            ("a note of no duration", {
+                let mut note = pitched_event(1);
+                note.duration = MusicalDuration::zero();
+                document(vec![note])
+            }),
+            ("a rest of no duration", {
+                let mut rest = rest_event(1);
+                rest.duration = MusicalDuration::zero();
+                document(vec![rest])
+            }),
+        ] {
+            assert!(
+                matches!(decode(&encode(&bad)), Err(FragmentError::Malformed(_))),
+                "{what} is refused"
+            );
+        }
     }
 
     #[test]

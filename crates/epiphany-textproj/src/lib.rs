@@ -81,7 +81,12 @@ use epiphany_ops::OperationEnvelope;
 /// `(0 16 0)` parser meets a six-field tuplet as an arity error, and this
 /// parser would meet a five-field one so, with no version signal to explain
 /// either; at 0.17.0 each refuses the other's document at line one.
-pub const COMPANION_VERSION: (u32, u32, u32) = (0, 17, 0);
+///
+/// Bumped again 0.17.0 → 0.18.0 by X4b, whose schema major 5 fills an
+/// event's marks, ornaments and grace, gives a marker its kind, replaces the
+/// lyric line with a syllable, adds a wavy line and a pedal bracket, and
+/// appends `set-voice-home` to the `kind` production.
+pub const COMPANION_VERSION: (u32, u32, u32) = (0, 18, 0);
 
 /// A parsed canonical Text Projection document.
 ///

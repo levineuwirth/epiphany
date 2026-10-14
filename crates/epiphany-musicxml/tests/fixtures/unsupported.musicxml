@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
 <!-- Hand-written for epiphany-musicxml's tests. Features with no operation
-     yet: a dynamic, words, a grace note, a staccato, a fermata and a lyric;
-     a cue note, which keeps its time in the voice; and a chord note of
-     another duration than its chord's, which imports at the chord's. Each
-     is recorded by kind; none becomes an event of its own. -->
+     yet: a cue note, which keeps its time in the voice, and a chord note of
+     another duration than its chord's, which imports at the chord's. Each is
+     recorded by kind; neither becomes an event of its own. The dynamic, the
+     words, the grace note, the staccato, the fermata and the lyric beside
+     them import since schema major 5. -->
 <score-partwise version="4.0">
   <part-list>
     <score-part id="P1"><part-name>Soprano</part-name></score-part>

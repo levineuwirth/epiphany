@@ -606,10 +606,12 @@ fn stroke_provenance_attrs(p: &Provenance) -> String {
 /// The `stroke-dasharray` (and, for dotted, `stroke-linecap`) attribute for a
 /// curve's line pattern, in staff-space units (the viewBox is staff-space). A
 /// solid line adds nothing. Dashed is a dash/gap pair; dotted is round-capped
-/// zero-length dashes, drawing round dots of the stroke's own width.
+/// zero-length dashes, drawing round dots of the stroke's own width. A wavy
+/// line has no dash pattern; until its engraver draws the wave as a path it
+/// strokes solid.
 fn dash_attrs(line: LineStyle) -> &'static str {
     match line {
-        LineStyle::Solid => "",
+        LineStyle::Solid | LineStyle::Wavy => "",
         LineStyle::Dashed => " stroke-dasharray=\"0.5 0.35\"",
         LineStyle::Dotted => " stroke-dasharray=\"0 0.28\" stroke-linecap=\"round\"",
     }

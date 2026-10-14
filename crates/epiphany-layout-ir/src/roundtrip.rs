@@ -21,15 +21,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use epiphany_core::{Score, TypedObjectId};
 
 use crate::constrained::to_constrained;
-use crate::logical::{cross_cutting_objects, identified_pitch_ids, to_logical, LayoutObject};
+use crate::logical::{
+    cross_cutting_objects, drawn_view, identified_pitch_ids, to_logical, LayoutObject,
+};
 use crate::provenance::{LayoutObjectId, Provenance};
 use crate::render::to_render;
 use crate::solver::{ConstraintSolver, SolveStatus, SolverConfig, SolverTier, StubSolver};
 
 /// The set of score-graph objects the pipeline lays out — the [`TypedObjectId`]s
 /// the round-trip expects to recover from the RenderIR. Kept in lockstep with
-/// [`to_logical`]'s projection so the source-set surjection holds.
+/// [`to_logical`]'s projection so the source-set surjection holds: a grace
+/// note, which the layout leaves out until grace notes are drawn, is not laid
+/// out.
 pub fn laid_out_object_ids(score: &Score) -> BTreeSet<TypedObjectId> {
+    let score = &*drawn_view(score);
     let mut ids = BTreeSet::new();
     for region in &score.canvas.regions {
         ids.insert(TypedObjectId::Region(region.id));

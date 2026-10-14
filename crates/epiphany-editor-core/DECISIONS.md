@@ -569,3 +569,55 @@ also retreats the caret by one entry duration → `1/1` vs `5/4`, dies) and
 `caret_clears_when_its_voice_is_deleted` (mutation: empty out
 `reresolve_caret`'s body → caret stays `Some` after `DeleteVoice`
 succeeds, dies).
+
+## The clipboard fragment carries grace notes (X4b fix round 1, 2026-10-11)
+
+Schema major 5 makes a grace note an event of zero duration, and the fragment
+already carried a note's grace, but its decoder refused every duration that
+was not positive, so copying any passage holding a grace wrote a fragment the
+same build refused to paste. The decoder now admits a zero duration for an
+event carrying a grace and only then, and refuses a grace with a duration, as
+reduction does; `FRAGMENT_VERSION` moves to `(0 2 0)` (the note's marks,
+ornaments and grace, carried since X4b.2 with the version unchanged, are
+counted in it too), its major still `0`, so every `(0 1 0)` fragment reads as
+before. A copied note takes the grace notes of its voice standing at its
+onset (D58's Q5: graces go with their note), since until grace notes are drawn
+a selection cannot catch one, and a lane lists a position's graces in their
+order before its event. A paste carries each grace's order, and a lane's paste
+deletes the destination voice's graces in its span with the notes it
+replaces, so the pasted graces stand in their own order and no other's. Locked
+by `copy_and_paste_carry_a_passages_grace_notes_in_their_order` and
+`a_fragment_events_duration_is_zero_exactly_when_it_carries_a_grace`.
+
+## Grace notes go with their note on every path that removes it (X4b fix round 2, 2026-10-12)
+
+D58's Q5 rules that a grace note survives its principal's delete in the model
+and that the editor deletes them together, and the first fix round's copy
+said it did, but only paste's make-room took a destination's graces: a
+notehead delete that left its note a rest, an event delete, and entry over a
+note each left the note's graces standing, undrawn and so unselectable, to
+ride a later copy and attach to whatever note was entered there next (C4b
+review 2's M2). Now every path that removes a note takes the grace notes of
+its voice standing at the note's onset, in the same transaction:
+
+- `delete_selection` takes them for each note it removes, by its event or by
+  its last notehead (a chord keeping a notehead keeps them), so a single
+  selected note with graces deletes as one transaction, and one undo restores
+  both;
+- `make_room`, which entry at the caret, the pencil, paste and a resize all
+  use, takes the graces of its voice standing in the span it clears (moved
+  there from paste), but those at the onset of the event a resize keeps, and
+  the graces at the onset of each tuplet member it cascades away whole,
+  wherever the member stands. Entry across a note's onset was refused before,
+  the note's grace left standing inside the new note; it applies now.
+
+Copy takes graces only at a copied note's onset, as its comment said: a rest
+standing where a grace stands copies alone. Locked by
+`deleting_a_notes_last_head_takes_its_grace_notes`,
+`deleting_a_note_event_takes_its_grace_notes`,
+`entry_over_a_note_takes_its_grace_notes`,
+`lengthening_a_note_takes_the_graces_of_the_note_it_covers`,
+`a_cascaded_tuplet_takes_its_members_grace_notes` and
+`copy_takes_grace_notes_only_at_a_copied_notes_onset`; the span's bounds, a
+grace at its start taken and one at its end kept, by
+`a_paste_replaces_the_graces_its_span_holds_and_no_others` (review 2's L1).

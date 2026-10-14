@@ -1698,3 +1698,43 @@ through them as well, keeps its shape. Key-signature glyphs are accidentals
 too, so a curve across a key change passes them. Locked by the module's unit
 tests and `a_slur_clears_the_accidentals_under_it` (`epiphany-cli`); no golden
 draws a curve through an accidental, so none changed.
+
+## ENGRAVER_VERSION 44 → 45: a visiting voice on its home's side (X4b.5, 2026-10-10)
+
+A voice the importer splits across staves is a voice on each, the staff's own
+voices ranked first and a visitor after them, so a visitor drew as a lower
+voice: an upper-staff voice writing unbeamed notes on its part's lower staff
+turned their stems down where MuseScore turns them up, and the lower staff's
+own voice beside such a note drew as an upper voice where MuseScore draws it
+alone (D46). Schema major 5 gives the score each visiting voice's
+home staff (`Score::voice_homes`, written by `SetVoiceHome`, which the
+importer emits for every voice at home on another staff). The projection's
+voice rule (`voice_places`, `epiphany-layout-ir`) now leaves a visitor out of
+its staff's ranking: it stands on its home's side throughout, above when its
+home staff stands above in the region, below when below, its own stated stem
+direction still winning; and its ink is no company for the staff's first
+voice. Locked by `a_visiting_voice_names_its_home_and_draws_on_its_side`
+(`epiphany-musicxml`), failing with the home unread, inverted, or not
+emitted.
+
+## ENGRAVER_VERSION 45 → 46: a grace note left undrawn until graces are drawn (X4b fix round 1, 2026-10-11)
+
+Schema major 5 imports a grace note as an event of zero duration at its
+principal's position, where the importer had skipped it. The projection drew
+it through the paths every other note takes: the decomposition pre-pass gives
+a zero-length event no components, and an event without components draws as
+a single implicit quarter (`components_of`, `epiphany-layout-ir`), so each
+grace stood in its principal's column as a full-size head on its stem, read
+as a chord tone, with its accidentals, its beam and any slur from it. Drawing
+grace notes is X4c's. Until then the projection lays out the score with every
+grace note left out (`drawn_view`, at `to_logical` and
+`laid_out_object_ids`, so the round trip's source set stays the laid-out
+one), with the slurs and ties that name one and a beam's grace members,
+dropping a beam left with fewer than two notes; the score version is still
+the whole score's. A page then draws what it drew before the import brought
+graces in. The corpus report names each such grace as "grace note left
+undrawn", and a slur or tie on one likewise, where it had passed under "not
+checked"; ink traced to a grace would be "grace note drawn as a plain note".
+Locked by `a_grace_note_is_not_drawn_as_a_member_of_its_principals_chord`
+(`epiphany-cli`), which fails with the graces laid out. X5c may take a
+number too, and the second to merge renumbers.

@@ -112,7 +112,7 @@ pub fn insert_event_value(
             position,
             duration,
             pitches: pitch_ids.iter().copied().map(identified_pitch).collect(),
-            articulations: Vec::new(),
+            marks: Vec::new(),
             dynamic: None,
             ornaments: Vec::new(),
             stem: StemConfiguration,

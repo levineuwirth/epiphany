@@ -118,8 +118,11 @@ fn build_corpus(rng: &mut SplitMix64) -> Corpus {
         if let Some(region) = score.canvas.regions.first() {
             regions.push(region.canonical_bytes());
         }
-        v0_scores.push(crate::codec::encode_v0_score(&score));
-        v1_scores.push(crate::codec::encode_v1_score(&score));
+        // A frozen form holds no schema-major-5 value (the rich scores'
+        // markers among them), so each pool takes the score without them.
+        let older = crate::codec::without_major_5_values(&score);
+        v0_scores.push(crate::codec::encode_v0_score(&older));
+        v1_scores.push(crate::codec::encode_v1_score(&older));
         scores.push(score.canonical_bytes());
     }
     Corpus {

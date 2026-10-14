@@ -21,10 +21,10 @@ use epiphany_determinism::fuzz::SplitMix64;
 use crate::event::{Event, PitchedEvent, StemConfiguration};
 use crate::graph::{
     AleatoricAnchoringDiscipline, AleatoricTimeModel, Canvas, ChordSymbol, DecompositionAttachment,
-    DecompositionSource, Instrument, Marker, Measure, MetricTimeModel, NotatedComponent, NoteValue,
-    ProportionalTimeModel, Region, RegionContent, RegionTimeModel, Score, Slur, Spanner, Staff,
-    StaffBasedContent, StaffExtent, StaffInstance, StaffLineConfiguration, Tie, TieClass,
-    TimeExtent, Tuplet, TupletRatio, Voice,
+    DecompositionSource, Instrument, Marker, MarkerKind, Measure, MetricTimeModel,
+    NotatedComponent, NoteValue, ProportionalTimeModel, Region, RegionContent, RegionTimeModel,
+    Score, Slur, Spanner, Staff, StaffBasedContent, StaffExtent, StaffInstance,
+    StaffLineConfiguration, Tie, TieClass, TimeExtent, Tuplet, TupletRatio, Voice,
 };
 use crate::ids::{
     ChordSymbolId, EventId, IdentityContext, InstrumentId, MarkerId, MeasureId, PitchId, RegionId,
@@ -79,7 +79,7 @@ fn pitched_event(eid: EventId, voice: VoiceId, pid: PitchId, index: i64) -> Even
         position: EventPosition::Musical(MusicalPosition(RationalTime::new(index, 4).unwrap())),
         duration: EventDuration::Musical(MusicalDuration(RationalTime::new(1, 4).unwrap())),
         pitches: vec![cmn_identified_pitch(pid, index as usize)],
-        articulations: Vec::new(),
+        marks: Vec::new(),
         dynamic: None,
         ornaments: Vec::new(),
         stem: StemConfiguration,
@@ -254,7 +254,7 @@ pub fn valid_score_rich(seed: u64) -> Score {
             duration: EventDuration::Musical(MusicalDuration(RationalTime::new(1, 12).unwrap())),
             // All C4 so any adjacent pair is enharmonically equivalent (valid tie).
             pitches: vec![cmn_identified_pitch(pid, 0)],
-            articulations: vec![],
+            marks: vec![],
             dynamic: None,
             ornaments: vec![],
             stem: StemConfiguration,
@@ -331,6 +331,7 @@ pub fn valid_score_rich(seed: u64) -> Score {
             edge: RegionEdge::Start,
             offset: AnchorOffset::Zero,
         },
+        kind: MarkerKind::Rehearsal(crate::Text::new("A")),
     });
     cross_cutting.chord_symbols.push(ChordSymbol {
         id: idc.mint::<ChordSymbolId>(),
@@ -369,7 +370,7 @@ pub fn valid_score_rich(seed: u64) -> Score {
                 position: EventPosition::WallClock(WallClockTime(k * 1000)),
                 duration: EventDuration::WallClock(WallClockDuration(1000)),
                 pitches: vec![cmn_identified_pitch(pid, k as usize)],
-                articulations: vec![],
+                marks: vec![],
                 dynamic: None,
                 ornaments: vec![],
                 stem: StemConfiguration,
@@ -411,7 +412,7 @@ pub fn valid_score_rich(seed: u64) -> Score {
                 position: EventPosition::Musical(MusicalPosition(RationalTime::new(k, 4).unwrap())),
                 duration: EventDuration::Musical(MusicalDuration(RationalTime::new(1, 4).unwrap())),
                 pitches: vec![cmn_identified_pitch(pid, k as usize)],
-                articulations: vec![],
+                marks: vec![],
                 dynamic: None,
                 ornaments: vec![],
                 stem: StemConfiguration,
