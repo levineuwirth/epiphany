@@ -541,7 +541,9 @@ fn committed_history(name: &str) -> Vec<epiphany_ops::OperationEnvelope> {
 /// region, and a `DeleteRegion` is refused `ContainerNotEmpty`, the marker
 /// standing at the region's start in the graph each time; and so when the
 /// marker was first re-anchored to another note, whose delete then orphans it
-/// (`173`). Before the fix the repair moved the graph's anchor alone, and each
+/// (`173`); and when two modifies wrote the marker before its orphaning, so
+/// the repair must rewrite its chain's last write, not its first (`180`, C4b
+/// review 2's L1). Before the fix the repair moved the graph's anchor alone, and each
 /// removed the region from under the marker.
 #[test]
 fn an_orphaned_marker_holds_its_region_in_both_modes() {
@@ -558,6 +560,7 @@ fn an_orphaned_marker_holds_its_region_in_both_modes() {
         ("171-invariant-cross-cutting-refs-resolve.txt", "repaired"),
         ("172-invariant-cross-cutting-refs-resolve.txt", "refused"),
         ("173-invariant-cross-cutting-refs-resolve.txt", "refused"),
+        ("180-invariant-cross-cutting-refs-resolve.txt", "refused"),
     ] {
         let history = committed_history(name);
         assert!(

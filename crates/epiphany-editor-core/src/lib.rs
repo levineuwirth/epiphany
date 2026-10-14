@@ -9578,6 +9578,32 @@ mod tests {
         assert_eq!(copy.events_copied, 2, "the note and its grace");
     }
 
+    /// A paste replaces the grace notes standing in its span, from its start,
+    /// and none past its end (C4b review 2's L1, its probe's cases E and B):
+    /// the first note pasted over the second takes the second's grace, which
+    /// stands where the paste starts, and leaves the third's, which stands
+    /// where the paste ends.
+    #[test]
+    fn a_paste_replaces_the_graces_its_span_holds_and_no_others() {
+        let (score, _, notes, [_, second]) = two_graced_notes();
+        let mut session = EditorSession::open(score, Box::new(StubSolver)).expect("renders");
+        select_first_pitch_of(&mut session, notes[0]);
+        let copy = session.copy_selection().expect("the first note copies");
+        assert_eq!(copy.events_copied, 1, "an ungraced note copies alone");
+        select_first_pitch_of(&mut session, notes[1]);
+        let pasted = session
+            .paste_over_selection(&copy.fragment)
+            .expect("pastes over the second note");
+        assert_eq!(pasted.events_inserted, 1);
+        assert!(session.score().events.get(notes[1]).is_none());
+        assert_eq!(
+            graces_in(&session),
+            BTreeSet::from([second]),
+            "the replaced note's grace went; the next note's stayed"
+        );
+        assert!(epiphany_core::check_invariants(session.score()).is_empty());
+    }
+
     /// r2 (T2 W4b): the tie equivalent of r1. A tie fully inside the copied
     /// range replays as a fresh [`TieId`] at the destination, spanning
     /// exactly the two pasted events, with `pitch_pairing: None` — the

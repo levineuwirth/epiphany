@@ -1463,6 +1463,188 @@ fn an_undo_restores_no_syllable_into_a_taken_slot_in_both_modes() {
     assert_eq!(slot_of(&score, second), Some((m.q(0), 2)));
 }
 
+/// A transaction that moves a syllable away and writes a second into the
+/// slot it left is undone whole: the undo removes its own syllable, so the
+/// slot is free as the undo leaves it and the moved syllable returns, strict
+/// and best-effort alike, in both modes (C4b review 2's L1: counting the
+/// undo's own mints as occupants made the strict undo conflict and the
+/// best-effort one leave the move in place).
+#[test]
+fn an_undo_frees_the_slot_its_own_syllable_holds_in_both_modes() {
+    let m = Measure::of(MEASURE);
+    let first = LyricLineId::new(A, 1);
+    for policy in [UndoPolicy::StrictInverse, UndoPolicy::BestEffort] {
+        let name = format!("{policy:?}");
+        let tx = TransactionId::new(A, 800);
+        let mut h = vec![m.op(
+            A,
+            0,
+            1,
+            &[],
+            create(CrossCuttingValue::Lyric(lyric(1, m.q(0), 1))),
+        )];
+        let mut declare = m.op(
+            A,
+            1,
+            2,
+            &ids(&h),
+            primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                id: tx,
+                label: String::from("move and fill"),
+                category: None,
+            })),
+        );
+        declare.transaction = Some(tx);
+        h.push(declare);
+        let mut moved = m.op(A, 2, 3, &ids(&h), modify_lyric(lyric(1, m.q(0), 2)));
+        moved.transaction = Some(tx);
+        h.push(moved);
+        let mut filled = m.op(
+            A,
+            3,
+            4,
+            &ids(&h),
+            create(CrossCuttingValue::Lyric(lyric(2, m.q(0), 1))),
+        );
+        filled.transaction = Some(tx);
+        h.push(filled);
+        let undo = m.op(
+            A,
+            4,
+            5,
+            &ids(&h),
+            OperationPayload::UndoTransaction(UndoTransactionPayload { target: tx, policy }),
+        );
+        h.push(undo.clone());
+        let (state, score) = m.agree(&name, &h);
+        assert!(
+            matches!(
+                effect(&state, undo.id),
+                Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
+            ),
+            "{name}: {:?}",
+            effect(&state, undo.id)
+        );
+        let lyrics: Vec<_> = score
+            .cross_cutting
+            .lyrics
+            .iter()
+            .map(|l| (l.id, l.event, l.verse))
+            .collect();
+        assert_eq!(lyrics, vec![(first, m.q(0), 1)], "{name}");
+    }
+}
+
+/// One undo meeting two taken slots supersedes both restorations, reading
+/// the slots again after each, so a best-effort undo restores neither
+/// syllable into its taken slot and a strict one conflicts, in both modes
+/// (C4b review 2's L1: a supersession that stopped after its first collision
+/// restored the second syllable beside the one holding its slot,
+/// `req:graph:lyric-syllable`).
+#[test]
+fn an_undo_meeting_two_taken_slots_supersedes_both_in_both_modes() {
+    let m = Measure::of(MEASURE);
+    let slot_of = |score: &Score, counter: u64| {
+        score
+            .cross_cutting
+            .lyrics
+            .iter()
+            .find(|l| l.id == LyricLineId::new(A, counter))
+            .map(|l| (l.event, l.verse))
+    };
+    for policy in [UndoPolicy::StrictInverse, UndoPolicy::BestEffort] {
+        let name = format!("{policy:?}");
+        let tx = TransactionId::new(A, 800);
+        let mut h = vec![m.op(
+            A,
+            0,
+            1,
+            &[],
+            create(CrossCuttingValue::Lyric(lyric(1, m.q(0), 1))),
+        )];
+        h.push(m.op(
+            A,
+            1,
+            2,
+            &ids(&h),
+            create(CrossCuttingValue::Lyric(lyric(2, m.q(1), 1))),
+        ));
+        let mut declare = m.op(
+            A,
+            2,
+            3,
+            &ids(&h),
+            primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                id: tx,
+                label: String::from("two moves"),
+                category: None,
+            })),
+        );
+        declare.transaction = Some(tx);
+        h.push(declare);
+        for (counter, value) in [(3, lyric(1, m.q(0), 2)), (4, lyric(2, m.q(1), 2))] {
+            let mut step = m.op(
+                A,
+                counter,
+                counter as i64 + 1,
+                &ids(&h),
+                modify_lyric(value),
+            );
+            step.transaction = Some(tx);
+            h.push(step);
+        }
+        h.push(m.op(
+            A,
+            5,
+            6,
+            &ids(&h),
+            create(CrossCuttingValue::Lyric(lyric(3, m.q(0), 1))),
+        ));
+        h.push(m.op(
+            A,
+            6,
+            7,
+            &ids(&h),
+            create(CrossCuttingValue::Lyric(lyric(4, m.q(1), 1))),
+        ));
+        let undo = m.op(
+            A,
+            7,
+            8,
+            &ids(&h),
+            OperationPayload::UndoTransaction(UndoTransactionPayload { target: tx, policy }),
+        );
+        h.push(undo.clone());
+        let (state, score) = m.agree(&name, &h);
+        if policy == UndoPolicy::StrictInverse {
+            assert!(
+                matches!(
+                    effect(&state, undo.id),
+                    Some(OperationEffect::Conflicted { .. })
+                ),
+                "{name}: {:?}",
+                effect(&state, undo.id)
+            );
+        }
+        assert_eq!(slot_of(&score, 1), Some((m.q(0), 2)), "{name}");
+        assert_eq!(slot_of(&score, 2), Some((m.q(1), 2)), "{name}");
+        assert_eq!(slot_of(&score, 3), Some((m.q(0), 1)), "{name}");
+        assert_eq!(slot_of(&score, 4), Some((m.q(1), 1)), "{name}");
+    }
+}
+
+/// The ids of `history`'s operations: what an author who wrote them has seen.
+fn ids(history: &[OperationEnvelope]) -> Vec<OperationId> {
+    history.iter().map(|e| e.id).collect()
+}
+
+/// A `ModifyCrossCutting` writing `value`.
+fn modify_lyric(value: Lyric) -> OperationPayload {
+    primitive(OperationKind::ModifyCrossCutting(ModifyCrossCuttingOp {
+        structure: CrossCuttingValue::Lyric(value),
+    }))
+}
+
 /// A home names the staff a voice visits from, so a home naming the voice's
 /// own staff is refused `HomeIsOwnStaff`, leaving no entry, while one naming
 /// the other staff applies, in both modes (C4b review 1's L2: before it the

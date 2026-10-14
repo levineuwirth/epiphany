@@ -618,4 +618,6 @@ standing where a grace stands copies alone. Locked by
 `entry_over_a_note_takes_its_grace_notes`,
 `lengthening_a_note_takes_the_graces_of_the_note_it_covers`,
 `a_cascaded_tuplet_takes_its_members_grace_notes` and
-`copy_takes_grace_notes_only_at_a_copied_notes_onset`.
+`copy_takes_grace_notes_only_at_a_copied_notes_onset`; the span's bounds, a
+grace at its start taken and one at its end kept, by
+`a_paste_replaces_the_graces_its_span_holds_and_no_others` (review 2's L1).

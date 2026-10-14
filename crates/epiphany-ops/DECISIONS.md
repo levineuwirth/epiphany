@@ -3884,3 +3884,15 @@ the region outside the transaction, as `178`. `179` pins the reading's other
 half: a second note of the marker's voice inserted outside the transaction, so
 the guard reads the marker re-anchored to it and the strict undo is refused
 for the voice that note holds, not for the region.
+
+**The first fix round's rules each pinned (L1).** Review 2 found three of the
+first fix round's reduction rules that no test caught when mutated, each
+shown to change behavior. Each now has a test it fails:
+`an_undo_frees_the_slot_its_own_syllable_holds_in_both_modes` (the lyric
+restore reading the undo's own syllables as gone, so an undo of a transaction
+that moved a syllable away and filled its slot restores it),
+`an_undo_meeting_two_taken_slots_supersedes_both_in_both_modes` (the
+restore's slots read again after each supersession, so two collisions in one
+undo are both superseded), and the committed history `180`, added to
+`an_orphaned_marker_holds_its_region_in_both_modes` (a marker written by two
+modifies before its orphaning, so the repair rewrites the chain's last write).
