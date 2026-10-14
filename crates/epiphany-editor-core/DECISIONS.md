@@ -633,9 +633,12 @@ new bytes in them, and a later `fsync` writes nothing of them and succeeds
 (Rebello et al., USENIX ATC 2020, §4). The commit flushed after its chunks and
 after its manifest, so its failed commit-point flush covered only the
 superblock it wrote, which the reopen selects when the save landed.
-`Bundle::sync` therefore writes the selected superblock's bytes again in their
-slot and then flushes, so the barrier has that slot to write, and a barrier
-that fails again keeps the save unsettled. A bare barrier reported such a save
+`Bundle::sync` therefore writes the selected superblock again in its slot and
+then flushes, so the barrier has that slot to write, and a barrier that fails
+again keeps the save unsettled. It writes the superblock the reopen decoded,
+not the slot read a second time: a clean page evicted between the reads holds
+the disk's older superblock, which rewriting the slot as read put back while
+the save was reported landed (2026-10-14). A bare barrier reported such a save
 landed with the disk a generation behind, and the next save left the disk's
 slots three generations apart, which opens read-only. The tests' stores fail
 as those filesystems do (`epiphany_bundle::PageCacheStore`), and read the disk

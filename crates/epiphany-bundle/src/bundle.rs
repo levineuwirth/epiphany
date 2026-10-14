@@ -653,9 +653,9 @@ impl<S: BlockStore> Bundle<S> {
         self.store
     }
 
-    /// Makes the selected generation durable: writes the selected superblock's
-    /// bytes again in their slot, as the store reads them, then runs a durability
-    /// barrier (the store's `flush`).
+    /// Makes the selected generation durable: writes the active superblock, the
+    /// one [`Bundle::reopen`] selected and decoded, into its slot again, then
+    /// runs a durability barrier (the store's `flush`).
     ///
     /// A writer reconciling a commit whose commit-point flush failed calls this
     /// once [`Bundle::reopen`] has selected the generation that commit wrote. The
@@ -667,10 +667,13 @@ impl<S: BlockStore> Bundle<S> {
     /// second `fsync` writes nothing and succeeds ([`crate::FailedFlush`]).
     /// Written again, the slot is dirty, so the barrier writes it, and a barrier
     /// that fails again is an error.
+    ///
+    /// It writes the superblock it holds, never the slot read a second time: a
+    /// clean page holds the new bytes only until it is evicted, and read again
+    /// it holds the disk's superblock, the generation before.
     pub fn sync(&mut self) -> Result<(), BundleError> {
-        let slot = self.active_slot.offset();
-        let superblock = read_vec(&self.store, slot, SUPERBLOCK_LEN)?;
-        self.store.write_at(slot, &superblock)?;
+        self.store
+            .write_at(self.active_slot.offset(), &self.superblock.encode())?;
         Ok(self.store.flush()?)
     }
 

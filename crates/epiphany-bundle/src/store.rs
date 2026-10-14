@@ -21,6 +21,7 @@
 //!   filesystems report one ([`FailedFlush`]): what a writer reads, and what is
 //!   on disk, once a flush has failed and the store is read and flushed again.
 
+use std::cell::{Cell, RefCell};
 use std::io;
 
 /// A positioned byte store with an explicit durability boundary.
@@ -444,23 +445,32 @@ pub enum FailedFlush {
 /// A page cache over a disk whose chosen flushes fail, for a writer that lives
 /// on after the failure, reads the store and flushes again. Reads see the
 /// *live* bytes (the page cache); a successful flush writes to the *durable*
-/// bytes (the disk) exactly the ranges written since the previous flush, and
-/// the file's length; a failed flush writes none of them and leaves them as
-/// [`FailedFlush`] says. A flush with nothing written since sends nothing to
-/// the disk, so it succeeds even where it was chosen to fail: a flush retried
-/// after a failure reports success without writing what failed.
+/// bytes (the disk) every unit written since the previous flush, whole, and the
+/// file's length; a failed flush writes none of them and leaves them as
+/// [`FailedFlush`] says. The unit is a byte unless [`PageCacheStore::with_unit`]
+/// sets another, such as the 4,096-byte page ext4 and XFS write back. A flush
+/// with nothing written since sends nothing to the disk, so it succeeds even
+/// where it was chosen to fail: a flush retried after a failure reports success
+/// without writing what failed. A clean unit can be evicted before a chosen
+/// read ([`PageCacheStore::evicting_before`]) and is then read from the disk.
 ///
 /// [`FaultStore`] models a crash, after which recovery reads only the disk; this
 /// models the failure a reconciling writer must not mistake for durability
 /// (`Bundle::sync`).
 pub struct PageCacheStore {
-    live: Vec<u8>,
+    /// Interior, so a read can evict.
+    live: RefCell<Vec<u8>>,
     durable: Vec<u8>,
     /// Writes (offset, len) since the last flush, failed or not.
     dirty: Vec<(u64, usize)>,
+    unit: usize,
     flushes: u32,
     failing: Vec<u32>,
     on_failure: FailedFlush,
+    evict_before: Vec<u32>,
+    /// Reads since the first failed flush, from none until one fails.
+    reads_since_failure: Cell<Option<u32>>,
+    evictions: Cell<u32>,
 }
 
 impl PageCacheStore {
@@ -468,18 +478,43 @@ impl PageCacheStore {
     /// numbered in `failing` (the first flush is 1) fail as `on_failure` says.
     pub fn new(image: Vec<u8>, failing: Vec<u32>, on_failure: FailedFlush) -> Self {
         PageCacheStore {
-            live: image.clone(),
+            live: RefCell::new(image.clone()),
             durable: image,
             dirty: Vec::new(),
+            unit: 1,
             flushes: 0,
             failing,
             on_failure,
+            evict_before: Vec::new(),
+            reads_since_failure: Cell::new(None),
+            evictions: Cell::new(0),
+        }
+    }
+
+    /// The store tracking writes by `unit` bytes, the unit it writes back and
+    /// evicts: a write dirties every unit it touches. A byte (the default) is
+    /// stricter than a filesystem, which writes back a page or a block whole.
+    pub fn with_unit(self, unit: usize) -> Self {
+        assert!(unit > 0, "a unit holds at least a byte");
+        PageCacheStore { unit, ..self }
+    }
+
+    /// The store evicting every clean unit before each read numbered in
+    /// `reads`, counted from the first failed flush (the first read after it
+    /// is 1): the unit is read again from the disk, as a page a failed `fsync`
+    /// marked clean holds the new bytes "only until the page has been evicted
+    /// from the page cache" (Rebello et al., §4). A unit written since the last
+    /// flush is dirty, and stays.
+    pub fn evicting_before(self, reads: Vec<u32>) -> Self {
+        PageCacheStore {
+            evict_before: reads,
+            ..self
         }
     }
 
     /// What a read sees now: the page cache.
-    pub fn live(&self) -> &[u8] {
-        &self.live
+    pub fn live(&self) -> Vec<u8> {
+        self.live.borrow().clone()
     }
 
     /// What is on disk: what a crash, or a page evicted and read again, leaves.
@@ -491,51 +526,93 @@ impl PageCacheStore {
     pub fn flushes(&self) -> u32 {
         self.flushes
     }
+
+    /// The evictions run so far.
+    pub fn evictions(&self) -> u32 {
+        self.evictions.get()
+    }
+
+    /// The units written since the last flush, as byte ranges a unit wide.
+    fn dirty_units(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.dirty
+            .iter()
+            .filter(|&&(_, len)| len > 0)
+            .map(|&(offset, len)| {
+                let start = offset as usize / self.unit * self.unit;
+                let end = (offset as usize + len).div_ceil(self.unit) * self.unit;
+                (start, end)
+            })
+    }
+
+    /// Every clean unit within the disk's length read again from the disk.
+    fn evict(&self) {
+        let mut live = self.live.borrow_mut();
+        let len = self.durable.len().min(live.len());
+        for start in (0..len).step_by(self.unit) {
+            let end = (start + self.unit).min(len);
+            if !self.dirty_units().any(|(s, e)| s < end && start < e) {
+                live[start..end].copy_from_slice(&self.durable[start..end]);
+            }
+        }
+        self.evictions.set(self.evictions.get() + 1);
+    }
 }
 
 impl BlockStore for PageCacheStore {
     fn len(&self) -> u64 {
-        self.live.len() as u64
+        self.live.borrow().len() as u64
     }
 
     fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        if let Some(reads) = self.reads_since_failure.get() {
+            self.reads_since_failure.set(Some(reads + 1));
+            if self.evict_before.contains(&(reads + 1)) {
+                self.evict();
+            }
+        }
+        let live = self.live.borrow();
         let end = offset as usize + buf.len();
-        if end > self.live.len() {
+        if end > live.len() {
             return Err(out_of_range());
         }
-        buf.copy_from_slice(&self.live[offset as usize..end]);
+        buf.copy_from_slice(&live[offset as usize..end]);
         Ok(())
     }
 
     fn write_at(&mut self, offset: u64, data: &[u8]) -> io::Result<()> {
-        apply_write(&mut self.live, offset, data);
+        apply_write(self.live.get_mut(), offset, data);
         self.dirty.push((offset, data.len()));
         Ok(())
     }
 
     fn flush(&mut self) -> io::Result<()> {
         self.flushes += 1;
-        // Marked clean whether the writes reach the disk or not.
-        let dirty = std::mem::take(&mut self.dirty);
-        if dirty.is_empty() {
+        if self.dirty.is_empty() {
             return Ok(());
         }
         if self.failing.contains(&self.flushes) {
+            // Marked clean, the writes not on the disk.
+            self.dirty.clear();
+            if self.reads_since_failure.get().is_none() {
+                self.reads_since_failure.set(Some(0));
+            }
             if self.on_failure == FailedFlush::Reverts {
-                self.live = self.durable.clone();
+                *self.live.get_mut() = self.durable.clone();
             }
             return Err(io::Error::other("flush failed: input/output error"));
         }
-        for (offset, len) in dirty {
-            apply_write(
-                &mut self.durable,
-                offset,
-                &self.live[offset as usize..offset as usize + len],
-            );
+        let units: Vec<_> = self.dirty_units().collect();
+        self.dirty.clear();
+        let live = self.live.get_mut();
+        for (start, end) in units {
+            let end = end.min(live.len());
+            if start < end {
+                apply_write(&mut self.durable, start as u64, &live[start..end]);
+            }
         }
         // The length, as `fsync` writes the file's size: bytes past the old end
         // that no successful flush wrote read from disk as zeros.
-        self.durable.resize(self.live.len(), 0);
+        self.durable.resize(live.len(), 0);
         Ok(())
     }
 }
@@ -659,5 +736,44 @@ mod tests {
             "the failed range reads as zeros"
         );
         assert_eq!(s.live(), b"abcdef");
+    }
+
+    #[test]
+    fn page_cache_store_writes_back_whole_units() {
+        for (unit, healed) in [(1, false), (4, true)] {
+            let mut s = PageCacheStore::new(vec![0xAA; 8], vec![1], FailedFlush::MarksClean)
+                .with_unit(unit);
+            s.write_at(1, &[0xBB]).unwrap();
+            assert!(s.flush().is_err());
+            s.write_at(2, &[0xCC]).unwrap();
+            s.flush().unwrap();
+            assert_eq!(s.durable()[2], 0xCC);
+            assert_eq!(
+                s.durable()[1] == 0xBB,
+                healed,
+                "unit {unit}: the failed byte is written back with its unit"
+            );
+            assert_eq!(&s.durable()[4..], &[0xAA; 4], "an unwritten unit is not");
+        }
+    }
+
+    #[test]
+    fn page_cache_store_evicts_clean_units_before_the_chosen_reads() {
+        let mut s = PageCacheStore::new(vec![0xAA; 8], vec![1], FailedFlush::MarksClean)
+            .with_unit(4)
+            .evicting_before(vec![2]);
+        let mut byte = [0u8];
+        s.read_exact_at(1, &mut byte).unwrap();
+        s.write_at(1, &[0xBB]).unwrap();
+        assert!(s.flush().is_err());
+        s.read_exact_at(1, &mut byte).unwrap();
+        assert_eq!(byte, [0xBB], "read 1 after the failure: still readable");
+        s.write_at(6, &[0xCC]).unwrap();
+        s.read_exact_at(1, &mut byte).unwrap();
+        assert_eq!(byte, [0xAA], "read 2: evicted, it is read from the disk");
+        assert_eq!(s.live()[6], 0xCC, "a dirty unit stays");
+        assert_eq!(s.evictions(), 1);
+        s.read_exact_at(1, &mut byte).unwrap();
+        assert_eq!(s.evictions(), 1, "only before the chosen reads");
     }
 }

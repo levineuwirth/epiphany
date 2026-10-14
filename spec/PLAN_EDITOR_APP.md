@@ -774,8 +774,9 @@ stated in the contract. Writes in every case stamp blocks via
   durability, not visibility.** Failure *before* the commit point: units
   remain unsaved and undoable. Success: units are promoted.
   **Indeterminate commit-point flush** (the bundle poisons itself read-only,
-  `bundle.rs:601,744`): the failed barrier was `sync_all` itself
-  (`store.rs:194`), so a generation readable after reopen may be kernel
+  as `Bundle::commit`'s doc states and the commit-point flush in
+  `Bundle::commit_versioned` does): the failed barrier was `sync_all` itself
+  (`FileStore::flush`), so a generation readable after reopen may be kernel
   cache, not durable state. Reconciliation therefore: (1) reopen and
   identify the selected generation; (2) confirm whether the exact staged
   envelope set is reachable; (3) execute a **fresh durability barrier** and

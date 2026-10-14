@@ -36,6 +36,8 @@ items batched."*).
    - `PageCacheStore` — a failed `fsync` the writer lives through, as ext4 and
      XFS (pages marked clean, new bytes readable) or Btrfs (reverted) leave it;
      added 2026-10-11 for `Bundle::sync` (see "Additional local decisions").
+     Since 2026-10-14 it writes back by a chosen unit (a byte by default, or a
+     page) and can evict clean units before chosen reads.
    The QUICKSTART suggested an in-memory `BTreeMap` for v0 and deferring the
    mmap'd file backend "until Agent D's crash fuzzer is green." The crash fuzzer
    *is* this crate's gate, and it drives `FaultStore`; memory-mapping is left as
@@ -101,15 +103,19 @@ items batched."*).
   them, and a later `fsync` writes nothing of them and succeeds (Rebello et
   al., USENIX ATC 2020, §4). The superblock-slot write is the only write the
   commit-point flush covers (the crash model above), so `Bundle::sync` writes
-  the selected superblock's 256 bytes again in their slot, as the store reads
-  them, before it flushes: the barrier then has that slot to write, and its
-  failure is an error, not a success over nothing. It rewrites what the store
-  reads rather than bytes it kept, so where the page cache reverted (Btrfs) it
-  writes the old superblock back and lands nothing the reopen did not select.
-  A failure before the commit point needs no rewrite: `commit` advances
-  neither the write cursor nor the active slot on an error, so the next commit
-  appends its chunks and manifest again at the same place and writes the same
-  slot. `PageCacheStore` models both filesystems' behavior for the tests.
+  the selected superblock again in its slot before it flushes: the barrier
+  then has that slot to write, and its failure is an error, not a success over
+  nothing. It writes the superblock the reopen selected and decoded, not the
+  slot read a second time (amended 2026-10-14): the page holds the new bytes
+  only until it is evicted, and a page evicted between the reopen and the
+  barrier is read again from the disk, whose older superblock a rewrite of
+  what the store reads would put back while the save was reported landed.
+  Where the page cache reverted (Btrfs), the reopen selects the generation
+  before and no barrier runs. A failure before the commit point needs no
+  rewrite: `commit` advances neither the write cursor nor the active slot on
+  an error, so the next commit appends its chunks and manifest again at the
+  same place and writes the same slot. `PageCacheStore` models both
+  filesystems' behavior for the tests.
 
 - **Reader resource limits.** Untrusted lengths (a superblock's
   `manifest_length`, a manifest's chunk/blob lengths) are checked against

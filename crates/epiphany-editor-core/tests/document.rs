@@ -577,7 +577,7 @@ fn on_disk(document: &EditorDocument<FlakyStore>) -> EditorDocument<MemStore> {
 /// against the file on disk: once a save has settled, the two hold one
 /// generation and one set of envelopes, and the disk's opens writable.
 fn reopened(document: &EditorDocument<FlakyStore>) -> EditorDocument<MemStore> {
-    let live = document.bundle().store().cache.live().to_vec();
+    let live = document.bundle().store().cache.live();
     let file = EditorDocument::open(MemStore::from_bytes(live)).expect("the file reopens");
     let disk = on_disk(document);
     assert_eq!(
@@ -713,6 +713,87 @@ fn a_save_reconciled_as_landed_is_on_disk_though_its_failed_flush_left_it_readab
     );
     assert_eq!(music(&disk.score()), music(session.score()));
     assert_eq!(music(&disk.score()).len(), 2, "holding both notes");
+}
+
+/// Review 3's E1: the failed commit point leaves the new superblock readable
+/// and its page clean, and a clean page is readable only until it is evicted.
+/// Evicted once the reopen has read both slots (its reads 1 to 3 after the
+/// failure: the header and the slots) and selected the staged generation, the
+/// page is read again from the disk, which holds the superblock before. The
+/// barrier writes the superblock the reopen selected, so the save reported
+/// landed is on disk and the next save's disk opens writable, whether the store
+/// writes back by byte or by page. Rewriting the slot as read a second time put
+/// the disk's own superblock back: the save was reported landed with the disk a
+/// generation behind, and the next left it read-only. Evicted before the
+/// reopen's first read, the page shows the generation before, and the save did
+/// not land.
+#[test]
+fn a_save_reconciled_as_landed_is_on_disk_though_its_clean_page_was_evicted() {
+    for unit in [1, 4096] {
+        for (evict_before, landed) in [(1, false), (4, true)] {
+            let case = format!("unit {unit}, evicted before read {evict_before}");
+            let created = EditorDocument::create(MemStore::new(), setup_operations(1)).unwrap();
+            let store = FlakyStore {
+                cache: PageCacheStore::new(
+                    created.into_store().into_bytes(),
+                    vec![3],
+                    FailedFlush::MarksClean,
+                )
+                .with_unit(unit)
+                .evicting_before(vec![evict_before]),
+                unreadable: 0,
+                refuse: std::cell::Cell::new(0),
+            };
+            let mut document = EditorDocument::open(store).unwrap();
+            let mut session = lease(&mut document);
+            let voice = the_voice(&session);
+            session.set_caret(voice, at(0, 1), whole(1, 4)).unwrap();
+            session.enter_nominal(CmnNominal::C).unwrap();
+            let staged = session.applied_operations().len();
+            assert!(matches!(
+                document.save(&mut session),
+                Err(DocumentError::Indeterminate(_))
+            ));
+
+            let outcome = document.reconcile(&mut session).expect("reconciles");
+            assert_eq!(
+                document.bundle().store().cache.evictions(),
+                1,
+                "{case}: evicted within the reconcile"
+            );
+            let disk = on_disk(&document);
+            if landed {
+                assert_eq!(
+                    outcome,
+                    Reconciled::Saved(Saved {
+                        generation: 2,
+                        envelopes: staged,
+                    }),
+                    "{case}"
+                );
+                assert_eq!(
+                    disk.generation(),
+                    2,
+                    "{case}: what is reported saved is on disk"
+                );
+                assert_eq!(
+                    reduced(disk.committed_operations()),
+                    reduced(&session_log(&session))
+                );
+            } else {
+                assert_eq!(outcome, Reconciled::NotSaved, "{case}");
+                assert_eq!(disk.generation(), 1, "{case}");
+            }
+
+            session.enter_nominal(CmnNominal::D).unwrap();
+            let saved = document.save(&mut session).expect("the next save");
+            assert_eq!(saved.generation, if landed { 3 } else { 2 }, "{case}");
+            let file = reopened(&document);
+            assert_eq!(file.generation(), saved.generation, "{case}");
+            assert_eq!(music(&file.score()), music(session.score()), "{case}");
+            assert_eq!(music(&file.score()).len(), 2, "{case}: holding both notes");
+        }
+    }
 }
 
 /// The fresh barrier fails too. With the selected superblock written again it
