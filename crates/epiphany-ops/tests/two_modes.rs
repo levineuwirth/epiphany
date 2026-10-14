@@ -643,3 +643,132 @@ fn an_orphaned_marker_holds_its_region_in_both_modes() {
         );
     }
 }
+
+/// An undo's region guard reads a live marker on an event the undo removes as
+/// the repair will leave it, so a marker the undo would orphan holds the
+/// region it would stand at, in both modes (C4b review 2's M1, one author): a
+/// region created in one transaction with an instance, a voice and a note, a
+/// tempo mark anchored to the note, then the transaction undone. Strict and
+/// cascading undos conflict (`174`, `175`, and `177`, whose second note the
+/// undo removes too), and a best-effort one keeps the region, taking the
+/// instance, the voice and the note, the marker orphaned to the region's
+/// start (`176`). Where the region stands outside the transaction the undo
+/// applies and the orphan keeps it (`178`, a control). Before the fix the
+/// guard read the marker at its note, and each of `174` to `177` removed the
+/// region from under the orphan (`CrossCuttingRefsResolve`). A marker whose
+/// note the undo removes beside another note of its voice the undo leaves is
+/// read re-anchored to that note, so the voice holding the note is what
+/// refuses a strict undo, not the region holding the marker (`179`).
+#[test]
+fn a_marker_its_regions_undo_would_orphan_holds_the_region_in_both_modes() {
+    use epiphany_core::{
+        AnchorOffset, IdentityContext, RegionEdge, ReplicaId, Score, TimeAnchor, TypedObjectId,
+    };
+    use epiphany_ops::{ObjectState, OperationEffect, OperationSet, RepairKind};
+    for (name, last) in [
+        ("174-invariant-cross-cutting-refs-resolve.txt", "conflicted"),
+        ("175-invariant-cross-cutting-refs-resolve.txt", "conflicted"),
+        ("176-invariant-cross-cutting-refs-resolve.txt", "repaired"),
+        ("177-invariant-cross-cutting-refs-resolve.txt", "conflicted"),
+        (
+            "178-control-orphan-region-outside-transaction.txt",
+            "repaired",
+        ),
+    ] {
+        let history = committed_history(name);
+        assert!(
+            modes::findings(&history).is_empty(),
+            "{name}: the modes agree and the graph holds"
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(history.iter().cloned());
+        let free = set.reduce();
+        let aware = set.reduce_onto(&Score::empty(IdentityContext::new(ReplicaId(0))));
+        let regions = &aware.score.canvas.regions;
+        assert_eq!(regions.len(), 1, "{name}: the region stands");
+        let region = regions[0].id;
+        let markers = &aware.score.cross_cutting.markers;
+        assert_eq!(markers.len(), 1, "{name}: the marker stands");
+        for state in [&free, &aware.state] {
+            let effect = state
+                .effects
+                .iter()
+                .find(|(id, _)| *id == history.last().expect("a history").id)
+                .map(|(_, e)| e.clone());
+            assert!(
+                matches!(
+                    state.objects.get(&TypedObjectId::Region(region)),
+                    Some(ObjectState::Live)
+                ),
+                "{name}: the region is live"
+            );
+            assert!(
+                matches!(
+                    state.objects.get(&TypedObjectId::Marker(markers[0].id)),
+                    Some(ObjectState::Live)
+                ),
+                "{name}: the marker is live"
+            );
+            match (last, effect) {
+                ("conflicted", Some(OperationEffect::Conflicted { .. })) => {}
+                ("repaired", Some(OperationEffect::AppliedWithRepair { repairs })) => {
+                    assert!(
+                        repairs.iter().any(|r| r.kind == RepairKind::Orphaned
+                            && r.target == TypedObjectId::Marker(markers[0].id)),
+                        "{name}: the undo orphans the marker, {repairs:?}"
+                    );
+                }
+                (_, effect) => panic!("{name}: expected {last}, the undo was {effect:?}"),
+            }
+        }
+        match last {
+            "conflicted" => assert!(
+                matches!(markers[0].anchor, TimeAnchor::Event { .. }),
+                "{name}: the refused undo leaves the marker on its note"
+            ),
+            _ => assert_eq!(
+                markers[0].anchor,
+                TimeAnchor::Region {
+                    id: region,
+                    edge: RegionEdge::Start,
+                    offset: AnchorOffset::Zero,
+                },
+                "{name}: the orphan stands at its region's start"
+            ),
+        }
+    }
+    let name = "179-control-marker-reanchored-in-its-voice.txt";
+    let history = committed_history(name);
+    assert!(
+        modes::findings(&history).is_empty(),
+        "{name}: the modes agree"
+    );
+    let mut set = OperationSet::new();
+    set.accept_all(history.iter().cloned());
+    let free = set.reduce();
+    let aware = set.reduce_onto(&Score::empty(IdentityContext::new(ReplicaId(0))));
+    let (_, _, voice) = aware.score.voices().next().expect("the voice stands");
+    let kept = voice.events.last().copied().expect("its notes stand");
+    for state in [&free, &aware.state] {
+        let Some((_, OperationEffect::Conflicted { conflict })) = state
+            .effects
+            .iter()
+            .find(|(id, _)| *id == history.last().expect("a history").id)
+        else {
+            panic!("{name}: the strict undo is refused");
+        };
+        let record = state
+            .conflicts
+            .records()
+            .iter()
+            .find(|record| record.id == *conflict)
+            .expect("the undo's conflict");
+        let mut affected = record.affected_objects.clone();
+        affected.sort();
+        assert_eq!(
+            affected,
+            vec![TypedObjectId::Event(kept), TypedObjectId::Voice(voice.id)],
+            "{name}: the voice and the note it holds refuse the undo"
+        );
+    }
+}

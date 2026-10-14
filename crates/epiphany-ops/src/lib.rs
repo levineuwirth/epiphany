@@ -710,6 +710,23 @@ pub mod vectors;
 ///     says so). Locked by
 ///     `a_home_naming_its_voices_own_staff_is_refused_in_both_modes`.
 ///
+///   X4b's second fix round (C4b review 2, 2026-10-12) holds one more, the
+///   same in both modes:
+///   - an undo's region guard reads a live marker anchored to an event the
+///     undo removes as its repair will leave it, re-anchored to the nearest
+///     event of its staff instance the undo leaves, else orphaned to the
+///     start of the event's region, so a marker the undo would orphan to a
+///     region it removes holds that region: strict and cascading undos
+///     conflict, a best-effort one keeps the region, where version `4` after
+///     the first fix round read the marker at its event, applied the undo and
+///     left the orphan anchored to the removed region
+///     (`CrossCuttingRefsResolve`, one author creating a region with a note
+///     in one transaction, anchoring a marker to the note and undoing the
+///     transaction). Locked by
+///     `a_marker_its_regions_undo_would_orphan_holds_the_region_in_both_modes`
+///     and the committed histories `174` to `177`, with `178` and `179` beside
+///     them.
+///
 ///   One verdict change X4b.2 made and this entry did not name until the
 ///   review found it: a `DeleteCrossCutting` naming a marker or a lyric a
 ///   base graph holds applies in graph-aware reduction, where version `3`

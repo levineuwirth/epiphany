@@ -3858,3 +3858,29 @@ region), the decode corpus's `with_ornaments_out_of_order` and
 `with_a_repeated_ornament` (the ornament set's decoder check), and core's
 `inv3_holds_graces_in_order_and_to_zero_duration` (the checker's two grace
 rules, which the reducer keeps, so only a graph built by hand reaches them).
+
+## X4b fix round 2 — C4b review 2's findings (2026-10-12)
+
+**An undo reads a marker on an event it removes as its repair leaves it
+(M1).** The first fix round wrote a repaired marker's anchor where the region
+guards read it, which holds a region for a marker orphaned before the
+region's undo. One author could still create a region with an instance, a
+voice and a note in one transaction, anchor a marker to the note and undo the
+transaction: the undo's guard read the marker at the note, which the undo
+removes, so nothing held the region; the repair then orphaned the marker to
+the start of that region, which the same undo removed
+(`CrossCuttingRefsResolve`, under every undo policy, the modes agreeing). The
+region arm of `undo_strand_block` now reads such a marker ahead, as
+`reanchor_marker` will leave it once every target is tombstoned: re-anchored
+to the nearest event of its staff instance the undo leaves
+(`nearest_live_event`, now told which events to pass over), else orphaned to
+the event's region (`orphan_region`, the reading `orphan_marker_anchor`
+writes), and a marker so orphaned to the region the undo removes holds it
+(`orphaned_to_region`). Strict and cascading undos conflict; a best-effort
+one keeps the region and takes the instance, voice and note, the marker
+standing at the region's start. The review's three histories and its two-note
+variant are committed as `174` to `177`, `expect: agree`, and its control,
+the region outside the transaction, as `178`. `179` pins the reading's other
+half: a second note of the marker's voice inserted outside the transaction, so
+the guard reads the marker re-anchored to it and the strict undo is refused
+for the voice that note holds, not for the region.

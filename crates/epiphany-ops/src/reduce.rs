@@ -8533,6 +8533,13 @@ impl<'a> Reducer<'a> {
                     self.anchored_to_region(*region, false, targets)
                         .first()
                         .map(|sid| (*target, *sid))
+                })
+                // A live marker on an event the undo removes, which its
+                // repair would orphan to the region's start: read as the
+                // repair leaves it, it holds the region too (X4b fix round 2).
+                .or_else(|| {
+                    self.orphaned_to_region(*region, targets)
+                        .map(|sid| (*target, sid))
                 }),
             TypedObjectId::StaffInstance(instance) => {
                 self.instance_voices.get(instance).and_then(|voices| {
@@ -11732,11 +11739,13 @@ impl<'a> Reducer<'a> {
     /// choice is a function of canonical state (permutation-invariant). Only
     /// *metric* placements are indexed; wall-clock distance (proportional
     /// regions) is a deferred refinement, so a wall-clock referent finds no
-    /// candidate and falls to the kind's declared failure action.
+    /// candidate and falls to the kind's declared failure action. An event
+    /// `exclude` names is no candidate: the deleted one, or every event an
+    /// undo removes when its guard reads a repair ahead of it.
     fn nearest_live_event(
         &self,
         referent: &ReferentContext,
-        exclude: EventId,
+        exclude: impl Fn(EventId) -> bool,
         max_rank: u8,
     ) -> Option<(EventId, u8)> {
         let EventPosition::Musical(referent_position) = &referent.position else {
@@ -11749,7 +11758,7 @@ impl<'a> Reducer<'a> {
                 continue;
             }
             for (position, _, event) in placements {
-                if *event == exclude
+                if exclude(*event)
                     || !matches!(
                         self.objects.get(&TypedObjectId::Event(*event)),
                         Some(ObjectState::Live)
@@ -11850,7 +11859,11 @@ impl<'a> Reducer<'a> {
         let TypedObjectId::Marker(marker) = sid else {
             return;
         };
-        match self.nearest_live_event(referent, deleted, PROXIMITY_SAME_STAFF_INSTANCE) {
+        match self.nearest_live_event(
+            referent,
+            |event| event == deleted,
+            PROXIMITY_SAME_STAFF_INSTANCE,
+        ) {
             Some((to, rank)) => {
                 if let Some(score) = self.graph.as_mut() {
                     if let Some(value) = score
@@ -11953,19 +11966,63 @@ impl<'a> Reducer<'a> {
     /// instance's region), so base-free and graph-aware reduction write the
     /// same anchor whether or not either holds the event's placement.
     fn orphan_marker_anchor(&mut self, sid: TypedObjectId, deleted: EventId) {
-        let region = self
-            .event_modify_chain
-            .get(&deleted)
-            .and_then(WriteChain::current)
-            .map(Event::voice)
-            .and_then(|voice| self.indexed_voice_region(voice));
-        if let Some(region) = region {
+        if let Some(region) = self.orphan_region(deleted) {
             self.rewrite_marker_anchor(sid, deleted, |_| TimeAnchor::Region {
                 id: region,
                 edge: RegionEdge::Start,
                 offset: AnchorOffset::Zero,
             });
         }
+    }
+
+    /// The region a marker `deleted`'s removal orphans is anchored to: the
+    /// event's, read from the indices both modes keep (the event's voice from
+    /// its own chain, the voice's instance, the instance's region).
+    fn orphan_region(&self, deleted: EventId) -> Option<RegionId> {
+        self.event_modify_chain
+            .get(&deleted)
+            .and_then(WriteChain::current)
+            .map(Event::voice)
+            .and_then(|voice| self.indexed_voice_region(voice))
+    }
+
+    /// The first live marker, in id order, that an undo removing `targets`
+    /// would orphan to `region`: one anchored to an event the undo removes,
+    /// read as its repair will leave it, which re-anchors it to the nearest
+    /// event of its staff instance the undo leaves, else orphans it to the
+    /// start of the event's region ([`Self::reanchor_marker`], run once every
+    /// target is tombstoned). Read from the values and indices both modes
+    /// keep (schema major 5, reduction version 4, X4b fix round 2: before it
+    /// the undo's guard read such a marker at the event it named before the
+    /// undo, so an undo removing a region with the last event a marker stood
+    /// on orphaned the marker to the region it removed,
+    /// `CrossCuttingRefsResolve`).
+    fn orphaned_to_region(
+        &self,
+        region: RegionId,
+        targets: &[TypedObjectId],
+    ) -> Option<TypedObjectId> {
+        let removed = |event: EventId| targets.contains(&TypedObjectId::Event(event));
+        self.cross_cutting_modify_chain
+            .iter()
+            .filter(|(sid, _)| {
+                !targets.contains(sid) && matches!(self.objects.get(*sid), Some(ObjectState::Live))
+            })
+            .find_map(|(sid, chain)| {
+                let Some(CrossCuttingValue::Marker(marker)) = chain.current() else {
+                    return None;
+                };
+                let TimeAnchor::Event { id: event, .. } = &marker.anchor else {
+                    return None;
+                };
+                if !removed(*event) {
+                    return None;
+                }
+                let reanchored = self.indexed_referent(*event).and_then(|referent| {
+                    self.nearest_live_event(&referent, removed, PROXIMITY_SAME_STAFF_INSTANCE)
+                });
+                (reanchored.is_none() && self.orphan_region(*event) == Some(region)).then_some(*sid)
+            })
     }
 
     /// Base-free reduction's "Marker / Anchor" rows for the event `deleted`
@@ -12280,7 +12337,11 @@ impl<'a> Reducer<'a> {
                     self.drop_structure_ref(sid, deleted_obj);
                     return;
                 }
-                match self.nearest_live_event(referent, deleted, PROXIMITY_SAME_STAFF_INSTANCE) {
+                match self.nearest_live_event(
+                    referent,
+                    |event| event == deleted,
+                    PROXIMITY_SAME_STAFF_INSTANCE,
+                ) {
                     Some((to, rank)) => {
                         let retargeted: Vec<EventId> = events
                             .iter()

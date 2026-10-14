@@ -851,7 +851,10 @@ this version: an undo restores no lyric syllable into a slot another holds
 delete orphans holds its region (Section~\ref{sec:k0:create-cross-cutting}), and
 a home naming its voice's own staff is refused, \texttt{PreconditionFailureReason}
 appending \texttt{HomeIsOwnStaff} (discriminant~20, epoch~15;
-Section~\ref{sec:k0:set-voice-home}).
+Section~\ref{sec:k0:set-voice-home}). Its second fix round, after its second
+review, adds one more: an undo reads a marker on an event it removes as the
+repair will leave it, so a marker the undo would orphan holds its region
+(Sections~\ref{sec:k0:create-cross-cutting} and~\ref{sec:k0:undo}).
 
 % ===========================================================================
 \chapter{The Catalog Framework}
@@ -1575,7 +1578,12 @@ later verdict reads: an orphan at its region's start holds the region as any
 marker anchored there does, against a \texttt{DeleteRegion} and an undo of the
 region's create (since version~0.21.0, after its first review, before which
 the repair moved the graph's anchor alone and the region could be removed from
-under the marker).
+under the marker). An undo that removes the marker's event reads the marker as
+the repair will leave it, at the nearest event of its staff instance the undo
+leaves or else at the start of the event's region, so a marker the undo would
+orphan holds that region against the same undo (since version~0.21.0, after
+its second review, before which the undo read the marker at its event and
+removed the region with the event, the orphan left anchored to it).
 
 \textbf{A tie gives way (since version~0.19.0).} A tie holds only while its
 class's validation holds (core specification,
@@ -2989,7 +2997,10 @@ still names: best effort applies only the invariant-20-safe subset of its
 meter restorations, chosen once its mints are gone, so a restoration it drops
 leaves its key's value, and a signature that value names stays, the undo
 taken again without it (since version~0.19.0, before which the signature was
-removed and the meter change named nothing).
+removed and the meter change named nothing). A region is held by a live marker
+anchored to it, and by one on an event the undo removes that the repair would
+orphan to the region's start, read as the repair will leave it
+(Section~\ref{sec:k0:create-cross-cutting}; since version~0.21.0).
 
 \emph{Idempotence asymmetry (ratified Pass~12, closing P12-K11).} An undo's
 value restorations enter the write chains as ordinary writes by the undo
