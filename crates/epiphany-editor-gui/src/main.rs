@@ -18,6 +18,13 @@
 //! panel shows the selection and the last applied op. The GUI is the thing meant to
 //! surface the next real core gaps.
 //!
+//! It edits **files** (the `file` module): `epiphany-editor-gui [path]` opens a saved
+//! document or a MusicXML file (imported into a new document held in memory until it
+//! is saved as a file), or a new score with no path; the file bar opens, saves, saves
+//! as and exports every page as SVG and PDF. Ctrl/Cmd+S saves; Shift+Enter and
+//! Ctrl/Cmd+Enter toggle a line or page break after the selected note's measure,
+//! and bare Enter toggles neither.
+//!
 //! It is a demo binary; there is no headless way to assert its rendering here, so the
 //! one piece of nontrivial logic — the screen↔world coordinate map a click depends on
 //! — is a pure [`ViewMap`] with a round-trip unit test.
@@ -25,18 +32,20 @@
 use eframe::egui;
 
 use epiphany_core::{CmnNominal, NoteValue, TypedObjectId};
-use epiphany_editor_core::{Caret, EditOutcome, EditorError, EditorSession, GridResolution};
-use epiphany_engrave::Engraver;
+use epiphany_editor_core::{
+    Caret, EditOutcome, EditorError, EditorSession, GridResolution, LayoutBreak,
+};
 use epiphany_layout_ir::{BoundingBox, HitShape, LayoutObjectId, Point};
 use epiphany_ops::{OperationKind, OperationPayload};
 use epiphany_render_svg::{render, RenderOptions};
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions::default();
+    let path = std::env::args().nth(1).map(std::path::PathBuf::from);
     eframe::run_native(
         "Epiphany editor (demo)",
         options,
-        Box::new(|_cc| Ok(Box::new(EditorApp::new()))),
+        Box::new(|_cc| Ok(Box::new(EditorApp::new(path)))),
     )
 }
 
@@ -295,6 +304,21 @@ fn resolve_letter(entry_mode: bool, nominal: CmnNominal) -> LetterAction {
     }
 }
 
+/// The layout break an Enter press toggles after the selected note's measure,
+/// given the modifiers held: Shift+Enter a line break, Ctrl/Cmd+Enter a page
+/// break. Bare Enter, and any other combination, toggles none: a key that easy to
+/// press by accident does not restructure the layout (see `DECISIONS.md`).
+fn break_key(modifiers: egui::Modifiers, enter: bool) -> Option<LayoutBreak> {
+    if !enter || modifiers.alt {
+        return None;
+    }
+    match (modifiers.command, modifiers.shift) {
+        (false, true) => Some(LayoutBreak::System),
+        (true, false) => Some(LayoutBreak::Page),
+        _ => None,
+    }
+}
+
 /// Toggles `this` (pencil or note-entry), forcing `other` off exactly when
 /// `this` turns **on** — the mutual-exclusion invariant §W2 pins ("the two
 /// modes are mutually exclusive"), pulled out pure so it is unit-tested
@@ -388,6 +412,10 @@ fn rasterize(svg: &str) -> Option<(egui::ColorImage, egui::Vec2)> {
 
 struct EditorApp {
     session: EditorSession,
+    /// The document the session edits, and the file it lives in, if any.
+    opened: file::Opened,
+    /// The path the file bar's buttons act on.
+    path_text: String,
     texture: Option<egui::TextureHandle>,
     /// `[min_x, min_y, width, height]` of the last render, in staff spaces.
     view_box: [f32; 4],
@@ -422,12 +450,32 @@ struct EditorApp {
 }
 
 impl EditorApp {
-    fn new() -> Self {
-        let score = epiphany_testkit::fixtures::ten_measure_single_staff(0);
-        let session = EditorSession::open(score, Box::new(Engraver::default()))
-            .expect("the ten-measure fixture renders under the real engraver");
+    /// A window on `path` (a saved document or a MusicXML file), or on a new
+    /// score when there is none or it does not open.
+    fn new(path: Option<std::path::PathBuf>) -> Self {
+        let (opened, session, status) = match path.as_deref().map(file::open) {
+            Some(Ok((opened, session))) => {
+                let status = format!("opened {}", path.as_deref().unwrap().display());
+                (opened, session, status)
+            }
+            Some(Err(e)) => {
+                let (opened, session) = file::new_score().expect("a new score opens");
+                (
+                    opened,
+                    session,
+                    format!("could not open: {e}; a new score instead"),
+                )
+            }
+            None => {
+                let (opened, session) = file::new_score().expect("a new score opens");
+                (opened, session, "new score".to_string())
+            }
+        };
+        let path_text = path.map(|p| p.display().to_string()).unwrap_or_default();
         EditorApp {
             session,
+            opened,
+            path_text,
             texture: None,
             view_box: [0.0, 0.0, 1.0, 1.0],
             logical_size: egui::vec2(1.0, 1.0),
@@ -437,8 +485,121 @@ impl EditorApp {
             entry_mode: false,
             rubber_band: None,
             last_paste_text: None,
-            status: "opened ten_measure_single_staff".to_string(),
+            status,
         }
+    }
+
+    /// Replaces the window's document and session with `next`, clearing what
+    /// belonged to the old session's view.
+    fn install(&mut self, next: (file::Opened, EditorSession)) {
+        (self.opened, self.session) = next;
+        self.rubber_band = None;
+        self.needs_render = true;
+    }
+
+    fn do_open(&mut self) {
+        let path = std::path::PathBuf::from(self.path_text.trim());
+        match file::open(&path) {
+            Ok(next) => {
+                self.install(next);
+                self.status = format!(
+                    "opened {}{}",
+                    path.display(),
+                    if self.opened.writable {
+                        ""
+                    } else {
+                        " read-only"
+                    }
+                );
+            }
+            Err(e) => self.status = format!("open: {e}"),
+        }
+    }
+
+    fn do_save(&mut self) {
+        self.status = match self.opened.save(&mut self.session) {
+            Ok(message) => message,
+            Err(e) => format!("save: {e}"),
+        };
+    }
+
+    fn do_save_as(&mut self) {
+        let path = std::path::PathBuf::from(self.path_text.trim());
+        match file::save_as(&mut self.opened, &mut self.session, &path) {
+            Ok(()) => {
+                self.rubber_band = None;
+                self.needs_render = true;
+                self.status = format!("saved as {}", path.display());
+            }
+            Err(e) => self.status = format!("save as: {e}"),
+        }
+    }
+
+    fn do_export(&mut self) {
+        let prefix = std::path::PathBuf::from(self.path_text.trim());
+        self.status = match file::export_pages(&self.opened, &self.session, &prefix) {
+            Ok(message) => message,
+            Err(e) => format!("export: {e}"),
+        };
+    }
+
+    fn do_new(&mut self) {
+        match file::new_score() {
+            Ok(next) => {
+                self.install(next);
+                self.status = "new score".to_string();
+            }
+            Err(e) => self.status = format!("new: {e}"),
+        }
+    }
+
+    /// The file bar: a path, and what to do with it.
+    fn file_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label("File:");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.path_text)
+                    .hint_text("a .musc document, a MusicXML file, or an export prefix")
+                    .desired_width(420.0),
+            );
+            if ui.button("Open").clicked() {
+                self.do_open();
+            }
+            if ui
+                .add_enabled(
+                    self.opened.writable && self.opened.path.is_some(),
+                    egui::Button::new("Save"),
+                )
+                .clicked()
+            {
+                self.do_save();
+            }
+            if ui.button("Save as").clicked() {
+                self.do_save_as();
+            }
+            if ui.button("Export SVG + PDF").clicked() {
+                self.do_export();
+            }
+            if ui.button("New").clicked() {
+                self.do_new();
+            }
+            ui.separator();
+            ui.label(
+                match (
+                    &self.opened.path,
+                    self.opened.writable,
+                    self.session.is_dirty(),
+                ) {
+                    (Some(path), true, dirty) => format!(
+                        "{}{}",
+                        path.display(),
+                        if dirty { " (unsaved edits)" } else { "" }
+                    ),
+                    (Some(path), false, _) => format!("{} (read-only)", path.display()),
+                    (None, _, _) => "not saved yet".to_string(),
+                },
+            );
+        });
     }
 
     /// Runs an intent, recording its outcome (or error) in the status line and
@@ -458,7 +619,20 @@ impl EditorApp {
         self.needs_render = true;
     }
 
-    /// Runs an undo/redo step (which returns `None` when there is nothing to do),
+    /// Undoes the last edit, recording the outcome in the status line: while a save
+    /// is unsettled, undo stops at the edits it staged, and the line says why
+    /// (`EditorError::UnsettledSave`).
+    fn do_undo(&mut self) {
+        self.run("undo", |s| s.undo());
+    }
+
+    /// Whether the Undo button is pressable: an edit can be undone, or undo is
+    /// held at an unsettled save's edits, which a press reports.
+    fn undo_enabled(&self) -> bool {
+        self.session.can_undo() || self.session.has_unsettled_save()
+    }
+
+    /// Runs a redo step (which returns `None` when there is nothing to do),
     /// recording the outcome in the status line and scheduling a re-render.
     fn run_history(
         &mut self,
@@ -633,10 +807,10 @@ impl EditorApp {
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             if ui
-                .add_enabled(self.session.can_undo(), egui::Button::new("↶ Undo"))
+                .add_enabled(self.undo_enabled(), egui::Button::new("↶ Undo"))
                 .clicked()
             {
-                self.run_history("undo", |s| s.undo());
+                self.do_undo();
             }
             if ui
                 .add_enabled(self.session.can_redo(), egui::Button::new("↷ Redo"))
@@ -797,7 +971,8 @@ impl EditorApp {
              (off) / enter A (entry mode) · B–G enter note (entry mode only) · I insert after · \
              R enter rest (entry mode) · ←/→ retreat/advance caret (entry mode) · P pencil · \
              N note-entry · Ctrl/Cmd+C copy · Ctrl/Cmd+V paste · Ctrl/Cmd+Z undo · \
-             Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y redo",
+             Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y redo · Ctrl/Cmd+S save · Shift+Enter line break \
+             / Ctrl/Cmd+Enter page break after the selected note's measure",
             if self.pencil {
                 "ON — click to insert"
             } else {
@@ -812,6 +987,10 @@ impl EditorApp {
     }
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
+        // Typing in the file bar's path is not a command.
+        if ctx.wants_keyboard_input() {
+            return;
+        }
         const LETTER_KEYS: [(egui::Key, CmnNominal); 7] = [
             (egui::Key::A, CmnNominal::A),
             (egui::Key::B, CmnNominal::B),
@@ -856,9 +1035,21 @@ impl EditorApp {
             // actual text needs `egui::Event::Paste`'s payload, which a bare
             // key-press check cannot provide (see `handle_clipboard_events`).
             copy: i.modifiers.command && i.key_pressed(egui::Key::C),
+            save: i.modifiers.command && i.key_pressed(egui::Key::S),
+            layout_break: break_key(i.modifiers, i.key_pressed(egui::Key::Enter)),
         });
+        if k.save {
+            self.do_save();
+        }
+        if let Some(kind) = k.layout_break {
+            let name = match kind {
+                LayoutBreak::System => "line break",
+                LayoutBreak::Page => "page break",
+            };
+            self.run(name, |s| s.toggle_break_after_selection(kind));
+        }
         if k.undo {
-            self.run_history("undo", |s| s.undo());
+            self.do_undo();
         }
         if k.redo {
             self.run_history("redo", |s| s.redo());
@@ -1123,6 +1314,11 @@ struct Keys {
     /// N, toggles note-entry mode.
     entry_toggle: bool,
     copy: bool,
+    /// Ctrl/Cmd+S, saves the document.
+    save: bool,
+    /// Shift+Enter or Ctrl/Cmd+Enter, toggles a line or a page break after the
+    /// selected note's measure ([`break_key`]).
+    layout_break: Option<LayoutBreak>,
 }
 
 impl eframe::App for EditorApp {
@@ -1130,6 +1326,7 @@ impl eframe::App for EditorApp {
         self.handle_keys(ctx);
         self.handle_clipboard_events(ctx);
 
+        egui::TopBottomPanel::top("file").show(ctx, |ui| self.file_bar(ui));
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| self.toolbar(ui));
         egui::SidePanel::right("debug")
             .default_width(280.0)
@@ -1146,6 +1343,8 @@ impl eframe::App for EditorApp {
     }
 }
 
+mod file;
+
 // The pixel-golden comparator, bless machinery, and the four golden-state tests
 // (T1a); see `goldens.rs`'s module doc. Test-only: never compiled into the
 // shipped binary.
@@ -1155,6 +1354,7 @@ mod goldens;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use epiphany_core::{EventPosition, MusicalDuration, MusicalPosition, RationalTime};
 
     #[test]
     fn view_map_round_trips_screen_and_world() {
@@ -1337,6 +1537,223 @@ mod tests {
     }
 
     #[test]
+    fn bare_enter_toggles_no_break_and_modified_enter_does() {
+        let held = |shift: bool, command: bool, alt: bool| egui::Modifiers {
+            alt,
+            ctrl: command,
+            shift,
+            mac_cmd: false,
+            command,
+        };
+        assert_eq!(
+            break_key(held(false, false, false), true),
+            None,
+            "bare Enter"
+        );
+        assert_eq!(
+            break_key(held(true, false, false), true),
+            Some(LayoutBreak::System),
+            "Shift+Enter, a line break"
+        );
+        assert_eq!(
+            break_key(held(false, true, false), true),
+            Some(LayoutBreak::Page),
+            "Ctrl/Cmd+Enter, a page break"
+        );
+        assert_eq!(break_key(held(true, true, false), true), None);
+        assert_eq!(break_key(held(true, false, true), true), None);
+        assert_eq!(
+            break_key(held(true, false, false), false),
+            None,
+            "no Enter, no break"
+        );
+    }
+
+    /// A window on a new score with a quarter C opening each of its first two
+    /// measures, the first selected, and the status line reset.
+    fn a_window_with_a_note_selected() -> EditorApp {
+        let mut app = EditorApp::new(None);
+        let voice = app.session.score().voices().next().expect("a voice").2.id;
+        let quarter = MusicalDuration(RationalTime::new(1, 4).unwrap());
+        for measure in [0, 1] {
+            let start = MusicalPosition(RationalTime::new(measure, 1).unwrap());
+            app.session
+                .set_caret(voice, start, quarter.clone())
+                .unwrap();
+            app.session.enter_nominal(CmnNominal::C).unwrap();
+        }
+        let first = app
+            .session
+            .score()
+            .events
+            .iter()
+            .find(|e| {
+                e.position()
+                    == &EventPosition::Musical(MusicalPosition(RationalTime::new(0, 1).unwrap()))
+            })
+            .map(|e| e.id())
+            .expect("the first note");
+        let object = app
+            .session
+            .hit_test()
+            .regions
+            .iter()
+            .find(|r| match r.source {
+                TypedObjectId::Event(e) => e == first,
+                TypedObjectId::Pitch(p) => app.session.score().events.get(first).is_some_and(|e| {
+                    let mut pitches = Vec::new();
+                    e.collect_identified_pitches(&mut pitches);
+                    pitches.iter().any(|ip| ip.id == p)
+                }),
+                _ => false,
+            })
+            .map(|r| r.layout_object)
+            .expect("the first note is drawn");
+        app.session.select(object).expect("it selects");
+        app.status = "ready".to_owned();
+        app
+    }
+
+    /// Whether a line break, and a page break, stand before the second measure.
+    fn breaks_before_the_second_measure(app: &EditorApp) -> (bool, bool) {
+        let region = app.session.score().voices().next().expect("a voice").0;
+        let at = MusicalPosition(RationalTime::new(1, 1).unwrap());
+        (
+            app.session.has_break(LayoutBreak::System, region, &at),
+            app.session.has_break(LayoutBreak::Page, region, &at),
+        )
+    }
+
+    /// One headless frame carrying an Enter press with `modifiers`, the key
+    /// handler first as `update` runs it. With `focused`, a single-line text
+    /// field (as the file bar's path is) took the keyboard the frame before.
+    fn press_enter(
+        app: &mut EditorApp,
+        ctx: &egui::Context,
+        modifiers: egui::Modifiers,
+        focused: bool,
+    ) {
+        let mut text = String::from("a path");
+        let field = egui::Id::new("path");
+        if focused {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut text).id(field))
+                        .request_focus();
+                });
+            });
+            assert!(ctx.wants_keyboard_input(), "the field has the keyboard");
+        }
+        let input = egui::RawInput {
+            modifiers,
+            events: vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: Some(egui::Key::Enter),
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }],
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |ctx| {
+            app.handle_keys(ctx);
+            if focused {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut text).id(field));
+                });
+            }
+        });
+    }
+
+    /// Enter through the window's key handler, in headless egui frames:
+    /// Shift+Enter toggles a line break after the selected note's measure, and
+    /// again clears it; Ctrl/Cmd+Enter toggles a page break; bare Enter and every
+    /// other chord change nothing and run nothing, and nor does any chord while
+    /// a text field has the keyboard. `break_key`'s own test pins the mapping;
+    /// this pins the handler's call to it and the focus gate before it.
+    #[test]
+    fn enter_through_the_key_handler_toggles_only_the_modified_breaks() {
+        let shift = egui::Modifiers::SHIFT;
+        let command = egui::Modifiers::COMMAND;
+        let alt = egui::Modifiers::ALT;
+        let ctrl_alone = egui::Modifiers {
+            ctrl: true,
+            ..egui::Modifiers::NONE
+        };
+        let mac_cmd_alone = egui::Modifiers {
+            mac_cmd: true,
+            ..egui::Modifiers::NONE
+        };
+        let chords = [
+            ("bare Enter", egui::Modifiers::NONE, false, (false, false)),
+            ("Shift+Enter", shift, false, (true, false)),
+            ("Ctrl/Cmd+Enter", command, false, (false, true)),
+            (
+                "Ctrl/Cmd+Shift+Enter",
+                command | shift,
+                false,
+                (false, false),
+            ),
+            ("Alt+Enter", alt, false, (false, false)),
+            ("Alt+Shift+Enter", alt | shift, false, (false, false)),
+            ("Alt+Ctrl/Cmd+Enter", alt | command, false, (false, false)),
+            (
+                "Ctrl without the command flag",
+                ctrl_alone,
+                false,
+                (false, false),
+            ),
+            (
+                "Cmd without the command flag",
+                mac_cmd_alone,
+                false,
+                (false, false),
+            ),
+            ("Shift+Enter in a text field", shift, true, (false, false)),
+            (
+                "Ctrl/Cmd+Enter in a text field",
+                command,
+                true,
+                (false, false),
+            ),
+        ];
+        for (name, modifiers, focused, expected) in chords {
+            let mut app = a_window_with_a_note_selected();
+            let before = app.session.score().clone();
+            press_enter(&mut app, &egui::Context::default(), modifiers, focused);
+            assert_eq!(breaks_before_the_second_measure(&app), expected, "{name}");
+            match expected {
+                (true, _) => assert!(
+                    app.status.starts_with("line break: ok"),
+                    "{name}: {}",
+                    app.status
+                ),
+                (_, true) => assert!(
+                    app.status.starts_with("page break: ok"),
+                    "{name}: {}",
+                    app.status
+                ),
+                _ => {
+                    assert_eq!(app.session.score(), &before, "{name}: nothing changes");
+                    assert_eq!(app.status, "ready", "{name}: nothing runs");
+                }
+            }
+        }
+        // Pressed again, Shift+Enter clears the line break.
+        let mut app = a_window_with_a_note_selected();
+        let ctx = egui::Context::default();
+        press_enter(&mut app, &ctx, shift, false);
+        assert_eq!(breaks_before_the_second_measure(&app), (true, false));
+        press_enter(&mut app, &ctx, shift, false);
+        assert_eq!(
+            breaks_before_the_second_measure(&app),
+            (false, false),
+            "{}",
+            app.status
+        );
+    }
+
+    #[test]
     fn toggle_exclusive_turning_on_clears_the_other() {
         assert_eq!(toggle_exclusive(false, true), (true, false));
     }
@@ -1354,9 +1771,9 @@ mod tests {
     // piece of clipboard-wiring logic with no `egui::Context`/native-backend
     // dependency, so it gets real unit tests (the surrounding egui-side
     // dispatch — reading `ctx.input`, calling `output_mut`, wiring the
-    // toolbar buttons — is review-only, per the packet's own gate; there is
-    // no headless way to synthesize an `egui::Context` frame or an OS
-    // clipboard gesture here).
+    // toolbar buttons — is review-only, per the packet's own gate; an OS
+    // clipboard gesture cannot be synthesized here, though a headless frame
+    // can be, as `press_enter` runs one).
 
     #[test]
     fn paste_event_text_finds_the_paste_events_own_text() {
@@ -1396,5 +1813,28 @@ mod tests {
             egui::Event::Paste("second".to_string()),
         ];
         assert_eq!(paste_event_text(&events), Some("second"));
+    }
+
+    /// While a save is unsettled, undo stops at the edits it staged and the status
+    /// line says why; the Undo button stays pressable, so a press can say it. Once
+    /// the next save settles it, the edit is saved and undo stops at the save.
+    #[test]
+    fn an_undo_held_at_an_unsettled_save_is_reported() {
+        let mut app = EditorApp::new(None);
+        // The commit point fails, and so does the fresh barrier after it.
+        app.install(file::tests::flaky_window(vec![3, 4]));
+        file::tests::edit(&mut app.session);
+        app.do_save();
+        assert!(app.status.contains("still unknown"), "{}", app.status);
+        let drawn = app.session.score().clone();
+        assert!(app.undo_enabled() && !app.session.can_undo());
+        app.do_undo();
+        assert_eq!(app.status, format!("undo: {}", EditorError::UnsettledSave));
+        assert_eq!(app.session.score(), &drawn, "the edit stays");
+        app.do_save();
+        assert!(app.status.contains("it landed"), "{}", app.status);
+        assert!(!app.undo_enabled());
+        app.do_undo();
+        assert_eq!(app.status, "undo: nothing to undo");
     }
 }

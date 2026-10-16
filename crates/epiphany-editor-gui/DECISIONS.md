@@ -469,3 +469,55 @@ headless way in this crate to synthesize an `egui::Context` frame or drive
 `ctx.input`/painter calls. `cargo test -p epiphany-editor-gui` green
 (25/25, including all five golden tests) is this packet's regression gate
 for that untested surface.
+
+## The window on a file (2026-10-10, X5a.6)
+
+The window edits an `EditorDocument` (the `file` module) instead of the
+built-in fixture: a saved document opened from its path, a MusicXML file
+imported into a new document held in memory (`Box<dyn BlockStore>` holds
+either store), or, with no path, a new score of one staff. The goldens still
+open the fixture directly, so they are unchanged.
+
+**Save as writes a new document and never the one opened.** As editors
+conventionally do, saving as leaves the file the document was opened from
+exactly as it was. The window asks the document for a copy of what it draws
+(`EditorDocument::save_as`: the committed envelopes and the session's applied
+units, saved and unsaved edits alike), writes it as a new bundle at the path
+(`FileStore::create_new`, never over an existing file; a file it cannot finish
+is removed), under a fresh `file_uuid` and the source's `document_id`
+(`req:format:file-document-lineage-identity`'s default, a working copy of the
+same work), and leases the new document in place of the old. A window
+read-only because another holds the file carries its edits into the copy and
+is writable on it. A document read-only for a reason of its own (extensions,
+an anomaly, an unclean log), or holding blobs, is refused, since a copy of its
+operations would not carry it faithfully; save as never reports success with
+something dropped. The undo history goes with the old lease; the redo stack
+and the selection do not carry over.
+
+**An unsettled save is settled at once.** A save whose commit point's flush
+failed, or a save asked for while an earlier one is unsettled, reconciles the
+document there and then (`EditorDocument::reconcile`), and the status line
+says how it settled: landed (any edits made since unsaved), not landed (the
+edits unsaved and undoable again), or still unknown (save again to retry).
+While it is still unknown, undo stops at the edits it staged (D64). The Undo
+button stays pressable then, and a press, like the key, puts the refusal in the
+status line.
+
+**One window writes a file.** Opening a saved document takes an advisory lock
+on its file (`File::try_lock`, which this crate may use: it is outside the
+MSRV floor). A window that cannot take it opens the document read-only. The
+lock is advisory, so it binds cooperating windows only.
+
+**Keys.** Ctrl/Cmd+S saves. Shift+Enter toggles a line break after the
+selected note's measure and Ctrl/Cmd+Enter a page break; bare Enter toggles
+neither (`break_key`). MuseScore puts the line break on bare Enter, but the
+owner, having run the window, ruled that bare Enter is not to be the default
+break key (D60): a key that easy to press by accident should not restructure
+the layout. Shift+Enter is the modified key nearest MuseScore's and reads as a
+line break, as it does in text; Ctrl/Cmd+Enter keeps MuseScore's page break.
+Any other combination with Enter does nothing. Bindings the user can set are a
+later keymap item. No shortcut fires while the file bar's path has the
+keyboard.
+
+**Concert pitch.** A transposed MusicXML file opened here is drawn at
+concert pitch: whether a score is shown transposed is not yet stored in it.

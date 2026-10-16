@@ -1,31 +1,47 @@
 #![forbid(unsafe_code)]
 //! `epiphany`: the first entry point a person can run on a file.
 //!
-//!     epiphany render <file.musicxml> [--page N] [-o out.svg]
+//!     epiphany render <file.musicxml|file.musc> [--page N] [-o out.svg]
 //!     epiphany import <file.musicxml>
+//!     epiphany new <file.musicxml> -o <file.musc>
+//!     epiphany export <file.musicxml|file.musc> -o <prefix> [--svg | --pdf] [--staff-space-mm X]
 //!
-//! `render` imports the file through the operation API, engraves it and
-//! writes page N (default 1) as SVG to `out.svg`, or to standard output.
-//! `import` prints what the import carried and what it could not: every
-//! operation that did not apply, with the reducer's reason; the source
-//! features not imported, by kind; the comparison against the source; and
-//! the score's invariant violations.
+//! `render` imports the file through the operation API, or opens it when it
+//! is a saved document, engraves it and writes page N (default 1) as SVG to
+//! `out.svg`, or to standard output. `new` imports a MusicXML file into a new
+//! document, which must not exist yet: the import's operations are its log.
+//! `export` writes every page as `<prefix>-<n>.svg`, framed by its page, and
+//! all of them as `<prefix>.pdf` (or only one kind), on paper at the staff
+//! space the MusicXML file sets, X mm, or 2 mm for a saved document. `import`
+//! prints what the import carried and what it could not: every operation that
+//! did not apply, with the reducer's reason; the source features not imported,
+//! by kind; the comparison against the source; and the score's invariant
+//! violations.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use epiphany_cli::{engrave_loaded, load, page, svg, Loaded};
+use epiphany_cli::{
+    engrave_loaded, engrave_path, engrave_score, export, is_document, load, new_document,
+    open_document, page, svg, ExportOptions, Loaded,
+};
 use epiphany_musicxml::source::FeatureClass;
 
-const USAGE: &str = "usage: epiphany render <file.musicxml> [--page N] [-o out.svg]\n       \
-                     epiphany import <file.musicxml>";
+const USAGE: &str =
+    "usage: epiphany render <file.musicxml|file.musc> [--page N] [-o out.svg]\n       \
+                     epiphany import <file.musicxml>\n       \
+                     epiphany new <file.musicxml> -o <file.musc>\n       \
+                     epiphany export <file.musicxml|file.musc> -o <prefix> [--svg | --pdf] \
+                     [--staff-space-mm X]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("render") => render_command(&args[1..]),
         Some("import") => import_command(&args[1..]),
+        Some("new") => new_command(&args[1..]),
+        Some("export") => export_command(&args[1..]),
         Some("-h" | "--help") => {
             println!("{USAGE}");
             ExitCode::SUCCESS
@@ -64,6 +80,11 @@ fn render_command(args: &[String]) -> ExitCode {
     let Some(file) = file else {
         return fail(USAGE);
     };
+    match is_document(&file) {
+        Ok(true) => return render_document(&file, number, output),
+        Ok(false) => {}
+        Err(e) => return fail(&format!("{}: {e}", file.display())),
+    }
     let loaded = match load(&file) {
         Ok(loaded) => loaded,
         Err(e) => return fail(&format!("{}: {e}", file.display())),
@@ -94,6 +115,134 @@ fn render_command(args: &[String]) -> ExitCode {
         },
     );
     ExitCode::SUCCESS
+}
+
+/// Writes `text` to `output`, or to standard output.
+fn write_output(output: Option<PathBuf>, text: &str) -> Result<(), ExitCode> {
+    match output {
+        Some(path) => {
+            std::fs::write(&path, text).map_err(|e| fail(&format!("{}: {e}", path.display())))
+        }
+        None => {
+            print!("{text}");
+            Ok(())
+        }
+    }
+}
+
+/// `render` on a saved document: its committed operations reduced and engraved
+/// on the document's page.
+fn render_document(file: &Path, number: usize, output: Option<PathBuf>) -> ExitCode {
+    let document = match open_document(file) {
+        Ok(document) => document,
+        Err(e) => return fail(&format!("{}: {e}", file.display())),
+    };
+    let engraved = engrave_score(&document.score());
+    let pages = engraved.layout.pages.len();
+    let Some(layout) = page(&engraved.layout, number) else {
+        return fail(&format!("{}: page {number} of {pages}", file.display()));
+    };
+    if let Err(code) = write_output(output, &svg(&layout)) {
+        return code;
+    }
+    eprintln!(
+        "{}: page {number} of {pages}; {} operations, generation {}{}",
+        file.display(),
+        document.committed_operations().len(),
+        document.generation(),
+        if document.is_read_only() {
+            format!("; read-only: {:?}", document.read_only_reasons())
+        } else {
+            String::new()
+        }
+    );
+    ExitCode::SUCCESS
+}
+
+fn export_command(args: &[String]) -> ExitCode {
+    let mut file: Option<PathBuf> = None;
+    let mut prefix: Option<PathBuf> = None;
+    let mut options = ExportOptions::default();
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "-o" => match rest.next() {
+                Some(path) => prefix = Some(PathBuf::from(path)),
+                None => return fail("-o needs a path prefix"),
+            },
+            "--svg" => options.pdf = false,
+            "--pdf" => options.svg = false,
+            "--staff-space-mm" => match rest.next().and_then(|n| n.parse::<f32>().ok()) {
+                Some(mm) if mm > 0.0 && mm.is_finite() => options.staff_space_mm = Some(mm),
+                _ => return fail("--staff-space-mm needs a positive length"),
+            },
+            other if other.starts_with('-') => {
+                return fail(&format!("unknown option {other}\n{USAGE}"))
+            }
+            other if file.is_none() => file = Some(PathBuf::from(other)),
+            other => return fail(&format!("unexpected argument {other}\n{USAGE}")),
+        }
+    }
+    let (Some(file), Some(prefix)) = (file, prefix) else {
+        return fail(USAGE);
+    };
+    if !options.svg && !options.pdf {
+        return fail("--svg and --pdf each ask for only one kind; give at most one");
+    }
+    let engraved = match engrave_path(&file) {
+        Ok(engraved) => engraved,
+        Err(e) => return fail(&format!("{}: {e}", file.display())),
+    };
+    match export(&engraved, &prefix, &options) {
+        Ok(exported) => {
+            eprintln!(
+                "{}: {} pages; wrote {}",
+                file.display(),
+                engraved.layout.pages.len(),
+                exported
+                    .paths
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            for (number, overrun) in &exported.overruns {
+                eprintln!(
+                    "  page {number}: the music runs {overrun:.1} staff spaces past the page, \
+                     which is extended to hold it"
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(&format!("{}: {e}", prefix.display())),
+    }
+}
+
+fn new_command(args: &[String]) -> ExitCode {
+    let [source, flag, target] = args else {
+        return fail(USAGE);
+    };
+    if flag != "-o" {
+        return fail(USAGE);
+    }
+    let (source, target) = (PathBuf::from(source), PathBuf::from(target));
+    match new_document(&source, &target) {
+        Ok(document) => {
+            eprintln!(
+                "{}: {} operations into {}{}",
+                source.display(),
+                document.committed_operations().len(),
+                target.display(),
+                if document.is_read_only() {
+                    format!(" (read-only: {:?})", document.read_only_reasons())
+                } else {
+                    String::new()
+                }
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(&format!("{}: {e}", source.display())),
+    }
 }
 
 fn import_command(args: &[String]) -> ExitCode {
