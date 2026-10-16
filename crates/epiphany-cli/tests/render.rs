@@ -1940,6 +1940,341 @@ fn a_voice_visiting_a_staff_leaves_its_own_voices_their_sides() {
     }
 }
 
+/// Writes a grand staff (treble over bass, 4/4, two divisions a quarter) of
+/// `measures` and loads it. The file's voice 1 is at home on the upper staff
+/// and voices 5 and 6 on the lower, each writing most of its notes there.
+fn grand_staff(name: &str, measures: &[String]) -> epiphany_cli::Loaded {
+    let body: String = measures
+        .iter()
+        .enumerate()
+        .map(|(m, content)| {
+            let attributes = if m == 0 {
+                "<attributes><divisions>2</divisions><time><beats>4</beats>\
+                 <beat-type>4</beat-type></time><staves>2</staves><clef number=\"1\">\
+                 <sign>G</sign><line>2</line></clef><clef number=\"2\"><sign>F</sign>\
+                 <line>4</line></clef></attributes>"
+            } else {
+                ""
+            };
+            format!(
+                "<measure number=\"{}\">{attributes}{content}</measure>",
+                m + 1
+            )
+        })
+        .collect();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\">{body}</part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    assert!(loaded.fidelity.passed(), "{:#?}", loaded.fidelity.failures);
+    loaded
+}
+
+/// A note of a grand staff's measure: what it is (a pitch or a rest), its
+/// duration in eighths, its voice, type, dots and staff (1 the upper).
+fn staff_note(what: &str, duration: u8, voice: u8, kind: &str, dots: u8, staff: u8) -> String {
+    format!(
+        "<note>{what}<duration>{duration}</duration><voice>{voice}</voice><type>{kind}</type>\
+         {}<staff>{staff}</staff></note>",
+        "<dot/>".repeat(dots.into())
+    )
+}
+
+fn staff_pitch(step: &str, alter: i8, octave: u8) -> String {
+    format!("<pitch><step>{step}</step><alter>{alter}</alter><octave>{octave}</octave></pitch>")
+}
+
+/// The one event of a voice on a staff (0 the upper) in a measure (0 the
+/// first), a rest or a note.
+fn source_event(
+    loaded: &epiphany_cli::Loaded,
+    voice: &str,
+    staff: usize,
+    measure: usize,
+    rest: bool,
+) -> epiphany_core::EventId {
+    use epiphany_musicxml::source::Content;
+    let found: Vec<epiphany_core::EventId> = loaded.import.source.parts[0]
+        .events
+        .iter()
+        .zip(&loaded.import.ids.events[0])
+        .filter(|(e, _)| e.voice == voice && e.staff == staff && e.measure == measure)
+        .filter(|(e, _)| matches!(e.content, Content::Rest { .. }) == rest)
+        .map(|(_, id)| *id)
+        .collect();
+    assert_eq!(
+        found.len(),
+        1,
+        "voice {voice}, staff {staff}, measure {measure}"
+    );
+    found[0]
+}
+
+/// A note's ink on the page: every glyph and drawn stroke traced to its event
+/// or its pitches; and the boxes of its head and of its stem.
+fn note_ink(
+    loaded: &epiphany_cli::Loaded,
+    layout: &epiphany_layout_ir::ResolvedLayoutIR,
+    id: epiphany_core::EventId,
+) -> (Vec<[f32; 4]>, [f32; 4], [f32; 4]) {
+    use epiphany_core::{Event, TypedObjectId};
+    let Some(Event::Pitched(n)) = loaded.reduced.score.events.get(id) else {
+        panic!("a note");
+    };
+    let traced = |source: &TypedObjectId| {
+        *source == TypedObjectId::Event(id)
+            || matches!(source, TypedObjectId::Pitch(p) if n.pitches.iter().any(|q| q.id == *p))
+    };
+    let mut ink: Vec<[f32; 4]> = layout
+        .glyphs
+        .iter()
+        .filter(|g| traced(&g.provenance.source))
+        .map(glyph_box)
+        .collect();
+    ink.extend(
+        layout
+            .strokes
+            .iter()
+            .filter(|s| traced(&s.provenance.source) && s.from != s.to)
+            .map(stroke_box),
+    );
+    let head = layout
+        .glyphs
+        .iter()
+        .find(|g| g.glyph.as_str() == "noteheadBlack" && traced(&g.provenance.source))
+        .map(glyph_box)
+        .expect("a head");
+    let stem = layout
+        .strokes
+        .iter()
+        .find(|s| s.provenance.source == TypedObjectId::Event(id) && s.from.x == s.to.x)
+        .map(stroke_box)
+        .expect("a stem");
+    (ink, head, stem)
+}
+
+/// Each staff of a grand staff holds a whole-measure rest of its own voice
+/// while the other staff's voice visits it for a beat: in the first measure
+/// the upper staff's voice writes a D-flat quarter on the lower staff's
+/// middle line, in the second a B on its second line, whose stem alone
+/// reaches the rest, and in the third the lower staff's voice writes a C
+/// quarter in the upper staff's third space. Each visitor stems toward its
+/// home, up on the lower staff and down on the upper, and the rest, which at
+/// its measure's first column would stand on the visiting head or stem,
+/// moves clear of every stroke and glyph of the visitor, to the side away
+/// from its stem.
+#[test]
+fn a_staffs_own_rest_stands_clear_of_a_visiting_voice() {
+    use epiphany_core::TypedObjectId;
+
+    let (note, pitch) = (staff_note, staff_pitch);
+    let measure_rest = |voice: u8, staff: u8| {
+        format!(
+            "<note><rest measure=\"yes\"/><duration>8</duration><voice>{voice}</voice>\
+             <staff>{staff}</staff></note>"
+        )
+    };
+    let backup = "<backup><duration>8</duration></backup>";
+    let from_above = |step: &str, alter: i8, octave: u8| {
+        [
+            note(&pitch(step, alter, octave), 2, 1, "quarter", 0, 2),
+            note(&pitch("C", 0, 5), 4, 1, "half", 0, 1),
+            note("<rest/>", 2, 1, "quarter", 0, 1),
+            backup.to_owned(),
+            measure_rest(5, 2),
+        ]
+        .concat()
+    };
+    let from_below = [
+        note(&pitch("C", 0, 5), 2, 5, "quarter", 0, 1),
+        note(&pitch("D", 0, 3), 4, 5, "half", 0, 2),
+        note("<rest/>", 2, 5, "quarter", 0, 2),
+        backup.to_owned(),
+        measure_rest(1, 1),
+    ]
+    .concat();
+    let loaded = grand_staff(
+        "visited_rest.musicxml",
+        &[from_above("D", -1, 3), from_above("B", 0, 2), from_below],
+    );
+    assert_eq!(
+        loaded.reduced.score.voice_homes.len(),
+        2,
+        "each staff's voice visits the other from its home"
+    );
+    let layout = engrave(&loaded.reduced.score).layout;
+
+    // Each measure's visitor and host (voice and staff), whether the visitor
+    // stems up, and its ink: a head, a stem and, in the first, a flat.
+    for (measure, visitor, host, stem_up, drawn) in [
+        (0, ("1", 1), ("5", 1), true, 3),
+        (1, ("1", 1), ("5", 1), true, 2),
+        (2, ("5", 0), ("1", 0), false, 2),
+    ] {
+        let visiting = source_event(&loaded, visitor.0, visitor.1, measure, false);
+        let rest = source_event(&loaded, host.0, host.1, measure, true);
+        let (ink, head, stem) = note_ink(&loaded, &layout, visiting);
+        assert_eq!(
+            stem[3] > head[3] + 1.0,
+            stem_up,
+            "measure {}: the visitor stems toward its home",
+            measure + 1
+        );
+        assert_eq!(ink.len(), drawn, "the visitor's ink: {ink:?}");
+        let glyph = layout
+            .glyphs
+            .iter()
+            .find(|g| g.provenance.source == TypedObjectId::Event(rest))
+            .map(glyph_box)
+            .expect("the staff's own rest");
+        for b in &ink {
+            assert!(
+                !boxes_overlap(glyph, *b),
+                "measure {}: the rest {glyph:?} stands on the visitor's ink {b:?}",
+                measure + 1
+            );
+        }
+        if stem_up {
+            assert!(
+                glyph[3] < head[1],
+                "measure {}: the rest stands below the head",
+                measure + 1
+            );
+        } else {
+            assert!(
+                glyph[1] > head[3],
+                "measure {}: the rest stands above the head",
+                measure + 1
+            );
+        }
+    }
+}
+
+/// A rest moved clear of a visiting voice keeps its dot beside it, and a rest
+/// a second voice of its own staff has turned keeps that side. In the first
+/// measure the lower staff's voice holds a dotted half rest while the upper
+/// staff's voice writes an eighth on its middle line, flagged and stemmed up:
+/// the rest moves below the visiting head and its dot with it, half a space
+/// above the rest's line. In the third the rest is a dotted quarter and the
+/// eighth an F under the staff, so the rest's dot alone meets the visitor's
+/// ink, its flag; the rest moves below the head all the same. In the second
+/// the lower staff holds two voices of its own, a whole-measure rest over two
+/// half notes, and the visitor writes a quarter on its middle line: the rest,
+/// turned upward by the half notes, stays above, clearing the visitor's stem
+/// by passing over its end.
+#[test]
+fn a_rest_moved_clear_of_a_visitor_keeps_its_dot_and_its_staffs_side() {
+    use epiphany_core::TypedObjectId;
+
+    let (note, pitch) = (staff_note, staff_pitch);
+    let backup = "<backup><duration>8</duration></backup>";
+    let dotted = [
+        note(&pitch("D", 0, 3), 1, 1, "eighth", 0, 2),
+        note("<rest/>", 1, 1, "eighth", 0, 1),
+        note(&pitch("C", 0, 5), 4, 1, "half", 0, 1),
+        note("<rest/>", 2, 1, "quarter", 0, 1),
+        backup.to_owned(),
+        note("<rest/>", 6, 5, "half", 1, 2),
+        note(&pitch("G", 0, 2), 2, 5, "quarter", 0, 2),
+    ]
+    .concat();
+    let turned = [
+        note(&pitch("D", 0, 3), 2, 1, "quarter", 0, 2),
+        note(&pitch("C", 0, 5), 4, 1, "half", 0, 1),
+        note("<rest/>", 2, 1, "quarter", 0, 1),
+        backup.to_owned(),
+        "<note><rest measure=\"yes\"/><duration>8</duration><voice>5</voice><staff>2</staff>\
+         </note>"
+            .to_owned(),
+        backup.to_owned(),
+        note(&pitch("G", 0, 2), 4, 6, "half", 0, 2),
+        note(&pitch("A", 0, 2), 4, 6, "half", 0, 2),
+    ]
+    .concat();
+    let flagged = [
+        note(&pitch("F", 0, 2), 1, 1, "eighth", 0, 2),
+        note("<rest/>", 1, 1, "eighth", 0, 1),
+        note(&pitch("C", 0, 5), 4, 1, "half", 0, 1),
+        note("<rest/>", 2, 1, "quarter", 0, 1),
+        backup.to_owned(),
+        note("<rest/>", 3, 5, "quarter", 1, 2),
+        note(&pitch("G", 0, 2), 1, 5, "eighth", 0, 2),
+        note(&pitch("G", 0, 2), 4, 5, "half", 0, 2),
+    ]
+    .concat();
+    let loaded = grand_staff("visited_rest_dot.musicxml", &[dotted, turned, flagged]);
+    assert_eq!(loaded.reduced.score.voice_homes.len(), 1, "voice 1 visits");
+    let layout = engrave(&loaded.reduced.score).layout;
+
+    // Each dotted rest and its dot, clear of the visiting eighth, its stem
+    // and its flag, below its head, the dot half a space above the rest's
+    // line.
+    for (measure, name) in [(0, "restHalf"), (2, "restQuarter")] {
+        let rest = source_event(&loaded, "5", 1, measure, true);
+        let visiting = source_event(&loaded, "1", 1, measure, false);
+        let (ink, head, _) = note_ink(&loaded, &layout, visiting);
+        assert_eq!(ink.len(), 3, "a head, a stem and a flag: {ink:?}");
+        let own: Vec<&epiphany_layout_ir::ResolvedGlyph> = layout
+            .glyphs
+            .iter()
+            .filter(|g| g.provenance.source == TypedObjectId::Event(rest))
+            .collect();
+        let glyph = own
+            .iter()
+            .find(|g| g.glyph.as_str() == name)
+            .expect("the rest");
+        let dot = own
+            .iter()
+            .find(|g| g.glyph.as_str() == "augmentationDot")
+            .expect("its dot");
+        for b in &ink {
+            for g in [glyph, dot] {
+                assert!(
+                    !boxes_overlap(glyph_box(g), *b),
+                    "measure {}: the rest's {} stands on the visitor's ink {b:?}",
+                    measure + 1,
+                    g.glyph.as_str()
+                );
+            }
+        }
+        assert!(
+            glyph_box(glyph)[3] < head[1],
+            "measure {}: the rest stands below the head",
+            measure + 1
+        );
+        assert!(
+            (dot.position.y.0 - (glyph.position.y.0 + 0.5)).abs() < 1e-3,
+            "measure {}: the dot {} stands half a space above its rest's line {}",
+            measure + 1,
+            dot.position.y.0,
+            glyph.position.y.0
+        );
+    }
+
+    // The turned whole rest above the visitor, its stem included.
+    let rest = source_event(&loaded, "5", 1, 1, true);
+    let (ink, _, stem) = note_ink(&loaded, &layout, source_event(&loaded, "1", 1, 1, false));
+    let glyph = layout
+        .glyphs
+        .iter()
+        .find(|g| g.provenance.source == TypedObjectId::Event(rest))
+        .map(glyph_box)
+        .expect("the turned rest");
+    for b in &ink {
+        assert!(
+            !boxes_overlap(glyph, *b),
+            "the turned rest {glyph:?} stands on the visitor's ink {b:?}"
+        );
+    }
+    assert!(
+        glyph[1] > stem[3],
+        "the turned rest {glyph:?} stands above the visiting stem {stem:?}"
+    );
+}
+
 /// A glyph's ink box on the page: left, bottom, right, top.
 fn glyph_box(glyph: &epiphany_layout_ir::ResolvedGlyph) -> [f32; 4] {
     let (x, y, b) = (glyph.position.x.0, glyph.position.y.0, &glyph.bounding_box);

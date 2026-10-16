@@ -1738,3 +1738,34 @@ checked"; ink traced to a grace would be "grace note drawn as a plain note".
 Locked by `a_grace_note_is_not_drawn_as_a_member_of_its_principals_chord`
 (`epiphany-cli`), which fails with the graces laid out. X5c may take a
 number too, and the second to merge renumbers.
+
+## ENGRAVER_VERSION 46 → 47: a staff's own rest clear of a visiting voice (X4b fix round 3, 2026-10-16)
+
+From 45 a voice visiting a staff from its home on another stands on its
+home's side, and its ink is no company for the staff's first voice, which is
+then alone beside it. Alone, that voice's rest keeps its own place, a
+whole-measure rest at its measure's first column hanging from the fourth
+line and any other on the middle line, so a visiting note at the rest's time
+could stand in it, head, stem or accidental (D70); before 45 the visitor
+ranked as the staff's second voice and turned the rest above it. Each staff
+instance's content now names its visiting events (`StaffContent::visiting`,
+`epiphany-layout-ir`, from the same home sides `voice_places` reads), and once
+stems, beams, heads and accidentals are placed the constrained pass moves
+each drawn rest of the staff's own voices whose glyph or dots meet the
+visitors' ink in its column (heads, ledger lines, dots, accidentals, stems
+and flags) a space at a time until it stands `REST_CLEARANCE` (0.25 space)
+above or below every box of it, its dots moving with it (`clear_visitors`).
+A rest alone on its staff moves to the side away from the stems it meets,
+below a visitor from above, whose stem turns up toward its home, and above
+one from below, as two voices on a staff turn apart; a rest a second voice
+of its own staff has turned keeps that side, and passes over the end of a
+visiting stem pointing its way rather than crossing to its partner's side.
+The visitor keeps the stem its home, or its voice's stated direction, gives
+it. Only the rest's own column is read: a column's glyphs share its slot and
+move together under spacing. A rest moved outside the staff draws no ledger
+line, as a rest moved by `clear_rests` draws none. Locked by
+`a_staffs_own_rest_stands_clear_of_a_visiting_voice` and
+`a_rest_moved_clear_of_a_visitor_keeps_its_dot_and_its_staffs_side`
+(`epiphany-cli`), which fail with the move removed. Centering a
+whole-measure rest in its measure, as MuseScore draws it, is X5d's (D70).
+X5c takes its own numbers; the second to merge renumbers.

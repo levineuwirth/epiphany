@@ -1263,6 +1263,7 @@ pub fn try_to_constrained(
                             comp,
                             visible: rest.visible,
                             dots,
+                            dots_y: yo + STAFF_HEIGHT / 2.0 + 0.5,
                             staff,
                             start: time,
                             voice: rest.voice,
@@ -2106,6 +2107,50 @@ pub fn try_to_constrained(
             ink: &tie_ink,
         };
 
+        // Each staff column's ink of the voices visiting that staff from their
+        // home on another (D46), each box with its component's stem direction;
+        // a rest of the staff's own voices that meets it moves clear.
+        let visiting: BTreeSet<EventId> = region
+            .objects
+            .iter()
+            .filter_map(|object| match object.content() {
+                LayoutContent::Staff(content) => Some(&content.visiting),
+                _ => None,
+            })
+            .flatten()
+            .copied()
+            .collect();
+        let mut visitor_ink: VisitorInk = BTreeMap::new();
+        for ((staff, key), refs) in &column_heads {
+            let Some(info) = columns.get(key) else {
+                continue;
+            };
+            let yo = staff.map(&y_origin).unwrap_or(0.0);
+            let mut stems = BTreeSet::new();
+            for r in refs {
+                let head = r.get(&pitch_heads, &unpitched_heads);
+                if !visiting.contains(&head.event) {
+                    continue;
+                }
+                let seg = event_stems
+                    .get(&head.event)
+                    .and_then(|segs| segs.iter().find(|seg| seg.comp == head.comp));
+                let up = seg.is_none_or(|seg| seg.up);
+                let boxes = visitor_ink.entry((*staff, key.clone())).or_default();
+                boxes.extend(
+                    column_ink_boxes(head, info.x, yo)
+                        .into_iter()
+                        .map(|b| (b, up)),
+                );
+                if stems.insert((head.event, head.comp)) {
+                    if let Some(seg) = seg {
+                        boxes.extend(stem_ink(seg, info.x).into_iter().map(|b| (b, up)));
+                    }
+                }
+            }
+        }
+        clear_visitors(&mut event_rests, &visiting, &visitor_ink, &columns);
+
         // Pass 2 — emit. Each logical object's exact provenance lands on exactly
         // one primitive; the extras a multi-component object owns are synthesized.
         for (provenance, staff, content) in specs {
@@ -2153,6 +2198,7 @@ pub fn try_to_constrained(
                                 default_clef: Clef::default(),
                                 beams: Vec::new(),
                                 cross_beams: Vec::new(),
+                                visiting: Default::default(),
                             };
                             &default_content
                         }
@@ -2383,7 +2429,8 @@ pub fn try_to_constrained(
                                         info.slot,
                                     );
                                     // Dots sit in the space above the middle line,
-                                    // right of the rest.
+                                    // right of the rest, and move with a rest
+                                    // moved clear of a visiting voice.
                                     let right =
                                         metrics(name).map_or(1.0, |m| m.bounding_box().right.0);
                                     for dot in 0..seg.dots {
@@ -2403,7 +2450,7 @@ pub fn try_to_constrained(
                                                     + right
                                                     + DOT_GAP
                                                     + f32::from(dot) * DOT_STEP,
-                                                yo + STAFF_HEIGHT / 2.0 + 0.5,
+                                                seg.dots_y,
                                             ),
                                             band_of(staff),
                                             staff,
@@ -3536,6 +3583,8 @@ struct RestSeg {
     /// A hidden rest keeps its column and draws no ink.
     visible: bool,
     dots: u8,
+    /// The `y` of the space its dots sit in.
+    dots_y: f32,
     /// Its staff, onset and voice's place, which decide which other notes it
     /// stands clear of.
     staff: Option<StaffId>,
@@ -3596,6 +3645,126 @@ fn clear_rests(rests: &mut BTreeMap<EventId, Vec<RestSeg>>, sounding: &[Sounding
             }
         }
     }
+}
+
+/// Each staff column's ink of the voices visiting its staff, each box with
+/// the stem direction of the component it belongs to.
+type VisitorInk = BTreeMap<(Option<StaffId>, ColumnKey), Vec<(InkBox, bool)>>;
+
+/// Moves each drawn rest of a staff's own voices whose ink (its glyph and
+/// dots) meets the ink of a voice visiting the staff from its home on another
+/// (`visitor_ink`: each column's heads, ledger lines, dots, accidentals,
+/// stems and flags, with each one's stem direction), a space at a time, dots
+/// with it, until it stands `REST_CLEARANCE` above or below every box of that
+/// ink in its column, as a rest beside another voice moves off its heads
+/// (`clear_rests`). A rest alone on its staff moves to the side away from the
+/// stems it meets, down from a visitor whose stem turns up, as the staff's
+/// voice would turn from a second voice there; a rest its own staff's voices
+/// have turned keeps its side. The visitor keeps the stem its home gives it.
+fn clear_visitors(
+    rests: &mut BTreeMap<EventId, Vec<RestSeg>>,
+    visiting: &BTreeSet<EventId>,
+    visitor_ink: &VisitorInk,
+    columns: &BTreeMap<ColumnKey, ColumnInfo>,
+) {
+    let dot_box = metrics("augmentationDot").map(|m| m.bounding_box());
+    for (eid, segs) in rests.iter_mut() {
+        if visiting.contains(eid) {
+            continue;
+        }
+        for seg in segs.iter_mut().filter(|seg| seg.visible) {
+            let (Some(ink), Some(info)) = (
+                visitor_ink.get(&(seg.staff, seg.key.clone())),
+                columns.get(&seg.key),
+            ) else {
+                continue;
+            };
+            let Some(bounds) = seg.name.and_then(metrics).map(|m| m.bounding_box()) else {
+                continue;
+            };
+            let x = info.x;
+            let own = |y: f32, dots_y: f32| -> Vec<InkBox> {
+                let mut boxes = vec![InkBox {
+                    left: x + bounds.left.0,
+                    right: x + bounds.right.0,
+                    bottom: y + bounds.bottom.0,
+                    top: y + bounds.top.0,
+                    behind: false,
+                }];
+                for dot in 0..seg.dots {
+                    let Some(b) = dot_box else {
+                        break;
+                    };
+                    let dx = x + bounds.right.0 + DOT_GAP + f32::from(dot) * DOT_STEP;
+                    boxes.push(InkBox {
+                        left: dx + b.left.0,
+                        right: dx + b.right.0,
+                        bottom: dots_y + b.bottom.0,
+                        top: dots_y + b.top.0,
+                        behind: false,
+                    });
+                }
+                boxes
+            };
+            let across = |a: &InkBox, b: &InkBox| a.left < b.right && b.left < a.right;
+            let stems_met: Vec<bool> = ink
+                .iter()
+                .filter(|(b, _)| {
+                    own(seg.y, seg.dots_y)
+                        .iter()
+                        .any(|r| across(r, b) && r.bottom < b.top && b.bottom < r.top)
+                })
+                .map(|(_, up)| *up)
+                .collect();
+            if stems_met.is_empty() {
+                continue;
+            }
+            let up = match seg.voice {
+                VoicePlace::Upper => true,
+                VoicePlace::Lower => false,
+                VoicePlace::Alone => stems_met.iter().all(|up| !up),
+            };
+            let step = if up { 1.0 } else { -1.0 };
+            while own(seg.y, seg.dots_y).iter().any(|r| {
+                ink.iter().any(|(b, _)| {
+                    across(r, b)
+                        && r.bottom < b.top + REST_CLEARANCE
+                        && b.bottom < r.top + REST_CLEARANCE
+                })
+            }) {
+                seg.y += step;
+                seg.dots_y += step;
+            }
+        }
+    }
+}
+
+/// A stem's ink and its flag's, from its column's `x`; nothing for a
+/// stemless value.
+fn stem_ink(seg: &StemSeg, x: f32) -> Vec<InkBox> {
+    if !seg.drawn {
+        return Vec::new();
+    }
+    let stem_x = x + seg.dx + seg.x_off;
+    let base = if seg.up { seg.lo } else { seg.hi };
+    let mut boxes = vec![InkBox {
+        left: stem_x - STEM_THICKNESS / 2.0,
+        right: stem_x + STEM_THICKNESS / 2.0,
+        bottom: base.min(seg.end),
+        top: base.max(seg.end),
+        behind: false,
+    }];
+    if let Some(b) = seg.flag.and_then(metrics).map(|m| m.bounding_box()) {
+        let left = stem_x - STEM_THICKNESS / 2.0;
+        boxes.push(InkBox {
+            left: left + b.left.0,
+            right: left + b.right.0,
+            bottom: seg.tip + b.bottom.0,
+            top: seg.tip + b.top.0,
+            behind: false,
+        });
+    }
+    boxes
 }
 
 /// A horizontal column the spacing pass tiles left-to-right. The clef sits in the
@@ -6898,6 +7067,7 @@ mod tests {
             }],
             beams: Vec::new(),
             cross_beams: Vec::new(),
+            visiting: Default::default(),
         });
         let logical = LogicalLayoutIR {
             source: ScoreVersion::default(),
@@ -7230,6 +7400,7 @@ mod tests {
             keys: vec![],
             beams: Vec::new(),
             cross_beams: Vec::new(),
+            visiting: Default::default(),
         });
         let logical = LogicalLayoutIR {
             source: ScoreVersion::default(),
@@ -7597,6 +7768,7 @@ mod tests {
                         keys: vec![],
                         beams: Vec::new(),
                         cross_beams: Vec::new(),
+                        visiting: Default::default(),
                     }),
                 ),
                 with_content(

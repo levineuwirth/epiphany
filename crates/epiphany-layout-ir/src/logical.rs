@@ -126,6 +126,10 @@ pub struct StaffContent {
     /// of another staff of the region: a beam across two staves, as the
     /// score's beams name it.
     pub cross_beams: Vec<BeamGroup>,
+    /// The events of the instance's voices that visit it from their home on
+    /// another staff of the region (`Score::voice_homes`, D46): a rest of the
+    /// instance's own voices stands clear of their ink.
+    pub visiting: BTreeSet<EventId>,
 }
 
 /// A beamed group: two or more notes of one voice, each an eighth or shorter
@@ -1085,6 +1089,14 @@ fn staff_content(
             .collect(),
         beams: beam_groups(score, si, annotations),
         cross_beams: cross_beam_groups(score, si, region_events, annotations),
+        visiting: {
+            let homes = home_sides(score, si);
+            si.voices
+                .iter()
+                .filter(|voice| homes.contains_key(&voice.id))
+                .flat_map(|voice| voice.events.iter().copied())
+                .collect()
+        },
     })
 }
 
@@ -1439,24 +1451,9 @@ fn event_content(
 /// the region and lower when below, and its ink is no company for the staff's
 /// first voice (D46).
 fn voice_places(score: &Score, si: &epiphany_core::StaffInstance) -> BTreeMap<EventId, VoicePlace> {
-    let staves: Vec<epiphany_core::StaffId> = score
-        .canvas
-        .regions
-        .iter()
-        .find(|region| region.staff_instances().iter().any(|i| i.id == si.id))
-        .map(|region| region.staff_instances().iter().map(|i| i.staff).collect())
-        .unwrap_or_default();
-    let home_side = |voice: &epiphany_core::Voice| -> Option<VoicePlace> {
-        let home = score.voice_homes.get(&voice.id)?;
-        let here = staves.iter().position(|staff| *staff == si.staff)?;
-        match staves.iter().position(|staff| staff == home)? {
-            at if at < here => Some(VoicePlace::Upper),
-            at if at > here => Some(VoicePlace::Lower),
-            _ => None,
-        }
-    };
+    let homes = home_sides(score, si);
     let (mut voices, visitors): (Vec<&epiphany_core::Voice>, Vec<&epiphany_core::Voice>) =
-        si.voices.iter().partition(|v| home_side(v).is_none());
+        si.voices.iter().partition(|v| !homes.contains_key(&v.id));
     voices.sort_by_key(|v| !v.is_primary);
     let span = |eid: &EventId| -> Option<(MusicalPosition, MusicalPosition)> {
         let (position, duration, visible) = match score.events.get(*eid)? {
@@ -1501,7 +1498,7 @@ fn voice_places(score: &Score, si: &epiphany_core::StaffInstance) -> BTreeMap<Ev
         let side = match voice.default_stem_direction {
             Some(epiphany_core::StemDirection::Up) => Some(VoicePlace::Upper),
             Some(epiphany_core::StemDirection::Down) => Some(VoicePlace::Lower),
-            None => home_side(voice),
+            None => homes.get(&voice.id).copied(),
         };
         for eid in &voice.events {
             places.insert(*eid, side.unwrap_or(VoicePlace::Alone));
@@ -1523,6 +1520,38 @@ fn voice_places(score: &Score, si: &epiphany_core::StaffInstance) -> BTreeMap<Ev
         }
     }
     places
+}
+
+/// The side of each voice of a staff instance that visits it from its home on
+/// another staff of its region: upper when that staff stands above this one,
+/// lower when below. A voice whose home is this staff, or a staff the region
+/// does not hold, is the instance's own.
+fn home_sides(
+    score: &Score,
+    si: &epiphany_core::StaffInstance,
+) -> BTreeMap<epiphany_core::VoiceId, VoicePlace> {
+    let staves: Vec<epiphany_core::StaffId> = score
+        .canvas
+        .regions
+        .iter()
+        .find(|region| region.staff_instances().iter().any(|i| i.id == si.id))
+        .map(|region| region.staff_instances().iter().map(|i| i.staff).collect())
+        .unwrap_or_default();
+    let Some(here) = staves.iter().position(|staff| *staff == si.staff) else {
+        return BTreeMap::new();
+    };
+    si.voices
+        .iter()
+        .filter_map(|voice| {
+            let home = score.voice_homes.get(&voice.id)?;
+            let side = match staves.iter().position(|staff| staff == home)? {
+                at if at < here => VoicePlace::Upper,
+                at if at > here => VoicePlace::Lower,
+                _ => return None,
+            };
+            Some((voice.id, side))
+        })
+        .collect()
 }
 
 /// An event's concrete position as a layout [`TimePoint`] (the two share the
