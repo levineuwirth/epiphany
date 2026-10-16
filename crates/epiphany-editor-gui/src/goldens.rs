@@ -458,11 +458,21 @@ mod tests {
         assert_golden("ten_measure_open", &pixmap1);
     }
 
+    /// The measures on the fixture's one staff.
+    fn measure_count(session: &EditorSession) -> usize {
+        session
+            .score()
+            .staff_instances()
+            .map(|(_, si)| si.measures.len())
+            .sum()
+    }
+
     /// **G2 — after a scripted pencil insert.** See [`scripted_insert_target`]
     /// for the click-point derivation. `staff_pitch_at` / `default_grid_at` /
     /// `position_at` are asserted to their exact values *before* the insert
     /// runs, then the insert is applied and the result locked against
-    /// `goldens/ten_measure_insert.png`.
+    /// `goldens/ten_measure_insert.png`. The insert lands at the last measure's
+    /// end, so it opens an eleventh measure (X5a.2).
     #[test]
     fn g2_ten_measure_insert_matches_baseline() {
         let score = fixtures::ten_measure_single_staff(0);
@@ -507,6 +517,11 @@ mod tests {
         assert!(
             outcome.graph_changed,
             "the insert must change the score graph"
+        );
+        assert_eq!(
+            measure_count(&session),
+            11,
+            "the insert past the last measure's end opens an eleventh measure for it"
         );
 
         let (svg1, pixmap1) = render_pixmap(&session, 12.0);
@@ -610,7 +625,9 @@ mod tests {
     /// reuse — but driven through [`EditorSession::set_caret_at`] +
     /// [`EditorSession::enter_nominal`] instead of the pencil's
     /// `insert_note_at`. Locks the entry loop's visible result the same way
-    /// G2 locks the pencil's.
+    /// G2 locks the pencil's. Entry at the last measure's end opens the next
+    /// measure rather than overfilling the last (X5a.2), so the four entries
+    /// fill an eleventh measure; re-blessed with G2 under D10.
     ///
     /// **Value assertions before pixels** (contract's own ordering): the
     /// grid/caret's exact position and entry duration are asserted as exact
@@ -684,6 +701,11 @@ mod tests {
                 session.caret().map(|c| c.position),
                 Some(after),
                 "{nominal:?}: the caret advances by exactly the entry duration (1/4)"
+            );
+            assert_eq!(
+                measure_count(&session),
+                11,
+                "{nominal:?}: the first entry opens an eleventh measure, and the rest fill it"
             );
         }
 

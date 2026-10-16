@@ -251,6 +251,16 @@ pub struct Bundle<S: BlockStore> {
     caps: BundleCapabilities,
 }
 
+/// What the cold-open procedure selects from a store.
+struct ColdOpen {
+    header: FixedHeader,
+    active_slot: Slot,
+    superblock: Superblock,
+    manifest: Manifest,
+    read_only: bool,
+    anomalies: Vec<IntegrityAnomaly>,
+}
+
 impl<S: BlockStore> Bundle<S> {
     /// Creates a brand-new bundle in `store` with the given file UUID and
     /// initial manifest (its generation is forced to 0). Writes the manifest
@@ -371,19 +381,56 @@ impl<S: BlockStore> Bundle<S> {
     /// (generation gap, divergent same-generation slots, a non-committed slot)
     /// opens the bundle **read-only** and is recorded in [`Bundle::anomalies`].
     pub fn open(store: S, caps: BundleCapabilities) -> Result<Self, BundleError> {
+        let opened = Self::cold_open(&store, &caps)?;
+        let write_cursor = store.len();
+        Ok(Bundle {
+            store,
+            header: opened.header,
+            active_slot: opened.active_slot,
+            superblock: opened.superblock,
+            manifest: opened.manifest,
+            write_cursor,
+            read_only: opened.read_only,
+            anomalies: opened.anomalies,
+            caps,
+        })
+    }
+
+    /// Runs the cold open again over this bundle's own store and takes what it
+    /// now selects: the header, the active superblock and its manifest, and the
+    /// read-only status and anomalies, as [`Bundle::open`] would find them. A
+    /// writer reconciling a commit whose commit-point flush failed, which left
+    /// this bundle poisoned read-only, reads this way which generation the store
+    /// now selects. On an error the bundle is left as it was, so the read can be
+    /// retried.
+    pub fn reopen(&mut self) -> Result<(), BundleError> {
+        let opened = Self::cold_open(&self.store, &self.caps)?;
+        self.header = opened.header;
+        self.active_slot = opened.active_slot;
+        self.superblock = opened.superblock;
+        self.manifest = opened.manifest;
+        self.write_cursor = self.store.len();
+        self.read_only = opened.read_only;
+        self.anomalies = opened.anomalies;
+        Ok(())
+    }
+
+    /// The cold-open procedure over `store`, reading only: what [`Bundle::open`]
+    /// and [`Bundle::reopen`] select.
+    fn cold_open(store: &S, caps: &BundleCapabilities) -> Result<ColdOpen, BundleError> {
         // 1. Header.
-        let header_bytes = read_vec(&store, 0, crate::header::HEADER_LEN)?;
+        let header_bytes = read_vec(store, 0, crate::header::HEADER_LEN)?;
         let header = FixedHeader::decode(&header_bytes)?;
 
         // 2. Both slots.
-        let slot_a_bytes = read_vec(&store, SLOT_A_OFFSET, SUPERBLOCK_LEN)?;
-        let slot_b_bytes = read_vec(&store, SLOT_B_OFFSET, SUPERBLOCK_LEN)?;
+        let slot_a_bytes = read_vec(store, SLOT_A_OFFSET, SUPERBLOCK_LEN)?;
+        let slot_b_bytes = read_vec(store, SLOT_B_OFFSET, SUPERBLOCK_LEN)?;
         let mut anomalies = Vec::new();
 
         // 3. Parse + manifest-hash-verify each slot. A slot survives only if it
         //    is a valid, committed superblock whose manifest chunk verifies.
-        let a = verified_slot(&store, &slot_a_bytes, &mut anomalies);
-        let b = verified_slot(&store, &slot_b_bytes, &mut anomalies);
+        let a = verified_slot(store, &slot_a_bytes, &mut anomalies);
+        let b = verified_slot(store, &slot_b_bytes, &mut anomalies);
 
         // 4–6. Apply the selection rule. A *selection-level* anomaly (a
         // generation gap > 1, or divergent slots at the same generation) forces
@@ -414,7 +461,7 @@ impl<S: BlockStore> Bundle<S> {
         // placement (in-body, within the size limit) and hash were already
         // checked by `verified_slot`; `Manifest::decode` additionally rejects
         // non-canonical bytes.
-        let manifest_payload = read_manifest_payload(&store, &superblock)?;
+        let manifest_payload = read_manifest_payload(store, &superblock)?;
         let manifest = Manifest::decode(&manifest_payload)?;
 
         // The manifest's self-declared generation must match the superblock that
@@ -532,17 +579,13 @@ impl<S: BlockStore> Bundle<S> {
             });
         }
 
-        let write_cursor = store.len();
-        Ok(Bundle {
-            store,
+        Ok(ColdOpen {
             header,
             active_slot: selection.slot,
             superblock,
             manifest,
-            write_cursor,
             read_only,
             anomalies,
-            caps,
         })
     }
 
@@ -608,6 +651,30 @@ impl<S: BlockStore> Bundle<S> {
     /// Consumes the bundle, returning its store (e.g. to inspect the bytes).
     pub fn into_store(self) -> S {
         self.store
+    }
+
+    /// Makes the selected generation durable: writes the active superblock, the
+    /// one [`Bundle::reopen`] selected and decoded, into its slot again, then
+    /// runs a durability barrier (the store's `flush`).
+    ///
+    /// A writer reconciling a commit whose commit-point flush failed calls this
+    /// once [`Bundle::reopen`] has selected the generation that commit wrote. The
+    /// commit flushed after its chunks and after its manifest, so the failed
+    /// flush covered only the superblock it wrote into the slot now selected. A
+    /// generation readable after that failure may be held only in the page
+    /// cache, and a bare barrier proves nothing of it: on ext4 and XFS a failed
+    /// `fsync` leaves the new bytes readable and marks their pages clean, so a
+    /// second `fsync` writes nothing and succeeds ([`crate::FailedFlush`]).
+    /// Written again, the slot is dirty, so the barrier writes it, and a barrier
+    /// that fails again is an error.
+    ///
+    /// It writes the superblock it holds, never the slot read a second time: a
+    /// clean page holds the new bytes only until it is evicted, and read again
+    /// it holds the disk's superblock, the generation before.
+    pub fn sync(&mut self) -> Result<(), BundleError> {
+        self.store
+            .write_at(self.active_slot.offset(), &self.superblock.encode())?;
+        Ok(self.store.flush()?)
     }
 
     /// Reads and fully verifies a chunk against its reference: that it lies in
@@ -3025,6 +3092,234 @@ mod tests {
         // The bundle is poisoned: further commits are refused (the durable state
         // is indeterminate and must be reloaded).
         assert!(bundle.is_read_only());
+    }
+
+    /// A commit-point flush that fails over a store that, as ext4 and XFS do,
+    /// leaves the new superblock readable and its page clean: a reopen selects
+    /// the new generation from the page cache while the disk holds the one
+    /// before. `sync` puts the selected generation on disk, or fails while the
+    /// disk cannot take it; a bare barrier would write nothing and succeed.
+    #[test]
+    fn sync_puts_on_disk_the_generation_a_failed_commit_point_left_readable() {
+        use crate::store::{FailedFlush, PageCacheStore};
+
+        let caps = || BundleCapabilities::synthetic_for_fixture(0);
+        let add = |bundle: &mut Bundle<PageCacheStore>, payload: &[u8]| {
+            bundle.commit(
+                &[StagedChunk::operation_block(block::encode_block(&[
+                    payload.to_vec(),
+                ]))],
+                |ctx| {
+                    let mut m = ctx.previous_manifest.clone();
+                    m.operation_roots.extend(ctx.new_chunks.iter().copied());
+                    m
+                },
+            )
+        };
+        let on_disk = |bundle: &Bundle<PageCacheStore>| {
+            Bundle::open(
+                MemStore::from_bytes(bundle.store().durable().to_vec()),
+                caps(),
+            )
+            .expect("the disk opens")
+        };
+        // A commit flushes three times, the third its commit point; the barriers
+        // `sync` runs come after.
+        for (failing, barriers) in [(vec![3], 1), (vec![3, 4], 2)] {
+            let image = fresh_bundle().into_store().into_bytes();
+            let store = PageCacheStore::new(image, failing.clone(), FailedFlush::MarksClean);
+            let mut bundle = Bundle::open(store, caps()).unwrap();
+            assert!(add(&mut bundle, b"e").is_err() && bundle.is_read_only());
+            bundle.reopen().expect("the store reads");
+            assert_eq!(bundle.generation(), 1, "the page cache holds the new one");
+            assert_eq!(on_disk(&bundle).generation(), 0, "the disk the one before");
+            for _ in 1..barriers {
+                assert!(bundle.sync().is_err(), "{failing:?}: a failed barrier");
+                assert_eq!(on_disk(&bundle).generation(), 0);
+            }
+            bundle.sync().expect("a barrier that succeeds");
+            assert_eq!(
+                on_disk(&bundle).generation(),
+                1,
+                "{failing:?}: the generation selected is on disk"
+            );
+            add(&mut bundle, b"f").expect("the next commit");
+            let disk = on_disk(&bundle);
+            assert_eq!(disk.generation(), 2);
+            assert!(!disk.is_read_only(), "{failing:?}: {:?}", disk.anomalies());
+        }
+    }
+
+    /// `Bundle::reopen` takes exactly what a cold open of its store selects, and
+    /// on an error leaves the bundle as it was, so the read can be retried. A
+    /// poisoned live bundle, its store swapped for each image, is compared field
+    /// by field with `Bundle::open` of that image, over every image a small
+    /// bundle makes: a fourth commit crashed at each syscall, clean and torn;
+    /// every cut; every byte of the prelude and the newest manifest flipped, and
+    /// every seventh elsewhere; one slot over the other; an earlier generation;
+    /// a generation gap; and a required extension, with flips.
+    #[test]
+    fn reopen_selects_what_open_selects_and_a_failed_reopen_replaces_nothing() {
+        use crate::store::{CrashPoint, FaultStore, Tear};
+
+        fn add_block<S: BlockStore>(bundle: &mut Bundle<S>, n: u8) -> Result<(), BundleError> {
+            let payload = block::encode_block(&[vec![n; 40 + n as usize]]);
+            bundle.commit(&[StagedChunk::operation_block(payload)], |ctx| {
+                let mut m = ctx.previous_manifest.clone();
+                m.operation_roots.extend(ctx.new_chunks.iter().copied());
+                m
+            })
+        }
+        // Every field a cold open selects, and the rest of the bundle's state.
+        fn fields<S: BlockStore>(b: &Bundle<S>) -> String {
+            format!(
+                "{:?}|{:?}|{:?}|{:?}|{}|{}|{:?}|{:?}",
+                b.header,
+                b.active_slot,
+                b.superblock,
+                b.manifest,
+                b.write_cursor,
+                b.read_only,
+                b.anomalies,
+                b.caps
+            )
+        }
+        let caps = || BundleCapabilities::synthetic_for_fixture(0);
+
+        let mut base = fresh_bundle();
+        add_block(&mut base, 1).unwrap();
+        let earlier = base.store().as_bytes().to_vec();
+        add_block(&mut base, 2).unwrap();
+        add_block(&mut base, 3).unwrap();
+        let image = base.store().as_bytes().to_vec();
+
+        let mut images: Vec<(String, Vec<u8>)> = Vec::new();
+        let syscalls = {
+            let mut b = Bundle::open(FaultStore::no_fault(image.clone()), caps()).unwrap();
+            add_block(&mut b, 4).unwrap();
+            b.store().syscalls_issued()
+        };
+        for after_syscalls in 0..=syscalls {
+            for tear in [
+                Tear::Clean,
+                Tear::TornLastWrite { prefix: 0 },
+                Tear::TornLastWrite { prefix: 1 },
+                Tear::TornLastWrite { prefix: 8 },
+                Tear::TornLastWrite { prefix: 40 },
+                Tear::TornLastWrite { prefix: 100 },
+            ] {
+                let crash = CrashPoint {
+                    after_syscalls,
+                    tear,
+                };
+                let store = FaultStore::new(image.clone(), crash);
+                let mut b = Bundle::open(store, caps()).unwrap();
+                let _ = add_block(&mut b, 4);
+                images.push((
+                    format!("crash after {after_syscalls} {tear:?}"),
+                    b.store().durable_image(),
+                ));
+            }
+        }
+        for len in 0..image.len() {
+            images.push((format!("cut at {len}"), image[..len].to_vec()));
+        }
+        for at in 0..image.len() {
+            if at < BODY_START as usize + 64 || at + 600 > image.len() || at % 7 == 0 {
+                let mut x = image.clone();
+                x[at] ^= 0xFF;
+                images.push((format!("flip at {at}"), x));
+            }
+        }
+        let (a, b, len) = (
+            SLOT_A_OFFSET as usize,
+            SLOT_B_OFFSET as usize,
+            SUPERBLOCK_LEN as usize,
+        );
+        let mut x = image.clone();
+        x.copy_within(b..b + len, a);
+        images.push(("slot B over slot A".into(), x));
+        let mut x = image.clone();
+        x.copy_within(a..a + len, b);
+        images.push(("slot A over slot B".into(), x));
+        images.push(("an earlier generation".into(), earlier.clone()));
+        images.push(("empty".into(), Vec::new()));
+        // Generation 0 in slot A beside generation 3 in slot B: a gap.
+        let mut x = image.clone();
+        x[a..a + len].copy_from_slice(&earlier[a..a + len]);
+        images.push(("a generation gap".into(), x));
+        let mut x = image.clone();
+        x[b..b + len].copy_from_slice(&earlier[b..b + len]);
+        images.push(("slot B from an earlier generation".into(), x));
+        let mut ext = Bundle::open(MemStore::from_bytes(image.clone()), caps()).unwrap();
+        ext.commit(&[], |ctx| {
+            let mut m = ctx.previous_manifest.clone();
+            m.extension_declarations
+                .push(crate::manifest::ExtensionDeclaration {
+                    extension_id: crate::ExtensionId([5; 16]),
+                    version: crate::SemVer {
+                        major: 1,
+                        minor: 0,
+                        patch: 0,
+                    },
+                    required: true,
+                    preserved_chunk_roots: Vec::new(),
+                    affected_object_kinds: Vec::new(),
+                    edit_barriers: Vec::new(),
+                });
+            m
+        })
+        .unwrap();
+        let ext = ext.store().as_bytes().to_vec();
+        images.push(("a required extension".into(), ext.clone()));
+        for at in (BODY_START as usize..ext.len()).step_by(97) {
+            let mut x = ext.clone();
+            x[at] ^= 0x55;
+            images.push((format!("a required extension, flip at {at}"), x));
+        }
+
+        let (mut writable, mut read_only, mut refused) = (0, 0, 0);
+        let mut mismatches = Vec::new();
+        for (name, x) in &images {
+            let opened = Bundle::open(MemStore::from_bytes(x.clone()), caps());
+            // A live bundle poisoned, as after a failed commit point, then its
+            // store swapped for the image.
+            let mut live = Bundle::open(MemStore::from_bytes(earlier.clone()), caps()).unwrap();
+            live.read_only = true;
+            let before = fields(&live);
+            live.store = MemStore::from_bytes(x.clone());
+            match (&opened, live.reopen()) {
+                (Ok(opened), Ok(())) => {
+                    if fields(opened) != fields(&live) {
+                        mismatches.push(format!("{name}: reopen took other fields"));
+                    }
+                    if opened.read_only {
+                        read_only += 1;
+                    } else {
+                        writable += 1;
+                    }
+                }
+                (Err(open), Err(reopen)) => {
+                    if format!("{open:?}") != format!("{reopen:?}") {
+                        mismatches.push(format!("{name}: {open:?} against {reopen:?}"));
+                    }
+                    if fields(&live) != before {
+                        mismatches.push(format!("{name}: a failed reopen replaced state"));
+                    }
+                    refused += 1;
+                }
+                (open, reopen) => mismatches.push(format!(
+                    "{name}: open {:?}, reopen {reopen:?}",
+                    open.as_ref().map(|_| ())
+                )),
+            }
+        }
+        assert!(mismatches.is_empty(), "{mismatches:#?}");
+        // Each way an open ends is reached, so no comparison above is vacuous.
+        assert!(
+            writable > 0 && read_only > 0 && refused > 0,
+            "writable {writable}, read-only {read_only}, refused {refused}"
+        );
     }
 
     #[test]
