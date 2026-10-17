@@ -384,17 +384,19 @@ mod tests {
     ///
     /// At this geometry, ten measures of quarter notes at `px_per_staff_space:
     /// 12.0` don't fit one line, so `ten_measure_single_staff` itself casts off
-    /// into two systems (not only the slurred G4 fixture). That means the
+    /// into several systems (not only the slurred G4 fixture). That means the
     /// score's *temporally* last note is not simply "the rightmost notehead
-    /// box": the first system happens to render wider than the second, so its
+    /// box": an earlier system can render wider than the last, so its
     /// notes reach further right on the page even though they come first in
     /// time. The last note is instead the rightmost `Pitch`-sourced notehead
     /// **within the system with the lowest `bounding_box.origin.y`** — systems
     /// stack top-to-bottom in this y-up world, so the lowest one is the last.
     ///
-    /// The click point sits half a staff space past that notehead's right edge
-    /// (clearly past it, still read as the same system) and two staff spaces
-    /// above its vertical center — four diatonic steps (a fifth) above the
+    /// The click point sits half a staff space inside the last system's right
+    /// edge, its closing barline: past the last note, whose column, spaced by
+    /// its quarter's duration, runs most of the way there, so the click reads
+    /// as the time after it, still in the same system. It stands two staff
+    /// spaces above the notehead's vertical center — four diatonic steps (a fifth) above the
     /// existing all-C4 content under treble clef, landing on a different,
     /// mid-staff pitch rather than repeating the fixture's own notes. `staff_pitch_at` /
     /// `default_grid_at` / `position_at` resolve this point to exact values,
@@ -431,8 +433,11 @@ mod tests {
             .max_by(|a, b| a.right.0.total_cmp(&b.right.0))
             .expect("the last system renders at least one notehead");
 
+        let system_right =
+            last_system.bounding_box.origin.x.0 + last_system.bounding_box.size.width.0;
+        assert!(system_right - 0.5 > last_notehead.right.0);
         Point::new(
-            last_notehead.right.0 + 0.5,
+            system_right - 0.5,
             (last_notehead.bottom.0 + last_notehead.top.0) / 2.0 + 2.0,
         )
     }
