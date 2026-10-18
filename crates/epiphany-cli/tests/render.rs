@@ -6177,3 +6177,582 @@ fn a_tie_starts_past_its_flag_on_its_justified_span() {
         );
     }
 }
+
+/// A one-part score in divisions of a sixteenth, on a page `width` spaces
+/// wide with margins of 7.5, its first measure opening with `attributes`,
+/// each of `measures` a measure, and a system break opening each measure
+/// numbered in `breaks`, as a file's own breaks are written.
+fn broken_part(width: f32, attributes: &str, measures: &[String], breaks: &[usize]) -> String {
+    let body: String = measures
+        .iter()
+        .enumerate()
+        .map(|(i, content)| {
+            let m = i + 1;
+            let print = if breaks.contains(&m) {
+                "<print new-system=\"yes\"/>"
+            } else {
+                ""
+            };
+            let attributes = if m == 1 {
+                format!("<attributes><divisions>4</divisions>{attributes}</attributes>")
+            } else {
+                String::new()
+            };
+            format!("<measure number=\"{m}\">{print}{attributes}{content}</measure>")
+        })
+        .collect();
+    format!(
+        "<score-partwise version=\"4.0\"><defaults><scaling><millimeters>7</millimeters>\
+         <tenths>40</tenths></scaling><page-layout><page-height>3000</page-height>\
+         <page-width>{}</page-width><page-margins type=\"both\"><left-margin>75</left-margin>\
+         <right-margin>75</right-margin><top-margin>75</top-margin>\
+         <bottom-margin>75</bottom-margin></page-margins></page-layout></defaults><part-list>\
+         <score-part id=\"P1\"><part-name>A</part-name></score-part></part-list>\
+         <part id=\"P1\">{body}</part></score-partwise>",
+        (width * 10.0).round()
+    )
+}
+
+/// A note of `duration` sixteenths and `kind`, its pitch a step and octave
+/// with an alteration (`None` a rest), a chord member when `chord`.
+fn sixteenths(pitch: Option<(&str, i8, u8)>, duration: u8, kind: &str, chord: bool) -> String {
+    let body = pitch.map_or("<rest/>".to_string(), |(step, alter, octave)| {
+        format!("<pitch><step>{step}</step><alter>{alter}</alter><octave>{octave}</octave></pitch>")
+    });
+    format!(
+        "<note>{}{body}<duration>{duration}</duration><voice>1</voice><type>{kind}</type></note>",
+        if chord { "<chord/>" } else { "" }
+    )
+}
+
+/// Solves a loaded file on its page as `engrave_loaded` does, keeping the
+/// solver's report and its warnings.
+fn solve_loaded(loaded: &epiphany_cli::Loaded) -> epiphany_layout_ir::SolveReport {
+    use epiphany_layout_ir::{to_constrained, to_logical, ConstraintSolver, SolverConfig};
+    epiphany_engrave::Engraver::with_geometry(epiphany_cli::page_of(&loaded.reduced.score)).solve(
+        &to_constrained(&to_logical(&loaded.reduced.score)),
+        &SolverConfig::default(),
+    )
+}
+
+/// The measure, numbered from 1, each system of a layout opens with.
+fn system_starts(
+    loaded: &epiphany_cli::Loaded,
+    layout: &epiphany_layout_ir::ResolvedLayoutIR,
+) -> Vec<usize> {
+    let ids = &loaded.import.ids.measures[0][0];
+    layout
+        .systems()
+        .map(|system| {
+            system
+                .measures
+                .iter()
+                .filter_map(|m| ids.iter().position(|id| *id == m.measure))
+                .min()
+                .map_or(0, |k| k + 1)
+        })
+        .collect()
+}
+
+/// The systems the score's breaks fix that the engraver added a system
+/// inside, as its warnings name them.
+fn added_systems(report: &epiphany_layout_ir::SolveReport) -> Vec<&str> {
+    report
+        .warnings
+        .iter()
+        .filter_map(|w| match &w.kind {
+            epiphany_layout_ir::SolverWarningKind::UnusualLayoutDecision(text)
+                if text.starts_with("a system added inside the score's breaks") =>
+            {
+                Some(text.as_str())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The rightmost ink of each system: its glyphs' boxes and its strokes, a
+/// stroke's half-thickness included.
+fn system_ink_right(layout: &epiphany_layout_ir::ResolvedLayoutIR) -> Vec<f32> {
+    layout
+        .systems()
+        .map(|system| {
+            let glyphs = system
+                .primitives
+                .glyphs
+                .iter()
+                .map(|&i| glyph_box(&layout.glyphs[i as usize])[2]);
+            let strokes = system
+                .primitives
+                .strokes
+                .iter()
+                .map(|&i| &layout.strokes[i as usize])
+                .map(|st| st.from.x.0.max(st.to.x.0) + st.thickness.0 / 2.0);
+            glyphs.chain(strokes).fold(f32::NEG_INFINITY, f32::max)
+        })
+        .collect()
+}
+
+/// A system the file's breaks fix, which holds more than the line at the
+/// fixed scale, is compressed toward its floor and kept, filling the line to
+/// its margins and keeping its durations' ratios: twelve measures of
+/// quarters and eighths broken every four, whose four measures take more
+/// than the line at their natural width, make the file's three systems, each
+/// opening where the file breaks, adding none, and a quarter's column stays
+/// half again an eighth's.
+#[test]
+fn a_system_the_breaks_fix_is_compressed_to_hold() {
+    let rhythm = [
+        ("C", 4, "quarter"),
+        ("D", 2, "eighth"),
+        ("E", 2, "eighth"),
+        ("F", 4, "quarter"),
+        ("G", 4, "quarter"),
+    ];
+    let measures: Vec<String> = (0..12)
+        .map(|_| {
+            rhythm
+                .iter()
+                .map(|(step, duration, kind)| {
+                    sixteenths(Some((step, 0, 5)), *duration, kind, false)
+                })
+                .collect()
+        })
+        .collect();
+    let attributes = "<time><beats>4</beats><beat-type>4</beat-type></time>\
+                      <clef><sign>G</sign><line>2</line></clef>";
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("compressed_to_hold.musicxml");
+    let (width, content) = (100.0, 85.0);
+
+    // At the fixed scale, on a page that holds all twelve in one system, the
+    // file's second system (measures 5 to 8) is wider than the line.
+    std::fs::write(&path, broken_part(2000.0, attributes, &measures, &[])).expect("written");
+    let wide = load(&path).expect("loads");
+    let layout = epiphany_cli::engrave_loaded(&wide).layout;
+    let system = layout.systems().next().expect("a system");
+    let ids = &wide.import.ids.measures[0][0];
+    let edge = |k: usize, right: bool| {
+        let b = &system
+            .measures
+            .iter()
+            .find(|m| m.measure == ids[k - 1])
+            .expect("the measure")
+            .bounding_box;
+        b.origin.x.0 + if right { b.size.width.0 } else { 0.0 }
+    };
+    let natural = edge(8, true) - edge(5, false);
+    assert!(
+        natural > content,
+        "four measures take {natural} at the fixed scale, more than the line's {content}"
+    );
+
+    std::fs::write(&path, broken_part(width, attributes, &measures, &[5, 9])).expect("written");
+    let loaded = load(&path).expect("loads");
+    let report = solve_loaded(&loaded);
+    assert_eq!(
+        system_starts(&loaded, &report.layout),
+        vec![1, 5, 9],
+        "the file's three systems, compressed, and no system added"
+    );
+    assert!(added_systems(&report).is_empty(), "{:?}", report.warnings);
+    for (s, right) in system_ink_right(&report.layout).into_iter().enumerate() {
+        assert!(
+            (right - (width - 7.5)).abs() < 0.05,
+            "system {s}'s ink runs to {right}, the margin at {}",
+            width - 7.5
+        );
+    }
+    let heads = heads_by_onset(&loaded.reduced.score, &report.layout);
+    let x = |onset: f64| head_x_at(&heads, onset);
+    for m in [4.0, 5.0, 8.0] {
+        let quarter = x(m + 0.25) - x(m);
+        let eighth = x(m + 0.375) - x(m + 0.25);
+        assert!(
+            (quarter / eighth - 1.5).abs() < 0.01,
+            "in the measure at {m}, a quarter's column {quarter} against an eighth's {eighth}"
+        );
+        assert!(
+            quarter < 4.9,
+            "the quarter's column {quarter} is compressed"
+        );
+    }
+}
+
+/// Where even the floor of a system the file's breaks fix holds more than
+/// the line, the engraver adds a system inside it, and names it with the
+/// floor's overflow: of three systems the file breaks, only the middle one's
+/// three measures of sixteenths are dense, and on the widest page whose line
+/// that system's floor overflows, exactly one system is added, there, and the
+/// others hold.
+#[test]
+fn where_even_the_floor_overflows_one_system_is_added() {
+    let light = || sixteenths(Some(("B", 0, 4)), 16, "whole", false);
+    let dense = || -> String {
+        ["C", "D", "E", "F", "G", "A", "G", "F"]
+            .iter()
+            .cycle()
+            .take(16)
+            .map(|step| sixteenths(Some((step, 0, 5)), 1, "16th", false))
+            .collect()
+    };
+    let measures = vec![
+        light(),
+        light(),
+        dense(),
+        dense(),
+        dense(),
+        light(),
+        light(),
+    ];
+    let attributes = "<time><beats>4</beats><beat-type>4</beat-type></time>\
+                      <clef><sign>G</sign><line>2</line></clef>";
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("floor_overflows.musicxml");
+    let mut held = None;
+    for tenth in (300..=1600).rev().step_by(5) {
+        let width = tenth as f32 / 10.0;
+        std::fs::write(&path, broken_part(width, attributes, &measures, &[3, 6])).expect("written");
+        let loaded = load(&path).expect("loads");
+        let report = solve_loaded(&loaded);
+        let added = added_systems(&report);
+        let starts = system_starts(&loaded, &report.layout);
+        if added.is_empty() {
+            assert_eq!(
+                starts,
+                vec![1, 3, 6],
+                "at width {width} the file's systems hold"
+            );
+            held = Some(width);
+            continue;
+        }
+        let held = held.expect("a wider page held the file's systems");
+        assert_eq!(added.len(), 1, "at width {width}: {added:?}");
+        assert!(
+            starts == vec![1, 3, 4, 6] || starts == vec![1, 3, 5, 6],
+            "at width {width}, one system added inside the dense one: {starts:?}"
+        );
+        // The overflow it names is what the half-space narrower line took
+        // from a floor that fitted it.
+        let overflow: f32 = added[0]
+            .trim_end_matches(" staff spaces at its floor")
+            .rsplit(' ')
+            .next()
+            .and_then(|o| o.parse().ok())
+            .expect("the overflow named");
+        assert!(
+            overflow > 0.0 && overflow <= held - width + 0.01,
+            "at width {width} the floor overflows by {overflow}, at {held} it held"
+        );
+        assert!(
+            report.warnings.iter().any(|w| matches!(
+                w.affected_objects.first(),
+                Some(epiphany_core::TypedObjectId::Measure(m))
+                    if loaded.import.ids.measures[0][0][starts[2] - 1] == *m
+            )),
+            "the warning names the measure the added system opens with"
+        );
+        return;
+    }
+    panic!("no page the dense system's floor overflows");
+}
+
+/// Ink boxes by a key a relayout of the score keeps: each glyph's, and each
+/// stem's and ledger line's, by its provenance and name.
+fn keyed_ink(layout: &epiphany_layout_ir::ResolvedLayoutIR) -> Vec<(String, [f32; 4])> {
+    let glyphs = layout.glyphs.iter().map(|g| {
+        (
+            format!("{:?}{}", g.provenance.stable_id, g.glyph.as_str()),
+            glyph_box(g),
+        )
+    });
+    let strokes = layout
+        .strokes
+        .iter()
+        .filter(|s| {
+            epiphany_layout_ir::is_rigid_width_stroke(s)
+                || (matches!(s.provenance.source, epiphany_core::TypedObjectId::Event(_))
+                    && (s.from.x.0 - s.to.x.0).abs() < 1e-4)
+        })
+        .map(|s| (format!("{:?}", s.provenance.stable_id), stroke_box(s)));
+    glyphs.chain(strokes).collect()
+}
+
+/// Every pair of keyed ink boxes that share ink, by more than a hundredth of
+/// a space each way.
+fn ink_on_ink(ink: &[(String, [f32; 4])]) -> std::collections::BTreeSet<(String, String)> {
+    let deep = |a: [f32; 4], b: [f32; 4]| {
+        a[2] > b[0] + 0.01 && b[2] > a[0] + 0.01 && a[3] > b[1] + 0.01 && b[3] > a[1] + 0.01
+    };
+    let mut pairs = std::collections::BTreeSet::new();
+    for (i, (ka, a)) in ink.iter().enumerate() {
+        for (kb, b) in &ink[i + 1..] {
+            if deep(*a, *b) {
+                pairs.insert(if ka < kb {
+                    (ka.clone(), kb.clone())
+                } else {
+                    (kb.clone(), ka.clone())
+                });
+            }
+        }
+    }
+    pairs
+}
+
+/// Compression toward the floor puts no ink on ink, and keeps each note
+/// after the one before it: a system the file breaks, of dotted rhythms,
+/// seconds, accidentals beside heads and ledger lines, rests, a leap of two
+/// octaves, a clef change and a key and time change, set on every page down
+/// to the narrowest whose line its floor still fits, shares no ink its
+/// natural spacing does not, and each of its heads stands after the previous
+/// onset's by MuseScore's least distance between two notes of a voice, a
+/// tenth of a space, however far apart their heights.
+#[test]
+fn compression_at_the_floor_puts_no_ink_on_ink() {
+    let n = |step, alter, octave, duration, kind| {
+        sixteenths(Some((step, alter, octave)), duration, kind, false)
+    };
+    let chord = |step, alter, octave, duration, kind| {
+        sixteenths(Some((step, alter, octave)), duration, kind, true)
+    };
+    let rest = |duration, kind| sixteenths(None, duration, kind, false);
+    let dotted = |note: String| note.replace("</type></note>", "</type><dot/></note>");
+    let hidden = |duration: u8, voice: u8| {
+        format!(
+            "<note print-object=\"no\"><rest/><duration>{duration}</duration>\
+             <voice>{voice}</voice></note>"
+        )
+    };
+    let measures = vec![
+        n("B", -1, 4, 16, "whole"),
+        [
+            dotted(n("F", 1, 5, 3, "eighth")),
+            n("G", 0, 5, 1, "16th"),
+            n("C", 0, 5, 4, "quarter"),
+            chord("D", -1, 5, 4, "quarter"),
+            dotted(rest(3, "eighth")),
+            n("B", 0, 5, 1, "16th"),
+            n("E", 0, 6, 4, "quarter"),
+        ]
+        .concat(),
+        [
+            n("F", 1, 4, 1, "16th"),
+            n("G", 1, 4, 1, "16th"),
+            n("A", 0, 4, 1, "16th"),
+            n("B", 0, 4, 1, "16th"),
+            n("C", 1, 5, 1, "16th"),
+            n("D", 0, 5, 1, "16th"),
+            n("E", 0, 5, 1, "16th"),
+            n("F", 1, 5, 1, "16th"),
+            n("G", 0, 4, 4, "quarter"),
+            chord("A", 0, 4, 4, "quarter"),
+            rest(4, "quarter"),
+        ]
+        .concat(),
+        [
+            // A lower voice's C4 and then an upper voice's C6, two octaves
+            // apart, their stems turned away from each other: nothing of one
+            // stands at the other's height.
+            hidden(4, 1),
+            n("C", 0, 6, 4, "quarter"),
+            "<attributes><clef><sign>F</sign><line>4</line></clef></attributes>".to_string(),
+            n("D", 1, 3, 4, "quarter"),
+            n("F", 1, 2, 4, "quarter"),
+            "<backup><duration>16</duration></backup>".to_string(),
+            n("C", 0, 4, 4, "quarter").replace("<voice>1</voice>", "<voice>2</voice>"),
+            hidden(12, 2),
+        ]
+        .concat(),
+        [
+            "<attributes><key><fifths>3</fifths></key><time><beats>3</beats>\
+             <beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef>\
+             </attributes>"
+                .to_string(),
+            dotted(n("G", 0, 4, 6, "quarter")),
+            n("E", 1, 5, 2, "eighth"),
+            n("F", 1, 5, 4, "quarter"),
+            chord("G", 1, 5, 4, "quarter"),
+        ]
+        .concat(),
+        dotted(n("C", 1, 5, 12, "half")),
+    ];
+    let attributes = "<key><fifths>-2</fifths></key><time><beats>4</beats>\
+                      <beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef>";
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("compressed_floor.musicxml");
+
+    // The natural spacing, on a page that holds the score in one system, and
+    // the natural width of the measures the file sets as one system.
+    std::fs::write(&path, broken_part(2000.0, attributes, &measures, &[])).expect("written");
+    let wide = load(&path).expect("loads");
+    let wide_layout = epiphany_cli::engrave_loaded(&wide).layout;
+    let natural_ink = keyed_ink(&wide_layout);
+    let ids = &wide.import.ids.measures[0][0];
+    let boxes: Vec<_> = wide_layout
+        .systems()
+        .flat_map(|system| &system.measures)
+        .filter(|m| ids[1..5].contains(&m.measure))
+        .map(|m| (m.bounding_box.origin.x.0, m.bounding_box.size.width.0))
+        .collect();
+    let spread = boxes
+        .iter()
+        .map(|b| b.0 + b.1)
+        .fold(f32::NEG_INFINITY, f32::max)
+        - boxes.iter().map(|b| b.0).fold(f32::INFINITY, f32::min);
+    let keys: std::collections::BTreeSet<&String> = natural_ink.iter().map(|(k, _)| k).collect();
+    let natural = ink_on_ink(&natural_ink);
+
+    let mut tightest = None;
+    for tenth in (300..=1200).rev().step_by(5) {
+        let width = tenth as f32 / 10.0;
+        std::fs::write(&path, broken_part(width, attributes, &measures, &[2, 6])).expect("written");
+        let loaded = load(&path).expect("loads");
+        let report = solve_loaded(&loaded);
+        if !added_systems(&report).is_empty() {
+            break;
+        }
+        assert_eq!(system_starts(&loaded, &report.layout), vec![1, 2, 6]);
+        let ink: Vec<(String, [f32; 4])> = keyed_ink(&report.layout)
+            .into_iter()
+            .filter(|(k, _)| keys.contains(k))
+            .collect();
+        let new: Vec<_> = ink_on_ink(&ink).difference(&natural).cloned().collect();
+        assert!(
+            new.is_empty(),
+            "at width {width} compression puts ink on ink: {new:?}"
+        );
+
+        // Each onset's heads after the previous onset's, in one system.
+        let layout = &report.layout;
+        let system_of: std::collections::BTreeMap<String, usize> = layout
+            .systems()
+            .enumerate()
+            .flat_map(|(s, system)| {
+                system.primitives.glyphs.iter().map(move |&i| {
+                    let g = &layout.glyphs[i as usize];
+                    (
+                        format!("{:?}{}", g.provenance.stable_id, g.glyph.as_str()),
+                        s,
+                    )
+                })
+            })
+            .collect();
+        let heads: Vec<(f64, usize, [f32; 4])> = heads_by_onset(&loaded.reduced.score, layout)
+            .into_iter()
+            .map(|(at, _, g)| {
+                let key = format!("{:?}{}", g.provenance.stable_id, g.glyph.as_str());
+                (at, system_of[&key], glyph_box(&g))
+            })
+            .collect();
+        let mut onsets: Vec<(f64, usize)> = heads.iter().map(|h| (h.0, h.1)).collect();
+        onsets.dedup();
+        for pair in onsets.windows(2) {
+            let ((t0, s0), (t1, s1)) = (pair[0], pair[1]);
+            if s0 != s1 {
+                continue;
+            }
+            let at = |t: f64| heads.iter().filter(move |h| h.0 == t);
+            let right = at(t0).map(|h| h.2[2]).fold(f32::NEG_INFINITY, f32::max);
+            let left = at(t1).map(|h| h.2[0]).fold(f32::INFINITY, f32::min);
+            assert!(
+                left >= right + 0.1 - 1e-3,
+                "at width {width} the heads at {t1} stand {} after those at {t0}",
+                left - right
+            );
+        }
+        tightest = Some(width);
+    }
+    // The narrowest page that held them, half a space wider than one whose
+    // line the floor overflows, holds the measures well inside their natural
+    // width.
+    let tightest = tightest.expect("some page holds the file's systems");
+    let line = tightest - 15.0;
+    assert!(
+        line < 0.8 * spread,
+        "the tightest line {line} holds the measures whose natural width is {spread}"
+    );
+}
+
+/// A compressed system's ties are decided where it sets them: an upper
+/// voice's flagged eighth tied to a quarter, over a whole note, whose tie the
+/// natural spacing starts past the flag, keeps at least a space between its
+/// ends on every page down to the narrowest whose line the system's floor
+/// fits, starting past its flag only where that leaves it the space.
+#[test]
+fn a_compressed_systems_ties_are_decided_where_it_sets_them() {
+    let note = |pitch: &str, duration: u8, kind: &str, voice: u8, tie: &str| {
+        let (step, octave) = pitch.split_at(1);
+        let (tie_el, tied) = match tie {
+            "" => (String::new(), String::new()),
+            kind => (
+                format!("<tie type=\"{kind}\"/>"),
+                format!("<notations><tied type=\"{kind}\"/></notations>"),
+            ),
+        };
+        let stem = if voice == 1 { "up" } else { "down" };
+        format!(
+            "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+             <duration>{duration}</duration>{tie_el}<voice>{voice}</voice><type>{kind}</type>\
+             <stem>{stem}</stem>{tied}</note>"
+        )
+    };
+    let measures: Vec<String> = (0..7)
+        .map(|_| {
+            [
+                note("C5", 2, "eighth", 1, "start"),
+                note("C5", 4, "quarter", 1, "stop"),
+                note("A4", 2, "eighth", 1, ""),
+                note("B4", 8, "half", 1, ""),
+                "<backup><duration>16</duration></backup>".to_string(),
+                note("F4", 16, "whole", 2, ""),
+            ]
+            .concat()
+        })
+        .collect();
+    let attributes = "<time><beats>4</beats><beat-type>4</beat-type></time>\
+                      <clef><sign>G</sign><line>2</line></clef>";
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("compressed_ties.musicxml");
+
+    // On a page that holds them at their natural spacing, each tie starts
+    // past its eighth's flag.
+    std::fs::write(&path, broken_part(2000.0, attributes, &measures, &[])).expect("written");
+    let wide = epiphany_cli::engrave_loaded(&load(&path).expect("loads")).layout;
+    let flags: Vec<[f32; 4]> = wide
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("flag"))
+        .map(glyph_box)
+        .collect();
+    for tie in ties_of(&wide) {
+        assert!(
+            flags.iter().all(|f| !curve_enters(&tie, *f)),
+            "the natural spacing starts each tie past its flag: {tie:?}"
+        );
+    }
+
+    let (mut held, mut short) = (0, Vec::new());
+    for tenth in (300..=1500).rev().step_by(5) {
+        let width = tenth as f32 / 10.0;
+        std::fs::write(&path, broken_part(width, attributes, &measures, &[2])).expect("written");
+        let loaded = load(&path).expect("loads");
+        let report = solve_loaded(&loaded);
+        if !added_systems(&report).is_empty() {
+            break;
+        }
+        assert_eq!(system_starts(&loaded, &report.layout), vec![1, 2]);
+        let ties = ties_of(&report.layout);
+        assert_eq!(ties.len(), 7, "a tie in each measure");
+        for tie in &ties {
+            let span = tie[3].0 - tie[0].0;
+            if span < 1.0 - 1e-3 {
+                short.push((width, span));
+            }
+        }
+        held += 1;
+    }
+    assert!(held > 10, "pages down to the floor held the file's systems");
+    let shortest = short.iter().map(|s| s.1).fold(f32::INFINITY, f32::min);
+    assert!(
+        short.is_empty(),
+        "{} ties under a space, the shortest {shortest}, from width {:?}",
+        short.len(),
+        short.first().map(|s| s.0)
+    );
+}

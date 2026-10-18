@@ -1076,7 +1076,17 @@ mod tests {
             remap.curves(&input),
         );
         let geometry = engraver.geometry();
-        let cast = crate::casting::cast_off(&input, &glyphs, &strokes, &curves, &geometry);
+        let cast = crate::casting::cast_off(
+            &input,
+            &glyphs,
+            &strokes,
+            &curves,
+            &crate::casting::Respacing {
+                skyline: &remap.skyline,
+                curves: &remap.unpassed_curves(&input),
+            },
+            &geometry,
+        );
         let census = census(&input, &cast);
         vertical_units(&input, &cast, &census)
     }

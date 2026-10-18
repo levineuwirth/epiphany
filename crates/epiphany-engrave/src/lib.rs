@@ -333,10 +333,13 @@ pub struct Engraver {
 /// flag began starting past it, to `50` when a tie that cannot pass a stem
 /// began passing its accidentals still, and to `51` when a tie the spaced
 /// line left too short to start past its first note's flag began starting
-/// past it where its system's justification gives it the span, and to `52`
+/// past it where its system's justification gives it the span, to `52`
 /// when an event the pre-pass does not decompose began spacing by its own
-/// sounding duration.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(52);
+/// sounding duration, and to `53` when a system the score's breaks fix that
+/// holds more than the line began compressing toward MuseScore's minimum
+/// distances rather than taking a system more, the search adding one only
+/// where even that floor overflows.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(53);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -383,35 +386,39 @@ impl Engraver {
         // stem behind. Both gate on structural validity: a malformed input must
         // not leak geometry into the diagnostic layout (which reaches
         // canonical_bytes / the renderer).
+        let remap = structural_valid.then(|| HorizontalRemap::build(input));
         let (spaced_glyphs, spaced_strokes, spaced_curves): (
             Vec<ResolvedGlyph>,
             Vec<Stroke>,
             Vec<Curve>,
-        ) = if structural_valid {
-            let remap = HorizontalRemap::build(input);
-            (
+        ) = match &remap {
+            Some(remap) => (
                 remap.glyphs(input),
                 remap.strokes(input),
                 remap.curves(input),
-            )
-        } else {
-            (Vec::new(), Vec::new(), Vec::new())
+            ),
+            None => (Vec::new(), Vec::new(), Vec::new()),
         };
         // Casting-off: break the spaced line into systems, stack them, assign
         // pages, and bake every position into the single world frame. Pure
         // geometry, so it runs whenever the structure is trustworthy (the
-        // catalog gate below only guards constraint *evaluation*).
-        let cast = if structural_valid {
-            Some(casting::cast_off(
+        // catalog gate below only guards constraint *evaluation*). A system
+        // the score's breaks fix that holds more than the line is spaced
+        // again tighter there, its curves passed again from where the spacing
+        // set them.
+        let cast = remap.as_ref().map(|remap| {
+            casting::cast_off(
                 input,
                 &spaced_glyphs,
                 &spaced_strokes,
                 &spaced_curves,
+                &casting::Respacing {
+                    skyline: &remap.skyline,
+                    curves: &remap.unpassed_curves(input),
+                },
                 &self.geometry,
-            ))
-        } else {
-            None
-        };
+            )
+        });
         let resolved_glyphs = spaced_glyphs.len();
 
         // Evaluate every declared constraint, routed by its strength (Chapter 9
@@ -464,6 +471,19 @@ impl Engraver {
         };
 
         let mut warnings = soft_violations;
+        // Each system casting added among the score's breaks, where even the
+        // floor would not hold the system they fix, named with that overflow.
+        for added in cast.iter().flat_map(|cast| &cast.added) {
+            warnings.push(SolverWarning {
+                kind: SolverWarningKind::UnusualLayoutDecision(format!(
+                    "a system added inside the score's breaks: the system they fix \
+                     overflows the line by {:.2} staff spaces at its floor",
+                    added.overflow
+                )),
+                affected_objects: added.opens.into_iter().collect(),
+                message: "system added within the score's breaks".to_owned(),
+            });
+        }
         if structural_valid && catalog_valid && !unsatisfied_constraints.is_empty() {
             warnings.push(SolverWarning {
                 kind: SolverWarningKind::UnusualLayoutDecision(
@@ -578,6 +598,8 @@ struct HorizontalRemap {
     /// spacing pass already reserved the companion's extent in the slot's
     /// advance; the rigid delta is what honors that reservation.
     slot_delta: BTreeMap<SpringSlotId, f32>,
+    /// The slots' ink by kind, for casting to space a system again tighter.
+    skyline: spacing::Skyline,
 }
 
 impl HorizontalRemap {
@@ -593,6 +615,7 @@ impl HorizontalRemap {
                 .into_iter()
                 .map(|(id, (source, target))| (id, target - source))
                 .collect(),
+            skyline: spaced.skyline,
         }
     }
 
@@ -711,16 +734,8 @@ impl HorizontalRemap {
         input
             .curves
             .iter()
-            .map(|c| {
-                let anchored = anchors.get(&c.id()).and_then(|(start, end)| {
-                    Some((*self.slot_delta.get(start)?, *self.slot_delta.get(end)?))
-                });
-                let spaced = match anchored {
-                    Some((start, end)) => anchored_curve(c.control_points(), start, end),
-                    None => c
-                        .control_points()
-                        .map(|point| Point::new(self.map(point.x.0), point.y.0)),
-                };
+            .zip(self.unpassed_curves(input))
+            .map(|(c, spaced)| {
                 let [p0, p1, p2, p3] = match c.provenance.source {
                     TypedObjectId::Slur(_) | TypedObjectId::Tie(_) => {
                         let tie = matches!(c.provenance.source, TypedObjectId::Tie(_));
@@ -740,6 +755,30 @@ impl HorizontalRemap {
                     style: c.style,
                     line: c.line,
                     vertical_band: c.vertical_band,
+                }
+            })
+            .collect()
+    }
+
+    /// Each curve's control points where the spacing sets it, before it
+    /// passes any ink: an anchored curve's ends ride their slots, its inner
+    /// points keeping their shares of the span; any other maps through the
+    /// spacing's map. Casting passes a compressed system's curves again from
+    /// these.
+    fn unpassed_curves(&self, input: &ConstrainedLayoutIR) -> Vec<[Point; 4]> {
+        let anchors = span_anchors(input);
+        input
+            .curves
+            .iter()
+            .map(|c| {
+                let anchored = anchors.get(&c.id()).and_then(|(start, end)| {
+                    Some((*self.slot_delta.get(start)?, *self.slot_delta.get(end)?))
+                });
+                match anchored {
+                    Some((start, end)) => anchored_curve(c.control_points(), start, end),
+                    None => c
+                        .control_points()
+                        .map(|point| Point::new(self.map(point.x.0), point.y.0)),
                 }
             })
             .collect()

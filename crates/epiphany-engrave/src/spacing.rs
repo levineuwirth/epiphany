@@ -20,11 +20,21 @@
 //! reaching across to another staff's beam is cleared there. The casting-off
 //! pass (`crate::casting`) then breaks this spaced line into systems and pages
 //! and justifies each system by stretching its note columns' springs.
+//!
+//! The same slots can be spaced again tighter ([`Skyline::place`]): a system
+//! the score's breaks fix that holds more than the line compresses toward a
+//! floor, its note columns' springs scaled by one factor, so the durations
+//! keep their ratios, and the ink after a note column clearing later ink by
+//! MuseScore's minimum distances ([`floor_gap`]) rather than by `SLOT_GAP`. At
+//! a factor of zero the springs are gone and only those distances hold: the
+//! floor. The lead's, a signature's, a change's and a barline's springs and
+//! clearances are kept, as justification keeps them.
 
 use std::collections::BTreeMap;
 
 use epiphany_layout_ir::{
-    is_barline_glyph, is_rigid_width_stroke, ConstrainedLayoutIR, SpringSlotId, VerticalBandKind,
+    is_barline_glyph, is_rigid_width_stroke, ConstrainedLayoutIR, SpringSlotId, VerticalBandId,
+    VerticalBandKind,
 };
 
 use crate::casting::barline_lines;
@@ -73,6 +83,274 @@ pub(crate) struct SpacedSlots {
     pub points: Vec<(f32, f32)>,
     /// Each glyph-bearing slot's own `(source_x, target_x)`.
     pub by_slot: BTreeMap<SpringSlotId, (f32, f32)>,
+    /// The slots' ink by kind, to space a run of them again tighter.
+    pub skyline: Skyline,
+}
+
+/// What a piece of ink is, for the distance it keeps from ink beside it at
+/// the floor: MuseScore's padding table pairs kinds of item.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub(crate) enum Ink {
+    Head,
+    Stem,
+    Ledger,
+    Accidental,
+    Dot,
+    Flag,
+    Rest,
+    Other,
+    Barline,
+    Clef,
+    KeySig,
+    TimeSig,
+}
+
+/// How many kinds of [`Ink`] there are.
+const INKS: usize = 12;
+
+impl Ink {
+    /// The kinds a note column's ink takes, the ones [`floor_gap`] reads as
+    /// the earlier of two.
+    const NOTE_COLUMN: [Ink; 8] = [
+        Ink::Head,
+        Ink::Stem,
+        Ink::Ledger,
+        Ink::Accidental,
+        Ink::Dot,
+        Ink::Flag,
+        Ink::Rest,
+        Ink::Other,
+    ];
+
+    /// A glyph's kind by its name; an accidental in a slot whose spring is
+    /// fixed (a lead, or a barline a key changes at) belongs to a key
+    /// signature.
+    fn of_glyph(name: &str, fixed: bool) -> Ink {
+        if name.starts_with("notehead") {
+            Ink::Head
+        } else if name.starts_with("accidental") {
+            if fixed {
+                Ink::KeySig
+            } else {
+                Ink::Accidental
+            }
+        } else if name.starts_with("augmentationDot") {
+            Ink::Dot
+        } else if name.starts_with("flag") {
+            Ink::Flag
+        } else if name.starts_with("rest") {
+            Ink::Rest
+        } else if is_barline_glyph(name) || name.starts_with("repeat") {
+            Ink::Barline
+        } else if name.contains("Clef") || name.starts_with("clef") {
+            Ink::Clef
+        } else if name.starts_with("timeSig") {
+            Ink::TimeSig
+        } else {
+            Ink::Other
+        }
+    }
+
+    /// Whether ink of this kind keeps clear of earlier ink of its own staff
+    /// at any height, as MuseScore never kerns a barline, a clef or a
+    /// signature (`HorizontalSpacing::isNeverKernable`).
+    fn never_kerned(self) -> bool {
+        matches!(self, Ink::Barline | Ink::Clef | Ink::KeySig | Ink::TimeSig)
+    }
+
+    /// Whether ink of this kind keeps clear of earlier ink of its kind and
+    /// staff at any height, as MuseScore never kerns one voice's heads, stems,
+    /// dots and rests against each other
+    /// (`HorizontalSpacing::isSameVoiceKerningLimited`; a staff stands in for
+    /// the voice).
+    fn kept_in_voice(self) -> bool {
+        matches!(self, Ink::Head | Ink::Stem | Ink::Dot | Ink::Rest)
+    }
+}
+
+/// The least distance at the floor from a note column's ink of kind
+/// `earlier` to later ink of kind `later` it meets at the same height, in
+/// staff spaces: MuseScore 4.7.5's padding table
+/// (`PaddingTable::createTable`) at its default style, where 0.1 (its
+/// `minPadUnit`) stands for every pair the table leaves at its default.
+/// `minNoteDistance` is 0.35, `noteBarDistance` 1.5, `accidentalNoteDistance`
+/// 0.25, `dotNoteDistance` 0.5, `dotDotDistance` 0.65 and `ledgerLineLength`
+/// 0.33 (`styledef.cpp`); a head meeting a head keeps `minNoteDistance`, as
+/// `HorizontalSpacing::computeNotePadding` raises it where two notes meet.
+pub(crate) fn floor_gap(earlier: Ink, later: Ink) -> f32 {
+    use Ink::*;
+    // The ledger line's reach past its head, which the table takes off a
+    // head's distance for a ledger line, at least a quarter of a space.
+    let ledger = |head: f32, by: f32| (head - by).max(0.25);
+    match (earlier, later) {
+        (Head, Head | Stem | Ledger | Accidental) => 0.35,
+        (Head | Stem, Rest) => 0.5,
+        (Head | Stem, Barline) => 1.5,
+        (Head | Stem, Clef) => 0.8,
+        (Head | Stem, KeySig | TimeSig) => 0.75,
+        (Stem, Head | Ledger | Accidental) => 0.35,
+        (Stem, Stem) => 0.85,
+        (Ledger, Head | Stem) => 0.35,
+        (Ledger, Ledger) => 0.25,
+        (Ledger, Accidental) => ledger(0.35, 0.33 / 2.0),
+        (Ledger, Rest) => 0.35,
+        (Ledger, Barline) => ledger(1.5, 0.33),
+        (Ledger, Clef) => ledger(0.8, 0.33 / 2.0),
+        (Ledger, KeySig | TimeSig) => ledger(0.75, 0.33 / 2.0),
+        (Accidental, Head | Stem) => 0.25,
+        (Accidental, Ledger) => 0.18,
+        (Dot, Head | Stem | Rest) => 0.65,
+        (Dot, Ledger) => ledger(0.65, 0.33),
+        (Dot, Accidental) => 0.35,
+        (Dot, Barline) => 0.8,
+        (Dot, Clef) => 1.0,
+        (Dot, KeySig | TimeSig) => 1.35,
+        (Flag, Head | Stem | Accidental | Rest) => 0.35,
+        (Flag, Ledger) => ledger(0.35, 0.33),
+        (Flag, Barline) => 1.0,
+        (Flag, Clef) => 0.5,
+        (Flag, KeySig | TimeSig) => 1.15,
+        (Rest, Head | Rest) => 0.5,
+        (Rest, Stem) => 0.35,
+        (Rest, Ledger) => ledger(0.5, 0.33 / 2.0),
+        (Rest, Accidental) => 0.45,
+        (Rest, Barline) => 1.65,
+        (Rest, Clef) => 0.8,
+        (Rest, KeySig | TimeSig) => 1.5,
+        _ => 0.1,
+    }
+}
+
+/// The least distance at the floor from a note column's ink of kind
+/// `earlier` to later ink of kind `later` on the same staff whatever their
+/// heights, where MuseScore keeps them apart so ([`Ink::never_kerned`],
+/// [`Ink::kept_in_voice`]): [`floor_gap`], but for two heads of one voice at
+/// different heights, which keep only the table's 0.1.
+fn staff_gap(earlier: Ink, later: Ink) -> Option<f32> {
+    if later.never_kerned() || (earlier.kept_in_voice() && later.kept_in_voice()) {
+        Some(match (earlier, later) {
+            (Ink::Head, Ink::Head) => 0.1,
+            _ => floor_gap(earlier, later),
+        })
+    } else {
+        None
+    }
+}
+
+/// One slot as [`Skyline::place`] spaces it: its spring, the clearance a
+/// fixed slot keeps after its ink, and its ink by band (all of it, and by
+/// kind) and by staff, each edge as an offset from the slot's source.
+struct FloorSlot {
+    preferred: f32,
+    fixed: bool,
+    clearance: f32,
+    bands: Vec<(i32, f32, f32)>,
+    floor: Vec<(i32, Ink, f32, f32)>,
+    staff: Vec<(usize, Ink, f32, f32)>,
+    /// `(earlier slot's index, least distance)` for each tie or beam across
+    /// two staves ending here.
+    ties: Vec<(usize, f32)>,
+}
+
+/// Every glyph-bearing slot's ink by kind, in source order, to space a run
+/// of them again tighter than the spacing pass did.
+pub(crate) struct Skyline {
+    slots: Vec<FloorSlot>,
+    index: BTreeMap<SpringSlotId, usize>,
+    staves: usize,
+}
+
+impl Skyline {
+    /// The slots `ids` (in source order) spaced again from the first, which
+    /// stands at 0: each note column's spring scaled by `scale`, each fixed
+    /// slot's kept; ink after a note column clearing later ink by
+    /// [`floor_gap`] where their heights meet and by [`staff_gap`] on one
+    /// staff at any height, ink after a fixed slot by the clearance the
+    /// spacing pass gives it; ties and beams across two staves their least
+    /// span where both ends are among `ids`. A slot it does not know stands
+    /// where the one before it does. At `scale` 0, the floor.
+    pub(crate) fn place(&self, ids: &[SpringSlotId], scale: f32) -> Vec<f32> {
+        let members: Vec<Option<usize>> =
+            ids.iter().map(|id| self.index.get(id).copied()).collect();
+        let (mut lo, mut hi) = (i32::MAX, i32::MIN);
+        for &k in members.iter().flatten() {
+            let slot = &self.slots[k];
+            for band in slot
+                .bands
+                .iter()
+                .map(|b| b.0)
+                .chain(slot.floor.iter().map(|b| b.0))
+            {
+                lo = lo.min(band);
+                hi = hi.max(band);
+            }
+        }
+        let bands = if lo <= hi { (hi - lo + 1) as usize } else { 0 };
+        let at = |band: i32| (band - lo) as usize;
+        // The rightmost ink set so far: a fixed slot's with its clearance, by
+        // band; a note column's by band and kind, and by staff and kind.
+        let mut fixed_edge = vec![f32::NEG_INFINITY; bands];
+        let mut band_edge = vec![f32::NEG_INFINITY; bands * INKS];
+        let mut staff_edge = vec![f32::NEG_INFINITY; self.staves * INKS];
+        let mut placed: Vec<(usize, f32)> = Vec::with_capacity(ids.len());
+        let mut out = Vec::with_capacity(ids.len());
+        let mut previous: Option<(f32, f32)> = None;
+        for member in members {
+            let Some(k) = member else {
+                out.push(previous.map_or(0.0, |(target, _)| target));
+                continue;
+            };
+            let slot = &self.slots[k];
+            let mut target =
+                previous.map_or(0.0, |(target, advance)| target + advance.max(MIN_ADVANCE));
+            for &(band, left, _) in &slot.bands {
+                target = target.max(fixed_edge[at(band)] - left);
+            }
+            for &(band, later, left, _) in &slot.floor {
+                let row = &band_edge[at(band) * INKS..][..INKS];
+                for earlier in Ink::NOTE_COLUMN {
+                    target = target.max(row[earlier as usize] + floor_gap(earlier, later) - left);
+                }
+            }
+            for &(staff, later, left, _) in &slot.staff {
+                let row = &staff_edge[staff * INKS..][..INKS];
+                for earlier in Ink::NOTE_COLUMN {
+                    if let Some(gap) = staff_gap(earlier, later) {
+                        target = target.max(row[earlier as usize] + gap - left);
+                    }
+                }
+            }
+            for &(start, need) in &slot.ties {
+                if let Ok(j) = placed.binary_search_by_key(&start, |p| p.0) {
+                    target = target.max(placed[j].1 + need);
+                }
+            }
+            if slot.fixed {
+                for &(band, _, right) in &slot.bands {
+                    let edge = &mut fixed_edge[at(band)];
+                    *edge = edge.max(target + right + slot.clearance);
+                }
+            } else {
+                for &(band, kind, _, right) in &slot.floor {
+                    let edge = &mut band_edge[at(band) * INKS + kind as usize];
+                    *edge = edge.max(target + right);
+                }
+                for &(staff, kind, _, right) in &slot.staff {
+                    let edge = &mut staff_edge[staff * INKS + kind as usize];
+                    *edge = edge.max(target + right);
+                }
+            }
+            placed.push((k, target));
+            out.push(target);
+            let advance = if slot.fixed {
+                slot.preferred
+            } else {
+                scale * slot.preferred
+            };
+            previous = Some((target, advance));
+        }
+        out
+    }
 }
 
 /// Spaces the glyph-bearing slots left to right. Each slot's source is its
@@ -99,6 +377,11 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
         fixed: bool,
         /// Whether every member is a barline or a repeat sign.
         barline: bool,
+        /// Each band's leftmost and rightmost edge of each kind of ink.
+        floor: BTreeMap<(i32, Ink), (f32, f32)>,
+        /// Each staff's leftmost and rightmost edge of each kind of ink, at
+        /// any height.
+        staff: BTreeMap<(VerticalBandId, Ink), (f32, f32)>,
     }
 
     let preferred_of: BTreeMap<SpringSlotId, (f32, bool)> = input
@@ -106,13 +389,33 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
         .iter()
         .map(|s| (s.id, (s.preferred_width.0, s.stretch_factor == 0.0)))
         .collect();
+    let staff_of_band: BTreeMap<_, _> = input
+        .vertical_bands
+        .iter()
+        .filter_map(|band| match band.kind {
+            VerticalBandKind::Staff(staff) => Some((band.id, staff)),
+            _ => None,
+        })
+        .collect();
     let mut by_slot: BTreeMap<SpringSlotId, Extent> = BTreeMap::new();
-    // Widens a slot's extent by a box of ink, in every band its height (and
-    // the margin about it) reaches.
-    let widen = |extent: &mut Extent, (left, right): (f32, f32), (bottom, top): (f32, f32)| {
+    // The bands a height (and the margin about it) reaches.
+    let bands_of = |(bottom, top): (f32, f32)| {
         let lo = ((bottom - SKYLINE_MARGIN) / SKYLINE_BAND).floor() as i32;
         let hi = ((top + SKYLINE_MARGIN) / SKYLINE_BAND).floor() as i32;
-        for band in lo..=hi.max(lo) {
+        lo..=hi.max(lo)
+    };
+    let stretch = |e: &mut (f32, f32), (left, right): (f32, f32)| {
+        e.0 = e.0.min(left);
+        e.1 = e.1.max(right);
+    };
+    // Widens a slot's extent by a box of ink of kind `ink`, in every band its
+    // height reaches, and on its staff, if it stands on one.
+    let widen = |extent: &mut Extent,
+                 ink: Ink,
+                 staff: Option<VerticalBandId>,
+                 (left, right): (f32, f32),
+                 height: (f32, f32)| {
+        for band in bands_of(height) {
             extent
                 .bands
                 .entry(band)
@@ -120,6 +423,18 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
                     e.0 = e.0.min(left);
                     e.1 = e.1.max(right);
                 })
+                .or_insert((left, right));
+            extent
+                .floor
+                .entry((band, ink))
+                .and_modify(|e| stretch(e, (left, right)))
+                .or_insert((left, right));
+        }
+        if let Some(staff) = staff.filter(|band| staff_of_band.contains_key(band)) {
+            extent
+                .staff
+                .entry((staff, ink))
+                .and_modify(|e| stretch(e, (left, right)))
                 .or_insert((left, right));
         }
     };
@@ -137,11 +452,15 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
             preferred,
             fixed,
             barline: true,
+            floor: BTreeMap::new(),
+            staff: BTreeMap::new(),
         });
         let name = glyph.glyph.as_str();
         extent.barline &= name.starts_with("barline") || name.starts_with("repeat");
         widen(
             extent,
+            Ink::of_glyph(name, fixed),
+            Some(glyph.vertical_band),
             (x + b.left.0, x + b.right.0),
             (y + b.bottom.0, y + b.top.0),
         );
@@ -154,14 +473,6 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
     // thickness, from the lower staff's barline to the upper's, as casting
     // draws it, and an accidental on a note above or below its staff keeps a
     // barline's clearance in the gap as on the staff.
-    let staff_of_band: BTreeMap<_, _> = input
-        .vertical_bands
-        .iter()
-        .filter_map(|band| match band.kind {
-            VerticalBandKind::Staff(staff) => Some((band.id, staff)),
-            _ => None,
-        })
-        .collect();
     for group in input
         .staff_groups
         .iter()
@@ -194,7 +505,13 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
                 let to = upper.baseline.y.0 + b.bottom.0;
                 for (dx, thickness) in barline_lines(upper.glyph.as_str(), b) {
                     let half = thickness / 2.0;
-                    widen(extent, (x + dx - half, x + dx + half), (from, to));
+                    widen(
+                        extent,
+                        Ink::Barline,
+                        None,
+                        (x + dx - half, x + dx + half),
+                        (from, to),
+                    );
                 }
             }
         }
@@ -207,7 +524,8 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
     // slot at both ends (a stem), so a stem reaching another staff's beam is
     // cleared where it reaches.
     for stroke in &input.strokes {
-        let slot = if is_rigid_width_stroke(stroke) {
+        let rigid = is_rigid_width_stroke(stroke);
+        let slot = if rigid {
             owning_glyph(stroke, &input.glyphs).map(|glyph| glyph.horizontal_slot)
         } else {
             anchors
@@ -218,9 +536,18 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
         let Some(extent) = slot.and_then(|slot| by_slot.get_mut(&slot)) else {
             continue;
         };
+        let ink = if rigid {
+            Ink::Ledger
+        } else if crate::stem_slot(stroke, &anchors).is_some() {
+            Ink::Stem
+        } else {
+            Ink::Other
+        };
         let half = stroke.thickness.0 * 0.5;
         widen(
             extent,
+            ink,
+            Some(stroke.vertical_band),
             (
                 stroke.from.x.0.min(stroke.to.x.0) - half,
                 stroke.from.x.0.max(stroke.to.x.0) + half,
@@ -280,12 +607,26 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
         ties.entry(*end).or_default().push((*start, need));
     }
 
+    // The clearance a slot asks after its ink: a note column `SLOT_GAP`, a
+    // barline `BARLINE_CLEARANCE`, and a lead, signature or change the gap its
+    // spring reserves after its ink, so a following accidental keeps that gap
+    // too.
+    let clearance_of = |extent: &Extent| {
+        let bearing = extent
+            .bands
+            .values()
+            .map(|(_, right)| right - extent.source)
+            .fold(0.0_f32, f32::max);
+        match (extent.fixed, extent.barline) {
+            (false, _) => SLOT_GAP,
+            (true, true) => BARLINE_CLEARANCE,
+            (true, false) => (extent.preferred - bearing).max(SLOT_GAP),
+        }
+    };
     let mut points = Vec::with_capacity(slots.len());
     let mut placed: BTreeMap<SpringSlotId, (f32, f32)> = BTreeMap::new();
     // Each band's rightmost ink set so far, in the target frame, with the
-    // clearance its slot asks after it: a note column `SLOT_GAP`, a barline
-    // `BARLINE_CLEARANCE`, and a lead, signature or change the gap its spring
-    // reserves after its ink, so a following accidental keeps that gap too.
+    // clearance its slot asks after it.
     let mut frontier: BTreeMap<i32, f32> = BTreeMap::new();
     // The previous slot's target and spring.
     let mut previous: Option<(f32, f32)> = None;
@@ -301,16 +642,7 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
                 target = target.max(at + need);
             }
         }
-        let bearing = extent
-            .bands
-            .values()
-            .map(|(_, right)| right - extent.source)
-            .fold(0.0_f32, f32::max);
-        let clearance = match (extent.fixed, extent.barline) {
-            (false, _) => SLOT_GAP,
-            (true, true) => BARLINE_CLEARANCE,
-            (true, false) => (extent.preferred - bearing).max(SLOT_GAP),
-        };
+        let clearance = clearance_of(extent);
         for (band, (_, right)) in &extent.bands {
             let edge = target + (right - extent.source) + clearance;
             frontier
@@ -323,9 +655,59 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
         previous = Some((target, extent.preferred));
     }
     points.dedup_by(|a, b| a.0 == b.0);
+
+    let index: BTreeMap<SpringSlotId, usize> = slots
+        .iter()
+        .enumerate()
+        .map(|(i, (id, _))| (*id, i))
+        .collect();
+    let mut staff_index: BTreeMap<VerticalBandId, usize> = BTreeMap::new();
+    for (_, extent) in &slots {
+        for (staff, _) in extent.staff.keys() {
+            let next = staff_index.len();
+            staff_index.entry(*staff).or_insert(next);
+        }
+    }
+    let skyline = Skyline {
+        slots: slots
+            .iter()
+            .map(|(id, extent)| {
+                let s = extent.source;
+                FloorSlot {
+                    preferred: extent.preferred,
+                    fixed: extent.fixed,
+                    clearance: clearance_of(extent),
+                    bands: extent
+                        .bands
+                        .iter()
+                        .map(|(band, (l, r))| (*band, l - s, r - s))
+                        .collect(),
+                    floor: extent
+                        .floor
+                        .iter()
+                        .map(|(&(band, ink), (l, r))| (band, ink, l - s, r - s))
+                        .collect(),
+                    staff: extent
+                        .staff
+                        .iter()
+                        .map(|(&(staff, ink), (l, r))| (staff_index[&staff], ink, l - s, r - s))
+                        .collect(),
+                    ties: ties
+                        .get(id)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|(start, need)| Some((*index.get(start)?, *need)))
+                        .collect(),
+                }
+            })
+            .collect(),
+        index,
+        staves: staff_index.len(),
+    };
     SpacedSlots {
         points,
         by_slot: placed,
+        skyline,
     }
 }
 

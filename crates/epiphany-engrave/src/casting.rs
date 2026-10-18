@@ -30,7 +30,14 @@
 //!    unhonoured override is recorded, not silently dropped). A region with no
 //!    measures has no break candidates: it stays one (possibly overfull) system
 //!    unless breaks force otherwise. A single measure wider than the page yields
-//!    an overfull system — Minimal does not break mid-measure on its own.
+//!    an overfull system — Minimal does not break mid-measure on its own. In a
+//!    region with break requirements, the measures between two of them (or
+//!    between one and the region's start or end) are a system the score fixes:
+//!    one that holds more than the line is kept whole where its floor fits
+//!    (`fixed_systems`), and compressed toward that floor when placed
+//!    (`compress_system`); where even the floor overflows, the search breaks
+//!    it as any other, and each system it adds there is named
+//!    (`AddedSystem`).
 //! 2. **Vertical stacking.** Each system's height is its real content extent
 //!    (glyph boxes plus stroke extents — the vertical spring solve that would
 //!    renegotiate band heights is deferred, so the constrained `y` geometry is
@@ -87,6 +94,27 @@ use epiphany_layout_ir::{
 
 use crate::clearance::InkRect;
 use crate::owning_glyph;
+use crate::spacing::Skyline;
+
+/// What casting needs to space a system again tighter than the spacing pass
+/// did: the slots' ink by kind, and each curve (parallel to the input's) where
+/// the spacing set it before it passed any ink.
+pub(crate) struct Respacing<'a> {
+    pub skyline: &'a Skyline,
+    pub curves: &'a [[Point; 4]],
+}
+
+/// A system the search added among a region's breaks, where the system they
+/// fix holds more than the line even at its floor: by how much, in staff
+/// spaces, and the measure it opens with.
+pub(crate) struct AddedSystem {
+    pub overflow: f32,
+    pub opens: Option<TypedObjectId>,
+}
+
+/// How many halvings of the springs' scale a compressed system's search
+/// takes before it settles between the two it has found.
+const COMPRESSION_STEPS: usize = 16;
 
 /// The registry id for the engraver's **system-continuation synthesis**: the
 /// segment of a region-spanning stroke (a staff line) that casting-off places
@@ -286,6 +314,9 @@ pub(crate) struct CastLayout {
     /// [`ResolvedSystem::primitives`] uses (W1 pin 3: unowned is a first-class
     /// bucket, never coerced onto a system).
     pub unowned: PrimitiveIndices,
+    /// Each system the search added among a region's breaks where even the
+    /// floor overflows.
+    pub added: Vec<AddedSystem>,
 }
 
 /// One realized spring slot in spaced (pre-casting) coordinates, with the
@@ -386,8 +417,9 @@ enum CurveFate {
 struct Placement {
     dx: f32,
     dy: f32,
-    /// `(slot source x, slack before it)`, increasing in both; empty for a
-    /// rigid system.
+    /// `(slot source x, slack before it)`, increasing in x, the slack rising
+    /// in a justified system and falling (below zero) in a compressed one;
+    /// empty for a rigid system.
     knots: Rc<[(f32, f32)]>,
 }
 
@@ -531,6 +563,7 @@ pub(crate) fn cast_off(
     spaced_glyphs: &[ResolvedGlyph],
     spaced_strokes: &[Stroke],
     spaced_curves: &[Curve],
+    respacing: &Respacing,
     geometry: &PageGeometry,
 ) -> CastLayout {
     // ---- Slot table (spaced coordinates) --------------------------------
@@ -740,10 +773,46 @@ pub(crate) fn cast_off(
                 .fold(first.lo, f32::min)
         })
         .collect();
+    let slot_time: BTreeMap<SpringSlotId, &TimePoint> = input
+        .horizontal_slots
+        .iter()
+        .map(|slot| (slot.id, &slot.time))
+        .collect();
+    // The width of the lead a later system opening at a slot draws: each
+    // staff's lead in force at its time, the widest.
+    let opening_lead = |r: usize, slot: SpringSlotId| -> f32 {
+        let Some(time) = slot_time.get(&slot) else {
+            return lead_max[r];
+        };
+        leads_of[r]
+            .iter()
+            .filter_map(|lead| {
+                lead.entries
+                    .iter()
+                    .rev()
+                    .find(|(from, _)| at_or_before(from, time))
+                    .or(lead.entries.first())
+                    .map(|(_, glyphs)| lead_width(glyphs))
+            })
+            .fold(0.0, f32::max)
+    };
     let mut systems: Vec<SystemPlan> = Vec::new();
     let mut skipped: Vec<EngravingDecision> = Vec::new();
+    // The systems each region's breaks fix that hold more than the line.
+    let mut fixed: Vec<Fixed> = Vec::with_capacity(region_slots.len());
+    let none = BTreeSet::new();
     for (r, infos) in region_slots.iter().enumerate() {
         let region_source = input.regions[r].provenance.source;
+        let bounds = Bounds {
+            width_limit: width_limit - edge,
+            left: staff_left[r],
+            lead: lead_max[r],
+            room: &room[r],
+            held: &none,
+        };
+        let region_fixed = fixed_systems(infos, &reqs, &bounds, respacing.skyline, &|slot| {
+            opening_lead(r, slot)
+        });
         walk_region(
             r,
             infos,
@@ -751,24 +820,45 @@ pub(crate) fn cast_off(
             &origins,
             region_source,
             Bounds {
-                width_limit: width_limit - edge,
-                left: staff_left[r],
-                lead: lead_max[r],
-                room: &room[r],
+                held: &region_fixed.held,
+                ..bounds
             },
             &mut systems,
             &mut skipped,
         );
+        fixed.push(region_fixed);
+    }
+    // Which systems are one the breaks fix and the search kept whole, and
+    // which the search added inside one whose floor overflows, each named by
+    // the measure it opens with.
+    let mut held_system = vec![false; systems.len()];
+    let mut added_systems: Vec<AddedSystem> = Vec::new();
+    for (s, plan) in systems.iter().enumerate() {
+        let (Some(&first), Some(&last)) = (plan.slots.first(), plan.slots.last()) else {
+            continue;
+        };
+        let region = &fixed[plan.region];
+        held_system[s] = region.held.contains(&(first, last + 1));
+        let slots = &region_slots[plan.region];
+        if let Some(&(_, _, overflow)) = region
+            .overflowing
+            .iter()
+            .find(|(lo, hi, _)| *lo < first && first < *hi)
+        {
+            added_systems.push(AddedSystem {
+                overflow,
+                opens: plan
+                    .slots
+                    .iter()
+                    .find_map(|&i| slots[i].measure_barline)
+                    .map(|g| input.glyphs[g].provenance.source),
+            });
+        }
     }
 
     // What each system draws at its start: nothing for a region's first,
     // whose lead the projection drew; for a later one, each staff's lead in
     // force at its first slot's time.
-    let slot_time: BTreeMap<SpringSlotId, &TimePoint> = input
-        .horizontal_slots
-        .iter()
-        .map(|slot| (slot.id, &slot.time))
-        .collect();
     let system_leads: Vec<Vec<(&SystemLead, &[LeadGlyph])>> = systems
         .iter()
         .map(|plan| {
@@ -1294,6 +1384,8 @@ pub(crate) fn cast_off(
         .map(|slot| (slot.id, slot.stretch_factor * slot.preferred_width.0))
         .collect();
     let mut placements: Vec<Placement> = Vec::with_capacity(systems.len());
+    // Whether each system is compressed, its curves then passed again.
+    let mut compressed: Vec<bool> = Vec::with_capacity(systems.len());
     let mut page_systems: Vec<Vec<usize>> = Vec::new();
     let mut cursor = 0.0_f32;
     let mut page_floor = 0.0_f32;
@@ -1313,16 +1405,33 @@ pub(crate) fn cast_off(
         // A later system's content starts after its lead.
         let base_dx = geometry.margins.left.0 + lead_w[s] - ext.min_x;
         let dy = cursor - ext.max_y;
-        placements.push(justify_system(
-            plan,
-            ext,
-            base_dx,
-            dy,
-            &region_slots,
-            &region_systems,
-            &springs,
-            width_limit - lead_w[s],
-        ));
+        let width = width_limit - lead_w[s];
+        let squeezed = held_system[s]
+            .then(|| {
+                compress_system(
+                    plan,
+                    ext,
+                    base_dx,
+                    dy,
+                    &region_slots,
+                    respacing.skyline,
+                    width,
+                )
+            })
+            .flatten();
+        compressed.push(squeezed.is_some());
+        placements.push(squeezed.unwrap_or_else(|| {
+            justify_system(
+                plan,
+                ext,
+                base_dx,
+                dy,
+                &region_slots,
+                &region_systems,
+                &springs,
+                width,
+            )
+        }));
         page_systems
             .last_mut()
             .expect("a page was opened above")
@@ -1615,16 +1724,34 @@ pub(crate) fn cast_off(
                     .get(&curve.id())
                     .filter(|_| system.is_some())
                     .and_then(|(start, end)| Some((slot_dx(start)?, slot_dx(end)?)));
+                // A compressed system's slur or tie is placed from where the
+                // spacing set it before it passed any ink, and passes the flag,
+                // accidentals and stems of its band where the compressed
+                // system sets them.
+                let curved = matches!(
+                    curve.provenance.source,
+                    TypedObjectId::Slur(_) | TypedObjectId::Tie(_)
+                );
+                let again = system.filter(|&s| compressed[s] && curved);
+                let from = match again {
+                    Some(_) => respacing.curves[ci],
+                    None => curve.control_points(),
+                };
                 let placed = match anchored {
-                    Some((start, end)) => crate::anchored_curve(curve.control_points(), start, end)
+                    Some((start, end)) => crate::anchored_curve(from, start, end)
                         .map(|pt| Point::new(pt.x.0, pt.y.0 + p.dy)),
-                    None => shift(curve.control_points(), &p),
+                    None => shift(from, &p),
                 };
                 // A tie the spacing left running into its first note's flag,
                 // the spaced line too short to start it past the flag, starts
                 // past it where its system's justification gives it the span,
                 // and passes the accidentals and stems of its band again there.
                 let [p0, p1, p2, p3] = match (system, curve.provenance.source) {
+                    (Some(s), source) if again.is_some() => {
+                        let ink = ink.get(&(*s, curve.vertical_band)).unwrap_or(&no_ink);
+                        let tie = matches!(source, TypedObjectId::Tie(_));
+                        crate::clear_curve(placed, &ink.flags, &ink.accidentals, &ink.stems, tie)
+                    }
                     (Some(s), TypedObjectId::Tie(_)) => {
                         let ink = ink.get(&(*s, curve.vertical_band)).unwrap_or(&no_ink);
                         crate::restart_past_flag(placed, &ink.flags, &ink.accidentals, &ink.stems)
@@ -1992,6 +2119,7 @@ pub(crate) fn cast_off(
         curve_system,
         region_of_system: systems.iter().map(|plan| plan.region).collect(),
         unowned,
+        added: added_systems,
     }
 }
 
@@ -2033,6 +2161,7 @@ fn optimal_breaks(
         left,
         lead,
         room,
+        held,
     } = bounds;
     let mut automatic = BTreeSet::new();
     if !width_limit.is_finite() || width_limit <= 0.0 || slots.is_empty() {
@@ -2081,7 +2210,9 @@ fn optimal_breaks(
                 continue;
             }
             let w = width(a, b);
-            let bad = if w <= width_limit {
+            let bad = if held.contains(&(pts[a], pts[b])) {
+                0.0 // a system the breaks fix, compressed to the width
+            } else if w <= width_limit {
                 let u = f64::from((width_limit - w) / width_limit);
                 u * u
             } else if b - a == 1 {
@@ -2121,13 +2252,101 @@ fn opens_measure(slots: &[SlotInfo], i: usize) -> bool {
 
 /// What a region's systems must fit: the content width; where the region's
 /// staff lines start, which its first system's width counts from; the widest
-/// lead a later system opens with; and, by slot, the room a tie continued
-/// into a system opening there needs.
+/// lead a later system opens with; by slot, the room a tie continued into a
+/// system opening there needs; and the systems the region's breaks fix that
+/// are kept whole however wide (`fixed_systems`), by their slots `[lo, hi)`.
 struct Bounds<'a> {
     width_limit: f32,
     left: f32,
     lead: f32,
     room: &'a [f32],
+    held: &'a BTreeSet<(usize, usize)>,
+}
+
+/// The systems a region's breaks fix (the slots `[lo, hi)` between two of
+/// its break requirements, or between one and the region's start or end, in
+/// a region with one) that hold more than the line at their natural width:
+/// `held`, whose floor fits the line, which the search keeps whole and
+/// casting compresses (`compress_system`); and `overflowing`, whose floor
+/// holds more than the line too, by how much, which the search breaks as it
+/// would any other.
+struct Fixed {
+    held: BTreeSet<(usize, usize)>,
+    overflowing: Vec<(usize, usize, f32)>,
+}
+
+/// A region's [`Fixed`] systems: those the break search, measuring a later
+/// system with the widest lead its region opens one with, finds wider than
+/// the line, held where their floor from `skyline` at a scale of 0 fits it
+/// with the lead they open with (`opening_lead`, by the slot they open at).
+fn fixed_systems(
+    slots: &[SlotInfo],
+    reqs: &BTreeMap<SpringSlotId, Vec<BreakReq>>,
+    bounds: &Bounds,
+    skyline: &Skyline,
+    opening_lead: &dyn Fn(SpringSlotId) -> f32,
+) -> Fixed {
+    let mut fixed = Fixed {
+        held: BTreeSet::new(),
+        overflowing: Vec::new(),
+    };
+    let &Bounds {
+        width_limit,
+        left,
+        lead,
+        room,
+        ..
+    } = bounds;
+    let mut ends: Vec<usize> = (0..slots.len())
+        .filter(|&i| opens_measure(slots, i) && reqs.contains_key(&slots[i].id))
+        .collect();
+    if ends.is_empty() || !width_limit.is_finite() || width_limit <= 0.0 {
+        return fixed;
+    }
+    ends.insert(0, 0);
+    ends.push(slots.len());
+    for pair in ends.windows(2) {
+        let (lo, hi) = (pair[0], pair[1]);
+        let range = &slots[lo..hi];
+        let Some(first) = range.first() else {
+            continue;
+        };
+        let start = if lo == 0 { left } else { f32::INFINITY };
+        let natural = range.iter().map(|s| s.hi).fold(f32::NEG_INFINITY, f32::max)
+            - range.iter().map(|s| s.lo).fold(start, f32::min);
+        if natural.max(0.0) + if lo > 0 { lead + room[lo] } else { 0.0 } <= width_limit {
+            continue;
+        }
+        let ids: Vec<SpringSlotId> = range.iter().map(|s| s.id).collect();
+        let at = skyline.place(&ids, 0.0);
+        let start = if lo == 0 {
+            left - first.x
+        } else {
+            f32::INFINITY
+        };
+        let floor = range
+            .iter()
+            .zip(&at)
+            .map(|(s, a)| a + (s.hi - s.x))
+            .fold(f32::NEG_INFINITY, f32::max)
+            - range
+                .iter()
+                .zip(&at)
+                .map(|(s, a)| a + (s.lo - s.x))
+                .fold(start, f32::min);
+        let floor = floor.max(0.0)
+            + if lo > 0 {
+                opening_lead(first.id) + room[lo]
+            } else {
+                0.0
+            };
+        if floor <= width_limit {
+            fixed.held.insert((lo, hi));
+        } else {
+            fixed.overflowing.push((lo, hi, floor - width_limit));
+        }
+    }
+    fixed
 }
 
 /// Walks one region's slots, opening a system at each break requirement and at
@@ -2148,6 +2367,7 @@ fn walk_region(
         left,
         lead,
         room,
+        held,
     } = bounds;
     // The optimal automatic breaks (a global badness-minimizing partition,
     // bounded by the break requirements); the walk opens a system at each.
@@ -2173,6 +2393,14 @@ fn walk_region(
             f32::NEG_INFINITY
         };
         chunk_hi[i] = slots[i].hi.max(next);
+    }
+    // Inside a system the breaks fix and the search keeps whole, the net
+    // stays out of the way: casting compresses that system to the width.
+    let mut kept = vec![false; slots.len()];
+    for &(lo, hi) in held {
+        for k in kept.iter_mut().take(hi).skip(lo + 1) {
+            *k = true;
+        }
     }
 
     let mut local = 0usize;
@@ -2237,6 +2465,7 @@ fn walk_region(
             && has_note
             && (automatic.contains(&slot.id)
                 || (opens_measure(slots, i)
+                    && !kept[i]
                     && chunk_hi[i] - current_lo
                         > width_limit
                             - if local > 0 {
@@ -2706,6 +2935,82 @@ fn justify_system(
     }
 }
 
+/// A system the breaks fix that holds more than the content width, compressed
+/// to it: its slots spaced again ([`Skyline::place`]) with every note column's
+/// spring scaled by the one factor in `[0, 1]` at which its first slot to its
+/// last spans the width, so the durations keep their ratios but where the
+/// floor's distances hold them apart; the lead's, signatures', changes' and
+/// barlines' springs kept. The factor is found by halving
+/// (`COMPRESSION_STEPS`) and the system set between the last placement too
+/// wide and the last that fits, both clear of the floor and so every point
+/// between them, at the one that spans the width exactly. Where even the
+/// floor spans more, it stays at the floor; where every spring at its full
+/// width fits by the floor's distances alone, it is set between that and its
+/// natural spacing. `None` for a system the width holds.
+fn compress_system(
+    plan: &SystemPlan,
+    ext: &Extent,
+    base_dx: f32,
+    dy: f32,
+    region_slots: &[Vec<SlotInfo>],
+    skyline: &Skyline,
+    width_limit: f32,
+) -> Option<Placement> {
+    let extra = width_limit - (ext.max_x - ext.min_x);
+    if !width_limit.is_finite() || extra >= 0.0 || plan.slots.len() < 2 {
+        return None;
+    }
+    let slots = &region_slots[plan.region];
+    let members: Vec<&SlotInfo> = plan.slots.iter().map(|&i| &slots[i]).collect();
+    let first = members[0].x;
+    let ids: Vec<SpringSlotId> = members.iter().map(|m| m.id).collect();
+    let natural: Vec<f32> = members.iter().map(|m| m.x - first).collect();
+    let end = natural.len() - 1;
+    // How much shorter than its natural span a placement sets the system.
+    let slack = |at: &[f32]| at[end] - natural[end];
+    let full = skyline.place(&ids, 1.0);
+    let (wide, fits) = if slack(&full) <= extra {
+        (natural.clone(), full)
+    } else {
+        let floor = skyline.place(&ids, 0.0);
+        if slack(&floor) > extra {
+            (floor.clone(), floor)
+        } else {
+            let (mut lo, mut hi) = (0.0_f32, 1.0_f32);
+            let (mut fits, mut wide) = (floor, full);
+            for _ in 0..COMPRESSION_STEPS {
+                let mid = 0.5 * (lo + hi);
+                let at = skyline.place(&ids, mid);
+                if slack(&at) <= extra {
+                    (lo, fits) = (mid, at);
+                } else {
+                    (hi, wide) = (mid, at);
+                }
+            }
+            (wide, fits)
+        }
+    };
+    let (a, b) = (slack(&wide), slack(&fits));
+    let share = if a - b > f32::EPSILON {
+        ((a - extra) / (a - b)).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let knots: Vec<(f32, f32)> = members
+        .iter()
+        .enumerate()
+        .map(|(k, m)| {
+            let at = wide[k] + share * (fits[k] - wide[k]);
+            (m.x, at - natural[k])
+        })
+        .collect();
+    Some(Placement {
+        dx: base_dx,
+        dy,
+        knots: Rc::from(knots),
+    })
+}
+
 /// The ink a tie passes once its system is placed: the flags, accidentals and
 /// stems of one system's band where the page sets them.
 #[derive(Default)]
@@ -3040,11 +3345,13 @@ mod tests {
     /// spanning `[i·10, i·10 + 9]` (each measure ~9 wide, step 10).
     /// Bounds with no lead, and no staff lines left of the first column.
     fn bounds(width_limit: f32, room: &[f32]) -> Bounds<'_> {
+        static NONE_HELD: BTreeSet<(usize, usize)> = BTreeSet::new();
         Bounds {
             width_limit,
             left: f32::INFINITY,
             lead: 0.0,
             room,
+            held: &NONE_HELD,
         }
     }
 

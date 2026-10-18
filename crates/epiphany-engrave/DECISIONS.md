@@ -1904,3 +1904,70 @@ staff, take the same beat). The renderer's `valid_score_rich` goldens, by
 engraver and by stub, moved: the two quarters of its aleatoric region now
 stand a quarter's column apart; re-blessed with renders before and after
 for the owner's reading.
+
+## ENGRAVER_VERSION 52 → 53: a system the score's breaks fix compresses toward a floor (X5c fix round 2, 2026-10-18)
+
+Duration spacing keeps a fixed scale (version 45, a quarter's column 5
+spaces), and once a file's own line breaks were imported the measures
+between two of them were often wider than the line at that scale: MuseScore,
+which wrote the breaks, sets a quarter at 3.5 spaces before it justifies
+(`HorizontalSpacing::chordRestSegmentNaturalWidth` in 4.7.5), so its
+systems hold more. The break search then added a system inside the file's,
+where the file has one. Now, in a region with break requirements, the
+measures between two of them (or between one and the region's start or
+end) are a system the score fixes (`casting::fixed_systems`), and one that
+holds more than the line at its natural width is kept whole wherever its
+floor fits the line, and compressed when placed:
+
+- Its slots are spaced again (`spacing::Skyline::place`) with every note
+  column's spring scaled by one factor, the largest in `[0, 1]` at which the
+  system spans the line, found by halving and set exactly between the last
+  placement too wide and the last that fits (`casting::compress_system`); so
+  the durations keep their ratios wherever a spring, and not a floor,
+  decides a gap. The lead's, a signature's, a change's and a barline's
+  springs and clearances are kept, as justification keeps them.
+- At a factor of zero only the floor holds: the ink after a note column
+  keeps from later ink at its height MuseScore 4.7.5's least distance for the
+  two kinds of item (`spacing::floor_gap`, from `PaddingTable::createTable`
+  at the default style of `styledef.cpp`: a head 0.35 from a head, stem,
+  ledger line or accidental after it (`minNoteDistance`), 0.5 from a rest,
+  1.5 from a barline (`noteBarDistance`); a stem 0.85 from a stem; a dot
+  0.65 from a head (`dotDotDistance`); a rest 1.65 from a barline; a ledger
+  line's distances a head's less its reach, `ledgerLineLength` 0.33, at least
+  0.25; a flag's, a dot's and a rest's to clefs and signatures as the table
+  gives them; 0.1, its `minPadUnit`, for every pair it leaves at its
+  default). On one staff, whatever their heights, a barline, clef or
+  signature clears every earlier note column's ink, and a head, stem, dot or
+  rest clears every earlier head, stem, dot and rest (MuseScore's
+  `isNeverKernable` and `isSameVoiceKerningLimited`, a staff standing in for
+  a voice), by the same distances but two heads' 0.1. Ties and beams across
+  two staves keep their least spans as in the spacing pass (a tie's 1.0 is
+  MuseScore's `minTieLength`). MuseScore itself, when a system overflows,
+  re-spaces it with its paddings and duration stretch both scaled down in
+  steps and then lets ink collide (`HorizontalSpacing::squeezeSystemToFit`);
+  here the paddings are the floor and are never scaled.
+- Where even the floor holds more than the line, the search breaks that
+  system as it breaks any other, by natural widths, and each system it adds
+  there is named in the solver's warnings with the floor's overflow
+  (`casting::AddedSystem`). A system narrower than the line justifies as
+  before; the search is unchanged in a region with no break requirement, and
+  in one with them it differs only in keeping a fixed system whole (its
+  overflow net stays out of one).
+- A compressed system's slurs and ties are placed from where the spacing set
+  them before they passed any ink and pass the flag, accidentals and stems
+  of their band again where the compressed system sets them (`clear_curve`
+  on `placed_ink`), so a tie the natural line started past its flag is not
+  left shorter than a space; elsewhere casting decides only a tie left in
+  its flag, as at version 51. A tie split at a system break keeps the
+  spacing pass's decision.
+
+Locked by `a_system_the_breaks_fix_is_compressed_to_hold` (three systems the
+file breaks, each wider than the line at the fixed scale, held, filling the
+line, a quarter's column still half again an eighth's),
+`where_even_the_floor_overflows_one_system_is_added` (on the widest page
+whose line one system's floor overflows, exactly one system is added there,
+named with its overflow), `compression_at_the_floor_puts_no_ink_on_ink`
+(dotted rhythms, seconds, accidentals, ledger lines, rests and a clef, key
+and time change, on every page down to the floor, share no ink their
+natural spacing does not, each onset's heads after the last's by 0.1) and
+`a_compressed_systems_ties_are_decided_where_it_sets_them` (`epiphany-cli`).
