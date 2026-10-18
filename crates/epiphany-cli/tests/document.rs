@@ -195,3 +195,82 @@ fn a_document_is_recognized_and_drawn_by_path() {
     );
     std::fs::remove_file(&target).unwrap();
 }
+
+/// An import holding X5a's breaks and X4b's expression as a document: its log
+/// is the import's, its blocks holding the expression born at schema major 5;
+/// it is drawn as the import is, breaks and all; it reopens equal, takes an
+/// edit, saves and reopens again with every value kept.
+#[test]
+fn an_imported_document_keeps_its_breaks_and_expression() {
+    use epiphany_musicxml::fidelity::expression_counts;
+
+    let source = fixture("breaks_and_expression.musicxml");
+    let target = scratch("breaks-and-expression");
+    let loaded = load(&source).expect("the fixture imports");
+    let mut document = new_document(&source, &target).expect("the document is made");
+    assert!(document.read_only_reasons().is_empty());
+    assert_eq!(
+        document.committed_operations(),
+        &loaded.import.envelopes[..]
+    );
+    assert!(
+        document
+            .bundle()
+            .manifest()
+            .operation_roots
+            .iter()
+            .any(|root| root.schema_version.major == 5),
+        "a block holding the expression is born at schema major 5"
+    );
+    assert_eq!(graph(&document.score()), graph(&loaded.reduced.score));
+    let expression = expression_counts(&loaded.reduced.score);
+    assert_eq!(expression.get("grace"), Some(&3));
+    let kept = |score: &Score| {
+        let content = score.canvas.regions[0]
+            .content
+            .staff_based()
+            .expect("staff based");
+        (
+            expression_counts(score),
+            score.voice_homes.len(),
+            content.user_system_breaks.len(),
+            content.user_page_breaks.len(),
+        )
+    };
+    let imported = kept(&loaded.reduced.score);
+    assert_eq!((imported.1, imported.2, imported.3), (1, 1, 1));
+    assert_eq!(
+        epiphany_cli::svg(&engrave_score(&document.score()).layout),
+        epiphany_cli::svg(&engrave_loaded(&loaded).layout),
+        "the document is drawn as its import is"
+    );
+
+    // An edit on the lower staff, over the third measure's rest.
+    let score = document.score();
+    let mut session: EditorSession = document
+        .lease(Box::new(Engraver::with_geometry(page_of(&score))))
+        .expect("writable");
+    let lower = session
+        .score()
+        .staff_instances()
+        .filter(|(_, si)| si.staff != score.staves[0].id)
+        .flat_map(|(_, si)| si.voices.iter())
+        .find(|voice| !score.voice_homes.contains_key(&voice.id))
+        .expect("the lower staff's own voice")
+        .id;
+    let at = MusicalPosition(RationalTime::new(2, 1).expect("2"));
+    session.set_caret(lower, at, quarter()).unwrap();
+    session.enter_nominal(CmnNominal::C).unwrap();
+    document.save(&mut session).expect("the edit saves");
+    drop(document);
+
+    let reopened = open_document(&target).expect("the document reopens");
+    assert_eq!(reopened.generation(), 2);
+    assert_eq!(
+        membership(reopened.committed_operations()),
+        membership(session.committed_operations())
+    );
+    assert_eq!(graph(&reopened.score()), graph(session.score()));
+    assert_eq!(kept(&reopened.score()), imported, "every value kept");
+    std::fs::remove_file(&target).expect("removed");
+}

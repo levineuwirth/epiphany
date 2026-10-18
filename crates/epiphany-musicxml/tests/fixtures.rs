@@ -2436,3 +2436,153 @@ fn breaks_are_imported_where_the_file_makes_them_and_laid_out_there() {
         "the tie's two halves, one each side of the break"
     );
 }
+
+/// X5a's breaks and X4b's expression in one file, each imported beside the
+/// other: the line and page breaks as the region's user breaks before the
+/// measures the file breaks at, every class of expression and text through
+/// its operation with none recorded as unsupported, the visiting voice's home,
+/// and the census holding (`run` holds the fidelity comparison, which counts
+/// each class in the file by its own walk). Laid out, the systems open where
+/// the file breaks, and the grace notes are not drawn.
+#[test]
+fn a_file_with_breaks_and_expression_imports_both() {
+    use epiphany_musicxml::fidelity::expression_counts;
+    use epiphany_ops::{OperationKind, OperationPayload};
+
+    let run = run("breaks_and_expression.musicxml");
+    all_applied(&run);
+    let breaks: Vec<(&str, String)> = run
+        .import
+        .envelopes
+        .iter()
+        .filter_map(|e| match &e.payload {
+            OperationPayload::Primitive(OperationKind::SetUserSystemBreak(op)) => {
+                Some(("system", offset(&op.anchor)))
+            }
+            OperationPayload::Primitive(OperationKind::SetUserPageBreak(op)) => {
+                Some(("page", offset(&op.anchor)))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        breaks,
+        vec![("system", "1".to_owned()), ("page", "2".to_owned())],
+        "a line break before measure 2, a page break before measure 3"
+    );
+    let features = &run.import.source.features;
+    assert_eq!(
+        features.of_class(FeatureClass::Content).count(),
+        0,
+        "nothing of the family is recorded as unsupported"
+    );
+    assert!(features
+        .of_class(FeatureClass::Notation)
+        .all(|(kind, _)| !kind.starts_with("print: new-")));
+
+    let score = &run.reduced.score;
+    let counts: Vec<(String, usize)> = expression_counts(score).into_iter().collect();
+    let expected: Vec<(String, usize)> = [
+        ("grace", 3),
+        ("lyric", 2),
+        ("mark accent", 1),
+        ("mark staccato", 1),
+        ("marker dynamic", 1),
+        ("marker fermata", 1),
+        ("marker tempo", 1),
+        ("ornament trill-mark", 1),
+        ("spanner hairpin", 1),
+        ("tempo", 1),
+    ]
+    .into_iter()
+    .map(|(class, n)| (class.to_owned(), n))
+    .collect();
+    assert_eq!(counts, expected);
+    assert_eq!(score.voice_homes.len(), 1, "the visiting voice's home");
+    let content = score.canvas.regions[0]
+        .content
+        .staff_based()
+        .expect("staff based");
+    assert_eq!(
+        (
+            content.user_system_breaks.len(),
+            content.user_page_breaks.len()
+        ),
+        (1, 1)
+    );
+
+    let constrained = to_constrained(&to_logical(score));
+    let layout = Engraver::default()
+        .solve(&constrained, &SolverConfig::default())
+        .layout;
+    let firsts: Vec<Vec<usize>> = layout
+        .pages
+        .iter()
+        .map(|page| {
+            page.systems
+                .iter()
+                .filter_map(|system| {
+                    system
+                        .measures
+                        .iter()
+                        .filter_map(|m| {
+                            run.import.ids.measures[0][0]
+                                .iter()
+                                .position(|id| *id == m.measure)
+                        })
+                        .min()
+                        .map(|k| k + 1)
+                })
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        firsts[..2],
+        [vec![1, 2], vec![3]],
+        "systems open at measures 1 and 2, and a page at measure 3"
+    );
+    // The ink traced to an event or one of its pitches: none to a grace note,
+    // and some to the C the first two stand before (the check's control).
+    let drawn = |event: &Event| {
+        let mut pitches = Vec::new();
+        event.collect_identified_pitches(&mut pitches);
+        let traced = |source: &epiphany_core::TypedObjectId| match source {
+            epiphany_core::TypedObjectId::Event(e) => *e == event.id(),
+            epiphany_core::TypedObjectId::Pitch(p) => pitches.iter().any(|ip| ip.id == *p),
+            _ => false,
+        };
+        layout
+            .glyphs
+            .iter()
+            .filter(|g| traced(&g.provenance.source))
+            .count()
+            + layout
+                .strokes
+                .iter()
+                .filter(|s| traced(&s.provenance.source))
+                .count()
+    };
+    let graces: Vec<&Event> = score
+        .events
+        .iter()
+        .filter(|e| e.grace().is_some())
+        .collect();
+    assert_eq!(graces.len(), 3);
+    for grace in graces {
+        assert_eq!(
+            drawn(grace),
+            0,
+            "no grace note is drawn until X4c draws them"
+        );
+    }
+    let principal = score
+        .events
+        .iter()
+        .find(|e| {
+            e.grace().is_none()
+                && e.position() == &EventPosition::Musical(epiphany_core::MusicalPosition::origin())
+                && e.voice() == score.canvas.regions[0].staff_instances()[0].voices[0].id
+        })
+        .expect("the first C");
+    assert!(drawn(principal) > 0, "the C the graces precede is drawn");
+}

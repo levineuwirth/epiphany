@@ -195,6 +195,115 @@ fn a_page_whose_music_overruns_its_paper_is_extended_not_cut() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// X5a's export of pages holding X4b's grace notes and a voice visiting the
+/// staff below its home: each page's SVG carries exactly the provenance of the
+/// primitives the layout's page holds, and the PDF draws as many glyphs,
+/// strokes and curves, so the export draws what the layout draws. The layout
+/// leaves the grace notes out until X4c draws them, and draws the visitor on
+/// its home's side, its stem toward the staff above.
+#[test]
+fn pages_with_graces_and_a_visiting_voice_export_what_the_layout_draws() {
+    use epiphany_core::{Event, TypedObjectId};
+    use epiphany_layout_ir::ResolvedLayoutIR;
+
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../epiphany-musicxml/tests/fixtures/breaks_and_expression.musicxml");
+    let loaded = epiphany_cli::load(&source).expect("the fixture imports");
+    let engraved = epiphany_cli::engrave_loaded(&loaded);
+    let layout = &engraved.layout;
+    assert_eq!(layout.pages.len(), 2, "the file's page break makes two");
+    let dir = scratch("graces");
+    let exported = export(&engraved, &dir.join("out"), &ExportOptions::default()).unwrap();
+    assert_eq!(exported.paths.len(), 3, "two SVGs and the PDF");
+
+    let provenance = |page: &ResolvedLayoutIR| {
+        let mut out: Vec<String> = page
+            .glyphs
+            .iter()
+            .map(|g| g.provenance.stable_id.0)
+            .chain(page.strokes.iter().map(|s| s.provenance.stable_id.0))
+            .chain(page.curves.iter().map(|c| c.provenance.stable_id.0))
+            .map(|id| format!("{id:032x}"))
+            .collect();
+        out.sort();
+        out
+    };
+    let (mut glyphs, mut strokes, mut curves) = (0, 0, 0);
+    for number in 1..=2 {
+        let page = epiphany_cli::page(layout, number).unwrap();
+        let svg = std::fs::read_to_string(&exported.paths[number - 1]).unwrap();
+        let mut drawn: Vec<String> = svg
+            .match_indices("data-prov=\"")
+            .map(|(at, _)| svg[at + 11..at + 43].to_owned())
+            .collect();
+        drawn.sort();
+        assert_eq!(
+            drawn,
+            provenance(&page),
+            "page {number} draws its primitives"
+        );
+        glyphs += page.glyphs.len();
+        strokes += page.strokes.len();
+        curves += page.curves.len();
+    }
+    let pdf = std::fs::read(&exported.paths[2]).unwrap();
+    let text = String::from_utf8_lossy(&pdf);
+    assert_eq!(media_boxes(&pdf).len(), 2);
+    assert_eq!(
+        text.matches(" Do Q").count() + text.matches(" re S Q").count(),
+        glyphs
+    );
+    assert_eq!(text.matches(" l S Q").count(), strokes);
+    assert_eq!(text.matches(" c S Q").count(), curves);
+
+    // The ink traced to an event or one of its pitches, as boxes.
+    let score = &loaded.reduced.score;
+    let ink = |event: &Event| {
+        let mut pitches = Vec::new();
+        event.collect_identified_pitches(&mut pitches);
+        let traced = |source: &TypedObjectId| match source {
+            TypedObjectId::Event(e) => *e == event.id(),
+            TypedObjectId::Pitch(p) => pitches.iter().any(|ip| ip.id == *p),
+            _ => false,
+        };
+        let heads: Vec<f32> = layout
+            .glyphs
+            .iter()
+            .filter(|g| traced(&g.provenance.source))
+            .map(|g| g.position.y.0)
+            .collect();
+        let stems: Vec<f32> = layout
+            .strokes
+            .iter()
+            .filter(|s| traced(&s.provenance.source))
+            .map(|s| s.from.y.0.max(s.to.y.0))
+            .collect();
+        (heads, stems)
+    };
+    let graces: Vec<&Event> = score
+        .events
+        .iter()
+        .filter(|e| e.grace().is_some())
+        .collect();
+    assert_eq!(graces.len(), 3);
+    for grace in graces {
+        assert_eq!(ink(grace), (vec![], vec![]), "a grace note is not drawn");
+    }
+    let visiting: Vec<&Event> = score
+        .events
+        .iter()
+        .filter(|e| score.voice_homes.contains_key(&e.voice()))
+        .collect();
+    assert_eq!(visiting.len(), 1, "the G the upper voice writes below");
+    let (heads, stems) = ink(visiting[0]);
+    assert_eq!((heads.len(), stems.len()), (1, 1), "a head and a stem");
+    assert!(
+        stems[0] > heads[0] + 1.0,
+        "the visitor stems up, toward its home: head {heads:?}, stem top {stems:?}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// A number as the renderers write one: at most four decimals, no trailing
 /// zeros.
 fn fmt(v: f32) -> String {
