@@ -1725,9 +1725,9 @@ pub(crate) fn cast_off(
                     .filter(|_| system.is_some())
                     .and_then(|(start, end)| Some((slot_dx(start)?, slot_dx(end)?)));
                 // A compressed system's slur or tie is placed from where the
-                // spacing set it before it passed any ink, and passes the flag,
-                // accidentals and stems of its band where the compressed
-                // system sets them.
+                // spacing set it before it passed any ink, and passes the ink
+                // of its band where the compressed system sets it
+                // (`pass_compressed`).
                 let curved = matches!(
                     curve.provenance.source,
                     TypedObjectId::Slur(_) | TypedObjectId::Tie(_)
@@ -1749,8 +1749,7 @@ pub(crate) fn cast_off(
                 let [p0, p1, p2, p3] = match (system, curve.provenance.source) {
                     (Some(s), source) if again.is_some() => {
                         let ink = ink.get(&(*s, curve.vertical_band)).unwrap_or(&no_ink);
-                        let tie = matches!(source, TypedObjectId::Tie(_));
-                        crate::clear_curve(placed, &ink.flags, &ink.accidentals, &ink.stems, tie)
+                        pass_compressed(placed, ink, matches!(source, TypedObjectId::Tie(_)))
                     }
                     (Some(s), TypedObjectId::Tie(_)) => {
                         let ink = ink.get(&(*s, curve.vertical_band)).unwrap_or(&no_ink);
@@ -3011,13 +3010,30 @@ fn compress_system(
     })
 }
 
-/// The ink a tie passes once its system is placed: the flags, accidentals and
-/// stems of one system's band where the page sets them.
+/// The ink a curve passes once its system is placed: the flags, accidentals,
+/// stems and heads of one system's band where the page sets them.
 #[derive(Default)]
 struct PlacedInk {
     flags: Vec<InkRect>,
     accidentals: Vec<InkRect>,
     stems: Vec<InkRect>,
+    heads: Vec<InkRect>,
+}
+
+/// A compressed system's slur or tie, placed from where the spacing set it
+/// before it passed any ink, passed over the ink of its band where the
+/// compressed system sets it ([`crate::clear_curve`]): a tie its flag,
+/// accidentals and stems, a slur its accidentals and stems and the heads too,
+/// as it passes accidentals. The spacing sets each slur clear of the heads it
+/// spans; compression narrows a slur and keeps its heights, so a steep one
+/// can come onto a head, its own first one above all.
+fn pass_compressed(placed: [Point; 4], ink: &PlacedInk, tie: bool) -> [Point; 4] {
+    if tie {
+        crate::clear_curve(placed, &ink.flags, &ink.accidentals, &ink.stems, true)
+    } else {
+        let passed: Vec<InkRect> = ink.accidentals.iter().chain(&ink.heads).copied().collect();
+        crate::clear_curve(placed, &ink.flags, &passed, &ink.stems, false)
+    }
 }
 
 /// Each system's [`PlacedInk`], by band, from the baked glyphs and strokes
@@ -3034,7 +3050,8 @@ fn placed_ink(
     for ((glyph, placed), system) in input.glyphs.iter().zip(glyphs).zip(glyph_system) {
         let name = glyph.glyph.as_str();
         let flag = name.starts_with("flag");
-        let Some(s) = system.filter(|_| flag || name.starts_with("accidental")) else {
+        let head = name.starts_with("notehead");
+        let Some(s) = system.filter(|_| flag || head || name.starts_with("accidental")) else {
             continue;
         };
         let (x, y, b) = (
@@ -3051,6 +3068,8 @@ fn placed_ink(
         let entry = ink.entry((s, glyph.vertical_band)).or_default();
         if flag {
             entry.flags.push(rect);
+        } else if head {
+            entry.heads.push(rect);
         } else {
             entry.accidentals.push(rect);
         }
@@ -3324,6 +3343,48 @@ mod tests {
         assert_eq!(
             page_top_content(1, &geometry),
             -(148.5 + INTER_PAGE_GAP) - 7.5
+        );
+    }
+
+    /// A compressed system's slur passes the heads of its band as it passes
+    /// accidentals, and a tie keeps to its own obstacles: a slur falling
+    /// steeply from above a head across its top right corner is lifted clear
+    /// of it, and the same curve as a tie is left as it was.
+    #[test]
+    fn a_compressed_systems_slur_passes_the_heads_it_meets() {
+        let cp =
+            [(0.3, 0.6), (0.7, 0.67), (1.6, -0.33), (2.7, -2.4)].map(|(x, y)| Point::new(x, y));
+        let head = InkRect {
+            left: 0.0,
+            right: 1.18,
+            bottom: -0.5,
+            top: 0.5,
+        };
+        let meets = |cp: [Point; 4]| {
+            (1..64).any(|k| {
+                let t = k as f32 / 64.0;
+                let at = |a: f32, b: f32, c: f32, d: f32| {
+                    let u = 1.0 - t;
+                    u * u * u * a + 3.0 * u * u * t * b + 3.0 * u * t * t * c + t * t * t * d
+                };
+                let x = at(cp[0].x.0, cp[1].x.0, cp[2].x.0, cp[3].x.0);
+                let y = at(cp[0].y.0, cp[1].y.0, cp[2].y.0, cp[3].y.0);
+                x > head.left && x < head.right && y > head.bottom && y < head.top
+            })
+        };
+        assert!(meets(cp), "the slur as placed runs through the head");
+        let ink = PlacedInk {
+            heads: vec![head],
+            ..PlacedInk::default()
+        };
+        assert!(
+            !meets(pass_compressed(cp, &ink, false)),
+            "the slur passes the head"
+        );
+        assert_eq!(
+            pass_compressed(cp, &ink, true),
+            cp,
+            "a tie keeps its own obstacles"
         );
     }
 

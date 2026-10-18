@@ -338,8 +338,9 @@ pub struct Engraver {
 /// sounding duration, and to `53` when a system the score's breaks fix that
 /// holds more than the line began compressing toward MuseScore's minimum
 /// distances rather than taking a system more, the search adding one only
-/// where even that floor overflows.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(53);
+/// where even that floor overflows, and to `54` when a compressed system's
+/// slur began passing the heads of its band as it passes accidentals.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(54);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.

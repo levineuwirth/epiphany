@@ -1969,5 +1969,23 @@ whose line one system's floor overflows, exactly one system is added there,
 named with its overflow), `compression_at_the_floor_puts_no_ink_on_ink`
 (dotted rhythms, seconds, accidentals, ledger lines, rests and a clef, key
 and time change, on every page down to the floor, share no ink their
-natural spacing does not, each onset's heads after the last's by 0.1) and
-`a_compressed_systems_ties_are_decided_where_it_sets_them` (`epiphany-cli`).
+natural spacing does not, each onset's heads after the last's by 0.1),
+`a_compressed_systems_ties_are_decided_where_it_sets_them` and
+`a_systems_floor_is_measured_with_the_lead_it_opens_with` (a system held
+down to the same narrowest page whatever lead a later system opens with)
+(`epiphany-cli`).
+
+## ENGRAVER_VERSION 53 → 54: a compressed system's slur passes the heads it meets (X5c fix round 2, 2026-10-18)
+
+Version 53 passed a compressed system's slurs and ties again over the flag,
+accidentals and stems of their band where the compressed system sets them.
+The spacing sets each slur clear of the heads it spans, but compression
+narrows a slur and keeps its heights, and the round's corpus sweep found a
+steep slur (falling a seventh from a beamed sixteenth to the note after it)
+cutting its own first head in a lightly compressed system, which version 52
+had split and stretched. A compressed system's slur now passes the heads of
+its band as it passes accidentals (`casting::pass_compressed`, by lifting an
+end near its end and raising its arc in its middle), so compression brings
+no slur onto a head; a tie keeps its own obstacles, and a slur outside a
+compressed system its spacing pass's decision. Locked by `casting`'s
+`a_compressed_systems_slur_passes_the_heads_it_meets`. No golden changed.
