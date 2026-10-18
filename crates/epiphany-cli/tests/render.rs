@@ -6756,3 +6756,57 @@ fn a_compressed_systems_ties_are_decided_where_it_sets_them() {
         short.first().map(|s| s.0)
     );
 }
+
+/// A system the file's breaks fix is held where its floor fits the line with
+/// the lead it opens with, however wide a lead the region opens a system
+/// with elsewhere: two files alike but for a key of seven sharps from inside
+/// their last system on, which the widest lead a system could open with
+/// takes, hold their middle system, three measures of eighths, on pages down
+/// to the same narrowest width.
+#[test]
+fn a_systems_floor_is_measured_with_the_lead_it_opens_with() {
+    let narrowest = |sharps: bool| {
+        let eighths: String = ["C", "D", "E", "F", "G", "A", "G", "F"]
+            .iter()
+            .map(|step| sixteenths(Some((step, 0, 5)), 2, "eighth", false))
+            .collect();
+        let whole = sixteenths(Some(("B", 0, 4)), 16, "whole", false);
+        let key = if sharps {
+            "<attributes><key><fifths>7</fifths></key></attributes>"
+        } else {
+            ""
+        };
+        let measures = vec![
+            whole.clone(),
+            eighths.clone(),
+            eighths.clone(),
+            eighths,
+            whole.clone(),
+            format!("{key}{whole}"),
+        ];
+        let attributes = "<time><beats>4</beats><beat-type>4</beat-type></time>\
+                          <clef><sign>G</sign><line>2</line></clef>";
+        let path =
+            Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("opening_lead_{sharps}.musicxml"));
+        let mut held = None;
+        for tenth in (300..=1200).rev().step_by(5) {
+            let width = tenth as f32 / 10.0;
+            std::fs::write(&path, broken_part(width, attributes, &measures, &[2, 5]))
+                .expect("written");
+            let loaded = load(&path).expect("loads");
+            let report = solve_loaded(&loaded);
+            if !added_systems(&report).is_empty()
+                || system_starts(&loaded, &report.layout) != vec![1, 2, 5]
+            {
+                break;
+            }
+            held = Some(width);
+        }
+        held.expect("a page holds the file's systems")
+    };
+    let (plain, sharps) = (narrowest(false), narrowest(true));
+    assert_eq!(
+        plain, sharps,
+        "the middle system holds down to {plain} without the later key and to {sharps} with it"
+    );
+}
