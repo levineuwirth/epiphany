@@ -10,29 +10,32 @@
 use std::collections::BTreeMap;
 
 use epiphany_core::{
-    AnchorOffset, Beam, BeamId, BeatGroup, Clef, ClefChange, Event, EventDuration, EventId,
-    EventPosition, ForeignFormatId, IdentifiedPitch, IdentityContext, Instrument, InstrumentId,
-    KeySignature, KeySignatureChange, Lyric, LyricLineId, Marker, MarkerId, MarkerKind, Measure,
-    MeasureId, MeasureNumberVisibility, MetricTimeModel, MusicalDuration, MusicalPosition,
-    OperationId, PitchId, PitchedEvent, PowerOfTwo, RationalTime, Region, RegionContent,
-    RegionEdge, RegionId, RegionTimeModel, ReplicaId, Rest, ScoreMetadata, Slur, SlurId, SlurKind,
-    SpanStyle, Spanner, SpannerId, Staff, StaffExtent, StaffGroup, StaffGroupId, StaffGroupKind,
-    StaffId, StaffInstance, StaffInstanceId, StaffLineConfiguration, StaffPosition,
-    StemConfiguration, Tempo, TempoSegment, TempoShape, Tie, TieClass, TieId, TimeAnchor,
-    TimeExtent, TimeSignature, TimeSignatureDisplay, TimeSignatureId, Timestamp, TransactionId,
-    Tuplet, TupletRatio, UnpitchedEvent, UnpitchedMember, UnpitchedMemberId, Voice, VoiceId,
-    VoiceOrigin, WallClockTime,
+    AnchorOffset, Beam, BeamId, BeatGroup, CanvasLayoutDefaults, CanvasMargins, CanvasSize, Clef,
+    ClefChange, Event, EventDuration, EventId, EventPosition, ForeignFormatId, IdentifiedPitch,
+    IdentityContext, Instrument, InstrumentId, KeySignature, KeySignatureChange, Lyric,
+    LyricLineId, Marker, MarkerId, MarkerKind, Measure, MeasureId, MeasureNumberVisibility,
+    MetricTimeModel, MusicalDuration, MusicalPosition, OperationId, PitchId, PitchedEvent,
+    PowerOfTwo, RationalTime, Region, RegionContent, RegionEdge, RegionId, RegionTimeModel,
+    ReplicaId, Rest, ScoreMetadata, Slur, SlurId, SlurKind, SpanStyle, Spanner, SpannerId, Staff,
+    StaffExtent, StaffGroup, StaffGroupId, StaffGroupKind, StaffId, StaffInstance, StaffInstanceId,
+    StaffLineConfiguration, StaffPosition, StemConfiguration, Tempo, TempoSegment, TempoShape, Tie,
+    TieClass, TieId, TimeAnchor, TimeExtent, TimeSignature, TimeSignatureDisplay, TimeSignatureId,
+    Timestamp, TransactionId, Tuplet, TupletRatio, UnpitchedEvent, UnpitchedMember,
+    UnpitchedMemberId, Voice, VoiceId, VoiceOrigin, WallClockTime,
 };
+use epiphany_determinism::CanonicalF64;
 use epiphany_ops::{
     AuthorId, CausalContext, CreateCrossCuttingOp, CreateInstrumentOp, CreateMeasureOp,
     CreateRegionOp, CreateStaffGroupOp, CreateStaffInstanceOp, CreateStaffOp, CreateTupletOp,
     CreateVoiceOp, CrossCuttingValue, HybridLogicalClock, InsertEventOp, OperationEnvelope,
-    OperationKind, OperationPayload, OperationStamp, RespellPitchOp, SetMetadataOp,
-    SetTempoSegmentOp, SetTimeSignatureOp, SetVoiceHomeOp, TransactionDescriptor,
+    OperationKind, OperationPayload, OperationStamp, RespellPitchOp, SetCanvasLayoutDefaultsOp,
+    SetMetadataOp, SetTempoSegmentOp, SetTimeSignatureOp, SetUserPageBreakOp, SetUserSystemBreakOp,
+    SetVoiceHomeOp, TransactionDescriptor,
 };
 
 use crate::source::{
-    Content, FeatureClass, GroupKind, Meter, Place, SourcePart, SourcePoint, SourceScore,
+    Content, FeatureClass, GroupKind, Meter, Place, SourceBreak, SourcePart, SourcePoint,
+    SourceScore,
 };
 
 /// The replica an import authors from unless told otherwise.
@@ -366,6 +369,30 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
         );
     }
 
+    // The page the file sets the score on, as the score's layout defaults, so a
+    // document made from the import is drawn on it.
+    if let Some(page) = source.page {
+        let ss = |v: f32| CanonicalF64::new(f64::from(v)).expect("the reader keeps pages finite");
+        e.emit(
+            "SetCanvasLayoutDefaults",
+            Subject::Score,
+            OperationKind::SetCanvasLayoutDefaults(SetCanvasLayoutDefaultsOp {
+                layout_defaults: CanvasLayoutDefaults {
+                    page_size: CanvasSize {
+                        width: ss(page.width),
+                        height: ss(page.height),
+                    },
+                    margins: CanvasMargins {
+                        top: ss(page.top),
+                        right: ss(page.right),
+                        bottom: ss(page.bottom),
+                        left: ss(page.left),
+                    },
+                },
+            }),
+        );
+    }
+
     // Staff groups, before the staves that name them.
     let mut group_of: BTreeMap<(usize, usize), StaffGroupId> = BTreeMap::new();
     for (k, group) in source.groups.iter().enumerate() {
@@ -604,6 +631,33 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
             per_staff.push(measures);
         }
         ids.measures.push(per_staff);
+    }
+
+    // The file's line and page breaks, as the region's user breaks at the
+    // measures they come before: musical offsets from the region's start,
+    // which the reducer keys each break by.
+    for measure in &source.measures {
+        let Some(kind) = measure.break_before else {
+            continue;
+        };
+        let anchor = region_anchor(region_id, &measure.onset);
+        let op = match kind {
+            SourceBreak::System => OperationKind::SetUserSystemBreak(SetUserSystemBreakOp {
+                region: region_id,
+                anchor,
+                present: true,
+            }),
+            SourceBreak::Page => OperationKind::SetUserPageBreak(SetUserPageBreakOp {
+                region: region_id,
+                anchor,
+                present: true,
+            }),
+        };
+        let name = match kind {
+            SourceBreak::System => "SetUserSystemBreak",
+            SourceBreak::Page => "SetUserPageBreak",
+        };
+        e.emit(name, Subject::Score, op);
     }
 
     // Events, part by part in source order.

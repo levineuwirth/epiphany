@@ -27,12 +27,17 @@ items batched."*).
    append-at-EOF.** The bundle *is* the file format, so chunks are addressed by
    file offset within one file (the spec's `ChunkRef::offset`), not a side
    `BTreeMap<ChunkId, Bytes>`. The `BlockStore` trait abstracts positioned
-   reads/writes plus an explicit durable `flush`; three implementations back it:
+   reads/writes plus an explicit durable `flush`; four implementations back it:
    - `MemStore` — an in-memory byte image (`flush` is a no-op); the default v0
      backing and the recovered-image reader.
    - `FileStore` — a real file whose `flush` is `fsync` (the production
      durability path; unix-only, via positioned `pread`/`pwrite`).
    - `FaultStore` — the crash simulator behind the acceptance gate.
+   - `PageCacheStore` — a failed `fsync` the writer lives through, as ext4 and
+     XFS (pages marked clean, new bytes readable) or Btrfs (reverted) leave it;
+     added 2026-10-11 for `Bundle::sync` (see "Additional local decisions").
+     Since 2026-10-14 it writes back by a chosen unit (a byte by default, or a
+     page) and can evict clean units before chosen reads.
    The QUICKSTART suggested an in-memory `BTreeMap` for v0 and deferring the
    mmap'd file backend "until Agent D's crash fuzzer is green." The crash fuzzer
    *is* this crate's gate, and it drives `FaultStore`; memory-mapping is left as
@@ -90,6 +95,27 @@ items batched."*).
   marks the in-memory bundle read-only and returns the error; the caller must
   reopen from storage to resync. (Earlier flush errors are safe — the active slot
   is untouched, so the bundle remains validly at the old generation.)
+
+- **A barrier after a failed flush writes before it flushes (2026-10-11).** A
+  writer that reopens after an indeterminate commit (`Bundle::reopen`) may read
+  the new superblock from the page cache while the disk holds the old one: on
+  ext4 and XFS a failed `fsync` marks its pages clean with the new bytes in
+  them, and a later `fsync` writes nothing of them and succeeds (Rebello et
+  al., USENIX ATC 2020, §4). The superblock-slot write is the only write the
+  commit-point flush covers (the crash model above), so `Bundle::sync` writes
+  the selected superblock again in its slot before it flushes: the barrier
+  then has that slot to write, and its failure is an error, not a success over
+  nothing. It writes the superblock the reopen selected and decoded, not the
+  slot read a second time (amended 2026-10-14): the page holds the new bytes
+  only until it is evicted, and a page evicted between the reopen and the
+  barrier is read again from the disk, whose older superblock a rewrite of
+  what the store reads would put back while the save was reported landed.
+  Where the page cache reverted (Btrfs), the reopen selects the generation
+  before and no barrier runs. A failure before the commit point needs no
+  rewrite: `commit` advances neither the write cursor nor the active slot on
+  an error, so the next commit appends its chunks and manifest again at the
+  same place and writes the same slot. `PageCacheStore` models both
+  filesystems' behavior for the tests.
 
 - **Reader resource limits.** Untrusted lengths (a superblock's
   `manifest_length`, a manifest's chunk/blob lengths) are checked against

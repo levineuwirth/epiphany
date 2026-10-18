@@ -28,7 +28,7 @@ corrupt the active state.
 | Manifest | `Manifest` (canonical_base ≠ acceleration_snapshots), `SnapshotRef`, `BlobRef`, `ProfileDeclaration`, `ExtensionDeclaration` | Ch. 8 §"The Manifest" |
 | Retention | `RetentionPolicy` (first-class), `ProfileConstraints` | Ch. 8 §"Garbage Collection and Retention" |
 | Op blocks | `pack_operation_blocks` (1 MiB soft target), `encode_block`/`decode_block` | Ch. 8 §"Operation Envelope Blocks" |
-| Storage | `BlockStore`, `MemStore`, `FileStore` (real `fsync`), `FaultStore` (crash sim) | Ch. 8 §"Durable Writes" |
+| Storage | `BlockStore`, `MemStore`, `FileStore` (real `fsync`), `FaultStore` (crash sim), `PageCacheStore` (a failed `fsync` lived through) | Ch. 8 §"Durable Writes" |
 | Gates | `fuzz::run_crash_recovery_fuzz`, `fuzz::exhaustive_crash_check`, `fuzz::run_manifest_selection_harness` | QUICKSTART acceptance |
 
 ## The crash-recovery contract (the acceptance gate)

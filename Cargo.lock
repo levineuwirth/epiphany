@@ -1193,7 +1193,10 @@ dependencies = [
 name = "epiphany-cli"
 version = "0.0.0"
 dependencies = [
+ "epiphany-bundle",
  "epiphany-core",
+ "epiphany-determinism",
+ "epiphany-editor-core",
  "epiphany-engrave",
  "epiphany-layout-ir",
  "epiphany-musicxml",
@@ -1226,9 +1229,13 @@ dependencies = [
 name = "epiphany-editor-core"
 version = "0.0.0"
 dependencies = [
+ "epiphany-bundle",
  "epiphany-core",
+ "epiphany-determinism",
+ "epiphany-engrave",
  "epiphany-layout-ir",
  "epiphany-ops",
+ "getrandom 0.2.17",
 ]
 
 [[package]]
@@ -1236,10 +1243,13 @@ name = "epiphany-editor-gui"
 version = "0.0.0"
 dependencies = [
  "eframe",
+ "epiphany-bundle",
+ "epiphany-cli",
  "epiphany-core",
  "epiphany-editor-core",
  "epiphany-engrave",
  "epiphany-layout-ir",
+ "epiphany-musicxml",
  "epiphany-ops",
  "epiphany-render-svg",
  "epiphany-testkit",
@@ -1277,6 +1287,7 @@ name = "epiphany-musicxml"
 version = "0.0.0"
 dependencies = [
  "epiphany-core",
+ "epiphany-determinism",
  "epiphany-engrave",
  "epiphany-layout-ir",
  "epiphany-ops",

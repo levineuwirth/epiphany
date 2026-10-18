@@ -50,14 +50,28 @@
 //!   cost of a larger file; glyph placement is consistent with the path mode by
 //!   construction, while exact rasterisation is the consumer's font renderer's.
 
+// ## PDF and export
+//
+// [`render_pdf`] writes pages of a layout as a PDF 1.4 document, drawing what
+// the SVG renderer draws from the same outlines (the private `pdf` module says
+// how). [`export_pages`] splits a layout into its pages, each framed by its
+// paper, or by a frame extended to hold ink that runs past it.
+
+mod export;
 mod font_subset_generated;
 mod outline;
+mod page;
+mod pdf;
 mod svg;
 pub mod xml;
 
+pub use export::{export_pages, ExportPage};
 pub use outline::{bundled_glyph_count, smufl_codepoint};
+pub use page::page_layout;
+pub use pdf::{render_pdf, PdfOptions, PdfOutput, PdfPage};
 pub use svg::{
-    render, Diagnostic, GlyphClass, GlyphMode, RenderOptions, RenderOutput, RenderStats,
+    ink_frame, render, Diagnostic, Frame, GlyphClass, GlyphMode, RenderOptions, RenderOutput,
+    RenderStats,
 };
 pub use xml::{check_well_formed, XmlError};
 

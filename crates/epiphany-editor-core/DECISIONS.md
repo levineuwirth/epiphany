@@ -570,6 +570,165 @@ also retreats the caret by one entry duration → `1/1` vs `5/4`, dies) and
 `reresolve_caret`'s body → caret stays `Some` after `DeleteVoice`
 succeeds, dies).
 
+## The document layer (2026-10-10, X5a.1)
+
+`EditorDocument<S: BlockStore>` (`src/document.rs`) is Ruling B's document
+(`spec/PLAN_EDITOR_APP.md`): it owns the bundle, the committed operation set
+and its generation, the read-only status and the lease. A document is
+`Score::empty(identity)` plus its envelope log; it stores no base, snapshot or
+frontier, so `open` replays every envelope graph-aware from an empty score.
+
+**The lease is a private token inside the session.** Of Ruling B's three
+shapes this is the third: `EditorDocument::lease` returns an ordinary
+`EditorSession` carrying a crate-private `Lease` (the document instance, a
+lease number, the committed generation, and whether it is writable), and
+`save` refuses a session whose token is absent or not writable (`NotLeased`: a
+probe-mode session, or a `view`, whose token only names its document), another
+instance's (`ForeignLease`), or superseded (`LeaseRevoked`). A borrowing
+guard was not chosen because a GUI holds the document and its session side
+by side for the life of a window. Replacing a leased session with another
+value moves its token with it, so no swap persists a foreign session. A new
+lease revokes the old rather than being refused, so a window that drops its
+session can always lease again.
+
+**The committed partition lives in the session too.** `Committed` holds the
+envelopes, their `OperationSet` (accepted once, so an edit's materialization
+does not re-hash them) and the frontier derived from the set's membership
+(`frontier_of`: the floor covers only each replica's contiguous prefix from
+counter 0; everything past a gap is a dot). The document and its session
+share it through `Arc`s and replace it only at a save. With nothing applied,
+a new edit's causal context is that frontier.
+
+**Promotion is a partition move, and redo survives it.** After the
+commit-point flush succeeds, the applied units are appended to the committed
+partition, `applied` and the undo units are emptied, and nothing is reduced
+again. The redo stack is kept: an undone unit's predecessors are the applied
+prefix it was undone from, which the save committed.
+
+**Ids.** A lease mints under `ReplicaId::generate()`. `with_identity` may
+resume a replica the partition holds; the session's operation counter then
+starts one past that replica's committed counters (`op_floor`), and every id
+mint also scans the committed envelopes, so a saved-then-deleted id is not
+re-minted.
+
+**Read-only outcomes.** A bundle that opens read-only, a manifest declaring
+extensions (they fail closed until the tombstone channel exists), and a log
+that does not reduce cleanly each open a read-only document, which `view`
+draws and which grants no lease. Ruling B's preserved, never-materialized
+case (an operation block above this build's accept-set) and a base-bearing
+bundle are open errors naming the cause, as is an envelope in a recognized
+historical layout (`UnsupportedHistoricalEncoding`, the interim boundary).
+
+**Three commit outcomes.** A failure before the commit point leaves the units
+unsaved and undoable. A failed commit-point flush poisons the bundle; the
+document keeps exactly the units it staged and then saves nothing until
+`reconcile` reopens the store in place (`Bundle::reopen`, so a failed read
+leaves the document in recovery to be tried again), checks that every staged
+block is a root of the generation it selects, and runs a fresh durability
+barrier (`Bundle::sync`) that must succeed before the save is reported.
+
+**The barrier writes before it flushes.** A failed flush can leave its writes
+readable and not on disk: on ext4 and XFS it marks their pages clean with the
+new bytes in them, and a later `fsync` writes nothing of them and succeeds
+(Rebello et al., USENIX ATC 2020, §4). The commit flushed after its chunks and
+after its manifest, so its failed commit-point flush covered only the
+superblock it wrote, which the reopen selects when the save landed.
+`Bundle::sync` therefore writes the selected superblock again in its slot and
+then flushes, so the barrier has that slot to write, and a barrier that fails
+again keeps the save unsettled. It writes the superblock the reopen decoded,
+not the slot read a second time: a clean page evicted between the reads holds
+the disk's older superblock, which rewriting the slot as read put back while
+the save was reported landed (2026-10-14). A bare barrier reported such a save
+landed with the disk a generation behind, and the next save left the disk's
+slots three generations apart, which opens read-only. The tests' stores fail
+as those filesystems do (`epiphany_bundle::PageCacheStore`), and read the disk
+as well as the page cache. A failure before the commit point needs no
+rewrite: the next commit appends its chunks and manifest again where the
+failed one did and writes the same slot, so every range it names is written
+again before its own flushes.
+
+**Reconciling promotes what the save staged, not what the session holds.**
+While a save is unsettled, undo stops at the units it staged, as it stops at
+the units any save commits (D64). The session counts them as its oldest
+applied units (`unsettled`), and `undo` refuses to reach them with
+`EditorError::UnsettledSave`. Units entered since undo and redo as ever, down
+to them, and redo of units undone before the save is unaffected. Since no
+staged unit is undone before the save settles, no later edit forks away from
+one and none is dropped. When the staged blocks landed, exactly those units
+move into the committed partition, a partition move as at a save that keeps
+the redo stack; units entered since stay applied, unsaved and undoable. When
+they did not land, the units become ordinary unsaved units again, undoable as
+before. Each way a unit leaves `applied` respects the floor: `undo` refuses;
+a failed edit or redo removes only its own unit; a save, which promotes,
+cannot run while the document is unsettled; and reconciling asserts that the
+staged units are still the oldest applied ones before it moves them. An
+earlier policy restored a staged unit undone since the save and dropped the
+later units that no longer reduced beside it; nothing reaches that case now.
+
+**Save As copies; it never writes the source.** `EditorDocument::save_as`
+returns a `DocumentCopy` of what a session draws (its committed partition and
+applied units), which `DocumentCopy::create` writes into an empty store as a
+new document: a fresh `file_uuid`, the source's `document_id`, lineage and
+profiles (`req:format:file-document-lineage-identity`). The session must be one
+this document leased or drew: a view now carries a non-writable token naming
+its document, which no save accepts. A read-only document, and one holding
+blobs, are refused rather than copied with something dropped.
+
+**Not here.** Creation never truncates (`FileStore::create_new`); the
+cross-process lock is taken where a document is opened from a path, in the
+GUI, which may use `File::try_lock` (MSRV-excluded); the generation and
+file-UUID revalidation before each commit, against a writer that ignores the
+lock, is not implemented.
+
+## Note entry across the barline (2026-10-10, X5a.2)
+
+Caret entry and the pencil share one core, `entry_ops`, which enters as
+MuseScore does. An entry that would cross a barline is split there into
+events tied in turn (a rest's parts are not tied), and an entry that runs
+past the staff's last measure first opens the measures it needs. Everything
+it mints (the measures, the make-room edits, the parts and their ties) is one
+transaction, so one undo takes it back whole.
+
+**Where measures end.** A measure ends where the next one starts; the last
+ends one bar of the latest meter a measure names after its start, which is
+how the layout draws it. A staff whose measures name no meter (the editor's
+own ten-measure fixture is one) takes the last measure to be as long as the
+one before it. A staff with neither plans nothing, and the entry is made
+whole where it is, as before.
+
+**Opened measures** go on every staff instance of the region that lacks a
+measure at that start, so the staves keep one barline grid; each is anchored
+at its offset from the region's start and names no meter, so the meter in
+force continues.
+
+The pencil's and the caret's goldens (`ten_measure_insert`,
+`ten_measure_caret_entry`) were re-blessed: each entry now fills an eleventh
+measure where it overfilled the tenth. Their before-and-after renders are in
+the phase's handoff for the owner's reading (D10).
+
+## Line and page breaks (2026-10-10, X5a.5)
+
+`set_break(kind, region, at, present)` sets or clears a line or page break
+before the measure starting at `at`, through `SetUserSystemBreak` or
+`SetUserPageBreak`; `toggle_break_after_selection` is MuseScore's line-break
+key, toggling one after the selected note's measure. The importer writes a
+file's `<print new-system|new-page>` the same way.
+
+**Anchored by offset, not by measure.** A break is written as its musical
+offset from the region's start (`TimeAnchor::Region`, edge `Start`). The
+reducer keys a break's last-writer slot by its anchor's resolved position,
+and every anchor but such an offset resolves to the region's origin, so two
+measure- or event-anchored breaks in one region would share a slot. The
+layout now resolves the offset form too. The cost: a break does not move with
+music inserted before it, until breaks are keyed by their anchors (a model
+change).
+
+**Breaks and D30.** A user break is honored unless it would close a system
+holding no note. A continued tie's 1.5 staff spaces after a system's clef and
+key come from widening that system's lead; an imported break never moves for
+it. If the widened system then overruns the width, the engraver opens an
+extra automatic break inside it, as it does for any system that will not fit.
+
 ## The clipboard fragment carries grace notes (X4b fix round 1, 2026-10-11)
 
 Schema major 5 makes a grace note an event of zero duration, and the fragment

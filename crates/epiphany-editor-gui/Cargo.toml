@@ -4,7 +4,7 @@ version = "0.0.0"
 edition.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "A thin native (egui) GUI shell over epiphany-editor-core: renders the score with epiphany-render-svg (rasterized by resvg), click to select, a pencil mode that clicks notes onto the staff, undo/redo, and a toolbar/keys for the note-editing intents and a duration palette. A vertical slice proving the editor seam."
+description = "A thin native (egui) GUI shell over epiphany-editor-core: opens, saves and exports a document or a MusicXML file, renders the score with epiphany-render-svg (rasterized by resvg), click to select, a pencil mode and caret entry, undo/redo, line and page breaks, and a toolbar/keys for the note-editing intents and a duration palette."
 
 # A demo binary, not a library other crates build on, so it carries the heavy GUI
 # dependency tree (eframe/winit/wgpu, resvg/usvg/tiny-skia) the rest of the
@@ -25,6 +25,12 @@ epiphany-layout-ir.workspace = true
 epiphany-ops.workspace = true
 # A clean score fixture to open.
 epiphany-testkit.workspace = true
+# Documents on disk (the bundle and its file store), MusicXML import, and the
+# command line's export and document helpers, so the window opens, saves and
+# exports files as `epiphany` does.
+epiphany-bundle.workspace = true
+epiphany-musicxml.workspace = true
+epiphany-cli.workspace = true
 
 # Native GUI shell (window, event loop, immediate-mode UI). Pinned to the classic
 # `App::update(ctx, frame)` + panel API (egui 0.35 redesigned `App` around `ui()`).

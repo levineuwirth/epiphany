@@ -49,6 +49,19 @@ green is not CI green.
 
 - Branch `x<N>/<slug>` from `origin/main`. Sessions run concurrently in this
   checkout: check `git status` for foreign work before any branch operation.
+- A phase works in its own worktree beside this checkout, made once by its
+  first session with
+  `git worktree add ~/Repos/personal/epiphany-x<N> -b x<N>/<slug> origin/main`
+  and reused by its fix rounds, building into its own target,
+  `CARGO_TARGET_DIR=~/build/epiphany-x<N>-target`, so its gate logs land
+  there. The shared checkout is not used for phase work; a review builds from
+  a `git archive` of the PR head in its own directory and target. The
+  coordinating session removes a merged phase's worktree with
+  `git worktree remove`, never by deleting the directory.
+- Phases on separate tracks run at once and open concurrent PRs. When another
+  phase merges first, take `origin/main` into the branch by a merge commit,
+  never a rebase (the squash collapses it), and resolve `DECISIONS.md`, the
+  operation catalog and the `Bumps` list by keeping both phases' entries.
 - Stage explicit paths; never `git add -A` or `git add .`. Never `git reset`,
   `git restore`, `git checkout <file>` or `git stash` against the working
   tree, and never delete an untracked file you did not create. Undo by
