@@ -1937,6 +1937,33 @@ fn prospective_references_target<V>(
     }
 }
 
+/// A cross-cutting structure's value as an undo leaves it: the value the
+/// undo's `restorations` write back to its chain, where they restore one,
+/// else its chain's current value, as `apply_restorations` leaves an absence
+/// restoration. Read by both arms of the undo's region guard
+/// (`anchored_to_region` and `orphaned_to_region`), so a marker or spanner
+/// the undone transaction moved onto the region, or onto a note the undo
+/// removes, is read at the anchor its restoration returns it to (schema
+/// major 5, reduction version 4, X4b fix round 4: before it both read the
+/// current value, and the undo conflicted, or kept the emptied region, for a
+/// structure its own restoration takes away).
+fn cross_cutting_as_undo_leaves<'a>(
+    sid: &TypedObjectId,
+    chain: &'a WriteChain<CrossCuttingValue>,
+    restorations: &'a [ValueRestoration],
+) -> Option<&'a CrossCuttingValue> {
+    restorations
+        .iter()
+        .find_map(|restoration| match restoration {
+            ValueRestoration::CrossCutting {
+                id,
+                value: Some(value),
+            } if id == sid => Some(value),
+            _ => None,
+        })
+        .or_else(|| chain.current())
+}
+
 /// The event references among a set of [`TimeAnchor`]s (the referent-index
 /// entries a tombstone must repair). Non-event anchors contribute nothing.
 fn anchor_event_refs<'a>(anchors: impl IntoIterator<Item = &'a TimeAnchor>) -> Vec<TypedObjectId> {
@@ -4720,20 +4747,22 @@ impl<'a> Reducer<'a> {
 
     /// The live markers and spanners anchored to `region` (by a musical
     /// offset only, with `musical`), read from the values both modes keep,
-    /// those `except` names aside.
+    /// those `except` names aside, each as an undo's `restorations` leave it
+    /// (none outside an undo).
     fn anchored_to_region(
         &self,
         region: RegionId,
         musical: bool,
         except: &[TypedObjectId],
+        restorations: &[ValueRestoration],
     ) -> Vec<TypedObjectId> {
         self.cross_cutting_modify_chain
             .iter()
             .filter(|(sid, _)| {
                 !except.contains(sid) && matches!(self.objects.get(*sid), Some(ObjectState::Live))
             })
-            .filter(|(_, chain)| {
-                chain.current().is_some_and(|value| {
+            .filter(|(sid, chain)| {
+                cross_cutting_as_undo_leaves(sid, chain, restorations).is_some_and(|value| {
                     region_anchors(value).into_iter().any(|anchor| {
                         matches!(anchor, TimeAnchor::Region { id, offset, .. }
                             if *id == region
@@ -7531,7 +7560,9 @@ impl<'a> Reducer<'a> {
         });
         // A live marker or spanner anchored to the region holds it likewise
         // (schema major 5, reduction version 4).
-        let marked = !self.anchored_to_region(op.region, false, &[]).is_empty();
+        let marked = !self
+            .anchored_to_region(op.region, false, &[], &[])
+            .is_empty();
         let minted_by =
             match self.delete_precondition(robj, env, has_instances || tempo_anchored || marked) {
                 Ok(minter) => minter,
@@ -7898,7 +7929,7 @@ impl<'a> Reducer<'a> {
             });
             // A live marker or spanner anchored here by a musical offset
             // strands itself (schema major 5, reduction version 4).
-            let anchored = self.anchored_to_region(op.region, true, &[]);
+            let anchored = self.anchored_to_region(op.region, true, &[], &[]);
             self.measure_values
                 .iter()
                 .filter(|(_, (instance, _))| instances.is_some_and(|set| set.contains(instance)))
@@ -8528,17 +8559,21 @@ impl<'a> Reducer<'a> {
                         .then_some((*target, *target))
                 })
                 // A live marker or spanner anchored to the region the undo
-                // does not remove (schema major 5, reduction version 4).
+                // does not remove (schema major 5, reduction version 4), read
+                // as the undo leaves it: one the undone transaction moved
+                // there is restored away (X4b fix round 4).
                 .or_else(|| {
-                    self.anchored_to_region(*region, false, targets)
+                    self.anchored_to_region(*region, false, targets, restorations)
                         .first()
                         .map(|sid| (*target, *sid))
                 })
                 // A live marker on an event the undo removes, which its
                 // repair would orphan to the region's start: read as the
-                // repair leaves it, it holds the region too (X4b fix round 2).
+                // repair leaves it, it holds the region too (X4b fix round 2),
+                // unless the undo's restoration takes it back to an earlier
+                // anchor (X4b fix round 4).
                 .or_else(|| {
-                    self.orphaned_to_region(*region, targets)
+                    self.orphaned_to_region(*region, targets, restorations)
                         .map(|sid| (*target, sid))
                 }),
             TypedObjectId::StaffInstance(instance) => {
@@ -11996,11 +12031,16 @@ impl<'a> Reducer<'a> {
     /// the undo's guard read such a marker at the event it named before the
     /// undo, so an undo removing a region with the last event a marker stood
     /// on orphaned the marker to the region it removed,
-    /// `CrossCuttingRefsResolve`).
+    /// `CrossCuttingRefsResolve`). A marker the undo's `restorations` take
+    /// back to an earlier anchor is read there, as the whole undo leaves it
+    /// (X4b fix round 4: before it a marker the undone transaction had moved
+    /// onto its own note was read on that note, so the undo conflicted, or
+    /// kept the emptied region, though the restoration takes the marker home).
     fn orphaned_to_region(
         &self,
         region: RegionId,
         targets: &[TypedObjectId],
+        restorations: &[ValueRestoration],
     ) -> Option<TypedObjectId> {
         let removed = |event: EventId| targets.contains(&TypedObjectId::Event(event));
         self.cross_cutting_modify_chain
@@ -12009,7 +12049,9 @@ impl<'a> Reducer<'a> {
                 !targets.contains(sid) && matches!(self.objects.get(*sid), Some(ObjectState::Live))
             })
             .find_map(|(sid, chain)| {
-                let Some(CrossCuttingValue::Marker(marker)) = chain.current() else {
+                let Some(CrossCuttingValue::Marker(marker)) =
+                    cross_cutting_as_undo_leaves(sid, chain, restorations)
+                else {
                     return None;
                 };
                 let TimeAnchor::Event { id: event, .. } = &marker.anchor else {

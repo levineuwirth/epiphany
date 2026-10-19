@@ -3896,3 +3896,28 @@ restore's slots read again after each supersession, so two collisions in one
 undo are both superseded), and the committed history `180`, added to
 `an_orphaned_marker_holds_its_region_in_both_modes` (a marker written by two
 modifies before its orphaning, so the repair rewrites the chain's last write).
+
+## X4b fix round 4 — C4b review 3's finding (2026-10-19)
+
+**An undo's region guard reads a marker as the whole undo leaves it (L1).**
+Both arms of the region guard in `undo_strand_block`, a marker or spanner
+anchored to the region (`anchored_to_region`) and a marker on a note the undo
+removes that its repair would orphan there (`orphaned_to_region`), read the
+structure's current value. An undo tombstones its targets, which runs the
+repair, and then applies its restorations, so a marker the undone
+transaction had itself moved there returns to its earlier anchor, older than
+the region, and strands nothing. One author could create a region with an
+instance, a voice and a note in one transaction and move an older region's
+marker onto that note or onto the new region's start: a strict or cascading
+undo of the transaction conflicted, and a best-effort one kept the emptied
+region, the marker going home all the same. Both modes agreed and no
+invariant broke; the tempo-segment, voice-home and meter arms of the same
+guard already read their values as the undo leaves them. Both arms now read
+through `cross_cutting_as_undo_leaves`: the value the undo's restorations
+write back to the structure's chain where they restore one, else its current
+value, as `apply_restorations` leaves an absence restoration. A
+`DeleteRegion` and a migration, which restore nothing, read the current value
+as before. The review's histories are committed under every policy as `181`
+to `186`, `expect: agree`, the new verdict asserted by
+`a_marker_its_undo_restores_holds_no_region_in_both_modes`: the undo applies,
+the region goes with its contents, and the marker stands on the older note.

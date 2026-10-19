@@ -727,6 +727,22 @@ pub mod vectors;
 ///     and the committed histories `174` to `177`, with `178` and `179` beside
 ///     them.
 ///
+///   X4b's fourth fix round (C4b review 3, 2026-10-19) changes that guard's
+///   verdict once more, the same in both modes:
+///   - both arms of the guard, a marker or spanner anchored to the region and
+///     a marker the undo's repair would orphan to it, read the structure as
+///     the whole undo leaves it, its restoration included: one the undone
+///     transaction itself moved onto the region's start, or onto a note the
+///     undo removes, is read at the earlier anchor its restoration returns it
+///     to, and holds nothing. The undo then applies under every policy, the
+///     region going with its contents and the marker returning home, where
+///     version `4` after the second fix round read the marker where the
+///     transaction had put it: strict and cascading undos conflicted and a
+///     best-effort one kept the emptied region (no invariant broken, one
+///     author moving an older marker in the region's own transaction).
+///     Locked by `a_marker_its_undo_restores_holds_no_region_in_both_modes`
+///     and the committed histories `181` to `186`.
+///
 ///   One verdict change X4b.2 made and this entry did not name until the
 ///   review found it: a `DeleteCrossCutting` naming a marker or a lyric a
 ///   base graph holds applies in graph-aware reduction, where version `3`

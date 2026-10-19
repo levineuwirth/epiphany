@@ -775,3 +775,96 @@ fn a_marker_its_regions_undo_would_orphan_holds_the_region_in_both_modes() {
         );
     }
 }
+
+/// An undo's region guard reads a marker as the whole undo leaves it, its
+/// restoration included, so a marker the undone transaction itself moved onto
+/// the region it removes holds nothing, in both modes (C4b review 3's L1, one
+/// author): a marker on a note of an older region, then one transaction
+/// creating a region with an instance, a voice and a note and moving the
+/// marker onto that note (`181` to `183`) or onto the new region's start
+/// (`184` to `186`), then the transaction undone under each policy. The
+/// undo's restoration returns the marker to the older note, so the undo
+/// applies under every policy: the new region goes with its contents and the
+/// marker stands on the older note. Before the fix both arms of the guard read
+/// the marker where the transaction had put it, so strict and cascading undos
+/// conflicted and a best-effort one kept the emptied region.
+#[test]
+fn a_marker_its_undo_restores_holds_no_region_in_both_modes() {
+    use epiphany_core::{
+        AnchorOffset, IdentityContext, ReplicaId, Score, TimeAnchor, TypedObjectId,
+    };
+    use epiphany_ops::{ObjectState, OperationEffect, OperationSet, RepairKind};
+    for name in [
+        "181-undo-transaction.txt",
+        "182-undo-transaction.txt",
+        "183-undo-transaction.txt",
+        "184-undo-transaction.txt",
+        "185-undo-transaction.txt",
+        "186-undo-transaction.txt",
+    ] {
+        let history = committed_history(name);
+        assert!(
+            modes::findings(&history).is_empty(),
+            "{name}: the modes agree and the graph holds"
+        );
+        let mut set = OperationSet::new();
+        set.accept_all(history.iter().cloned());
+        let free = set.reduce();
+        let aware = set.reduce_onto(&Score::empty(IdentityContext::new(ReplicaId(0))));
+        let regions = &aware.score.canvas.regions;
+        assert_eq!(regions.len(), 1, "{name}: the older region alone stands");
+        let older = regions[0].id;
+        let mut minted: Vec<_> = free
+            .objects
+            .keys()
+            .filter_map(|object| match object {
+                TypedObjectId::Region(region) if *region != older => Some(*region),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(minted.len(), 1, "{name}: one region the transaction made");
+        let undone = minted.remove(0);
+        let (_, _, voice) = aware.score.voices().next().expect("the older voice");
+        assert_eq!(aware.score.voices().count(), 1, "{name}: the voice goes");
+        let note = voice.events.first().copied().expect("the older note");
+        let markers = &aware.score.cross_cutting.markers;
+        assert_eq!(markers.len(), 1, "{name}: the marker stands");
+        assert_eq!(
+            markers[0].anchor,
+            TimeAnchor::Event {
+                id: note,
+                offset: AnchorOffset::Zero,
+            },
+            "{name}: the restoration returns the marker to the older note"
+        );
+        for state in [&free, &aware.state] {
+            let effect = state
+                .effects
+                .iter()
+                .find(|(id, _)| *id == history.last().expect("a history").id)
+                .map(|(_, e)| e.clone());
+            let Some(OperationEffect::AppliedWithRepair { repairs }) = effect else {
+                panic!("{name}: the undo applies, not {effect:?}");
+            };
+            assert!(
+                repairs.iter().any(|r| r.kind == RepairKind::CascadeDeleted
+                    && r.target == TypedObjectId::Region(undone)),
+                "{name}: the undo removes the transaction's region, {repairs:?}"
+            );
+            assert!(
+                matches!(
+                    state.objects.get(&TypedObjectId::Region(undone)),
+                    Some(ObjectState::Tombstoned { .. })
+                ),
+                "{name}: the transaction's region is gone"
+            );
+            assert!(
+                matches!(
+                    state.objects.get(&TypedObjectId::Marker(markers[0].id)),
+                    Some(ObjectState::Live)
+                ),
+                "{name}: the marker is live"
+            );
+        }
+    }
+}
