@@ -3662,6 +3662,10 @@ type VisitorInk = BTreeMap<(Option<StaffId>, ColumnKey), Vec<(InkBox, bool)>>;
 /// stems it meets, down from a visitor whose stem turns up, as the staff's
 /// voice would turn from a second voice there; a rest its own staff's voices
 /// have turned keeps its side. The visitor keeps the stem its home gives it.
+/// A rest moves no further than the column ink's vertical extent plus its own
+/// height, and a debug build asserts it then stands clear, so a defect in the
+/// move fails instead of looping (X4b fix round 4: before it the loop had no
+/// bound).
 fn clear_visitors(
     rests: &mut BTreeMap<EventId, Vec<RestSeg>>,
     visiting: &BTreeSet<EventId>,
@@ -3726,16 +3730,38 @@ fn clear_visitors(
                 VoicePlace::Alone => stems_met.iter().all(|up| !up),
             };
             let step = if up { 1.0 } else { -1.0 };
-            while own(seg.y, seg.dots_y).iter().any(|r| {
-                ink.iter().any(|(b, _)| {
-                    across(r, b)
-                        && r.bottom < b.top + REST_CLEARANCE
-                        && b.bottom < r.top + REST_CLEARANCE
+            let meets = |y: f32, dots_y: f32| {
+                own(y, dots_y).iter().any(|r| {
+                    ink.iter().any(|(b, _)| {
+                        across(r, b)
+                            && r.bottom < b.top + REST_CLEARANCE
+                            && b.bottom < r.top + REST_CLEARANCE
+                    })
                 })
-            }) {
+            };
+            // The rest and its dots move as one body past boxes that stay, so
+            // they stand clear within the column ink's vertical extent plus
+            // their own height and a clearance at either end; a space more
+            // allows for rounding. A move that needs more is a defect: it
+            // stops at the bound rather than hang (C4b review 3's L2).
+            let extent = |boxes: &mut dyn Iterator<Item = &InkBox>| {
+                boxes.fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), b| {
+                    (lo.min(b.bottom), hi.max(b.top))
+                })
+            };
+            let (ink_lo, ink_hi) = extent(&mut ink.iter().map(|(b, _)| b));
+            let (rest_lo, rest_hi) = extent(&mut own(seg.y, seg.dots_y).iter());
+            let bound = (ink_hi - ink_lo) + (rest_hi - rest_lo) + 2.0 * REST_CLEARANCE + 1.0;
+            let mut moved = 0.0;
+            while moved < bound && meets(seg.y, seg.dots_y) {
                 seg.y += step;
                 seg.dots_y += step;
+                moved += 1.0;
             }
+            debug_assert!(
+                !meets(seg.y, seg.dots_y),
+                "a rest moved {moved} spaces, its bound, and still meets a visiting voice's ink"
+            );
         }
     }
 }

@@ -1769,3 +1769,17 @@ line, as a rest moved by `clear_rests` draws none. Locked by
 (`epiphany-cli`), which fail with the move removed. Centering a
 whole-measure rest in its measure, as MuseScore draws it, is X5d's (D70).
 X5c takes its own numbers; the second to merge renumbers.
+
+## The rest move bounded (X4b fix round 4, 2026-10-19; ENGRAVER_VERSION stays 47)
+
+`clear_visitors` stepped a rest while any box of it met the visitors' ink,
+with no bound: every box is finite and the rest and its dots move as one, so
+it ended, but a defect in what moves (dots left behind, as fix round 3's
+mutation `fr3d` held them) looped without end and hung the render tests
+rather than failing them (C4b review 3's L2). The move now stops after as
+many spaces as the column ink's vertical extent plus the rest's own height
+and a clearance at either end, with a space to spare, the most a rigid body
+needs to pass a set of boxes that stay, and a debug build asserts that the
+rest then stands clear, so such a defect fails the render tests within
+seconds. No input the engraver gives reaches the bound: every page draws as
+before, so `ENGRAVER_VERSION` stays 47.
