@@ -423,6 +423,14 @@ pub(crate) fn subjects_of(kind: &OperationKind, score: &Score) -> BarrierSubject
                 Some(op.staff_instance),
             ),
         ),
+        // X4b: a voice's home staff is a field of the voice.
+        OperationKind::SetVoiceHome(op) => {
+            let location = voice_location(score, op.voice);
+            one(
+                TypedObjectId::Voice(op.voice),
+                ctx(location.map(|(r, _)| r), location.map(|(_, si)| si)),
+            )
+        }
         OperationKind::DeleteVoice(op) => {
             let location = voice_location(score, op.voice);
             one(

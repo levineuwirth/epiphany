@@ -52,7 +52,7 @@ fn quarter(eid: EventId, voice: VoiceId, pid: PitchId, index: i64) -> Event {
                 },
             },
         }],
-        articulations: vec![],
+        marks: vec![],
         dynamic: None,
         ornaments: vec![],
         stem: StemConfiguration,
@@ -84,7 +84,7 @@ fn c_at(eid: EventId, voice: VoiceId, pid: PitchId, index: i64, octave: i8) -> E
                 },
             },
         }],
-        articulations: vec![],
+        marks: vec![],
         dynamic: None,
         ornaments: vec![],
         stem: StemConfiguration,
@@ -697,6 +697,7 @@ pub fn ten_measure_single_staff(seed: u64) -> Score {
             edge: RegionEdge::Start,
             offset: AnchorOffset::Zero,
         },
+        kind: epiphany_core::MarkerKind::Rehearsal(epiphany_core::Text::new("A")),
     });
     cross_cutting.chord_symbols.push(ChordSymbol {
         id: idc.mint::<ChordSymbolId>(),

@@ -1698,3 +1698,88 @@ through them as well, keeps its shape. Key-signature glyphs are accidentals
 too, so a curve across a key change passes them. Locked by the module's unit
 tests and `a_slur_clears_the_accidentals_under_it` (`epiphany-cli`); no golden
 draws a curve through an accidental, so none changed.
+
+## ENGRAVER_VERSION 44 → 45: a visiting voice on its home's side (X4b.5, 2026-10-10)
+
+A voice the importer splits across staves is a voice on each, the staff's own
+voices ranked first and a visitor after them, so a visitor drew as a lower
+voice: an upper-staff voice writing unbeamed notes on its part's lower staff
+turned their stems down where MuseScore turns them up, and the lower staff's
+own voice beside such a note drew as an upper voice where MuseScore draws it
+alone (D46). Schema major 5 gives the score each visiting voice's
+home staff (`Score::voice_homes`, written by `SetVoiceHome`, which the
+importer emits for every voice at home on another staff). The projection's
+voice rule (`voice_places`, `epiphany-layout-ir`) now leaves a visitor out of
+its staff's ranking: it stands on its home's side throughout, above when its
+home staff stands above in the region, below when below, its own stated stem
+direction still winning; and its ink is no company for the staff's first
+voice. Locked by `a_visiting_voice_names_its_home_and_draws_on_its_side`
+(`epiphany-musicxml`), failing with the home unread, inverted, or not
+emitted.
+
+## ENGRAVER_VERSION 45 → 46: a grace note left undrawn until graces are drawn (X4b fix round 1, 2026-10-11)
+
+Schema major 5 imports a grace note as an event of zero duration at its
+principal's position, where the importer had skipped it. The projection drew
+it through the paths every other note takes: the decomposition pre-pass gives
+a zero-length event no components, and an event without components draws as
+a single implicit quarter (`components_of`, `epiphany-layout-ir`), so each
+grace stood in its principal's column as a full-size head on its stem, read
+as a chord tone, with its accidentals, its beam and any slur from it. Drawing
+grace notes is X4c's. Until then the projection lays out the score with every
+grace note left out (`drawn_view`, at `to_logical` and
+`laid_out_object_ids`, so the round trip's source set stays the laid-out
+one), with the slurs and ties that name one and a beam's grace members,
+dropping a beam left with fewer than two notes; the score version is still
+the whole score's. A page then draws what it drew before the import brought
+graces in. The corpus report names each such grace as "grace note left
+undrawn", and a slur or tie on one likewise, where it had passed under "not
+checked"; ink traced to a grace would be "grace note drawn as a plain note".
+Locked by `a_grace_note_is_not_drawn_as_a_member_of_its_principals_chord`
+(`epiphany-cli`), which fails with the graces laid out. X5c may take a
+number too, and the second to merge renumbers.
+
+## ENGRAVER_VERSION 46 → 47: a staff's own rest clear of a visiting voice (X4b fix round 3, 2026-10-16)
+
+From 45 a voice visiting a staff from its home on another stands on its
+home's side, and its ink is no company for the staff's first voice, which is
+then alone beside it. Alone, that voice's rest keeps its own place, a
+whole-measure rest at its measure's first column hanging from the fourth
+line and any other on the middle line, so a visiting note at the rest's time
+could stand in it, head, stem or accidental (D70); before 45 the visitor
+ranked as the staff's second voice and turned the rest above it. Each staff
+instance's content now names its visiting events (`StaffContent::visiting`,
+`epiphany-layout-ir`, from the same home sides `voice_places` reads), and once
+stems, beams, heads and accidentals are placed the constrained pass moves
+each drawn rest of the staff's own voices whose glyph or dots meet the
+visitors' ink in its column (heads, ledger lines, dots, accidentals, stems
+and flags) a space at a time until it stands `REST_CLEARANCE` (0.25 space)
+above or below every box of it, its dots moving with it (`clear_visitors`).
+A rest alone on its staff moves to the side away from the stems it meets,
+below a visitor from above, whose stem turns up toward its home, and above
+one from below, as two voices on a staff turn apart; a rest a second voice
+of its own staff has turned keeps that side, and passes over the end of a
+visiting stem pointing its way rather than crossing to its partner's side.
+The visitor keeps the stem its home, or its voice's stated direction, gives
+it. Only the rest's own column is read: a column's glyphs share its slot and
+move together under spacing. A rest moved outside the staff draws no ledger
+line, as a rest moved by `clear_rests` draws none. Locked by
+`a_staffs_own_rest_stands_clear_of_a_visiting_voice` and
+`a_rest_moved_clear_of_a_visitor_keeps_its_dot_and_its_staffs_side`
+(`epiphany-cli`), which fail with the move removed. Centering a
+whole-measure rest in its measure, as MuseScore draws it, is X5d's (D70).
+X5c takes its own numbers; the second to merge renumbers.
+
+## The rest move bounded (X4b fix round 4, 2026-10-19; ENGRAVER_VERSION stays 47)
+
+`clear_visitors` stepped a rest while any box of it met the visitors' ink,
+with no bound: every box is finite and the rest and its dots move as one, so
+it ended, but a defect in what moves (dots left behind, as fix round 3's
+mutation `fr3d` held them) looped without end and hung the render tests
+rather than failing them (C4b review 3's L2). The move now stops after as
+many spaces as the column ink's vertical extent plus the rest's own height
+and a clearance at either end, with a space to spare, the most a rigid body
+needs to pass a set of boxes that stay, and a debug build asserts that the
+rest then stands clear, so such a defect fails the render tests within
+seconds. No input the engraver gives reaches the bound: every page draws as
+before, so `ENGRAVER_VERSION` stays 47.

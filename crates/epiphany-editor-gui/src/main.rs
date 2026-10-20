@@ -1815,6 +1815,140 @@ mod tests {
         assert_eq!(paste_event_text(&events), Some("second"));
     }
 
+    /// Selects `event` by the hit region its stem, rest or notehead draws.
+    fn select_event(app: &mut EditorApp, event: epiphany_core::EventId) {
+        let score = app.session.score();
+        let object = app
+            .session
+            .hit_test()
+            .regions
+            .iter()
+            .find(|r| match r.source {
+                TypedObjectId::Event(e) => e == event,
+                TypedObjectId::Pitch(p) => score.events.get(event).is_some_and(|e| {
+                    let mut pitches = Vec::new();
+                    e.collect_identified_pitches(&mut pitches);
+                    pitches.iter().any(|ip| ip.id == p)
+                }),
+                _ => false,
+            })
+            .map(|r| r.layout_object)
+            .expect("the event is drawn");
+        app.session.select(object).expect("it selects");
+    }
+
+    /// The grace notes of `voice` standing at `onset`, by their order: each
+    /// one's order and pitches.
+    fn graces_at(
+        score: &epiphany_core::Score,
+        voice: epiphany_core::VoiceId,
+        onset: &MusicalPosition,
+    ) -> Vec<(u16, Vec<epiphany_core::Pitch>)> {
+        let mut out: Vec<_> = score
+            .events
+            .iter()
+            .filter(|e| {
+                e.voice() == voice && e.position() == &EventPosition::Musical(onset.clone())
+            })
+            .filter_map(|e| {
+                let order = e.grace()?.order;
+                let mut pitches = Vec::new();
+                e.collect_identified_pitches(&mut pitches);
+                Some((order, pitches.iter().map(|ip| ip.pitch.clone()).collect()))
+            })
+            .collect();
+        out.sort_by_key(|(order, _)| *order);
+        out
+    }
+
+    /// X4b's clipboard fragment, `(0 2 0)`, through X5a's window, in headless
+    /// egui frames: the window's Copy puts a note and the two grace notes
+    /// before it on egui's clipboard channel, and a paste event (Ctrl/Cmd+V)
+    /// pastes them over another note, the graces before it in their order.
+    /// Saved as a document, the file reopens holding what the window draws.
+    #[test]
+    fn the_windows_clipboard_carries_grace_notes_into_a_saved_document() {
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../epiphany-musicxml/tests/fixtures/breaks_and_expression.musicxml");
+        let mut app = EditorApp::new(Some(source));
+        assert!(app.opened.writable, "{}", app.status);
+        let at = |n: i64, d: i64| MusicalPosition(RationalTime::new(n, d).unwrap());
+        let note = |app: &EditorApp, onset: &MusicalPosition| {
+            let score = app.session.score();
+            let voice = score.canvas.regions[0].staff_instances()[0].voices[0].id;
+            let event = score
+                .events
+                .iter()
+                .find(|e| {
+                    e.voice() == voice
+                        && e.grace().is_none()
+                        && e.position() == &EventPosition::Musical(onset.clone())
+                })
+                .expect("a note there")
+                .id();
+            (voice, event)
+        };
+        let (voice, first) = note(&app, &at(0, 1));
+        let graces = graces_at(app.session.score(), voice, &at(0, 1));
+        assert_eq!(graces.len(), 2, "two graces before the first note");
+        assert!(graces_at(app.session.score(), voice, &at(1, 1)).is_empty());
+
+        let ctx = egui::Context::default();
+        select_event(&mut app, first);
+        let copied = ctx
+            .run(egui::RawInput::default(), |ctx| app.do_copy(ctx))
+            .platform_output
+            .copied_text;
+        assert!(app.status.starts_with("copy: "), "{}", app.status);
+        assert!(
+            copied.starts_with("(epiphany-fragment (0 2 0)"),
+            "{}",
+            &copied[..copied.len().min(60)]
+        );
+
+        let (_, destination) = note(&app, &at(1, 1));
+        select_event(&mut app, destination);
+        let input = egui::RawInput {
+            events: vec![egui::Event::Paste(copied)],
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |ctx| app.handle_clipboard_events(ctx));
+        assert!(app.status.starts_with("paste: "), "{}", app.status);
+        assert!(
+            app.session.score().events.get(destination).is_none(),
+            "the destination note is replaced"
+        );
+        assert_eq!(
+            graces_at(app.session.score(), voice, &at(1, 1)),
+            graces,
+            "the pasted note's graces stand before it in their order"
+        );
+        assert_eq!(graces_at(app.session.score(), voice, &at(0, 1)), graces);
+        assert!(epiphany_core::check_invariants(app.session.score()).is_empty());
+
+        let dir = std::env::temp_dir().join(format!(
+            "epiphany-gui-clipboard-{}-{}",
+            std::process::id(),
+            epiphany_core::ReplicaId::generate().0
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("pasted.musc");
+        app.path_text = target.display().to_string();
+        app.do_save_as();
+        assert!(app.status.starts_with("saved as"), "{}", app.status);
+        let drawn = app.session.score().clone();
+        drop(app);
+        let (_, session) = file::open(&target).expect("the document reopens");
+        let graph = |score: &epiphany_core::Score| {
+            let mut score = score.clone();
+            score.identity = epiphany_core::IdentityContext::new(epiphany_core::ReplicaId(7));
+            score
+        };
+        assert_eq!(graph(session.score()), graph(&drawn));
+        assert_eq!(graces_at(session.score(), voice, &at(1, 1)), graces);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// While a save is unsettled, undo stops at the edits it staged and the status
     /// line says why; the Undo button stays pressable, so a press can say it. Once
     /// the next save settles it, the edit is saved and undo stops at the save.

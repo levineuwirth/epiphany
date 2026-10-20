@@ -267,8 +267,10 @@ fn page_content(page: &PdfPage<'_>, scale: f32, forms: &BTreeMap<&str, usize>) -
         }
         for &i in curves {
             let curve = &layout.curves[i];
+            // A wavy line strokes solid until its engraver draws the wave as
+            // a path, as the SVG writer strokes it.
             let dash = match curve.line {
-                LineStyle::Solid => "",
+                LineStyle::Solid | LineStyle::Wavy => "",
                 LineStyle::Dashed => "[0.5 0.35] 0 d ",
                 LineStyle::Dotted => "1 J [0 0.28] 0 d ",
             };

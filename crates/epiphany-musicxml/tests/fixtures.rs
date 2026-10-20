@@ -524,6 +524,89 @@ fn each_staff_ranks_its_own_voices_before_a_visiting_one() {
     assert_eq!(ranked(1, &numbered), ["s1: 9* 10"]);
 }
 
+/// A voice visiting a staff from its home on another names that home
+/// (schema major 5) and is drawn on its home's side, upper when visiting from
+/// above; the staff's own voice beside it is drawn alone, as MuseScore draws
+/// it (D46). The upper staff's voice 1 writes a quarter on the lower staff in
+/// each measure: in the first where the lower staff's own voice 5 writes
+/// nothing, in the second beside its whole note.
+#[test]
+fn a_visiting_voice_names_its_home_and_draws_on_its_side() {
+    use epiphany_layout_ir::{LayoutContent, LayoutObject, VoicePlace};
+    let note = |step: &str, octave: u8, duration: u8, voice: &str, staff: u8| {
+        format!(
+            "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+             <duration>{duration}</duration><voice>{voice}</voice><staff>{staff}</staff></note>"
+        )
+    };
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\">\
+         <measure number=\"1\"><attributes><divisions>1</divisions><time><beats>4</beats>\
+         <beat-type>4</beat-type></time><staves>2</staves></attributes>\
+         {}{}{}{}<backup><duration>4</duration></backup>{}<forward><duration>2</duration></forward>\
+         </measure><measure number=\"2\">{}{}{}{}<backup><duration>4</duration></backup>{}</measure>\
+         </part></score-partwise>",
+        note("C", 5, 1, "1", 1),
+        note("D", 5, 1, "1", 1),
+        note("G", 3, 1, "1", 2),
+        note("E", 5, 1, "1", 1),
+        note("C", 3, 2, "5", 2),
+        note("G", 3, 1, "1", 2),
+        note("C", 5, 1, "1", 1),
+        note("D", 5, 1, "1", 1),
+        note("E", 5, 1, "1", 1),
+        note("C", 3, 4, "5", 2),
+    );
+    let import = import(&xml).expect("imports");
+    let reduced = reduce(&import);
+    assert!(compare(&import, &reduced).passed());
+    assert!(reduced.verdicts.iter().all(Verdict::applied));
+    let score = &reduced.score;
+    let staves = &import.ids.staves[0];
+    let visitor = import.ids.voices[&(0, 1, String::from("1"))];
+    let own = import.ids.voices[&(0, 1, String::from("5"))];
+    assert_eq!(
+        score.voice_homes.iter().collect::<Vec<_>>(),
+        [(&visitor, &staves[0])],
+        "only the visiting voice names a home"
+    );
+    let logical = to_logical(score);
+    let place = |voice: epiphany_core::VoiceId| -> Vec<VoicePlace> {
+        let events: Vec<epiphany_core::EventId> = score
+            .voices()
+            .find(|(_, _, v)| v.id == voice)
+            .map(|(_, _, v)| v.events.clone())
+            .expect("the voice");
+        events
+            .iter()
+            .map(|id| {
+                logical
+                    .regions
+                    .iter()
+                    .flat_map(|r| &r.objects)
+                    .find_map(|object| match object {
+                        LayoutObject::Note(c) | LayoutObject::Rest(c)
+                            if c.provenance.source == epiphany_core::TypedObjectId::Event(*id) =>
+                        {
+                            match &c.content {
+                                LayoutContent::Note(n) => Some(n.voice),
+                                LayoutContent::Rest(r) => Some(r.voice),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    })
+                    .expect("laid out")
+            })
+            .collect()
+    };
+    // The visitor stands above, alone or beside the staff's own voice.
+    assert_eq!(place(visitor), [VoicePlace::Upper, VoicePlace::Upper]);
+    // The staff's own voice is alone beside it.
+    assert_eq!(place(own), [VoicePlace::Alone, VoicePlace::Alone]);
+}
+
 #[test]
 fn a_key_written_before_the_staves_reaches_each_staff_it_names() {
     let run = run("keyed_grand_staves.musicxml");
@@ -1466,10 +1549,16 @@ fn features_without_an_operation_are_recorded_by_kind_and_not_imported() {
     let run = run("unsupported.musicxml");
     all_applied(&run);
     // The cue note keeps its quarter, so F5 starts a quarter into the
-    // second measure, its A5 at F5's duration.
+    // second measure, its A5 at F5's duration. The grace note, a zero-length
+    // event since schema major 5, stands before C5.
     assert_eq!(
         events(&run.reduced.score),
-        ["s0 v0 0 1/4 C5", "s0 v0 1/4 1/4 D5", "s0 v0 3/4 1/4 F5 A5"]
+        [
+            "s0 v0 0 0 B4",
+            "s0 v0 0 1/4 C5",
+            "s0 v0 1/4 1/4 D5",
+            "s0 v0 3/4 1/4 F5 A5"
+        ]
     );
     let content: Vec<(&str, usize)> = run
         .import
@@ -1480,18 +1569,339 @@ fn features_without_an_operation_are_recorded_by_kind_and_not_imported() {
         .collect();
     assert_eq!(
         content,
-        [
-            ("articulations: staccato", 1),
-            ("chord note of a different duration", 1),
-            ("cue note", 1),
-            ("direction: dynamics", 1),
-            ("direction: words", 1),
-            ("fermata", 1),
-            ("grace note", 1),
-            ("lyric", 1),
-        ]
+        [("chord note of a different duration", 1), ("cue note", 1)]
     );
     assert_eq!(run.import.source.census[0].grace_or_cue, 2);
+}
+
+/// A fermata over a barline stands at the barline, not on the note the next
+/// measure starts with there.
+#[test]
+fn a_barline_fermata_stands_at_the_barline() {
+    use epiphany_core::{MarkerKind, TimeAnchor};
+    let xml = "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+               </part-name></score-part></part-list><part id=\"P1\">\
+               <measure number=\"1\"><attributes><divisions>1</divisions><time><beats>1</beats>\
+               <beat-type>4</beat-type></time></attributes>\
+               <note><pitch><step>C</step><octave>5</octave></pitch><duration>1</duration>\
+               <voice>1</voice><type>quarter</type></note>\
+               <barline location=\"right\"><fermata type=\"upright\"/></barline></measure>\
+               <measure number=\"2\"><note><pitch><step>D</step><octave>5</octave></pitch>\
+               <duration>1</duration><voice>1</voice><type>quarter</type></note></measure>\
+               </part></score-partwise>";
+    let import = import(xml).expect("imports");
+    let reduced = reduce(&import);
+    assert!(compare(&import, &reduced).passed());
+    let markers = &reduced.score.cross_cutting.markers;
+    assert_eq!(markers.len(), 1);
+    assert!(matches!(markers[0].kind, MarkerKind::Fermata(_)));
+    assert_eq!(
+        offset(&markers[0].anchor),
+        "1/4",
+        "at the barline, not on the second measure's note"
+    );
+    assert!(!matches!(markers[0].anchor, TimeAnchor::Event { .. }));
+}
+
+/// A grace note inside a tuplet's span occupies no time, so it is no member:
+/// the tuplet holds its three eighths and applies.
+#[test]
+fn a_grace_note_inside_a_tuplet_is_no_member() {
+    let run = run("grace_in_tuplet.musicxml");
+    all_applied(&run);
+    let score = &run.reduced.score;
+    assert_eq!(
+        events(score),
+        [
+            "s0 v0 0 1/12 C5",
+            "s0 v0 1/12 0 E5",
+            "s0 v0 1/12 1/12 D5",
+            "s0 v0 1/6 1/12 E5"
+        ]
+    );
+    let ids = &run.import.ids.events[0];
+    assert_eq!(
+        score.cross_cutting.tuplets[0].members,
+        vec![ids[0], ids[2], ids[3]]
+    );
+}
+
+/// Each kind of expression and text the model holds (schema major 5),
+/// imported through the operations with none recorded as unsupported: the
+/// values written out by hand from the file.
+#[test]
+fn expression_and_text_import_through_their_operations() {
+    use epiphany_core::{
+        ArpeggioDirection, BracketKind, BreathMark, Dynamic, EventMark, Fermata, FermataShape,
+        Grace, GraceKind, HairpinDirection, LineStyle, MarkerKind, Metronome, NoteValue,
+        OctaveOffset, Ornament, OrnamentKind, PedalKind, SpannerKind, Syllabic, TempoMark, Text,
+        TextLineDefinition,
+    };
+    use epiphany_musicxml::fidelity::expression_counts;
+    use epiphany_ops::{OperationKind, OperationPayload};
+    let run = run("expression.musicxml");
+    all_applied(&run);
+    let score = &run.reduced.score;
+    assert_eq!(
+        run.import
+            .source
+            .features
+            .of_class(FeatureClass::Content)
+            .count(),
+        0,
+        "nothing of the family is recorded as unsupported"
+    );
+    let counts: Vec<(String, usize)> = expression_counts(score).into_iter().collect();
+    let expected: Vec<(String, usize)> = [
+        ("grace", 2),
+        ("lyric", 3),
+        ("mark accent", 1),
+        ("mark arpeggio", 1),
+        ("mark harmonic", 1),
+        ("mark marcato", 1),
+        ("mark staccato", 2),
+        ("mark tenuto", 1),
+        ("mark tremolo", 1),
+        ("mark two-note tremolo", 1),
+        ("mark up-bow", 1),
+        ("marker breath", 1),
+        ("marker coda", 1),
+        ("marker dynamic", 2),
+        ("marker fermata", 2),
+        ("marker rehearsal", 1),
+        ("marker segno", 1),
+        ("marker tempo", 1),
+        ("marker text", 1),
+        ("ornament trill-mark", 1),
+        ("spanner bracket", 1),
+        ("spanner glissando", 1),
+        ("spanner hairpin", 1),
+        ("spanner ottava", 1),
+        ("spanner pedal", 1),
+        ("spanner text line", 1),
+        ("spanner trill line", 1),
+        ("tempo", 2),
+    ]
+    .into_iter()
+    .map(|(class, n)| (class.to_owned(), n))
+    .collect();
+    assert_eq!(counts, expected);
+
+    // The graces stand at their note's position, of no length, in order,
+    // before it.
+    assert_eq!(
+        events(score)[..3],
+        ["s0 v0 0 0 B4", "s0 v0 0 0 D5", "s0 v0 0 1/4 C5"]
+    );
+    let ids = &run.import.ids.events[0];
+    let event = |i: usize| score.events.get(ids[i]).expect("imported");
+    let note = |i: usize| match event(i) {
+        Event::Pitched(p) => p.clone(),
+        other => panic!("a note, not {other:?}"),
+    };
+    for (i, order) in [(0, 0), (1, 1)] {
+        assert_eq!(
+            note(i).grace,
+            Some(Grace {
+                kind: GraceKind::Acciaccatura,
+                value: NoteValue::Eighth,
+                dots: 0,
+                order
+            })
+        );
+    }
+    assert_eq!(
+        run.reduced.score.cross_cutting.beams[0].events,
+        vec![ids[0], ids[1]],
+        "the graces beam together"
+    );
+    // Marks as a canonical set, ascending by kind; a trill with its flat.
+    assert_eq!(
+        note(2).marks,
+        [EventMark::Staccato, EventMark::Tenuto, EventMark::Accent]
+    );
+    assert_eq!(
+        note(2).ornaments,
+        [Ornament {
+            kind: OrnamentKind::Trill,
+            accidental_above: Some(epiphany_core::AccidentalId::new("flat")),
+            accidental_below: None,
+        }]
+    );
+    assert_eq!(note(3).marks, [EventMark::Tremolo { strokes: 3 }]);
+    assert_eq!(
+        note(4).marks,
+        [
+            EventMark::Marcato,
+            EventMark::Arpeggio {
+                direction: ArpeggioDirection::Up
+            }
+        ]
+    );
+    assert_eq!(note(6).marks, [EventMark::UpBow, EventMark::Harmonic]);
+    assert_eq!(note(9).marks, [EventMark::TremoloWithNext { strokes: 2 }]);
+
+    // Lyrics: one syllable an event and verse.
+    let lyrics: Vec<_> = score
+        .cross_cutting
+        .lyrics
+        .iter()
+        .map(|l| {
+            (
+                ids.iter().position(|e| *e == l.event).expect("an event"),
+                l.verse,
+                l.text.as_str().to_owned(),
+                l.syllabic,
+                l.extension,
+            )
+        })
+        .collect();
+    assert_eq!(
+        lyrics,
+        [
+            (2, 1, String::from("la"), Syllabic::Begin, false),
+            (2, 2, String::from("lo"), Syllabic::Single, false),
+            (3, 1, String::from("la"), Syllabic::End, true),
+        ]
+    );
+
+    // Point marks: on the note or rest starting where the file puts them,
+    // the note before its graces; where none of the staff starts, at the
+    // position.
+    let on = |i: usize| TimeAnchor::Event {
+        id: ids[i],
+        offset: AnchorOffset::Zero,
+    };
+    let at = |numerator: i64, denominator: i64| TimeAnchor::Region {
+        id: score.canvas.regions[0].id,
+        edge: epiphany_core::RegionEdge::Start,
+        offset: AnchorOffset::Musical(epiphany_core::MusicalDuration(
+            RationalTime::new(numerator, denominator).expect("a time"),
+        )),
+    };
+    let markers: Vec<(TimeAnchor, MarkerKind)> = score
+        .cross_cutting
+        .markers
+        .iter()
+        .map(|m| (m.anchor.clone(), m.kind.clone()))
+        .collect();
+    for expected in [
+        (on(2), MarkerKind::Dynamic(Dynamic::Mf)),
+        (on(2), MarkerKind::Text(Text::new("dolce"))),
+        (on(2), MarkerKind::Rehearsal(Text::new("A"))),
+        (
+            on(5),
+            MarkerKind::Fermata(Fermata {
+                shape: FermataShape::Long,
+                inverted: false,
+            }),
+        ),
+        (at(1, 8), MarkerKind::Dynamic(Dynamic::P)),
+        (on(6), MarkerKind::Breath(BreathMark::Comma)),
+        (on(7), MarkerKind::Segno),
+        (on(11), MarkerKind::Coda),
+        (
+            at(2, 1),
+            MarkerKind::Fermata(Fermata {
+                shape: FermataShape::Normal,
+                inverted: false,
+            }),
+        ),
+        (
+            on(2),
+            MarkerKind::Tempo(TempoMark {
+                text: Some(Text::new("Allegro")),
+                metronome: Some(Metronome {
+                    beat: NoteValue::Quarter,
+                    dots: 0,
+                    per_minute: Text::new("96"),
+                }),
+            }),
+        ),
+    ] {
+        assert!(markers.contains(&expected), "{expected:?} in {markers:?}");
+    }
+    assert_eq!(markers.len(), 10);
+
+    // Lines from start to stop.
+    let spanners: Vec<(TimeAnchor, TimeAnchor, SpannerKind, LineStyle)> = score
+        .cross_cutting
+        .spanners
+        .iter()
+        .map(|s| (s.start.clone(), s.end.clone(), s.kind.clone(), s.style.line))
+        .collect();
+    for expected in [
+        (
+            on(2),
+            on(4),
+            SpannerKind::Hairpin(HairpinDirection::Crescendo),
+            LineStyle::Solid,
+        ),
+        (on(2), on(3), SpannerKind::TrillExtension, LineStyle::Solid),
+        (
+            on(7),
+            on(11),
+            SpannerKind::PedalBracket(PedalKind::Sustain),
+            LineStyle::Solid,
+        ),
+        (
+            on(7),
+            on(11),
+            SpannerKind::OctaveLine(OctaveOffset(1)),
+            LineStyle::Solid,
+        ),
+        (
+            on(7),
+            on(11),
+            SpannerKind::TextLine(TextLineDefinition {
+                text: Text::new("cresc."),
+            }),
+            LineStyle::Dashed,
+        ),
+        (
+            on(7),
+            on(11),
+            SpannerKind::Bracket(BracketKind::Square),
+            LineStyle::Solid,
+        ),
+        (on(7), on(8), SpannerKind::Glissando, LineStyle::Wavy),
+    ] {
+        assert!(spanners.contains(&expected), "{expected:?} in {spanners:?}");
+    }
+    assert_eq!(spanners.len(), 7);
+
+    // The tempo map: one segment at each tempo the file sets; the first's
+    // mark in the same transaction as its segment.
+    let bpm: Vec<(TimeAnchor, String)> = score
+        .tempo_map
+        .segments
+        .iter()
+        .map(|s| (s.start.clone(), format!("{}", s.start_tempo.bpm())))
+        .collect();
+    assert_eq!(
+        bpm,
+        [
+            (at(0, 1), String::from("96")),
+            (at(1, 1), String::from("120"))
+        ]
+    );
+    let transaction_of = |pick: &dyn Fn(&OperationKind) -> bool| {
+        run.import
+            .envelopes
+            .iter()
+            .find(|e| matches!(&e.payload, OperationPayload::Primitive(kind) if pick(kind)))
+            .and_then(|e| e.transaction)
+    };
+    let segment = transaction_of(
+        &|k| matches!(k, OperationKind::SetTempoSegment(op) if op.start == at(0, 1)),
+    );
+    let mark = transaction_of(&|k| {
+        matches!(k, OperationKind::CreateCrossCutting(op)
+            if matches!(&op.structure, epiphany_ops::CrossCuttingValue::Marker(m)
+                if matches!(m.kind, MarkerKind::Tempo(_))))
+    });
+    assert!(segment.is_some(), "the tempo is set in a transaction");
+    assert_eq!(segment, mark, "its mark is in the same transaction");
 }
 
 #[test]
@@ -2025,4 +2435,154 @@ fn breaks_are_imported_where_the_file_makes_them_and_laid_out_there() {
         halves, 2,
         "the tie's two halves, one each side of the break"
     );
+}
+
+/// X5a's breaks and X4b's expression in one file, each imported beside the
+/// other: the line and page breaks as the region's user breaks before the
+/// measures the file breaks at, every class of expression and text through
+/// its operation with none recorded as unsupported, the visiting voice's home,
+/// and the census holding (`run` holds the fidelity comparison, which counts
+/// each class in the file by its own walk). Laid out, the systems open where
+/// the file breaks, and the grace notes are not drawn.
+#[test]
+fn a_file_with_breaks_and_expression_imports_both() {
+    use epiphany_musicxml::fidelity::expression_counts;
+    use epiphany_ops::{OperationKind, OperationPayload};
+
+    let run = run("breaks_and_expression.musicxml");
+    all_applied(&run);
+    let breaks: Vec<(&str, String)> = run
+        .import
+        .envelopes
+        .iter()
+        .filter_map(|e| match &e.payload {
+            OperationPayload::Primitive(OperationKind::SetUserSystemBreak(op)) => {
+                Some(("system", offset(&op.anchor)))
+            }
+            OperationPayload::Primitive(OperationKind::SetUserPageBreak(op)) => {
+                Some(("page", offset(&op.anchor)))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        breaks,
+        vec![("system", "1".to_owned()), ("page", "2".to_owned())],
+        "a line break before measure 2, a page break before measure 3"
+    );
+    let features = &run.import.source.features;
+    assert_eq!(
+        features.of_class(FeatureClass::Content).count(),
+        0,
+        "nothing of the family is recorded as unsupported"
+    );
+    assert!(features
+        .of_class(FeatureClass::Notation)
+        .all(|(kind, _)| !kind.starts_with("print: new-")));
+
+    let score = &run.reduced.score;
+    let counts: Vec<(String, usize)> = expression_counts(score).into_iter().collect();
+    let expected: Vec<(String, usize)> = [
+        ("grace", 3),
+        ("lyric", 2),
+        ("mark accent", 1),
+        ("mark staccato", 1),
+        ("marker dynamic", 1),
+        ("marker fermata", 1),
+        ("marker tempo", 1),
+        ("ornament trill-mark", 1),
+        ("spanner hairpin", 1),
+        ("tempo", 1),
+    ]
+    .into_iter()
+    .map(|(class, n)| (class.to_owned(), n))
+    .collect();
+    assert_eq!(counts, expected);
+    assert_eq!(score.voice_homes.len(), 1, "the visiting voice's home");
+    let content = score.canvas.regions[0]
+        .content
+        .staff_based()
+        .expect("staff based");
+    assert_eq!(
+        (
+            content.user_system_breaks.len(),
+            content.user_page_breaks.len()
+        ),
+        (1, 1)
+    );
+
+    let constrained = to_constrained(&to_logical(score));
+    let layout = Engraver::default()
+        .solve(&constrained, &SolverConfig::default())
+        .layout;
+    let firsts: Vec<Vec<usize>> = layout
+        .pages
+        .iter()
+        .map(|page| {
+            page.systems
+                .iter()
+                .filter_map(|system| {
+                    system
+                        .measures
+                        .iter()
+                        .filter_map(|m| {
+                            run.import.ids.measures[0][0]
+                                .iter()
+                                .position(|id| *id == m.measure)
+                        })
+                        .min()
+                        .map(|k| k + 1)
+                })
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        firsts[..2],
+        [vec![1, 2], vec![3]],
+        "systems open at measures 1 and 2, and a page at measure 3"
+    );
+    // The ink traced to an event or one of its pitches: none to a grace note,
+    // and some to the C the first two stand before (the check's control).
+    let drawn = |event: &Event| {
+        let mut pitches = Vec::new();
+        event.collect_identified_pitches(&mut pitches);
+        let traced = |source: &epiphany_core::TypedObjectId| match source {
+            epiphany_core::TypedObjectId::Event(e) => *e == event.id(),
+            epiphany_core::TypedObjectId::Pitch(p) => pitches.iter().any(|ip| ip.id == *p),
+            _ => false,
+        };
+        layout
+            .glyphs
+            .iter()
+            .filter(|g| traced(&g.provenance.source))
+            .count()
+            + layout
+                .strokes
+                .iter()
+                .filter(|s| traced(&s.provenance.source))
+                .count()
+    };
+    let graces: Vec<&Event> = score
+        .events
+        .iter()
+        .filter(|e| e.grace().is_some())
+        .collect();
+    assert_eq!(graces.len(), 3);
+    for grace in graces {
+        assert_eq!(
+            drawn(grace),
+            0,
+            "no grace note is drawn until X4c draws them"
+        );
+    }
+    let principal = score
+        .events
+        .iter()
+        .find(|e| {
+            e.grace().is_none()
+                && e.position() == &EventPosition::Musical(epiphany_core::MusicalPosition::origin())
+                && e.voice() == score.canvas.regions[0].staff_instances()[0].voices[0].id
+        })
+        .expect("the first C");
+    assert!(drawn(principal) > 0, "the C the graces precede is drawn");
 }

@@ -620,9 +620,136 @@ pub mod vectors;
 ///   for an emptied container,
 ///   `a_container_an_undo_emptied_reads_empty_in_both_modes`; for a dropped
 ///   meter restoration,
-///   `a_best_effort_undo_keeps_a_signature_its_dropped_restoration_leaves_named_in_both_modes`;
+///   `a_best_effort_undo_keeps_a_signature_its_dropped_restoration_leaves_named_in_both_modes`
+///   and, for a dropped grid restoration (pinned in X4b.0),
+///   `a_best_effort_undo_keeps_a_signature_its_dropped_grid_restoration_leaves_named_in_both_modes`;
 ///   for an undone event's pitches,
 ///   `an_event_an_undo_removes_takes_its_pitches_in_both_modes`.
+///
+/// * `4` — **X4b** (2026-10-10), expression and text in the model. X4b.0,
+///   closing X4a's follow-ups, makes one **reduction verdict** change, and
+///   with it the state the verdict produces:
+///   - a `ModifyEvent` whose value carries a pitch another event holds live
+///     is refused `RecreateContentMismatch` in both modes, read from the
+///     pitch index both keep, as a create re-carrying a live id under a
+///     different parent is, where version `3` applied it and the pitch stood
+///     in two events (`PitchIdUnique`; X4a review 3's F1). A carried pitch a
+///     delete removed is still left out of the value (delete wins).
+///
+///   Locked by
+///   `a_modify_carrying_a_pitch_another_event_holds_is_refused_in_both_modes`.
+///
+///   X4b.2, the schema walk to schema major 5, adds verdicts and reduced
+///   state over the values it introduces, each the same in both modes:
+///   - a grace note has zero duration and only a grace note does: an
+///     `InsertEvent` or a `ModifyEvent` whose value breaks either is refused
+///     `EventDurationInvalid`; a grace stands at an event's onset, never
+///     strictly inside another's span in its voice, and an insert or a move
+///     that would put one inside, or a span over one, is refused alike;
+///   - a voice's events stand by position, a position's graces in their
+///     `order` and then by id before its event of positive duration, and a
+///     modify that changes a grace's order re-sorts the voice;
+///   - a grace is no tuplet's member: a `CreateTuplet` naming one is refused
+///     `EventDurationInvalid`;
+///   - a standard tie's ends are adjacent among the voice's events of
+///     positive duration, the graces before either taking no place;
+///   - one lyric syllable per event and verse: a create or modify that would
+///     put a second is refused `SlotOccupied` (reason 19, epoch 15), and an
+///     event's delete cascade-deletes its syllables;
+///   - a marker an operation anchors to an event is re-anchored at the
+///     event's delete in both modes, base-free reduction reading the event's
+///     place from the occupancy index (graph-only before, as no operation
+///     created a marker);
+///   - a voice's home staff (`SetVoiceHome`, kind 43) is a last-writer-wins
+///     register keyed by the voice: a dead voice or a dead staff refuses it,
+///     concurrent differing writes conflict, an undo restores the earlier
+///     home (superseded where its staff was removed since), an undo cannot
+///     remove a staff a live voice's home names, and a voice's delete takes
+///     its home with it.
+///
+///   X4b.4's fuzz, writing those values, found two more, now held:
+///   - a grace note keeps a pitch, as with none it would be a rest of no
+///     length: a `DeleteIdentifiedPitch` of its last live pitch, and a
+///     `ModifyEvent` leaving it none, are refused `EventDurationInvalid`, and
+///     an undo taking its last, the grace staying, is held by the strand
+///     guard, read as the undo leaves the event;
+///   - a marker or spanner anchored to a region by a musical offset is held
+///     to the region's time: written into a region out of musical time it is
+///     refused `WrongRegionTimeModel`, a live one strands its region's
+///     migration out of musical time, and a live one anchored to a region
+///     holds it against a `DeleteRegion` (`ContainerNotEmpty`) and an undo of
+///     its create.
+///
+///   Locked by `crates/epiphany-musicxml/tests/expression_modes.rs`, one test
+///   per verdict.
+///
+///   X4b's first fix round (C4b review 1, 2026-10-11) holds more, each the
+///   same in both modes:
+///   - an undo restores no lyric syllable to an event and verse another live
+///     syllable holds as the undo leaves it: the restoration is superseded by
+///     the write that put that syllable there, so a strict undo conflicts and
+///     a best-effort one leaves the syllable where it stands, where version
+///     `4` as reviewed restored it beside the other (two syllables in one
+///     slot, `req:graph:lyric-syllable`). Syllables one undo moves back among
+///     themselves restore together. Locked by
+///     `an_undo_restores_no_syllable_into_a_taken_slot_in_both_modes`.
+///   - a marker its event's delete re-anchors or orphans is read where the
+///     repair puts it: the repair writes the new anchor into the marker's
+///     write chain, which the region guards read, so an orphan anchored to
+///     its region's start holds the region against a `DeleteRegion`
+///     (`ContainerNotEmpty`) and an undo of the region's create (strict and
+///     cascading undos conflict, a best-effort one keeps the region), where
+///     version `4` as reviewed moved the graph's anchor alone and let the
+///     region go from under it (`CrossCuttingRefsResolve`, found by the fuzz
+///     at seed `0xc41ea269`, one author reaching it). Locked by
+///     `an_orphaned_marker_holds_its_region_in_both_modes` and the committed
+///     histories `168` to `173`.
+///   - a `SetVoiceHome` naming the staff its voice's own instance manifests
+///     is refused `HomeIsOwnStaff` (reason 20, epoch 15), where version `4` as
+///     reviewed held it, a second graph state meaning a voice at home (`None`
+///     says so). Locked by
+///     `a_home_naming_its_voices_own_staff_is_refused_in_both_modes`.
+///
+///   X4b's second fix round (C4b review 2, 2026-10-12) holds one more, the
+///   same in both modes:
+///   - an undo's region guard reads a live marker anchored to an event the
+///     undo removes as its repair will leave it, re-anchored to the nearest
+///     event of its staff instance the undo leaves, else orphaned to the
+///     start of the event's region, so a marker the undo would orphan to a
+///     region it removes holds that region: strict and cascading undos
+///     conflict, a best-effort one keeps the region, where version `4` after
+///     the first fix round read the marker at its event, applied the undo and
+///     left the orphan anchored to the removed region
+///     (`CrossCuttingRefsResolve`, one author creating a region with a note
+///     in one transaction, anchoring a marker to the note and undoing the
+///     transaction). Locked by
+///     `a_marker_its_regions_undo_would_orphan_holds_the_region_in_both_modes`
+///     and the committed histories `174` to `177`, with `178` and `179` beside
+///     them.
+///
+///   X4b's fourth fix round (C4b review 3, 2026-10-19) changes that guard's
+///   verdict once more, the same in both modes:
+///   - both arms of the guard, a marker or spanner anchored to the region and
+///     a marker the undo's repair would orphan to it, read the structure as
+///     the whole undo leaves it, its restoration included: one the undone
+///     transaction itself moved onto the region's start, or onto a note the
+///     undo removes, is read at the earlier anchor its restoration returns it
+///     to, and holds nothing. The undo then applies under every policy, the
+///     region going with its contents and the marker returning home, where
+///     version `4` after the second fix round read the marker where the
+///     transaction had put it: strict and cascading undos conflicted and a
+///     best-effort one kept the emptied region (no invariant broken, one
+///     author moving an older marker in the region's own transaction).
+///     Locked by `a_marker_its_undo_restores_holds_no_region_in_both_modes`
+///     and the committed histories `181` to `186`.
+///
+///   One verdict change X4b.2 made and this entry did not name until the
+///   review found it: a `DeleteCrossCutting` naming a marker or a lyric a
+///   base graph holds applies in graph-aware reduction, where version `3`
+///   refused every marker or lyric id `TargetMissing`, the operation then
+///   deleting only ties, slurs, beams and spanners. Base-free reduction,
+///   holding no base, refuses it in both versions; only a canonical base,
+///   which exists in tests alone (D4), reaches it.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.
@@ -643,7 +770,7 @@ pub mod vectors;
 /// `epiphany-bundle` in order to use that crate's `ReductionAlgorithmVersion`
 /// wrapper. The wrapper is constructed at the composition boundary by whoever
 /// depends on both (P13-S27 pin 1, §0.3).
-pub const CURRENT_REDUCTION_ALGORITHM_VERSION: u32 = 3;
+pub const CURRENT_REDUCTION_ALGORITHM_VERSION: u32 = 4;
 
 pub use anomaly::{
     AnomalousReplicaSegment, IntegrityAnomaly, IntegrityAnomalyKind, ReplicaAnomalyReason,
@@ -676,8 +803,8 @@ pub use payload::{
     ResolveEquivocationPayload, RespellPitchOp, SetCanvasLayoutDefaultsOp, SetClefOp,
     SetKeySignatureOp, SetMetadataOp, SetMetricGridOp, SetSpellingPrecedenceOp, SetStaffLayoutOp,
     SetTempoSegmentOp, SetTimeSignatureOp, SetTuningContextOp, SetUserPageBreakOp,
-    SetUserSystemBreakOp, TransactionCategory, TransactionDescriptor, TransposeIntervalOp,
-    TransposeOp, TupletCompensation,
+    SetUserSystemBreakOp, SetVoiceHomeOp, TransactionCategory, TransactionDescriptor,
+    TransposeIntervalOp, TransposeOp, TupletCompensation,
 };
 pub use reduce::{
     canonical_reduction_order, measure_anchor_relation_for_agreement_test, GraphMaterialization,

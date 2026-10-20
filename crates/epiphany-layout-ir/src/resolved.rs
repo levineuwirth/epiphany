@@ -237,6 +237,7 @@ impl CanonicalEncode for ResolvedLayoutIR {
                 epiphany_core::LineStyle::Solid => 0,
                 epiphany_core::LineStyle::Dashed => 1,
                 epiphany_core::LineStyle::Dotted => 2,
+                epiphany_core::LineStyle::Wavy => 3,
             });
         }
         push_len(out, self.engraving_decisions.len());

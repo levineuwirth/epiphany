@@ -318,8 +318,19 @@ pub struct Engraver {
 /// a courtesy, where a key change inside a system had drawn nothing, and to
 /// `44` when a slur or tie began passing over the accidentals of its staff
 /// it would meet, after spacing: a slur by raising its arc or, near an end,
-/// lifting that end, a tie by raising its arc within bounds.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(44);
+/// lifting that end, a tie by raising its arc within bounds, and to `45`
+/// when a voice visiting a staff from its home on another began standing on
+/// its home's side, above when its home is above, and the staff's own first
+/// voice beside it alone, where the visitor had been ranked among the
+/// staff's own voices and drawn below (D46), and to `46` when a grace note,
+/// which schema major 5 imports as an event of zero duration, began being
+/// left out of the drawing until grace notes are drawn, where it had stood in
+/// its principal's chord as a full-size quarter note, and to `47` when a rest
+/// of a staff's own voice that meets the ink of a voice visiting the staff
+/// began moving clear of it, to the side away from the visitor's stem, where
+/// alone on its staff it had stood at its own place on the visiting head or
+/// stem.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(47);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -1055,6 +1066,7 @@ mod tests {
                             keys: vec![],
                             beams: Vec::new(),
                             cross_beams: Vec::new(),
+                            visiting: Default::default(),
                         }),
                     ),
                     manifested(
@@ -1501,6 +1513,7 @@ mod tests {
                 keys: vec![],
                 beams: Vec::new(),
                 cross_beams: Vec::new(),
+                visiting: Default::default(),
             }),
         )];
         objects.extend(note(1, 101, MusicalPosition::origin()));
@@ -2022,6 +2035,7 @@ mod tests {
                             }],
                             beams: Vec::new(),
                             cross_beams: Vec::new(),
+                            visiting: Default::default(),
                         }),
                     ),
                     manifested(

@@ -18,15 +18,14 @@
 //! — the normalization `req:textproj:strict-parse` forbids.
 
 use crate::event::{
-    ArenaError, CueEvent, Event, EventArena, GraceKind, GraphicEvent, IndeterminacyKind,
-    IndeterminateEvent, PitchedEvent, Rest, StaffPosition, TrajectoryEndpoint, TrajectoryEvent,
-    TrajectoryShape, UnpitchedEvent, UnpitchedMemberId,
+    ArenaError, ArpeggioDirection, CueEvent, Event, EventArena, EventMark, GraphicEvent,
+    IndeterminacyKind, IndeterminateEvent, PitchedEvent, Rest, StaffPosition, TrajectoryEndpoint,
+    TrajectoryEvent, TrajectoryShape, UnpitchedEvent, UnpitchedMemberId,
 };
 use crate::ids::{EventId, PitchId};
 use crate::pitch::IdentifiedPitch;
 use crate::textvalue::{Sexp, TextError, TextValue};
 use crate::textvalue_impls::class_of;
-use crate::time::MusicalDuration;
 
 // ===========================================================================
 // Helpers shared by the tagged unions.
@@ -86,48 +85,125 @@ impl TextValue for UnpitchedMemberId {
 // Tagged unions.
 // ===========================================================================
 
-/// `impl Codec for GraceKind` writes a discriminant byte, then the fraction's
-/// bytes only for `MeasuredFraction`. So the three fieldless kinds are bare
-/// symbols and the fourth is `(measured-fraction <duration>)`
-/// (`req:textproj:value-projection` clause 3).
-///
-/// A fieldless kind spelled as a list, or `measured-fraction` spelled bare, is a
-/// non-canonical spelling of the same value: the `Symbol`/`List` split rejects
-/// each rather than accepting it, so no two texts denote one kind.
-impl TextValue for GraceKind {
+/// `impl Codec for EventMark` writes the mark's tag, then a field for the three
+/// kinds that carry one, so a fieldless mark is a bare symbol and the others are
+/// `(tremolo <strokes>)`, `(tremolo-with-next <strokes>)` and
+/// `(arpeggio <direction>)` (`req:textproj:value-projection` clause 3).
+impl TextValue for EventMark {
     fn project(&self) -> Sexp {
         match self {
-            GraceKind::Acciaccatura => Sexp::sym("acciaccatura"),
-            GraceKind::Appoggiatura => Sexp::sym("appoggiatura"),
-            GraceKind::Unmeasured => Sexp::sym("unmeasured"),
-            GraceKind::MeasuredFraction(d) => {
-                Sexp::List(vec![Sexp::sym("measured-fraction"), d.project()])
+            EventMark::Tremolo { strokes } => {
+                Sexp::List(vec![Sexp::sym("tremolo"), strokes.project()])
             }
+            EventMark::TremoloWithNext { strokes } => {
+                Sexp::List(vec![Sexp::sym("tremolo-with-next"), strokes.project()])
+            }
+            EventMark::Arpeggio { direction } => {
+                Sexp::List(vec![Sexp::sym("arpeggio"), direction.project()])
+            }
+            fieldless => Sexp::sym(EVENT_MARK_SYMBOLS[fieldless.tag() as usize]),
         }
     }
     fn parse(s: &Sexp) -> Result<Self, TextError> {
         match s {
-            Sexp::Symbol(name) => match name.as_str() {
-                "acciaccatura" => Ok(GraceKind::Acciaccatura),
-                "appoggiatura" => Ok(GraceKind::Appoggiatura),
-                "unmeasured" => Ok(GraceKind::Unmeasured),
+            Sexp::Symbol(name) => FIELDLESS_EVENT_MARKS
+                .iter()
+                .find(|m| EVENT_MARK_SYMBOLS[m.tag() as usize] == name.as_str())
+                .copied()
+                .ok_or_else(|| TextError::UnknownConstructor {
+                    type_name: "EventMark",
+                    found: name.clone(),
+                }),
+            Sexp::List(_) => match head_symbol(s, "EventMark")? {
+                "tremolo" => Ok(EventMark::Tremolo {
+                    strokes: u8::parse(one_field(s, "tremolo")?)?,
+                }),
+                "tremolo-with-next" => Ok(EventMark::TremoloWithNext {
+                    strokes: u8::parse(one_field(s, "tremolo-with-next")?)?,
+                }),
+                "arpeggio" => Ok(EventMark::Arpeggio {
+                    direction: ArpeggioDirection::parse(one_field(s, "arpeggio")?)?,
+                }),
                 found => Err(TextError::UnknownConstructor {
-                    type_name: "GraceKind",
+                    type_name: "EventMark",
                     found: found.to_owned(),
                 }),
             },
-            Sexp::List(_) => Ok(GraceKind::MeasuredFraction(MusicalDuration::parse(
-                one_field(s, "measured-fraction")?,
-            )?)),
             _ => Err(TextError::Expected {
-                expected: "GraceKind",
+                expected: "EventMark",
                 found: class_of(s),
             }),
         }
     }
 }
 
-/// `impl Codec for IndeterminacyKind` mirrors [`GraceKind`]: three fieldless
+/// Each mark's symbol, indexed by its tag.
+const EVENT_MARK_SYMBOLS: [&str; 22] = [
+    "staccato",
+    "staccatissimo",
+    "spiccato",
+    "tenuto",
+    "detached-legato",
+    "accent",
+    "marcato",
+    "stress",
+    "unstress",
+    "up-bow",
+    "down-bow",
+    "harmonic",
+    "open-string",
+    "stopped",
+    "snap-pizzicato",
+    "scoop",
+    "plop",
+    "doit",
+    "falloff",
+    "tremolo",
+    "tremolo-with-next",
+    "arpeggio",
+];
+
+/// The marks that carry no field, in tag order.
+const FIELDLESS_EVENT_MARKS: [EventMark; 19] = [
+    EventMark::Staccato,
+    EventMark::Staccatissimo,
+    EventMark::Spiccato,
+    EventMark::Tenuto,
+    EventMark::DetachedLegato,
+    EventMark::Accent,
+    EventMark::Marcato,
+    EventMark::Stress,
+    EventMark::Unstress,
+    EventMark::UpBow,
+    EventMark::DownBow,
+    EventMark::Harmonic,
+    EventMark::OpenString,
+    EventMark::Stopped,
+    EventMark::SnapPizzicato,
+    EventMark::Scoop,
+    EventMark::Plop,
+    EventMark::Doit,
+    EventMark::Falloff,
+];
+
+/// An event's marks and ornaments are canonical sets, so the text parses one
+/// only in that order (`req:textproj:strict-parse`), as the codec decodes it.
+fn canonical_sets(
+    marks: &[EventMark],
+    ornaments: &[crate::event::Ornament],
+) -> Result<(), TextError> {
+    if marks.windows(2).all(|w| w[0].tag() < w[1].tag())
+        && ornaments.windows(2).all(|w| w[0].kind < w[1].kind)
+    {
+        Ok(())
+    } else {
+        Err(TextError::NotCanonical(
+            "an event's marks and ornaments are sets, ascending by kind, one per kind",
+        ))
+    }
+}
+
+/// `impl Codec for IndeterminacyKind`: three fieldless
 /// kinds as bare symbols and `Compound` carrying a nested sequence, so the text
 /// is `pitch` / `duration` / `choice` / `(compound (<kind>…))`. The `Compound`
 /// sequence is itself an [`IndeterminacyKind`] list, and the generic `Vec` impl
@@ -255,13 +331,16 @@ impl TextValue for Event {
     }
     fn parse(s: &Sexp) -> Result<Self, TextError> {
         match head_symbol(s, "Event")? {
-            "pitched" => Ok(Event::Pitched(PitchedEvent::parse(one_field(
-                s, "pitched",
-            )?)?)),
-            "unpitched" => Ok(Event::Unpitched(UnpitchedEvent::parse(one_field(
-                s,
-                "unpitched",
-            )?)?)),
+            "pitched" => {
+                let e = PitchedEvent::parse(one_field(s, "pitched")?)?;
+                canonical_sets(&e.marks, &e.ornaments)?;
+                Ok(Event::Pitched(e))
+            }
+            "unpitched" => {
+                let e = UnpitchedEvent::parse(one_field(s, "unpitched")?)?;
+                canonical_sets(&e.marks, &[])?;
+                Ok(Event::Unpitched(e))
+            }
             "rest" => Ok(Event::Rest(Rest::parse(one_field(s, "rest")?)?)),
             "indeterminate" => Ok(Event::Indeterminate(IndeterminateEvent::parse(one_field(
                 s,
@@ -415,13 +494,27 @@ mod tests {
             position: EventPosition::Musical(MusicalPosition(RationalTime::new(1, 2).unwrap())),
             duration: EventDuration::Musical(MusicalDuration(RationalTime::new(1, 4).unwrap())),
             pitches: vec![identified_pitch(counter * 10)],
-            articulations: vec![],
+            marks: vec![
+                EventMark::Staccato,
+                EventMark::Accent,
+                EventMark::Tremolo { strokes: 3 },
+                EventMark::Arpeggio {
+                    direction: ArpeggioDirection::Up,
+                },
+            ],
             dynamic: None,
-            ornaments: vec![],
+            ornaments: vec![crate::event::Ornament {
+                kind: crate::event::OrnamentKind::Trill,
+                accidental_above: Some(crate::pitch::AccidentalId::new("flat")),
+                accidental_below: None,
+            }],
             stem: StemConfiguration,
-            grace: Some(GraceKind::MeasuredFraction(MusicalDuration(
-                RationalTime::new(1, 8).unwrap(),
-            ))),
+            grace: Some(crate::event::Grace {
+                kind: crate::event::GraceKind::Acciaccatura,
+                value: crate::graph::NoteValue::Eighth,
+                dots: 0,
+                order: 1,
+            }),
         })
     }
 
@@ -435,31 +528,58 @@ mod tests {
     }
 
     #[test]
-    fn grace_kind_round_trips_every_variant() {
+    fn a_grace_and_its_kind_round_trip() {
+        use crate::event::{Grace, GraceKind};
         assert_eq!(GraceKind::Acciaccatura.project().render(), "acciaccatura");
+        round_trip(GraceKind::Appoggiatura);
+        let grace = Grace {
+            kind: GraceKind::Appoggiatura,
+            value: crate::graph::NoteValue::Sixteenth,
+            dots: 1,
+            order: 2,
+        };
         assert_eq!(
-            GraceKind::MeasuredFraction(MusicalDuration(RationalTime::new(1, 8).unwrap()))
-                .project()
-                .render(),
-            "(measured-fraction (ratio 1 8))"
+            grace.project().render(),
+            "(grace appoggiatura sixteenth 1 2)"
         );
-        for g in [
-            GraceKind::Acciaccatura,
-            GraceKind::Appoggiatura,
-            GraceKind::Unmeasured,
-            GraceKind::MeasuredFraction(MusicalDuration(RationalTime::new(3, 8).unwrap())),
-        ] {
-            round_trip(g);
-        }
+        round_trip(grace);
+        assert!(GraceKind::parse(&read_sexp("(acciaccatura)").unwrap()).is_err());
+        assert!(GraceKind::parse(&read_sexp("unmeasured").unwrap()).is_err());
     }
 
-    /// A fieldless kind spelled as a list, or a field kind spelled bare, is a
-    /// non-canonical spelling and must be rejected, not accepted.
+    /// Every event mark round-trips; a fieldless mark spelled as a list, or a
+    /// field mark spelled bare, is refused, and so is an event whose marks are
+    /// out of order or repeat a kind.
     #[test]
-    fn grace_kind_rejects_the_wrong_shape() {
-        assert!(GraceKind::parse(&read_sexp("(acciaccatura)").unwrap()).is_err());
-        assert!(GraceKind::parse(&read_sexp("measured-fraction").unwrap()).is_err());
-        assert!(GraceKind::parse(&read_sexp("nope").unwrap()).is_err());
+    fn event_marks_round_trip_and_an_event_holds_them_as_a_set() {
+        let mut all: Vec<EventMark> = FIELDLESS_EVENT_MARKS.to_vec();
+        all.extend([
+            EventMark::Tremolo { strokes: 2 },
+            EventMark::TremoloWithNext { strokes: 3 },
+            EventMark::Arpeggio {
+                direction: ArpeggioDirection::Plain,
+            },
+        ]);
+        for (tag, mark) in all.iter().enumerate() {
+            assert_eq!(mark.tag() as usize, tag);
+            round_trip(*mark);
+        }
+        assert_eq!(EventMark::Marcato.project().render(), "marcato");
+        assert_eq!(
+            EventMark::Tremolo { strokes: 3 }.project().render(),
+            "(tremolo 3)"
+        );
+        assert!(EventMark::parse(&read_sexp("(staccato)").unwrap()).is_err());
+        assert!(EventMark::parse(&read_sexp("tremolo").unwrap()).is_err());
+        let Event::Pitched(mut e) = pitched_event(3) else {
+            unreachable!()
+        };
+        e.marks = vec![EventMark::Accent, EventMark::Staccato];
+        let text = Event::Pitched(e.clone()).project();
+        assert!(Event::parse(&text).is_err(), "out of order");
+        e.marks = vec![EventMark::Accent, EventMark::Accent];
+        let text = Event::Pitched(e).project();
+        assert!(Event::parse(&text).is_err(), "repeated");
     }
 
     #[test]
@@ -570,7 +690,7 @@ mod tests {
             position: EventPosition::Musical(MusicalPosition::origin()),
             duration: EventDuration::Musical(MusicalDuration::whole()),
             pitches: vec![],
-            articulations: vec![],
+            marks: vec![],
             dynamic: None,
             ornaments: vec![],
             stem: StemConfiguration,

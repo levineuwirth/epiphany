@@ -134,13 +134,16 @@ pub struct ReachCounts {
 /// they exercised but lose their base, and the base-bearing spelling survives
 /// only as the new `canonical_base_present` reject vector (class
 /// `canonical-base-unsupported`).
+///
+/// `multi_envelope` is **3** since X4b: its `expression_and_text` document
+/// carries one envelope per new value and the new kind.
 pub fn expected_reach() -> ReachCounts {
     ReachCounts {
         extensions: 2,
         canonical_bases: 0,
         custom_profiles: 2,
         lineages: 2,
-        multi_envelope: 2,
+        multi_envelope: 3,
         reject_classes: [
             ("blob-line", 1),
             ("canonical-base-unsupported", 1),
@@ -340,6 +343,126 @@ fn staff_change_envelope(counter: u64, physical_time: i64, clef: bool) -> Operat
         transaction: None,
         payload: OperationPayload::Primitive(kind),
     }
+}
+
+/// X4b: an envelope per new value of schema major 5 and the new kind: a
+/// note with marks and an ornament, a grace note before it, a dynamic and a
+/// lyric on the note, a wavy pedal bracket, and a voice's home staff.
+fn expression_envelopes(counter: u64) -> Vec<OperationEnvelope> {
+    use epiphany_core::{
+        AnchorOffset, ArpeggioDirection, Dynamic, EventId, EventMark, Grace, GraceKind, LineStyle,
+        LyricLineId, MarkerId, MarkerKind, MusicalDuration, MusicalPosition, NoteValue, Ornament,
+        OrnamentKind, PedalKind, SpanStyle, Spanner, SpannerId, SpannerKind, Syllabic, Text,
+        TimeAnchor, VoiceId,
+    };
+    use epiphany_ops::{CreateCrossCuttingOp, CrossCuttingValue, InsertEventOp, SetVoiceHomeOp};
+    let r = ReplicaId(1);
+    let voice = VoiceId::new(r, 1);
+    let instance = StaffInstanceId::new(r, 1);
+    let note_id = EventId::new(r, 1);
+    let at = MusicalPosition::origin();
+    let mut note = epiphany_ops::valuegen::insert_event_value(
+        note_id,
+        voice,
+        at.clone(),
+        MusicalDuration::whole(),
+        &[epiphany_core::PitchId::new(r, 1)],
+    );
+    let mut grace = epiphany_ops::valuegen::insert_event_value(
+        EventId::new(r, 2),
+        voice,
+        at,
+        MusicalDuration::zero(),
+        &[epiphany_core::PitchId::new(r, 2)],
+    );
+    if let epiphany_core::Event::Pitched(p) = &mut note {
+        p.marks = vec![
+            EventMark::Staccato,
+            EventMark::Tremolo { strokes: 3 },
+            EventMark::Arpeggio {
+                direction: ArpeggioDirection::Up,
+            },
+        ];
+        p.ornaments = vec![Ornament {
+            kind: OrnamentKind::Trill,
+            accidental_above: Some(epiphany_core::AccidentalId::new("sharp")),
+            accidental_below: None,
+        }];
+    }
+    if let epiphany_core::Event::Pitched(p) = &mut grace {
+        p.grace = Some(Grace {
+            kind: GraceKind::Acciaccatura,
+            value: NoteValue::Eighth,
+            dots: 0,
+            order: 0,
+        });
+    }
+    let on_note = TimeAnchor::Event {
+        id: note_id,
+        offset: AnchorOffset::Zero,
+    };
+    let kinds = vec![
+        OperationKind::InsertEvent(InsertEventOp {
+            staff_instance: instance,
+            event: note,
+        }),
+        OperationKind::InsertEvent(InsertEventOp {
+            staff_instance: instance,
+            event: grace,
+        }),
+        OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+            structure: CrossCuttingValue::Marker(epiphany_core::Marker {
+                id: MarkerId::new(r, 1),
+                anchor: on_note.clone(),
+                kind: MarkerKind::Dynamic(Dynamic::Mf),
+            }),
+        }),
+        OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+            structure: CrossCuttingValue::Lyric(epiphany_core::Lyric {
+                id: LyricLineId::new(r, 1),
+                event: note_id,
+                verse: 1,
+                text: Text::new("la"),
+                syllabic: Syllabic::Begin,
+                extension: false,
+            }),
+        }),
+        OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+            structure: CrossCuttingValue::Spanner(Spanner {
+                id: SpannerId::new(r, 1),
+                start: on_note.clone(),
+                end: on_note,
+                staves: vec![StaffId::new(r, 1)],
+                kind: SpannerKind::PedalBracket(PedalKind::Sustain),
+                style: SpanStyle {
+                    line: LineStyle::Wavy,
+                    thickness: None,
+                },
+            }),
+        }),
+        OperationKind::SetVoiceHome(SetVoiceHomeOp {
+            voice,
+            home: Some(StaffId::new(r, 2)),
+        }),
+    ];
+    kinds
+        .into_iter()
+        .enumerate()
+        .map(|(i, kind)| {
+            let id = OperationId::new(r, counter + i as u64);
+            OperationEnvelope {
+                id,
+                author: AuthorId(0xAB),
+                stamp: OperationStamp::new(
+                    HybridLogicalClock::new(WallClockTime(id.counter as i64 * 100), 0),
+                    id,
+                ),
+                causal_context: CausalContext::new(),
+                transaction: None,
+                payload: OperationPayload::Primitive(kind),
+            }
+        })
+        .collect()
 }
 
 fn profiles(custom: bool) -> Vec<ProfileDeclaration> {
@@ -543,6 +666,17 @@ fn accept_documents() -> Vec<(&'static str, String)> {
     };
     let clef = staff_change(12, 14, true);
     let key = staff_change(13, 15, false);
+    // X4b: schema major 5's values and kind 43, the same discipline.
+    let expression = TextDocument {
+        document_id: DocumentId([14; 16]),
+        manifest_schema_version: SchemaVersion::V0,
+        lineage_id: None,
+        profiles: profiles(false),
+        extensions: Vec::new(),
+        canonical_base: None,
+        blobs: Vec::new(),
+        envelopes: expression_envelopes(16),
+    };
 
     vec![
         (
@@ -602,6 +736,11 @@ fn accept_documents() -> Vec<(&'static str, String)> {
         (
             "set_key_signature",
             project_text_document(&key).expect("an accept document carries no canonical base"),
+        ),
+        (
+            "expression_and_text",
+            project_text_document(&expression)
+                .expect("an accept document carries no canonical base"),
         ),
     ]
 }
@@ -686,15 +825,15 @@ pub fn document_vectors() -> Vec<TextVector> {
         .map(|(name, text)| (SURFACE, "accept", "-", *name, text.as_bytes().to_vec()))
         .collect();
 
-    // The rejected version must be one this crate does NOT implement. X3c
-    // moved `COMPANION_VERSION` to 0.17.0; this vector now names 0.16.0, the
-    // immediately superseded companion (previously 0.15.0, when the committed
-    // version was 0.16.0) — rejecting the version right behind you is exactly
+    // The rejected version must be one this crate does NOT implement. X4b
+    // moved `COMPANION_VERSION` to 0.18.0; this vector now names 0.17.0, the
+    // immediately superseded companion (previously 0.16.0, when the committed
+    // version was 0.17.0) — rejecting the version right behind you is exactly
     // the deferred migrate-on-read posture (`req:textproj:header-version`).
     let wrong_version = replace_once(
         minimal,
+        "(text-projection (0 18 0))",
         "(text-projection (0 17 0))",
-        "(text-projection (0 16 0))",
     );
     vectors.push((
         SURFACE,
@@ -1049,7 +1188,7 @@ mod tests {
     #[test]
     fn the_reference_implementation_agrees_with_every_vector() {
         match verify(COMMITTED) {
-            Ok(count) => assert_eq!(count, 23, "the corpus has unexpectedly thinned"),
+            Ok(count) => assert_eq!(count, 24, "the corpus has unexpectedly thinned"),
             Err(failures) => panic!(
                 "{} disagreement(s):\n{}",
                 failures.len(),
@@ -1252,20 +1391,14 @@ mod tests {
         );
     }
 
-    /// (t16) X3c: the companion version is **0.17.0** (bumped from 0.16.0
-    /// with the tuplet's display), its `create_tuplet` document carries the
-    /// display and round-trips, and the negative vector rejects **0.16.0**
-    /// (the immediately superseded companion).
+    /// (t16) X3c: the `create_tuplet` document carries the display and
+    /// round-trips. (Its companion version, 0.17.0, rejecting 0.16.0, was
+    /// pinned here until X4b moved it on; `t17` pins the current one.)
     ///
-    /// **Mutation:** the committed negative vector naming `(0 15 0)`, as it
-    /// did at 0.16.0; must fail.
+    /// **Mutation:** drop the display from the tuplet's text production;
+    /// must fail.
     #[test]
-    fn t16_x3c_companion_is_0_17_0_rejecting_0_16_0() {
-        assert_eq!(
-            crate::COMPANION_VERSION,
-            (0, 17, 0),
-            "the companion version must be 0.17.0"
-        );
+    fn t16_x3c_a_tuplet_carries_its_display() {
         let name = "create_tuplet";
         let text = accept_documents()
             .into_iter()
@@ -1283,9 +1416,55 @@ mod tests {
             reprojected, text,
             "{name}: project(serialize(parse(T))) == T"
         );
+    }
+
+    /// (t17) X4b: the companion version is **0.18.0** (bumped from 0.17.0
+    /// with schema major 5's values and `set-voice-home`), the
+    /// `expression_and_text` document carries each new value and the new
+    /// kind and round-trips, and the negative vector rejects **0.17.0** (the
+    /// immediately superseded companion).
+    ///
+    /// **Mutation:** the committed negative vector naming `(0 16 0)`, as it
+    /// did at 0.17.0; must fail.
+    #[test]
+    fn t17_x4b_companion_is_0_18_0_rejecting_0_17_0() {
+        assert_eq!(
+            crate::COMPANION_VERSION,
+            (0, 18, 0),
+            "the companion version must be 0.18.0"
+        );
+        let name = "expression_and_text";
+        let text = accept_documents()
+            .into_iter()
+            .find(|(n, _)| *n == name)
+            .unwrap_or_else(|| panic!("accept document is absent: {name}"))
+            .1;
+        for production in [
+            "(set-voice-home ",
+            "(marker ",
+            "(lyric ",
+            "(grace ",
+            "(ornament ",
+            "staccato",
+            "pedal-bracket",
+            "wavy",
+        ] {
+            assert!(
+                text.contains(production),
+                "{name} carries {production}: {text}"
+            );
+        }
+        let document = parse_document(&text).unwrap_or_else(|e| panic!("{name} must parse: {e}"));
+        assert_eq!(document.envelopes.len(), 6, "{name} carries six envelopes");
+        let reprojected =
+            project_text_document(&document).expect("an accept document carries no canonical base");
+        assert_eq!(
+            reprojected, text,
+            "{name}: project(serialize(parse(T))) == T"
+        );
 
         // The negative vector must reject exactly the immediately superseded
-        // companion, 0.16.0.
+        // companion, 0.17.0.
         let rows = parse(COMMITTED).expect("the committed corpus parses");
         let superseded = rows
             .iter()
@@ -1294,8 +1473,8 @@ mod tests {
         assert_eq!(superseded.verdict, "reject");
         let text = String::from_utf8(superseded.text.clone()).expect("utf8");
         assert!(
-            text.contains("(text-projection (0 16 0))"),
-            "the negative vector must name the immediately superseded companion 0.16.0, got: {text}"
+            text.contains("(text-projection (0 17 0))"),
+            "the negative vector must name the immediately superseded companion 0.17.0, got: {text}"
         );
         assert!(
             parse_document(&text).is_err(),

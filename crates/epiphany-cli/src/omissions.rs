@@ -7,6 +7,9 @@
 //! for an object it does not engrave, and does not count as ink. The checks:
 //!
 //! - an event, pitch, tie or slur with no primitive at all;
+//! - a grace note, which the layout leaves out until grace notes are drawn
+//!   (X4c), named as left undrawn, with a slur or tie on one; and named as
+//!   drawn as a plain note should any ink trace to it;
 //! - a tuplet whose number is shown with nothing drawn for it, or with its
 //!   bracket and no number;
 //! - a notehead or rest drawn at a value other than its duration's, a flag or
@@ -172,6 +175,14 @@ pub fn omissions(
         .collect();
     let names = |source: TypedObjectId| glyphs.get(&source).cloned().unwrap_or_default();
 
+    // The grace notes, which the layout leaves out until they are drawn.
+    let graces: BTreeSet<epiphany_core::EventId> = score
+        .events
+        .iter()
+        .filter(|event| event.grace().is_some())
+        .map(Event::id)
+        .collect();
+
     let instances: Vec<&epiphany_core::StaffInstance> = score
         .canvas
         .regions
@@ -267,6 +278,14 @@ pub fn omissions(
                     Event::Rest(r) if !r.visible => continue,
                     _ => {}
                 }
+                if graces.contains(id) {
+                    out.add(if sources.iter().any(|s| inked.contains(s)) {
+                        "grace note drawn as a plain note"
+                    } else {
+                        "grace note left undrawn"
+                    });
+                    continue;
+                }
                 if !sources.iter().any(|s| inked.contains(s)) {
                     out.add(match event {
                         Event::Pitched(_) => "note not drawn",
@@ -349,12 +368,20 @@ pub fn omissions(
     }
 
     for tie in &score.cross_cutting.ties {
-        if !inked.contains(&TypedObjectId::Tie(tie.id)) {
+        if graces.contains(&tie.start_event) || graces.contains(&tie.end_event) {
+            if !inked.contains(&TypedObjectId::Tie(tie.id)) {
+                out.add("tie on a grace note left undrawn");
+            }
+        } else if !inked.contains(&TypedObjectId::Tie(tie.id)) {
             out.add("tie not drawn");
         }
     }
     for slur in &score.cross_cutting.slurs {
-        if !inked.contains(&TypedObjectId::Slur(slur.id)) {
+        if graces.contains(&slur.start_event) || graces.contains(&slur.end_event) {
+            if !inked.contains(&TypedObjectId::Slur(slur.id)) {
+                out.add("slur on a grace note left undrawn");
+            }
+        } else if !inked.contains(&TypedObjectId::Slur(slur.id)) {
             out.add("slur not drawn");
         }
     }
