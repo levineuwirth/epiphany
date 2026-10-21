@@ -7058,7 +7058,8 @@ fn compression_at_the_floor_puts_no_ink_on_ink() {
 /// natural spacing starts past the flag, keeps at least a space between its
 /// ends on every page down to the narrowest whose line the system's floor
 /// fits, compressed there to fill its line, starting past its flag only
-/// where that leaves it the space.
+/// where that leaves it the space; and so does a quarter tied to a quarter,
+/// which has no flag to start past.
 #[test]
 fn a_compressed_systems_ties_are_decided_where_it_sets_them() {
     let note = |pitch: &str, duration: u8, kind: &str, voice: u8, tie: &str| {
@@ -7083,7 +7084,8 @@ fn a_compressed_systems_ties_are_decided_where_it_sets_them() {
                 note("C5", 2, "eighth", 1, "start"),
                 note("C5", 4, "quarter", 1, "stop"),
                 note("A4", 2, "eighth", 1, ""),
-                note("B4", 8, "half", 1, ""),
+                note("B4", 4, "quarter", 1, "start"),
+                note("B4", 4, "quarter", 1, "stop"),
                 "<backup><duration>16</duration></backup>".to_string(),
                 note("F4", 16, "whole", 2, ""),
             ]
@@ -7135,7 +7137,7 @@ fn a_compressed_systems_ties_are_decided_where_it_sets_them() {
             compressed += 1;
         }
         let ties = ties_of(&report.layout);
-        assert_eq!(ties.len(), 7, "a tie in each measure");
+        assert_eq!(ties.len(), 14, "two ties in each measure");
         for tie in &ties {
             let span = tie[3].0 - tie[0].0;
             if span < 1.0 - 1e-3 {

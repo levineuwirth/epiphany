@@ -2159,7 +2159,9 @@ the barline after it, each within the tenth the width steps by.
 systems of slurs over flats and a steep two-note slur from a beamed sixteenth
 down to their floor, no slur entering an accidental or a head: once the floor
 kept a flagged tie's room, the ties test no longer saw a compressed system's
-curves left unpassed, and this one does. All are in `epiphany-cli`.
+curves left unpassed, and this one does. For the same reason the ties test
+gained a tie with no flag, whose least span only the floor's tie span keeps.
+All are in `epiphany-cli`.
 
 ## Where the floor departs from MuseScore (X5c fix round 3, 2026-10-21; ENGRAVER_VERSION stays 56)
 
