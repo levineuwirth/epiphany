@@ -30,8 +30,12 @@ use epiphany_ops::fuzz::modes;
 /// The CI budget, in chunks: histories, their first seed, and the operations
 /// each authors after its genesis. The longer chunk reaches states the shorter
 /// does not within its histories (review 1's L4: a planted break the first
-/// chunk alone missed).
-const CI_BUDGET: [(u64, u64, usize); 2] = [(96, 0x4A_0001, 24), (64, 0x4A_0001, 64)];
+/// chunk alone missed). It holds 128 histories, not 64, so that the rarest
+/// payload shapes (a grace rewritten, a pedal line without its sign, a
+/// syllable deleted) each come to about six in the budget rather than three or
+/// four; at 64, an arm added to the generator lost the syllable's delete from
+/// the budget by the draws moving alone.
+const CI_BUDGET: [(u64, u64, usize); 2] = [(96, 0x4A_0001, 24), (128, 0x4A_0001, 64)];
 
 /// The CI budget's runs, one per chunk with its authored count, shared by the
 /// tests that read them.

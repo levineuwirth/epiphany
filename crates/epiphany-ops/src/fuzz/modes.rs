@@ -38,7 +38,10 @@
 //! note in it marked): the note entered after the transaction and deleted,
 //! orphaning its mark, then the voice, instance and region deleted in turn or
 //! the transaction undone; or one or two notes entered in the transaction,
-//! the first marked, and the transaction undone. A
+//! the first marked, and the transaction undone; or one or two notes entered
+//! in the transaction, which also moves an older mark onto the first of them
+//! or the region's start, and the transaction undone, the mark's restoration
+//! taking it back to where it stood. A
 //! whole-event modify moves, resizes or revalues an event, writes a chord
 //! without a pitch its author sees, writes an event as another kind in its
 //! place, or mints a pitch, a chord written with a new one or another kind
@@ -3298,6 +3301,112 @@ fn make(
             }));
             out
         }
+        64 => {
+            // An older point mark moved into a passage an editor adds and then
+            // takes away: a metric region after every region the view holds,
+            // an instance of a staff the view holds in it, a voice and one or
+            // two notes, created in one transaction, which also moves a mark
+            // the view holds (one its author places on a note first, where it
+            // holds none) onto the passage's first note or its start; then the
+            // transaction undone, its restoration taking the mark back to
+            // where it stood, so the undo strands nothing in the region it
+            // removes.
+            if sim.replicas[r].open.is_some() {
+                return None;
+            }
+            let mut out = Vec::new();
+            let older = match sim.rng.pick(&h.score.cross_cutting.markers) {
+                Some(marker) => marker.clone(),
+                None => {
+                    let event = rng_event(sim)?.id();
+                    let marker = epiphany_core::Marker {
+                        id: sim.mint(r),
+                        anchor: valuegen::event_anchor(event),
+                        kind: random_marker_kind(&mut sim.rng),
+                    };
+                    out.push(prim(OperationKind::CreateCrossCutting(
+                        CreateCrossCuttingOp {
+                            structure: CrossCuttingValue::Marker(marker.clone()),
+                        },
+                    )));
+                    marker
+                }
+            };
+            let mut passage = make(sim, r, 15, h)?;
+            let Some(OperationPayload::Primitive(OperationKind::CreateRegion(op))) =
+                passage.first_mut()
+            else {
+                return None;
+            };
+            op.region.time_model = valuegen::metric_model();
+            let region = op.region.id;
+            let staff = sim.rng.pick(&h.score.staves)?.id;
+            let instance: StaffInstanceId = sim.mint(r);
+            let voice: VoiceId = sim.mint(r);
+            let tx: TransactionId = sim.mint(r);
+            passage.insert(
+                0,
+                prim(OperationKind::DeclareTransaction(TransactionDescriptor {
+                    id: tx,
+                    label: String::from("add a passage"),
+                    category: None,
+                })),
+            );
+            passage.push(prim(OperationKind::CreateStaffInstance(
+                CreateStaffInstanceOp {
+                    region,
+                    instance: valuegen::staff_instance(instance, staff),
+                },
+            )));
+            passage.push(prim(OperationKind::CreateVoice(CreateVoiceOp {
+                staff_instance: instance,
+                voice: valuegen::voice(voice),
+            })));
+            let mut quarter_tones = Vec::new();
+            let mut at = MusicalPosition::origin();
+            let mut first = None;
+            for _ in 0..1 + sim.rng.below(2) {
+                let event: EventId = sim.mint(r);
+                let length = random_duration(&mut sim.rng);
+                let value = event_value(
+                    sim,
+                    r,
+                    event,
+                    voice,
+                    at.clone(),
+                    length.clone(),
+                    &mut quarter_tones,
+                );
+                at = MusicalPosition(at.0.add(&length.0));
+                first.get_or_insert(event);
+                passage.push(prim(OperationKind::InsertEvent(InsertEventOp {
+                    staff_instance: instance,
+                    event: value,
+                })));
+            }
+            let anchor = if sim.rng.chance(2) {
+                valuegen::region_start_anchor(region, MusicalPosition::origin())
+            } else {
+                valuegen::event_anchor(first?)
+            };
+            passage.push(prim(OperationKind::ModifyCrossCutting(
+                ModifyCrossCuttingOp {
+                    structure: CrossCuttingValue::Marker(epiphany_core::Marker { anchor, ..older }),
+                },
+            )));
+            let members = passage.len() as u64;
+            if out.is_empty() {
+                sim.replicas[r].open = Some((tx, members));
+            } else {
+                sim.replicas[r].queued.push((tx, members));
+            }
+            out.extend(passage);
+            out.push(OperationPayload::UndoTransaction(UndoTransactionPayload {
+                target: tx,
+                policy: random_policy(&mut sim.rng),
+            }));
+            out
+        }
         _ => return None,
     })
 }
@@ -3476,7 +3585,7 @@ fn tie_entry(
 /// Each arm of [`make`] and how often it is drawn: the editing of notes,
 /// pitches and their marks three times as often as the score's structure and
 /// settings, as an editor's history runs.
-const ARMS: [(u64, u64); 64] = [
+const ARMS: [(u64, u64); 65] = [
     (0, 4),
     (1, 3),
     (2, 3),
@@ -3541,6 +3650,7 @@ const ARMS: [(u64, u64); 64] = [
     (61, 1),
     (62, 1),
     (63, 1),
+    (64, 1),
 ];
 
 fn draw_arm(rng: &mut Rng) -> u64 {
