@@ -58,6 +58,9 @@ const SKYLINE_BAND: f32 = 0.25;
 /// How far above and below its ink a slot's content keeps clear of earlier
 /// ink: heads a third apart in neighbouring columns still clear each other
 /// sideways, while a head an octave from the previous may stand under it.
+/// Rounded out to the skyline's bands, two pieces of ink up to about 0.65
+/// apart in height meet, where MuseScore pads only shapes within 0.2 of
+/// each other (0.1 before an accidental), so the floor keeps more apart.
 const SKYLINE_MARGIN: f32 = 0.2;
 
 /// The least advance from one slot to the next, whatever their springs and
@@ -162,7 +165,8 @@ impl Ink {
 
     /// Whether ink of this kind keeps clear of earlier ink of its own staff
     /// at any height, as MuseScore never kerns a barline, a clef or a
-    /// signature (`HorizontalSpacing::isNeverKernable`).
+    /// signature (`HorizontalSpacing::isNeverKernable`); a clef here wherever
+    /// it stands, where MuseScore kerns one that changes inside a measure.
     fn never_kerned(self) -> bool {
         matches!(self, Ink::Barline | Ink::Clef | Ink::KeySig | Ink::TimeSig)
     }
@@ -184,8 +188,10 @@ impl Ink {
 /// `minPadUnit`) stands for every pair the table leaves at its default.
 /// `minNoteDistance` is 0.35, `noteBarDistance` 1.5, `accidentalNoteDistance`
 /// 0.25, `dotNoteDistance` 0.5, `dotDotDistance` 0.65 and `ledgerLineLength`
-/// 0.33 (`styledef.cpp`); a head meeting a head keeps `minNoteDistance`, as
-/// `HorizontalSpacing::computeNotePadding` raises it where two notes meet.
+/// 0.33 (`styledef.cpp`); a head meeting a head keeps `minNoteDistance`
+/// whatever their voices, where `HorizontalSpacing::computeNotePadding`
+/// raises the table's 0.1 to it only for two notes of one voice, or two
+/// neighbours by duration, whose shapes meet.
 pub(crate) fn floor_gap(earlier: Ink, later: Ink) -> f32 {
     use Ink::*;
     // The ledger line's reach past its head, which the table takes off a

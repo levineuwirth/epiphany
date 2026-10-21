@@ -2156,3 +2156,32 @@ draws them: two whole notes at one height 0.35 apart, an up stem and the
 down stem after it 0.85, a dot 0.65 before the next head, a head 1.5 before
 the barline after it, each within the tenth the width steps by. All are in
 `epiphany-cli`.
+
+## Where the floor departs from MuseScore (X5c fix round 3, 2026-10-21; ENGRAVER_VERSION stays 56)
+
+The floor (version 53) takes MuseScore 4.7.5's paddings, but where it reads
+which ink they apply to it departs from MuseScore in four places, each
+keeping ink further apart than MuseScore would, never nearer:
+
+- A staff stands in for a voice. MuseScore keeps one voice's heads, stems,
+  dots and rests apart at any height (`isSameVoiceKerningLimited`); the floor
+  keeps a staff's apart, so two voices on one staff kern less here than in
+  MuseScore.
+- Two heads whose heights meet keep `minNoteDistance`, 0.35, whatever their
+  voices. MuseScore's table gives two notes `minPadUnit`, 0.1, and
+  `computeNotePadding` raises it to 0.35 only where two notes of one voice,
+  or two neighbours by duration, have shapes that intersect.
+- Heights meet here when two pieces of ink, each widened by
+  `SKYLINE_MARGIN`, 0.2, and rounded out to the skyline's quarter-space
+  bands, share a band, so ink up to about 0.65 of a space apart in height
+  keeps its distance. MuseScore pads only where two shapes come within 0.2 of
+  each other vertically, 0.1 before an accidental
+  (`computeVerticalClearance`).
+- A clef keeps clear of every earlier note column's ink on its staff at any
+  height wherever it stands. MuseScore's `isNeverKernable` kerns a clef that
+  changes inside a measure.
+
+Besides these, as version 53 states, the lead's, signatures', changes' and
+barlines' springs are kept whole: the barline's own spring after it stands
+1.5 from its glyph's origin, where MuseScore's `barNoteDistance` is 1.25 from
+the barline's right edge.
