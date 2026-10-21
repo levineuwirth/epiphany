@@ -318,19 +318,44 @@ pub struct Engraver {
 /// a courtesy, where a key change inside a system had drawn nothing, and to
 /// `44` when a slur or tie began passing over the accidentals of its staff
 /// it would meet, after spacing: a slur by raising its arc or, near an end,
-/// lifting that end, a tie by raising its arc within bounds, and to `45`
-/// when a voice visiting a staff from its home on another began standing on
-/// its home's side, above when its home is above, and the staff's own first
-/// voice beside it alone, where the visitor had been ranked among the
-/// staff's own voices and drawn below (D46), and to `46` when a grace note,
-/// which schema major 5 imports as an event of zero duration, began being
-/// left out of the drawing until grace notes are drawn, where it had stood in
-/// its principal's chord as a full-size quarter note, and to `47` when a rest
-/// of a staff's own voice that meets the ink of a voice visiting the staff
-/// began moving clear of it, to the side away from the visitor's stem, where
-/// alone on its staff it had stood at its own place on the visiting head or
-/// stem.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(47);
+/// lifting that end, a tie by raising its arc within bounds. Two branches
+/// then raised it from `44` at once. On one, to `45` when a voice visiting a
+/// staff from its home on another began standing on its home's side, above
+/// when its home is above, and the staff's own first voice beside it alone,
+/// where the visitor had been ranked among the staff's own voices and drawn
+/// below (D46), and to `46` when a grace note, which schema major 5 imports
+/// as an event of zero duration, began being left out of the drawing until
+/// grace notes are drawn, where it had stood in its principal's chord as a
+/// full-size quarter note, and to `47` when a rest of a staff's own voice
+/// that meets the ink of a voice visiting the staff began moving clear of it,
+/// to the side away from the visitor's stem, where alone on its staff it had
+/// stood at its own place on the visiting head or stem. On the other, to
+/// `45` when time columns began spacing by the durations sounding through
+/// them, a column's ink clearing only the earlier ink at its height, a
+/// justified system's slack going to its note columns by their springs, and
+/// a region's last system justifying once it fills three tenths of the
+/// width, and to `46` when a barline joined across the gap between two
+/// staves of a group began reserving its line there, so ink in the gap keeps
+/// a barline's clearance, and to `47` when a tie that must arc further than
+/// 1.5 spaces to pass an accidental began taking a fuller arc, as far as a
+/// sixth of its span and three spaces at most, rather than running through
+/// it, to `48` when a slur or tie began passing the stems of its staff inside
+/// its span as it passes accidentals, to `49` when a tie meeting its first
+/// note's flag began starting past it, to `50` when a tie that cannot pass a
+/// stem began passing its accidentals still, and to `51` when a tie the
+/// spaced line left too short to start past its first note's flag began
+/// starting past it where its system's justification gives it the span, to
+/// `52` when an event the pre-pass does not decompose began spacing by its
+/// own sounding duration, and to `53` when a system the score's breaks fix
+/// that holds more than the line began compressing toward MuseScore's
+/// minimum distances rather than taking a system more, the search adding one
+/// only where even that floor overflows, and to `54` when a compressed
+/// system's slur began passing the heads of its band as it passes
+/// accidentals. It went to `55`, past both, when the two were taken
+/// together, and to `56` when a compressed system's floor began keeping a
+/// tie whose first note has a flag on its side the span to start past the
+/// flag, so compression no longer sets such a tie back into it.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(56);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -377,35 +402,39 @@ impl Engraver {
         // stem behind. Both gate on structural validity: a malformed input must
         // not leak geometry into the diagnostic layout (which reaches
         // canonical_bytes / the renderer).
+        let remap = structural_valid.then(|| HorizontalRemap::build(input));
         let (spaced_glyphs, spaced_strokes, spaced_curves): (
             Vec<ResolvedGlyph>,
             Vec<Stroke>,
             Vec<Curve>,
-        ) = if structural_valid {
-            let remap = HorizontalRemap::build(input);
-            (
+        ) = match &remap {
+            Some(remap) => (
                 remap.glyphs(input),
                 remap.strokes(input),
                 remap.curves(input),
-            )
-        } else {
-            (Vec::new(), Vec::new(), Vec::new())
+            ),
+            None => (Vec::new(), Vec::new(), Vec::new()),
         };
         // Casting-off: break the spaced line into systems, stack them, assign
         // pages, and bake every position into the single world frame. Pure
         // geometry, so it runs whenever the structure is trustworthy (the
-        // catalog gate below only guards constraint *evaluation*).
-        let cast = if structural_valid {
-            Some(casting::cast_off(
+        // catalog gate below only guards constraint *evaluation*). A system
+        // the score's breaks fix that holds more than the line is spaced
+        // again tighter there, its curves passed again from where the spacing
+        // set them.
+        let cast = remap.as_ref().map(|remap| {
+            casting::cast_off(
                 input,
                 &spaced_glyphs,
                 &spaced_strokes,
                 &spaced_curves,
+                &casting::Respacing {
+                    skyline: &remap.skyline,
+                    curves: &remap.unpassed_curves(input),
+                },
                 &self.geometry,
-            ))
-        } else {
-            None
-        };
+            )
+        });
         let resolved_glyphs = spaced_glyphs.len();
 
         // Evaluate every declared constraint, routed by its strength (Chapter 9
@@ -458,6 +487,19 @@ impl Engraver {
         };
 
         let mut warnings = soft_violations;
+        // Each system casting added among the score's breaks, where even the
+        // floor would not hold the system they fix, named with that overflow.
+        for added in cast.iter().flat_map(|cast| &cast.added) {
+            warnings.push(SolverWarning {
+                kind: SolverWarningKind::UnusualLayoutDecision(format!(
+                    "a system added inside the score's breaks: the system they fix \
+                     overflows the line by {:.2} staff spaces at its floor",
+                    added.overflow
+                )),
+                affected_objects: added.opens.into_iter().collect(),
+                message: "system added within the score's breaks".to_owned(),
+            });
+        }
         if structural_valid && catalog_valid && !unsatisfied_constraints.is_empty() {
             warnings.push(SolverWarning {
                 kind: SolverWarningKind::UnusualLayoutDecision(
@@ -572,6 +614,8 @@ struct HorizontalRemap {
     /// spacing pass already reserved the companion's extent in the slot's
     /// advance; the rigid delta is what honors that reservation.
     slot_delta: BTreeMap<SpringSlotId, f32>,
+    /// The slots' ink by kind, for casting to space a system again tighter.
+    skyline: spacing::Skyline,
 }
 
 impl HorizontalRemap {
@@ -587,6 +631,7 @@ impl HorizontalRemap {
                 .into_iter()
                 .map(|(id, (source, target))| (id, target - source))
                 .collect(),
+            skyline: spaced.skyline,
         }
     }
 
@@ -689,33 +734,30 @@ impl HorizontalRemap {
     /// Re-maps each curve's four control-point x's through the same coordinate
     /// map as a spanning stroke's endpoints (a slur is never rigid-width), so
     /// the arc stretches with the spacing between its endpoint columns, then
-    /// passes it over the accidentals of its staff it would meet
+    /// passes it over the accidentals of its staff it would meet, and the
+    /// stems of its staff that stand inside its span
     /// ([`clearance::clear_accidentals`]): a slur by its arc or, near an end,
-    /// by lifting that end, a tie by its arc alone. Its y is otherwise kept.
+    /// by lifting that end, a tie by its arc alone, a tie meeting its first
+    /// note's flag starting past it first ([`clearance::start_past_flag`]),
+    /// where the spaced line gives it the span; casting decides again for a
+    /// tie this leaves in its flag, on the span its justified system gives it.
+    /// Its y is otherwise kept.
     fn curves(&self, input: &ConstrainedLayoutIR) -> Vec<Curve> {
         let anchors = span_anchors(input);
-        let accidentals = self.accidentals(input);
+        let accidentals = self.glyph_ink(input, "accidental");
+        let flags = self.glyph_ink(input, "flag");
+        let stems = self.stems(input, &anchors);
         input
             .curves
             .iter()
-            .map(|c| {
-                let anchored = anchors.get(&c.id()).and_then(|(start, end)| {
-                    Some((*self.slot_delta.get(start)?, *self.slot_delta.get(end)?))
-                });
-                let spaced = match anchored {
-                    Some((start, end)) => anchored_curve(c.control_points(), start, end),
-                    None => c
-                        .control_points()
-                        .map(|point| Point::new(self.map(point.x.0), point.y.0)),
-                };
+            .zip(self.unpassed_curves(input))
+            .map(|(c, spaced)| {
                 let [p0, p1, p2, p3] = match c.provenance.source {
-                    TypedObjectId::Slur(_) | TypedObjectId::Tie(_) => clearance::clear_accidentals(
-                        spaced,
-                        accidentals
-                            .get(&c.vertical_band)
-                            .map_or(&[][..], Vec::as_slice),
-                        matches!(c.provenance.source, TypedObjectId::Tie(_)),
-                    ),
+                    TypedObjectId::Slur(_) | TypedObjectId::Tie(_) => {
+                        let tie = matches!(c.provenance.source, TypedObjectId::Tie(_));
+                        let band = |of| in_band(of, &c.vertical_band);
+                        clear_curve(spaced, band(&flags), band(&accidentals), band(&stems), tie)
+                    }
                     _ => spaced,
                 };
                 Curve {
@@ -733,17 +775,149 @@ impl HorizontalRemap {
             })
             .collect()
     }
+
+    /// Each curve's control points where the spacing sets it, before it
+    /// passes any ink: an anchored curve's ends ride their slots, its inner
+    /// points keeping their shares of the span; any other maps through the
+    /// spacing's map. Casting passes a compressed system's curves again from
+    /// these.
+    fn unpassed_curves(&self, input: &ConstrainedLayoutIR) -> Vec<[Point; 4]> {
+        let anchors = span_anchors(input);
+        input
+            .curves
+            .iter()
+            .map(|c| {
+                let anchored = anchors.get(&c.id()).and_then(|(start, end)| {
+                    Some((*self.slot_delta.get(start)?, *self.slot_delta.get(end)?))
+                });
+                match anchored {
+                    Some((start, end)) => anchored_curve(c.control_points(), start, end),
+                    None => c
+                        .control_points()
+                        .map(|point| Point::new(self.map(point.x.0), point.y.0)),
+                }
+            })
+            .collect()
+    }
+}
+
+/// The ink of `band` in a by-band table, or none.
+fn in_band<'a>(
+    of: &'a BTreeMap<epiphany_layout_ir::VerticalBandId, Vec<clearance::InkRect>>,
+    band: &epiphany_layout_ir::VerticalBandId,
+) -> &'a [clearance::InkRect] {
+    of.get(band).map_or(&[][..], Vec::as_slice)
+}
+
+/// How far inside a curve's span, from either end, a stem must stand for the
+/// curve to pass it, in staff spaces: the stems of the notes a curve joins
+/// stand at its ends.
+const STEM_END_MARGIN: f32 = 0.6;
+
+/// `cp`, a slur or a tie, past the ink of its band it would meet: a tie
+/// meeting its first note's flag starting past it first
+/// ([`clearance::start_past_flag`]), then the accidentals, and the stems
+/// standing more than [`STEM_END_MARGIN`] inside its span, passed
+/// ([`clearance::clear_obstacles`]).
+pub(crate) fn clear_curve(
+    cp: [Point; 4],
+    flags: &[clearance::InkRect],
+    accidentals: &[clearance::InkRect],
+    stems: &[clearance::InkRect],
+    tie: bool,
+) -> [Point; 4] {
+    let cp = if tie {
+        clearance::start_past_flag(cp, flags)
+    } else {
+        cp
+    };
+    // The stems inside the span, clear of those of the notes the curve joins,
+    // which stand at its ends.
+    let (x0, x3) = (cp[0].x.0, cp[3].x.0);
+    let inner: Vec<clearance::InkRect> = stems
+        .iter()
+        .filter(|s| s.left > x0 + STEM_END_MARGIN && s.right < x3 - STEM_END_MARGIN)
+        .copied()
+        .collect();
+    clearance::clear_obstacles(cp, accidentals, &inner, tie)
+}
+
+/// `cp`, a tie where casting places it, started past its first note's flag
+/// if it still runs into it with the span to start past it, and then passed
+/// over the accidentals and stems of its band again ([`clear_curve`]), since
+/// its shape has changed; a tie that does not start past a flag is returned
+/// as it was. The spacing pass decides on the spaced line, which a justified
+/// system lengthens, so a tie it left in its flag for want of span may have
+/// the span once placed.
+pub(crate) fn restart_past_flag(
+    cp: [Point; 4],
+    flags: &[clearance::InkRect],
+    accidentals: &[clearance::InkRect],
+    stems: &[clearance::InkRect],
+) -> [Point; 4] {
+    if clearance::start_past_flag(cp, flags) == cp {
+        cp
+    } else {
+        clear_curve(cp, flags, accidentals, stems, true)
+    }
+}
+
+/// The slot a stroke rides if it is a stem: an event's upright stroke, at
+/// least 0.3 spaces long, whose ends ride one slot.
+pub(crate) fn stem_slot(
+    s: &Stroke,
+    anchors: &BTreeMap<GlyphObjectId, (SpringSlotId, SpringSlotId)>,
+) -> Option<SpringSlotId> {
+    if !matches!(s.provenance.source, TypedObjectId::Event(_))
+        || (s.from.x.0 - s.to.x.0).abs() > 1e-6
+        || (s.from.y.0 - s.to.y.0).abs() < 0.3
+    {
+        return None;
+    }
+    anchors
+        .get(&s.id())
+        .filter(|(start, end)| start == end)
+        .map(|(start, _)| *start)
 }
 
 impl HorizontalRemap {
-    /// Every accidental glyph's ink where the spacing sets it, by its band.
-    fn accidentals(
+    /// Every stem's ink where the spacing sets it, by its band: an event's
+    /// upright stroke whose ends ride one slot.
+    fn stems(
         &self,
         input: &ConstrainedLayoutIR,
+        anchors: &BTreeMap<GlyphObjectId, (SpringSlotId, SpringSlotId)>,
+    ) -> BTreeMap<epiphany_layout_ir::VerticalBandId, Vec<clearance::InkRect>> {
+        let mut by_band: BTreeMap<_, Vec<clearance::InkRect>> = BTreeMap::new();
+        for s in &input.strokes {
+            let Some(delta) = stem_slot(s, anchors).and_then(|slot| self.slot_delta.get(&slot))
+            else {
+                continue;
+            };
+            let (x, half) = (s.from.x.0 + delta, s.thickness.0 * 0.5);
+            by_band
+                .entry(s.vertical_band)
+                .or_default()
+                .push(clearance::InkRect {
+                    left: x - half,
+                    right: x + half,
+                    bottom: s.from.y.0.min(s.to.y.0),
+                    top: s.from.y.0.max(s.to.y.0),
+                });
+        }
+        by_band
+    }
+
+    /// Every glyph's ink whose name begins `prefix`, where the spacing sets
+    /// it, by its band.
+    fn glyph_ink(
+        &self,
+        input: &ConstrainedLayoutIR,
+        prefix: &str,
     ) -> BTreeMap<epiphany_layout_ir::VerticalBandId, Vec<clearance::InkRect>> {
         let mut by_band: BTreeMap<_, Vec<clearance::InkRect>> = BTreeMap::new();
         for g in &input.glyphs {
-            if !g.glyph.as_str().starts_with("accidental") {
+            if !g.glyph.as_str().starts_with(prefix) {
                 continue;
             }
             let x = match self.slot_delta.get(&g.horizontal_slot) {
@@ -1075,6 +1249,7 @@ mod tests {
                             voice: epiphany_layout_ir::VoicePlace::Alone,
                             position: TimePoint::Musical(MusicalPosition::origin()),
                             components: vec![],
+                            duration: None,
                             pitches: vec![NotePitch {
                                 pitch,
                                 spelling: Some(PitchSpelling::cmn(CmnNominal::C, 5)),
@@ -1494,6 +1669,7 @@ mod tests {
                         voice: epiphany_layout_ir::VoicePlace::Alone,
                         position: TimePoint::Musical(pos),
                         components: whole(),
+                        duration: None,
                         // C6 is a step above the treble staff, so each head earns
                         // ledger lines.
                         pitches: vec![NotePitch {
@@ -1929,6 +2105,7 @@ mod tests {
                 voice: epiphany_layout_ir::VoicePlace::Alone,
                 position: time,
                 components: vec![],
+                duration: None,
                 pitches: vec![NotePitch {
                     pitch: pid,
                     spelling: Some(spelling),
@@ -2044,6 +2221,7 @@ mod tests {
                             voice: epiphany_layout_ir::VoicePlace::Alone,
                             position: TimePoint::Musical(MusicalPosition::origin()),
                             components: vec![],
+                            duration: None,
                             pitches: vec![NotePitch {
                                 pitch,
                                 spelling: Some(PitchSpelling::cmn(CmnNominal::C, 5)),
@@ -2696,7 +2874,7 @@ mod tests {
             .iter()
             .flat_map(|page| &page.systems)
             .collect();
-        assert_eq!(systems.len(), 2, "the region wraps into two systems");
+        assert!(systems.len() >= 2, "the region wraps");
         let pitch = |sys: &epiphany_layout_ir::ResolvedSystem| {
             assert_eq!(sys.staves.len(), 2, "both staves ride every system");
             sys.staves[0].bounding_box.origin.y.0 - sys.staves[1].bounding_box.origin.y.0
@@ -3125,5 +3303,194 @@ mod tests {
         let top = map.hit(click).into_iter().next().expect("the click hits");
         assert_eq!(top.layout_object, glyph.provenance.stable_id);
         assert_eq!(top.source, glyph.provenance.source);
+    }
+
+    /// A tie casting finds running into its first note's flag, with the span
+    /// to start past it, starts past it and passes again the accidental its
+    /// new shape meets: here one its old shape passed. A tie meeting no flag
+    /// comes back as it was.
+    #[test]
+    fn a_tie_restarted_past_its_flag_passes_its_accidentals_again() {
+        use clearance::InkRect;
+        let p = Point::new;
+        let tie = [
+            p(0.0, 0.0),
+            p(10.0 / 3.0, 4.0 / 3.0),
+            p(20.0 / 3.0, 4.0 / 3.0),
+            p(10.0, 0.0),
+        ];
+        let flag = InkRect {
+            left: 0.0,
+            right: 0.8,
+            bottom: 0.0,
+            top: 3.0,
+        };
+        let flat = InkRect {
+            left: 2.8,
+            right: 3.2,
+            bottom: -1.0,
+            top: 0.55,
+        };
+        // The least height of a curve over the flat's top, across its width.
+        let over = |cp: &[Point; 4]| {
+            let at = |a: f32, b: f32, c: f32, d: f32, t: f32| {
+                let u = 1.0 - t;
+                u * u * u * a + 3.0 * u * u * t * b + 3.0 * u * t * t * c + t * t * t * d
+            };
+            (0..=4000)
+                .map(|k| k as f32 / 4000.0)
+                .map(|t| {
+                    let x = at(cp[0].x.0, cp[1].x.0, cp[2].x.0, cp[3].x.0, t);
+                    let y = at(cp[0].y.0, cp[1].y.0, cp[2].y.0, cp[3].y.0, t);
+                    (x, y)
+                })
+                .filter(|(x, _)| *x >= flat.left && *x <= flat.right)
+                .map(|(_, y)| y - flat.top)
+                .fold(f32::INFINITY, f32::min)
+        };
+        assert!(over(&tie) >= 0.2, "the tie as it stood passes the flat");
+        let moved = clearance::start_past_flag(tie, &[flag]);
+        assert!(moved[0].x.0 >= 1.0 - 1e-4, "the tie starts past the flag");
+        assert!(over(&moved) < 0.2, "moved alone, it meets the flat");
+        let placed = restart_past_flag(tie, &[flag], &[flat], &[]);
+        assert_eq!((placed[0], placed[3]), (moved[0], tie[3]), "its ends");
+        assert!(
+            over(&placed) >= clearance::ACCIDENTAL_CLEARANCE - 1e-3,
+            "it passes the flat again"
+        );
+        assert_eq!(restart_past_flag(tie, &[], &[flat], &[]), tie);
+    }
+
+    /// A tie arcing over its heads from 0 to 10, its arc a space high.
+    fn ten_space_tie() -> [Point; 4] {
+        let p = Point::new;
+        [
+            p(0.0, 0.0),
+            p(10.0 / 3.0, 4.0 / 3.0),
+            p(20.0 / 3.0, 4.0 / 3.0),
+            p(10.0, 0.0),
+        ]
+    }
+
+    /// Only a tie starts past its first note's flag: a slur meeting the same
+    /// flag keeps its start.
+    #[test]
+    fn a_slur_does_not_start_past_a_flag() {
+        let flag = clearance::InkRect {
+            left: 0.0,
+            right: 0.8,
+            bottom: 0.0,
+            top: 3.0,
+        };
+        let curve = ten_space_tie();
+        assert_eq!(clear_curve(curve, &[flag], &[], &[], true)[0].x.0, 1.0);
+        assert_eq!(clear_curve(curve, &[flag], &[], &[], false), curve);
+    }
+
+    /// A curve passes the stems inside its span, and not those standing
+    /// within [`STEM_END_MARGIN`] of its ends, its own notes' stems: a tie
+    /// with its last note's stem 0.3 inside its end, too tall to pass,
+    /// still passes the stem in its middle.
+    #[test]
+    fn a_curve_passes_its_inner_stems_and_not_its_own_notes() {
+        let stem = |x: f32, bottom: f32, top: f32| clearance::InkRect {
+            left: x - 0.06,
+            right: x + 0.06,
+            bottom,
+            top,
+        };
+        let inner = stem(5.0, -2.0, 1.2);
+        let own = stem(9.7, -0.5, 3.0);
+        let tie = ten_space_tie();
+        let cleared = clear_curve(tie, &[], &[], &[inner, own], true);
+        let height = |cp: &[Point; 4], t: f32| {
+            let u = 1.0 - t;
+            u * u * u * cp[0].y.0
+                + 3.0 * u * u * t * cp[1].y.0
+                + 3.0 * u * t * t * cp[2].y.0
+                + t * t * t * cp[3].y.0
+        };
+        assert!(
+            height(&tie, 0.5) < inner.top,
+            "the tie meets the inner stem"
+        );
+        assert!(
+            height(&cleared, 0.5) >= inner.top + clearance::ACCIDENTAL_CLEARANCE - 1e-3,
+            "the tie passes the inner stem"
+        );
+    }
+
+    /// A stem, for the curves that pass stems, is an event's upright stroke
+    /// riding one slot and at least 0.3 spaces long: the same stroke cut
+    /// shorter, or slanted, is none.
+    #[test]
+    fn a_stem_is_an_upright_stroke_on_one_slot_at_least_a_third_long() {
+        let input = fixture();
+        let anchors = span_anchors(&input);
+        let stem = input
+            .strokes
+            .iter()
+            .find(|s| stem_slot(s, &anchors).is_some())
+            .expect("the fixture draws a stem");
+        let with_to = |dx: f32, length: f32| {
+            let mut s = stem.clone();
+            let up = if s.to.y.0 >= s.from.y.0 { 1.0 } else { -1.0 };
+            s.to = Point::new(s.from.x.0 + dx, s.from.y.0 + up * length);
+            s
+        };
+        assert!(stem_slot(&with_to(0.0, 0.35), &anchors).is_some());
+        assert_eq!(stem_slot(&with_to(0.0, 0.25), &anchors), None);
+        assert_eq!(stem_slot(&with_to(0.5, 3.0), &anchors), None);
+    }
+
+    /// A note column with no duration width, a column of wall-clock time,
+    /// still takes its share of a justified system's slack, while the lead
+    /// keeps its width: the first head stands where it stands ragged, and the
+    /// heads stand further apart.
+    #[test]
+    fn a_column_without_a_duration_width_still_stretches() {
+        use epiphany_layout_ir::{Margins, Size2D, StaffSpace};
+        let score = epiphany_testkit::corpus::corpus()
+            .into_iter()
+            .find(|f| f.name == "proportional_region")
+            .map(|f| (f.build)())
+            .expect("the proportional fixture");
+        let input = to_constrained(&to_logical(&score));
+        let heads = |width: f32| {
+            let geometry = PageGeometry {
+                size: Size2D {
+                    width: StaffSpace(width),
+                    height: StaffSpace(100.0),
+                },
+                margins: Margins {
+                    top: StaffSpace(5.0),
+                    right: StaffSpace(5.0),
+                    bottom: StaffSpace(5.0),
+                    left: StaffSpace(5.0),
+                },
+            };
+            let report = Engraver::with_geometry(geometry).solve(&input, &SolverConfig::default());
+            let mut xs: Vec<f32> = report
+                .layout
+                .glyphs
+                .iter()
+                .filter(|g| g.glyph.as_str().starts_with("notehead"))
+                .map(|g| g.position.x.0)
+                .collect();
+            xs.sort_by(f32::total_cmp);
+            xs
+        };
+        let (ragged, justified) = (heads(1000.0), heads(40.0));
+        assert_eq!((ragged.len(), justified.len()), (3, 3), "three heads");
+        assert!(
+            (justified[0] - ragged[0]).abs() < 1e-3,
+            "the lead keeps its width: the first head at {} ragged, {} justified",
+            ragged[0],
+            justified[0]
+        );
+        assert!(
+            justified[2] - justified[0] > ragged[2] - ragged[0] + 1.0,
+            "the heads stretch: {ragged:?} ragged, {justified:?} justified"
+        );
     }
 }

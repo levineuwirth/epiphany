@@ -221,6 +221,7 @@ pub fn gen_layout_content(rng: &mut Rng) -> LayoutContent {
             voice: epiphany_layout_ir::VoicePlace::Alone,
             position: time(rng),
             components: components(rng),
+            duration: None,
             staff_position: epiphany_core::StaffPosition(rng.range(0, 16) as i16 - 4),
         }),
         1 => LayoutContent::Staff(StaffContent {
@@ -235,6 +236,7 @@ pub fn gen_layout_content(rng: &mut Rng) -> LayoutContent {
             voice: epiphany_layout_ir::VoicePlace::Alone,
             position: time(rng),
             components: components(rng),
+            duration: None,
             pitches: vec![NotePitch {
                 pitch: epiphany_core::PitchId::new(epiphany_core::ReplicaId(7), rng.next_u64()),
                 spelling: spelling(rng),
@@ -244,6 +246,7 @@ pub fn gen_layout_content(rng: &mut Rng) -> LayoutContent {
             voice: epiphany_layout_ir::VoicePlace::Alone,
             position: time(rng),
             components: components(rng),
+            duration: None,
             staff_position: rng
                 .boolean()
                 .then(|| epiphany_core::StaffPosition(rng.range(0, 9) as i16)),

@@ -368,17 +368,26 @@ fn engraver_goldens_differ_from_the_stub_goldens() {
 /// label: no number's ink meets another's, and no bracket hook crosses one.
 /// The fixture's second ending is for two passes, so its label is two numbers
 /// with a comma between them, and its bracket opens at an end repeat, whose
-/// column the spacing widens.
+/// column the spacing widens. An unbounded page keeps the fixture on one
+/// system, so no bracket is split by a break.
 #[test]
 fn an_endings_numbers_stand_apart_inside_their_bracket() {
     use epiphany_core::TypedObjectId;
-    use epiphany_engrave::Engraver;
+    use epiphany_engrave::{Engraver, PageGeometry};
 
     let score = epiphany_testkit::fixtures::ten_measure_with_repeats(0x000A_11CE);
     let constrained = to_constrained(&to_logical(&score));
-    let layout = Engraver::default()
-        .solve(&constrained, &SolverConfig::default())
-        .layout;
+    let layout = Engraver::with_geometry(PageGeometry {
+        size: epiphany_layout_ir::Size2D::default(),
+        margins: epiphany_layout_ir::Margins::default(),
+    })
+    .solve(&constrained, &SolverConfig::default())
+    .layout;
+    assert_eq!(
+        layout.systems().count(),
+        1,
+        "the fixture stands on one system"
+    );
     let repeat = |source: &TypedObjectId| matches!(source, TypedObjectId::RepeatStructure(_));
     let mut labels: Vec<(&str, f32, f32)> = Vec::new();
     // Each label glyph's ink bottom: the comma sits on the digits' bottom edge.

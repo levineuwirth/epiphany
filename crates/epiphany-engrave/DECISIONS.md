@@ -1699,6 +1699,297 @@ too, so a curve across a key change passes them. Locked by the module's unit
 tests and `a_slur_clears_the_accidentals_under_it` (`epiphany-cli`); no golden
 draws a curve through an accidental, so none changed.
 
+## ENGRAVER_VERSION 44 → 45: time columns spaced by their durations (X5c.1, 2026-10-10)
+
+Every time column had the same natural width (`COLUMN_PREFERRED_WIDTH`, 1.5
+spaces), and the spacing pass kept between two columns at least the widest
+ink any staff had in the first plus the widest overhang any staff had in the
+second, so a half note and an eighth took the same room, and in a full score
+every onset of any staff, a septuplet's beside a sextuplet's, took a whole
+column's width; justification then stretched every gap of a system alike,
+and a region's last system stayed ragged however full. Four changes,
+together:
+
+- A note column's spring takes the width its durations ask
+  (`duration_widths` in `epiphany-layout-ir`'s constrained stage): the
+  shortest duration `s` sounding through the column, any staff's note or rest
+  that has begun and not ended, asks `QUARTER_SPACE · (s / quarter)^log2(1.5)`
+  for its whole length, each doubling half again as wide; a column that holds
+  only part of it, because another staff's note begins before it ends, takes
+  its part in proportion, `dt / s`. The ratio is MuseScore's default
+  ("measure spacing", 1.5). The scale is fixed, a quarter's column 5 spaces,
+  chosen by measuring the systems it casts against MuseScore's own; MuseScore
+  instead takes each system's shortest note as its unit, so a full score,
+  whose systems nearly always hold a short note somewhere, spreads wider
+  there than here, while a measure's natural width here does not depend on
+  where the line breaks. The power is taken from square roots and products
+  (`ratio_power`), which IEEE rounds exactly, rather than a library `powf`,
+  which need not agree across platforms. The constrained stage's own frame
+  steps a note column by that width too, where it is more than
+  `COLUMN_X_STEP`, so the slurs, ties and beams shaped there keep their
+  proportions once spaced (a slur's arc is a share of its span, and with
+  columns 1.6 apart and the spacing setting them wider, every slur came out
+  flatter than its rule); the stub solver, which draws that frame, changes
+  with it.
+- The spacing pass clears earlier ink by its height (`spacing::space_slots`):
+  each glyph, ledger line and slot-anchored stroke (a stem) widens its slot's
+  extent in every quarter-space band its height reaches, give or take
+  `SKYLINE_MARGIN`, and a slot stands clear of the rightmost ink already set
+  in each band its own ink reaches by the clearance that ink's slot asks: a
+  note column's `SLOT_GAP`, a barline's `BARLINE_CLEARANCE` (MuseScore's
+  distance from a barline to an accidental), and a lead's, signature's or
+  change's the gap its spring reserves after its ink, so an accidental after
+  a time signature keeps the signature's whole gap. Columns whose ink stands
+  on different staves may stand as close as their onsets ask; a stem reaching
+  another staff's beam is cleared where it reaches.
+- A justified system's slack goes to its note columns by their springs
+  (`stretch_factor · preferred_width`; the lead's, a signature's, a change's
+  and a barline's springs have `stretch_factor` 0), through a piecewise map
+  (`Placement`), not one affine stretch: a note keeps its distance after its
+  barline, and the durations keep their proportions, however much a system
+  stretches.
+- A region's last system is justified like the others once its natural ink
+  fills `LAST_SYSTEM_FILL` (three tenths) of the content width, MuseScore's
+  default ("last system fill threshold"); a shorter one stays ragged.
+
+Locked by `columns_space_by_the_durations_sounding_through_them`,
+`ink_on_one_staff_need_not_clear_ink_on_another`,
+`a_justified_system_stretches_its_note_columns_and_not_its_barlines`,
+`an_accidental_keeps_the_gap_a_signature_or_barline_asks` and
+`a_last_system_filled_past_three_tenths_is_justified` (`epiphany-cli`, on the
+hand-written `spacing.musicxml` and generated parts), and the constrained
+stage's `ratio_power` and `duration_widths` unit tests. `spacing_distortion`,
+the quality catalog's spacing axis, measures how far a system's rhythmic
+advances depart from even, so it now reports the proportions duration
+spacing makes on purpose; a duration-relative definition is the catalog's
+open question (quality decision 8) and a change to the catalog, not made
+here. Every engraving golden changed and was re-blessed with renders before
+and after for the owner's reading.
+
+## ENGRAVER_VERSION 45 → 46: a joined barline reserves its line in the gap (X5c.1, 2026-10-10)
+
+Version 45's skyline took a barline's extent from its glyph on each staff,
+while a group whose barlines join from staff to staff has the casting stage
+draw each joining line across the gap between two staves, after spacing.
+Ink in the gap after a barline, mostly an accidental on a note above or
+below its staff, then stood only as far from the line as from earlier ink
+there, and could stand on it: the column-wide clearance of version 44 had
+kept it off. `spacing::space_slots` now reserves each joining line in its
+barline slot's extent, in the gap between each two staves of a joined
+group, from the lower staff's barline to the upper's, at each line's
+thickness as `casting::barline_lines` gives it, so ink in the gap keeps a
+barline's clearance as on the staff. Locked by
+`an_accidental_in_a_gap_keeps_clear_of_the_barline_joined_across_it`
+(`epiphany-cli`, a piano part whose bass staff's E-flat on its second ledger
+line opens a measure). Two goldens moved, `notation` by at most 0.008 of a
+space and `arrow_accidentals` by less, where a joining line's band within
+the skyline's margin of a staff is a hair wider than the barline glyph's
+box; re-blessed with renders before and after for the owner's reading.
+
+## ENGRAVER_VERSION 46 → 47: a long tie passes the accidentals in its path (X5c.2, 2026-10-10)
+
+Version 44 passed a tie over the accidentals of its staff by raising its arc
+as far as `MAX_TIE_ARC`, 1.5 spaces, and left a tie that would have to arc
+further running through them: a held note's tie through another voice's
+notes near its pitch, mostly, at a voice crossing or under a run, which
+MuseScore draws through them as well. Such a tie now takes a fuller arc:
+its inner control points move to an eighth of its span from each end
+(`FULL_TIE_SHARE`), so it leaves its heads more steeply and keeps its height
+across its middle, and it may arc as far as a sixth of its span
+(`LONG_TIE_SHARE`), half the third a slur may take, and never past three
+spaces (`MAX_LONG_TIE_ARC`). A tie that passes within 1.5 spaces keeps its
+own shape, and so a tie of nine spaces or less is unchanged; one that cannot
+pass either way is still left as it was, not half raised. Slurs are
+untouched. Locked by `clearance`'s
+`a_long_tie_takes_a_fuller_arc_to_pass_and_a_short_one_does_not` and
+`a_long_tie_clears_an_accidental_in_its_path` (`epiphany-cli`: a whole
+note's tie over the other voice's A-flat a step above it). The
+`arrow_accidentals` golden's whole-note tie, which ran through the arrow of
+an arrowed natural, now arcs over it; re-blessed with renders before and
+after for the owner's reading.
+
+## ENGRAVER_VERSION 47 → 48: a curve passes the stems inside its span (X5c.3, 2026-10-10)
+
+A slur or tie passed the accidentals of its staff after spacing but not its
+stems, so a curve whose columns spacing had moved, or a tie at a voice
+crossing, ran through a stem standing inside its span: the long stem of
+another voice's note rising through a held note's tie, mostly, and a slur
+ending past a beamed group's last stem. `HorizontalRemap::stems` gathers
+each event's upright stroke whose ends ride one slot, where the spacing
+sets it, by band, and a curve passes those of its own band standing more
+than `STEM_END_MARGIN` (0.6 spaces) inside either end, the stems of the
+notes it joins standing at its ends, with the accidentals and by the same
+rules: a slur by its arc or by lifting an end, a tie by its arc within its
+bounds, a long tie by a fuller arc. A tie that cannot pass a stem so, under
+a beamed run whose stems reach a beam far above it, is left as it was.
+Stems of another staff, which casting lengthens to their beams, are not
+gathered. Locked by `a_tie_passes_a_stem_standing_in_its_path`
+(`epiphany-cli`: a lower voice's whole-note tie under the stems an upper
+voice's E4 raises through it at a crossing). No golden changed.
+
+## ENGRAVER_VERSION 48 → 49: a tie starts past its first note's flag (X5c.4, 2026-10-10)
+
+A tie leaves its head from the head's side, and where its first note is an
+unbeamed note whose flag stands on the tie's side (an upper voice's eighth,
+its stem up and its tie above), the tie ran into the flag.
+`clearance::start_past_flag` now starts such a tie past the flag it would
+run through, by `ACCIDENTAL_CLEARANCE`, at the same height, its inner
+control points keeping their shares of the shorter span, before it passes
+accidentals and stems; a tie the move would leave shorter than a space is
+kept as it was. Locked by `a_tie_starts_past_its_first_notes_flag`
+(`epiphany-cli`).
+
+Not done: a tie across a barline still runs through a time signature
+standing there, as MuseScore draws it. The signature's digits fill the staff
+and stand about a space before the note the tie reaches, so a tie from a
+note inside the staff would have to rise past the staff's edge and fall
+back within that space; taking the digits as obstacles of the clearance
+cleared none in the cases tried (a quarter's and a whole note's tie from a
+D5 into a 2/4) and, since a tie keeps a new shape only when it passes every
+obstacle, would have returned a tie that passes accidentals there to running
+through them. Room after the signature, a tie broken around the digits, or
+MuseScore's crossing is the owner's to choose. No golden changed.
+
+## ENGRAVER_VERSION 49 → 50: a tie that cannot pass a stem still passes its accidentals (X5c.3, 2026-10-10)
+
+Version 48 gave a curve its stems and accidentals as one set of obstacles,
+and a tie keeps a new shape only when it passes every obstacle, so a held
+chord's tie under a beamed run of another voice, whose stems reach a beam
+far above any arc the tie may take, was returned whole to its version 46
+shape and ran again through the accidentals version 47 had passed: the
+corpus sweep after version 48 counted two such ties and four more tie
+crossings of noteheads. `clearance::clear_obstacles` now passes both where
+the tie can and, where it cannot pass a stem, the accidentals alone, as at
+version 47. Slurs, which keep what they clear, are unchanged. Locked by
+`clearance`'s `a_tie_that_cannot_pass_a_stem_still_passes_its_accidental`.
+No golden changed.
+
+## ENGRAVER_VERSION 50 → 51: a tie starts past its flag on its justified span (X5c fix round 1, 2026-10-11)
+
+Version 49 decided a tie's start past its first note's flag in the spacing
+pass, on the spaced line, and kept a tie the move would leave shorter than a
+space running into its flag. Casting then justifies each system, giving its
+note columns their share of the slack, and carries an anchored tie between
+its end slots' new places, so on the page such a tie could have spaces past
+the flag and still run through it (C5c review 1's M1: a flagged sixteenth
+tied to a quarter, on every justified system). Casting now decides again for
+each tie of a system where it places it: one still running into its flag,
+with the span there to start past it, starts past it
+(`restart_past_flag`), and since its shape has changed it passes the
+accidentals and stems of its band again, gathered where the page sets them
+(`casting::placed_ink`). A tie the spacing already started past its flag,
+and every other curve, is placed as before. Locked by
+`a_tie_starts_past_its_flag_on_its_justified_span` (`epiphany-cli`: the
+review's shape, six measures on a page fifty spaces wide) and
+`a_tie_restarted_past_its_flag_passes_its_accidentals_again` (a tie the
+move brings onto a flat its old shape passed).
+
+## ENGRAVER_VERSION 51 → 52: an undecomposed event spaces by its own duration (X5c fix round 1, 2026-10-11)
+
+Duration spacing (version 45) took an event's spans from its placed
+components, and an event the pre-pass does not decompose has none, though
+the constrained stage still draws it, as an implicit quarter: notes whose
+file gives a tuplet's time modification without the tuplet, or the notes of
+an aleatoric region of musical discipline, whose decomposition is deferred.
+Its column then took its width from another staff's durations, or the
+uniform 1.5 spaces when nothing else sounded (C5c review 1's L2: a triplet
+eighth's beat over a quarter took 5.0 spaces where the notated triplet
+takes 7.89). The logical IR's note, rest and unpitched content now carries
+the event's sounding duration in musical time (`duration`, `None` in
+wall-clock time), and `component_spans` gives an event with no components
+the span of that duration. Wall-clock columns still take none. Locked by
+`an_undecomposed_event_spaces_by_its_own_duration` (`epiphany-cli`:
+triplet eighths with and without their tuplet, over a quarter on the other
+staff, take the same beat). The renderer's `valid_score_rich` goldens, by
+engraver and by stub, moved: the two quarters of its aleatoric region now
+stand a quarter's column apart; re-blessed with renders before and after
+for the owner's reading.
+
+## ENGRAVER_VERSION 52 → 53: a system the score's breaks fix compresses toward a floor (X5c fix round 2, 2026-10-18)
+
+Duration spacing keeps a fixed scale (version 45, a quarter's column 5
+spaces), and once a file's own line breaks were imported the measures
+between two of them were often wider than the line at that scale: MuseScore,
+which wrote the breaks, sets a quarter at 3.5 spaces before it justifies
+(`HorizontalSpacing::chordRestSegmentNaturalWidth` in 4.7.5), so its
+systems hold more. The break search then added a system inside the file's,
+where the file has one. Now, in a region with break requirements, the
+measures between two of them (or between one and the region's start or
+end) are a system the score fixes (`casting::fixed_systems`), and one that
+holds more than the line at its natural width is kept whole wherever its
+floor fits the line, and compressed when placed:
+
+- Its slots are spaced again (`spacing::Skyline::place`) with every note
+  column's spring scaled by one factor, the largest in `[0, 1]` at which the
+  system spans the line, found by halving and set exactly between the last
+  placement too wide and the last that fits (`casting::compress_system`); so
+  the durations keep their ratios wherever a spring, and not a floor,
+  decides a gap. The lead's, a signature's, a change's and a barline's
+  springs and clearances are kept, as justification keeps them.
+- At a factor of zero only the floor holds: the ink after a note column
+  keeps from later ink at its height MuseScore 4.7.5's least distance for the
+  two kinds of item (`spacing::floor_gap`, from `PaddingTable::createTable`
+  at the default style of `styledef.cpp`: a head 0.35 from a head, stem,
+  ledger line or accidental after it (`minNoteDistance`), 0.5 from a rest,
+  1.5 from a barline (`noteBarDistance`); a stem 0.85 from a stem; a dot
+  0.65 from a head (`dotDotDistance`); a rest 1.65 from a barline; a ledger
+  line's distances a head's less its reach, `ledgerLineLength` 0.33, at least
+  0.25; a flag's, a dot's and a rest's to clefs and signatures as the table
+  gives them; 0.1, its `minPadUnit`, for every pair it leaves at its
+  default). On one staff, whatever their heights, a barline, clef or
+  signature clears every earlier note column's ink, and a head, stem, dot or
+  rest clears every earlier head, stem, dot and rest (MuseScore's
+  `isNeverKernable` and `isSameVoiceKerningLimited`, a staff standing in for
+  a voice), by the same distances but two heads' 0.1. Ties and beams across
+  two staves keep their least spans as in the spacing pass (a tie's 1.0 is
+  MuseScore's `minTieLength`). MuseScore itself, when a system overflows,
+  re-spaces it with its paddings and duration stretch both scaled down in
+  steps and then lets ink collide (`HorizontalSpacing::squeezeSystemToFit`);
+  here the paddings are the floor and are never scaled.
+- Where even the floor holds more than the line, the search breaks that
+  system as it breaks any other, by natural widths, and each system it adds
+  there is named in the solver's warnings with the floor's overflow
+  (`casting::AddedSystem`). A system narrower than the line justifies as
+  before; the search is unchanged in a region with no break requirement, and
+  in one with them it differs only in keeping a fixed system whole (its
+  overflow net stays out of one).
+- A compressed system's slurs and ties are placed from where the spacing set
+  them before they passed any ink and pass the flag, accidentals and stems
+  of their band again where the compressed system sets them (`clear_curve`
+  on `placed_ink`), so a tie the natural line started past its flag is not
+  left shorter than a space; elsewhere casting decides only a tie left in
+  its flag, as at version 51. A tie split at a system break keeps the
+  spacing pass's decision.
+
+Locked by `a_system_the_breaks_fix_is_compressed_to_hold` (three systems the
+file breaks, each wider than the line at the fixed scale, held, filling the
+line, a quarter's column still half again an eighth's),
+`where_even_the_floor_overflows_one_system_is_added` (on the widest page
+whose line one system's floor overflows, exactly one system is added there,
+named with its overflow), `compression_at_the_floor_puts_no_ink_on_ink`
+(dotted rhythms, seconds, accidentals, ledger lines, rests and a clef, key
+and time change, on every page down to the floor, share no ink their
+natural spacing does not, each onset's heads after the last's by 0.1),
+`a_compressed_systems_ties_are_decided_where_it_sets_them` and
+`a_systems_floor_is_measured_with_the_lead_it_opens_with` (a system held
+down to the same narrowest page whatever lead a later system opens with)
+(`epiphany-cli`).
+
+## ENGRAVER_VERSION 53 → 54: a compressed system's slur passes the heads it meets (X5c fix round 2, 2026-10-18)
+
+Version 53 passed a compressed system's slurs and ties again over the flag,
+accidentals and stems of their band where the compressed system sets them.
+The spacing sets each slur clear of the heads it spans, but compression
+narrows a slur and keeps its heights, and the round's corpus sweep found a
+steep slur (falling a seventh from a beamed sixteenth to the note after it)
+cutting its own first head in a lightly compressed system, which version 52
+had split and stretched. A compressed system's slur now passes the heads of
+its band as it passes accidentals (`casting::pass_compressed`, by lifting an
+end near its end and raising its arc in its middle), so compression brings
+no slur onto a head; a tie keeps its own obstacles, and a slur outside a
+compressed system its spacing pass's decision. Locked by `casting`'s
+`a_compressed_systems_slur_passes_the_heads_it_meets`. No golden changed.
+
 ## ENGRAVER_VERSION 44 → 45: a visiting voice on its home's side (X4b.5, 2026-10-10)
 
 A voice the importer splits across staves is a voice on each, the staff's own
@@ -1783,3 +2074,120 @@ needs to pass a set of boxes that stay, and a debug build asserts that the
 rest then stands clear, so such a defect fails the render tests within
 seconds. No input the engraver gives reaches the bound: every page draws as
 before, so `ENGRAVER_VERSION` stays 47.
+
+## ENGRAVER_VERSION 54 → 55: the two branches' engravers taken together (X5c fix round 3, 2026-10-21)
+
+X4b raised the version from 44 to 47 on its branch while this one raised it
+from 44 to 54, so `45` to `47` name different changes on the two: the
+sections from `44 → 45: time columns spaced by their durations` to `53 → 54`
+are this branch's, and the three after them X4b's, which reached `main`
+first. Taking `main` here draws both at once: a visiting voice on its home's
+side, a grace note left out and a staff's own rest moved clear of a visitor,
+in systems spaced by duration and, where the file's breaks fix a system
+wider than the line, compressed toward the floor. Neither branch's rules
+changed in the merge; the version goes to `55`, past both, so a layout
+either branch made is never taken for the other's.
+
+## A held system keeps MuseScore's paddings where its natural spacing sets less (X5c fix round 3, 2026-10-21; ENGRAVER_VERSION stays 55)
+
+The spacing pass clears a note column's ink from later ink at its height by
+`SLOT_GAP`, 0.3, a barline's included. The floor clears it by MuseScore's
+paddings instead, which exceed that for most pairs and most of all before a
+barline (`noteBarDistance`, 1.5), and on one staff it keeps some ink apart
+at any height, where the spacing pass keeps none. A compressed system sets
+each slot at the larger of its scaled spring and the floor, so where the
+floor holds a slot further from the one before it than the spacing pass
+did, that gap stands wider than at its natural spacing while the rest of
+the system shrinks further to pay for it: a compressed system's last notes
+stand as far from its barlines as MuseScore's do, further than the same
+music stands uncompressed, and now and then a whole measure stands a little
+wider than its natural width. This is accepted beside D71 (C5c review 2's
+L1, ruled under D76): the floor is MuseScore's own distance there, and
+capping it at the natural spacing would set a compressed system's notes
+nearer its barlines than MuseScore sets them. So the floor can exceed the
+spacing it compresses; a lone measure dense enough to have a floor wider
+than its natural width stays overfull at its natural width, as a lone
+measure always has.
+
+## ENGRAVER_VERSION 55 → 56: a flagged tie keeps its start's room at the floor (X5c fix round 3, 2026-10-21)
+
+The floor kept a tie's least span, a space, between its ends. A tie whose
+first note has a flag on the tie's side starts past the flag where it has
+the span (`clearance::start_past_flag`: the flag's right edge,
+`ACCIDENTAL_CLEARANCE` beyond, and `MIN_TIE_SPAN` from there to its end),
+which takes the flag's width and 0.2 more than the floor kept. Between the
+natural spacing and the floor there was therefore a band of widths at which
+compression set a tie the natural spacing had started past its flag back
+into it (C5c review 2's L3), each with under a space past the flag, the
+rule kept as written. The floor now keeps such a tie that span too
+(`clearance::flag_start`, read where `space_slots` gathers the floor's
+ties): a flag riding the tie's start slot on its staff, in the window
+`start_past_flag` reads, reaching past the tie's start toward the side it
+arcs to, keeps the tie's end from its start slot by the flag's right edge,
+0.2, the least span and a thousandth more (`FLAG_START_SLACK`), since a tie
+set at exactly that span could be left a rounding short of it and kept in
+its flag. A system the floor so widened may no longer fit its line and take
+a system more, named as any other. The natural spacing is unchanged; so is
+every tie in a system the breaks do not hold. Locked by
+`compression_never_sets_a_tie_back_into_its_flag` (`epiphany-cli`): nine
+measures broken every three, each with two flagged ties over a whole note,
+every tie clear of every flag on every page down to the floor, which fails
+with the flag's room left out of the floor or with the thousandth dropped.
+
+## The compression tests see compression (X5c fix round 3, 2026-10-21; ENGRAVER_VERSION stays 56)
+
+C5c review 2's L2 found four of the five compression tests passing with no
+system compressed, and the floor's lead, a continued tie's room and most of
+its distances pinned by no test. `compression_at_the_floor_puts_no_ink_on_ink`
+and `a_compressed_systems_ties_are_decided_where_it_sets_them` now assert,
+before reading ink or ties, that the system the file breaks fills its line
+within 0.05 on every page and stands narrower there than at its natural
+spacing, so a held system left uncompressed fails them.
+`a_held_systems_floor_takes_its_lead_and_a_continued_ties_room` holds three
+systems in a key of seven flats, the middle one opening on a tie continued
+from the first, on every page down to the narrowest whose line its floor
+with its lead and the tie's room fits, every system's ink within the margin
+there, and the next page adds a named system inside the middle one; with
+either the lead or the room left out of the floor's measure, a held system
+runs past the margin unnamed. `a_held_systems_floor_keeps_musescores_least_distances`
+finds the narrowest page, to a tenth of a space, that holds a system the
+file breaks, and reads there four of `floor_gap`'s distances as the page
+draws them: two whole notes at one height 0.35 apart, an up stem and the
+down stem after it 0.85, a dot 0.65 before the next head, a head 1.5 before
+the barline after it, each within the tenth the width steps by.
+`a_compressed_systems_slurs_pass_the_ink_where_it_sets_them` holds three
+systems of slurs over flats and a steep two-note slur from a beamed sixteenth
+down to their floor, no slur entering an accidental or a head: once the floor
+kept a flagged tie's room, the ties test no longer saw a compressed system's
+curves left unpassed, and this one does. For the same reason the ties test
+gained a tie with no flag, whose least span only the floor's tie span keeps.
+All are in `epiphany-cli`.
+
+## Where the floor departs from MuseScore (X5c fix round 3, 2026-10-21; ENGRAVER_VERSION stays 56)
+
+The floor (version 53) takes MuseScore 4.7.5's paddings, but where it reads
+which ink they apply to it departs from MuseScore in four places, each
+keeping ink further apart than MuseScore would, never nearer:
+
+- A staff stands in for a voice. MuseScore keeps one voice's heads, stems,
+  dots and rests apart at any height (`isSameVoiceKerningLimited`); the floor
+  keeps a staff's apart, so two voices on one staff kern less here than in
+  MuseScore.
+- Two heads whose heights meet keep `minNoteDistance`, 0.35, whatever their
+  voices. MuseScore's table gives two notes `minPadUnit`, 0.1, and
+  `computeNotePadding` raises it to 0.35 only where two notes of one voice,
+  or two neighbours by duration, have shapes that intersect.
+- Heights meet here when two pieces of ink, each widened by
+  `SKYLINE_MARGIN`, 0.2, and rounded out to the skyline's quarter-space
+  bands, share a band, so ink up to about 0.65 of a space apart in height
+  keeps its distance. MuseScore pads only where two shapes come within 0.2 of
+  each other vertically, 0.1 before an accidental
+  (`computeVerticalClearance`).
+- A clef keeps clear of every earlier note column's ink on its staff at any
+  height wherever it stands. MuseScore's `isNeverKernable` kerns a clef that
+  changes inside a measure.
+
+Besides these, as version 53 states, the lead's, signatures', changes' and
+barlines' springs are kept whole: the barline's own spring after it stands
+1.5 from its glyph's origin, where MuseScore's `barNoteDistance` is 1.25 from
+the barline's right edge.

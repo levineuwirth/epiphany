@@ -164,6 +164,10 @@ pub struct PlacedKeySignature {
 pub struct NoteContent {
     pub position: TimePoint,
     pub components: Vec<PlacedComponent>,
+    /// The event's sounding duration in musical time (`None` in wall-clock
+    /// time): what its note column spaces it by when the pre-pass gives it
+    /// no components.
+    pub duration: Option<MusicalDuration>,
     pub pitches: Vec<NotePitch>,
     pub voice: VoicePlace,
 }
@@ -211,6 +215,10 @@ pub struct NotePitch {
 pub struct RestContent {
     pub position: TimePoint,
     pub components: Vec<PlacedComponent>,
+    /// The event's sounding duration in musical time (`None` in wall-clock
+    /// time): what its note column spaces it by when the pre-pass gives it
+    /// no components.
+    pub duration: Option<MusicalDuration>,
     pub staff_position: Option<StaffPosition>,
     /// False for a hidden rest, which keeps its time but draws no ink.
     pub visible: bool,
@@ -226,6 +234,10 @@ pub struct RestContent {
 pub struct UnpitchedContent {
     pub position: TimePoint,
     pub components: Vec<PlacedComponent>,
+    /// The event's sounding duration in musical time (`None` in wall-clock
+    /// time): what its note column spaces it by when the pre-pass gives it
+    /// no components.
+    pub duration: Option<MusicalDuration>,
     pub staff_position: StaffPosition,
     pub voice: VoicePlace,
 }
@@ -1388,6 +1400,10 @@ fn event_content(
     };
     let voice = places.get(&event).copied().unwrap_or(VoicePlace::Alone);
     let components = placed_components(score, components_of(annotations, event));
+    let musical = |duration: &EventDuration| match duration {
+        EventDuration::Musical(duration) => Some(duration.clone()),
+        _ => None,
+    };
     match graph_event {
         Event::Pitched(pitched) => {
             let pitches = pitched
@@ -1404,6 +1420,7 @@ fn event_content(
             LayoutContent::Note(NoteContent {
                 position: event_time(&pitched.position),
                 components,
+                duration: musical(&pitched.duration),
                 pitches,
                 voice,
             })
@@ -1422,6 +1439,7 @@ fn event_content(
             LayoutContent::Rest(RestContent {
                 position,
                 components,
+                duration: musical(&rest.duration),
                 staff_position: rest.vertical_position,
                 visible: rest.visible,
                 whole_measure,
@@ -1431,6 +1449,7 @@ fn event_content(
         Event::Unpitched(unpitched) => LayoutContent::Unpitched(UnpitchedContent {
             position: event_time(&unpitched.position),
             components,
+            duration: musical(&unpitched.duration),
             staff_position: unpitched.staff_position,
             voice,
         }),

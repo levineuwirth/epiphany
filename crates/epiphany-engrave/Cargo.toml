@@ -21,3 +21,5 @@ epiphany-core.workspace = true
 # epiphany-testkit's `ten_measure_single_staff` (testkit does not depend on this
 # crate, so this dev-dep introduces no cycle).
 epiphany-testkit.workspace = true
+# A test authors a slur's height, a `SpaceUnit` over a `CanonicalF64`.
+epiphany-determinism.workspace = true
