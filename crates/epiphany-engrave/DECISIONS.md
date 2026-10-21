@@ -2133,3 +2133,26 @@ every tie in a system the breaks do not hold. Locked by
 measures broken every three, each with two flagged ties over a whole note,
 every tie clear of every flag on every page down to the floor, which fails
 with the flag's room left out of the floor or with the thousandth dropped.
+
+## The compression tests see compression (X5c fix round 3, 2026-10-21; ENGRAVER_VERSION stays 56)
+
+C5c review 2's L2 found four of the five compression tests passing with no
+system compressed, and the floor's lead, a continued tie's room and most of
+its distances pinned by no test. `compression_at_the_floor_puts_no_ink_on_ink`
+and `a_compressed_systems_ties_are_decided_where_it_sets_them` now assert,
+before reading ink or ties, that the system the file breaks fills its line
+within 0.05 on every page and stands narrower there than at its natural
+spacing, so a held system left uncompressed fails them.
+`a_held_systems_floor_takes_its_lead_and_a_continued_ties_room` holds three
+systems in a key of seven flats, the middle one opening on a tie continued
+from the first, on every page down to the narrowest whose line its floor
+with its lead and the tie's room fits, every system's ink within the margin
+there, and the next page adds a named system inside the middle one; with
+either the lead or the room left out of the floor's measure, a held system
+runs past the margin unnamed. `a_held_systems_floor_keeps_musescores_least_distances`
+finds the narrowest page, to a tenth of a space, that holds a system the
+file breaks, and reads there four of `floor_gap`'s distances as the page
+draws them: two whole notes at one height 0.35 apart, an up stem and the
+down stem after it 0.85, a dot 0.65 before the next head, a head 1.5 before
+the barline after it, each within the tenth the width steps by. All are in
+`epiphany-cli`.

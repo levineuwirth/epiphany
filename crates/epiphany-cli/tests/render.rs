@@ -6868,10 +6868,11 @@ fn ink_on_ink(ink: &[(String, [f32; 4])]) -> std::collections::BTreeSet<(String,
 /// after the one before it: a system the file breaks, of dotted rhythms,
 /// seconds, accidentals beside heads and ledger lines, rests, a leap of two
 /// octaves, a clef change and a key and time change, set on every page down
-/// to the narrowest whose line its floor still fits, shares no ink its
-/// natural spacing does not, and each of its heads stands after the previous
-/// onset's by MuseScore's least distance between two notes of a voice, a
-/// tenth of a space, however far apart their heights.
+/// to the narrowest whose line its floor still fits, compressed there to fill
+/// its line, shares no ink its natural spacing does not, and each of its
+/// heads stands after the previous onset's by MuseScore's least distance
+/// between two notes of a voice, a tenth of a space, however far apart their
+/// heights.
 #[test]
 fn compression_at_the_floor_puts_no_ink_on_ink() {
     let n = |step, alter, octave, duration, kind| {
@@ -6966,7 +6967,7 @@ fn compression_at_the_floor_puts_no_ink_on_ink() {
     let keys: std::collections::BTreeSet<&String> = natural_ink.iter().map(|(k, _)| k).collect();
     let natural = ink_on_ink(&natural_ink);
 
-    let mut tightest = None;
+    let (mut tightest, mut compressed) = (None, 0);
     for tenth in (300..=1200).rev().step_by(5) {
         let width = tenth as f32 / 10.0;
         std::fs::write(&path, broken_part(width, attributes, &measures, &[2, 6])).expect("written");
@@ -6976,6 +6977,17 @@ fn compression_at_the_floor_puts_no_ink_on_ink() {
             break;
         }
         assert_eq!(system_starts(&loaded, &report.layout), vec![1, 2, 6]);
+        // The system the file breaks is compressed and fills its line before
+        // its ink is read: wider at its natural spacing than every page here.
+        let right = system_ink_right(&report.layout)[1];
+        assert!(
+            (right - (width - 7.5)).abs() < 0.05,
+            "at width {width} the held system's ink runs to {right}, the margin at {}",
+            width - 7.5
+        );
+        if measures_span(&loaded, &report.layout, 2, 5) < spread - 1e-3 {
+            compressed += 1;
+        }
         let ink: Vec<(String, [f32; 4])> = keyed_ink(&report.layout)
             .into_iter()
             .filter(|(k, _)| keys.contains(k))
@@ -7030,6 +7042,10 @@ fn compression_at_the_floor_puts_no_ink_on_ink() {
     // line the floor overflows, holds the measures well inside their natural
     // width.
     let tightest = tightest.expect("some page holds the file's systems");
+    assert!(
+        compressed as f32 >= (120.0 - tightest) * 2.0,
+        "the system is compressed on {compressed} pages, every page from 120 down to {tightest}"
+    );
     let line = tightest - 15.0;
     assert!(
         line < 0.8 * spread,
@@ -7041,7 +7057,8 @@ fn compression_at_the_floor_puts_no_ink_on_ink() {
 /// voice's flagged eighth tied to a quarter, over a whole note, whose tie the
 /// natural spacing starts past the flag, keeps at least a space between its
 /// ends on every page down to the narrowest whose line the system's floor
-/// fits, starting past its flag only where that leaves it the space.
+/// fits, compressed there to fill its line, starting past its flag only
+/// where that leaves it the space.
 #[test]
 fn a_compressed_systems_ties_are_decided_where_it_sets_them() {
     let note = |pitch: &str, duration: u8, kind: &str, voice: u8, tie: &str| {
@@ -7080,7 +7097,9 @@ fn a_compressed_systems_ties_are_decided_where_it_sets_them() {
     // On a page that holds them at their natural spacing, each tie starts
     // past its eighth's flag.
     std::fs::write(&path, broken_part(2000.0, attributes, &measures, &[])).expect("written");
-    let wide = epiphany_cli::engrave_loaded(&load(&path).expect("loads")).layout;
+    let wide_loaded = load(&path).expect("loads");
+    let wide = epiphany_cli::engrave_loaded(&wide_loaded).layout;
+    let natural = measures_span(&wide_loaded, &wide, 2, 7);
     let flags: Vec<[f32; 4]> = wide
         .glyphs
         .iter()
@@ -7094,7 +7113,7 @@ fn a_compressed_systems_ties_are_decided_where_it_sets_them() {
         );
     }
 
-    let (mut held, mut short) = (0, Vec::new());
+    let (mut held, mut compressed, mut short) = (0, 0, Vec::new());
     for tenth in (300..=1500).rev().step_by(5) {
         let width = tenth as f32 / 10.0;
         std::fs::write(&path, broken_part(width, attributes, &measures, &[2])).expect("written");
@@ -7104,6 +7123,17 @@ fn a_compressed_systems_ties_are_decided_where_it_sets_them() {
             break;
         }
         assert_eq!(system_starts(&loaded, &report.layout), vec![1, 2]);
+        // The system the file breaks fills its line before its ties are
+        // read, compressed wherever its natural spacing is wider.
+        let right = system_ink_right(&report.layout)[1];
+        assert!(
+            (right - (width - 7.5)).abs() < 0.05,
+            "at width {width} the held system's ink runs to {right}, the margin at {}",
+            width - 7.5
+        );
+        if measures_span(&loaded, &report.layout, 2, 7) < natural - 1e-3 {
+            compressed += 1;
+        }
         let ties = ties_of(&report.layout);
         assert_eq!(ties.len(), 7, "a tie in each measure");
         for tie in &ties {
@@ -7115,6 +7145,10 @@ fn a_compressed_systems_ties_are_decided_where_it_sets_them() {
         held += 1;
     }
     assert!(held > 10, "pages down to the floor held the file's systems");
+    assert!(
+        compressed > 10,
+        "{compressed} of the {held} pages compress the system"
+    );
     let shortest = short.iter().map(|s| s.1).fold(f32::INFINITY, f32::min);
     assert!(
         short.is_empty(),
@@ -7296,6 +7330,242 @@ fn a_systems_floor_is_measured_with_the_lead_it_opens_with() {
         plain, sharps,
         "the middle system holds down to {plain} without the later key and to {sharps} with it"
     );
+}
+
+/// A held system's floor counts the lead it opens with and the room a tie
+/// continued into it needs: in a key of seven flats, three systems the file
+/// breaks, the middle one opening on a tie continued from the first and
+/// holding three measures of eighths, keep their ink within the margin on
+/// every page down to the narrowest whose line that system's floor with its
+/// lead and the tie's room fits, compressing it there, and on the next page
+/// a system is added inside it, named.
+#[test]
+fn a_held_systems_floor_takes_its_lead_and_a_continued_ties_room() {
+    let n =
+        |step, octave, duration, kind| sixteenths(Some((step, -1, octave)), duration, kind, false);
+    let tied = |note: String, kind: &str| {
+        note.replace("<voice>", &format!("<tie type=\"{kind}\"/><voice>"))
+            .replace(
+                "</type></note>",
+                &format!("</type><notations><tied type=\"{kind}\"/></notations></note>"),
+            )
+    };
+    let eighths = |steps: &[&'static str]| -> String {
+        steps.iter().map(|step| n(step, 5, 2, "eighth")).collect()
+    };
+    let measures = vec![
+        n("B", 4, 16, "whole"),
+        [n("B", 4, 8, "half"), tied(n("E", 5, 8, "half"), "start")].concat(),
+        [
+            tied(n("E", 5, 4, "quarter"), "stop"),
+            eighths(&["D", "C", "D", "E", "F", "E"]),
+        ]
+        .concat(),
+        eighths(&["D", "C", "D", "E", "F", "E", "D", "C"]),
+        eighths(&["D", "E", "F", "E", "D", "C", "D", "E"]),
+        n("E", 5, 16, "whole"),
+    ];
+    let attributes = "<key><fifths>-7</fifths></key><time><beats>4</beats>\
+                      <beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef>";
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("lead_and_room.musicxml");
+
+    std::fs::write(&path, broken_part(2000.0, attributes, &measures, &[])).expect("written");
+    let loaded = load(&path).expect("loads");
+    let natural = measures_span(&loaded, &epiphany_cli::engrave_loaded(&loaded).layout, 3, 5);
+
+    let (mut compressed, mut tightest, mut added_at) = (0, None, None);
+    for tenth in (400..=1600).rev().step_by(5) {
+        let width = tenth as f32 / 10.0;
+        std::fs::write(&path, broken_part(width, attributes, &measures, &[3, 6])).expect("written");
+        let loaded = load(&path).expect("loads");
+        let report = solve_loaded(&loaded);
+        let layout = &report.layout;
+        let starts = system_starts(&loaded, layout);
+        let added = added_systems(&report);
+        if !added.is_empty() {
+            // The search breaks the middle system by natural widths, so it
+            // may add more than one, each named.
+            assert_eq!(
+                starts.len(),
+                3 + added.len(),
+                "at width {width}: {starts:?}, {added:?}"
+            );
+            assert!(
+                starts[..2] == [1, 3]
+                    && starts[starts.len() - 1] == 6
+                    && starts[2..starts.len() - 1]
+                        .iter()
+                        .all(|m| (4..=5).contains(m)),
+                "at width {width}, the systems added stand inside the middle one: {starts:?}"
+            );
+            added_at = Some(width);
+            break;
+        }
+        assert_eq!(starts, vec![1, 3, 6], "at width {width}");
+        assert_eq!(
+            ties_of(layout).len(),
+            2,
+            "the tie split at the file's break"
+        );
+        let right = system_ink_right(layout);
+        for (s, r) in right.iter().enumerate() {
+            assert!(
+                *r <= width - 7.5 + 0.05,
+                "at width {width} system {s}'s ink runs to {r}, past the margin at {}",
+                width - 7.5
+            );
+        }
+        if measures_span(&loaded, layout, 3, 5) < natural - 1e-3 {
+            assert!(
+                (right[1] - (width - 7.5)).abs() < 0.05,
+                "at width {width} the compressed system's ink runs to {}",
+                right[1]
+            );
+            compressed += 1;
+        }
+        tightest = Some(width);
+    }
+    let tightest = tightest.expect("a page holds the file's systems");
+    let added_at = added_at.expect("a page whose line the floor with its lead and room overflows");
+    assert_eq!(added_at, tightest - 0.5);
+    assert!(
+        compressed > 10,
+        "{compressed} pages compress the middle system"
+    );
+}
+
+/// A held system's floor keeps MuseScore's least distances, as its padding
+/// table sets them at the default style: on the narrowest page whose line
+/// the floor of a system the file breaks fits, compressed there to its
+/// floor, two whole notes at one height stand 0.35 apart
+/// (`minNoteDistance`), an up stem and the down stem after it 0.85, a dot
+/// 0.65 before the next head, and a head 1.5 before the barline after it
+/// (`noteBarDistance`), each within the tenth of a space the page's width
+/// steps by.
+#[test]
+fn a_held_systems_floor_keeps_musescores_least_distances() {
+    let n =
+        |step, octave, duration, kind| sixteenths(Some((step, 0, octave)), duration, kind, false);
+    let dotted = |note: String| note.replace("</type></note>", "</type><dot/></note>");
+    let measures = vec![
+        "<note><rest measure=\"yes\"/><duration>32</duration><voice>1</voice></note>".to_string(),
+        [n("C", 5, 16, "whole"), n("C", 5, 16, "whole")].concat(),
+        [
+            n("E", 4, 8, "half"),
+            n("G", 5, 8, "half"),
+            dotted(n("A", 4, 6, "quarter")),
+            n("A", 4, 2, "eighth"),
+            n("B", 4, 8, "half"),
+        ]
+        .concat(),
+    ];
+    let attributes = "<time><beats>8</beats><beat-type>4</beat-type></time>\
+                      <clef><sign>G</sign><line>2</line></clef>";
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("floor_distances.musicxml");
+    let solve = |tenths: u32| {
+        std::fs::write(
+            &path,
+            broken_part(tenths as f32 / 10.0, attributes, &measures, &[2]),
+        )
+        .expect("written");
+        let loaded = load(&path).expect("loads");
+        let report = solve_loaded(&loaded);
+        (loaded, report)
+    };
+    let holds = |tenths: u32| {
+        let (loaded, report) = solve(tenths);
+        added_systems(&report).is_empty() && system_starts(&loaded, &report.layout) == vec![1, 2]
+    };
+    // The narrowest page, to a tenth of a space, that holds the file's
+    // systems; the next narrower overflows the held system's floor.
+    let (mut lo, mut hi) = (200, 2000);
+    assert!(holds(hi) && !holds(lo));
+    while hi - lo > 1 {
+        let mid = (lo + hi) / 2;
+        if holds(mid) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    let (loaded, report) = solve(hi);
+    let layout = &report.layout;
+    let natural = {
+        let (wide, report) = solve(20000);
+        measures_span(&wide, &report.layout, 2, 3)
+    };
+    assert!(
+        measures_span(&loaded, layout, 2, 3) < 0.6 * natural,
+        "the held system is compressed toward its floor"
+    );
+
+    let heads = heads_by_onset(&loaded.reduced.score, layout);
+    let head = |onset: f64| {
+        let (_, _, g) = heads
+            .iter()
+            .find(|(at, _, _)| (at - onset).abs() < 1e-9)
+            .unwrap_or_else(|| panic!("a head at {onset}"));
+        glyph_box(g)
+    };
+    let (_, event_of) = staves_of(&loaded.reduced.score);
+    let stem = |onset: f64| {
+        let (_, _, g) = heads
+            .iter()
+            .find(|(at, _, _)| (at - onset).abs() < 1e-9)
+            .expect("a head");
+        let epiphany_core::TypedObjectId::Pitch(pitch) = g.provenance.source else {
+            panic!("a pitch's head");
+        };
+        let event = event_of[&pitch];
+        layout
+            .strokes
+            .iter()
+            .filter(|s| s.provenance.source == epiphany_core::TypedObjectId::Event(event))
+            .filter(|s| (s.from.x.0 - s.to.x.0).abs() < 1e-4 && (s.from.y.0 - s.to.y.0).abs() > 2.0)
+            .map(stroke_box)
+            .next()
+            .expect("a stem")
+    };
+    let after = |x: f32, name: &str| {
+        layout
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str().starts_with(name))
+            .map(glyph_box)
+            .filter(|b| b[0] > x)
+            .min_by(|a, b| a[0].total_cmp(&b[0]))
+            .unwrap_or_else(|| panic!("a {name} after {x}"))
+    };
+    // Onsets in whole notes: measure 2 from 2, measure 3 from 4.
+    let distances = [
+        (
+            "two whole notes at one height",
+            head(3.0)[0] - head(2.0)[2],
+            0.35,
+        ),
+        (
+            "an up stem and the down stem after it",
+            stem(4.5)[0] - stem(4.0)[2],
+            0.85,
+        ),
+        (
+            "a dot and the next head",
+            head(5.375)[0] - after(head(5.0)[2], "augmentationDot")[2],
+            0.65,
+        ),
+        (
+            "a head and the barline after it",
+            after(head(3.0)[2], "barline")[0] - head(3.0)[2],
+            1.5,
+        ),
+    ];
+    for (what, distance, least) in distances {
+        assert!(
+            distance > least - 1e-3 && distance < least + 0.1,
+            "on the narrowest page, {hi} tenths wide, {what} stand {distance} apart, the \
+             floor's {least}"
+        );
+    }
 }
 
 /// What a layout draws, as a sorted list: each glyph by name and place, each
