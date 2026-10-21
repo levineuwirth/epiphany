@@ -318,29 +318,42 @@ pub struct Engraver {
 /// a courtesy, where a key change inside a system had drawn nothing, and to
 /// `44` when a slur or tie began passing over the accidentals of its staff
 /// it would meet, after spacing: a slur by raising its arc or, near an end,
-/// lifting that end, a tie by raising its arc within bounds, and to `45` when
-/// time columns began spacing by the durations sounding through them, a
-/// column's ink clearing only the earlier ink at its height, a justified
-/// system's slack going to its note columns by their springs, and a region's
-/// last system justifying once it fills three tenths of the width, and to
-/// `46` when a barline joined across the gap between two staves of a group
-/// began reserving its line there, so ink in the gap keeps a barline's
-/// clearance, and to `47` when a tie that must arc further than 1.5 spaces
-/// to pass an accidental began taking a fuller arc, as far as a sixth of its
-/// span and three spaces at most, rather than running through it, to `48`
-/// when a slur or tie began passing the stems of its staff inside its span
-/// as it passes accidentals, to `49` when a tie meeting its first note's
-/// flag began starting past it, to `50` when a tie that cannot pass a stem
-/// began passing its accidentals still, and to `51` when a tie the spaced
-/// line left too short to start past its first note's flag began starting
-/// past it where its system's justification gives it the span, to `52`
-/// when an event the pre-pass does not decompose began spacing by its own
-/// sounding duration, and to `53` when a system the score's breaks fix that
-/// holds more than the line began compressing toward MuseScore's minimum
-/// distances rather than taking a system more, the search adding one only
-/// where even that floor overflows, and to `54` when a compressed system's
-/// slur began passing the heads of its band as it passes accidentals.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(54);
+/// lifting that end, a tie by raising its arc within bounds. Two branches
+/// then raised it from `44` at once. On one, to `45` when a voice visiting a
+/// staff from its home on another began standing on its home's side, above
+/// when its home is above, and the staff's own first voice beside it alone,
+/// where the visitor had been ranked among the staff's own voices and drawn
+/// below (D46), and to `46` when a grace note, which schema major 5 imports
+/// as an event of zero duration, began being left out of the drawing until
+/// grace notes are drawn, where it had stood in its principal's chord as a
+/// full-size quarter note, and to `47` when a rest of a staff's own voice
+/// that meets the ink of a voice visiting the staff began moving clear of it,
+/// to the side away from the visitor's stem, where alone on its staff it had
+/// stood at its own place on the visiting head or stem. On the other, to
+/// `45` when time columns began spacing by the durations sounding through
+/// them, a column's ink clearing only the earlier ink at its height, a
+/// justified system's slack going to its note columns by their springs, and
+/// a region's last system justifying once it fills three tenths of the
+/// width, and to `46` when a barline joined across the gap between two
+/// staves of a group began reserving its line there, so ink in the gap keeps
+/// a barline's clearance, and to `47` when a tie that must arc further than
+/// 1.5 spaces to pass an accidental began taking a fuller arc, as far as a
+/// sixth of its span and three spaces at most, rather than running through
+/// it, to `48` when a slur or tie began passing the stems of its staff inside
+/// its span as it passes accidentals, to `49` when a tie meeting its first
+/// note's flag began starting past it, to `50` when a tie that cannot pass a
+/// stem began passing its accidentals still, and to `51` when a tie the
+/// spaced line left too short to start past its first note's flag began
+/// starting past it where its system's justification gives it the span, to
+/// `52` when an event the pre-pass does not decompose began spacing by its
+/// own sounding duration, and to `53` when a system the score's breaks fix
+/// that holds more than the line began compressing toward MuseScore's
+/// minimum distances rather than taking a system more, the search adding one
+/// only where even that floor overflows, and to `54` when a compressed
+/// system's slur began passing the heads of its band as it passes
+/// accidentals. It went to `55`, past both, when the two were taken
+/// together.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(55);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -1225,6 +1238,7 @@ mod tests {
                             keys: vec![],
                             beams: Vec::new(),
                             cross_beams: Vec::new(),
+                            visiting: Default::default(),
                         }),
                     ),
                     manifested(
@@ -1673,6 +1687,7 @@ mod tests {
                 keys: vec![],
                 beams: Vec::new(),
                 cross_beams: Vec::new(),
+                visiting: Default::default(),
             }),
         )];
         objects.extend(note(1, 101, MusicalPosition::origin()));
@@ -2195,6 +2210,7 @@ mod tests {
                             }],
                             beams: Vec::new(),
                             cross_beams: Vec::new(),
+                            visiting: Default::default(),
                         }),
                     ),
                     manifested(

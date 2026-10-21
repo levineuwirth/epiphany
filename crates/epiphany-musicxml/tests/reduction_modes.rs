@@ -4299,7 +4299,7 @@ fn a_pitch_inserted_into_an_unpitched_event_makes_it_a_note_in_both_modes() {
         duration: m.quarters[0].duration().clone(),
         staff_position: StaffPosition(-1),
         instrument_member: UnpitchedMemberId(0),
-        articulations: Vec::new(),
+        marks: Vec::new(),
         dynamic: None,
         stem: epiphany_core::StemConfiguration,
         grace: None,
@@ -5203,6 +5203,93 @@ fn a_migration_admits_an_event_as_its_targets_discipline_does_in_both_modes() {
     }
 }
 
+/// A whole-event modify carrying a pitch another event holds live is refused
+/// `RecreateContentMismatch`, in both modes, as a create re-carrying a live id
+/// under a different parent is: a pitch belongs to one event. One author
+/// writes the second quarter as a chord of its own pitch and the first
+/// quarter's, by itself and with a new pitch beside them; neither applies,
+/// nothing is minted, and the first quarter keeps its pitch. A chord of its
+/// own pitch and a new one applies, as does one carrying a pitch a delete
+/// removed from the first quarter, which stays out (delete wins). Before
+/// reduction version 4 the modify applied in both modes and the pitch stood
+/// in two events (`PitchIdUnique`); X4a review 3 found it (its F1).
+#[test]
+fn a_modify_carrying_a_pitch_another_event_holds_is_refused_in_both_modes() {
+    use epiphany_core::{IdentifiedPitch, PitchId};
+    use epiphany_ops::DeleteIdentifiedPitchOp;
+    let m = Measure::new();
+    let own = |i: usize| match &m.quarters[i] {
+        Event::Pitched(e) => e.pitches[0].clone(),
+        other => panic!("a note, not {other:?}"),
+    };
+    let chord = |pitches: Vec<IdentifiedPitch>| {
+        let Event::Pitched(mut second) = m.quarters[1].clone() else {
+            unreachable!("a note");
+        };
+        second.pitches = pitches;
+        primitive(OperationKind::ModifyEvent(ModifyEventOp {
+            event: Event::Pitched(second),
+        }))
+    };
+    let fresh = |counter: u64| IdentifiedPitch {
+        id: PitchId::new(A, counter),
+        pitch: valuegen::pitch_value_nth(4),
+    };
+    let mismatch = refused(PreconditionFailureReason::RecreateContentMismatch);
+    let graph = |authored: &[OperationEnvelope]| {
+        let mut set = OperationSet::new();
+        set.accept_all(m.import.envelopes.iter().chain(authored).cloned());
+        set.reduce_onto(&Score::empty(IdentityContext::new(m.import.replica)))
+            .score
+    };
+
+    // The first quarter's pitch carried, alone and beside a new pitch.
+    for (n, carried) in [vec![own(1), own(0)], vec![own(1), own(0), fresh(3600)]]
+        .into_iter()
+        .enumerate()
+    {
+        let authored = vec![m.op(A, n as u64, 1, &[], chord(carried))];
+        let state = m.agree("a chord carrying another event's pitch", &authored);
+        assert_eq!(effect(&state, authored[0].id), mismatch);
+        assert!(
+            !state
+                .objects
+                .contains_key(&TypedObjectId::Pitch(PitchId::new(A, 3600))),
+            "nothing minted"
+        );
+        let score = graph(&authored);
+        assert_eq!(score.events.get(m.q(0)), Some(&m.quarters[0]));
+        assert_eq!(score.events.get(m.q(1)), Some(&m.quarters[1]));
+    }
+
+    // Its own pitch and a new one: applies.
+    let authored = vec![m.op(A, 0, 1, &[], chord(vec![own(1), fresh(3601)]))];
+    let state = m.agree("a chord of its own pitch and a new one", &authored);
+    assert_eq!(
+        effect(&state, authored[0].id),
+        Some(OperationEffect::Applied)
+    );
+
+    // The first quarter's pitch deleted, then carried: applies without it.
+    let deleted = m.op(
+        A,
+        0,
+        1,
+        &[],
+        primitive(OperationKind::DeleteIdentifiedPitch(
+            DeleteIdentifiedPitchOp { pitch: own(0).id },
+        )),
+    );
+    let written = m.op(A, 1, 2, &[deleted.id], chord(vec![own(1), own(0)]));
+    let authored = vec![deleted, written.clone()];
+    let state = m.agree("a chord carrying a deleted pitch", &authored);
+    assert_eq!(effect(&state, written.id), Some(OperationEffect::Applied));
+    let Some(Event::Pitched(second)) = graph(&authored).events.get(m.q(1)).cloned() else {
+        panic!("a note");
+    };
+    assert_eq!(second.pitches, vec![own(1)]);
+}
+
 /// A whole-event modify mints each pitch its value carries that no operation
 /// has minted, in both modes, as an insert mints its event's pitches: the
 /// pitch is live, operations naming it apply, the tie check reads it, and an
@@ -5596,6 +5683,68 @@ fn a_trajectorys_own_pitches_are_read_and_written_as_a_notes_in_both_modes() {
             DeleteIdentifiedPitchOp { pitch: id },
         ))
     };
+
+    // A stepwise trajectory's steps, minted by the write, transposed by steps,
+    // given a new value, and one deleted (X4a review 3's L3: no test wrote a
+    // step).
+    let steps = vec![
+        pitch(PitchId::new(A, 3230), 5),
+        pitch(PitchId::new(A, 3231), 6),
+    ];
+    let Event::Trajectory(mut stepwise) = trajectory(2, third.clone(), third_upper.clone()) else {
+        unreachable!("a trajectory");
+    };
+    stepwise.shape = TrajectoryShape::Stepwise(steps.clone());
+    let revalued = valuegen::pitch_value_nth(7);
+    let walked = vec![
+        (add(2, third_upper.clone()), None),
+        (modify(Event::Trajectory(stepwise)), None),
+        (
+            primitive(OperationKind::Transpose(TransposeOp {
+                targets: vec![steps[0].id],
+                chromatic_steps: 2,
+            })),
+            None,
+        ),
+        (
+            primitive(OperationKind::ModifyIdentifiedPitch(
+                epiphany_ops::ModifyIdentifiedPitchOp {
+                    pitch: steps[1].id,
+                    value: revalued.clone(),
+                },
+            )),
+            None,
+        ),
+    ];
+    let authored = serial(walked.clone());
+    let state = m.agree("a stepwise trajectory's steps written", &authored);
+    for op in &authored {
+        assert_eq!(effect(&state, op.id), Some(OperationEffect::Applied));
+    }
+    for step in &steps {
+        assert!(
+            live(&state, TypedObjectId::Pitch(step.id)),
+            "a step is minted"
+        );
+    }
+    let Some(Event::Trajectory(held)) = graph(&authored).events.get(m.q(2)).cloned() else {
+        panic!("a trajectory");
+    };
+    let TrajectoryShape::Stepwise(held_steps) = held.shape else {
+        panic!("stepwise");
+    };
+    assert_eq!(held_steps.len(), 2);
+    assert_ne!(held_steps[0].pitch, steps[0].pitch, "the first step moved");
+    assert_eq!(held_steps[1].pitch, revalued, "the second step revalued");
+    let mut deleted = walked;
+    deleted.push((delete_pitch(steps[0].id), None));
+    let authored = serial(deleted);
+    m.agree("a stepwise trajectory's step deleted", &authored);
+    let Some(Event::Pitched(left)) = graph(&authored).events.get(m.q(2)).cloned() else {
+        panic!("a note");
+    };
+    let ids: Vec<PitchId> = left.pitches.iter().map(|ip| ip.id).collect();
+    assert_eq!(ids, vec![third.id, third_upper.id, steps[1].id]);
     let authored = serial(vec![
         (add(2, third_upper.clone()), None),
         (
@@ -5872,6 +6021,151 @@ fn a_best_effort_undo_keeps_a_signature_its_dropped_restoration_leaves_named_in_
         "the 4/4 stays"
     );
     assert!(live(&state, TypedObjectId::TimeSignature(half)));
+}
+
+/// A best-effort undo keeps a time signature a region's whole grid still
+/// names after the undo, in both modes: the grid arm of the rule above. One
+/// author: a region with a measure at its start under a 4/4 grid; a
+/// transaction minting a 2/4 signature (by a meter change at a later bar) and
+/// setting the region's whole grid to it; measures then entered at its
+/// second and third half bars; and the transaction undone best effort. The
+/// grid's restoration to 4/4 would leave those measures half a bar apart
+/// under a whole-bar meter, so it is dropped and the grid keeps naming the
+/// 2/4 signature, which stays; the meter change's removal is admitted. With
+/// the grid arm gone the undo removed the signature the grid still named
+/// (`CrossCuttingRefsResolve`); X4a review 3 found the arm pinned by nothing
+/// (its L2).
+#[test]
+fn a_best_effort_undo_keeps_a_signature_its_dropped_grid_restoration_leaves_named_in_both_modes() {
+    use epiphany_core::{MeasureId, MeterChange, MetricGrid, StaffInstanceId, TimeSignatureId};
+    use epiphany_ops::{
+        CreateMeasureOp, CreateRegionOp, CreateStaffInstanceOp, SetMetricGridOp, SetTimeSignatureOp,
+    };
+    let m = Measure::new();
+    let region = RegionId::new(A, 3420);
+    let instance = StaffInstanceId::new(A, 3421);
+    let (whole, half) = (TimeSignatureId::new(A, 3422), TimeSignatureId::new(A, 3423));
+    let tx = TransactionId::new(A, 3424);
+    let at = |halves: i64| {
+        valuegen::region_start_anchor(
+            region,
+            MusicalPosition(RationalTime::new(halves, 2).expect("halves")),
+        )
+    };
+    let measure = |id: u64, halves: i64| {
+        primitive(OperationKind::CreateMeasure(CreateMeasureOp {
+            instance,
+            measure: epiphany_core::Measure {
+                id: MeasureId::new(A, id),
+                start: at(halves),
+                time_signature: None,
+                explicit_number: Some(halves as u32 + 1),
+                number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+            },
+        }))
+    };
+    let signature = |id: TimeSignatureId, beats: u16, halves: i64| {
+        primitive(OperationKind::SetTimeSignature(SetTimeSignatureOp {
+            region,
+            anchor: at(halves),
+            time_signature: Some(valuegen::time_signature(id, beats)),
+        }))
+    };
+    let grid = |signature: TimeSignatureId| {
+        primitive(OperationKind::SetMetricGrid(SetMetricGridOp {
+            region,
+            grid: Some(MetricGrid {
+                meter_sequence: vec![MeterChange {
+                    anchor: at(0),
+                    time_signature: signature,
+                }],
+            }),
+        }))
+    };
+    let payloads = vec![
+        (
+            primitive(OperationKind::CreateRegion(CreateRegionOp {
+                region: valuegen::region(region),
+            })),
+            None,
+        ),
+        (
+            primitive(OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                region,
+                instance: valuegen::staff_instance(instance, m.import.ids.staves[0][0]),
+            })),
+            None,
+        ),
+        (measure(3425, 0), None),
+        (signature(whole, 4, 0), None),
+        (grid(whole), None),
+        (
+            primitive(OperationKind::DeclareTransaction(TransactionDescriptor {
+                id: tx,
+                label: String::from("edit"),
+                category: None,
+            })),
+            Some(tx),
+        ),
+        (signature(half, 2, 4), Some(tx)),
+        (grid(half), Some(tx)),
+        (measure(3426, 1), None),
+        (measure(3427, 2), None),
+        (
+            OperationPayload::UndoTransaction(UndoTransactionPayload {
+                target: tx,
+                policy: UndoPolicy::BestEffort,
+            }),
+            None,
+        ),
+    ];
+    let mut authored: Vec<OperationEnvelope> = Vec::new();
+    for (counter, (payload, transaction)) in payloads.into_iter().enumerate() {
+        let seen: Vec<OperationId> = authored.last().map(|e| e.id).into_iter().collect();
+        let mut env = m.op(A, counter as u64, counter as i64 + 1, &seen, payload);
+        env.transaction = transaction;
+        authored.push(env);
+    }
+    let state = m.agree(
+        "a best-effort undo of a signature its grid keeps",
+        &authored,
+    );
+    for env in &authored {
+        assert!(
+            matches!(
+                effect(&state, env.id),
+                Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
+            ),
+            "{:?}: {:?}",
+            env.id,
+            effect(&state, env.id)
+        );
+    }
+    assert!(
+        live(&state, TypedObjectId::TimeSignature(half)),
+        "the 2/4 the grid names stays"
+    );
+    assert!(live(&state, TypedObjectId::TimeSignature(whole)));
+    let mut set = OperationSet::new();
+    set.accept_all(m.import.envelopes.iter().chain(&authored).cloned());
+    let score = set
+        .reduce_onto(&Score::empty(IdentityContext::new(m.import.replica)))
+        .score;
+    let held = score
+        .canvas
+        .regions
+        .iter()
+        .find(|r| r.id == region)
+        .expect("the region");
+    let epiphany_core::RegionContent::StaffBased(content) = &held.content else {
+        panic!("a staff-based region");
+    };
+    let named: Vec<TimeSignatureId> = content
+        .default_metric_grid
+        .iter()
+        .flat_map(|g| g.meter_sequence.iter().map(|c| c.time_signature))
+        .collect();
+    assert_eq!(named, vec![half], "the grid's restoration was dropped");
 }
 
 /// An event an undo removes takes every pitch it holds with it, as a delete

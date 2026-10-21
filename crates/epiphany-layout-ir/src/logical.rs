@@ -13,6 +13,7 @@
 //! change should invalidate it, Chapter 7 §7.1's requirement), and that
 //! provenance survives the whole pipeline.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::prepass::{derive_annotations, DerivedAnnotations, PrePassProfile};
@@ -125,6 +126,10 @@ pub struct StaffContent {
     /// of another staff of the region: a beam across two staves, as the
     /// score's beams name it.
     pub cross_beams: Vec<BeamGroup>,
+    /// The events of the instance's voices that visit it from their home on
+    /// another staff of the region (`Score::voice_homes`, D46): a rest of the
+    /// instance's own voices stands clear of their ink.
+    pub visiting: BTreeSet<EventId>,
 }
 
 /// A beamed group: two or more notes of one voice, each an eighth or shorter
@@ -605,7 +610,13 @@ pub struct LogicalLayoutIR {
 /// layout objects — both visual staves are preserved, neither is dropped. A
 /// stable-id collision (the same `(source, region)` reached twice, e.g. a staff
 /// listed twice in one staff extent) is de-duplicated.
+///
+/// A grace note is left out (`drawn_view`): until grace notes are drawn
+/// (X4c), the layout lays out the score as it stood before schema major 5
+/// brought them in. The [`ScoreVersion`] is still the whole score's.
 pub fn to_logical(score: &Score) -> LogicalLayoutIR {
+    let source = derive_score_version(score);
+    let score = &*drawn_view(score);
     let mut regions = Vec::new();
     let mut engraving_decisions = Vec::new();
     // The projected break overrides, keyed by owning region for the final
@@ -974,7 +985,6 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
         ))
     });
 
-    let source = derive_score_version(score);
     LogicalLayoutIR {
         source,
         regions,
@@ -985,6 +995,48 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
             .collect(),
         cross_region,
     }
+}
+
+/// The score as the layout draws it: every grace note left out, with the
+/// beams, slurs and ties that name one, until grace notes are drawn (X4c).
+/// Before schema major 5 the importer skipped a grace note, so the layout never
+/// met one; drawn through the paths every other note takes, a grace of zero
+/// duration would stand in its principal's chord as a full-size quarter note.
+/// A beam keeps its other notes while two remain. Borrowed when the score
+/// holds no grace note.
+pub(crate) fn drawn_view(score: &Score) -> Cow<'_, Score> {
+    let graces: BTreeSet<EventId> = score
+        .events
+        .iter()
+        .filter(|event| event.grace().is_some())
+        .map(Event::id)
+        .collect();
+    if graces.is_empty() {
+        return Cow::Borrowed(score);
+    }
+    let mut view = score.clone();
+    for grace in &graces {
+        view.events.remove(*grace);
+    }
+    for region in &mut view.canvas.regions {
+        if let Some(instances) = region.content.staff_instances_mut() {
+            for voice in instances.iter_mut().flat_map(|si| si.voices.iter_mut()) {
+                voice.events.retain(|event| !graces.contains(event));
+            }
+        }
+    }
+    let cc = &mut view.cross_cutting;
+    for beam in &mut cc.beams {
+        beam.events.retain(|event| !graces.contains(event));
+    }
+    cc.beams.retain(|beam| beam.events.len() >= 2);
+    cc.slurs
+        .retain(|slur| !graces.contains(&slur.start_event) && !graces.contains(&slur.end_event));
+    cc.ties
+        .retain(|tie| !graces.contains(&tie.start_event) && !graces.contains(&tie.end_event));
+    view.decomposition_attachments
+        .retain(|attachment| !graces.contains(&attachment.target));
+    Cow::Owned(view)
 }
 
 /// The canonical bytes of a projected break override's anchor (its ordering
@@ -1049,6 +1101,14 @@ fn staff_content(
             .collect(),
         beams: beam_groups(score, si, annotations),
         cross_beams: cross_beam_groups(score, si, region_events, annotations),
+        visiting: {
+            let homes = home_sides(score, si);
+            si.voices
+                .iter()
+                .filter(|voice| homes.contains_key(&voice.id))
+                .flat_map(|voice| voice.events.iter().copied())
+                .collect()
+        },
     })
 }
 
@@ -1403,8 +1463,16 @@ fn event_content(
 /// upper, lower and so on; a voice stating its stem direction is upper or
 /// lower by it throughout. Only a note, an unpitched note or a visible rest at
 /// a musical position with a musical duration shows ink.
+///
+/// A voice visiting from its home on another staff (`Score::voice_homes`,
+/// schema major 5) is not ranked with the staff's own: it stands on its
+/// home's side throughout, upper when its home staff stands above this one in
+/// the region and lower when below, and its ink is no company for the staff's
+/// first voice (D46).
 fn voice_places(score: &Score, si: &epiphany_core::StaffInstance) -> BTreeMap<EventId, VoicePlace> {
-    let mut voices: Vec<&epiphany_core::Voice> = si.voices.iter().collect();
+    let homes = home_sides(score, si);
+    let (mut voices, visitors): (Vec<&epiphany_core::Voice>, Vec<&epiphany_core::Voice>) =
+        si.voices.iter().partition(|v| !homes.contains_key(&v.id));
     voices.sort_by_key(|v| !v.is_primary);
     let span = |eid: &EventId| -> Option<(MusicalPosition, MusicalPosition)> {
         let (position, duration, visible) = match score.events.get(*eid)? {
@@ -1445,6 +1513,16 @@ fn voice_places(score: &Score, si: &epiphany_core::StaffInstance) -> BTreeMap<Ev
         })
     };
     let mut places = BTreeMap::new();
+    for voice in visitors {
+        let side = match voice.default_stem_direction {
+            Some(epiphany_core::StemDirection::Up) => Some(VoicePlace::Upper),
+            Some(epiphany_core::StemDirection::Down) => Some(VoicePlace::Lower),
+            None => homes.get(&voice.id).copied(),
+        };
+        for eid in &voice.events {
+            places.insert(*eid, side.unwrap_or(VoicePlace::Alone));
+        }
+    }
     for (k, voice) in voices.iter().enumerate() {
         for eid in &voice.events {
             let place = match voice.default_stem_direction {
@@ -1461,6 +1539,38 @@ fn voice_places(score: &Score, si: &epiphany_core::StaffInstance) -> BTreeMap<Ev
         }
     }
     places
+}
+
+/// The side of each voice of a staff instance that visits it from its home on
+/// another staff of its region: upper when that staff stands above this one,
+/// lower when below. A voice whose home is this staff, or a staff the region
+/// does not hold, is the instance's own.
+fn home_sides(
+    score: &Score,
+    si: &epiphany_core::StaffInstance,
+) -> BTreeMap<epiphany_core::VoiceId, VoicePlace> {
+    let staves: Vec<epiphany_core::StaffId> = score
+        .canvas
+        .regions
+        .iter()
+        .find(|region| region.staff_instances().iter().any(|i| i.id == si.id))
+        .map(|region| region.staff_instances().iter().map(|i| i.staff).collect())
+        .unwrap_or_default();
+    let Some(here) = staves.iter().position(|staff| *staff == si.staff) else {
+        return BTreeMap::new();
+    };
+    si.voices
+        .iter()
+        .filter_map(|voice| {
+            let home = score.voice_homes.get(&voice.id)?;
+            let side = match staves.iter().position(|staff| staff == home)? {
+                at if at < here => VoicePlace::Upper,
+                at if at > here => VoicePlace::Lower,
+                _ => return None,
+            };
+            Some((voice.id, side))
+        })
+        .collect()
 }
 
 /// An event's concrete position as a layout [`TimePoint`] (the two share the
@@ -1983,7 +2093,7 @@ pub(crate) fn cross_cutting_objects(score: &Score) -> Vec<(TypedObjectId, Vec<Ty
     for ly in &cc.lyrics {
         out.push((
             TypedObjectId::LyricLine(ly.id),
-            ly.events.iter().map(|e| TypedObjectId::Event(*e)).collect(),
+            vec![TypedObjectId::Event(ly.event)],
         ));
     }
     for ch in &cc.chord_symbols {

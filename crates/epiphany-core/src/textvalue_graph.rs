@@ -25,10 +25,11 @@ use std::collections::BTreeMap;
 use epiphany_determinism::CanonicalF64;
 
 use crate::graph::{
-    AnnotationAnchor, DecompositionSource, EventOrderingDAG, GestureAnchoring, KeySignature,
-    MetadataValue, RegionContent, RegionTimeModel, RepeatKind, ScoreTuningContext,
-    SoundConfiguration, SpaceUnit, SpannerKind, StaffGroupKind, TieClass, TimeSignature,
-    TimeSignatureDisplay, Timestamp, TuningContextSettings, TupletRatio, VoiceOrigin,
+    AnnotationAnchor, DecompositionSource, Dynamic, EventOrderingDAG, GestureAnchoring,
+    KeySignature, MarkerKind, MetadataValue, RegionContent, RegionTimeModel, RepeatKind,
+    ScoreTuningContext, SoundConfiguration, SpaceUnit, SpannerKind, StaffGroupKind, TieClass,
+    TimeSignature, TimeSignatureDisplay, Timestamp, TuningContextSettings, TupletRatio,
+    VoiceOrigin,
 };
 use crate::textvalue::{kebab, Sexp, TextError, TextValue};
 use crate::textvalue_impls::class_of;
@@ -483,7 +484,7 @@ impl TextValue for TuningContextSettings {
 // Tagged unions.
 // ===========================================================================
 
-/// The `SpannerKind` variants, in `fn enc` tag order 0..=8. Each carries its
+/// The `SpannerKind` variants, in `fn enc` tag order 0..=9. Each carries its
 /// payload positionally.
 impl TextValue for SpannerKind {
     fn project(&self) -> Sexp {
@@ -497,6 +498,7 @@ impl TextValue for SpannerKind {
             SpannerKind::Portamento => variant("Portamento", vec![]),
             SpannerKind::TextLine(t) => variant("TextLine", vec![t.project()]),
             SpannerKind::Bracket(b) => variant("Bracket", vec![b.project()]),
+            SpannerKind::PedalBracket(p) => variant("PedalBracket", vec![p.project()]),
         }
     }
     fn parse(s: &Sexp) -> Result<Self, TextError> {
@@ -528,12 +530,166 @@ impl TextValue for SpannerKind {
         } else if ctor == kebab("Bracket") {
             let f = fields_of(fields, "SpannerKind", 1)?;
             Ok(SpannerKind::Bracket(TextValue::parse(&f[0])?))
+        } else if ctor == kebab("PedalBracket") {
+            let f = fields_of(fields, "SpannerKind", 1)?;
+            Ok(SpannerKind::PedalBracket(TextValue::parse(&f[0])?))
         } else {
             Err(TextError::UnknownConstructor {
                 type_name: "SpannerKind",
                 found: ctor.to_owned(),
             })
         }
+    }
+}
+
+/// The `MarkerKind` variants, in `fn enc` tag order 0..=8 (schema major 5).
+impl TextValue for MarkerKind {
+    fn project(&self) -> Sexp {
+        match self {
+            MarkerKind::Dynamic(d) => variant("Dynamic", vec![d.project()]),
+            MarkerKind::Fermata(f) => variant("Fermata", vec![f.project()]),
+            MarkerKind::Breath(b) => variant("Breath", vec![b.project()]),
+            MarkerKind::Caesura(c) => variant("Caesura", vec![c.project()]),
+            MarkerKind::Text(t) => variant("Text", vec![t.project()]),
+            MarkerKind::Tempo(t) => variant("Tempo", vec![t.project()]),
+            MarkerKind::Rehearsal(t) => variant("Rehearsal", vec![t.project()]),
+            MarkerKind::Segno => variant("Segno", vec![]),
+            MarkerKind::Coda => variant("Coda", vec![]),
+        }
+    }
+    fn parse(s: &Sexp) -> Result<Self, TextError> {
+        let (ctor, fields) = split_variant(s)?;
+        let one = |fields| fields_of(fields, "MarkerKind", 1).map(|f| &f[0]);
+        if ctor == kebab("Dynamic") {
+            Ok(MarkerKind::Dynamic(TextValue::parse(one(fields)?)?))
+        } else if ctor == kebab("Fermata") {
+            Ok(MarkerKind::Fermata(TextValue::parse(one(fields)?)?))
+        } else if ctor == kebab("Breath") {
+            Ok(MarkerKind::Breath(TextValue::parse(one(fields)?)?))
+        } else if ctor == kebab("Caesura") {
+            Ok(MarkerKind::Caesura(TextValue::parse(one(fields)?)?))
+        } else if ctor == kebab("Text") {
+            Ok(MarkerKind::Text(TextValue::parse(one(fields)?)?))
+        } else if ctor == kebab("Tempo") {
+            Ok(MarkerKind::Tempo(TextValue::parse(one(fields)?)?))
+        } else if ctor == kebab("Rehearsal") {
+            Ok(MarkerKind::Rehearsal(TextValue::parse(one(fields)?)?))
+        } else if ctor == kebab("Segno") {
+            no_fields(fields)?;
+            Ok(MarkerKind::Segno)
+        } else if ctor == kebab("Coda") {
+            no_fields(fields)?;
+            Ok(MarkerKind::Coda)
+        } else {
+            Err(TextError::UnknownConstructor {
+                type_name: "MarkerKind",
+                found: ctor.to_owned(),
+            })
+        }
+    }
+}
+
+/// The `Dynamic` variants, in `fn enc` tag order 0..=24: each a bare symbol
+/// but `Other`, which carries its text (schema major 5).
+impl TextValue for Dynamic {
+    fn project(&self) -> Sexp {
+        match self {
+            Dynamic::Other(t) => variant("Other", vec![t.project()]),
+            fieldless => Sexp::Symbol(kebab(dynamic_name(fieldless))),
+        }
+    }
+    fn parse(s: &Sexp) -> Result<Self, TextError> {
+        let (ctor, fields) = split_variant(s)?;
+        if ctor == kebab("Other") {
+            let f = fields_of(fields, "Dynamic", 1)?;
+            return Ok(Dynamic::Other(TextValue::parse(&f[0])?));
+        }
+        no_fields(fields)?;
+        FIELDLESS_DYNAMICS
+            .iter()
+            .find(|d| kebab(dynamic_name(d)) == ctor)
+            .cloned()
+            .ok_or_else(|| TextError::UnknownConstructor {
+                type_name: "Dynamic",
+                found: ctor.to_owned(),
+            })
+    }
+}
+
+/// The fieldless dynamics, in tag order.
+const FIELDLESS_DYNAMICS: [Dynamic; 24] = [
+    Dynamic::Pppppp,
+    Dynamic::Ppppp,
+    Dynamic::Pppp,
+    Dynamic::Ppp,
+    Dynamic::Pp,
+    Dynamic::P,
+    Dynamic::Mp,
+    Dynamic::Mf,
+    Dynamic::F,
+    Dynamic::Ff,
+    Dynamic::Fff,
+    Dynamic::Ffff,
+    Dynamic::Fffff,
+    Dynamic::Ffffff,
+    Dynamic::Fp,
+    Dynamic::Sf,
+    Dynamic::Sfz,
+    Dynamic::Sffz,
+    Dynamic::Sfp,
+    Dynamic::Sfpp,
+    Dynamic::Rf,
+    Dynamic::Rfz,
+    Dynamic::Fz,
+    Dynamic::Niente,
+];
+
+fn dynamic_name(d: &Dynamic) -> &'static str {
+    match d {
+        Dynamic::Pppppp => "Pppppp",
+        Dynamic::Ppppp => "Ppppp",
+        Dynamic::Pppp => "Pppp",
+        Dynamic::Ppp => "Ppp",
+        Dynamic::Pp => "Pp",
+        Dynamic::P => "P",
+        Dynamic::Mp => "Mp",
+        Dynamic::Mf => "Mf",
+        Dynamic::F => "F",
+        Dynamic::Ff => "Ff",
+        Dynamic::Fff => "Fff",
+        Dynamic::Ffff => "Ffff",
+        Dynamic::Fffff => "Fffff",
+        Dynamic::Ffffff => "Ffffff",
+        Dynamic::Fp => "Fp",
+        Dynamic::Sf => "Sf",
+        Dynamic::Sfz => "Sfz",
+        Dynamic::Sffz => "Sffz",
+        Dynamic::Sfp => "Sfp",
+        Dynamic::Sfpp => "Sfpp",
+        Dynamic::Rf => "Rf",
+        Dynamic::Rfz => "Rfz",
+        Dynamic::Fz => "Fz",
+        Dynamic::Niente => "Niente",
+        Dynamic::Other(_) => "Other",
+    }
+}
+
+/// Score text projects as a quoted string and parses by comparison: a string
+/// that is not already NFC is refused, never folded
+/// (`req:textproj:strict-parse`), as a catalog id's is.
+impl TextValue for crate::Text {
+    fn project(&self) -> Sexp {
+        Sexp::Str(self.as_str().to_owned())
+    }
+    fn parse(s: &Sexp) -> Result<Self, TextError> {
+        let Sexp::Str(text) = s else {
+            return Err(TextError::Expected {
+                expected: "text",
+                found: class_of(s),
+            });
+        };
+        crate::Text::from_nfc(text.clone())
+            .ok_or(TextError::NotCanonical("text is not in Unicode NFC"))
     }
 }
 
@@ -1168,8 +1324,25 @@ mod tests {
         round_trip(SpannerKind::Hairpin(HairpinDirection::Crescendo));
         round_trip(SpannerKind::OctaveLine(OctaveOffset(2)));
         round_trip(SpannerKind::TextLine(TextLineDefinition {
-            text: "cresc.".to_owned(),
+            text: crate::Text::new("cresc."),
         }));
+        round_trip(SpannerKind::PedalBracket(crate::graph::PedalKind::UnaCorda));
+        round_trip(crate::graph::MarkerKind::Dynamic(
+            crate::graph::Dynamic::Sfz,
+        ));
+        round_trip(crate::graph::MarkerKind::Dynamic(
+            crate::graph::Dynamic::Other(crate::Text::new("subito p")),
+        ));
+        round_trip(crate::graph::MarkerKind::Tempo(crate::graph::TempoMark {
+            text: Some(crate::Text::new("Allegro")),
+            metronome: Some(crate::graph::Metronome {
+                beat: crate::graph::NoteValue::Quarter,
+                dots: 1,
+                per_minute: crate::Text::new("c. 72"),
+            }),
+        }));
+        round_trip(crate::graph::MarkerKind::Coda);
+        assert!(crate::Text::parse(&crate::textvalue::read_sexp("\"e\u{301}\"").unwrap()).is_err());
 
         round_trip(RepeatKind::SimpleRepeat { count: 2 });
         round_trip(RepeatKind::DalSegno {

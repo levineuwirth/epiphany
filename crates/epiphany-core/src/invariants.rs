@@ -33,7 +33,7 @@
 //! extents) and never raise a false positive. This is documented per check.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::event::Event;
 use crate::graph::{
@@ -101,7 +101,7 @@ pub enum GraphInvariant {
     ///   - Comment.anchor — anchor target, extant region, live event.
     ///   - GraphicGesture.objects — stored graphic object.
     ///   - GraphicGesture.anchoring — anchor target, declared staff, live event.
-    ///   - LyricLine.events — live event.
+    ///   - Lyric.event — live event.
     ///   - Staff.instrument — declared instrument.
     ///   - StaffInstance.instrument_override — declared instrument.
     ///   - Staff.group — declared staff group.
@@ -120,6 +120,7 @@ pub enum GraphInvariant {
     ///   - CueEvent.source — live event.
     ///   - TempoSegment.start — anchor target.
     ///   - TempoSegment.end — anchor target.
+    ///   - Score.voice_homes — declared staff, extant voice.
     ///
     ///     Beyond that surface, the checker reaches four rules that are NOT
     ///     part of the normative invariant 10 and **no longer report under this
@@ -507,9 +508,17 @@ impl<'a> GraphIndex<'a> {
                         voice_dup.insert(v.id);
                     }
                     voice_parent.insert(v.id, (region.id, si.id));
-                    for (ix, e) in v.events.iter().enumerate() {
+                    // An event's place among its voice's events of positive
+                    // duration: a grace note (zero duration, schema major 5)
+                    // takes the place of the note it precedes, so a standard
+                    // tie may pass over the graces before its end.
+                    let mut ix = 0;
+                    for e in &v.events {
                         event_voice_index.insert(*e, (v.id, ix));
                         event_instance.insert(*e, si.id);
+                        if score.events.get(*e).is_none_or(|ev| ev.grace().is_none()) {
+                            ix += 1;
+                        }
                     }
                 }
             }
@@ -723,10 +732,40 @@ impl<'a> GraphIndex<'a> {
     fn check_voice_events_sorted_non_overlap(&self, out: &mut Vec<WellFormednessViolation>) {
         for (_r, _si, v) in self.score.voices() {
             let mut prev: Option<(EventId, Endpoints)> = None;
+            let mut prev_grace: Option<(
+                EventId,
+                &crate::event::Grace,
+                &crate::time::EventPosition,
+            )> = None;
             for e in &v.events {
                 let Some(ev) = self.score.events.get(*e) else {
                     continue; // absence is invariant 2's report
                 };
+                // A grace note has zero duration, and only a grace note does
+                // (schema major 5); graces at one position stand in their
+                // order, then by id, before the event of positive duration
+                // there, which the end-before-start check below holds.
+                if ev.grace().is_some() != ev.has_zero_duration() {
+                    out.push(WellFormednessViolation::invariant(
+                        GraphInvariant::VoiceEventsSortedNonOverlap,
+                        format!(
+                            "in voice {:?}, event {:?} is a grace note or has zero duration, not both",
+                            v.id, e
+                        ),
+                    ));
+                }
+                if let (Some(g), Some((pe, pg, pp))) = (ev.grace(), prev_grace) {
+                    if pp == ev.position() && (pg.order, pe) >= (g.order, *e) {
+                        out.push(WellFormednessViolation::invariant(
+                            GraphInvariant::VoiceEventsSortedNonOverlap,
+                            format!(
+                                "in voice {:?}, grace {:?} stands before grace {:?} out of order",
+                                v.id, pe, e
+                            ),
+                        ));
+                    }
+                }
+                prev_grace = ev.grace().map(|g| (*e, g, ev.position()));
                 let cur = Endpoints::of(ev);
                 if let Some((pe, pep)) = &prev {
                     if let (Some(p_end), Some(c_start)) = (pep.end_key(), cur.start_key()) {
@@ -1269,12 +1308,47 @@ impl<'a> GraphIndex<'a> {
                 crate::graph::GestureAnchoring::Free => {}
             }
         }
+        // One syllable per event and verse is a rule of its own, not a
+        // reference (`req:graph:lyric-syllable`), reported after the surface.
+        let mut syllables: BTreeSet<(EventId, u16)> = BTreeSet::new();
+        let mut second_syllables = Vec::new();
         for ly in &cc.lyrics {
-            for e in &ly.events {
-                flag(
-                    live_event(e),
-                    format!("lyric line {:?} event {:?} dangling", ly.id, e),
-                );
+            flag(
+                live_event(&ly.event),
+                format!("lyric {:?} event {:?} dangling", ly.id, ly.event),
+            );
+            if !syllables.insert((ly.event, ly.verse)) {
+                second_syllables.push(format!(
+                    "lyric {:?} is a second syllable on event {:?} in verse {}",
+                    ly.id, ly.event, ly.verse
+                ));
+            }
+        }
+        // A visiting voice's home staff (schema major 5): the voice is one the
+        // score holds, the staff one it declares. That the staff is not the one
+        // the voice's own instance manifests, a voice at home having no entry,
+        // is a rule of its own, not a reference (`req:graph:voice-home`, X4b
+        // fix round 2: before it a graph holding such an entry passed, though
+        // reduction refuses one `HomeIsOwnStaff`), reported after the surface.
+        let own_staff: BTreeMap<crate::ids::VoiceId, crate::ids::StaffId> = self
+            .score
+            .staff_instances()
+            .flat_map(|(_, si)| si.voices.iter().map(move |v| (v.id, si.staff)))
+            .collect();
+        let mut homes_at_home = Vec::new();
+        for (voice, staff) in &self.score.voice_homes {
+            flag(
+                own_staff.contains_key(voice),
+                format!("voice home of voice {voice:?} names no voice the score holds"),
+            );
+            flag(
+                self.declared_staves.contains(staff),
+                format!("voice {voice:?} home staff {staff:?} not declared"),
+            );
+            if own_staff.get(voice) == Some(staff) {
+                homes_at_home.push(format!(
+                    "voice {voice:?} home staff {staff:?} is the staff its instance manifests"
+                ));
             }
         }
 
@@ -1461,6 +1535,18 @@ impl<'a> GraphIndex<'a> {
                 }
                 _ => {}
             }
+        }
+        for witness in second_syllables {
+            out.push(WellFormednessViolation::requirement(
+                "req:graph:lyric-syllable",
+                witness,
+            ));
+        }
+        for witness in homes_at_home {
+            out.push(WellFormednessViolation::requirement(
+                "req:graph:voice-home",
+                witness,
+            ));
         }
     }
 
@@ -3499,7 +3585,7 @@ mod review_fix_tests {
                 )),
                 duration: EventDuration::Musical(MusicalDuration(RationalTime::new(1, 4).unwrap())),
                 pitches: vec![p],
-                articulations: vec![],
+                marks: vec![],
                 dynamic: None,
                 ornaments: vec![],
                 stem: StemConfiguration,
@@ -3671,8 +3757,8 @@ mod review_fix_tests {
     #[test]
     fn inv10_flags_dangling_marker_lyric_and_gesture_refs() {
         use crate::graph::{
-            AnnotationAnchor, ChordSymbol, Comment, GestureAnchoring, GraphicGesture, LyricLine,
-            Marker, RepeatStructure,
+            AnnotationAnchor, ChordSymbol, Comment, GestureAnchoring, GraphicGesture, Lyric,
+            Marker, MarkerKind, RepeatStructure, Syllabic,
         };
         let r = valid_score(50).identity.replica_id;
         let ghost_e = crate::ids::EventId::new(r, 9_100_001);
@@ -3686,16 +3772,67 @@ mod review_fix_tests {
                 edge: crate::time::RegionEdge::Start,
                 offset: AnchorOffset::Zero,
             },
+            kind: MarkerKind::Segno,
         });
         assert!(fires(&s, GraphInvariant::CrossCuttingRefsResolve));
 
-        // Lyric line referencing a dangling event.
+        // A lyric on a dangling event.
         let mut s = valid_score(51);
-        s.cross_cutting.lyrics.push(LyricLine {
-            id: crate::ids::LyricLineId::new(r, 1),
-            events: vec![ghost_e],
-        });
+        let lyric = |id: u64, event| Lyric {
+            id: crate::ids::LyricLineId::new(r, id),
+            event,
+            verse: 1,
+            text: crate::Text::new("la"),
+            syllabic: Syllabic::Single,
+            extension: false,
+        };
+        s.cross_cutting.lyrics.push(lyric(1, ghost_e));
         assert!(fires(&s, GraphInvariant::CrossCuttingRefsResolve));
+
+        // Two syllables on one event and verse; one on each verse holds.
+        let mut s = valid_score(51);
+        let event = s.events.iter().next().expect("an event").id();
+        s.cross_cutting.lyrics.push(lyric(1, event));
+        assert!(check_requirement(&s, "req:graph:lyric-syllable").is_empty());
+        let mut second = lyric(2, event);
+        second.verse = 2;
+        s.cross_cutting.lyrics.push(second);
+        assert!(check_requirement(&s, "req:graph:lyric-syllable").is_empty());
+        s.cross_cutting.lyrics.push(lyric(3, event));
+        assert!(!check_requirement(&s, "req:graph:lyric-syllable").is_empty());
+        assert!(!fires(&s, GraphInvariant::CrossCuttingRefsResolve));
+
+        // A voice home naming no voice or no staff breaks invariant 10; one
+        // naming the staff the voice's own instance manifests breaks
+        // `req:graph:voice-home` alone; one naming another declared staff
+        // holds.
+        let with_other_staff = || {
+            let mut s = valid_score(51);
+            let mut other = s.staves[0].clone();
+            other.id = crate::ids::StaffId::new(r, 9_100_005);
+            s.staves.push(other);
+            s
+        };
+        let other = crate::ids::StaffId::new(r, 9_100_005);
+        let mut s = with_other_staff();
+        s.voice_homes
+            .insert(crate::ids::VoiceId::new(r, 9_100_003), other);
+        assert!(fires(&s, GraphInvariant::CrossCuttingRefsResolve));
+        let mut s = with_other_staff();
+        let (voice, own) = s
+            .staff_instances()
+            .find_map(|(_, si)| si.voices.first().map(|v| (v.id, si.staff)))
+            .expect("a voice");
+        s.voice_homes.insert(voice, other);
+        assert!(!fires(&s, GraphInvariant::CrossCuttingRefsResolve));
+        s.voice_homes
+            .insert(voice, crate::ids::StaffId::new(r, 9_100_004));
+        assert!(fires(&s, GraphInvariant::CrossCuttingRefsResolve));
+        s.voice_homes.remove(&voice);
+        assert!(check_requirement(&s, "req:graph:voice-home").is_empty());
+        s.voice_homes.insert(voice, own);
+        assert!(!check_requirement(&s, "req:graph:voice-home").is_empty());
+        assert!(!fires(&s, GraphInvariant::CrossCuttingRefsResolve));
 
         // Graphic gesture anchored to a dangling event.
         let mut s = valid_score(52);
@@ -3759,6 +3896,147 @@ mod review_fix_tests {
             permits_spanning_slurs: false,
         });
         assert!(check_invariants(&s).is_empty());
+    }
+
+    /// Invariant 3's two grace rules in the checker, each the only rule a
+    /// score breaks: graces at one position stand in their order, then by
+    /// id; and an event has zero duration exactly when it is a grace note,
+    /// a grace of positive duration standing alone at the voice's end and a
+    /// note of zero duration standing before its neighbour each flagged. The
+    /// reducer keeps both, so only the checker's own rule reaches a graph
+    /// that breaks them (C4b review 1's L1, `mu12` and `mu13`).
+    #[test]
+    fn inv3_holds_graces_in_order_and_to_zero_duration() {
+        use crate::event::{Grace, GraceKind};
+        use crate::graph::NoteValue;
+        let base = valid_score(1);
+        let r = base.identity.replica_id;
+        // The first voice whose first event is a note in musical time.
+        let (ri, si, vi, first) = base
+            .canvas
+            .regions
+            .iter()
+            .enumerate()
+            .flat_map(|(ri, region)| {
+                region
+                    .staff_instances()
+                    .iter()
+                    .enumerate()
+                    .flat_map(move |(si, instance)| {
+                        instance
+                            .voices
+                            .iter()
+                            .enumerate()
+                            .map(move |(vi, voice)| (ri, si, vi, voice.events.first().copied()))
+                    })
+            })
+            .find_map(|(ri, si, vi, first)| {
+                let first = first?;
+                matches!(
+                    base.events.get(first),
+                    Some(Event::Pitched(PitchedEvent {
+                        position: EventPosition::Musical(_),
+                        duration: EventDuration::Musical(_),
+                        ..
+                    }))
+                )
+                .then_some((ri, si, vi, first))
+            })
+            .expect("a voice opening with a note");
+        let Some(Event::Pitched(principal)) = base.events.get(first).cloned() else {
+            unreachable!("a note");
+        };
+        let note = |c: u64, position: EventPosition, d: MusicalDuration, order: Option<u16>| {
+            Event::Pitched(PitchedEvent {
+                id: crate::ids::EventId::new(r, c),
+                voice: principal.voice,
+                position,
+                duration: EventDuration::Musical(d),
+                pitches: vec![cmn_ip(r, c, CmnNominal::A, 4)],
+                marks: Vec::new(),
+                dynamic: None,
+                ornaments: Vec::new(),
+                stem: StemConfiguration,
+                grace: order.map(|order| Grace {
+                    kind: GraceKind::Acciaccatura,
+                    value: NoteValue::Eighth,
+                    dots: 0,
+                    order,
+                }),
+            })
+        };
+        // Two graces before the voice's first note, placed in `voice_order`.
+        let with = |events: Vec<Event>, voice_order: &[u64], at_end: bool| {
+            let mut s = base.clone();
+            for event in events {
+                s.events.insert(event).expect("a fresh id");
+            }
+            let voice = &mut s.canvas.regions[ri]
+                .content
+                .staff_instances_mut()
+                .expect("staff-based")[si]
+                .voices[vi];
+            let ids = voice_order.iter().map(|c| crate::ids::EventId::new(r, *c));
+            if at_end {
+                voice.events.extend(ids);
+            } else {
+                voice.events.splice(0..0, ids);
+            }
+            s
+        };
+        let at = principal.position.clone();
+        let zero = MusicalDuration::zero();
+        let graces = || {
+            vec![
+                note(9_100, at.clone(), zero.clone(), Some(0)),
+                note(9_101, at.clone(), zero.clone(), Some(1)),
+            ]
+        };
+        let inv3 = GraphInvariant::VoiceEventsSortedNonOverlap;
+        assert!(
+            !fires(&with(graces(), &[9_100, 9_101], false), inv3),
+            "in order"
+        );
+        assert!(
+            fires(&with(graces(), &[9_101, 9_100], false), inv3),
+            "out of order"
+        );
+
+        // A note of zero duration at the voice's first position, no grace.
+        let bare = note(9_102, at.clone(), zero.clone(), None);
+        assert!(
+            fires(&with(vec![bare], &[9_102], false), inv3),
+            "zero, not a grace"
+        );
+
+        // A grace of positive duration after the voice's last event.
+        let last = base.canvas.regions[ri].staff_instances()[si].voices[vi]
+            .events
+            .iter()
+            .filter_map(|e| base.events.get(*e))
+            .filter_map(|e| match (e.position(), e.duration()) {
+                (EventPosition::Musical(p), EventDuration::Musical(d)) => {
+                    Some(p.clone() + d.clone())
+                }
+                _ => None,
+            })
+            .max()
+            .expect("a metric event");
+        let long = note(
+            9_103,
+            EventPosition::Musical(last.clone()),
+            MusicalDuration::whole(),
+            Some(0),
+        );
+        assert!(
+            fires(&with(vec![long], &[9_103], true), inv3),
+            "a grace, not zero"
+        );
+        let fine = note(9_103, EventPosition::Musical(last), zero, Some(0));
+        assert!(
+            !fires(&with(vec![fine], &[9_103], true), inv3),
+            "a grace at zero, alone"
+        );
     }
 }
 
@@ -3969,6 +4247,7 @@ mod review_fix_tests_2 {
                     edge: crate::time::RegionEdge::Start,
                     offset: crate::time::AnchorOffset::Zero,
                 },
+                kind: crate::graph::MarkerKind::Coda,
             });
         }
         assert!(fires(&s, GraphInvariant::UniqueIdentifiers));
@@ -4087,7 +4366,7 @@ mod review_fix_tests_3 {
                 )),
                 duration: EventDuration::Musical(MusicalDuration(RationalTime::new(1, 4).unwrap())),
                 pitches: ps,
-                articulations: vec![],
+                marks: vec![],
                 dynamic: None,
                 ornaments: vec![],
                 stem: StemConfiguration,
@@ -4243,7 +4522,7 @@ mod review_fix_tests_3 {
                 position: EventPosition::WallClock(WallClockTime(10)),
                 duration: EventDuration::WallClock(WallClockDuration(5)),
                 pitches: vec![pitch_at(r, 5100, CmnNominal::C, 0)],
-                articulations: vec![],
+                marks: vec![],
                 dynamic: None,
                 ornaments: vec![],
                 stem: StemConfiguration,

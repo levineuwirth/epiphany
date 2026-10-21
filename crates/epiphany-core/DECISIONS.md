@@ -1717,3 +1717,106 @@ puts a `cmn-12` and a `cmn-24` pitch in one frame (twice the semitone, or the
 moves a spelling in it, the sibling of `PitchSpelling::transposed`. The
 engraver's glyph table is held to these names and alterations by
 `the_cores_quarter_tone_accidentals_are_drawn_at_their_alterations`.
+
+## Schema major 5: expression and text (X4b.2, 2026-10-10)
+
+The owner's ruling on the payload shapes (roadmap D58) fills the slots an
+event already carried and gives the score's point marks, lyrics and a voice's
+home staff their values. Every value an operation carried before encodes as
+it did (D58's Q1(a)); a field added to a value only the snapshot carries
+moves the snapshot to major 5.
+
+**The event's slots.** `articulations` becomes `marks: Vec<EventMark>`, one
+union of the marks an event carries (articulations, bowings, technical, brass
+and jazz marks, a single-note or two-note tremolo with its strokes, an
+arpeggio with its direction; tags 0 to 21, Q9). `ornaments` holds `Ornament`
+(trill, mordents, turns, each with the accidentals above and below it), and
+`grace` holds `Grace` (kind, notated value, dots, `order`). Marks and
+ornaments are canonical sets (Q10): one of each kind, ascending by kind, a
+repeated kind or an unordered pair refused by name. `DynamicMark` stays a reserved unit: a
+dynamic is a point marker (Q2), not an event's field. An empty slot encodes
+byte-identically to the placeholder it replaces, so an operation written
+before major 5 decodes unchanged.
+
+**Grace notes have zero duration** (Q5). The notated value lives in the
+payload; the duration is zero, and only a grace's is. Invariant 3 gains the
+zero-duration rule and the order of a position's graces, `(order, id)`,
+before its event of positive duration; a tie's adjacency counts only events
+of positive duration, so graces take no place between a tie's ends. The
+decomposition pre-pass already skipped a zero-length event.
+
+**Markers and lyrics.** `Marker` gains `kind: MarkerKind`: a dynamic (the 24
+standard marks and `Other(Text)`), a fermata (five shapes, inverted or not),
+a breath mark, a caesura, staff text, a tempo mark (its text and an optional
+metronome, beside `SetTempoSegment` with no stored link, Q7), a rehearsal
+mark, segno and coda (Q2, Q3). Placement is not stored (Q8). `LyricLine`
+becomes `Lyric`, one syllable per event and verse (Q4): event, verse, text,
+syllabic form and extension; a second syllable on one event and verse is
+reported under its own label, `req:graph:lyric-syllable`, not invariant 10's. Text is `Text`, a string held to Unicode NFC (Q6),
+`TextLineDefinition`'s text among it; the decoder refuses any other form.
+
+**A wavy line and a pedal bracket (Q12).** `LineStyle::Wavy` (tag 3) and
+`SpannerKind::PedalBracket(PedalKind)` (tag 9), a pedal line drawn without
+its sign; `PedalLine` is unchanged and means a line with its sign. Both tags
+are new, so no earlier document holds either; no writer in any of the three
+working trees created a `PedalLine`, and no committed history, decode vector
+or text vector held one.
+
+**The home staff lives in `Score.voice_homes`, not on `Voice`.** The design
+note put it on `Voice`, but a `Voice` is also carried inside the values of
+`CreateVoice`, `CreateStaffInstance` and `CreateRegion`, so a field on it
+would append to values operations already carry, against Q1(a). The map
+`voice_homes: BTreeMap<VoiceId, StaffId>` is appended to `Score` (empty
+encodes as a zero count), written by `SetVoiceHome` (Q11). Invariant 10
+holds its keys to the voices the score holds and its values to declared
+staves.
+
+**The frozen major-4 forms.** `encode_v4_score` and `decode_v4_score` hold
+the major-4 layout; every older major's decoder now reads events through
+`dec_events_v4`. A value no major before 5 gave a meaning is refused by
+name, never defaulted: a filled placeholder list or grace kind, a marker
+(it had no kind), a lyric line (it had no syllable). The unions the older
+decoders read with the live codec, `LineStyle` and `SpannerKind`, are held
+by `refuse_major_5_values`. The decode corpus pins each refusal
+(`major_5_refusals_name_their_value`) and
+`schema_major_5_wire_bytes_are_frozen` pins the new values' bytes.
+
+**The canonical base is unchanged.** `MaterializedState` holds effects,
+conflicts, anomalies, objects, spellings, breaks and pending; every write
+chain is reducer state, rebuilt from the operations and seeded from a base
+graph. The new chains (a voice's home; a marker's and a lyric's values in
+the cross-cutting chain) stay out of it, and the base stays major 0.
+
+## The dynamic slot refused by name (X4b fix round 1, 2026-10-11)
+
+C4b review 1's L3: of the four placeholder slots an event carried before
+schema major 5, the frozen decoders refused a filled marks list, ornaments
+list and grace kind by name, but `dynamic` (`Option<DynamicMark>`, a unit
+encoding no bytes) read as `Some` at every major and at 5, meaning nothing,
+since a dynamic is a point mark (`MarkerKind::Dynamic`). `DynamicMark`'s codec
+now refuses itself ("a dynamic placeholder: a dynamic is a point mark"), so a
+present slot is refused wherever an event is read, at every major and in
+the live layout, and its text value parses its symbol and refuses it, so the
+projection and the editor's clipboard fragment refuse it too; the empty slot
+reads as before. No writer filled it (the core's own exotic-variant test did,
+and now leaves it empty). The decode corpus gains the refusal under
+`core.score_v4` and `core.score_v5` (class `dynamic-placeholder`). Locked by
+`a_dynamic_placeholder_is_refused_by_name_at_every_major` and
+`major_5_refusals_name_their_value`.
+
+## A home is never its voice's own staff, in the graph (X4b fix round 2, 2026-10-12)
+
+C4b review 2's L3: reduction refuses a `SetVoiceHome` naming the staff its
+voice's own instance manifests (`HomeIsOwnStaff`, the first fix round), but
+the checker read a home only for an extant voice and a declared staff, and
+the snapshot decoder takes any entry, so a graph or snapshot could hold the
+state the refusal removed, and a defect admitting it in both modes was
+invisible to the two-mode fuzz, which judges graphs by this checker. The
+checker now flags such an entry. It is a rule of its own, not a reference
+(invariant 10's surface is a closed table of reference targets), so, as one
+syllable an event and verse is, it reports under its own requirement,
+`req:graph:voice-home`, defined beside the `Score` listing: an entry
+`MUST NOT` name the staff its voice's staff instance manifests, a voice at
+home there having no entry. Locked by
+`inv10_flags_dangling_marker_lyric_and_gesture_refs`, whose home cases now
+name another declared staff where they mean a visiting voice.

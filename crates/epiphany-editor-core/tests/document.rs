@@ -1309,3 +1309,256 @@ fn a_resumed_replica_mints_past_its_committed_ids() {
     let view = document.view(Box::new(StubSolver)).unwrap();
     assert_eq!(music(view.score()).len(), 2, "C and G");
 }
+
+/// A two-measure grand score in 4/4: two staves, one voice each.
+fn two_staff_operations() -> Vec<OperationEnvelope> {
+    let mut setup = ScoreSetup::single_staff("Piano", 2);
+    setup.staves.push(epiphany_editor_core::StaffSetup {
+        name: "Piano".to_owned(),
+        clef: epiphany_core::Clef::bass(),
+    });
+    setup
+        .operations(ReplicaId::generate())
+        .expect("two staves in 4/4 are representable")
+}
+
+/// Enters X4b's values (schema major 5) as the import writes them: a C on the
+/// upper staff's first beat carrying marks and an ornament, a grace note before
+/// it, a lyric syllable and a dynamic on it; and an E on the lower staff whose
+/// voice is at home on the upper (`SetVoiceHome`). The notes are entered at the
+/// caret; the rest is one transaction.
+fn enter_expression(session: &mut EditorSession) {
+    use epiphany_core::{
+        AccidentalId, AnchorOffset, Dynamic, Event, EventId, EventMark, Grace, GraceKind,
+        IdentifiedPitch, Lyric, LyricLineId, Marker, MarkerId, MarkerKind, NoteValue, Ornament,
+        OrnamentKind, PitchId, Syllabic, Text, TimeAnchor,
+    };
+    use epiphany_ops::{
+        CreateCrossCuttingOp, CrossCuttingValue, InsertEventOp, ModifyEventOp, OperationKind,
+        SetVoiceHomeOp,
+    };
+
+    let instances: Vec<_> = session
+        .score()
+        .staff_instances()
+        .map(|(_, si)| (si.id, si.staff, si.voices[0].id))
+        .collect();
+    let [(upper, upper_staff, upper_voice), (_, _, lower_voice)] = instances[..] else {
+        panic!("two staves, one voice each");
+    };
+    session
+        .set_caret(upper_voice, at(0, 1), whole(1, 4))
+        .unwrap();
+    session.enter_nominal(CmnNominal::C).unwrap();
+    session
+        .set_caret(lower_voice, at(1, 4), whole(1, 4))
+        .unwrap();
+    session.enter_nominal(CmnNominal::E).unwrap();
+
+    let Some(Event::Pitched(note)) = session
+        .score()
+        .events
+        .iter()
+        .find(|e| e.voice() == upper_voice)
+        .cloned()
+    else {
+        panic!("the upper staff's C");
+    };
+    let replica = ReplicaId(0x4B5A);
+    let mut marked = note.clone();
+    marked.marks = vec![EventMark::Staccato, EventMark::Accent];
+    marked.ornaments = vec![Ornament {
+        kind: OrnamentKind::Trill,
+        accidental_above: Some(AccidentalId::new("flat")),
+        accidental_below: None,
+    }];
+    let mut grace = note.clone();
+    grace.id = EventId::new(replica, 1);
+    grace.duration = EventDuration::Musical(MusicalDuration::zero());
+    grace.pitches = vec![IdentifiedPitch {
+        id: PitchId::new(replica, 2),
+        pitch: epiphany_editor_core::midi_note_to_pitch(74),
+    }];
+    grace.grace = Some(Grace {
+        kind: GraceKind::Acciaccatura,
+        value: NoteValue::Eighth,
+        dots: 0,
+        order: 0,
+    });
+    session
+        .apply_transaction(
+            "expression and text",
+            None,
+            vec![
+                OperationKind::ModifyEvent(ModifyEventOp {
+                    event: Event::Pitched(marked),
+                }),
+                OperationKind::InsertEvent(InsertEventOp {
+                    staff_instance: upper,
+                    event: Event::Pitched(grace),
+                }),
+                OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                    structure: CrossCuttingValue::Lyric(Lyric {
+                        id: LyricLineId::new(replica, 3),
+                        event: note.id,
+                        verse: 1,
+                        text: Text::new("la"),
+                        syllabic: Syllabic::Single,
+                        extension: false,
+                    }),
+                }),
+                OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                    structure: CrossCuttingValue::Marker(Marker {
+                        id: MarkerId::new(replica, 4),
+                        anchor: TimeAnchor::Event {
+                            id: note.id,
+                            offset: AnchorOffset::Zero,
+                        },
+                        kind: MarkerKind::Dynamic(Dynamic::Mf),
+                    }),
+                }),
+                OperationKind::SetVoiceHome(SetVoiceHomeOp {
+                    voice: lower_voice,
+                    home: Some(upper_staff),
+                }),
+            ],
+        )
+        .expect("the values apply");
+}
+
+/// X4b's values a score holds: marks, ornaments, grace notes, lyric
+/// syllables, markers and voice homes, counted.
+fn expression(score: &Score) -> [usize; 6] {
+    let (mut marks, mut ornaments, mut graces) = (0, 0, 0);
+    for event in score.events.iter() {
+        if let epiphany_core::Event::Pitched(p) = event {
+            marks += p.marks.len();
+            ornaments += p.ornaments.len();
+            graces += usize::from(p.grace.is_some());
+        }
+    }
+    [
+        marks,
+        ornaments,
+        graces,
+        score.cross_cutting.lyrics.len(),
+        score.cross_cutting.markers.len(),
+        score.voice_homes.len(),
+    ]
+}
+
+const ENTERED: [usize; 6] = [2, 1, 1, 1, 1, 1];
+
+/// X4b's values in X5a's document: saved, their blocks born at schema major 5
+/// and stamped minimally; reopened, the reducer state and the graph equal to
+/// what the session drew; leased again, edited and saved, and reopened equal
+/// again, the values kept.
+#[test]
+fn expression_and_text_save_reopen_and_save_again() {
+    let mut document = EditorDocument::create(MemStore::new(), two_staff_operations()).unwrap();
+    let mut session = lease(&mut document);
+    enter_expression(&mut session);
+    assert_eq!(expression(session.score()), ENTERED);
+    document.save(&mut session).expect("saves");
+    assert!(
+        document
+            .bundle()
+            .manifest()
+            .operation_roots
+            .iter()
+            .any(|root| root.schema_version.major == 5),
+        "a block holding the values is born at schema major 5"
+    );
+    assert_blocks_stamped_minimally(document.bundle());
+    let drawn = session_log(&session);
+
+    let mut file =
+        EditorDocument::open(MemStore::from_bytes(document.into_store().into_bytes())).unwrap();
+    assert!(file.read_only_reasons().is_empty());
+    assert_eq!(
+        reduced(file.committed_operations()),
+        reduced(&drawn),
+        "reopened: the reducer state and the graph"
+    );
+    assert_eq!(expression(&file.score()), ENTERED);
+
+    let mut again = lease(&mut file);
+    let voice = the_voice(&again);
+    again.set_caret(voice, at(1, 1), whole(1, 4)).unwrap();
+    again.enter_nominal(CmnNominal::G).unwrap();
+    file.save(&mut again).expect("saves again");
+    assert_blocks_stamped_minimally(file.bundle());
+    let file = EditorDocument::open(MemStore::from_bytes(file.into_store().into_bytes())).unwrap();
+    assert_eq!(
+        reduced(file.committed_operations()),
+        reduced(&session_log(&again))
+    );
+    assert_eq!(expression(&file.score()), ENTERED, "the values stay");
+}
+
+/// Save as carries X4b's values, saved and unsaved, into the new document.
+#[test]
+fn save_as_carries_expression_and_text() {
+    let mut document = EditorDocument::create(MemStore::new(), two_staff_operations()).unwrap();
+    let mut session = lease(&mut document);
+    enter_expression(&mut session);
+    let copied = document
+        .save_as(&session)
+        .expect("copies")
+        .create(MemStore::new())
+        .expect("the copy is written");
+    assert_blocks_stamped_minimally(copied.bundle());
+    let copied =
+        EditorDocument::open(MemStore::from_bytes(copied.into_store().into_bytes())).unwrap();
+    assert_eq!(
+        reduced(copied.committed_operations()),
+        reduced(&session_log(&session))
+    );
+    assert_eq!(expression(&copied.score()), ENTERED);
+    assert_eq!(document.generation(), 1, "the source is not written");
+    assert_eq!(expression(&document.score()), [0; 6]);
+}
+
+/// D64's floor over X4b's values: while the save that staged them is
+/// unsettled, undo stops at them and they stay drawn. Reconciled as landed,
+/// they are saved and the file holds them; as not landed, they undo and the
+/// file never held them.
+#[test]
+fn undo_stops_at_expression_and_text_an_unsettled_save_staged() {
+    for landed in [true, false] {
+        let created = EditorDocument::create(MemStore::new(), two_staff_operations()).unwrap();
+        let store = FlakyStore::new(created.into_store().into_bytes(), vec![3], landed);
+        let mut document = EditorDocument::open(store).unwrap();
+        let mut session = lease(&mut document);
+        enter_expression(&mut session);
+        assert!(matches!(
+            document.save(&mut session),
+            Err(DocumentError::Indeterminate(_))
+        ));
+        assert_eq!(session.undo(), Err(EditorError::UnsettledSave));
+        assert_eq!(expression(session.score()), ENTERED, "the values stay");
+
+        let outcome = document.reconcile(&mut session).expect("reconciles");
+        if landed {
+            assert!(matches!(outcome, Reconciled::Saved(_)), "{outcome:?}");
+            assert!(!session.is_dirty());
+            assert_eq!(session.undo(), Err(EditorError::NothingToUndo));
+            assert_eq!(expression(session.score()), ENTERED);
+        } else {
+            assert_eq!(outcome, Reconciled::NotSaved);
+            session.undo().expect("the values undo, one transaction");
+            assert_eq!(expression(session.score()), [0; 6]);
+            assert!(session.is_dirty(), "the two notes stay, unsaved");
+        }
+        let file = reopened(&document);
+        assert_eq!(
+            reduced(file.committed_operations()),
+            reduced(session.committed_operations()),
+            "the file holds what the session has saved"
+        );
+        assert_eq!(
+            expression(&file.score()),
+            if landed { ENTERED } else { [0; 6] }
+        );
+    }
+}

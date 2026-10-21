@@ -4,8 +4,8 @@
 
 use epiphany_bundle::MemStore;
 use epiphany_core::{
-    Clef, CmnNominal, Event, EventDuration, EventPosition, MusicalDuration, MusicalPosition,
-    RationalTime, ReplicaId, Score, VoiceId,
+    Clef, CmnNominal, Event, EventDuration, EventId, EventPosition, MusicalDuration,
+    MusicalPosition, RationalTime, ReplicaId, Score, VoiceId,
 };
 use epiphany_editor_core::{EditorDocument, EditorSession, ScoreSetup, StaffSetup};
 use epiphany_layout_ir::StubSolver;
@@ -211,4 +211,144 @@ fn an_entry_over_a_tied_note_makes_room_as_any_other() {
         ties(session.score()).is_empty(),
         "the tie gives way with its start"
     );
+}
+
+/// Inserts, as one transaction, a grace note (an eighth acciaccatura, D5)
+/// before each of `principals`, at its onset and in the order given: a grace
+/// as the import makes one, which the editor neither draws nor selects.
+fn add_graces(session: &mut EditorSession, principals: &[EventId]) {
+    use epiphany_core::{Grace, GraceKind, IdentifiedPitch, NoteValue, PitchId};
+    use epiphany_ops::{InsertEventOp, OperationKind};
+    let (_, instance) = session.score().staff_instances().next().expect("a staff");
+    let instance = instance.id;
+    let replica = ReplicaId(0x4B5A);
+    let mut order = std::collections::BTreeMap::new();
+    let inserts = principals
+        .iter()
+        .enumerate()
+        .map(|(k, principal)| {
+            let Some(Event::Pitched(mut grace)) = session.score().events.get(*principal).cloned()
+            else {
+                panic!("a note");
+            };
+            let n = order.entry(*principal).or_insert(0u16);
+            grace.id = EventId::new(replica, 2 * k as u64);
+            grace.duration = EventDuration::Musical(MusicalDuration::zero());
+            grace.pitches = vec![IdentifiedPitch {
+                id: PitchId::new(replica, 2 * k as u64 + 1),
+                pitch: epiphany_editor_core::midi_note_to_pitch(74),
+            }];
+            grace.grace = Some(Grace {
+                kind: GraceKind::Acciaccatura,
+                value: NoteValue::Eighth,
+                dots: 0,
+                order: *n,
+            });
+            *n += 1;
+            OperationKind::InsertEvent(InsertEventOp {
+                staff_instance: instance,
+                event: Event::Pitched(grace),
+            })
+        })
+        .collect();
+    session
+        .apply_transaction("graces", None, inserts)
+        .expect("the graces apply");
+}
+
+/// The onsets of the grace notes standing in `score`, in order.
+fn grace_onsets(score: &Score) -> Vec<MusicalPosition> {
+    let mut out: Vec<_> = score
+        .events
+        .iter()
+        .filter(|e| e.grace().is_some())
+        .map(|e| match e.position() {
+            EventPosition::Musical(p) => p.clone(),
+            other => panic!("a musical onset, not {other:?}"),
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// [`events`] with a grace before the note at its onset: ordered by onset,
+/// then length.
+fn by_onset_and_length(
+    score: &Score,
+    voice: VoiceId,
+) -> Vec<(MusicalPosition, MusicalDuration, bool)> {
+    let mut out = events(score, voice);
+    out.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+    out
+}
+
+/// The note of `voice` starting at `onset`, graces aside.
+fn note_at(score: &Score, voice: VoiceId, onset: MusicalPosition) -> EventId {
+    score
+        .events
+        .iter()
+        .find(|e| {
+            e.voice() == voice
+                && e.grace().is_none()
+                && e.position() == &EventPosition::Musical(onset.clone())
+        })
+        .map(Event::id)
+        .expect("a note there")
+}
+
+/// X4b's grace notes meet entry across the barline (D69's M2: graces go with
+/// their note). A half split at the barline and tied replaces the note the
+/// second measure opens with, and takes that note's two grace notes in its one
+/// transaction, so none is left inside the tied pieces; the half whose tail it
+/// cuts keeps its grace, and so does the note after it. One undo brings every
+/// note and grace back.
+#[test]
+fn an_entry_across_a_barline_takes_the_graces_of_the_note_it_replaces() {
+    let mut session = session(1, 2);
+    let voice = first_voice(&session);
+    session.set_caret(voice, at(1, 2), whole(1, 2)).unwrap();
+    session.enter_nominal(CmnNominal::E).unwrap();
+    session.set_entry_duration(whole(1, 4)).unwrap();
+    session.enter_nominal(CmnNominal::G).unwrap();
+    session.enter_nominal(CmnNominal::A).unwrap();
+    let score = session.score();
+    let [half, opening, after] =
+        [at(1, 2), at(1, 1), at(5, 4)].map(|onset| note_at(score, voice, onset));
+    add_graces(&mut session, &[half, opening, opening, after]);
+    let graced = by_onset_and_length(session.score(), voice);
+    assert_eq!(
+        grace_onsets(session.score()),
+        vec![at(1, 2), at(1, 1), at(1, 1), at(5, 4)]
+    );
+    assert!(epiphany_core::check_invariants(session.score()).is_empty());
+
+    session.set_caret(voice, at(3, 4), whole(1, 2)).unwrap();
+    session.enter_nominal(CmnNominal::C).unwrap();
+    let grace = |n, d| (at(n, d), MusicalDuration::zero(), true);
+    assert_eq!(
+        by_onset_and_length(session.score(), voice),
+        vec![
+            grace(1, 2),
+            note(1, 2, 1, 4),
+            note(3, 4, 1, 4),
+            note(1, 1, 1, 4),
+            grace(5, 4),
+            note(5, 4, 1, 4)
+        ],
+        "the half cut to a quarter keeps its grace, the replaced note's two go, \
+         and the next note's stays"
+    );
+    assert_eq!(ties(session.score()), vec![(at(3, 4), at(1, 1))]);
+    assert_eq!(grace_onsets(session.score()), vec![at(1, 2), at(5, 4)]);
+    assert!(epiphany_core::check_invariants(session.score()).is_empty());
+
+    session
+        .undo()
+        .expect("the entry undoes, its graces with it");
+    assert_eq!(by_onset_and_length(session.score(), voice), graced);
+    assert_eq!(
+        grace_onsets(session.score()),
+        vec![at(1, 2), at(1, 1), at(1, 1), at(5, 4)]
+    );
+    assert!(ties(session.score()).is_empty());
 }

@@ -48,7 +48,7 @@ const INVARIANT_TEN_SURFACE: &[(&str, &str)] = &[
         "GraphicGesture.anchoring",
         "anchor target, declared staff, live event",
     ),
-    ("LyricLine.events", "live event"),
+    ("Lyric.event", "live event"),
     ("Staff.instrument", "declared instrument"),
     ("StaffInstance.instrument_override", "declared instrument"),
     ("Staff.group", "declared staff group"),
@@ -70,6 +70,7 @@ const INVARIANT_TEN_SURFACE: &[(&str, &str)] = &[
     ("CueEvent.source", "live event"),
     ("TempoSegment.start", "anchor target"),
     ("TempoSegment.end", "anchor target"),
+    ("Score.voice_homes", "declared staff, extant voice"),
 ];
 
 /// Pin 1a's closed target vocabulary. A term outside it fails, and that is a
@@ -84,6 +85,7 @@ const TARGET_VOCABULARY: &[&str] = &[
     "declared time signature",
     "extant region",
     "extant tuplet",
+    "extant voice",
     "live event",
     "live pitch",
     "stored graphic object",

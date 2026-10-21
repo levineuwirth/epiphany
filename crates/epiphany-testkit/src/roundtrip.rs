@@ -384,7 +384,7 @@ pub fn assert_score_serialization_stable(score: &Score, frontier: &[u8], seed: u
     .expect("create bundle");
     let snapshot = StagedChunk {
         kind: ChunkKind::Snapshot,
-        schema_version: SchemaVersion::for_major(4),
+        schema_version: SchemaVersion::for_major(5),
         payload: canonical.clone(),
     };
     let frontier = frontier.to_vec();
@@ -424,7 +424,7 @@ pub fn assert_score_serialization_stable(score: &Score, frontier: &[u8], seed: u
         .acceleration_snapshots
         .first()
         .expect("an acceleration snapshot");
-    assert_eq!(accel.root.schema_version, SchemaVersion::for_major(4));
+    assert_eq!(accel.root.schema_version, SchemaVersion::for_major(5));
     let loaded = reopened
         .read_chunk(&accel.root)
         .expect("read snapshot chunk back");
@@ -772,6 +772,149 @@ mod tests {
         );
     }
 
+    /// X4b: a block of schema major 5's payloads, one of each new value and
+    /// the new kind (marks, an ornament and a grace on events; a marker, a
+    /// lyric, a wavy pedal bracket; a voice's home), stamps 5.15, reopens
+    /// read-write, and gives back every envelope as written.
+    #[test]
+    fn an_expression_block_stamps_5_15_and_round_trips() {
+        use epiphany_core::{
+            AnchorOffset, Dynamic, Event, EventId, EventMark, Grace, GraceKind, LineStyle, Lyric,
+            LyricLineId, Marker, MarkerId, MarkerKind, MusicalDuration, MusicalPosition, NoteValue,
+            OperationId, Ornament, OrnamentKind, PedalKind, PitchId, ReplicaId, SpanStyle, Spanner,
+            SpannerId, SpannerKind, StaffId, StaffInstanceId, Syllabic, Text, TimeAnchor, VoiceId,
+            WallClockTime,
+        };
+        use epiphany_ops::{
+            valuegen, AuthorId, CausalContext, CreateCrossCuttingOp, CrossCuttingValue,
+            HybridLogicalClock, InsertEventOp, OperationEnvelope, OperationKind, OperationPayload,
+            OperationStamp, SetVoiceHomeOp,
+        };
+        let r = ReplicaId(1);
+        let voice = VoiceId::new(r, 1);
+        let at = MusicalPosition::origin();
+        let mut note = valuegen::insert_event_value(
+            EventId::new(r, 1),
+            voice,
+            at.clone(),
+            MusicalDuration::whole(),
+            &[PitchId::new(r, 1)],
+        );
+        let mut grace = valuegen::insert_event_value(
+            EventId::new(r, 2),
+            voice,
+            at,
+            MusicalDuration::zero(),
+            &[PitchId::new(r, 2)],
+        );
+        if let Event::Pitched(p) = &mut note {
+            p.marks = vec![EventMark::Accent, EventMark::Tremolo { strokes: 2 }];
+            p.ornaments = vec![Ornament {
+                kind: OrnamentKind::Turn,
+                accidental_above: None,
+                accidental_below: Some(epiphany_core::AccidentalId::new("flat")),
+            }];
+        }
+        if let Event::Pitched(p) = &mut grace {
+            p.grace = Some(Grace {
+                kind: GraceKind::Appoggiatura,
+                value: NoteValue::Sixteenth,
+                dots: 1,
+                order: 2,
+            });
+        }
+        let on = TimeAnchor::Event {
+            id: EventId::new(r, 1),
+            offset: AnchorOffset::Zero,
+        };
+        let instance = StaffInstanceId::new(r, 1);
+        let kinds = vec![
+            OperationKind::InsertEvent(InsertEventOp {
+                staff_instance: instance,
+                event: note,
+            }),
+            OperationKind::InsertEvent(InsertEventOp {
+                staff_instance: instance,
+                event: grace,
+            }),
+            OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                structure: CrossCuttingValue::Marker(Marker {
+                    id: MarkerId::new(r, 1),
+                    anchor: on.clone(),
+                    kind: MarkerKind::Dynamic(Dynamic::Other(Text::new("pi\u{f9}"))),
+                }),
+            }),
+            OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                structure: CrossCuttingValue::Lyric(Lyric {
+                    id: LyricLineId::new(r, 1),
+                    event: EventId::new(r, 1),
+                    verse: 2,
+                    text: Text::new("\u{e9}t\u{e9}"),
+                    syllabic: Syllabic::Middle,
+                    extension: true,
+                }),
+            }),
+            OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                structure: CrossCuttingValue::Spanner(Spanner {
+                    id: SpannerId::new(r, 1),
+                    start: on.clone(),
+                    end: on,
+                    staves: vec![StaffId::new(r, 1)],
+                    kind: SpannerKind::PedalBracket(PedalKind::UnaCorda),
+                    style: SpanStyle {
+                        line: LineStyle::Wavy,
+                        thickness: None,
+                    },
+                }),
+            }),
+            OperationKind::SetVoiceHome(SetVoiceHomeOp {
+                voice,
+                home: Some(StaffId::new(r, 2)),
+            }),
+        ];
+        let envelopes: Vec<OperationEnvelope> = kinds
+            .into_iter()
+            .enumerate()
+            .map(|(i, kind)| {
+                let id = OperationId::new(r, i as u64 + 1);
+                OperationEnvelope {
+                    id,
+                    author: AuthorId(0xAB),
+                    stamp: OperationStamp::new(
+                        HybridLogicalClock::new(WallClockTime(100 * (i as i64 + 1)), 0),
+                        id,
+                    ),
+                    causal_context: CausalContext::new(),
+                    transaction: None,
+                    payload: OperationPayload::Primitive(kind),
+                }
+            })
+            .collect();
+
+        let staged = crate::bundle_harness::stage_operation_block(&envelopes);
+        assert_eq!(
+            staged.schema_version,
+            SchemaVersion::new(5, 15),
+            "a block carrying a major-5 value stamps major 5, and SetVoiceHome's epoch 15"
+        );
+        let reopened = reopen_with_op_block(0xD2_0005, staged);
+        assert!(
+            !reopened.is_read_only(),
+            "major 5 is inside the raised op-block accept-set [0, 5]"
+        );
+        let blocks = reopened
+            .read_operation_block(&reopened.manifest().operation_roots[0])
+            .expect("a major-5 op block is admitted by the accept-set");
+        assert_eq!(blocks.len(), envelopes.len());
+        for (bytes, env) in blocks.iter().zip(&envelopes) {
+            assert_eq!(bytes, &env.to_canonical_bytes());
+            assert_eq!(
+                &epiphany_ops::decode_envelope(bytes).expect("the envelope decodes"),
+                env
+            );
+        }
+    }
+
     #[test]
     fn a_create_tuplet_block_stamps_4_13_and_reopens_read_write() {
         use epiphany_core::{
@@ -811,7 +954,7 @@ mod tests {
         let reopened = reopen_with_op_block(0xD2_0004, staged);
         assert!(
             !reopened.is_read_only(),
-            "major 4 is inside the raised op-block accept-set [0, 4], so the \
+            "major 4 is inside the raised op-block accept-set [0, 5], so the \
              bundle must open read-write"
         );
         // Read back through the accept-set gate and decoded: the envelope,
@@ -829,18 +972,19 @@ mod tests {
     #[test]
     fn op_block_beyond_the_accept_set_opens_read_only() {
         use epiphany_bundle::IntegrityAnomaly;
-        // A newer writer's op block, stamped schema major 5 — beyond the reader's
-        // op-block accept-set [0,4]. The bundle opens read-only preservation (the
+        // A newer writer's op block, stamped schema major 6 — beyond the reader's
+        // op-block accept-set [0,5]. The bundle opens read-only preservation (the
         // canonical base and manifest still read) rather than hard-rejecting.
         //
-        // Major 5: genesis tranche G2b raised the op-block accept-set to
-        // [0, 3] (`SetTuningContext` is born at major 3) and X3c to [0, 4]
-        // (`CreateTuplet` is born at major 4), so this test's "beyond the
-        // accept-set" major must move past both to stay an actual test of
-        // the read-only-on-overflow path.
+        // Major 6: genesis tranche G2b raised the op-block accept-set to
+        // [0, 3] (`SetTuningContext` is born at major 3), X3c to [0, 4]
+        // (`CreateTuplet` is born at major 4) and X4b to [0, 5] (an event's
+        // marks, a marker and a lyric are born at major 5), so this test's
+        // "beyond the accept-set" major must move past each to stay an
+        // actual test of the read-only-on-overflow path.
         let block = StagedChunk::operation_block_versioned(
             encode_block(&[vec![1u8, 2, 3, 4]]),
-            SchemaVersion::new(5, 0),
+            SchemaVersion::new(6, 0),
         );
         let reopened = reopen_with_op_block(0xD2_0002, block);
         assert!(
@@ -849,7 +993,7 @@ mod tests {
         );
         assert!(reopened.anomalies().iter().any(|a| matches!(
             a,
-            IntegrityAnomaly::UnsupportedCanonicalChunkMajor { schema_major: 5 }
+            IntegrityAnomaly::UnsupportedCanonicalChunkMajor { schema_major: 6 }
         )));
     }
 
@@ -923,15 +1067,15 @@ mod tests {
     ///
     /// # Two provably independent operands
     ///
-    /// The fixture is built with `synthetic_for_fixture(3)` and commits a base
-    /// carrying the **literal** `ReductionAlgorithmVersion(3)`; the reopen then
+    /// The fixture is built with `synthetic_for_fixture(4)` and commits a base
+    /// carrying the **literal** `ReductionAlgorithmVersion(4)`; the reopen then
     /// supplies `production_caps()`, which wraps the real constant. One operand
     /// is a literal written into a fixture, the other is the authority read at
     /// the reopen — neither derived from the other.
     ///
     /// **The literals track the constant's value by hand.** P13-S16 moved the
-    /// authority `0` → `1`, X3.1 `1` → `2` and X4a `2` → `3`, so every literal below moved
-    /// with it — by editing, never by referencing
+    /// authority `0` → `1`, X3.1 `1` → `2`, X4a `2` → `3` and X4b `3` → `4`, so every
+    /// literal below moved with it — by editing, never by referencing
     /// `CURRENT_REDUCTION_ALGORITHM_VERSION`. That this
     /// test must be edited whenever the authority moves is the **point**, not
     /// friction to be engineered away: it is the tripwire. A future rung that
@@ -961,7 +1105,7 @@ mod tests {
             MemStore::new(),
             FileUuid([0x5E; 16]),
             Manifest::empty(DocumentId([0x5E; 16])),
-            BundleCapabilities::synthetic_for_fixture(3),
+            BundleCapabilities::synthetic_for_fixture(4),
         )
         .expect("fixture bundle creates");
 
@@ -978,7 +1122,7 @@ mod tests {
                     snapshot_id: SnapshotId([0x5E; 16]),
                     covers_causal_frontier: FrontierBytes::empty(),
                     // A deliberate LITERAL — not the constant. See above.
-                    reduction_algorithm_version: ReductionAlgorithmVersion(3),
+                    reduction_algorithm_version: ReductionAlgorithmVersion(4),
                     profile_id: ProfileId::Full,
                     hash: root.hash,
                     root,
@@ -1001,13 +1145,13 @@ mod tests {
                         .as_ref()
                         .unwrap()
                         .reduction_algorithm_version,
-                    ReductionAlgorithmVersion(3)
+                    ReductionAlgorithmVersion(4)
                 );
             }
             Err(BundleError::CanonicalBaseRequiresRebuild { base, current }) => {
                 // Reached only under M5b. Assert both fields, then fail loudly
                 // quoting them — that is the mutation's required observation.
-                assert_eq!(base, ReductionAlgorithmVersion(3));
+                assert_eq!(base, ReductionAlgorithmVersion(4));
                 panic!(
                     "M5b observation: base={} current={} — the authority is load-bearing here",
                     base.0, current.0

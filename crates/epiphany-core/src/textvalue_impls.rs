@@ -357,7 +357,7 @@ mod tests {
 
     #[test]
     fn the_codec_macros_project_units_c_style_enums_and_catalog_ids() {
-        use crate::event::ArticulationMark;
+        use crate::event::DynamicMark;
         use crate::pitch::{AccidentalId, SpellingSourceKind};
         use crate::textvalue::read_sexp;
         // cstyle enum -> bare symbol
@@ -371,7 +371,7 @@ mod tests {
         );
         assert!(SpellingSourceKind::parse(&read_sexp("nope").unwrap()).is_err());
         // unit struct -> bare symbol
-        assert_eq!(ArticulationMark.project().render(), "articulation-mark");
+        assert_eq!(DynamicMark.project().render(), "dynamic-mark");
         // catalog id -> string, NFC-checked
         let id = AccidentalId::new("sharp");
         assert_eq!(id.project().render(), "\"sharp\"");

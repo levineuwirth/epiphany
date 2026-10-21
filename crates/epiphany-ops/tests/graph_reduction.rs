@@ -2639,6 +2639,7 @@ fn marker_reanchor_breaks_full_ties_by_ascending_event_id() {
             id: referent,
             offset: AnchorOffset::Zero,
         },
+        kind: epiphany_core::MarkerKind::Segno,
     });
 
     let ins = |counter: u64, event: EventId, voice: VoiceId, pitch: u64| {
@@ -2714,6 +2715,7 @@ fn marker_orphans_when_the_staff_instance_has_no_other_live_event() {
             id: marked,
             offset: AnchorOffset::Zero,
         },
+        kind: epiphany_core::MarkerKind::Segno,
     });
 
     let mut order: Vec<EventId> = instance_events
@@ -2901,6 +2903,7 @@ fn referent_reanchoring_is_permutation_invariant() {
             id: referent,
             offset: AnchorOffset::Zero,
         },
+        kind: epiphany_core::MarkerKind::Segno,
     });
 
     let ins = |counter: u64, event: u64, position: i32| {

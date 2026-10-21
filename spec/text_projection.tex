@@ -234,7 +234,7 @@
   {\Large\scshape\color{epiphanyslate}Text Projection}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.17.0 --- A tuplet carries its display}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.18.0 --- Expression and text}\\[4pt]
   {\small\color{epiphanyslate}Normative for the text form it defines}
   \vfill
 \end{titlepage}
@@ -483,7 +483,7 @@ A projection is, in order:
 \begin{requirement}
   \label{req:textproj:header-version}
   A parser implementing this companion \MUST{} accept exactly one header
-  version: \texttt{(0 17 0)}, the version of the companion it implements. It
+  version: \texttt{(0 18 0)}, the version of the companion it implements. It
   \MUST{} reject any other version at line one.
 
   Multi-version acceptance and text migrate-on-read are deferred in the same
@@ -534,7 +534,7 @@ projection introduces no ordering of its own.
   A parser \MUST{} reject every \texttt{(blob ...)} line whose blob is
   unreferenced by canonical state
   (Requirement~\ref{req:textproj:canonical-blobs}). At companion
-  version~0.17.0, neither a canonical operation nor canonical reduced state can
+  version~0.18.0, neither a canonical operation nor canonical reduced state can
   carry a \texttt{BlobId}; canonical state therefore cannot reference a blob,
   and a parser \MUST{} reject every \texttt{(blob ...)} line.
 \end{requirement}
@@ -727,11 +727,11 @@ are ratified.
   fieldless variant is therefore shape-identical to a struct. The collision is
   \emph{irreducible} without new syntax, and it is reachable from the first
   pitched note a score contains: a \texttt{PitchedEvent} carries
-  \texttt{articulations} and \texttt{ornaments}, sequences of a zero-field
-  \texttt{ArticulationMark} and \texttt{OrnamentMark}, alongside an optional
-  \texttt{DynamicMark} --- so one \texttt{insert-event} line holds an empty
-  sequence and an absent option, both spelled \texttt{()}, and a two-element
-  sequence spelled like a two-field struct.
+  \texttt{marks} and \texttt{ornaments}, sets of \texttt{EventMark} and
+  \texttt{Ornament}, alongside an optional \texttt{DynamicMark} --- so one
+  \texttt{insert-event} line holds an empty set and an absent option, both
+  spelled \texttt{()}, and a set of two marks whose first is fieldless
+  (\texttt{(staccato accent)}) spelled like a one-field struct.
 
   Making the text standalone-unambiguous would buy nothing, because
   Requirement~\ref{req:textproj:strict-parse} already obliges a parser to reject
@@ -1095,12 +1095,14 @@ kind           ::= "(insert-event " bytes " " value ")"
                | "(create-tuplet " value ")"
                | "(set-clef " bytes " " value " " option ")"
                | "(set-key-signature " bytes " " value " " option ")"
+               | "(set-voice-home " bytes " " option ")"
 
 tuplet-comp    ::= "not-in-tuplet" | "(replace-with-rest " value ")"
                | "(rewrite-tuplets (" bytes* "))"
                | "(cascade-delete-tuplets (" bytes* "))"
 cross-cutting  ::= "(tie " value ")" | "(slur " value ")"
                | "(beam " value ")" | "(spanner " value ")"
+               | "(marker " value ")" | "(lyric " value ")"
 remapping      ::= "preserve-time" | "(reassign (" reassign-entry* "))"
 reassign-entry ::= "(" bytes " " ratio ")"          ; event id, musical position
 
@@ -1171,7 +1173,7 @@ A document of one operation --- a transposition of two pitches up a perfect
 fifth --- projects to four lines:
 
 \begin{lstlisting}
-(text-projection (0 17 0))
+(text-projection (0 18 0))
 (document #x05050505050505050505050505050505 (schema 0 1))
 (profile full (0 1 0) (constraints 67108864 (retention 1 () true)))
 (envelope #x00000000000000070000000000000001 #x00000000000000000000000011223344 (stamp 42 7 #x00000000000000070000000000000001) (causal ((#x0000000000000001 3)) (#x00000000000000020000000000000009)) (some #x00000000000000070000000000000005) (primitive (transpose-interval (#x00000000000000070000000000000001 #x00000000000000070000000000000002) (transposition-interval 4 7))))
@@ -1523,6 +1525,25 @@ containing it parses, projects, or serializes
   migrated, as the Binary Format refuses a \texttt{CreateTuplet} stamped below
   major~4. Cached projections at \texttt{(0 16 0)} do not migrate; a stale
   \texttt{TextProjection} chunk is regenerated, not converted. \\
+
+    \today & Chapter 5 & 0.18.0 --- Expression and text (X4b). The Binary
+  Format's schema major~5 fills an event's \texttt{marks}, \texttt{ornaments}
+  and \texttt{grace}, gives a \texttt{Marker} its \texttt{kind}, replaces the
+  lyric line with a \texttt{Lyric} syllable, and adds a wavy
+  \texttt{LineStyle} and a pedal bracket; each is the struct or union
+  projection the Core Specification's codec defines, and a \texttt{Text} is a
+  \texttt{string} in Unicode NFC, any other form refused. The
+  \texttt{cross-cutting} production gains \texttt{"(marker " value ")"} and
+  \texttt{"(lyric " value ")"}, and the \texttt{kind} production gains
+  \texttt{"(set-voice-home " bytes " " option ")"}: a voice's id and its
+  optional home staff's id (\texttt{req:textproj:operation-vocabulary}).
+
+  Same forcing reason as every prior grammar-changing bump: holding the version
+  would leave two mutually incompatible grammars both claiming
+  \texttt{(0 17 0)}. At 0.18.0 a \texttt{(0 17 0)} document is refused at line
+  one (\texttt{req:textproj:header-version}). Cached projections at
+  \texttt{(0 17 0)} do not migrate; a stale \texttt{TextProjection} chunk is
+  regenerated, not converted. \\
 \bottomrule
 \end{longtable}
 
