@@ -7158,6 +7158,159 @@ fn a_compressed_systems_ties_are_decided_where_it_sets_them() {
     );
 }
 
+/// A compressed system's slurs pass the ink where it sets them: in systems
+/// the file breaks, each of three slurs over flats (one rising to a flat, a
+/// two-note one falling to a flat, one raised over an interior flat) and a
+/// steep two-note slur falling a seventh from a beamed sixteenth stands clear
+/// of every accidental and notehead on every page down to the narrowest
+/// whose line the systems' floor fits, as the natural spacing sets them.
+#[test]
+fn a_compressed_systems_slurs_pass_the_ink_where_it_sets_them() {
+    let note = |step: &str, alter: i8, octave: u8, duration: u8, kind: &str, extra: &str| {
+        let alter_el = if alter == 0 {
+            String::new()
+        } else {
+            format!("<alter>{alter}</alter>")
+        };
+        let accidental = if alter == -1 {
+            "<accidental>flat</accidental>"
+        } else {
+            ""
+        };
+        let (beam, slur) = match extra.split_once(' ') {
+            Some((beam, slur)) => (beam, slur),
+            None if extra.starts_with("beam") => (extra, ""),
+            None => ("", extra),
+        };
+        let beam = match beam {
+            "" => String::new(),
+            b => {
+                let kind = b.trim_start_matches("beam-");
+                format!("<beam number=\"1\">{kind}</beam><beam number=\"2\">{kind}</beam>")
+            }
+        };
+        let slur = match slur {
+            "" => String::new(),
+            kind => format!("<notations><slur type=\"{kind}\" number=\"1\"/></notations>"),
+        };
+        format!(
+            "<note><pitch><step>{step}</step>{alter_el}<octave>{octave}</octave></pitch>\
+             <duration>{duration}</duration><voice>1</voice><type>{kind}</type>{accidental}\
+             {beam}{slur}</note>"
+        )
+    };
+    let q = |step, alter, octave, slur| note(step, alter, octave, 4, "quarter", slur);
+    let s = |step, octave, extra| note(step, 0, octave, 1, "16th", extra);
+    let four: Vec<String> = vec![
+        [
+            q("C", 0, 5, "start"),
+            q("D", 0, 5, ""),
+            q("E", 0, 5, ""),
+            q("A", -1, 5, "stop"),
+        ]
+        .concat(),
+        [
+            q("D", 0, 5, "start"),
+            q("E", -1, 5, "stop"),
+            q("C", 0, 5, "start"),
+            q("B", -1, 4, "stop"),
+        ]
+        .concat(),
+        [
+            q("E", 0, 5, "start"),
+            q("A", -1, 5, ""),
+            q("G", 0, 5, ""),
+            q("F", 0, 5, "stop"),
+        ]
+        .concat(),
+        [
+            s("C", 6, "beam-begin start"),
+            s("D", 5, "beam-continue stop"),
+            s("E", 5, "beam-continue"),
+            s("F", 5, "beam-end"),
+            s("G", 5, "beam-begin"),
+            s("A", 5, "beam-continue"),
+            s("B", 5, "beam-continue"),
+            s("C", 6, "beam-end"),
+            note("B", 0, 5, 8, "half", ""),
+        ]
+        .concat(),
+    ];
+    let measures: Vec<String> = four.iter().cycle().take(12).cloned().collect();
+    let attributes = "<time><beats>4</beats><beat-type>4</beat-type></time>\
+                      <clef><sign>G</sign><line>2</line></clef>";
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("compressed_slurs.musicxml");
+    let met = |layout: &epiphany_layout_ir::ResolvedLayoutIR| -> Vec<(String, [(f32, f32); 4])> {
+        let ink: Vec<(String, [f32; 4])> = layout
+            .glyphs
+            .iter()
+            .filter(|g| {
+                let name = g.glyph.as_str();
+                name.starts_with("accidental") || name.starts_with("notehead")
+            })
+            .map(|g| (g.glyph.as_str().to_string(), glyph_box(g)))
+            .collect();
+        layout
+            .curves
+            .iter()
+            .filter(|c| matches!(c.provenance.source, epiphany_core::TypedObjectId::Slur(_)))
+            .map(|c| [c.p0, c.p1, c.p2, c.p3].map(|p| (p.x.0, p.y.0)))
+            .flat_map(|cp| {
+                ink.iter()
+                    .filter(move |(_, b)| curve_enters(&cp, *b))
+                    .map(move |(name, _)| (name.clone(), cp))
+            })
+            .collect()
+    };
+
+    std::fs::write(&path, broken_part(2000.0, attributes, &measures, &[])).expect("written");
+    let loaded = load(&path).expect("loads");
+    let wide = epiphany_cli::engrave_loaded(&loaded).layout;
+    let slurs = wide
+        .curves
+        .iter()
+        .filter(|c| matches!(c.provenance.source, epiphany_core::TypedObjectId::Slur(_)))
+        .count();
+    assert_eq!(slurs, 15, "five slurs in each four measures");
+    assert!(met(&wide).is_empty(), "{:?}", met(&wide));
+    let natural: Vec<f32> = [1, 5, 9]
+        .iter()
+        .map(|&m| measures_span(&loaded, &wide, m, m + 3))
+        .collect();
+
+    let (mut compressed, mut meetings) = (0, Vec::new());
+    for tenth in (300..=1500).rev().step_by(5) {
+        let width = tenth as f32 / 10.0;
+        std::fs::write(&path, broken_part(width, attributes, &measures, &[5, 9])).expect("written");
+        let loaded = load(&path).expect("loads");
+        let report = solve_loaded(&loaded);
+        if !added_systems(&report).is_empty() {
+            break;
+        }
+        assert_eq!(system_starts(&loaded, &report.layout), vec![1, 5, 9]);
+        let layout = &report.layout;
+        let right = system_ink_right(layout);
+        for (s, &m) in [1, 5, 9].iter().enumerate() {
+            if measures_span(&loaded, layout, m, m + 3) < natural[s] - 1e-3 {
+                assert!(
+                    (right[s] - (width - 7.5)).abs() < 0.05,
+                    "at width {width} compressed system {s}'s ink runs to {}",
+                    right[s]
+                );
+                compressed += 1;
+            }
+        }
+        meetings.extend(met(layout).into_iter().map(|m| (width, m)));
+    }
+    assert!(compressed > 30, "{compressed} systems compressed");
+    assert!(
+        meetings.is_empty(),
+        "{} slurs meet an accidental or a head, the first {:?}",
+        meetings.len(),
+        meetings.first()
+    );
+}
+
 /// Compression never sets a tie back into its first note's flag: the floor
 /// keeps a flagged tie the span its start past the flag needs. Nine measures
 /// broken every three, each with an upper voice's eighth tied to a quarter

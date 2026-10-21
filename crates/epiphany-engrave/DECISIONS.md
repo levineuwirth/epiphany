@@ -2154,8 +2154,12 @@ finds the narrowest page, to a tenth of a space, that holds a system the
 file breaks, and reads there four of `floor_gap`'s distances as the page
 draws them: two whole notes at one height 0.35 apart, an up stem and the
 down stem after it 0.85, a dot 0.65 before the next head, a head 1.5 before
-the barline after it, each within the tenth the width steps by. All are in
-`epiphany-cli`.
+the barline after it, each within the tenth the width steps by.
+`a_compressed_systems_slurs_pass_the_ink_where_it_sets_them` holds three
+systems of slurs over flats and a steep two-note slur from a beamed sixteenth
+down to their floor, no slur entering an accidental or a head: once the floor
+kept a flagged tie's room, the ties test no longer saw a compressed system's
+curves left unpassed, and this one does. All are in `epiphany-cli`.
 
 ## Where the floor departs from MuseScore (X5c fix round 3, 2026-10-21; ENGRAVER_VERSION stays 56)
 
