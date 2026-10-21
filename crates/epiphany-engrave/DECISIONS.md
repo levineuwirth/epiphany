@@ -2087,3 +2087,24 @@ in systems spaced by duration and, where the file's breaks fix a system
 wider than the line, compressed toward the floor. Neither branch's rules
 changed in the merge; the version goes to `55`, past both, so a layout
 either branch made is never taken for the other's.
+
+## A held system keeps MuseScore's paddings where its natural spacing sets less (X5c fix round 3, 2026-10-21; ENGRAVER_VERSION stays 55)
+
+The spacing pass clears a note column's ink from later ink at its height by
+`SLOT_GAP`, 0.3, a barline's included. The floor clears it by MuseScore's
+paddings instead, which exceed that for most pairs and most of all before a
+barline (`noteBarDistance`, 1.5), and on one staff it keeps some ink apart
+at any height, where the spacing pass keeps none. A compressed system sets
+each slot at the larger of its scaled spring and the floor, so where the
+floor holds a slot further from the one before it than the spacing pass
+did, that gap stands wider than at its natural spacing while the rest of
+the system shrinks further to pay for it: a compressed system's last notes
+stand as far from its barlines as MuseScore's do, further than the same
+music stands uncompressed, and now and then a whole measure stands a little
+wider than its natural width. This is accepted beside D71 (C5c review 2's
+L1, ruled under D76): the floor is MuseScore's own distance there, and
+capping it at the natural spacing would set a compressed system's notes
+nearer its barlines than MuseScore sets them. So the floor can exceed the
+spacing it compresses; a lone measure dense enough to have a floor wider
+than its natural width stays overfull at its natural width, as a lone
+measure always has.
