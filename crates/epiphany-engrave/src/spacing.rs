@@ -32,12 +32,14 @@
 
 use std::collections::BTreeMap;
 
+use epiphany_core::TypedObjectId;
 use epiphany_layout_ir::{
     is_barline_glyph, is_rigid_width_stroke, ConstrainedLayoutIR, SpringSlotId, VerticalBandId,
     VerticalBandKind,
 };
 
 use crate::casting::barline_lines;
+use crate::clearance::{self, InkRect};
 use crate::owning_glyph;
 
 /// Inter-slot gap (staff spaces) reserved between a note column's right
@@ -65,6 +67,13 @@ const MIN_ADVANCE: f32 = 0.1;
 /// The least a tie runs between its ends, which stand clear of their
 /// columns' ink, in staff spaces.
 const TIE_MIN_SPAN: f32 = 1.0;
+
+/// How much further the floor keeps a flagged tie's end than its start past
+/// the flag and its least span ask, in staff spaces: a thousandth, so a tie
+/// the floor sets at exactly that span is never left a rounding short of it,
+/// which would keep it in its flag (`clearance::start_past_flag` keeps a tie
+/// the move would leave shorter than its least span).
+const FLAG_START_SLACK: f32 = 1e-3;
 
 /// The least a beam across two staves runs between the stems it joins, whose
 /// up stem right of its head can stand close beside the next down stem left
@@ -248,7 +257,8 @@ struct FloorSlot {
     floor: Vec<(i32, Ink, f32, f32)>,
     staff: Vec<(usize, Ink, f32, f32)>,
     /// `(earlier slot's index, least distance)` for each tie or beam across
-    /// two staves ending here.
+    /// two staves ending here, and for each tie whose first note's flag
+    /// stands on its side, the span its start past the flag needs.
     ties: Vec<(usize, f32)>,
 }
 
@@ -267,8 +277,9 @@ impl Skyline {
     /// [`floor_gap`] where their heights meet and by [`staff_gap`] on one
     /// staff at any height, ink after a fixed slot by the clearance the
     /// spacing pass gives it; ties and beams across two staves their least
-    /// span where both ends are among `ids`. A slot it does not know stands
-    /// where the one before it does. At `scale` 0, the floor.
+    /// span where both ends are among `ids`, and a tie whose first note has a
+    /// flag on its side the span to start past it. A slot it does not know
+    /// stands where the one before it does. At `scale` 0, the floor.
     pub(crate) fn place(&self, ids: &[SpringSlotId], scale: f32) -> Vec<f32> {
         let members: Vec<Option<usize>> =
             ids.iter().map(|id| self.index.get(id).copied()).collect();
@@ -570,10 +581,32 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
     // ends: the later slot stands at least that far, and its end's and the
     // earlier end's offsets from their slots, after the earlier. Each
     // requirement is `(earlier slot, distance)`, by the later slot (a beam
-    // across two staves adds its own below).
+    // across two staves adds its own below). At the floor a tie whose first
+    // note has a flag on the tie's side keeps, besides, the span its start
+    // past that flag needs (`clearance::flag_start`, then
+    // `clearance::MIN_TIE_SPAN`), so compression never sets a tie the
+    // natural spacing starts past its flag back into it (`flag_ties`).
     let source_of: BTreeMap<SpringSlotId, f32> =
         slots.iter().map(|(id, e)| (*id, e.source)).collect();
+    let mut flags: BTreeMap<(SpringSlotId, VerticalBandId), Vec<InkRect>> = BTreeMap::new();
+    for glyph in input
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("flag"))
+    {
+        let (x, y, b) = (glyph.baseline.x.0, glyph.baseline.y.0, glyph.bounding_box);
+        flags
+            .entry((glyph.horizontal_slot, glyph.vertical_band))
+            .or_default()
+            .push(InkRect {
+                left: x + b.left.0,
+                right: x + b.right.0,
+                bottom: y + b.bottom.0,
+                top: y + b.top.0,
+            });
+    }
     let mut ties: BTreeMap<SpringSlotId, Vec<(SpringSlotId, f32)>> = BTreeMap::new();
+    let mut flag_ties: BTreeMap<SpringSlotId, Vec<(SpringSlotId, f32)>> = BTreeMap::new();
     for curve in &input.curves {
         let Some((start, end)) = anchors.get(&curve.id()) else {
             continue;
@@ -586,6 +619,16 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
         }
         let need = (curve.p0.x.0 - s0) + TIE_MIN_SPAN + (s1 - curve.p3.x.0);
         ties.entry(*end).or_default().push((*start, need));
+        if !matches!(curve.provenance.source, TypedObjectId::Tie(_)) {
+            continue;
+        }
+        let at_start = flags.get(&(*start, curve.vertical_band));
+        if let Some(from) = at_start.and_then(|f| clearance::flag_start(curve.control_points(), f))
+        {
+            let need =
+                (from - s0) + clearance::MIN_TIE_SPAN + FLAG_START_SLACK + (s1 - curve.p3.x.0);
+            flag_ties.entry(*end).or_default().push((*start, need));
+        }
     }
     // Likewise a beam across two staves, between the stems at its ends.
     let crossing: std::collections::BTreeSet<_> = input
@@ -695,6 +738,7 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
                     ties: ties
                         .get(id)
                         .into_iter()
+                        .chain(flag_ties.get(id))
                         .flatten()
                         .filter_map(|(start, need)| Some((*index.get(start)?, *need)))
                         .collect(),

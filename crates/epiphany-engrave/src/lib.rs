@@ -352,8 +352,10 @@ pub struct Engraver {
 /// only where even that floor overflows, and to `54` when a compressed
 /// system's slur began passing the heads of its band as it passes
 /// accidentals. It went to `55`, past both, when the two were taken
-/// together.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(55);
+/// together, and to `56` when a compressed system's floor began keeping a
+/// tie whose first note has a flag on its side the span to start past the
+/// flag, so compression no longer sets such a tie back into it.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(56);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.

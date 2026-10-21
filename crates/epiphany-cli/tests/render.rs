@@ -6635,6 +6635,31 @@ fn system_ink_right(layout: &epiphany_layout_ir::ResolvedLayoutIR) -> Vec<f32> {
         .collect()
 }
 
+/// The width from the left edge of measure `from` to the right edge of
+/// measure `to` (numbered from 1, inclusive) where a layout sets them: less
+/// than at their natural spacing where a system is compressed, more where
+/// one is justified.
+fn measures_span(
+    loaded: &epiphany_cli::Loaded,
+    layout: &epiphany_layout_ir::ResolvedLayoutIR,
+    from: usize,
+    to: usize,
+) -> f32 {
+    let ids = &loaded.import.ids.measures[0][0][from - 1..to];
+    let boxes: Vec<(f32, f32)> = layout
+        .systems()
+        .flat_map(|system| &system.measures)
+        .filter(|m| ids.contains(&m.measure))
+        .map(|m| (m.bounding_box.origin.x.0, m.bounding_box.size.width.0))
+        .collect();
+    assert!(!boxes.is_empty(), "measures {from} to {to} are drawn");
+    boxes
+        .iter()
+        .map(|b| b.0 + b.1)
+        .fold(f32::NEG_INFINITY, f32::max)
+        - boxes.iter().map(|b| b.0).fold(f32::INFINITY, f32::min)
+}
+
 /// A system the file's breaks fix, which holds more than the line at the
 /// fixed scale, is compressed toward its floor and kept, filling the line to
 /// its margins and keeping its durations' ratios: twelve measures of
@@ -7096,6 +7121,126 @@ fn a_compressed_systems_ties_are_decided_where_it_sets_them() {
         "{} ties under a space, the shortest {shortest}, from width {:?}",
         short.len(),
         short.first().map(|s| s.0)
+    );
+}
+
+/// Compression never sets a tie back into its first note's flag: the floor
+/// keeps a flagged tie the span its start past the flag needs. Nine measures
+/// broken every three, each with an upper voice's eighth tied to a quarter
+/// and another tied to a dotted quarter, over a whole note: on every page
+/// down to the narrowest whose line the systems' floor fits, every tie
+/// stands clear of every flag, as the natural spacing sets them.
+#[test]
+fn compression_never_sets_a_tie_back_into_its_flag() {
+    let note = |pitch: &str, duration: u8, kind: &str, voice: u8, extra: &str| {
+        let (step, octave) = pitch.split_at(1);
+        let (tie_el, tied) = match extra {
+            "start" | "stop" => (
+                format!("<tie type=\"{extra}\"/>"),
+                format!("<notations><tied type=\"{extra}\"/></notations>"),
+            ),
+            _ => (String::new(), String::new()),
+        };
+        let dot = if kind == "quarter." { "<dot/>" } else { "" };
+        let beam = match extra {
+            "begin" | "end" => {
+                format!("<beam number=\"1\">{extra}</beam><beam number=\"2\">{extra}</beam>")
+            }
+            _ => String::new(),
+        };
+        let stem = if voice == 1 { "up" } else { "down" };
+        format!(
+            "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+             <duration>{duration}</duration>{tie_el}<voice>{voice}</voice><type>{}</type>\
+             {dot}<stem>{stem}</stem>{beam}{tied}</note>",
+            kind.trim_end_matches('.')
+        )
+    };
+    let measure = [
+        note("C5", 2, "eighth", 1, "start"),
+        note("C5", 4, "quarter", 1, "stop"),
+        note("A4", 1, "16th", 1, "begin"),
+        note("B4", 1, "16th", 1, "end"),
+        note("D5", 2, "eighth", 1, "start"),
+        note("D5", 6, "quarter.", 1, "stop"),
+        "<backup><duration>16</duration></backup>".to_string(),
+        note("F4", 16, "whole", 2, ""),
+    ]
+    .concat();
+    let measures = vec![measure; 9];
+    let attributes = "<time><beats>4</beats><beat-type>4</beat-type></time>\
+                      <clef><sign>G</sign><line>2</line></clef>";
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("flagged_ties.musicxml");
+    let flags_of = |layout: &epiphany_layout_ir::ResolvedLayoutIR| -> Vec<[f32; 4]> {
+        layout
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str().starts_with("flag"))
+            .map(glyph_box)
+            .collect()
+    };
+
+    // On a page that holds them at their natural spacing, each tie starts
+    // past its eighth's flag.
+    std::fs::write(&path, broken_part(2000.0, attributes, &measures, &[])).expect("written");
+    let loaded = load(&path).expect("loads");
+    let wide = epiphany_cli::engrave_loaded(&loaded).layout;
+    let natural: Vec<f32> = [1, 4, 7]
+        .iter()
+        .map(|&m| measures_span(&loaded, &wide, m, m + 2))
+        .collect();
+    let flags = flags_of(&wide);
+    assert_eq!(ties_of(&wide).len(), 18, "two ties in each measure");
+    for tie in ties_of(&wide) {
+        assert!(
+            flags.iter().all(|f| !curve_enters(&tie, *f)),
+            "the natural spacing starts each tie past its flag: {tie:?}"
+        );
+    }
+
+    let (mut held, mut compressed, mut meetings) = (0, 0, Vec::new());
+    for tenth in (400..=1600).rev().step_by(5) {
+        let width = tenth as f32 / 10.0;
+        std::fs::write(&path, broken_part(width, attributes, &measures, &[4, 7])).expect("written");
+        let loaded = load(&path).expect("loads");
+        let report = solve_loaded(&loaded);
+        if !added_systems(&report).is_empty() {
+            break;
+        }
+        assert_eq!(system_starts(&loaded, &report.layout), vec![1, 4, 7]);
+        let layout = &report.layout;
+        let flags = flags_of(layout);
+        for tie in ties_of(layout) {
+            if let Some(flag) = flags.iter().find(|f| curve_enters(&tie, **f)) {
+                meetings.push((width, tie, *flag));
+            }
+        }
+        // A system set narrower than its natural spacing is compressed and
+        // fills the line.
+        let right = system_ink_right(layout);
+        for (s, &m) in [1, 4, 7].iter().enumerate() {
+            if measures_span(&loaded, layout, m, m + 2) < natural[s] - 1e-3 {
+                assert!(
+                    (right[s] - (width - 7.5)).abs() < 0.05,
+                    "at width {width} compressed system {s}'s ink runs to {}",
+                    right[s]
+                );
+                compressed += 1;
+            }
+        }
+        held += 1;
+    }
+    assert!(
+        held > 100,
+        "{held} pages down to the floor held the file's systems"
+    );
+    assert!(compressed > 100, "{compressed} systems compressed");
+    assert!(
+        meetings.is_empty(),
+        "{} ties meet a flag, the first at width {:?}: {:?}",
+        meetings.len(),
+        meetings.first().map(|m| m.0),
+        meetings.first()
     );
 }
 

@@ -2108,3 +2108,28 @@ nearer its barlines than MuseScore sets them. So the floor can exceed the
 spacing it compresses; a lone measure dense enough to have a floor wider
 than its natural width stays overfull at its natural width, as a lone
 measure always has.
+
+## ENGRAVER_VERSION 55 → 56: a flagged tie keeps its start's room at the floor (X5c fix round 3, 2026-10-21)
+
+The floor kept a tie's least span, a space, between its ends. A tie whose
+first note has a flag on the tie's side starts past the flag where it has
+the span (`clearance::start_past_flag`: the flag's right edge,
+`ACCIDENTAL_CLEARANCE` beyond, and `MIN_TIE_SPAN` from there to its end),
+which takes the flag's width and 0.2 more than the floor kept. Between the
+natural spacing and the floor there was therefore a band of widths at which
+compression set a tie the natural spacing had started past its flag back
+into it (C5c review 2's L3), each with under a space past the flag, the
+rule kept as written. The floor now keeps such a tie that span too
+(`clearance::flag_start`, read where `space_slots` gathers the floor's
+ties): a flag riding the tie's start slot on its staff, in the window
+`start_past_flag` reads, reaching past the tie's start toward the side it
+arcs to, keeps the tie's end from its start slot by the flag's right edge,
+0.2, the least span and a thousandth more (`FLAG_START_SLACK`), since a tie
+set at exactly that span could be left a rounding short of it and kept in
+its flag. A system the floor so widened may no longer fit its line and take
+a system more, named as any other. The natural spacing is unchanged; so is
+every tie in a system the breaks do not hold. Locked by
+`compression_never_sets_a_tie_back_into_its_flag` (`epiphany-cli`): nine
+measures broken every three, each with two flagged ties over a whole note,
+every tie clear of every flag on every page down to the floor, which fails
+with the flag's room left out of the floor or with the thousandth dropped.

@@ -67,7 +67,7 @@ const MAX_LONG_TIE_ARC: f32 = 3.0;
 
 /// The least a tie runs once it starts past its first note's flag, in staff
 /// spaces.
-const MIN_TIE_SPAN: f32 = 1.0;
+pub(crate) const MIN_TIE_SPAN: f32 = 1.0;
 
 /// How many accidentals one curve passes, at most.
 const MAX_PASSES: usize = 24;
@@ -193,6 +193,24 @@ pub(crate) fn start_past_flag(cp: [Point; 4], flags: &[InkRect]) -> [Point; 4] {
         Point::new(along(cp[2].x.0), cp[2].y.0),
         cp[3],
     ]
+}
+
+/// Where `cp`, a tie, would start past its first note's flag
+/// ([`start_past_flag`]): [`ACCIDENTAL_CLEARANCE`] past the right edge of the
+/// rightmost flag at its start, in the window that function reads, that
+/// stands on the side the tie arcs to (reaching above the tie's start for a
+/// tie arcing above, below it for one arcing below); `None` where no flag
+/// stands so. A flag rides its note's column as the tie's start does, so
+/// neither the window nor the side changes as spacing moves the column.
+pub(crate) fn flag_start(cp: [Point; 4], flags: &[InkRect]) -> Option<f32> {
+    let (x0, y0) = (cp[0].x.0, cp[0].y.0);
+    let above = offset(&cp) > 0.0;
+    flags
+        .iter()
+        .filter(|b| b.left < x0 + 0.5 && b.right > x0)
+        .filter(|b| if above { b.top > y0 } else { b.bottom < y0 })
+        .map(|b| b.right + ACCIDENTAL_CLEARANCE)
+        .reduce(f32::max)
 }
 
 /// The inner control points' offsets from the chord, at its thirds.
