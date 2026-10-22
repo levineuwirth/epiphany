@@ -16,7 +16,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_layout_ir::{
-    Autoplace, ConstrainedLayoutIR, FamilyMark, GlyphObjectId, Room, TextObject, VerticalBandId,
+    Autoplace, ConstrainedLayoutIR, FamilyMark, GlyphObjectId, PlaceOrder, Room, TextObject,
+    VerticalBandId,
 };
 
 use crate::clearance::InkRect;
@@ -131,13 +132,19 @@ pub(crate) fn place(
         });
         let mut sky: Vec<InkRect> = ink.get(&key).cloned().unwrap_or_default();
         for same in members.chunk_by(|&a, &b| placement(a).order == placement(b).order) {
+            // A verse is placed against the ink under it, not against the
+            // other verses, which keep their lines from it
+            // (`LyricsLayout::checkCollisionsWithStaffElements`).
+            let verses = placement(same[0]).order == PlaceOrder::Lyric;
+            let under = sky.len();
             // Each piece of this order, where its boxes join the sky.
             let mut joined: Vec<(usize, std::ops::Range<usize>)> = Vec::new();
             for &i in same {
                 let p = placement(i);
                 let mut need = 0.0f32;
+                let seen = if verses { &sky[..under] } else { &sky[..] };
                 for b in &pieces[i].boxes {
-                    for s in sky.iter().filter(|s| s.left < b.right && s.right > b.left) {
+                    for s in seen.iter().filter(|s| s.left < b.right && s.right > b.left) {
                         if p.above {
                             need = need.max(s.top + p.min_distance - b.bottom);
                         } else {
@@ -161,18 +168,40 @@ pub(crate) fn place(
                     rows.entry(row.id).or_default().push((i, at));
                 }
             }
+            // A verse moved moves the verses outside it as far
+            // (`moveThisVerseAndOuterOnes`): in a row's order, the verses' own.
+            let mut outer = 0.0f32;
             for row in rows.values() {
                 let centres: Vec<f32> = row
                     .iter()
                     .map(|&(i, _)| placement(i).row.expect("a row's member").centre + shift[i])
                     .collect();
-                let target = if placement(row[0].0).above {
+                let above = placement(row[0].0).above;
+                let target = if above {
                     centres.iter().copied().fold(f32::NEG_INFINITY, f32::max)
                 } else {
                     centres.iter().copied().fold(f32::INFINITY, f32::min)
                 };
+                // How far the row's members moved, at most; for verses, at
+                // least as far as the verse inside.
+                let moved = row
+                    .iter()
+                    .zip(&centres)
+                    .map(|(&(i, _), &c)| target - c + shift[i])
+                    .fold(0.0f32, |a, m| if above { a.max(m) } else { a.min(m) });
+                let extra = if verses {
+                    let carried = if above {
+                        outer.max(moved)
+                    } else {
+                        outer.min(moved)
+                    };
+                    outer = carried;
+                    carried - moved
+                } else {
+                    0.0
+                };
                 for ((i, at), centre) in row.iter().zip(centres) {
-                    let delta = target - centre;
+                    let delta = target - centre + extra;
                     shift[*i] += delta;
                     for b in &mut sky[at.clone()] {
                         b.bottom += delta;
@@ -188,7 +217,7 @@ pub(crate) fn place(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use epiphany_layout_ir::{PlaceOrder, Row};
+    use epiphany_layout_ir::Row;
 
     const STAFF: VerticalBandId = VerticalBandId(7);
 
@@ -206,7 +235,7 @@ mod tests {
                 row,
                 between: None,
             }),
-            hairpin: None,
+            line: None,
         }
     }
 
@@ -345,6 +374,53 @@ mod tests {
         let dynamic_bottom = -2.4 + shift[0];
         assert!(
             (shift[3] - (dynamic_bottom - 0.5 - -2.0)).abs() < 1e-5,
+            "{shift:?}"
+        );
+    }
+
+    /// A verse is placed against the ink under it, never against another
+    /// verse, which keeps its line from it: where a low note moves the first
+    /// verse down, the second moves as far, and where only the second's own
+    /// ink needs it, the second alone.
+    #[test]
+    fn verses_move_with_the_verses_inside_them() {
+        let verse =
+            |v: u128, centre: f32| member(false, PlaceOrder::Lyric, Some(Row { id: v, centre }));
+        // Two syllables in each of two verses, a line apart.
+        let family = [
+            verse(1, -3.0),
+            verse(1, -3.0),
+            verse(2, -5.4),
+            verse(2, -5.4),
+        ];
+        let pieces = [
+            piece(0, vec![rect(0.0, 2.0, -3.2, -2.1)]),
+            piece(1, vec![rect(5.0, 7.0, -3.2, -2.1)]),
+            piece(2, vec![rect(0.0, 2.0, -5.6, -4.5)]),
+            piece(3, vec![rect(5.0, 7.0, -5.6, -4.5)]),
+        ];
+        // A low note over the second syllable: the first verse clears it by
+        // a space, and the second keeps its line.
+        let ink = sky(vec![rect(5.0, 6.0, -3.0, 4.0)]);
+        let shift = place(&family, &pieces, &ink);
+        let need = -3.0 - 0.5 - -2.1;
+        for (i, s) in shift.iter().enumerate() {
+            assert!((s - need).abs() < 1e-5, "{i}: {shift:?}");
+        }
+        // Ink reaching only the second verse's height, beside the first's
+        // syllables: the second moves alone.
+        let ink = sky(vec![rect(8.0, 9.0, -6.0, -5.0)]);
+        let pieces = [
+            piece(0, vec![rect(0.0, 2.0, -3.2, -2.1)]),
+            piece(1, vec![rect(5.0, 7.0, -3.2, -2.1)]),
+            piece(2, vec![rect(0.0, 2.0, -5.6, -4.5)]),
+            piece(3, vec![rect(7.5, 9.5, -5.6, -4.5)]),
+        ];
+        let shift = place(&family, &pieces, &ink);
+        assert_eq!((shift[0], shift[1]), (0.0, 0.0), "{shift:?}");
+        let need = -6.0 - 0.5 - -4.5;
+        assert!(
+            (shift[2] - need).abs() < 1e-5 && (shift[3] - need).abs() < 1e-5,
             "{shift:?}"
         );
     }

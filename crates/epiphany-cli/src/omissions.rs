@@ -24,7 +24,8 @@
 //! - of the expression family the engraver draws, each mark of a note
 //!   (articulation, technique, ornament and its accidentals, tremolo, jazz
 //!   mark, arpeggio) with nothing drawn for it, by its class, and each
-//!   fermata, breath mark, caesura, dynamic and hairpin with no ink; one
+//!   fermata, breath mark, caesura, dynamic, hairpin and syllable with no
+//!   ink; one
 //!   anchored at a region offset stands on no staff, so it is named as drawn
 //!   nowhere;
 //! - each diagnostic the projection raised, by kind.
@@ -632,6 +633,16 @@ pub fn omissions(
                 out.add(&format!("{class} at a region offset: drawn nowhere"))
             }
             _ => out.add(class),
+        }
+    }
+    for lyric in score
+        .cross_cutting
+        .lyrics
+        .iter()
+        .filter(|l| !graces.contains(&l.event))
+    {
+        if !inked.contains(&TypedObjectId::LyricLine(lyric.id)) {
+            out.add("lyric");
         }
     }
     for spanner in &score.cross_cutting.spanners {

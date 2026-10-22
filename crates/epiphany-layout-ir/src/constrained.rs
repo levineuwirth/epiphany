@@ -235,10 +235,32 @@ pub struct FamilyMark {
     pub room: Room,
     /// How a solver places it off its staff, if it does.
     pub placement: Option<Autoplace>,
-    /// A hairpin's shape, its strokes its upper and its lower leg: a solver
-    /// setting it across a system break draws each piece by it.
-    pub hairpin: Option<HairpinShape>,
+    /// A line a solver draws piece by piece where a system break cuts it,
+    /// if the member is one.
+    pub line: Option<FamilyLine>,
 }
+
+/// A line of the family a solver draws piece by piece where a system break
+/// cuts it, as MuseScore draws its segments: a hairpin by its shape, its
+/// strokes its upper and its lower leg; a hyphen as dashes along its stroke
+/// (`LyricsLayout`: [`LYRIC_DASH_MIN`] to [`LYRIC_DASH_MAX`] long, one in
+/// each [`LYRIC_DASH_MAX_DISTANCE`] of it); a melisma line drawn only where
+/// it is at least [`LYRIC_MELISMA_MIN`] long.
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub enum FamilyLine {
+    Hairpin(HairpinShape),
+    Hyphen,
+    Melisma,
+}
+
+/// A hyphen's dash length's bounds (`lyricsDashMinLength`,
+/// `lyricsDashMaxLength`), the longest stretch one dash serves
+/// (`lyricsDashMaxDistance`), and a melisma line's least length
+/// (`lyricsMelismaMinLength`), in staff spaces.
+pub const LYRIC_DASH_MIN: f32 = 0.4;
+pub const LYRIC_DASH_MAX: f32 = 0.6;
+pub const LYRIC_DASH_MAX_DISTANCE: f32 = 16.0;
+pub const LYRIC_MELISMA_MIN: f32 = 1.0;
 
 /// A hairpin's shape (MuseScore's `TLayout::layoutHairpinSegment`): its legs
 /// open from its axis to [`HAIRPIN_HEIGHT`] at its wide end, a crescendo's
@@ -271,7 +293,7 @@ impl FamilyMark {
             texts: Vec::new(),
             room: Room::None,
             placement: None,
-            hairpin: None,
+            line: None,
         }
     }
 }
@@ -285,8 +307,8 @@ pub enum Room {
     /// As any ink of its column: an arpeggio left of its chord.
     Ink,
     /// A syllable's: clear of the earlier syllables of its staff and verse
-    /// at any height, and of no other ink.
-    Verse(u16),
+    /// at any height, by more where a hyphen follows it, and of no other ink.
+    Verse { verse: u16, hyphen: bool },
 }
 
 /// How a solver places a member of the family off its staff once the
@@ -2667,8 +2689,65 @@ pub fn try_to_constrained(
                 chains.insert(a.max(b), a.min(b));
             }
         }
-        // Each hairpin leg's slots, anchored once the columns they ride are
-        // known to hold glyphs.
+        // Each syllable, placed before any is emitted, so a hyphen reaches the
+        // next: centred on its note's head, but for its leading and trailing
+        // marks, or, where a melisma line extends from it or a verse number
+        // leads it, its letters from the head's left
+        // (`LyricsLayout::layout`).
+        let mut syllables: BTreeMap<(EventId, u16), SyllablePlacing> = BTreeMap::new();
+        for (provenance, staff, content) in &specs {
+            let (Some(st), Some(LayoutContent::Lyric(lyric))) = (*staff, content) else {
+                continue;
+            };
+            let key = ColumnKey::Timed(lyric.time.clone(), ColumnRole::Note);
+            let Some(info) = columns.get(&key) else {
+                continue;
+            };
+            let (mut run, gaps) = shape_text(
+                (*provenance).clone(),
+                lyric.text.as_str(),
+                TextFace::Roman,
+                LYRIC_TEXT_SIZE,
+                TextAlign::Left,
+                Point::new(0.0, 0.0),
+            );
+            for d in text_diagnostics(provenance.source, &gaps) {
+                emit.diag(d.source, d.kind);
+            }
+            let (lead, trail, advance) = syllable_margins(&run, lyric.text.as_str());
+            // A verse number leads letters; digits alone are the syllable.
+            let numbered = lyric
+                .text
+                .as_str()
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_digit())
+                && lyric.text.as_str().chars().any(char::is_alphabetic);
+            let x = if lyric.melisma_end.is_some() || numbered {
+                info.x + note_left(Some(lyric.event), &event_stems, &event_rests) - lead
+            } else {
+                info.x + note_centre(Some(lyric.event), &event_stems, &event_rests)
+                    - (lead + advance - trail) * 0.5
+            };
+            let baseline =
+                y_origin(st) - LYRIC_BELOW - LYRIC_LINE * f32::from(lyric.verse.saturating_sub(1));
+            run.origin = Point::new(x - run.reserved_box.left.0, baseline);
+            let (left, right) = (
+                run.origin.x.0 + run.bounds.left.0,
+                run.origin.x.0 + run.bounds.right.0,
+            );
+            syllables.insert(
+                (lyric.event, lyric.verse),
+                SyllablePlacing {
+                    key,
+                    run,
+                    left,
+                    right,
+                },
+            );
+        }
+        // Each hairpin leg's, hyphen's and melisma line's slots, anchored once
+        // the columns they ride are known to hold glyphs.
         let mut hairpin_anchors: Vec<(GlyphObjectId, SpringSlotId, SpringSlotId)> = Vec::new();
 
         // Pass 2 — emit. Each logical object's exact provenance lands on exactly
@@ -3027,7 +3106,7 @@ pub fn try_to_constrained(
                                     texts: Vec::new(),
                                     room: Room::None,
                                     placement: None,
-                                    hairpin: None,
+                                    line: None,
                                 });
                                 emit.stroke(stroke);
                             }
@@ -3059,7 +3138,7 @@ pub fn try_to_constrained(
                                     texts: vec![id],
                                     room,
                                     placement: None,
-                                    hairpin: None,
+                                    line: None,
                                 });
                             }
                         }
@@ -3743,7 +3822,7 @@ pub fn try_to_constrained(
                                                 row: None,
                                                 between: None,
                                             }),
-                                            hairpin: None,
+                                            line: None,
                                         });
                                         true
                                     }
@@ -3837,7 +3916,7 @@ pub fn try_to_constrained(
                                         texts: runs,
                                         room: Room::None,
                                         placement,
-                                        hairpin: None,
+                                        line: None,
                                     });
                                     true
                                 }
@@ -3845,6 +3924,134 @@ pub fn try_to_constrained(
                             },
                             _ => false,
                         },
+                        _ => false,
+                    };
+                    if !drawn {
+                        emit.stroke(anchor(
+                            provenance,
+                            Point::new(default_x, yo),
+                            band_of(staff),
+                        ));
+                    }
+                }
+                TypedObjectId::LyricLine(_) => {
+                    // A syllable under its note in its verse's row, placed
+                    // again by a solver once its system is set; a hyphen to
+                    // the next syllable of its verse where its word goes on,
+                    // and a melisma line to its last note where it extends.
+                    let drawn = match (content, staff) {
+                        (Some(LayoutContent::Lyric(lyric)), Some(_)) => {
+                            match syllables.get(&(lyric.event, lyric.verse)) {
+                                Some(syllable) => {
+                                    let info = column(&syllable.key);
+                                    let band = band_of(staff);
+                                    let baseline = syllable.run.origin.y.0;
+                                    let placement = Some(Autoplace {
+                                        above: false,
+                                        order: PlaceOrder::Lyric,
+                                        min_distance: LYRIC_MIN_DISTANCE,
+                                        row: Some(Row {
+                                            id: u128::from(lyric.verse),
+                                            centre: baseline,
+                                        }),
+                                        between: None,
+                                    });
+                                    let hyphen = matches!(
+                                        lyric.syllabic,
+                                        epiphany_core::Syllabic::Begin
+                                            | epiphany_core::Syllabic::Middle
+                                    );
+                                    texts.push(TextObject {
+                                        text: syllable.run.clone(),
+                                        horizontal_slot: info.slot,
+                                        vertical_band: band,
+                                    });
+                                    family.push(FamilyMark {
+                                        band,
+                                        glyphs: Vec::new(),
+                                        strokes: Vec::new(),
+                                        texts: vec![syllable.run.id()],
+                                        room: Room::Verse {
+                                            verse: lyric.verse,
+                                            hyphen,
+                                        },
+                                        placement,
+                                        line: None,
+                                    });
+                                    let next = lyric
+                                        .next
+                                        .as_ref()
+                                        .and_then(|(e, _)| syllables.get(&(*e, lyric.verse)))
+                                        .filter(|_| hyphen);
+                                    let end = lyric.melisma_end.as_ref().and_then(|(e, t)| {
+                                        let key = ColumnKey::Timed(t.clone(), ColumnRole::Note);
+                                        let info = columns.get(&key)?;
+                                        Some((
+                                            key,
+                                            info.x
+                                                + note_right(Some(*e), &event_stems, &event_rests),
+                                        ))
+                                    });
+                                    let lines = [
+                                        next.map(|n| {
+                                            (
+                                                FamilyLine::Hyphen,
+                                                syllable.right + LYRIC_DASH_PAD,
+                                                n.left - LYRIC_DASH_PAD,
+                                                baseline + LYRIC_DASH_Y,
+                                                n.key.clone(),
+                                                1u128,
+                                            )
+                                        }),
+                                        end.map(|(key, x)| {
+                                            (
+                                                FamilyLine::Melisma,
+                                                syllable.right + LYRIC_MELISMA_PAD,
+                                                x,
+                                                baseline,
+                                                key,
+                                                2u128,
+                                            )
+                                        }),
+                                    ];
+                                    for (kind, x0, x1, y, key, k) in lines.into_iter().flatten() {
+                                        let stroke = line_stroke(
+                                            Provenance::synthesized(
+                                                provenance.source,
+                                                SynthesisKind::Registered(LYRIC_LINE_SYNTHESIS),
+                                                SynthesisInstanceKey(k),
+                                                provenance.dependencies.clone(),
+                                            ),
+                                            // Each end rides its own column, so the
+                                            // two may cross here where the columns
+                                            // stand closer than their syllables,
+                                            // which spacing sets apart.
+                                            Point::new(x0, y),
+                                            Point::new(x1, y),
+                                            LYRIC_LINE_WIDTH,
+                                            band,
+                                        );
+                                        hairpin_anchors.push((
+                                            stroke.id(),
+                                            info.slot,
+                                            column(&key).slot,
+                                        ));
+                                        family.push(FamilyMark {
+                                            band,
+                                            glyphs: Vec::new(),
+                                            strokes: vec![stroke.id()],
+                                            texts: Vec::new(),
+                                            room: Room::None,
+                                            placement,
+                                            line: Some(kind),
+                                        });
+                                        emit.stroke(stroke);
+                                    }
+                                    true
+                                }
+                                None => false,
+                            }
+                        }
                         _ => false,
                     };
                     if !drawn {
@@ -3946,7 +4153,10 @@ pub fn try_to_constrained(
                                             between: grand_neighbour(&grand, st, above)
                                                 .map(|n| band_of(Some(n))),
                                         }),
-                                        hairpin: Some(HairpinShape { crescendo, axis }),
+                                        line: Some(FamilyLine::Hairpin(HairpinShape {
+                                            crescendo,
+                                            axis,
+                                        })),
                                     });
                                     for leg in legs {
                                         emit.stroke(leg);
@@ -7365,6 +7575,59 @@ const HAIRPIN_MIN_DISTANCE: f32 = 0.7;
 const HAIRPIN_DYNAMIC_GAP: f32 = 0.5;
 const HAIRPIN_END_INSET: f32 = 1.0;
 
+/// A syllable's size, Edwin at 10 points (`lyricsOddFontSize`); its first
+/// verse's baseline under its staff (`lyricsPosBelow`); the step from verse
+/// to verse, Edwin's line at that size, its ascender, descender and gap
+/// 1200 of its 1000 units (`lyricsLineHeight` 1.0); a verse's distance from
+/// the ink over it (`lyricsMinTopDistance`); a hyphen's distance from its
+/// syllables (`lyricsDashPad`) and its height over their baseline, half
+/// Edwin's x-height of 466 units (`lyricsDashYposRatio`); the line width of
+/// a hyphen and a melisma line (`lyricsDashLineThickness`,
+/// `lyricsLineThickness`); and the gap before a melisma line
+/// (`lyricsMelismaPad`).
+const LYRIC_TEXT_SIZE: f32 = 2.016;
+const LYRIC_BELOW: f32 = 3.0;
+const LYRIC_LINE: f32 = 1.2 * LYRIC_TEXT_SIZE;
+const LYRIC_MIN_DISTANCE: f32 = 1.0;
+const LYRIC_DASH_PAD: f32 = 0.05;
+const LYRIC_DASH_Y: f32 = 0.5 * 0.466 * LYRIC_TEXT_SIZE;
+const LYRIC_LINE_WIDTH: f32 = 0.1;
+const LYRIC_MELISMA_PAD: f32 = 0.2;
+
+/// A syllable placed before it is emitted: its column, its run where it
+/// stands, and its ink across.
+struct SyllablePlacing {
+    key: ColumnKey,
+    run: ResolvedText,
+    left: f32,
+    right: f32,
+}
+
+/// The widths of a syllable's leading and trailing marks (a verse number,
+/// punctuation), which MuseScore leaves out when it aligns the syllable, by
+/// the run's caret stops; and its advance.
+fn syllable_margins(run: &ResolvedText, text: &str) -> (f32, f32, f32) {
+    let advance = run.reserved_box.right.0 - run.reserved_box.left.0;
+    let caret = |offset: usize| {
+        run.clusters
+            .clusters
+            .iter()
+            .flat_map(|c| c.carets.iter())
+            .find(|stop| stop.offset as usize == offset)
+            .map(|stop| stop.x.0 - run.reserved_box.left.0)
+    };
+    let first = text.char_indices().find(|(_, c)| c.is_alphabetic());
+    let last = text.char_indices().rev().find(|(_, c)| c.is_alphabetic());
+    match (first, last) {
+        (Some((a, _)), Some((b, c))) => {
+            let lead = caret(a).unwrap_or(0.0);
+            let trail = caret(b + c.len_utf8()).map_or(0.0, |x| advance - x);
+            (lead, trail, advance)
+        }
+        _ => (0.0, 0.0, advance),
+    }
+}
+
 /// A dynamic placed before it is emitted: its column, its side and baseline,
 /// and its ink.
 struct DynamicPlacing {
@@ -7532,6 +7795,35 @@ fn note_centre(
         })
         .unwrap_or((head.left.0 + head.right.0) * 0.5)
 }
+
+/// The x a note's ink starts at, from its column: its first component's
+/// head's left, or its rest's.
+fn note_left(
+    event: Option<EventId>,
+    stems: &BTreeMap<EventId, Vec<StemSeg>>,
+    rests: &BTreeMap<EventId, Vec<RestSeg>>,
+) -> f32 {
+    let head = metrics("noteheadBlack")
+        .expect("notehead metrics are bundled")
+        .bounding_box();
+    note_centre(event, stems, rests) - (head.right.0 - head.left.0) * 0.5
+}
+
+/// The x a note's head ends at, from its column.
+fn note_right(
+    event: Option<EventId>,
+    stems: &BTreeMap<EventId, Vec<StemSeg>>,
+    rests: &BTreeMap<EventId, Vec<RestSeg>>,
+) -> f32 {
+    let head = metrics("noteheadBlack")
+        .expect("notehead metrics are bundled")
+        .bounding_box();
+    note_centre(event, stems, rests) + (head.right.0 - head.left.0) * 0.5
+}
+
+/// The registry id for a syllable's hyphen (key 1) and melisma line (key
+/// 2), synthesized from the syllable.
+const LYRIC_LINE_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x4C59_524C_494E_4553); // "LYRLINES"
 
 /// The registry id for a hairpin's lower leg, synthesized from the hairpin.
 const HAIRPIN_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x4841_4952_5049_4E53); // "HAIRPINS"
@@ -10753,7 +11045,7 @@ mod tests {
             texts: Vec::new(),
             room: Room::None,
             placement: None,
-            hairpin: None,
+            line: None,
         };
         assert_eq!(with(good.clone()), Ok(()));
         // A glyph named as a stroke, a stroke as a text run.

@@ -1147,3 +1147,25 @@ column's spring the padding after it.
   and time, and stand in one `Row`; each names the other staff of its grand
   staff it stands toward (`Autoplace::between`). A line's ends are resolved
   as a point mark's place is (`SpannerContent`).
+
+## Lyrics (X4c.5, 2026-10-22)
+
+- A syllable is set in Edwin at 10 points, its first verse's baseline 3.0
+  under its staff and each verse a line lower, Edwin's line at that size
+  (its ascender, descender and gap, 1200 of its 1000 units). It stands
+  centred on its note's head but for its leading and trailing marks (a
+  verse number, punctuation), or, where a melisma line extends from it or a
+  verse number leads it (digits before its first letter), with its letters
+  from the head's left (`LyricsLayout::layout`).
+- A syllable whose word goes on (begin, middle) draws a hyphen to the next
+  syllable of its verse in its note's voice, 0.05 clear of each, at half
+  Edwin's x-height over their baseline; one extending a melisma draws a line
+  from 0.2 after it to the head of the last note before that next syllable,
+  or before its voice ends (`LyricContent`). Each end rides its own column,
+  so where the columns stand closer than their syllables the projection's
+  ends cross; spacing sets the syllables apart before casting draws it. Both
+  are lines of the family (`FamilyLine::Hyphen`, `FamilyLine::Melisma`),
+  which replaces the hairpin shape's field as the one record of a line a
+  solver draws piece by piece.
+- A syllable is a placed member of its verse's row, a space clear of the
+  ink under it (`lyricsMinTopDistance`), after the dynamics and hairpins.

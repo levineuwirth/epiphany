@@ -352,6 +352,13 @@ fn the_expression_familys_undrawn_members_are_counted_by_class() {
         ),
     ]
     .concat();
+    // A syllable on the last note.
+    let at = measure.rfind("</note>").expect("a note");
+    let measure = format!(
+        "{}<lyric number=\"1\"><syllabic>single</syllabic><text>la</text></lyric>{}",
+        &measure[..at],
+        &measure[at..]
+    );
     // A dynamic and a hairpin at the first note, the hairpin stopping at the
     // third.
     let measure = format!(
@@ -393,6 +400,7 @@ fn the_expression_familys_undrawn_members_are_counted_by_class() {
                 "caesura",
                 "dynamic",
                 "hairpin",
+                "lyric",
             ]
             .iter()
             .any(|class| kind.starts_with(class))
@@ -429,6 +437,9 @@ fn the_expression_familys_undrawn_members_are_counted_by_class() {
         }
     }
     for t in &mut engraved.layout.texts {
+        if matches!(t.provenance.source, TypedObjectId::LyricLine(_)) {
+            t.provenance.source = region;
+        }
         if [accidental, arpeggio].contains(&t.provenance.stable_id) {
             t.provenance.stable_id = epiphany_layout_ir::LayoutObjectId(2);
         }
@@ -441,13 +452,14 @@ fn the_expression_familys_undrawn_members_are_counted_by_class() {
         "fermata",
         "dynamic",
         "hairpin",
+        "lyric",
     ] {
         assert!(
             counted.contains(&(kind.to_owned(), 1)),
             "{kind}: {counted:?}"
         );
     }
-    assert_eq!(counted.len(), 6, "{counted:?}");
+    assert_eq!(counted.len(), 7, "{counted:?}");
 
     // A fermata at its region's start: on no staff, drawn nowhere.
     let mut moved = loaded.reduced.score.clone();

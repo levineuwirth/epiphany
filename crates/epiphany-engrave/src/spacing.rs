@@ -51,6 +51,13 @@ const SLOT_GAP: f32 = 0.3;
 /// (`PaddingTable::createTable`, 1.0 either side).
 const BREATH_PADDING: f32 = 1.0;
 
+/// The least a syllable stands clear of the next of its staff's verse
+/// (`lyricsMinDistance`), and where a hyphen joins them, the room for its
+/// shortest dash and the pad either side of it (`lyricsDashMinLength`,
+/// `lyricsDashPad`).
+const SYLLABLE_GAP: f32 = 0.25;
+const HYPHENED_GAP: f32 = 0.4 + 2.0 * 0.05;
+
 /// The least a barline's ink stands clear of the ink after it, an
 /// accidental's mostly: MuseScore's default distance from a barline to an
 /// accidental (0.65 spaces). The note itself stands further, by the
@@ -281,6 +288,9 @@ struct FloorSlot {
     /// two staves ending here, and for each tie whose first note's flag
     /// stands on its side, the span its start past the flag needs.
     ties: Vec<(usize, f32)>,
+    /// Each syllable's staff's verse's index, its edges, and the gap the
+    /// next of its verse keeps after it.
+    verses: Vec<(usize, f32, f32, f32)>,
 }
 
 /// Every glyph-bearing slot's ink by kind, in source order, to space a run
@@ -289,6 +299,7 @@ pub(crate) struct Skyline {
     slots: Vec<FloorSlot>,
     index: BTreeMap<SpringSlotId, usize>,
     staves: usize,
+    verses: usize,
 }
 
 impl Skyline {
@@ -324,6 +335,7 @@ impl Skyline {
         let mut fixed_edge = vec![f32::NEG_INFINITY; bands];
         let mut band_edge = vec![f32::NEG_INFINITY; bands * INKS];
         let mut staff_edge = vec![f32::NEG_INFINITY; self.staves * INKS];
+        let mut verse_edge = vec![f32::NEG_INFINITY; self.verses];
         let mut placed: Vec<(usize, f32)> = Vec::with_capacity(ids.len());
         let mut out = Vec::with_capacity(ids.len());
         let mut previous: Option<(f32, f32)> = None;
@@ -356,6 +368,12 @@ impl Skyline {
                 if let Ok(j) = placed.binary_search_by_key(&start, |p| p.0) {
                     target = target.max(placed[j].1 + need);
                 }
+            }
+            for &(verse, left, _, _) in &slot.verses {
+                target = target.max(verse_edge[verse] - left);
+            }
+            for &(verse, _, right, gap) in &slot.verses {
+                verse_edge[verse] = target + right + gap;
             }
             if slot.fixed {
                 for &(band, _, right) in &slot.bands {
@@ -414,6 +432,9 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
         /// Each staff's leftmost and rightmost edge of each kind of ink, at
         /// any height.
         staff: BTreeMap<(VerticalBandId, Ink), (f32, f32)>,
+        /// Each syllable's ink across, by its staff and verse, with the gap
+        /// the next of its verse keeps after it.
+        verses: BTreeMap<(VerticalBandId, u16), (f32, f32, f32)>,
     }
 
     let preferred_of: BTreeMap<SpringSlotId, (f32, bool)> = input
@@ -495,6 +516,7 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
             barline: true,
             floor: BTreeMap::new(),
             staff: BTreeMap::new(),
+            verses: BTreeMap::new(),
         });
         if roomless.contains(&glyph.id()) {
             continue;
@@ -606,13 +628,25 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
     // A text run of the family that takes room as ink does (an arpeggio, left
     // of its chord as an accidental stands).
     for (text, room) in crate::family::texts_with_room(input) {
-        if room != Room::Ink {
-            continue;
-        }
         let Some(extent) = by_slot.get_mut(&text.horizontal_slot) else {
             continue;
         };
         let (x, y, b) = (text.text.origin.x.0, text.text.origin.y.0, text.text.bounds);
+        // A syllable keeps clear of its verse's others alone (D79's Q13).
+        if let Room::Verse { verse, hyphen } = room {
+            let gap = if hyphen { HYPHENED_GAP } else { SYLLABLE_GAP };
+            extent
+                .verses
+                .entry((text.vertical_band, verse))
+                .and_modify(|e| {
+                    *e = (e.0.min(x + b.left.0), e.1.max(x + b.right.0), e.2.max(gap));
+                })
+                .or_insert((x + b.left.0, x + b.right.0, gap));
+            continue;
+        }
+        if room != Room::Ink {
+            continue;
+        }
         widen(
             extent,
             Ink::Accidental,
@@ -732,6 +766,8 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
     let is_breath = |extent: &Extent| extent.staff.keys().any(|(_, ink)| *ink == Ink::Breath);
     let mut bare: BTreeMap<i32, f32> = BTreeMap::new();
     let mut voice_edge: BTreeMap<VerticalBandId, f32> = BTreeMap::new();
+    // Each staff's verse's last syllable's right edge, with its gap.
+    let mut verse_edge: BTreeMap<(VerticalBandId, u16), f32> = BTreeMap::new();
     // The previous slot's target and spring.
     let mut previous: Option<(f32, f32)> = None;
     for (id, extent) in &slots {
@@ -757,6 +793,14 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
             if let Some(&(_, at)) = placed.get(start) {
                 target = target.max(at + need);
             }
+        }
+        for (verse, (left, _, _)) in &extent.verses {
+            if let Some(&edge) = verse_edge.get(verse) {
+                target = target.max(edge + (extent.source - left));
+            }
+        }
+        for (verse, (_, right, gap)) in &extent.verses {
+            verse_edge.insert(*verse, target + (right - extent.source) + gap);
         }
         let clearance = clearance_of(extent);
         for (band, (_, right)) in &extent.bands {
@@ -792,10 +836,15 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
         .map(|(i, (id, _))| (*id, i))
         .collect();
     let mut staff_index: BTreeMap<VerticalBandId, usize> = BTreeMap::new();
+    let mut verse_index: BTreeMap<(VerticalBandId, u16), usize> = BTreeMap::new();
     for (_, extent) in &slots {
         for (staff, _) in extent.staff.keys() {
             let next = staff_index.len();
             staff_index.entry(*staff).or_insert(next);
+        }
+        for verse in extent.verses.keys() {
+            let next = verse_index.len();
+            verse_index.entry(*verse).or_insert(next);
         }
     }
     let skyline = Skyline {
@@ -829,11 +878,17 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
                         .flatten()
                         .filter_map(|(start, need)| Some((*index.get(start)?, *need)))
                         .collect(),
+                    verses: extent
+                        .verses
+                        .iter()
+                        .map(|(verse, (l, r, gap))| (verse_index[verse], l - s, r - s, *gap))
+                        .collect(),
                 }
             })
             .collect(),
         index,
         staves: staff_index.len(),
+        verses: verse_index.len(),
     };
     SpacedSlots {
         points,

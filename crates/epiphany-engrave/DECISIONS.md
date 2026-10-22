@@ -2264,3 +2264,37 @@ is set:
   leaves open (`a_hairpin_over_a_system_break_opens_each_piece`); a piece
   the system sets shorter than a space has its end moved out to a space
   (`a_hairpin_is_at_least_a_space_long`).
+
+## ENGRAVER_VERSION 59 → 60: lyrics (X4c.5, 2026-10-22)
+
+- A syllable takes room against its staff's verse alone (`Room::Verse`, D79's
+  Q13): it stands at least 0.25 after the verse's syllable before it
+  (`lyricsMinDistance`), or 0.5 where a hyphen joins them, room for the
+  shortest dash and its pads, at natural spacing and at the floor
+  (`a_verse_keeps_its_syllables_apart`). A run that takes room, a syllable
+  or an arpeggio, widens its slot in casting too, so a system holds it.
+- Once a system is set, a verse is placed against the ink under it, never
+  against another verse, its syllables aligned on their baseline a space
+  clear of that ink; a verse moved moves the verses outside it as far
+  (`LyricsLayout::checkCollisionsWithStaffElements`;
+  `verses_move_with_the_verses_inside_them`).
+- A stroke anchored in two systems (a hairpin, hyphen or melisma line over a
+  break) splits where they break, rather than by where its spaced ends fall:
+  a hairpin or line ending at a later system's first note no longer rides
+  its first system whole. Its anchored ends ride their slots' deltas, as
+  within one system, where it is placed as where it is drawn, so a
+  justified system no longer stretches a hairpin's or line's end away from
+  its note.
+- A hyphen is drawn as dashes along each of its pieces, one in each 16
+  spaces of it, each 0.4 to 0.6 long and centred in its share
+  (`lyricsDashMaxDistance`, `lyricsDashMinLength`, `lyricsDashMaxLength`);
+  one too short for its least dash grows to it about its centre. A hyphen
+  or melisma line going on past its system stops a quarter space short of
+  the system's end (`endingXForOpenEndedLines`); carried into a later system
+  it starts at that system's first column (`firstNoteRestSegmentX`: the
+  lesser of a space past the lead's ink and the first note), and a hyphen's
+  piece there too short for its least dash grows back from its end, so the
+  dash stands 0.05 before the syllable opening the system
+  (`LyricsLayout::layoutDashes`). A melisma line's piece shorter than a
+  space, less a tolerance of 0.05, is not drawn (`lyricsMelismaMinLength`,
+  `lyricsMelismaForce` off).

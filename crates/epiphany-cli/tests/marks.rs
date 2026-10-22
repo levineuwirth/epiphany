@@ -1,8 +1,9 @@
 //! The expression family on the page: marks at their notes, fermatas, breath
-//! marks and caesuras (X4c.3), dynamics and hairpins (X4c.4), each on a
-//! hand-written file, against MuseScore 4.7.5's default rules as `marks.rs`
-//! and the constrained pass cite them.
+//! marks and caesuras (X4c.3), dynamics and hairpins (X4c.4), and lyrics
+//! (X4c.5), each on a hand-written file, against MuseScore 4.7.5's default
+//! rules as `marks.rs` and the constrained pass cite them.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use epiphany_cli::{engrave, load, Loaded};
@@ -95,6 +96,40 @@ fn dynamic(name: &str, staff: u8) -> String {
 
 fn wedge(kind: &str, staff: u8) -> String {
     direction(staff, &format!("<wedge type=\"{kind}\"/>"))
+}
+
+/// `note` sung to `text` as syllable `syllabic` of verse `verse`, extending
+/// a melisma when `extend`.
+fn syllable(note: String, verse: u8, syllabic: &str, text: &str, extend: bool) -> String {
+    let extend = if extend { "<extend/>" } else { "" };
+    note.replacen(
+        "</note>",
+        &format!(
+            "<lyric number=\"{verse}\"><syllabic>{syllabic}</syllabic><text>{text}</text>\
+             {extend}</lyric></note>"
+        ),
+        1,
+    )
+}
+
+/// The page's runs whose words are `words`, left to right.
+fn runs<'a>(layout: &'a ResolvedLayoutIR, words: &str) -> Vec<&'a ResolvedText> {
+    let mut found: Vec<&ResolvedText> = layout.texts.iter().filter(|t| t.text == words).collect();
+    found.sort_by(|a, b| a.origin.x.0.total_cmp(&b.origin.x.0));
+    found
+}
+
+/// The lines a syllable draws, its hyphen's dashes and its melisma line, by
+/// the syllable they belong to: each as `(left, right, y)`, left to right.
+fn lyric_lines(layout: &ResolvedLayoutIR) -> Vec<(f32, f32, f32)> {
+    let mut found: Vec<(f32, f32, f32)> = layout
+        .strokes
+        .iter()
+        .filter(|s| matches!(s.provenance.source, TypedObjectId::LyricLine(_)) && s.from != s.to)
+        .map(|s| (s.from.x.0, s.to.x.0, s.from.y.0))
+        .collect();
+    found.sort_by(|a, b| a.0.total_cmp(&b.0));
+    found
 }
 
 /// `note` sung to a syllable.
@@ -1219,6 +1254,46 @@ fn a_hairpin_over_a_system_break_opens_each_piece() {
     }
 }
 
+/// A hairpin over a break is placed by the ink it is drawn over: one ending
+/// in a full system a space before a low sharpened note, its end over the
+/// sharp, stands clear of the sharp.
+#[test]
+fn a_hairpin_over_a_break_clears_the_ink_at_its_end() {
+    let first = [wedge("crescendo", 1), note("C5", 8, "whole", 1, 1, "")].concat();
+    let second = [
+        "<print new-system=\"yes\"/>".to_string(),
+        note("C5", 4, "half", 1, 1, ""),
+        wedge("stop", 1),
+        note("G#3", 4, "half", 1, 1, ""),
+    ]
+    .concat();
+    let third = [
+        "<print new-system=\"yes\"/>".to_string(),
+        note("C5", 8, "whole", 1, 1, ""),
+    ]
+    .concat();
+    let loaded = part("hairpin_sharp.musicxml", 1, &[first, second, third]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let sharp = named(&layout, "accidentalSharp");
+    assert_eq!(sharp.len(), 1);
+    let sharp = sharp[0];
+    let legs: Vec<Leg> = hairpin_legs(&layout)
+        .into_iter()
+        .filter(|leg| (leg.0 .1 - sharp[1]).abs() < 8.0)
+        .collect();
+    assert_eq!(legs.len(), 2, "{legs:?}");
+    let (left, right) = (legs[0].0 .0, legs[0].1 .0);
+    assert!(
+        right > sharp[0] && left < sharp[2],
+        "the piece reaches over the sharp: {legs:?} {sharp:?}"
+    );
+    let top = legs
+        .iter()
+        .flat_map(|leg| [leg.0 .1, leg.1 .1])
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(top <= sharp[1] - 0.5 + 1e-3, "{top} over {sharp:?}");
+}
+
 /// A hairpin is at least a space long: one over a sixty-fourth in a measure
 /// of them too wide for its line, whose next stands less than two spaces
 /// after it.
@@ -1292,4 +1367,516 @@ fn a_grand_staffs_dynamic_stands_between_its_staves() {
         middle,
         "mf's centre",
     );
+}
+
+/// A syllable stands centred on its note's head but for its leading and
+/// trailing marks, a line under the staff; one extending a melisma stands
+/// with its letters from the head's left (`LyricsLayout::layout`).
+#[test]
+fn a_syllable_stands_centred_on_its_note_but_for_its_marks() {
+    let measure = [
+        syllable(
+            note("A4", 2, "quarter", 1, 1, ""),
+            1,
+            "single",
+            "word,",
+            false,
+        ),
+        syllable(note("A4", 2, "quarter", 1, 1, ""), 1, "single", "la", true),
+        note("A4", 2, "quarter", 1, 1, ""),
+        note("rest", 2, "quarter", 1, 1, ""),
+    ]
+    .concat();
+    let loaded = part("syllables.musicxml", 1, &[measure]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let (bottom_line, _) = staff_lines(&layout)[0];
+    let word = runs(&layout, "word,")[0];
+    // The letters of "word" centred: the run's advance less the comma's.
+    let letters = epiphany_layout_ir::shape_text(
+        word.provenance.clone(),
+        "word",
+        epiphany_layout_ir::TextFace::Roman,
+        2.016,
+        epiphany_layout_ir::TextAlign::Left,
+        epiphany_layout_ir::Point::new(0.0, 0.0),
+    )
+    .0;
+    let width = letters.reserved_box.right.0 - letters.reserved_box.left.0;
+    let left = word.origin.x.0 + word.reserved_box.left.0;
+    near(
+        left + width * 0.5,
+        centre_x(head(&loaded, &layout, e[0])),
+        "word's letters' centre",
+    );
+    near(
+        word.origin.y.0,
+        bottom_line - 3.0,
+        "the first verse's baseline",
+    );
+    let la = runs(&layout, "la")[0];
+    near(
+        la.origin.x.0 + la.reserved_box.left.0,
+        head(&loaded, &layout, e[1])[0],
+        "la from the head's left",
+    );
+
+    // Marks around the letters are left out of the centring; a verse
+    // number leads letters from the head's left; digits alone are the
+    // syllable, centred whole.
+    let measure = [
+        syllable(
+            note("A4", 2, "quarter", 1, 1, ""),
+            1,
+            "single",
+            "(word)",
+            false,
+        ),
+        syllable(
+            note("A4", 2, "quarter", 1, 1, ""),
+            1,
+            "single",
+            "1. Wo",
+            false,
+        ),
+        syllable(note("A4", 2, "quarter", 1, 1, ""), 1, "single", "12", false),
+        note("rest", 2, "quarter", 1, 1, ""),
+    ]
+    .concat();
+    let loaded = part("syllable_marks.musicxml", 1, &[measure]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    // A caret stop's x on the page.
+    let caret = |t: &ResolvedText, offset: usize| {
+        t.origin.x.0
+            + t.clusters
+                .clusters
+                .iter()
+                .flat_map(|c| c.carets.iter())
+                .find(|stop| stop.offset as usize == offset)
+                .expect("a caret stop")
+                .x
+                .0
+    };
+    let bracketed = runs(&layout, "(word)")[0];
+    near(
+        (caret(bracketed, 1) + caret(bracketed, 5)) * 0.5,
+        centre_x(head(&loaded, &layout, e[0])),
+        "the bracketed word's letters' centre",
+    );
+    near(
+        caret(runs(&layout, "1. Wo")[0], 3),
+        head(&loaded, &layout, e[1])[0],
+        "the numbered syllable's letters from the head's left",
+    );
+    let digits = runs(&layout, "12")[0];
+    near(
+        digits.origin.x.0 + (digits.reserved_box.left.0 + digits.reserved_box.right.0) * 0.5,
+        centre_x(head(&loaded, &layout, e[2])),
+        "digits alone centred",
+    );
+}
+
+/// The verses stand a line apart, Edwin's line at 10 points; ink under the
+/// staff moves the first verse to stand a space clear of it, and the second
+/// with it.
+#[test]
+fn verses_stand_a_line_apart_and_move_together() {
+    let measure = |low: &str| {
+        [
+            syllable(
+                syllable(
+                    note("A4", 2, "quarter", 1, 1, ""),
+                    1,
+                    "single",
+                    "one",
+                    false,
+                ),
+                2,
+                "single",
+                "two",
+                false,
+            ),
+            syllable(
+                syllable(note(low, 2, "quarter", 1, 1, ""), 1, "single", "la", false),
+                2,
+                "single",
+                "li",
+                false,
+            ),
+            note("rest", 4, "half", 1, 1, ""),
+        ]
+        .concat()
+    };
+    let line = 1.2 * 2.016;
+    for (low, moved) in [("G4", false), ("C3", true)] {
+        let loaded = part(&format!("verses_{low}.musicxml"), 1, &[measure(low)]);
+        let layout = engrave(&loaded.reduced.score).layout;
+        let (bottom_line, _) = staff_lines(&layout)[0];
+        let (one, two) = (runs(&layout, "one")[0], runs(&layout, "two")[0]);
+        near(one.origin.y.0 - two.origin.y.0, line, "a line apart");
+        if moved {
+            let e = events(&loaded);
+            let low_ink = head(&loaded, &layout, e[1])[1];
+            let la = runs(&layout, "la")[0];
+            near(
+                la.origin.y.0 + la.bounds.top.0,
+                low_ink - 1.0,
+                "a space under the low note",
+            );
+        } else {
+            near(
+                one.origin.y.0,
+                bottom_line - 3.0,
+                "three spaces under the staff",
+            );
+        }
+    }
+}
+
+/// A verse keeps its syllables apart, a quarter space, or room for a dash
+/// where a hyphen joins them, at natural width and set toward its floor
+/// alike: four measures of words on quarters, every other word joined to the
+/// next by a hyphen, the file breaking the system after them, on pages from
+/// one too narrow for their floor to one that holds them whole.
+#[test]
+fn a_verse_keeps_its_syllables_apart() {
+    let words: String = (0..4)
+        .map(|m| {
+            let notes: String = (0..4)
+                .map(|k| {
+                    let (syllabic, text) = if k % 2 == 0 {
+                        ("begin", "Hallo")
+                    } else {
+                        ("end", "wordy")
+                    };
+                    syllable(note("A4", 2, "quarter", 1, 1, ""), 1, syllabic, text, false)
+                })
+                .collect();
+            let attributes = if m == 0 {
+                "<attributes><divisions>2</divisions><time><beats>4</beats><beat-type>4\
+                 </beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>"
+            } else {
+                ""
+            };
+            format!(
+                "<measure number=\"{}\">{attributes}{notes}</measure>",
+                m + 1
+            )
+        })
+        .collect();
+    let mut spans = Vec::new();
+    // The gaps a hyphen's dash stood in with room to spare over its least.
+    let mut roomy = 0;
+    for width in (40..=120).step_by(4).map(|w| w as f32) {
+        let xml = format!(
+            "<score-partwise version=\"4.0\"><defaults><scaling><millimeters>7</millimeters>\
+             <tenths>40</tenths></scaling><page-layout><page-height>3000</page-height>\
+             <page-width>{}</page-width><page-margins type=\"both\"><left-margin>75\
+             </left-margin><right-margin>75</right-margin><top-margin>75</top-margin>\
+             <bottom-margin>75</bottom-margin></page-margins></page-layout></defaults>\
+             <part-list><score-part id=\"P1\"><part-name>A</part-name></score-part>\
+             </part-list><part id=\"P1\">{words}<measure number=\"5\">\
+             <print new-system=\"yes\"/><note><pitch><step>A</step><octave>4</octave>\
+             </pitch><duration>8</duration><voice>1</voice><type>whole</type></note>\
+             </measure></part></score-partwise>",
+            width * 10.0
+        );
+        let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("verse_{width}.musicxml"));
+        std::fs::write(&path, xml).expect("written");
+        let loaded = load(&path).expect("loads");
+        let layout = epiphany_cli::engrave_loaded(&loaded).layout;
+        let firsts = runs(&layout, "Hallo");
+        let seconds = runs(&layout, "wordy");
+        assert_eq!((firsts.len(), seconds.len()), (8, 8));
+        // In page order; a pair in two systems keeps nothing.
+        let mut words: Vec<(&ResolvedText, bool)> = firsts
+            .iter()
+            .map(|t| (*t, true))
+            .chain(seconds.iter().map(|t| (*t, false)))
+            .collect();
+        words.sort_by(|a, b| {
+            let (a, b) = (a.0.origin, b.0.origin);
+            b.y.0.total_cmp(&a.y.0).then(a.x.0.total_cmp(&b.x.0))
+        });
+        for pair in words.windows(2) {
+            let ((a, hyphen), (b, _)) = (pair[0], pair[1]);
+            if (a.origin.y.0 - b.origin.y.0).abs() > 0.01 {
+                continue;
+            }
+            let gap = if hyphen { 0.5 } else { 0.25 };
+            let (a, b) = (text_box(a), text_box(b));
+            assert!(b[0] >= a[2] + gap - 1e-3, "{width}: {a:?} {b:?}");
+            if hyphen {
+                // Its dash a pad clear of each.
+                let dashes: Vec<_> = lyric_lines(&layout)
+                    .into_iter()
+                    .filter(|d| d.0 > a[0] && d.1 < b[2] && (d.2 - a[1]).abs() < 1.0)
+                    .collect();
+                assert_eq!(dashes.len(), 1, "{width}: {a:?} {b:?}");
+                // As long as the gap less its pads allows, between the least
+                // and the longest dash, centred in it.
+                let d = dashes[0];
+                let room = b[0] - a[2] - 2.0 * 0.05;
+                let near = |x: f32, y: f32| (x - y).abs() < 1e-3;
+                assert!(
+                    near(d.1 - d.0, room.clamp(0.4, 0.6))
+                        && near((d.0 + d.1) * 0.5, (a[2] + b[0]) * 0.5),
+                    "{width}: {d:?} {a:?} {b:?}"
+                );
+                if room > 0.4 + 1e-3 && room < 1.5 {
+                    roomy += 1;
+                }
+            }
+        }
+        let y = firsts[0].origin.y.0;
+        if words.iter().all(|(t, _)| (t.origin.y.0 - y).abs() < 0.01) {
+            spans.push(text_box(seconds[7])[2] - text_box(firsts[0])[0]);
+        }
+    }
+    // Some page holding them in one system sets them tighter than another,
+    // toward their floor.
+    let widest = spans.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let tightest = spans.iter().copied().fold(f32::INFINITY, f32::min);
+    assert!(tightest < widest - 1.0, "{spans:?}");
+    // Some dash stood in a gap wider than its least's room and its pads but
+    // narrower than a pad's growth would leave unchanged.
+    assert!(roomy > 0, "no gap tested the pads");
+}
+
+/// A hyphen stands between its syllables as a dash 0.4 to 0.6 long, centred
+/// between them, at half Edwin's x-height over their baseline; over a system
+/// break, a dash after the first in its system and another before the next
+/// in the next system.
+#[test]
+fn a_hyphen_stands_between_its_syllables() {
+    let first = [
+        syllable(note("A4", 4, "half", 1, 1, ""), 1, "begin", "no", false),
+        syllable(note("A4", 4, "half", 1, 1, ""), 1, "end", "thing", false),
+    ]
+    .concat();
+    let loaded = part("hyphen.musicxml", 1, &[first]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let (no, thing) = (
+        text_box(runs(&layout, "no")[0]),
+        text_box(runs(&layout, "thing")[0]),
+    );
+    let dashes = lyric_lines(&layout);
+    assert_eq!(dashes.len(), 1, "{dashes:?}");
+    let (l, r, y) = dashes[0];
+    assert!((0.4 - 1e-3..=0.6 + 1e-3).contains(&(r - l)), "{dashes:?}");
+    near(
+        (l + r) * 0.5,
+        (no[2] + 0.05 + thing[0] - 0.05) * 0.5,
+        "the dash's centre",
+    );
+    near(
+        y,
+        runs(&layout, "no")[0].origin.y.0 + 0.5 * 0.466 * 2.016,
+        "the dash's height",
+    );
+
+    // Over a break.
+    let first = syllable(note("A4", 8, "whole", 1, 1, ""), 1, "begin", "no", false);
+    let second = [
+        "<print new-system=\"yes\"/>".to_string(),
+        syllable(note("A4", 8, "whole", 1, 1, ""), 1, "end", "thing", false),
+    ]
+    .concat();
+    let loaded = part("hyphen_break.musicxml", 1, &[first, second]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let (no, thing) = (
+        text_box(runs(&layout, "no")[0]),
+        text_box(runs(&layout, "thing")[0]),
+    );
+    let dashes = lyric_lines(&layout);
+    // After "no", from 0.05 past it to a quarter space short of its system's
+    // end, more than 16 spaces: a dash in each 16-space share, centred in it,
+    // its longest.
+    let end = layout
+        .strokes
+        .iter()
+        .filter(|s| {
+            matches!(s.provenance.source, TypedObjectId::Staff(_))
+                && s.from.y.0 > no[3]
+                && s.from.y.0 < no[3] + 8.0
+        })
+        .map(|s| s.to.x.0)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let (x0, x1) = (no[2] + 0.05, end - 0.25);
+    let n = ((x1 - x0) / 16.0).ceil();
+    let after: Vec<_> = dashes
+        .iter()
+        .filter(|d| (d.2 - no[1]).abs() < 2.0)
+        .collect();
+    assert!(n >= 2.0 && after.len() as f32 == n, "{n}: {dashes:?}");
+    for (k, d) in after.iter().enumerate() {
+        near(
+            (d.0 + d.1) * 0.5,
+            x0 + (x1 - x0) / n * (k as f32 + 0.5),
+            "a dash centred in its share",
+        );
+        near(d.1 - d.0, 0.6, "the longest dash");
+    }
+    // Before "thing", opening its system: the least dash, ending 0.05 before
+    // it.
+    let before: Vec<_> = dashes
+        .iter()
+        .filter(|d| (d.2 - thing[1]).abs() < 2.0)
+        .collect();
+    assert_eq!(before.len(), 1, "{dashes:?}");
+    near(before[0].1, thing[0] - 0.05, "the dash's end");
+    near(before[0].1 - before[0].0, 0.4, "the least dash");
+
+    // Into a full system, to its second note: a dash in each 16-space share
+    // between the system's first column and the syllable, whose end rides
+    // its note as the system stretches.
+    let first = syllable(note("A4", 8, "whole", 1, 1, ""), 1, "begin", "no", false);
+    let second = [
+        "<print new-system=\"yes\"/>".to_string(),
+        note("A4", 2, "quarter", 1, 1, ""),
+        syllable(note("A4", 2, "quarter", 1, 1, ""), 1, "end", "thing", false),
+        note("rest", 4, "half", 1, 1, ""),
+    ]
+    .concat();
+    let third = [
+        "<print new-system=\"yes\"/>".to_string(),
+        note("A4", 8, "whole", 1, 1, ""),
+    ]
+    .concat();
+    let loaded = part("hyphen_stretched.musicxml", 1, &[first, second, third]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let thing = text_box(runs(&layout, "thing")[0]);
+    let before: Vec<_> = lyric_lines(&layout)
+        .into_iter()
+        .filter(|d| (d.2 - thing[1]).abs() < 2.0)
+        .collect();
+    let (x0, x1) = (head(&loaded, &layout, e[1])[0], thing[0] - 0.05);
+    let n = ((x1 - x0) / 16.0).ceil();
+    assert!(before.len() as f32 == n, "{n}: {before:?}");
+    for (k, d) in before.iter().enumerate() {
+        near(
+            (d.0 + d.1) * 0.5,
+            x0 + (x1 - x0) / n * (k as f32 + 0.5),
+            "a dash centred in its share",
+        );
+    }
+
+    // A middle syllable's word goes on too, and to the next syllable of its
+    // own verse, past a note only the second verse sings.
+    let both = |n: String, one: Option<(&str, &str)>, two: &str| {
+        let n = match one {
+            Some((syllabic, text)) => syllable(n, 1, syllabic, text, false),
+            None => n,
+        };
+        syllable(n, 2, "single", two, false)
+    };
+    let notes = [
+        both(
+            note("A4", 2, "quarter", 1, 1, ""),
+            Some(("begin", "Hal")),
+            "a",
+        ),
+        both(
+            note("A4", 2, "quarter", 1, 1, ""),
+            Some(("middle", "le")),
+            "b",
+        ),
+        both(note("A4", 2, "quarter", 1, 1, ""), None, "c"),
+        syllable(note("A4", 2, "quarter", 1, 1, ""), 1, "end", "lu", false),
+    ]
+    .concat();
+    let loaded = part("hyphen_middle.musicxml", 1, &[notes]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let ink = |words: &str| text_box(runs(&layout, words)[0]);
+    let dashes = lyric_lines(&layout);
+    let between = |a: [f32; 4], b: [f32; 4]| {
+        dashes
+            .iter()
+            .filter(|d| d.0 >= a[2] && d.1 <= b[0] && (d.2 - a[1]).abs() < 1.0)
+            .count()
+    };
+    assert!(between(ink("Hal"), ink("le")) >= 1, "{dashes:?}");
+    assert!(between(ink("le"), ink("lu")) >= 1, "{dashes:?}");
+}
+
+/// A melisma line runs from just after its syllable to its last note's
+/// head; one that would stand shorter than a space is not drawn.
+#[test]
+fn a_melisma_line_runs_to_its_last_note() {
+    let measure = [
+        syllable(note("A4", 2, "quarter", 1, 1, ""), 1, "single", "Ah", true),
+        note("B4", 2, "quarter", 1, 1, ""),
+        note("C5", 2, "quarter", 1, 1, ""),
+        syllable(note("A4", 2, "quarter", 1, 1, ""), 1, "single", "la", false),
+    ]
+    .concat();
+    let loaded = part("melisma.musicxml", 1, &[measure]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let ah = text_box(runs(&layout, "Ah")[0]);
+    let lines = lyric_lines(&layout);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    near(lines[0].0, ah[2] + 0.2, "from after Ah");
+    near(
+        lines[0].1,
+        head(&loaded, &layout, e[2])[2],
+        "to the last note's head",
+    );
+    near(
+        lines[0].2,
+        runs(&layout, "Ah")[0].origin.y.0,
+        "on the baseline",
+    );
+
+    // Over one sixty-fourth, the next syllable on the one after: shorter
+    // than a space, so not drawn.
+    let measure: String = [
+        syllable(note("A4", 1, "64th", 1, 1, ""), 1, "single", "la", true),
+        note("B4", 1, "64th", 1, 1, ""),
+        syllable(note("C5", 1, "64th", 1, 1, ""), 1, "single", "lu", false),
+    ]
+    .concat()
+        + &(0..61)
+            .map(|_| note("C5", 1, "64th", 1, 1, ""))
+            .collect::<String>();
+    let loaded = part_in("short_melisma.musicxml", 1, 16, &[measure]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let span = head(&loaded, &layout, e[1])[2] - (text_box(runs(&layout, "la")[0])[2] + 0.2);
+    assert!(span > 0.0 && span < 0.95, "{span}");
+    assert!(
+        lyric_lines(&layout).is_empty(),
+        "{:?}",
+        lyric_lines(&layout)
+    );
+}
+
+/// A syllable takes room in its system: a long word on the last note of
+/// each measure, past its barline, stands within the page's margin in every
+/// system, the full ones as the last.
+#[test]
+fn a_system_holds_its_syllables() {
+    let measure: String = (0..8)
+        .map(|k| {
+            let text = if k == 7 { "extraordinarily" } else { "la" };
+            syllable(note("A4", 1, "eighth", 1, 1, ""), 1, "single", text, false)
+        })
+        .collect();
+    let measures = vec![measure; 8];
+    let loaded = part("long_word.musicxml", 1, &measures);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let words = runs(&layout, "extraordinarily");
+    assert_eq!(words.len(), 8);
+    let systems: BTreeSet<i32> = words
+        .iter()
+        .map(|w| (w.origin.y.0 * 100.0).round() as i32)
+        .collect();
+    assert!(systems.len() >= 3, "{systems:?}");
+    // The default page: A4 at an 8 mm staff, 7.5 margins, 105 wide.
+    for word in words {
+        let ink = text_box(word);
+        assert!(ink[2] <= 105.0 - 7.5 + 1e-3, "{ink:?}");
+    }
 }

@@ -84,13 +84,14 @@ use epiphany_core::{StaffId, TypedObjectId};
 use epiphany_layout_ir::{
     continuation_instance_key, inter_staff_gap_id, is_barline_glyph, is_rigid_width_stroke,
     metrics, synthesized_layout_id, tie_arc, BreakClass, BreakKind, ConstrainedLayoutIR, Curve,
-    DecisionSource, EngravingDecision, EngravingDecisionKind, EngravingOverrideId, GlyphObject,
-    GlyphObjectId, GlyphReference, GlyphStyle, GroupSign, GroupSpan, HairpinShape,
+    DecisionSource, EngravingDecision, EngravingDecisionKind, EngravingOverrideId, FamilyLine,
+    GlyphObject, GlyphObjectId, GlyphReference, GlyphStyle, GroupSign, GroupSpan, HairpinShape,
     LayoutConstraint, LayoutObjectId, LeadGlyph, Margins, Point, PrimitiveIndices, Provenance,
     Rect, ResolvedGlyph, ResolvedMeasure, ResolvedPage, ResolvedStaff, ResolvedSystem,
     ResolvedText, Size2D, SpringSlotId, StaffSpace, Stroke, SynthesisInstanceKey, SynthesisKind,
     SynthesisRegistryId, SystemLead, TimePoint, Transform2D, VerticalBand, VerticalBandId,
-    VerticalBandKind, HAIRPIN_CONT_HEIGHT, HAIRPIN_HEIGHT, HAIRPIN_MIN_LENGTH,
+    VerticalBandKind, HAIRPIN_CONT_HEIGHT, HAIRPIN_HEIGHT, HAIRPIN_MIN_LENGTH, LYRIC_DASH_MAX,
+    LYRIC_DASH_MAX_DISTANCE, LYRIC_DASH_MIN, LYRIC_MELISMA_MIN,
 };
 
 use crate::clearance::InkRect;
@@ -136,6 +137,14 @@ const STAFF_SPAN: f32 = 4.0;
 
 /// The gap between a system-start lead's ink and the system's first column.
 const LEAD_GAP: f32 = 0.8;
+
+/// How far before its system's end a line over a break stops
+/// (`lineEndToBarlineDistance`).
+const LINE_END_GAP: f32 = 0.25;
+
+/// How much shorter than its least length a melisma line may stand and
+/// still be drawn (`LyricsLayout::layoutMelismaLine`'s tolerance).
+const LYRIC_MELISMA_TOLERANCE: f32 = 0.05;
 
 /// A tie continued into a later system starts this far clear of the system's
 /// lead (the widest of its staves' clefs and key signatures)…
@@ -633,6 +642,23 @@ pub(crate) fn cast_off(
             (info.lo, info.hi) = (info.x, info.x);
         }
     }
+    // A run of the family that takes room, an arpeggio or a syllable, widens
+    // its slot as the spacing pass lets it.
+    let room: BTreeSet<GlyphObjectId> = crate::family::texts_with_room(input)
+        .into_iter()
+        .filter(|(_, room)| *room != epiphany_layout_ir::Room::None)
+        .map(|(text, _)| text.id())
+        .collect();
+    for (text, spaced) in input.texts.iter().zip(spaced_texts) {
+        if !room.contains(&text.id()) {
+            continue;
+        }
+        if let Some(entry) = slots.get_mut(&text.horizontal_slot) {
+            let x = spaced.origin.x.0;
+            entry.lo = entry.lo.min(x + spaced.bounds.left.0);
+            entry.hi = entry.hi.max(x + spaced.bounds.right.0);
+        }
+    }
     // Fold each rigid stroke (a ledger line) into its owning slot's extent, so
     // an overhanging ledger widens the measure it belongs to (mirrors the
     // spacing pass's extent rule).
@@ -1032,6 +1058,26 @@ pub(crate) fn cast_off(
             if let Some(s) = anchored_system(stroke.id()) {
                 return StrokeFate::Rigid(Some(s));
             }
+            // One anchored in two systems (a hairpin, hyphen or melisma line
+            // over a break) splits where they break: to its first system's
+            // end, through any between, and from its last system's start.
+            if let Some((a, b)) = anchors.get(&stroke.id()).and_then(|(start, end)| {
+                Some((*system_of_slot.get(start)?, *system_of_slot.get(end)?))
+            }) {
+                if a < b {
+                    let (from, to) = (spaced.from, spaced.to);
+                    let mut segments = vec![(a, from, Point::new(clips[a].1, from.y.0))];
+                    segments.extend((a + 1..b).map(|s| {
+                        (
+                            s,
+                            Point::new(clips[s].0, from.y.0),
+                            Point::new(clips[s].1, to.y.0),
+                        )
+                    }));
+                    segments.push((b, Point::new(clips[b].0, to.y.0), to));
+                    return StrokeFate::Split(segments);
+                }
+            }
             stroke_fate(
                 stroke,
                 spaced,
@@ -1362,6 +1408,39 @@ pub(crate) fn cast_off(
             (placement, compressed)
         })
         .collect();
+    // Each hyphen and melisma line, by its stroke.
+    let lyric_lines: BTreeMap<GlyphObjectId, FamilyLine> = input
+        .family
+        .iter()
+        .filter(|mark| matches!(mark.line, Some(FamilyLine::Hyphen | FamilyLine::Melisma)))
+        .flat_map(|mark| {
+            mark.strokes
+                .iter()
+                .map(move |id| (*id, mark.line.expect("a line")))
+        })
+        .collect();
+    // Where a split stroke's piece stands across in its system, in the
+    // family's placing as in its drawing.
+    let piece_x =
+        |source: &Stroke, k: usize, n: usize, s: usize, p: &Placement, from: f32, to: f32| {
+            split_piece_x(
+                k,
+                n,
+                (from, to),
+                p,
+                anchors.get(&source.id()),
+                &slot_source_x,
+                lyric_lines.contains_key(&source.id()).then(|| {
+                    let plan = &systems[s];
+                    plan.slots
+                        .first()
+                        .map_or(geometry.margins.left.0 + lead_w[s], |&i| {
+                            let x = region_slots[plan.region][i].x;
+                            x + p.slot_dx(x)
+                        })
+                }),
+            )
+        };
     let mut family_dy: BTreeMap<(usize, usize), f32> = BTreeMap::new();
     // The placed family's pieces and the ink each was placed against, kept
     // for centring a grand staff's once its staves are set.
@@ -1439,13 +1518,11 @@ pub(crate) fn cast_off(
                 StrokeFate::Rigid(None) => Vec::new(),
                 StrokeFate::Split(segments) => segments
                     .iter()
-                    .map(|(s, from, to)| {
+                    .enumerate()
+                    .map(|(k, (s, from, to))| {
                         let p = &hplace[*s].0;
-                        (
-                            *s,
-                            Point::new(p.x(from.x.0), from.y.0),
-                            Point::new(p.x(to.x.0), to.y.0),
-                        )
+                        let (fx, tx) = piece_x(stroke, k, segments.len(), *s, p, from.x.0, to.x.0);
+                        (*s, Point::new(fx, from.y.0), Point::new(tx, to.y.0))
                     })
                     .collect(),
             };
@@ -1974,7 +2051,10 @@ pub(crate) fn cast_off(
     let hairpin_legs: BTreeMap<GlyphObjectId, (HairpinShape, f32)> = input
         .family
         .iter()
-        .filter_map(|mark| Some((mark.hairpin?, &mark.strokes)))
+        .filter_map(|mark| match mark.line {
+            Some(FamilyLine::Hairpin(shape)) => Some((shape, &mark.strokes)),
+            _ => None,
+        })
         .filter(|(_, legs)| legs.len() == 2)
         .flat_map(|(shape, legs)| [(legs[0], (shape, 1.0)), (legs[1], (shape, -1.0))])
         .collect();
@@ -2004,7 +2084,7 @@ pub(crate) fn cast_off(
                         .copied()
                         .unwrap_or(0.0)
                 };
-                let stroke = match sys {
+                let mut stroke = match sys {
                     Some(s) => {
                         let p = placements[*s].sunk(staff_dy(*s, stroke_staff_of[si]) - lift(*s));
                         let mut stroke = place_stroke(
@@ -2031,6 +2111,14 @@ pub(crate) fn cast_off(
                 };
                 if let (Some(s), TypedObjectId::Staff(staff)) = (sys, spaced.provenance.source) {
                     mark_staff(&mut staff_marks, *s, staff, &stroke);
+                }
+                let more = lyric_line(&mut stroke, lyric_lines.get(&source.id()), false);
+                for (j, dash) in more.into_iter().enumerate() {
+                    continuations.push(Stroke {
+                        provenance: extra_dash(spaced, 0, j),
+                        ..dash
+                    });
+                    continuation_system.push(*sys);
                 }
                 strokes.push(stroke);
                 stroke_system.push(*sys);
@@ -2061,13 +2149,13 @@ pub(crate) fn cast_off(
                         )
                     };
                     // A staff line reaches back under a later system's lead.
-                    let from_x = if lead_w[*s] > 0.0
+                    let (mut from_x, to_x) =
+                        piece_x(source, k, segments.len(), *s, &p, from.x.0, to.x.0);
+                    if lead_w[*s] > 0.0
                         && matches!(spaced.provenance.source, TypedObjectId::Staff(_))
                     {
-                        geometry.margins.left.0
-                    } else {
-                        p.x(from.x.0)
-                    };
+                        from_x = geometry.margins.left.0;
+                    }
                     // A hairpin's piece opens from its axis as MuseScore draws
                     // each piece of one over a system break: to its full
                     // opening at its wide end, and to its continuation's at a
@@ -2093,7 +2181,7 @@ pub(crate) fn cast_off(
                     let mut stroke = Stroke {
                         provenance,
                         from: Point::new(from_x, from_y + p.dy),
-                        to: Point::new(p.x(to.x.0), to_y + p.dy),
+                        to: Point::new(to_x, to_y + p.dy),
                         thickness: spaced.thickness,
                         layer: spaced.layer,
                         style: spaced.style,
@@ -2105,6 +2193,16 @@ pub(crate) fn cast_off(
                     }
                     if let TypedObjectId::Staff(staff) = spaced.provenance.source {
                         mark_staff(&mut staff_marks, *s, staff, &stroke);
+                    }
+                    // A piece after the first ends at a syllable opening its
+                    // system, or spans one whole, longer than any dash.
+                    let more = lyric_line(&mut stroke, lyric_lines.get(&source.id()), k > 0);
+                    for (j, dash) in more.into_iter().enumerate() {
+                        continuations.push(Stroke {
+                            provenance: extra_dash(spaced, k, j),
+                            ..dash
+                        });
+                        continuation_system.push(Some(*s));
                     }
                     if k == 0 {
                         strokes.push(stroke);
@@ -3182,6 +3280,99 @@ fn param_at_x(cp: [Point; 4], x: f32) -> f32 {
         }
     }
     0.5 * (lo + hi)
+}
+
+/// Where piece `k` of a stroke split into `n` over systems stands across in
+/// its system, from the spaced ends of its piece: an anchored end rides its
+/// slot's delta, as it does within one system, so a justified system keeps
+/// it at its note; a hyphen or melisma line (`lyric_start` its system's
+/// first column) carried into a later system starts at that column, the
+/// lesser of a space past the lead's ink and the first note
+/// (`Measure::firstNoteRestSegmentX`), the lead's gap being under a space,
+/// and one going on stops short of its system's end
+/// (`endingXForOpenEndedLines`).
+fn split_piece_x(
+    k: usize,
+    n: usize,
+    (from, to): (f32, f32),
+    p: &Placement,
+    anchor: Option<&(SpringSlotId, SpringSlotId)>,
+    slot_source_x: &BTreeMap<SpringSlotId, f32>,
+    lyric_start: Option<f32>,
+) -> (f32, f32) {
+    let slot_dx = |slot: &SpringSlotId| slot_source_x.get(slot).map(|&sx| p.slot_dx(sx));
+    let from_x = match lyric_start {
+        Some(x) if k > 0 => x,
+        _ => anchor
+            .filter(|_| k == 0)
+            .and_then(|(start, _)| slot_dx(start))
+            .map_or_else(|| p.x(from), |dx| from + dx),
+    };
+    let to_x = if lyric_start.is_some() && k + 1 < n {
+        p.x(to) - LINE_END_GAP
+    } else {
+        anchor
+            .filter(|_| k + 1 == n)
+            .and_then(|(_, end)| slot_dx(end))
+            .map_or_else(|| p.x(to), |dx| to + dx)
+    };
+    (from_x, to_x)
+}
+
+/// A hyphen's or melisma line's piece where the system sets it: a hyphen's
+/// as dashes, one in each `LYRIC_DASH_MAX_DISTANCE` of it, each between
+/// `LYRIC_DASH_MIN` and `LYRIC_DASH_MAX` long and centred in its share, the
+/// first in `line`'s place and the rest returned; one too short for its
+/// least dash grows to it about its centre, or, `before` a syllable opening
+/// its system, back from its end (`LyricsLayout::layoutDashes`). A melisma
+/// line's piece is kept only where it is at least `LYRIC_MELISMA_MIN` long,
+/// and no ink otherwise.
+fn lyric_line(line: &mut Stroke, kind: Option<&FamilyLine>, before: bool) -> Vec<Stroke> {
+    let (x0, x1, y) = (line.from.x.0, line.to.x.0, line.from.y.0);
+    let span = x1 - x0;
+    match kind {
+        Some(FamilyLine::Melisma) => {
+            if span < LYRIC_MELISMA_MIN - LYRIC_MELISMA_TOLERANCE {
+                line.to = line.from;
+            }
+            Vec::new()
+        }
+        Some(FamilyLine::Hyphen) => {
+            let n = (span / LYRIC_DASH_MAX_DISTANCE).ceil().max(1.0);
+            if before && span < LYRIC_DASH_MIN {
+                line.from = Point::new(x1 - LYRIC_DASH_MIN, y);
+                return Vec::new();
+            }
+            let share = span / n;
+            let length = share.clamp(LYRIC_DASH_MIN, LYRIC_DASH_MAX);
+            let dash = |k: f32| {
+                let centre = x0 + share * (k + 0.5);
+                Stroke {
+                    from: Point::new(centre - length * 0.5, y),
+                    to: Point::new(centre + length * 0.5, y),
+                    ..line.clone()
+                }
+            };
+            let more = (1..n as usize).map(|k| dash(k as f32)).collect();
+            *line = dash(0.0);
+            more
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// A hyphen's further dash's provenance: synthesized from its first, keyed
+/// by the piece it stands in and its place there.
+fn extra_dash(spaced: &Stroke, piece: usize, k: usize) -> Provenance {
+    Provenance::synthesized(
+        spaced.provenance.source,
+        SynthesisKind::Registered(SYSTEM_CONTINUATION_SYNTHESIS),
+        continuation_instance_key(
+            spaced.provenance.stable_id,
+            (1 << 20) + (piece as u32) * 1024 + k as u32 + 1,
+        ),
+        spaced.provenance.dependencies.clone(),
+    )
 }
 
 /// A hairpin's piece stands at least its least length, its end moved out
@@ -4555,5 +4746,47 @@ mod tests {
             owner_continuation, 1,
             "the continuation is owned by the system it was split INTO, not the source's"
         );
+    }
+
+    /// A melisma line's piece stands where it is a space long less MuseScore's
+    /// tolerance, and not shorter; a hyphen's piece too short for its least
+    /// dash grows to it about its centre, or, before a syllable opening its
+    /// system, back from its end (`LyricsLayout::layoutMelismaLine`,
+    /// `LyricsLayout::layoutDashes`).
+    #[test]
+    fn a_lyric_lines_piece_keeps_its_least_lengths() {
+        use epiphany_core::{RegionId, ReplicaId};
+        let line = |x1: f32| Stroke {
+            provenance: Provenance::projected(
+                TypedObjectId::Region(RegionId::new(ReplicaId(1), 1)),
+                Vec::new(),
+            ),
+            from: Point::new(0.0, 0.0),
+            to: Point::new(x1, 0.0),
+            thickness: StaffSpace(0.1),
+            layer: 0,
+            style: GlyphStyle::default(),
+            vertical_band: VerticalBandId(0),
+        };
+        let ends = |s: &Stroke| (s.from.x.0, s.to.x.0);
+        let melisma = |x1: f32, before: bool| {
+            let mut s = line(x1);
+            lyric_line(&mut s, Some(&FamilyLine::Melisma), before);
+            ends(&s)
+        };
+        assert_eq!(melisma(0.97, false), (0.0, 0.97));
+        assert_eq!(melisma(0.94, false), (0.0, 0.0));
+        let hyphen = |x1: f32, before: bool| {
+            let mut s = line(x1);
+            let more = lyric_line(&mut s, Some(&FamilyLine::Hyphen), before);
+            assert!(more.is_empty());
+            ends(&s)
+        };
+        let near = |(a, b): (f32, f32), (c, d): (f32, f32)| {
+            assert!((a - c).abs() < 1e-5 && (b - d).abs() < 1e-5, "{a} {b}");
+        };
+        near(hyphen(0.2, false), (-0.1, 0.3));
+        near(hyphen(0.2, true), (-0.2, 0.2));
+        near(hyphen(0.5, true), (0.0, 0.5));
     }
 }

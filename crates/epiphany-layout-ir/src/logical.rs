@@ -78,6 +78,28 @@ pub enum LayoutContent {
     Marker(MarkerContent),
     /// A line: its kind, and where its ends stand.
     Spanner(SpannerContent),
+    /// A syllable: its verse and text, its place in its word, and the
+    /// syllables and notes its hyphen or melisma line reaches.
+    Lyric(LyricContent),
+}
+
+/// A syllable's content, resolved so the constrained pass can draw it, its
+/// hyphen and its melisma line without the score.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct LyricContent {
+    /// Its note, and its note's onset.
+    pub event: EventId,
+    pub time: TimePoint,
+    /// Its verse, from 1.
+    pub verse: u16,
+    pub text: epiphany_core::Text,
+    pub syllabic: epiphany_core::Syllabic,
+    /// The next syllable of its verse in its note's voice: that note and its
+    /// onset.
+    pub next: Option<(EventId, TimePoint)>,
+    /// Where its melisma line, if it has one, ends: the last note of its
+    /// voice before that next syllable, and that note's onset.
+    pub melisma_end: Option<(EventId, TimePoint)>,
 }
 
 /// A line's content: its kind, and where each end stands, resolved as a
@@ -919,6 +941,7 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
     // dependencies. A single-region object joins that region and, when all
     // located dependencies agree, that staff. A multi-region object uses the
     // dedicated cross-region collection instead of being misfiled in region 0.
+    let mut lyrics = lyric_contents(score);
     for (src, deps) in cross_cutting_objects(score) {
         let provenance = Provenance::projected(src, deps.clone());
         if !seen.insert(provenance.stable_id) {
@@ -974,6 +997,10 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
                         at: marker_place(score, &marker.anchor, &all_places),
                     })
                 })
+                .unwrap_or_default(),
+            TypedObjectId::LyricLine(id) => lyrics
+                .remove(&id)
+                .map(LayoutContent::Lyric)
                 .unwrap_or_default(),
             TypedObjectId::Spanner(id) => score
                 .cross_cutting
@@ -1186,6 +1213,68 @@ fn staff_content(
         },
         vocal: vocal_staff(score, si.staff),
     })
+}
+
+/// Each syllable's content: in each voice, by verse, the syllable that
+/// follows it and, for one extending a melisma, the last note before that
+/// one (or before the voice ends).
+fn lyric_contents(score: &Score) -> BTreeMap<epiphany_core::LyricLineId, LyricContent> {
+    let mut by_event: BTreeMap<EventId, Vec<&epiphany_core::Lyric>> = BTreeMap::new();
+    for lyric in &score.cross_cutting.lyrics {
+        by_event.entry(lyric.event).or_default().push(lyric);
+    }
+    let mut out = BTreeMap::new();
+    let is_note = |e: &EventId| {
+        matches!(
+            score.events.get(*e),
+            Some(Event::Pitched(_)) | Some(Event::Unpitched(_))
+        )
+    };
+    let voices = score
+        .canvas
+        .regions
+        .iter()
+        .flat_map(|r| r.staff_instances())
+        .flat_map(|si| si.voices.iter());
+    for voice in voices {
+        let events = &voice.events;
+        for (i, eid) in events.iter().enumerate() {
+            for lyric in by_event.get(eid).into_iter().flatten() {
+                let next_at = events[i + 1..].iter().position(|e| {
+                    by_event
+                        .get(e)
+                        .is_some_and(|ls| ls.iter().any(|l| l.verse == lyric.verse))
+                });
+                let onset = |e: &EventId| score.events.get(*e).map(|ev| event_time(ev.position()));
+                let next = next_at.and_then(|k| {
+                    let e = events[i + 1 + k];
+                    Some((e, onset(&e)?))
+                });
+                let until = next_at.map_or(events.len(), |k| i + 1 + k);
+                let melisma_end = lyric
+                    .extension
+                    .then(|| events[i + 1..until].iter().rev().find(|e| is_note(e)))
+                    .flatten()
+                    .and_then(|e| Some((*e, onset(e)?)));
+                let Some(time) = onset(eid) else {
+                    continue;
+                };
+                out.insert(
+                    lyric.id,
+                    LyricContent {
+                        event: *eid,
+                        time,
+                        verse: lyric.verse,
+                        text: lyric.text.clone(),
+                        syllabic: lyric.syllabic,
+                        next,
+                        melisma_end,
+                    },
+                );
+            }
+        }
+    }
+    out
 }
 
 /// Whether most of `staff`'s notes, across the score, carry a syllable of
