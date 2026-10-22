@@ -927,11 +927,13 @@ mod tests {
             Point::new(50.0, 50.0),
         );
         let mut render = render_of(0x5EED);
+        // After any run the fixture's marks draw.
+        let index = render.texts.len();
         render.texts.push(run);
         let map = render.hit_test_map();
         let hits = map.hit(Point::new(50.5, 50.5));
         assert_eq!(hits.first().map(|r| r.source), Some(source));
-        assert_eq!(hits[0].primitive, PrimitiveRef::Text(0));
+        assert_eq!(hits[0].primitive, PrimitiveRef::Text(index));
         assert!(
             map.hit(Point::new(48.0, 50.5)).is_empty(),
             "left of its line"

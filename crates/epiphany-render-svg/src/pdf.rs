@@ -600,6 +600,20 @@ mod tests {
             .layout
     }
 
+    /// The stub's layout of a rich score without the runs its marks draw,
+    /// for a test of what it adds alone.
+    fn runless(seed: u64) -> ResolvedLayoutIR {
+        let mut layout = stub_layout(seed);
+        layout.texts.clear();
+        layout.unowned.texts.clear();
+        for page in &mut layout.pages {
+            for system in &mut page.systems {
+                system.primitives.texts.clear();
+            }
+        }
+        layout
+    }
+
     fn frame() -> Frame {
         Frame {
             left: -10.0,
@@ -662,7 +676,7 @@ mod tests {
     /// Each glyph is drawn once through its form, each stroke and curve once.
     #[test]
     fn every_primitive_is_drawn_once() {
-        let layout = stub_layout(5);
+        let layout = runless(5);
         let out = render_pdf(
             &[PdfPage {
                 layout: &layout,
@@ -716,7 +730,7 @@ mod tests {
 
     #[test]
     fn a_text_run_is_drawn_as_one_form_per_glyph() {
-        let mut layout = stub_layout(3);
+        let mut layout = runless(3);
         let (run, _) = epiphany_layout_ir::shape_text(
             epiphany_layout_ir::Provenance::projected(
                 epiphany_core::TypedObjectId::Marker(epiphany_core::MarkerId::from_raw(9)),
@@ -768,7 +782,7 @@ mod tests {
     #[test]
     fn a_turned_symbol_is_drawn_turned() {
         use epiphany_layout_ir::{symbol_run, Symbol, SymbolPlace, Turn};
-        let mut layout = stub_layout(3);
+        let mut layout = runless(3);
         layout.texts.push(symbol_run(
             epiphany_layout_ir::Provenance::projected(
                 epiphany_core::TypedObjectId::Marker(epiphany_core::MarkerId::from_raw(9)),

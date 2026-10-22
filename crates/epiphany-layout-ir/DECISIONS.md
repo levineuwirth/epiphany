@@ -1169,3 +1169,30 @@ column's spring the padding after it.
   solver draws piece by piece.
 - A syllable is a placed member of its verse's row, a space clear of the
   ink under it (`lyricsMinTopDistance`), after the dynamics and hairpins.
+
+## Tempo marks, staff text and rehearsal marks (X4c.6, 2026-10-22)
+
+- Every `Text` marker is drawn as staff text, upright in Edwin at 10 points
+  over its staff, its baseline a space over the staff, its pen from its
+  note's head (D79's Q9; the expression kind is X5b's, and drawn italic
+  below by whichever of X4c and X4d runs after X5b merges).
+- A tempo mark, rehearsal mark, segno or coda is a system object, drawn
+  over the region's top staff whatever staff holds it, or none: a tempo
+  mark's words in Edwin bold at 12 points, its metronome's beat in Bravura
+  Text at 20 (the note, then a space and its dots: `TempoText`'s patterns)
+  and its figure in bold after it, pen to pen, its baseline 2.0 over the
+  staff, from its note's head or, at a measure opening with a time
+  signature, from the signature (`TLayout::layoutTempoText`); a rehearsal
+  mark in Edwin bold at 14 in a square frame 0.5 off its ink and 0.16 wide,
+  at least as wide as high (`TextBase::layoutFrame`); a segno or coda in
+  Bravura Text at 18; each a half space clear of the ink under it. One
+  repeating another's kind, words and time from another part, as exports
+  often write a system object into every part, is drawn once.
+- A run riding a column no glyph holds (a mark where no note of any staff
+  starts) rides the nearest column before it that holds one, its offset
+  from that column kept as the projection set it, so a justified system
+  does not carry it toward its time as it carries the columns; a frame
+  about it rides with it, and a mark at its measure's start whose barline
+  column holds none stands as at a system's start. A dynamic in words there
+  had named a slot no glyph realized, which validation refuses, so the
+  score drew nothing.

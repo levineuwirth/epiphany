@@ -2298,3 +2298,22 @@ is set:
   (`LyricsLayout::layoutDashes`). A melisma line's piece shorter than a
   space, less a tolerance of 0.05, is not drawn (`lyricsMelismaMinLength`,
   `lyricsMelismaForce` off).
+
+## ENGRAVER_VERSION 60 → 61: tempo marks, staff text and rehearsal marks (X4c.6, 2026-10-22)
+
+- The family is placed in MuseScore's order with the rehearsal marks after
+  the tempo marks, so a rehearsal mark stands outside a tempo mark it meets
+  (`SystemLayout::layoutSystemElements` places them last), and a segno or
+  coda after both (`markersAndJumps`).
+- A member at its measure's start (`MeasureStart`) is set across once its
+  system is: a rehearsal mark centred on its barline's right edge, where
+  its measure starts, and a segno or coda on the barline's middle, both by
+  the ink of the barline column there; where the measure opens its system
+  or follows no barline, a rehearsal mark is centred just after the ink of
+  the system's lead and of the columns before its own (its signatures), and
+  a segno or coda on the system's left edge (`TLayout::layoutRehearsalMark`,
+  `MarkerLayout::doLayoutMarker`). Its runs and its frame move together, in
+  its placing as in its drawing.
+- A tempo mark is not set right of a rehearsal mark at its measure, as
+  MuseScore's `tempoAlignRightOfRehearsalMark` does; the two stand one over
+  the other.

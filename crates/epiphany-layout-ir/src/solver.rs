@@ -807,9 +807,10 @@ mod tests {
         );
         assert_eq!(
             layout.strokes.len(),
-            40,
-            "the rich fixture's real stroke count (its tuplet's bracket, four \
-             strokes, in place of the anchor it drew before)"
+            43,
+            "the rich fixture's real stroke count (its tuplet's bracket and its \
+             rehearsal mark's frame, four strokes each, in place of the anchors \
+             they drew before)"
         );
         // Its tie, drawn as an arc, and the curve added above.
         assert_eq!(layout.curves.len(), 2);

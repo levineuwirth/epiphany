@@ -86,8 +86,8 @@ use epiphany_layout_ir::{
     metrics, synthesized_layout_id, tie_arc, BreakClass, BreakKind, ConstrainedLayoutIR, Curve,
     DecisionSource, EngravingDecision, EngravingDecisionKind, EngravingOverrideId, FamilyLine,
     GlyphObject, GlyphObjectId, GlyphReference, GlyphStyle, GroupSign, GroupSpan, HairpinShape,
-    LayoutConstraint, LayoutObjectId, LeadGlyph, Margins, Point, PrimitiveIndices, Provenance,
-    Rect, ResolvedGlyph, ResolvedMeasure, ResolvedPage, ResolvedStaff, ResolvedSystem,
+    LayoutConstraint, LayoutObjectId, LeadGlyph, Margins, MeasureMark, Point, PrimitiveIndices,
+    Provenance, Rect, ResolvedGlyph, ResolvedMeasure, ResolvedPage, ResolvedStaff, ResolvedSystem,
     ResolvedText, Size2D, SpringSlotId, StaffSpace, Stroke, SynthesisInstanceKey, SynthesisKind,
     SynthesisRegistryId, SystemLead, TimePoint, Transform2D, VerticalBand, VerticalBandId,
     VerticalBandKind, HAIRPIN_CONT_HEIGHT, HAIRPIN_HEIGHT, HAIRPIN_MIN_LENGTH, LYRIC_DASH_MAX,
@@ -1441,6 +1441,88 @@ pub(crate) fn cast_off(
                 }),
             )
         };
+    // Each member standing at its measure's start, set across once its
+    // system is: centred on its barline's ink there, on its right edge for a
+    // rehearsal mark (where the measure starts) and on its middle for a
+    // segno or coda; or, where the measure opens its system, just after the
+    // ink of the system's lead and of the columns before the member's, or on
+    // the system's left edge.
+    let mut family_dx: BTreeMap<usize, f32> = BTreeMap::new();
+    let text_at: BTreeMap<GlyphObjectId, usize> = input
+        .texts
+        .iter()
+        .enumerate()
+        .map(|(i, text)| (text.id(), i))
+        .collect();
+    for (f, mark) in input.family.iter().enumerate() {
+        let Some(across) = mark.placement.and_then(|p| p.across) else {
+            continue;
+        };
+        // Its runs' ink across where their slot sets them, and their slot.
+        let mut ink: Option<(usize, SpringSlotId, f32, f32)> = None;
+        for i in mark.texts.iter().filter_map(|id| text_at.get(id)) {
+            let (text, spaced) = (&input.texts[*i], &spaced_texts[*i]);
+            let Some(s) = text_system[*i] else {
+                continue;
+            };
+            let slot = text.horizontal_slot;
+            let sx = slot_source_x
+                .get(&slot)
+                .copied()
+                .unwrap_or(spaced.origin.x.0);
+            let x = spaced.origin.x.0 + hplace[s].0.slot_dx(sx) - shift_of(slot);
+            let (l, r) = (x + spaced.bounds.left.0, x + spaced.bounds.right.0);
+            ink = Some(match ink {
+                Some((s, slot, a, b)) => (s, slot, a.min(l), b.max(r)),
+                None => (s, slot, l, r),
+            });
+        }
+        let Some((s, slot, l, r)) = ink else {
+            continue;
+        };
+        // The ink of the glyphs in this system's slots matching `pick`.
+        let glyph_ink = |pick: &dyn Fn(SpringSlotId) -> bool| {
+            input
+                .glyphs
+                .iter()
+                .zip(spaced_glyphs)
+                .filter(|(g, _)| {
+                    system_of_slot.get(&g.horizontal_slot) == Some(&s) && pick(g.horizontal_slot)
+                })
+                .map(|(g, spaced)| {
+                    let sx = slot_source_x
+                        .get(&g.horizontal_slot)
+                        .copied()
+                        .unwrap_or(spaced.position.x.0);
+                    let x =
+                        spaced.position.x.0 + hplace[s].0.slot_dx(sx) - shift_of(g.horizontal_slot);
+                    (x + g.bounding_box.left.0, x + g.bounding_box.right.0)
+                })
+                .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)))
+        };
+        let barline = across
+            .barline
+            .filter(|b| system_of_slot.get(b) == Some(&s))
+            .and_then(|b| glyph_ink(&|slot| slot == b));
+        let target = match (barline, across.kind) {
+            (Some((_, right)), MeasureMark::Rehearsal) => right,
+            (Some((left, right)), MeasureMark::Repeat) => (left + right) * 0.5,
+            (None, MeasureMark::Rehearsal) => {
+                let lead = if lead_w[s] > 0.0 {
+                    geometry.margins.left.0 + lead_w[s] - LEAD_GAP
+                } else {
+                    geometry.margins.left.0
+                };
+                let own = slot_source_x.get(&slot).copied().unwrap_or(f32::INFINITY);
+                let before =
+                    glyph_ink(&|other| slot_source_x.get(&other).is_some_and(|&x| x < own));
+                before.map_or(lead, |(_, right)| lead.max(right))
+            }
+            (None, MeasureMark::Repeat) => geometry.margins.left.0,
+        };
+        family_dx.insert(f, target - (l + r) * 0.5);
+    }
+    let member_dx = |f: Option<&usize>| f.and_then(|f| family_dx.get(f)).copied().unwrap_or(0.0);
     let mut family_dy: BTreeMap<(usize, usize), f32> = BTreeMap::new();
     // The placed family's pieces and the ink each was placed against, kept
     // for centring a grand staff's once its staves are set.
@@ -1513,7 +1595,12 @@ pub(crate) fn cast_off(
                         &input.glyphs,
                         anchors.get(&stroke.id()),
                     );
-                    vec![(*s, p.from, p.to)]
+                    let dx = member_dx(placed.strokes.get(&stroke.id()));
+                    vec![(
+                        *s,
+                        Point::new(p.from.x.0 + dx, p.from.y.0),
+                        Point::new(p.to.x.0 + dx, p.to.y.0),
+                    )]
                 }
                 StrokeFate::Rigid(None) => Vec::new(),
                 StrokeFate::Split(segments) => segments
@@ -1605,7 +1692,8 @@ pub(crate) fn cast_off(
                 .get(&text.horizontal_slot)
                 .copied()
                 .unwrap_or(spaced.origin.x.0);
-            let x = spaced.origin.x.0 + hplace[s].0.slot_dx(sx) - shift_of(text.horizontal_slot);
+            let x = spaced.origin.x.0 + hplace[s].0.slot_dx(sx) - shift_of(text.horizontal_slot)
+                + member_dx(placed.texts.get(&text.id()));
             let (y, b) = (spaced.origin.y.0, spaced.bounds);
             let ink = rect(x + b.left.0, x + b.right.0, y + b.bottom.0, y + b.top.0);
             match placed.texts.get(&text.id()) {
@@ -2099,6 +2187,9 @@ pub(crate) fn cast_off(
                         if hairpin_legs.contains_key(&source.id()) {
                             keep_hairpin_length(&mut stroke);
                         }
+                        let dx = member_dx(placed.strokes.get(&source.id()));
+                        stroke.from = Point::new(stroke.from.x.0 + dx, stroke.from.y.0);
+                        stroke.to = Point::new(stroke.to.x.0 + dx, stroke.to.y.0);
                         // A stem reaching a beam across two staves: its beam
                         // end rides the staff the beam does.
                         if let Some(&upper) = reach_upper.get(&source.id()) {
@@ -2387,7 +2478,8 @@ pub(crate) fn cast_off(
                         .copied()
                         .unwrap_or(0.0);
                     (
-                        placements[s].slot_dx(sx) - shift_of(text.horizontal_slot),
+                        placements[s].slot_dx(sx) - shift_of(text.horizontal_slot)
+                            + member_dx(placed.texts.get(&text.id())),
                         placements[s].dy - staff_dy(s, text_staff_of[ti]) + lift,
                     )
                 }
@@ -4387,18 +4479,19 @@ mod tests {
         };
         assert_eq!(measure_count(&plain), 10);
         assert_eq!(measure_count(&repeats), 10);
-        // The volta brackets sit above the staff, so the system carrying them
-        // is taller than any repeat-free system.
-        let max_height = |report: &crate::SolveReport| -> f32 {
+        // The volta brackets sit above the staff, so the systems carrying them
+        // stand taller than the repeat-free fixture's (whose first holds its
+        // rehearsal mark, as the repeat fixture's does).
+        let height = |report: &crate::SolveReport| -> f32 {
             report
                 .layout
                 .pages
                 .iter()
                 .flat_map(|page| &page.systems)
                 .map(|system| system.bounding_box.size.height.0)
-                .fold(0.0, f32::max)
+                .sum()
         };
-        assert!(max_height(&repeats) > max_height(&plain));
+        assert!(height(&repeats) > height(&plain));
     }
 
     #[test]
@@ -4662,9 +4755,10 @@ mod tests {
         );
         assert_eq!(
             stroke_counts,
-            vec![34, 37, 29],
+            vec![37, 37, 29],
             "the three/four/three measure split's real per-system stroke counts \
-             (the tie in the first system is a curve)"
+             (the tie in the first system is a curve; the rehearsal mark's frame, \
+             four strokes, takes its traced anchor's place)"
         );
         assert_eq!(
             glyph_counts.iter().sum::<usize>(),

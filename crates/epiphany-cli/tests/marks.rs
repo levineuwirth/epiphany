@@ -1880,3 +1880,497 @@ fn a_system_holds_its_syllables() {
         assert!(ink[2] <= 105.0 - 7.5 + 1e-3, "{ink:?}");
     }
 }
+
+/// Words over `staff`, as MuseScore writes staff text, or, `italic`, as it
+/// writes expression text, below.
+fn words(text: &str, staff: u8, italic: bool) -> String {
+    let (placement, style) = if italic {
+        ("below", " font-style=\"italic\"")
+    } else {
+        ("above", "")
+    };
+    format!(
+        "<direction placement=\"{placement}\"><direction-type><words{style}>{text}</words>\
+         </direction-type><staff>{staff}</staff></direction>"
+    )
+}
+
+/// A tempo mark over `staff`: its words in bold, if any, and its metronome
+/// mark, if any, a beat of `beat` with `dots` at `per_minute`.
+fn tempo(words: Option<&str>, beat: Option<(&str, u8, u32)>, staff: u8) -> String {
+    let words = words.map_or(String::new(), |w| {
+        format!("<direction-type><words font-weight=\"bold\">{w}</words></direction-type>")
+    });
+    let (metronome, sound) = beat.map_or((String::new(), 100), |(unit, dots, per)| {
+        let dots = "<beat-unit-dot/>".repeat(usize::from(dots));
+        (
+            format!(
+                "<direction-type><metronome><beat-unit>{unit}</beat-unit>{dots}\
+                 <per-minute>{per}</per-minute></metronome></direction-type>"
+            ),
+            per,
+        )
+    });
+    format!(
+        "<direction placement=\"above\">{words}{metronome}<staff>{staff}</staff>\
+         <sound tempo=\"{sound}\"/></direction>"
+    )
+}
+
+/// A run's face's family, its first segment's.
+fn face(run: &ResolvedText) -> &str {
+    &run.shaping.faces[run.segments[0].face as usize].family.0
+}
+
+/// A run's size, its first segment's.
+fn size(run: &ResolvedText) -> f32 {
+    run.segments[0].size.0
+}
+
+/// A run's pen start and end across.
+fn pen(run: &ResolvedText) -> (f32, f32) {
+    (
+        run.origin.x.0 + run.reserved_box.left.0,
+        run.origin.x.0 + run.reserved_box.right.0,
+    )
+}
+
+/// Staff text stands over its staff, upright, its baseline a space over
+/// the staff, its pen from its note's head; words MuseScore writes as
+/// expression text, italic and below, stand the same until the model holds
+/// their kind (D79's Q9); and a note over the staff lifts the text a half
+/// space clear of it.
+#[test]
+fn staff_text_stands_over_its_staff_from_its_note() {
+    let measure = [
+        words("dolce", 1, false),
+        note("C5", 2, "quarter", 1, 1, ""),
+        note("C5", 2, "quarter", 1, 1, ""),
+        words("high", 1, false),
+        note("A5", 4, "half", 1, 1, ""),
+        backup(8),
+        words("sotto voce", 2, true),
+        note("E3", 8, "whole", 5, 2, ""),
+    ]
+    .concat();
+    let loaded = part("staff_text.musicxml", 2, &[measure]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let lines = staff_lines(&layout);
+    let dolce = runs(&layout, "dolce")[0];
+    assert_eq!(face(dolce), "Edwin Roman");
+    near(size(dolce), 2.016, "ten points");
+    near(dolce.origin.y.0, lines[0].1 + 1.0, "a space over the staff");
+    near(
+        pen(dolce).0,
+        head(&loaded, &layout, e[0])[0],
+        "from the head",
+    );
+    let sotto = runs(&layout, "sotto voce")[0];
+    assert_eq!(face(sotto), "Edwin Roman");
+    near(sotto.origin.y.0, lines[1].1 + 1.0, "over the lower staff");
+    near(
+        pen(sotto).0,
+        head(&loaded, &layout, e[3])[0],
+        "from its head",
+    );
+    let high = text_box(runs(&layout, "high")[0]);
+    let a5 = head(&loaded, &layout, e[2]);
+    near(high[1], a5[3] + 0.5, "a half space over the high note");
+}
+
+/// A tempo mark stands over the system's top staff, whatever staff holds
+/// it: its words in Edwin bold at 12 points, its metronome's beat in Bravura
+/// Text at 20 and its figure in bold after it, pen to pen, on one baseline 2.0
+/// over the staff, from its note's head, or, at a measure opening with a
+/// time signature, from the signature; repeated from another staff at its
+/// time, it is drawn once.
+#[test]
+fn a_tempo_mark_stands_over_the_top_staff() {
+    let first = [
+        tempo(Some("Lento"), None, 1),
+        note("C5", 8, "whole", 1, 1, ""),
+        backup(8),
+        note("E3", 8, "whole", 5, 2, ""),
+    ]
+    .concat();
+    let second = [
+        note("C5", 8, "whole", 1, 1, ""),
+        backup(8),
+        tempo(Some("Allegro"), Some(("quarter", 0, 120)), 2),
+        tempo(Some("Allegro"), Some(("quarter", 0, 120)), 1),
+        note("E3", 8, "whole", 5, 2, ""),
+    ]
+    .concat();
+    let third = [
+        note("C5", 8, "whole", 1, 1, ""),
+        backup(8),
+        tempo(None, Some(("half", 1, 60)), 2),
+        note("E3", 8, "whole", 5, 2, ""),
+    ]
+    .concat();
+    let loaded = part("tempo.musicxml", 2, &[first, second, third]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let top = staff_lines(&layout)[0].1;
+    // Over the time signature the first measure opens with.
+    let lento = runs(&layout, "Lento")[0];
+    assert_eq!(face(lento), "Edwin Bold");
+    near(size(lento), 2.419, "twelve points");
+    near(lento.origin.y.0, top + 2.0, "2.0 over the top staff");
+    let signature = layout
+        .glyphs
+        .iter()
+        .find(|g| g.glyph.as_str() == "timeSig4")
+        .expect("a time signature");
+    near(pen(lento).0, signature.position.x.0, "over the signature");
+    // Words, beat and figure, pen to pen, drawn once.
+    let allegro = runs(&layout, "Allegro ");
+    assert_eq!(allegro.len(), 1, "drawn once");
+    let beat = runs(&layout, "\u{ECA5}");
+    let figure = runs(&layout, " = 120");
+    assert_eq!((beat.len(), figure.len()), (1, 1));
+    let (allegro, beat, figure) = (allegro[0], beat[0], figure[0]);
+    assert_eq!(face(beat), "Bravura Text");
+    near(size(beat), 4.032, "twenty points");
+    assert_eq!(face(figure), "Edwin Bold");
+    near(
+        pen(allegro).0,
+        head(&loaded, &layout, e[2])[0],
+        "from its head",
+    );
+    near(pen(beat).0, pen(allegro).1, "the beat after the words");
+    near(pen(figure).0, pen(beat).1, "the figure after the beat");
+    for run in [allegro, beat, figure] {
+        near(run.origin.y.0, top + 2.0, "one baseline");
+    }
+    // A dotted beat alone: the note, a space and its dot.
+    let dotted = runs(&layout, "\u{ECA3} \u{ECB7}");
+    assert_eq!(
+        dotted.len(),
+        1,
+        "{:?}",
+        layout.texts.iter().map(|t| &t.text).collect::<Vec<_>>()
+    );
+    assert!(dotted[0]
+        .segments
+        .iter()
+        .all(|s| s.glyphs.iter().all(|g| g.glyph_id != 0)));
+    near(
+        pen(runs(&layout, " = 60")[0]).0,
+        pen(dotted[0]).1,
+        "its figure after it",
+    );
+}
+
+/// The frame about a rehearsal mark: its strokes' lines, as
+/// `(left, bottom, right, top)`.
+fn frame(layout: &ResolvedLayoutIR, run: &ResolvedText) -> (f32, f32, f32, f32) {
+    let strokes: Vec<_> = layout
+        .strokes
+        .iter()
+        .filter(|s| s.provenance.source == run.provenance.source && s.from != s.to)
+        .collect();
+    assert_eq!(strokes.len(), 4, "{strokes:?}");
+    for s in &strokes {
+        near(s.thickness.0, 0.16, "the frame's width");
+    }
+    let xs = strokes
+        .iter()
+        .filter(|s| s.from.x.0 == s.to.x.0)
+        .map(|s| s.from.x.0);
+    let ys = strokes
+        .iter()
+        .filter(|s| s.from.y.0 == s.to.y.0)
+        .map(|s| s.from.y.0);
+    (
+        xs.clone().fold(f32::INFINITY, f32::min),
+        ys.clone().fold(f32::INFINITY, f32::min),
+        xs.fold(f32::NEG_INFINITY, f32::max),
+        ys.fold(f32::NEG_INFINITY, f32::max),
+    )
+}
+
+/// A rehearsal mark stands in Edwin bold at 14 points in a frame half a
+/// space off its ink, at least as wide as high, over the system's top staff:
+/// centred on its measure's barline's right edge, where the measure starts;
+/// at the piece's start, just after the first measure's signatures; after a
+/// system break, just after the lead's clef, a letter taller than wide in a
+/// square frame; and outside a tempo mark at its measure.
+#[test]
+fn a_rehearsal_mark_stands_framed_at_its_measures_start() {
+    let rehearsal = |mark: &str| {
+        format!(
+            "<direction placement=\"above\"><direction-type><rehearsal>{mark}</rehearsal>\
+             </direction-type><staff>1</staff></direction>"
+        )
+    };
+    let measures = [
+        [rehearsal("A"), note("C5", 8, "whole", 1, 1, "")].concat(),
+        [
+            rehearsal("B"),
+            tempo(Some("Allegro"), None, 1),
+            note("C5", 8, "whole", 1, 1, ""),
+        ]
+        .concat(),
+        [
+            "<print new-system=\"yes\"/>".to_string(),
+            rehearsal("I"),
+            note("C5", 8, "whole", 1, 1, ""),
+        ]
+        .concat(),
+    ];
+    let loaded = part("rehearsal.musicxml", 1, &measures);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let centre = |run: &ResolvedText| centre_x(text_box(run));
+    let (a, b, c) = (
+        runs(&layout, "A")[0],
+        runs(&layout, "B")[0],
+        runs(&layout, "I")[0],
+    );
+    assert_eq!(face(a), "Edwin Bold");
+    near(size(a), 2.822, "fourteen points");
+    near(
+        a.origin.y.0,
+        staff_lines(&layout)[0].1 + 2.0,
+        "2.0 over the top staff",
+    );
+    // Its frame, about its ink.
+    let ink = text_box(b);
+    let (l, bottom, r, top) = frame(&layout, b);
+    let half = ((ink[3] - ink[1]) - (ink[2] - ink[0])).max(0.0) * 0.5;
+    near(l, ink[0] - half - 0.58, "the frame's left");
+    near(r, ink[2] + half + 0.58, "the frame's right");
+    near(bottom, ink[1] - 0.58, "the frame's bottom");
+    near(top, ink[3] + 0.58, "the frame's top");
+    // On the barline's right edge.
+    let barline = named(&layout, "barlineSingle")[0];
+    near(centre(b), barline[2], "B on its barline's right edge");
+    // After the first measure's time signature.
+    let signature = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("timeSig"))
+        .map(|g| glyph_box(g)[2])
+        .fold(f32::NEG_INFINITY, f32::max);
+    near(centre(a), signature, "A after the signature");
+    // After the next system's clef.
+    let clef = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str() == "gClef")
+        .map(glyph_box)
+        .min_by(|p, q| p[1].total_cmp(&q[1]))
+        .expect("a clef");
+    near(centre(c), clef[2], "I after the lead's clef");
+    // A letter taller than wide stands in a square frame.
+    let square = frame(&layout, c);
+    near(square.2 - square.0, square.3 - square.1, "a square frame");
+    // Outside the tempo mark it overlaps.
+    let allegro = text_box(runs(&layout, "Allegro")[0]);
+    assert!(allegro[0] < r && allegro[2] > l, "{allegro:?} {l} {r}");
+    assert!(
+        bottom - 0.08 >= allegro[3] + 0.5 - 1e-3,
+        "{bottom} {allegro:?}"
+    );
+}
+
+/// A segno or coda stands in Bravura Text at 18 points over the system's
+/// top staff, its baseline 2.0 over it, centred on its measure's barline, or
+/// at the piece's start on the system's left edge.
+#[test]
+fn a_segno_or_coda_stands_at_its_measures_start() {
+    let sign = |name: &str| {
+        format!(
+            "<direction placement=\"above\"><direction-type><{name}/></direction-type>\
+             <staff>1</staff></direction>"
+        )
+    };
+    let measures = [
+        [sign("coda"), note("C5", 8, "whole", 1, 1, "")].concat(),
+        [sign("segno"), note("C5", 8, "whole", 1, 1, "")].concat(),
+    ];
+    let loaded = part("segno.musicxml", 1, &measures);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let top = staff_lines(&layout)[0].1;
+    let (segno, coda) = (runs(&layout, "\u{E047}")[0], runs(&layout, "\u{E048}")[0]);
+    assert_eq!(face(segno), "Bravura Text");
+    near(size(segno), 3.629, "eighteen points");
+    near(segno.origin.y.0, top + 2.0, "2.0 over the staff");
+    let barline = named(&layout, "barlineSingle")[0];
+    near(
+        centre_x(text_box(segno)),
+        centre_x(barline),
+        "the segno on its barline",
+    );
+    near(
+        centre_x(text_box(coda)),
+        7.5,
+        "the coda on the system's edge",
+    );
+}
+
+/// A mark where no note starts stands at its time, in a system set wide:
+/// staff text and a dynamic in words anchored an eighth and a quarter into
+/// their measure, and a tempo mark and a framed rehearsal mark anchored
+/// three eighths and eleven sixteenths into their region, on no staff, each
+/// after the first note and before the barline in the order of their times,
+/// the frame about its mark.
+#[test]
+fn a_text_where_no_note_starts_stands_at_its_time() {
+    use epiphany_core::{
+        AnchorOffset, MarkerKind, MeasurePosition, MusicalDuration, RationalTime, RegionEdge,
+        TimeAnchor,
+    };
+    let marks = [
+        words("poco", 1, false),
+        direction(
+            1,
+            "<dynamics><other-dynamics>sempre</other-dynamics></dynamics>",
+        ),
+        tempo(Some("Lento"), None, 1),
+        direction(1, "<rehearsal>R</rehearsal>"),
+        note("C5", 4, "half", 1, 1, ""),
+        note("C5", 2, "quarter", 1, 1, ""),
+        note("C5", 2, "quarter", 1, 1, ""),
+    ]
+    .concat();
+    let measures = [
+        marks,
+        note("C5", 8, "whole", 1, 1, ""),
+        [
+            "<print new-system=\"yes\"/>".to_string(),
+            note("C5", 8, "whole", 1, 1, ""),
+        ]
+        .concat(),
+    ];
+    let loaded = part("no_note.musicxml", 1, &measures);
+    let mut score = loaded.reduced.score.clone();
+    let id = loaded.import.ids.measures[0][0][0];
+    let region = score.canvas.regions[0].id;
+    let at = |n: i64, d: i64| {
+        AnchorOffset::Musical(MusicalDuration(RationalTime::new(n, d).expect("a time")))
+    };
+    for marker in &mut score.cross_cutting.markers {
+        let (measure, offset) = match marker.kind {
+            MarkerKind::Text(_) => (true, at(1, 8)),
+            MarkerKind::Dynamic(_) => (true, at(1, 4)),
+            MarkerKind::Tempo(_) => (false, at(3, 8)),
+            MarkerKind::Rehearsal(_) => (false, at(11, 16)),
+            _ => continue,
+        };
+        marker.anchor = if measure {
+            TimeAnchor::Measure {
+                id,
+                position: MeasurePosition::Start,
+                offset,
+            }
+        } else {
+            TimeAnchor::Region {
+                id: region,
+                edge: RegionEdge::Start,
+                offset,
+            }
+        };
+    }
+    let layout = engrave(&score).layout;
+    let e = events(&loaded);
+    let first = head(&loaded, &layout, e[0]);
+    let barline = named(&layout, "barlineSingle")[0];
+    // Each at its time: staff text and a tempo mark from their pen, a
+    // dynamic and a rehearsal mark by their centres.
+    let mut last = first[2];
+    for (words, centred) in [
+        ("poco", false),
+        ("sempre", true),
+        ("Lento", false),
+        ("R", true),
+    ] {
+        let run = runs(&layout, words);
+        assert_eq!(run.len(), 1, "{words}");
+        let x = if centred {
+            centre_x(text_box(run[0]))
+        } else {
+            pen(run[0]).0
+        };
+        assert!(
+            x > last && x < barline[0],
+            "{words}: {x} after {last}, before {barline:?}"
+        );
+        last = x;
+    }
+    // The rehearsal mark's frame stands about its ink, though, as the
+    // projection sets it, it reaches past the last note's column.
+    let r = runs(&layout, "R")[0];
+    let ink = text_box(r);
+    let (l, _, right, _) = frame(&layout, r);
+    let grow = ((ink[3] - ink[1]) - (ink[2] - ink[0])).max(0.0) * 0.5;
+    near(l, ink[0] - grow - 0.58, "the frame's left");
+    near(right, ink[2] + grow + 0.58, "the frame's right");
+}
+
+/// A mark at its measure's start is placed by its ink where it stands
+/// there, not where its note is: a rehearsal mark and a segno at a barline
+/// before a key and meter change, a note high over the staff after them,
+/// stand at their own height beside the note; a segno with a rehearsal
+/// mark stands outside it.
+#[test]
+fn a_mark_at_its_measures_start_clears_the_ink_where_it_stands() {
+    // A key and a meter change, each held inside the staff.
+    let key = |fifths: i8, beats: u8, beat: u8| {
+        format!(
+            "<attributes><key><fifths>{fifths}</fifths></key><time><beats>{beats}</beats>\
+             <beat-type>{beat}</beat-type></time></attributes>"
+        )
+    };
+    let measures = [
+        note("C5", 8, "whole", 1, 1, ""),
+        [
+            key(-1, 2, 2),
+            direction(1, "<rehearsal>B</rehearsal>"),
+            note("C6", 8, "whole", 1, 1, ""),
+        ]
+        .concat(),
+        note("C5", 8, "whole", 1, 1, ""),
+        [
+            key(0, 4, 4),
+            direction(1, "<segno/>"),
+            note("C6", 8, "whole", 1, 1, ""),
+        ]
+        .concat(),
+        [
+            direction(1, "<rehearsal>D</rehearsal>"),
+            direction(1, "<segno/>"),
+            note("C5", 8, "whole", 1, 1, ""),
+        ]
+        .concat(),
+    ];
+    let loaded = part("measure_start_ink.musicxml", 1, &measures);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let top = staff_lines(&layout)[0].1;
+    let (b, d) = (runs(&layout, "B")[0], runs(&layout, "D")[0]);
+    let (_, _, r, _) = frame(&layout, b);
+    let high = head(&loaded, &layout, e[1]);
+    assert!(
+        r < high[0],
+        "the note stands beside the frame: {r} {high:?}"
+    );
+    near(b.origin.y.0, top + 2.0, "B at its own height");
+    let mut segnos = runs(&layout, "\u{E047}");
+    segnos.sort_by(|p, q| p.origin.x.0.total_cmp(&q.origin.x.0));
+    assert_eq!(segnos.len(), 2);
+    let high = head(&loaded, &layout, e[3]);
+    assert!(text_box(segnos[0])[2] < high[0], "beside the note");
+    near(
+        segnos[0].origin.y.0,
+        top + 2.0,
+        "the segno at its own height",
+    );
+    let (_, _, _, frame_top) = frame(&layout, d);
+    let outer = text_box(segnos[1]);
+    assert!(
+        outer[1] >= frame_top + 0.08 + 0.5 - 1e-3,
+        "{outer:?} over {frame_top}"
+    );
+}

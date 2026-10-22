@@ -480,3 +480,138 @@ fn the_expression_familys_undrawn_members_are_counted_by_class() {
     );
     assert_eq!(kinds.get("fermata"), None);
 }
+
+/// Staff text, tempo and rehearsal marks, segnos and codas the engraver
+/// draws are no omission, a tempo mark repeated from another staff at its
+/// time drawn with the one it repeats; each whose ink is taken away is
+/// counted by its class; staff text anchored at its region's offset, on no
+/// staff, is named as drawn nowhere, and a tempo mark there stands over the
+/// system.
+#[test]
+fn text_marks_undrawn_are_counted_by_class() {
+    use epiphany_core::{MarkerKind, TimeAnchor};
+
+    let direction = |staff: u8, content: &str, sound: &str| {
+        format!(
+            "<direction placement=\"above\"><direction-type>{content}</direction-type>\
+             <staff>{staff}</staff>{sound}</direction>"
+        )
+    };
+    let note = |staff: u8, voice: u8, octave: u8| {
+        format!(
+            "<note><pitch><step>C</step><octave>{octave}</octave></pitch><duration>8\
+             </duration><voice>{voice}</voice><type>whole</type><staff>{staff}</staff></note>"
+        )
+    };
+    let tempo = |staff: u8| {
+        direction(
+            staff,
+            "<words font-weight=\"bold\">Allegro</words>",
+            "<sound tempo=\"120\"/>",
+        )
+    };
+    let first = [
+        direction(1, "<words>dolce</words>", ""),
+        tempo(1),
+        direction(1, "<rehearsal>A</rehearsal>", ""),
+        note(1, 1, 5),
+        "<backup><duration>8</duration></backup>".to_string(),
+        tempo(2),
+        note(2, 5, 3),
+    ]
+    .concat();
+    let second = [
+        direction(1, "<segno/>", ""),
+        direction(1, "<coda/>", ""),
+        note(1, 1, 5),
+        "<backup><duration>8</duration></backup>".to_string(),
+        note(2, 5, 3),
+    ]
+    .concat();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
+         <attributes><divisions>2</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time><staves>2</staves><clef number=\"1\"><sign>G</sign><line>2</line></clef>\
+         <clef number=\"2\"><sign>F</sign><line>4</line></clef></attributes>{first}\
+         </measure><measure number=\"2\">{second}</measure></part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("text_mark_omissions.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let classes = [
+        "staff text",
+        "tempo mark",
+        "rehearsal mark",
+        "segno",
+        "coda",
+    ];
+    let counted = |score: &epiphany_core::Score, engraved: &Engraved| -> Vec<(String, usize)> {
+        omissions(score, &engraved.layout, &engraved.diagnostics)
+            .kinds
+            .into_iter()
+            .filter(|(kind, _)| classes.iter().any(|class| kind.starts_with(class)))
+            .collect()
+    };
+    let score = &loaded.reduced.score;
+    let tempos = score
+        .cross_cutting
+        .markers
+        .iter()
+        .filter(|m| matches!(m.kind, MarkerKind::Tempo(_)))
+        .count();
+    assert_eq!(tempos, 2, "a tempo mark on each staff");
+    let mut engraved = engrave(score);
+    assert_eq!(counted(score, &engraved), vec![], "every class drawn");
+
+    // Every text mark's ink taken away.
+    let region = TypedObjectId::Region(score.canvas.regions[0].id);
+    for t in &mut engraved.layout.texts {
+        if matches!(t.provenance.source, TypedObjectId::Marker(_)) {
+            t.provenance.source = region;
+        }
+    }
+    for s in &mut engraved.layout.strokes {
+        if matches!(s.provenance.source, TypedObjectId::Marker(_)) {
+            s.provenance.source = region;
+        }
+    }
+    let mut found = counted(score, &engraved);
+    found.sort();
+    assert_eq!(
+        found,
+        vec![
+            ("coda".to_owned(), 1),
+            ("rehearsal mark".to_owned(), 1),
+            ("segno".to_owned(), 1),
+            ("staff text".to_owned(), 1),
+            ("tempo mark".to_owned(), 2),
+        ]
+    );
+
+    // Staff text and both tempo marks at the region's start.
+    let mut moved = score.clone();
+    for marker in &mut moved.cross_cutting.markers {
+        if matches!(marker.kind, MarkerKind::Text(_) | MarkerKind::Tempo(_)) {
+            marker.anchor = TimeAnchor::Region {
+                id: moved.canvas.regions[0].id,
+                edge: epiphany_core::RegionEdge::Start,
+                offset: epiphany_core::AnchorOffset::Zero,
+            };
+        }
+    }
+    let engraved = engrave(&moved);
+    assert_eq!(
+        counted(&moved, &engraved),
+        vec![("staff text at a region offset: drawn nowhere".to_owned(), 1)]
+    );
+    assert_eq!(
+        engraved
+            .layout
+            .texts
+            .iter()
+            .filter(|t| t.text == "Allegro")
+            .count(),
+        1
+    );
+}

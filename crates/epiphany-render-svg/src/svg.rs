@@ -964,6 +964,20 @@ mod tests {
             .layout
     }
 
+    /// The stub's layout of a rich score without the runs its marks draw,
+    /// for a test of what it adds alone.
+    fn runless(seed: u64) -> ResolvedLayoutIR {
+        let mut layout = stub_layout(seed);
+        layout.texts.clear();
+        layout.unowned.texts.clear();
+        for page in &mut layout.pages {
+            for system in &mut page.systems {
+                system.primitives.texts.clear();
+            }
+        }
+        layout
+    }
+
     #[test]
     fn a_stroke_renders_as_a_traced_line() {
         let mut layout = stub_layout(11);
@@ -996,8 +1010,8 @@ mod tests {
         );
         assert_eq!(
             out.stats.provenance_count,
-            glyph_count + base_strokes + 1 + layout.curves.len(),
-            "every glyph, stroke and curve is traced"
+            glyph_count + base_strokes + 1 + layout.curves.len() + layout.texts.len(),
+            "every glyph, stroke, curve and run is traced"
         );
     }
 
@@ -1131,7 +1145,7 @@ mod tests {
         assert!(out.diagnostics.is_empty());
         assert_eq!(
             out.stats.provenance_count,
-            layout.glyphs.len() + layout.strokes.len() + layout.curves.len()
+            layout.glyphs.len() + layout.strokes.len() + layout.curves.len() + layout.texts.len()
         );
         assert!(out.svg.contains("<svg"));
         assert!(out.svg.contains("data-prov="));
@@ -1212,7 +1226,7 @@ mod tests {
         assert!(out.svg.contains("set in the embedded font"));
         assert_eq!(
             out.stats.provenance_count,
-            layout.glyphs.len() + layout.strokes.len() + layout.curves.len()
+            layout.glyphs.len() + layout.strokes.len() + layout.curves.len() + layout.texts.len()
         );
         assert!(out.svg.contains("data-prov="));
     }
@@ -1326,7 +1340,7 @@ mod tests {
     /// A layout holding one shaped run, the words chosen so its chain sets
     /// one character in each face and leaves one uncovered.
     fn with_a_run(words: &str) -> ResolvedLayoutIR {
-        let mut layout = stub_layout(3);
+        let mut layout = runless(3);
         let (run, _) = epiphany_layout_ir::shape_text(
             epiphany_layout_ir::Provenance::projected(
                 epiphany_core::TypedObjectId::Marker(epiphany_core::MarkerId::from_raw(9)),
@@ -1390,7 +1404,7 @@ mod tests {
     #[test]
     fn a_turned_symbol_is_drawn_turned() {
         use epiphany_layout_ir::{symbol_run, Symbol, SymbolPlace, Turn};
-        let mut layout = stub_layout(3);
+        let mut layout = runless(3);
         let symbol = |turn: Turn| Symbol {
             codepoint: '\u{EAA9}',
             at: SymbolPlace::Origin(Point::new(0.0, 0.0)),

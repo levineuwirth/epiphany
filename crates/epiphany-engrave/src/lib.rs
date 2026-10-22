@@ -360,7 +360,7 @@ pub struct Engraver {
 /// when the resolved layout began carrying shaped text runs, a fourth
 /// primitive each riding its slot and joining its staff's extent, whose count
 /// enters every layout's canonical bytes though no score yet draws one.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(60);
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(61);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -2735,13 +2735,14 @@ mod tests {
     #[test]
     fn page_overflow_starts_a_second_page() {
         use epiphany_layout_ir::{Margins, Size2D, StaffSpace};
-        // A deliberately small page: 50×10 staff spaces of content, so the
-        // ten-measure fixture wraps into systems (≈7 staff spaces tall) of
-        // which only one fits a page — the multi-page path.
+        // A deliberately small page: 50×14 staff spaces of content, so the
+        // ten-measure fixture wraps into systems (≈7 staff spaces tall, the
+        // first ≈11.5 with its rehearsal mark over it) of which only one fits
+        // a page — the multi-page path.
         let geometry = PageGeometry {
             size: Size2D {
                 width: StaffSpace(60.0),
-                height: StaffSpace(20.0),
+                height: StaffSpace(24.0),
             },
             margins: Margins {
                 top: StaffSpace(5.0),
@@ -3588,8 +3589,10 @@ mod tests {
             .iter()
             .find(|g| g.provenance.stable_id == head.provenance.stable_id)
             .expect("the head is drawn");
-        let run = &report.layout.texts[0];
-        let constrained = &input.texts[0].text;
+        // The run added last, after any the fixture's marks draw.
+        let last = input.texts.len() - 1;
+        let run = &report.layout.texts[last];
+        let constrained = &input.texts[last].text;
         // It keeps its offset from the head whose slot it rides, across and
         // down, however the slot is spaced and its system placed.
         let before = (
@@ -3609,7 +3612,7 @@ mod tests {
         let owner = report
             .layout
             .systems()
-            .position(|s| s.primitives.texts.contains(&0))
+            .position(|s| s.primitives.texts.contains(&(last as u32)))
             .expect("a system owns the run");
         let head_index = report
             .layout
@@ -3629,11 +3632,12 @@ mod tests {
         let input = fixture();
         let (with, _) = with_a_run_below(&input, 12.0);
         let report = Engraver::default().solve(&with, &SolverConfig::default());
-        let run = &report.layout.texts[0];
+        let last = with.texts.len() - 1;
+        let run = &report.layout.texts[last];
         let owner = report
             .layout
             .systems()
-            .find(|s| s.primitives.texts.contains(&0))
+            .find(|s| s.primitives.texts.contains(&(last as u32)))
             .expect("a system owns the run");
         // The run's ink stands inside its system, which grew to hold it.
         let bottom = run.origin.y.0 + run.bounds.bottom.0;

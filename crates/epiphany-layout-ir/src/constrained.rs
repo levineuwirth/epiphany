@@ -328,6 +328,31 @@ pub struct Autoplace {
     /// far as the ink between them lets it (MuseScore's
     /// `dynamicsHairpinsAutoCenterOnGrandStaff`).
     pub between: Option<VerticalBandId>,
+    /// Where it stands across once its system is set, if at its measure's
+    /// start rather than where the projection put it.
+    pub across: Option<MeasureStart>,
+}
+
+/// A member standing at its measure's start, as MuseScore sets a rehearsal
+/// mark (`TLayout::layoutRehearsalMark`) or a segno or coda
+/// (`MarkerLayout::doLayoutMarker`): by the ink of the barline column
+/// `barline` where that column stands in the member's system, or, where the
+/// measure opens its system or follows no barline, at the system's start.
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub struct MeasureStart {
+    pub barline: Option<SpringSlotId>,
+    pub kind: MeasureMark,
+}
+
+/// How a member at its measure's start stands across.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum MeasureMark {
+    /// Centred on the barline's right edge, where its measure starts, or,
+    /// opening a system, just after the lead's ink: a rehearsal mark.
+    Rehearsal,
+    /// Centred on the barline, or, opening a system, on the system's left
+    /// edge: a segno or coda.
+    Repeat,
 }
 
 /// A row of the family: its members in one system, once each is placed, are
@@ -349,8 +374,11 @@ pub enum PlaceOrder {
     Dynamic,
     Lyric,
     StaffText,
-    Rehearsal,
     Tempo,
+    /// Placed after the tempo marks, so standing outside them.
+    Rehearsal,
+    /// A segno or coda (`markersAndJumps`).
+    Marker,
 }
 
 /// A beam joining notes on two staves of a region (see
@@ -937,6 +965,14 @@ impl ConstrainedLayoutIR {
             }
             if !band_ids.contains(&mark.band) {
                 return Err(ConstrainedValidationError::UnknownBand(mark.band));
+            }
+            if let Some(slot) = mark
+                .placement
+                .and_then(|p| p.across)
+                .and_then(|across| across.barline)
+                .filter(|slot| !slot_ids.contains(slot))
+            {
+                return Err(ConstrainedValidationError::UnknownSlot(slot));
             }
         }
 
@@ -1703,12 +1739,29 @@ pub fn try_to_constrained(
                     // will use.
                     keys.insert(ColumnKey::Lead);
                 }
+                // A system mark where no note starts (a tempo or rehearsal
+                // mark, a segno or coda) stands in the note column of its
+                // time, made for it where none is, whatever staff it has.
+                (TypedObjectId::Marker(_), LayoutContent::Marker(marker))
+                    if matches!(
+                        marker.kind,
+                        MarkerKind::Tempo(_)
+                            | MarkerKind::Rehearsal(_)
+                            | MarkerKind::Segno
+                            | MarkerKind::Coda
+                    ) =>
+                {
+                    if let MarkerPlace::Time(time) = &marker.at {
+                        keys.insert(ColumnKey::Timed(time.clone(), ColumnRole::Note));
+                    }
+                }
                 // A breath mark or caesura stands in a column of its own where
                 // its note's sound ends, before what follows there.
                 (TypedObjectId::Marker(_), LayoutContent::Marker(marker)) if staff.is_some() => {
-                    // A dynamic where no note of its staff starts stands in the
-                    // note column of its time, made for it where none is.
-                    if let (MarkerKind::Dynamic(_), MarkerPlace::Time(time)) =
+                    // A dynamic or staff text where no note of its staff starts
+                    // stands in the note column of its time, made for it where
+                    // none is.
+                    if let (MarkerKind::Dynamic(_) | MarkerKind::Text(_), MarkerPlace::Time(time)) =
                         (&marker.kind, &marker.at)
                     {
                         keys.insert(ColumnKey::Timed(time.clone(), ColumnRole::Note));
@@ -2746,9 +2799,216 @@ pub fn try_to_constrained(
                 },
             );
         }
+        // Each text mark, placed before any is emitted (X4c.6): staff text
+        // over its staff, upright, left at its note (D79's Q9); a tempo mark,
+        // rehearsal mark, segno or coda over the region's top staff, as
+        // MuseScore draws a system object, and one repeating another's kind,
+        // words and time from another part drawn once.
+        let measures: Vec<&crate::logical::MeasureContent> = region
+            .objects
+            .iter()
+            .filter_map(|object| match object.content() {
+                LayoutContent::Measure(measure) => Some(measure),
+                _ => None,
+            })
+            .collect();
+        let mut text_marks: BTreeMap<u128, TextMarkPlacing> = BTreeMap::new();
+        let mut drawn_once: Vec<(&MarkerKind, TimePoint)> = Vec::new();
+        for (provenance, staff, content) in &specs {
+            let Some(LayoutContent::Marker(marker)) = content else {
+                continue;
+            };
+            let system = match marker.kind {
+                MarkerKind::Tempo(_)
+                | MarkerKind::Rehearsal(_)
+                | MarkerKind::Segno
+                | MarkerKind::Coda => true,
+                MarkerKind::Text(_) => false,
+                _ => continue,
+            };
+            let (event, time) = match &marker.at {
+                MarkerPlace::Event { event, time, .. } => (Some(*event), time.clone()),
+                MarkerPlace::Time(time) => (None, time.clone()),
+                MarkerPlace::Unresolved => continue,
+            };
+            let Some(st) = (if system {
+                staff_order.first().copied()
+            } else {
+                *staff
+            }) else {
+                continue;
+            };
+            if system {
+                let twin = drawn_once.iter().any(|(kind, at)| {
+                    **kind == marker.kind && time_total(at, &time) == Ordering::Equal
+                });
+                if twin {
+                    continue;
+                }
+                drawn_once.push((&marker.kind, time.clone()));
+            }
+            let note = ColumnKey::Timed(time.clone(), ColumnRole::Note);
+            let Some(info) = columns.get(&note) else {
+                continue;
+            };
+            let top = y_origin(st) + STAFF_HEIGHT;
+            let left = info.x + note_left(event, &event_stems, &event_rests);
+            let measure = measures
+                .iter()
+                .find(|m| time_total(&m.start, &time) == Ordering::Equal);
+            // Its measure's barline, where the mark stands at a measure's start.
+            let barline = measure.map(|_| ColumnKey::Timed(time.clone(), ColumnRole::Barline));
+            let mut gaps = Vec::new();
+            let mut shape = |text: &str, face: TextFace, size: f32, at: Point, k: u128| {
+                let provenance = if k == 0 {
+                    (*provenance).clone()
+                } else {
+                    Provenance::synthesized(
+                        provenance.source,
+                        SynthesisKind::Registered(TEXT_MARK_SYNTHESIS),
+                        SynthesisInstanceKey(k),
+                        provenance.dependencies.clone(),
+                    )
+                };
+                let (run, gap) = shape_text(provenance, text, face, size, TextAlign::Left, at);
+                gaps.push(gap);
+                run
+            };
+            let placing = match &marker.kind {
+                MarkerKind::Text(words) => TextMarkPlacing {
+                    key: note,
+                    staff: st,
+                    runs: vec![shape(
+                        words.as_str(),
+                        TextFace::Roman,
+                        STAFF_TEXT_SIZE,
+                        Point::new(left, top + STAFF_TEXT_ABOVE),
+                        0,
+                    )],
+                    frame: None,
+                    order: PlaceOrder::StaffText,
+                    across: None,
+                },
+                MarkerKind::Tempo(tempo) => {
+                    // Over the time signature its measure opens with, if one
+                    // shows (`TLayout::layoutTempoText`).
+                    let signature = measure
+                        .filter(|m| m.time_signature.is_some())
+                        .map(|m| signature_column(m))
+                        .and_then(|key| Some((columns.get(&key)?.x + TIME_SIG_X, key)));
+                    let (x, key) = signature.unwrap_or((left, note));
+                    let baseline = top + TEMPO_ABOVE;
+                    let mut runs = Vec::new();
+                    let mut pen = x;
+                    let mut k = 0u128;
+                    let mut set = |runs: &mut Vec<ResolvedText>, text: &str, face, size| {
+                        let run = shape(text, face, size, Point::new(pen, baseline), k);
+                        pen += run.reserved_box.right.0 - run.reserved_box.left.0;
+                        k += 1;
+                        runs.push(run);
+                    };
+                    let words = tempo
+                        .text
+                        .as_ref()
+                        .map(|t| t.as_str())
+                        .filter(|t| !t.is_empty());
+                    match (&tempo.metronome, words) {
+                        (Some(metronome), words) => {
+                            if let Some(words) = words {
+                                set(&mut runs, &format!("{words} "), TextFace::Bold, TEMPO_SIZE);
+                            }
+                            set(
+                                &mut runs,
+                                &metronome_beat(metronome),
+                                TextFace::Symbols,
+                                TEMPO_SYMBOL_SIZE,
+                            );
+                            set(
+                                &mut runs,
+                                &format!(" = {}", metronome.per_minute.as_str()),
+                                TextFace::Bold,
+                                TEMPO_SIZE,
+                            );
+                        }
+                        (None, Some(words)) => set(&mut runs, words, TextFace::Bold, TEMPO_SIZE),
+                        (None, None) => {}
+                    }
+                    TextMarkPlacing {
+                        key,
+                        staff: st,
+                        runs,
+                        frame: None,
+                        order: PlaceOrder::Tempo,
+                        across: None,
+                    }
+                }
+                MarkerKind::Rehearsal(words) => {
+                    let mut run = shape(
+                        words.as_str(),
+                        TextFace::Bold,
+                        REHEARSAL_SIZE,
+                        Point::new(0.0, top + REHEARSAL_ABOVE),
+                        0,
+                    );
+                    // Centred on its note until a solver sets it at its
+                    // measure's start.
+                    let (l, r) = (run.bounds.left.0, run.bounds.right.0);
+                    run.origin = Point::new(left - (l + r) * 0.5, run.origin.y.0);
+                    // Its frame about its ink, at least as wide as high, a
+                    // padding off it (`TextBase::layoutFrame`).
+                    let (x, y) = (run.origin.x.0, run.origin.y.0);
+                    let (mut l, mut r) = (x + l, x + r);
+                    let (b, t) = (y + run.bounds.bottom.0, y + run.bounds.top.0);
+                    let grow = ((t - b) - (r - l)).max(0.0) * 0.5;
+                    (l, r) = (l - grow, r + grow);
+                    let pad = REHEARSAL_PADDING + REHEARSAL_FRAME * 0.5;
+                    TextMarkPlacing {
+                        key: note,
+                        staff: st,
+                        runs: vec![run],
+                        frame: Some([l - pad, b - pad, r + pad, t + pad]),
+                        order: PlaceOrder::Rehearsal,
+                        across: measure.map(|_| (barline.clone(), MeasureMark::Rehearsal)),
+                    }
+                }
+                MarkerKind::Segno | MarkerKind::Coda => {
+                    let symbol = if marker.kind == MarkerKind::Segno {
+                        "\u{E047}" // segno
+                    } else {
+                        "\u{E048}" // coda
+                    };
+                    let mut run = shape(
+                        symbol,
+                        TextFace::Symbols,
+                        REPEAT_SYMBOL_SIZE,
+                        Point::new(0.0, top + REPEAT_ABOVE),
+                        0,
+                    );
+                    let (l, r) = (run.bounds.left.0, run.bounds.right.0);
+                    run.origin = Point::new(left - (l + r) * 0.5, run.origin.y.0);
+                    TextMarkPlacing {
+                        key: note,
+                        staff: st,
+                        runs: vec![run],
+                        frame: None,
+                        order: PlaceOrder::Marker,
+                        across: measure.map(|_| (barline.clone(), MeasureMark::Repeat)),
+                    }
+                }
+                _ => continue,
+            };
+            for gap in &gaps {
+                for d in text_diagnostics(provenance.source, gap) {
+                    emit.diag(d.source, d.kind);
+                }
+            }
+            text_marks.insert(provenance.stable_id.0, placing);
+        }
         // Each hairpin leg's, hyphen's and melisma line's slots, anchored once
         // the columns they ride are known to hold glyphs.
         let mut hairpin_anchors: Vec<(GlyphObjectId, SpringSlotId, SpringSlotId)> = Vec::new();
+        // This region's first run and family member.
+        let (text_start, family_start) = (texts.len(), family.len());
 
         // Pass 2 — emit. Each logical object's exact provenance lands on exactly
         // one primitive; the extras a multi-component object owns are synthesized.
@@ -3764,9 +4024,79 @@ pub fn try_to_constrained(
                 TypedObjectId::Marker(_) => {
                     // A point mark this tier draws: a fermata over its chord or
                     // rest, placed again by a solver once its system is set; a
-                    // breath mark or caesura in its column. Any other, or one
-                    // with no staff, keeps a traced anchor.
+                    // breath mark or caesura in its column; a text mark. Any
+                    // other, or one with no staff, keeps a traced anchor.
                     let drawn = match (content, staff) {
+                        (Some(LayoutContent::Marker(_)), _)
+                            if text_marks.contains_key(&provenance.stable_id.0) =>
+                        {
+                            // A text mark: its runs, a rehearsal mark's frame
+                            // about them, placed again by a solver once its
+                            // system is set.
+                            let mark = &text_marks[&provenance.stable_id.0];
+                            let info = column(&mark.key);
+                            let band = band_of(Some(mark.staff));
+                            let mut runs = Vec::new();
+                            for run in &mark.runs {
+                                runs.push(run.id());
+                                texts.push(TextObject {
+                                    text: run.clone(),
+                                    horizontal_slot: info.slot,
+                                    vertical_band: band,
+                                });
+                            }
+                            let mut frame = Vec::new();
+                            if let Some([l, b, r, t]) = mark.frame {
+                                let half = REHEARSAL_FRAME * 0.5;
+                                let sides = [
+                                    ((l - half, t), (r + half, t)),
+                                    ((l - half, b), (r + half, b)),
+                                    ((l, b), (l, t)),
+                                    ((r, b), (r, t)),
+                                ];
+                                for (k, (from, to)) in sides.into_iter().enumerate() {
+                                    let stroke = line_stroke(
+                                        Provenance::synthesized(
+                                            provenance.source,
+                                            SynthesisKind::Registered(TEXT_FRAME_SYNTHESIS),
+                                            SynthesisInstanceKey(k as u128 + 1),
+                                            provenance.dependencies.clone(),
+                                        ),
+                                        Point::new(from.0, from.1),
+                                        Point::new(to.0, to.1),
+                                        REHEARSAL_FRAME,
+                                        band,
+                                    );
+                                    hairpin_anchors.push((stroke.id(), info.slot, info.slot));
+                                    frame.push(stroke.id());
+                                    emit.stroke(stroke);
+                                }
+                            }
+                            let across = mark.across.as_ref().map(|(barline, kind)| MeasureStart {
+                                barline: barline
+                                    .as_ref()
+                                    .and_then(|k| columns.get(k))
+                                    .map(|c| c.slot),
+                                kind: *kind,
+                            });
+                            family.push(FamilyMark {
+                                band,
+                                glyphs: Vec::new(),
+                                strokes: frame,
+                                texts: runs,
+                                room: Room::None,
+                                placement: Some(Autoplace {
+                                    above: true,
+                                    order: mark.order,
+                                    min_distance: TEXT_MIN_DISTANCE,
+                                    row: None,
+                                    between: None,
+                                    across,
+                                }),
+                                line: None,
+                            });
+                            true
+                        }
                         (Some(LayoutContent::Marker(marker)), Some(_)) => match &marker.kind {
                             MarkerKind::Fermata(fermata) => {
                                 let place = match &marker.at {
@@ -3821,6 +4151,7 @@ pub fn try_to_constrained(
                                                 min_distance: FERMATA_MIN_DISTANCE,
                                                 row: None,
                                                 between: None,
+                                                across: None,
                                             }),
                                             line: None,
                                         });
@@ -3884,6 +4215,7 @@ pub fn try_to_constrained(
                                         between: staff
                                             .and_then(|st| grand_neighbour(&grand, st, d.above))
                                             .map(|n| band_of(Some(n))),
+                                        across: None,
                                     });
                                     let (glyphs, runs) = match &d.ink {
                                         DynamicInk::Glyph { name, x } => {
@@ -3955,6 +4287,7 @@ pub fn try_to_constrained(
                                             centre: baseline,
                                         }),
                                         between: None,
+                                        across: None,
                                     });
                                     let hyphen = matches!(
                                         lyric.syllabic,
@@ -4152,6 +4485,7 @@ pub fn try_to_constrained(
                                             }),
                                             between: grand_neighbour(&grand, st, above)
                                                 .map(|n| band_of(Some(n))),
+                                            across: None,
                                         }),
                                         line: Some(FamilyLine::Hairpin(HairpinShape {
                                             crescendo,
@@ -4321,6 +4655,47 @@ pub fn try_to_constrained(
                     start: slot,
                     end: slot,
                 });
+            }
+        }
+        // A run riding a column no glyph holds (a mark where no note of any
+        // staff starts) rides the nearest column before it that holds one,
+        // or else the first, its place kept, and a frame about it with it; a
+        // mark at its measure's start whose barline column holds no glyph
+        // stands as at a system's start.
+        let held = |slot: &SpringSlotId| column_members.get(slot).is_some_and(|m| !m.is_empty());
+        let held_columns: Vec<(&ColumnKey, SpringSlotId)> = columns
+            .iter()
+            .filter(|(_, info)| held(&info.slot))
+            .map(|(key, info)| (key, info.slot))
+            .collect();
+        let key_of: BTreeMap<SpringSlotId, &ColumnKey> =
+            columns.iter().map(|(key, info)| (info.slot, key)).collect();
+        let nearest = |slot: SpringSlotId| -> SpringSlotId {
+            if held(&slot) {
+                return slot;
+            }
+            let Some(key) = key_of.get(&slot) else {
+                return slot;
+            };
+            held_columns
+                .iter()
+                .rev()
+                .find(|(k, _)| *k <= *key)
+                .or_else(|| held_columns.first())
+                .map_or(slot, |(_, held)| *held)
+        };
+        for text in &mut texts[text_start..] {
+            text.horizontal_slot = nearest(text.horizontal_slot);
+        }
+        for anchor in &mut hairpin_anchors {
+            if anchor.1 == anchor.2 {
+                let slot = nearest(anchor.1);
+                (anchor.1, anchor.2) = (slot, slot);
+            }
+        }
+        for mark in &mut family[family_start..] {
+            if let Some(across) = mark.placement.as_mut().and_then(|p| p.across.as_mut()) {
+                across.barline = across.barline.filter(|slot| held(slot));
             }
         }
         // A hairpin's legs ride the columns of its ends where both hold
@@ -7593,6 +7968,71 @@ const LYRIC_DASH_PAD: f32 = 0.05;
 const LYRIC_DASH_Y: f32 = 0.5 * 0.466 * LYRIC_TEXT_SIZE;
 const LYRIC_LINE_WIDTH: f32 = 0.1;
 const LYRIC_MELISMA_PAD: f32 = 0.2;
+
+/// Text marks (X4c.6), in staff spaces at MuseScore's default points over
+/// its 1.75 mm space (D79's Q7): staff text in Edwin at 10 points, its
+/// baseline a space over its staff (`staffTextPosAbove`); a tempo mark in
+/// Edwin bold at 12, its metronome's beat in Bravura Text at 20
+/// (`tempoMusicalSymbolSize`), its baseline 2.0 over the top staff
+/// (`tempoPosAbove`); a rehearsal mark in Edwin bold at 14 in a square frame
+/// 0.5 off its ink and 0.16 wide (`rehearsalMarkFramePadding`,
+/// `rehearsalMarkFrameWidth`), and a segno or coda in Bravura Text at 18
+/// (`repeatLeftMusicalSymbolSize`), each with its baseline 2.0 over the top
+/// staff (`rehearsalMarkPosAbove`, `markerPosAbove`); each a half space
+/// clear of the ink under it (`staffTextMinDistance`, `tempoMinDistance`,
+/// `rehearsalMarkMinDistance`, `repeatMinDistance`).
+const STAFF_TEXT_SIZE: f32 = 2.016;
+const STAFF_TEXT_ABOVE: f32 = 1.0;
+const TEMPO_SIZE: f32 = 2.419;
+const TEMPO_SYMBOL_SIZE: f32 = 4.032;
+const TEMPO_ABOVE: f32 = 2.0;
+const REHEARSAL_SIZE: f32 = 2.822;
+const REHEARSAL_PADDING: f32 = 0.5;
+const REHEARSAL_FRAME: f32 = 0.16;
+const REHEARSAL_ABOVE: f32 = 2.0;
+const REPEAT_SYMBOL_SIZE: f32 = 3.629;
+const REPEAT_ABOVE: f32 = 2.0;
+const TEXT_MIN_DISTANCE: f32 = 0.5;
+
+/// The registry ids for a tempo mark's further runs (its metronome's beat,
+/// key 1, and figure, key 2, or its beat key 0 where it has no words) and
+/// for a rehearsal mark's frame (keys 1 to 4), synthesized from the mark.
+const TEXT_MARK_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x5445_5854_4D41_524B); // "TEXTMARK"
+const TEXT_FRAME_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x5445_5854_4652_4D45); // "TEXTFRME"
+
+/// A text mark placed before it is emitted: the column it rides and its
+/// staff, its runs where they stand, a rehearsal mark's frame (its lines'
+/// centres: left, bottom, right, top), its placing order, and, at its
+/// measure's start, its barline's column and how it stands there.
+struct TextMarkPlacing {
+    key: ColumnKey,
+    staff: StaffId,
+    runs: Vec<ResolvedText>,
+    frame: Option<[f32; 4]>,
+    order: PlaceOrder,
+    across: Option<(Option<ColumnKey>, MeasureMark)>,
+}
+
+/// A metronome mark's beat as Bravura Text sets it: the note, then a space
+/// and a dot for each dot (`TempoText`'s patterns, `metNote…Up`,
+/// `metAugmentationDot`).
+fn metronome_beat(metronome: &epiphany_core::Metronome) -> String {
+    let note = match metronome.beat {
+        NoteValue::Whole => '\u{ECA2}',
+        NoteValue::Half => '\u{ECA3}',
+        NoteValue::Quarter => '\u{ECA5}',
+        NoteValue::Eighth => '\u{ECA7}',
+        NoteValue::Sixteenth => '\u{ECA9}',
+        NoteValue::ThirtySecond => '\u{ECAB}',
+        NoteValue::SixtyFourth => '\u{ECAD}',
+    };
+    let mut beat = String::from(note);
+    if metronome.dots > 0 {
+        beat.push(' ');
+        beat.extend(std::iter::repeat_n('\u{ECB7}', usize::from(metronome.dots)));
+    }
+    beat
+}
 
 /// A syllable placed before it is emitted: its column, its run where it
 /// stands, and its ink across.

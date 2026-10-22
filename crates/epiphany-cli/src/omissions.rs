@@ -24,10 +24,11 @@
 //! - of the expression family the engraver draws, each mark of a note
 //!   (articulation, technique, ornament and its accidentals, tremolo, jazz
 //!   mark, arpeggio) with nothing drawn for it, by its class, and each
-//!   fermata, breath mark, caesura, dynamic, hairpin and syllable with no
-//!   ink; one
-//!   anchored at a region offset stands on no staff, so it is named as drawn
-//!   nowhere;
+//!   fermata, breath mark, caesura, dynamic, hairpin, syllable, staff text,
+//!   tempo mark, rehearsal mark, segno and coda with no ink; a mark of a
+//!   staff anchored at a region offset stands on no staff, so it is named as
+//!   drawn nowhere, while a tempo or rehearsal mark, segno or coda stands
+//!   over the system, drawn once where parts repeat it;
 //! - each diagnostic the projection raised, by kind.
 //!
 //! Not checked, and counted as such: whether an accidental is the one the
@@ -144,6 +145,25 @@ fn offset(anchor: &TimeAnchor) -> Option<RationalTime> {
             ..
         } => Some(RationalTime::zero()),
         _ => None,
+    }
+}
+
+/// Where an anchor stands in its region's musical time: an event's onset or
+/// a region offset, with its own offset; `None` in wall-clock time.
+fn onset(score: &Score, anchor: &TimeAnchor) -> Option<RationalTime> {
+    match anchor {
+        TimeAnchor::Event { id, offset } => {
+            let EventPosition::Musical(start) = score.events.get(*id)?.position() else {
+                return None;
+            };
+            let by = match offset {
+                AnchorOffset::Zero => RationalTime::zero(),
+                AnchorOffset::Musical(d) => d.0.clone(),
+                _ => return None,
+            };
+            Some((start.clone() + epiphany_core::MusicalDuration(by)).0)
+        }
+        _ => offset(anchor),
     }
 }
 
@@ -617,15 +637,46 @@ pub fn omissions(
             }
         }
     }
+    // A system mark (a tempo or rehearsal mark, a segno or coda) is drawn
+    // once over the system, whichever part holds it, so one repeating an
+    // inked mark's kind and time from another part is drawn too.
+    let system_mark = |kind: &MarkerKind| {
+        matches!(
+            kind,
+            MarkerKind::Tempo(_) | MarkerKind::Rehearsal(_) | MarkerKind::Segno | MarkerKind::Coda
+        )
+    };
+    let inked_system: Vec<(&MarkerKind, RationalTime)> = score
+        .cross_cutting
+        .markers
+        .iter()
+        .filter(|m| system_mark(&m.kind) && inked.contains(&TypedObjectId::Marker(m.id)))
+        .filter_map(|m| Some((&m.kind, onset(score, &m.anchor)?)))
+        .collect();
     for marker in &score.cross_cutting.markers {
         let class = match marker.kind {
             MarkerKind::Fermata(_) => "fermata",
             MarkerKind::Breath(_) => "breath mark",
             MarkerKind::Caesura(_) => "caesura",
             MarkerKind::Dynamic(_) => "dynamic",
-            _ => continue,
+            MarkerKind::Text(_) => "staff text",
+            MarkerKind::Tempo(_) => "tempo mark",
+            MarkerKind::Rehearsal(_) => "rehearsal mark",
+            MarkerKind::Segno => "segno",
+            MarkerKind::Coda => "coda",
         };
         if inked.contains(&TypedObjectId::Marker(marker.id)) {
+            continue;
+        }
+        if system_mark(&marker.kind) {
+            let at = onset(score, &marker.anchor);
+            if inked_system
+                .iter()
+                .any(|(kind, t)| **kind == marker.kind && Some(t) == at.as_ref())
+            {
+                continue;
+            }
+            out.add(class);
             continue;
         }
         match marker.anchor {

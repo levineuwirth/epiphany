@@ -234,6 +234,7 @@ mod tests {
                 min_distance: 0.5,
                 row,
                 between: None,
+                across: None,
             }),
             line: None,
         }
