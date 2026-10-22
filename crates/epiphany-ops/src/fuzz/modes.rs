@@ -1027,7 +1027,7 @@ fn random_marker_kind(rng: &mut Rng) -> epiphany_core::MarkerKind {
         BreathMark, CaesuraMark, Dynamic, Fermata, FermataShape, MarkerKind, Metronome, NoteValue,
         TempoMark,
     };
-    match rng.below(9) {
+    match rng.below(10) {
         0 => MarkerKind::Dynamic(
             [Dynamic::P, Dynamic::Mf, Dynamic::Sfz, Dynamic::Niente][rng.below(4) as usize].clone(),
         ),
@@ -1048,7 +1048,8 @@ fn random_marker_kind(rng: &mut Rng) -> epiphany_core::MarkerKind {
         }),
         6 => MarkerKind::Rehearsal(epiphany_core::Text::new("A")),
         7 => MarkerKind::Segno,
-        _ => MarkerKind::Coda,
+        8 => MarkerKind::Coda,
+        _ => MarkerKind::ExpressionText(random_text(rng)),
     }
 }
 

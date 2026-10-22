@@ -868,7 +868,10 @@ recording an end tempo is refused \texttt{TempoMapMalformed}
 (Section~\ref{sec:k0:meter-tempo}), and an undo's restoration of a marker or
 a spanner anchored by a musical offset to a region a migration took out of
 musical time since is superseded by that migration
-(Section~\ref{sec:k0:undo}). Accordingly
+(Section~\ref{sec:k0:undo}). A marker's kind may be expression text
+(\texttt{MarkerKind::ExpressionText}, appended at epoch~16): a
+\texttt{CreateCrossCutting} or \texttt{ModifyCrossCutting} carrying one
+requires that minor, and reduces as any marker does. Accordingly
 \texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION} moves
 \texttt{4}~$\rightarrow$~\texttt{5}, one version for the phase.
 

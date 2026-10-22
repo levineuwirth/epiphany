@@ -1303,12 +1303,17 @@ pub enum MarkerKind {
     Fermata(Fermata),
     Breath(BreathMark),
     Caesura(CaesuraMark),
-    /// Staff or expression text, styled by the engraver.
+    /// Staff text, styled by the engraver.
     Text(crate::Text),
     Tempo(TempoMark),
     Rehearsal(crate::Text),
     Segno,
     Coda,
+    /// Expression text, which the engraver styles as expression (italic,
+    /// below the staff) where staff text stands upright above it (X5b.7,
+    /// roadmap D79 Q9). Appended at schema-minor epoch 16: an operation
+    /// whose value holds one requires that minor.
+    ExpressionText(crate::Text),
 }
 
 /// A point dynamic. Growth is by appended variant.

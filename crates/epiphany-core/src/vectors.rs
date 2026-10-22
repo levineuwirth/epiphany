@@ -757,6 +757,20 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         "with_a_lyric_not_in_nfc",
         unnormalized,
     ));
+    // An expression-text marker, the kind appended at epoch 16 (X5b.7).
+    let mut with_expression = expressive.clone();
+    with_expression.cross_cutting.markers.push(Marker {
+        id: MarkerId::new(ReplicaId(1), 79),
+        anchor: with_expression.cross_cutting.markers[0].anchor.clone(),
+        kind: MarkerKind::ExpressionText(crate::Text::new("dolce")),
+    });
+    v.push(row(
+        SV5,
+        "accept",
+        "-",
+        "with_expression_text",
+        with_expression.canonical_bytes(),
+    ));
     // A constant tempo segment recording an end tempo (P13-S8): the derived
     // codec read it as a second spelling of one constant tempo; the segment's
     // own decoder rejects it (reduction version 5).

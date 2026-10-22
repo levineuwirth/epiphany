@@ -800,6 +800,11 @@ pub mod vectors;
 ///     committed history `187` and
 ///     `a_marker_an_undo_would_restore_into_a_migrated_region_stays_out_in_both_modes`.
 ///
+///   With it, at the same epoch 16, a wire addition that changes no verdict:
+///   `MarkerKind` appends `ExpressionText` (X5b.7, D79 Q9), reduced as any
+///   marker is; an operation carrying one requires minor 16. Every value
+///   that existed before decodes, reduces and stamps as it did.
+///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.
 ///

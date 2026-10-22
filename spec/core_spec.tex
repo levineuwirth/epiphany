@@ -6305,6 +6305,10 @@ pub enum MarkerKind {
     Rehearsal(Text),
     Segno,
     Coda,
+    /// Expression text: the engraver styles it as expression (italic,
+    /// below the staff), where staff text stands upright above.
+    /// Appended at schema-minor epoch 16 (X5b).
+    ExpressionText(Text),
 }
 
 pub enum Dynamic {
@@ -17394,7 +17398,9 @@ layouts they own versus inherit:
   preconditions and effect state a break's key: its anchor, naming what its
   region holds. \texttt{req:time:tempo-segment-shape} settles P13-S8: a
   constant tempo segment's \texttt{end\_tempo} is absent, and
-  \texttt{TempoShape}'s listing says so.
+  \texttt{TempoShape}'s listing says so. \texttt{MarkerKind} appends
+  \texttt{ExpressionText} (roadmap D79 Q9): expression text, which an import
+  writes for italic words, apart from staff text.
   \\
   \bottomrule
 \end{longtable}

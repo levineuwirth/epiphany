@@ -2604,3 +2604,56 @@ fn a_file_with_breaks_and_expression_imports_both() {
         .expect("the first C");
     assert!(drawn(principal) > 0, "the C the graces precede is drawn");
 }
+
+/// MuseScore writes expression text as italic words and staff text upright:
+/// a direction's words become an expression-text marker where its first
+/// `<words>` is italic, a staff-text one where it is upright, and italic
+/// words a tempo mark takes stay the tempo's (X5b.7, roadmap D79 Q9). The
+/// independent census counts the two apart, and an operation carrying an
+/// expression-text marker requires schema minor 16.
+#[test]
+fn italic_words_import_as_expression_text() {
+    use epiphany_core::{MarkerKind, Text};
+    use epiphany_musicxml::fidelity::expression_counts;
+    use epiphany_ops::{OperationKind, OperationPayload};
+    let run = run("expression_text.musicxml");
+    all_applied(&run);
+    let score = &run.reduced.score;
+    let mut kinds: Vec<MarkerKind> = score
+        .cross_cutting
+        .markers
+        .iter()
+        .map(|m| m.kind.clone())
+        .filter(|k| matches!(k, MarkerKind::Text(_) | MarkerKind::ExpressionText(_)))
+        .collect();
+    kinds.sort_by_key(|k| format!("{k:?}"));
+    assert_eq!(
+        kinds,
+        [
+            MarkerKind::ExpressionText(Text::new("espressivo")),
+            MarkerKind::ExpressionText(Text::new("sotto voce,")),
+            MarkerKind::Text(Text::new("pizz.")),
+        ]
+    );
+    let counts = expression_counts(score);
+    assert_eq!(counts.get("marker expression text"), Some(&2));
+    assert_eq!(counts.get("marker text"), Some(&1));
+    assert_eq!(counts.get("marker tempo"), Some(&1));
+    let epochs: Vec<Option<u16>> = run
+        .import
+        .envelopes
+        .iter()
+        .filter(|e| {
+            matches!(
+                &e.payload,
+                OperationPayload::Primitive(OperationKind::CreateCrossCutting(op))
+                    if matches!(&op.structure, epiphany_ops::CrossCuttingValue::Marker(m)
+                        if matches!(m.kind, MarkerKind::Text(_) | MarkerKind::ExpressionText(_)))
+            )
+        })
+        .map(|e| e.introduced_minor())
+        .collect();
+    let mut sorted = epochs.clone();
+    sorted.sort();
+    assert_eq!(sorted, [None, Some(16), Some(16)]);
+}

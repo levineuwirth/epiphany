@@ -2383,6 +2383,11 @@ impl Codec for MarkerKind {
             }
             MarkerKind::Segno => out.push(7),
             MarkerKind::Coda => out.push(8),
+            // Appended at epoch 16 (X5b.7).
+            MarkerKind::ExpressionText(t) => {
+                out.push(9);
+                t.enc(out);
+            }
         }
     }
     fn dec(r: &mut Reader<'_>) -> Result<Self> {
@@ -2396,6 +2401,7 @@ impl Codec for MarkerKind {
             6 => MarkerKind::Rehearsal(Codec::dec(r)?),
             7 => MarkerKind::Segno,
             8 => MarkerKind::Coda,
+            9 => MarkerKind::ExpressionText(Codec::dec(r)?),
             tag => {
                 return Err(ScoreDecodeError::InvalidTag {
                     kind: "MarkerKind",
@@ -5317,6 +5323,11 @@ mod tests {
         );
         assert_eq!(hex(&MarkerKind::Segno), "07");
         assert_eq!(hex(&MarkerKind::Coda), "08");
+        // Appended at epoch 16 (X5b.7).
+        assert_eq!(
+            hex(&MarkerKind::ExpressionText(crate::Text::new("x"))),
+            "090100000078"
+        );
         assert_eq!(hex(&Syllabic::End), "03");
         // The appended tags of the line style and the spanner kind.
         assert_eq!(hex(&LineStyle::Wavy), "03");

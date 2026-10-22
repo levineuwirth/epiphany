@@ -2542,7 +2542,11 @@ The \emph{only} minor-additive mechanism in schema major~0 is
     is the one and only append this vocabulary has had);
   \item the value-layer unions enumerated as closed in
     Requirement~\ref{req:binfmt:frozen-layout} may gain appended variants
-    only through a ratified revision of this document, also minor-additive.
+    only through a ratified revision of this document, also minor-additive
+    (0.22.0 appended \texttt{MarkerKind} \tablenums{9}
+    \texttt{ExpressionText} at epoch~16, the first such append: the epoch of
+    a value an operation carries counts toward its envelope's minor, as the
+    derivation below says of every nested variant its encoder reaches).
 \end{itemize}
 
 \paragraph{The schema-minor derivation (G-minor).} Every appended
@@ -3466,7 +3470,10 @@ slot keeps its place:
     \tablenums{1} Thick, \tablenums{2} Short, \tablenums{3} Curved);
     \tablenums{4} Text \cat{} \texttt{Text}; \tablenums{5} Tempo \cat{}
     \texttt{TempoMark}; \tablenums{6} Rehearsal \cat{} \texttt{Text};
-    \tablenums{7} Segno; \tablenums{8} Coda.
+    \tablenums{7} Segno; \tablenums{8} Coda; \tablenums{9} ExpressionText
+    \cat{} \texttt{Text} (0.22.0, X5b, appended at epoch~16: an operation
+    whose value holds one requires that minor, and its block is stamped so,
+    Section~\ref{sec:evolution:additive}).
   \item \texttt{Dynamic}: discriminant byte --- \tablenums{0}--\tablenums{13}
     the marks from \textit{pppppp} to \textit{ffffff}, \tablenums{14} fp,
     \tablenums{15} sf, \tablenums{16} sfz, \tablenums{17} sffz,
@@ -4202,7 +4209,10 @@ at format major~\tablenums{0} is refused as a legacy container.
   decode vector of a non-empty section and its rejections. A
   \texttt{TempoSegment} of a \texttt{Constant} shape recording an
   \texttt{end\_tempo} is rejected at decode (P13-S8), with an operation's and a
-  score's reject vectors. Semantics: Operation Catalog, 0.22.0. \\
+  score's reject vectors. \texttt{MarkerKind} appends \tablenums{9}
+  \texttt{ExpressionText} at epoch~16, which the minor of an operation
+  carrying one takes, with vectors of the marker, of a block at its epoch and
+  of one stamped below it. Semantics: Operation Catalog, 0.22.0. \\
 \bottomrule
 \end{longtable}
 

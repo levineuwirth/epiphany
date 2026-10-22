@@ -796,6 +796,28 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         v.push(row(OE, "accept", "-", name, envelope.to_canonical_bytes()));
     }
 
+    // X5b.7: a marker of the expression-text kind, appended at epoch 16.
+    let expression = staff_change(
+        14,
+        crate::payload::OperationKind::CreateCrossCutting(crate::payload::CreateCrossCuttingOp {
+            structure: crate::payload::CrossCuttingValue::Marker(epiphany_core::Marker {
+                id: epiphany_core::MarkerId::new(ReplicaId(1), 15),
+                anchor: epiphany_core::TimeAnchor::Event {
+                    id: EventId::new(ReplicaId(1), 16),
+                    offset: epiphany_core::AnchorOffset::Zero,
+                },
+                kind: epiphany_core::MarkerKind::ExpressionText(epiphany_core::Text::new("dolce")),
+            }),
+        }),
+    );
+    v.push(row(
+        OE,
+        "accept",
+        "-",
+        "create_expression_text_marker",
+        expression.to_canonical_bytes(),
+    ));
+
     // X5b (P13-S8): a constant tempo segment recording an end tempo fails
     // the segment's own decoder, as a second spelling of one tempo.
     let tempo = epiphany_core::Tempo::quarter(96.0).expect("a tempo");
@@ -862,6 +884,8 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         .expect("the historical tuplet vector exists");
     let mut truncated = envelope("set_clef");
     truncated.pop();
+    let expression = vec![envelope("create_expression_text_marker")];
+    let expression_stamp = derive(&expression);
     for (verdict, class, name, declared, payloads) in [
         ("accept", "-", "one_major_0_operation", clef_stamp, &clef),
         ("accept", "-", "mixed_majors", mixed_stamp, &mixed),
@@ -906,6 +930,20 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
             "undecodable_envelope",
             clef_stamp,
             &vec![truncated],
+        ),
+        (
+            "accept",
+            "-",
+            "expression_text_at_its_epoch",
+            expression_stamp,
+            &expression,
+        ),
+        (
+            "reject",
+            "mis-stamped",
+            "expression_text_below_its_epoch",
+            at(expression_stamp.major, expression_stamp.minor - 1),
+            &expression,
         ),
     ] {
         v.push(row(

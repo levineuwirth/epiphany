@@ -132,21 +132,27 @@ impl OperationEnvelope {
     /// (`spec/PLAN_GMINOR_SCHEMA_MINOR.md` §4, pin 3): the maximum over its
     /// outer [`OperationPayload::introduced_minor`] and — when the payload is
     /// [`OperationPayload::Primitive`] — the nested
-    /// [`OperationKind::introduced_minor`]. `None` when neither imposes a
-    /// requirement (both are baseline). No other nested vocabulary an
-    /// envelope's encoder reaches (`OperationEnvelope::encode_canonical`)
-    /// carries a post-baseline append: the embedded graph values ride
-    /// `epiphany-core`'s codec, which the G-minor audit found clean
-    /// (`spec/AUDIT_GMINOR_VOCABULARIES.md` Part 2).
+    /// [`OperationKind::introduced_minor`] and the epoch of any appended
+    /// variant its value holds ([`OperationKind::value_introduced_minor`]).
+    /// `None` when none imposes a requirement (all are baseline). The embedded
+    /// graph values ride `epiphany-core`'s codec, which the G-minor audit found
+    /// clean (`spec/AUDIT_GMINOR_VOCABULARIES.md` Part 2) until X5b appended
+    /// `MarkerKind::ExpressionText` at epoch 16.
     pub fn introduced_minor(&self) -> Option<u16> {
         let payload_epoch = self.payload.introduced_minor();
-        let kind_epoch = match &self.payload {
-            OperationPayload::Primitive(kind) => kind.introduced_minor(),
+        let (kind_epoch, value_epoch) = match &self.payload {
+            OperationPayload::Primitive(kind) => {
+                (kind.introduced_minor(), kind.value_introduced_minor())
+            }
             OperationPayload::ResolveConflict(_)
             | OperationPayload::UndoTransaction(_)
-            | OperationPayload::ResolveEquivocation(_) => None,
+            | OperationPayload::ResolveEquivocation(_) => (None, None),
         };
-        payload_epoch.into_iter().chain(kind_epoch).max()
+        payload_epoch
+            .into_iter()
+            .chain(kind_epoch)
+            .chain(value_epoch)
+            .max()
     }
 }
 
@@ -578,6 +584,27 @@ impl OperationKind {
             OperationKind::SetClef(_) | OperationKind::SetKeySignature(_) => Some(14),
             // Minor 15 (X4b).
             OperationKind::SetVoiceHome(_) => Some(15),
+        }
+    }
+
+    /// The schema-minor epoch an appended variant in this operation's carried
+    /// value requires, or `None` where its value holds none: a marker of the
+    /// expression-text kind (`MarkerKind::ExpressionText`, epoch 16, X5b.7),
+    /// created or written by a cross-cutting operation. Separate from
+    /// [`Self::introduced_minor`], which is the kind's own discriminant's and
+    /// equals its tag's.
+    pub fn value_introduced_minor(&self) -> Option<u16> {
+        let structure = match self {
+            OperationKind::CreateCrossCutting(op) => &op.structure,
+            OperationKind::ModifyCrossCutting(op) => &op.structure,
+            _ => return None,
+        };
+        match structure {
+            CrossCuttingValue::Marker(marker) => match marker.kind {
+                epiphany_core::MarkerKind::ExpressionText(_) => Some(16),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
