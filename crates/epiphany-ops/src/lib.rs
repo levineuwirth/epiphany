@@ -785,6 +785,20 @@ pub mod vectors;
 ///     `TargetMissing` in both modes, where version `4` applied it. Locked by
 ///     `break_keys.rs`, `user_breaks_at_distinct_anchors_keep_their_own_slots`
 ///     and the undo-surface tests' break rows.
+///   - **S8** (X5b.5, a verdict): a `SetTempoSegment` carrying a `Constant`
+///     segment that records an end tempo is refused `TempoMapMalformed` in
+///     both modes, where version `4` applied one whose end tempo equalled its
+///     start (P13-S8; such a segment also fails its decoder now, so only a
+///     value built in memory reaches reduction). Locked by
+///     `constant_tempo.rs`.
+///   - **A restoration into a migrated region** (X5b.5, a verdict): an undo's
+///     restoration of a marker or a spanner anchored by a musical offset to a
+///     region a migration took out of musical time since is superseded by
+///     that migration, in both modes, as version `3` supersedes the seven
+///     value restorations it reads so; version `4` restored a marker there,
+///     breaking `AnchorOffsetModel` (one author, D80 Q17). Locked by the
+///     committed history `187` and
+///     `a_marker_an_undo_would_restore_into_a_migrated_region_stays_out_in_both_modes`.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.

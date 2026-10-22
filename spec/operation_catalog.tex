@@ -863,7 +863,12 @@ another live region holding a live instance of its staff is refused,
 (discriminant~21, epoch~16; Section~\ref{sec:k0:structural-containers}).
 A user break's slot is keyed by its anchor, and a break naming an event or a
 measure its region does not hold live is refused \texttt{TargetMissing}
-(Section~\ref{sec:k0:set-user-system-break}). Accordingly
+(Section~\ref{sec:k0:set-user-system-break}). A constant tempo segment
+recording an end tempo is refused \texttt{TempoMapMalformed}
+(Section~\ref{sec:k0:meter-tempo}), and an undo's restoration of a marker or
+a spanner anchored by a musical offset to a region a migration took out of
+musical time since is superseded by that migration
+(Section~\ref{sec:k0:undo}). Accordingly
 \texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION} moves
 \texttt{4}~$\rightarrow$~\texttt{5}, one version for the phase.
 
@@ -2790,9 +2795,12 @@ Section~\ref{sec:k0:create-staff}). The time-signature value's beat-group sum is
 construction and again at decode, so a malformed value never reaches
 reduction. A tempo-segment write preconditions that the \emph{resulting} map
 is well-formed (segments ordered and non-overlapping; a non-constant shape
-carries its end data; the carried segment's own start equals the operation's
-\texttt{start} key) --- a write that would malform the map is refused as a
-precondition no-op (\texttt{TempoMapMalformed}). A time signature written in a
+carries its end data, and a constant one records no end tempo, since
+version~0.22.0, before which one equal to its start was admitted; the carried
+segment's own start equals the operation's \texttt{start} key) --- a write
+that would malform the map is refused as a precondition no-op
+(\texttt{TempoMapMalformed}). A constant segment recording an end tempo fails
+its own decoder, so such a write reaches reduction only built in memory. A time signature written in a
 region whose time model admits no musical offset is refused with
 \texttt{WrongRegionTimeModel} in both modes (since version~0.19.0, before which
 it applied and left a meter in musical time). Graph-aware reduction applies
@@ -3010,9 +3018,11 @@ staff it spans) is superseded by that tombstoning (since version~0.19.0, before
 which the dangling value was restored); a value whose restoration would write in musical
 time into a region a migration has since taken out of it (a break anchored by
 a musical offset, a meter change, a metric grid, a tempo segment anchored in
-the region, a clef or key change of its staff instance) is superseded by that
-migration, as its setter is refused there (since version~0.19.0, before which
-it was restored at an offset the region no longer admits); and a value whose
+the region, a clef or key change of its staff instance and, since
+version~0.22.0, a marker or a spanner anchored to the region by a musical
+offset) is superseded by that migration, as its setter is refused there (since
+version~0.19.0, before which it was restored at an offset the region no longer
+admits); and a value whose
 restoration would name an object tombstoned since (a meter change's or metric
 grid's time signature or anchor, a tempo segment's anchors, an instrument
 override, a break's anchor) is superseded by the operation that tombstoned it,

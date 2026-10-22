@@ -994,15 +994,13 @@ enum ValueRestoration {
 
 /// Whether a tempo segment's shape carries the end data it requires
 /// (operation_catalog §"Meter and Tempo Overwrites"): a non-constant shape
-/// needs both an explicit `end` and an `end_tempo`; a constant segment's
-/// `end_tempo`, when present, must equal its `start_tempo` (the same structural
-/// rules the graph-invariant checker applies to tempo maps).
+/// needs both an explicit `end` and an `end_tempo`; a constant segment records
+/// no `end_tempo` (reduction version 5, P13-S8: before it one equal to its
+/// `start_tempo` was admitted), the same structural rules the graph-invariant
+/// checker applies to tempo maps.
 fn tempo_segment_shape_well_formed(segment: &TempoSegment) -> bool {
     match segment.shape {
-        TempoShape::Constant => segment
-            .end_tempo
-            .as_ref()
-            .is_none_or(|end| end == &segment.start_tempo),
+        TempoShape::Constant => segment.end_tempo.is_none(),
         TempoShape::Linear | TempoShape::Exponential | TempoShape::Curve => {
             segment.end_tempo.is_some() && segment.end.is_some()
         }
@@ -1928,6 +1926,30 @@ fn anchor_object_refs<'a>(anchors: impl IntoIterator<Item = &'a TimeAnchor>) -> 
             TimeAnchor::Measure { id, .. } => Some(TypedObjectId::Measure(*id)),
             TimeAnchor::Region { id, .. } => Some(TypedObjectId::Region(*id)),
             TimeAnchor::WallClock { .. } => None,
+        })
+        .collect()
+}
+
+/// The regions a cross-cutting value is anchored to by a musical offset: a
+/// marker's anchor, a spanner's two ends.
+fn regions_anchored_in_musical_time(value: &CrossCuttingValue) -> Vec<RegionId> {
+    let anchors: Vec<&TimeAnchor> = match value {
+        CrossCuttingValue::Marker(marker) => vec![&marker.anchor],
+        CrossCuttingValue::Spanner(spanner) => vec![&spanner.start, &spanner.end],
+        CrossCuttingValue::Tie(_)
+        | CrossCuttingValue::Slur(_)
+        | CrossCuttingValue::Beam(_)
+        | CrossCuttingValue::Lyric(_) => Vec::new(),
+    };
+    anchors
+        .into_iter()
+        .filter_map(|anchor| match anchor {
+            TimeAnchor::Region {
+                id,
+                offset: AnchorOffset::Musical(_),
+                ..
+            } => Some(*id),
+            _ => None,
         })
         .collect()
 }
@@ -9366,10 +9388,21 @@ impl<'a> Reducer<'a> {
                     // spanner's staff) is superseded by its tombstoning:
                     // restoring it would reinstate a dangling reference
                     // (`CrossCuttingRefsResolve`; reduction version 3, before
-                    // which it was restored).
-                    let deleted = value
-                        .as_ref()
-                        .and_then(|value| self.tombstoned_since(cross_cutting_referents(value)));
+                    // which it was restored). One anchored by a musical offset
+                    // to a region a migration took out of musical time since is
+                    // superseded by that migration, as the seven restorations
+                    // of reduction version 3 are: restoring it would anchor it
+                    // by an offset the region no longer admits
+                    // (`AnchorOffsetModel`; reduction version 5, before which
+                    // a marker's was restored).
+                    let deleted = value.as_ref().and_then(|value| {
+                        self.tombstoned_since(cross_cutting_referents(value))
+                            .or_else(|| {
+                                regions_anchored_in_musical_time(value)
+                                    .into_iter()
+                                    .find_map(|region| self.out_of_musical_time(region))
+                            })
+                    });
                     match deleted {
                         Some(by) => superseded.push(by),
                         None => {

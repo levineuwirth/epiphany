@@ -2217,9 +2217,8 @@ pub struct TempoSegment {
     pub start_tempo: Tempo,
 
     /// Tempo at the end of this segment.
-    /// Required if shape != Constant; ignored (and SHOULD be None)
-    /// if shape == Constant. A Constant segment holds start_tempo
-    /// throughout.
+    /// Required if shape != Constant; MUST be None if shape ==
+    /// Constant. A Constant segment holds start_tempo throughout.
     pub end_tempo: Option<Tempo>,
 
     /// Shape of the tempo change over this segment.
@@ -2227,8 +2226,7 @@ pub struct TempoSegment {
 }
 
 pub enum TempoShape {
-    /// Constant tempo throughout: end_tempo MUST be None or equal to
-    /// start_tempo.
+    /// Constant tempo throughout: end_tempo MUST be absent.
     Constant,
 
     /// Linear interpolation from start_tempo to end_tempo.
@@ -2280,13 +2278,17 @@ pub struct Tempo {
 \begin{requirement}
   \label{req:time:tempo-segment-shape}
   A tempo segment's \texttt{shape} and its \texttt{end\_tempo} \MUST{} be
-  compatible. If \texttt{shape} is \texttt{Constant} and \texttt{end\_tempo}
-  is present, it \MUST{} equal \texttt{start\_tempo}. If \texttt{shape} is
-  \texttt{Linear}, \texttt{Exponential} or \texttt{Curve}, \texttt{end\_tempo}
-  \MUST{} be present.
+  compatible. If \texttt{shape} is \texttt{Constant}, \texttt{end\_tempo}
+  \MUST{} be absent. If \texttt{shape} is \texttt{Linear},
+  \texttt{Exponential} or \texttt{Curve}, \texttt{end\_tempo} \MUST{} be
+  present.
 
-  This requirement states the compatibility that is enforced. It does not
-  determine whether a constant segment records an \texttt{end\_tempo} at all.
+  A constant segment that recorded an \texttt{end\_tempo} equal to its
+  \texttt{start\_tempo} would be a second spelling of one tempo, with a hash of
+  its own. A decoder rejects one rather than normalizing it (Binary Format
+  companion, \sectionsc{Graph Value Layouts}), and reduction refuses a value
+  built in memory (reduction algorithm version~\texttt{5}; until then an equal
+  end tempo was admitted).
 \end{requirement}
 
 \subsection{Conversion}
@@ -17390,7 +17392,9 @@ layouts they own versus inherit:
   would overlap a region holding its staff is refused (reduction algorithm
   version~\texttt{5}, which X5b opens). \texttt{SetUserSystemBreak}'s
   preconditions and effect state a break's key: its anchor, naming what its
-  region holds.
+  region holds. \texttt{req:time:tempo-segment-shape} settles P13-S8: a
+  constant tempo segment's \texttt{end\_tempo} is absent, and
+  \texttt{TempoShape}'s listing says so.
   \\
   \bottomrule
 \end{longtable}

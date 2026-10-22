@@ -757,6 +757,27 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         "with_a_lyric_not_in_nfc",
         unnormalized,
     ));
+    // A constant tempo segment recording an end tempo (P13-S8): the derived
+    // codec read it as a second spelling of one constant tempo; the segment's
+    // own decoder rejects it (reduction version 5).
+    let mut doubled = expressive.clone();
+    let tempo = crate::tempo::Tempo::quarter(96.0).expect("a tempo");
+    doubled.tempo_map.segments = vec![crate::tempo::TempoSegment {
+        start: crate::time::TimeAnchor::WallClock {
+            time: crate::time::WallClockTime(0),
+        },
+        end: None,
+        start_tempo: tempo.clone(),
+        end_tempo: Some(tempo),
+        shape: crate::tempo::TempoShape::Constant,
+    }];
+    v.push(row(
+        SV5,
+        "reject",
+        "constant-tempo-with-end-tempo",
+        "with_a_constant_tempo_recording_an_end_tempo",
+        doubled.canonical_bytes(),
+    ));
 
     // --- Tuplet ----------------------------------------------------------
     const TUPLET: &str = "core.tuplet";

@@ -4027,3 +4027,27 @@ break rows assert that the undo's removal of a slot the transaction opened is
 no write the redo could reverse; the collapse test became
 `user_breaks_at_distinct_anchors_keep_their_own_slots`; and the seeded base
 digest is re-pinned, the break sections' new layout moving it.
+
+## X5b.5 — the constant tempo spelling and a restoration into a migrated region (2026-10-22)
+
+**A constant tempo segment records no end tempo (P13-S8).** The rule said a
+constant segment's `end_tempo` "MUST be None or equal to start_tempo", and the
+derived codec accepted both, so one constant tempo had two spellings and two
+hashes; no constructor emits the second. It is rejected everywhere the rule is
+written: `TempoSegment`'s codec is written out and refuses it at decode (every
+major sharing it) and in the text projection's parser, the checker reports it
+under `req:time:tempo-segment-shape`, the integrator calls the map malformed,
+and reduction refuses a value built in memory `TempoMapMalformed`, in both
+modes. The specification says "MUST be absent".
+
+**A restoration into a migrated region is superseded (D80 Q17).** The undo's
+restorations ask of a value whether its region now admits a musical offset
+(`out_of_musical_time`) for the seven kinds X4a's M5 named, but the
+cross-cutting arm asked only whether a referent was tombstoned since. A marker
+anchored by a musical offset to a region's start, moved away by one
+transaction, its region then migrated to proportional time, could be restored
+there by an undo of the transaction, breaking `AnchorOffsetModel`; one author's
+history reaches it (`187`, found by the X5b.0 arm's plant run). The
+cross-cutting arm now also supersedes a value anchored by a musical offset to
+a region out of musical time (`regions_anchored_in_musical_time`: a marker's
+anchor, a spanner's two ends), by that region's migration.

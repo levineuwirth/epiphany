@@ -893,3 +893,82 @@ fn a_marker_its_undo_restores_holds_no_region_in_both_modes() {
         }
     }
 }
+
+/// An undo would restore a marker to a region's start by a musical offset,
+/// in a region a later migration took out of musical time: the migration
+/// supersedes the restoration, in both modes, as it supersedes the seven
+/// value restorations reduction version 3 reads so (reduction version 5, D80
+/// Q17). One author's history (`187`): a marker on a region's start moved by
+/// one transaction to a second region's start and by another onto a third
+/// region's note, the second region migrated to proportional time, and the
+/// last transaction undone, best effort. The undo applies and leaves the
+/// marker out of the migrated region; before the fix it returned there,
+/// anchored by an offset the region no longer admits (`AnchorOffsetModel`).
+#[test]
+fn a_marker_an_undo_would_restore_into_a_migrated_region_stays_out_in_both_modes() {
+    use epiphany_core::{AnchorOffset, IdentityContext, ReplicaId, Score, TimeAnchor};
+    use epiphany_ops::{
+        CrossCuttingValue, OperationEffect, OperationKind, OperationPayload, OperationSet,
+    };
+    let history = committed_history("187-invariant-anchor-offset-model.txt");
+    assert!(modes::valid(&history));
+    assert!(modes::findings(&history).is_empty());
+    let migrated = history
+        .iter()
+        .find_map(|env| match &env.payload {
+            OperationPayload::Primitive(OperationKind::ChangeRegionTimeModel(op)) => {
+                Some(op.region)
+            }
+            _ => None,
+        })
+        .expect("a migration");
+    let undo = history.last().expect("the undo");
+    assert!(matches!(undo.payload, OperationPayload::UndoTransaction(_)));
+    let mut set = OperationSet::new();
+    for envelope in &history {
+        set.accept(envelope.clone());
+    }
+    let marker = history
+        .iter()
+        .rev()
+        .find_map(|env| match &env.payload {
+            OperationPayload::Primitive(OperationKind::ModifyCrossCutting(op)) => {
+                match &op.structure {
+                    CrossCuttingValue::Marker(m) => Some(m.id),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+        .expect("the moved marker");
+    let free = set.reduce();
+    let aware = set.reduce_onto(&Score::empty(IdentityContext::new(ReplicaId(0))));
+    assert_eq!(free.effects, aware.state.effects);
+    assert_eq!(free.canonical_bytes(), aware.state.canonical_bytes());
+    let Some((_, OperationEffect::AppliedWithRepair { repairs })) =
+        free.effects.iter().find(|(id, _)| *id == undo.id)
+    else {
+        panic!("the undo applies, repairing");
+    };
+    assert!(
+        repairs
+            .iter()
+            .any(|r| r.target == epiphany_core::TypedObjectId::Marker(marker)),
+        "{repairs:?}"
+    );
+    let anchor = &aware
+        .score
+        .cross_cutting
+        .markers
+        .iter()
+        .find(|m| m.id == marker)
+        .expect("the marker stands")
+        .anchor;
+    assert!(
+        !matches!(
+            anchor,
+            TimeAnchor::Region { id, offset: AnchorOffset::Musical(_), .. } if *id == migrated
+        ),
+        "the marker went back into the migrated region: {anchor:?}"
+    );
+}

@@ -796,6 +796,35 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         v.push(row(OE, "accept", "-", name, envelope.to_canonical_bytes()));
     }
 
+    // X5b (P13-S8): a constant tempo segment recording an end tempo fails
+    // the segment's own decoder, as a second spelling of one tempo.
+    let tempo = epiphany_core::Tempo::quarter(96.0).expect("a tempo");
+    let doubled = staff_change(
+        13,
+        crate::payload::OperationKind::SetTempoSegment(crate::payload::SetTempoSegmentOp {
+            region: None,
+            start: epiphany_core::TimeAnchor::WallClock {
+                time: epiphany_core::WallClockTime(0),
+            },
+            segment: Some(epiphany_core::TempoSegment {
+                start: epiphany_core::TimeAnchor::WallClock {
+                    time: epiphany_core::WallClockTime(0),
+                },
+                end: None,
+                start_tempo: tempo.clone(),
+                end_tempo: Some(tempo),
+                shape: epiphany_core::TempoShape::Constant,
+            }),
+        }),
+    );
+    v.push(row(
+        OE,
+        "reject",
+        "constant-tempo-with-end-tempo",
+        "set_tempo_segment_constant_with_end_tempo",
+        doubled.to_canonical_bytes(),
+    ));
+
     // ---- ops.operation_block ------------------------------------------------
     // An operation block as a reader holds it to the supported-layout boundary
     // (Binary Format companion §"The Chunk-Level Gate"): the block's declared

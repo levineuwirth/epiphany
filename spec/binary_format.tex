@@ -911,7 +911,11 @@ normative statement about the bytes, not an implementation detail:
     beat groups sum to the measure duration, \texttt{NonZeroU16} rejects
     zero, \texttt{EventOrderingDAG} rejects cyclic edge maps,
     \texttt{ReferencePitch}, \texttt{Tempo}, and
-    \texttt{SpellingPrecedence} re-validate their invariants. Structurally
+    \texttt{SpellingPrecedence} re-validate their invariants, and
+    \texttt{TempoSegment} rejects a \texttt{Constant} shape carrying an
+    \texttt{end\_tempo} (0.22.0; core \texttt{req:time:tempo-segment-shape}),
+    as Requirement~\ref{req:binfmt:compression-none-parameter} rejects a
+    second spelling of one value rather than normalizing it. Structurally
     well-formed bytes that fail a type invariant are a decode error
     (reject-never-normalize).
 \end{description}
@@ -4195,8 +4199,10 @@ at format major~\tablenums{0} is refused as a legacy container.
   \texttt{RegionsOverlap} at epoch~16. \texttt{MaterializedState}'s break
   and page-break sections key each break by its anchor,
   $\mathrm{lp}$(\texttt{TimeAnchor}) in place of a resolved position, with a
-  decode vector of a non-empty section and its rejections. Semantics:
-  Operation Catalog, 0.22.0. \\
+  decode vector of a non-empty section and its rejections. A
+  \texttt{TempoSegment} of a \texttt{Constant} shape recording an
+  \texttt{end\_tempo} is rejected at decode (P13-S8), with an operation's and a
+  score's reject vectors. Semantics: Operation Catalog, 0.22.0. \\
 \bottomrule
 \end{longtable}
 
