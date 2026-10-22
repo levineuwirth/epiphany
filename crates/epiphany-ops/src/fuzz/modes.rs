@@ -121,9 +121,7 @@ use crate::stamp::{HybridLogicalClock, OperationStamp};
 use crate::support::AuthorId;
 use crate::undo::{UndoPolicy, UndoTransactionPayload};
 use crate::valuegen;
-use crate::{
-    GraphMaterialization, MaterializedState, ObjectState, OperationEffect, OperationKindRegistryId,
-};
+use crate::{GraphMaterialization, MaterializedState, OperationEffect, OperationKindRegistryId};
 
 /// The identity of the empty base both modes start from.
 const BASE: ReplicaId = ReplicaId(0);
@@ -302,8 +300,7 @@ struct View {
 pub struct Finding {
     /// What kind of failure, stable under shrinking: an effect split names the
     /// operation's kind and both effects' shapes; an invariant names the
-    /// invariant and its witness's shape ([`witness_shape`]), or the deferred
-    /// cause it is ([`deferred`]).
+    /// invariant and its witness's shape ([`witness_shape`]).
     pub class: String,
     /// The particulars.
     pub detail: String,
@@ -436,87 +433,26 @@ fn compare(
             }
         }
     }
-    out.extend(invariant_findings(
-        history,
-        &aware_effects,
-        &aware.score,
-        &aware.state.objects,
-    ));
+    out.extend(invariant_findings(&aware.score));
     out
 }
 
-/// The deferred class (D48, D50 to D52) is every `RegionExtents` overlap made
-/// by creating or filling regions, whatever its cause and however many
-/// authors: two regions whose time extents overlap, each holding an instance
-/// of a common staff that the graph holds and the ledger holds live
-/// (`overlap_made_by_regions`).
-/// Refusing a region's creation or fill where it would overlap one the merged
-/// history keeps needs region extents compared in both modes; X5 does so and
-/// closes the class. The causes the classifier knows are named apart
-/// ([`REGION_NEVER_SEEN`], [`REGION_SEEN_DELETED`], [`REGION_SEEN_UNDONE`]),
-/// the rest under one general name ([`REGION_OVERLAP`]). An overlap of
-/// another making (a region's staff extent naming a staff it holds no live
-/// instance of, or an instance the graph keeps that the ledger tombstoned)
-/// keeps the invariant's plain class, which nothing excepts.
-/// This constant is the prefix the three named causes share.
-pub const DEFERRED_REGIONS: &str = "invariant Invariant(RegionExtents: a region created at the place of one its author's view did not hold live";
-
-/// The deferred class's first cause (D48): two authors each created a region at
-/// one time extent, neither having seen the other's create.
-pub const REGION_NEVER_SEEN: &str = "invariant Invariant(RegionExtents: a region created at the place of one its author's view did not hold live, never seen";
-
-/// The deferred class's second cause (D50): an author saw a region and its
-/// own delete of it, which the merged history refuses (another author filled
-/// the region concurrently), and created a region in its place.
-pub const REGION_SEEN_DELETED: &str = "invariant Invariant(RegionExtents: a region created at the place of one its author's view did not hold live, seen deleted by a delete the merged history refuses";
-
-/// The deferred class's third cause (D51): an author saw a region and its own
-/// undo of the transaction that created it, which the merged history blocks
-/// (another author filled the region concurrently), and created a region in
-/// its place.
-pub const REGION_SEEN_UNDONE: &str = "invariant Invariant(RegionExtents: a region created at the place of one its author's view did not hold live, seen undone by an undo the merged history blocks";
-
-/// The deferred class's general name (D52): an overlap made by creating or
-/// filling regions of a cause the classifier does not name, one author's
-/// direct overlap among them.
-pub const REGION_OVERLAP: &str = "invariant Invariant(RegionExtents: two regions created or filled to overlap in time and staff, by a cause not named";
-
-/// Whether `class` is the deferred class, by one of its names; it is closed
-/// by X5 (D52).
-pub fn deferred(class: &str) -> bool {
-    class == REGION_NEVER_SEEN
-        || class == REGION_SEEN_DELETED
-        || class == REGION_SEEN_UNDONE
-        || class == REGION_OVERLAP
-}
-
-fn invariant_findings(
-    history: &[OperationEnvelope],
-    effects: &BTreeMap<OperationId, OperationEffect>,
-    score: &Score,
-    objects: &BTreeMap<TypedObjectId, ObjectState>,
-) -> Vec<Finding> {
+/// Every invariant the graph-aware score breaks, each class once: the
+/// invariant and its witness's shape. Nothing is excepted: the region class
+/// D48 and D50 to D52 deferred closed when reduction version 5 refused a fill
+/// whose region overlaps another holding its staff (X5b), and its machinery
+/// left the fuzz with it.
+fn invariant_findings(score: &Score) -> Vec<Finding> {
     let mut seen = BTreeSet::new();
     check_invariants(score)
         .into_iter()
         .filter_map(|violation| {
             let full = format!("{:?}", violation.kind);
-            let named = matches!(
-                violation.kind,
-                epiphany_core::ViolationKind::Invariant(
-                    epiphany_core::GraphInvariant::RegionExtents
-                )
-            )
-            .then(|| deferred_region_cause(history, effects, score, objects, &violation.witness))
-            .flatten();
-            let class = match named {
-                Some(cause) => String::from(cause),
-                None => format!(
-                    "invariant {}: {}",
-                    full.trim_end_matches(')'),
-                    witness_shape(&violation.witness)
-                ),
-            };
+            let class = format!(
+                "invariant {}: {}",
+                full.trim_end_matches(')'),
+                witness_shape(&violation.witness)
+            );
             seen.insert(class.clone()).then(|| Finding {
                 class,
                 detail: format!("{violation:?}"),
@@ -599,159 +535,6 @@ fn collapse_lists(chars: &[char], at: &mut usize, close: Option<char>) -> String
     }
     items.dedup();
     items.join(", ")
-}
-
-/// The regions a `RegionExtents` witness names, in order.
-fn witness_regions(witness: &str) -> Vec<RegionId> {
-    witness
-        .match_indices("RegionId(")
-        .filter_map(|(at, tag)| {
-            let digits = witness.get(at + tag.len()..at + tag.len() + 33)?;
-            let (replica, counter) = digits.split_once(':')?;
-            Some(RegionId::new(
-                ReplicaId(u64::from_str_radix(replica, 16).ok()?),
-                u64::from_str_radix(counter, 16).ok()?,
-            ))
-        })
-        .collect()
-}
-
-/// Whether a `RegionExtents` witness is an overlap made by creating or
-/// filling regions (D52): it names two regions, both in `score`, whose time
-/// extents overlap (where both are wall-clock; the invariant has judged any
-/// other), each holding a staff instance of a common staff that the graph
-/// holds and the ledger (`objects`) holds live. A staff extent naming a staff
-/// of no live instance is another making, and so is an instance the graph
-/// keeps after the ledger tombstoned it, a removal the graph failed to make
-/// (X4a review 3's L1: read from the graph alone, such an overlap was
-/// deferred under a named cause).
-fn overlap_made_by_regions(
-    score: &Score,
-    objects: &BTreeMap<TypedObjectId, ObjectState>,
-    witness: &str,
-) -> bool {
-    let [a, b] = witness_regions(witness)[..] else {
-        return false;
-    };
-    let region = |id: RegionId| score.canvas.regions.iter().find(|r| r.id == id);
-    let (Some(a), Some(b)) = (region(a), region(b)) else {
-        return false;
-    };
-    let wall = |anchor: &epiphany_core::TimeAnchor| match anchor {
-        epiphany_core::TimeAnchor::WallClock { time } => Some(time.0),
-        _ => None,
-    };
-    let times = |r: &Region| Some((wall(&r.time_extent.start)?, wall(&r.time_extent.end)?));
-    if let (Some((a0, a1)), Some((b0, b1))) = (times(a), times(b)) {
-        if !(a0 < b1 && b0 < a1) {
-            return false;
-        }
-    }
-    let staves = |r: &Region| -> BTreeSet<StaffId> {
-        r.staff_instances()
-            .iter()
-            .filter(|i| {
-                matches!(
-                    objects.get(&TypedObjectId::StaffInstance(i.id)),
-                    Some(ObjectState::Live)
-                )
-            })
-            .map(|i| i.staff)
-            .collect()
-    };
-    !staves(a).is_disjoint(&staves(b))
-}
-
-/// The deferred class's name for a `RegionExtents` witness, if it is in the
-/// class (`overlap_made_by_regions`): the cause the classifier knows
-/// ([`region_cause`]), or the general name.
-fn deferred_region_cause(
-    history: &[OperationEnvelope],
-    effects: &BTreeMap<OperationId, OperationEffect>,
-    score: &Score,
-    objects: &BTreeMap<TypedObjectId, ObjectState>,
-    witness: &str,
-) -> Option<&'static str> {
-    overlap_made_by_regions(score, objects, witness)
-        .then(|| region_cause(history, effects, witness).unwrap_or(REGION_OVERLAP))
-}
-
-/// The named cause of a `RegionExtents` witness naming two regions, if it is
-/// one: both created by envelopes of `history` at one time extent, and either
-/// neither create in the other's causal past (never seen), or the later
-/// create's author having seen the earlier region and its delete, the delete
-/// refused in the merged history (`effects`) and the region not live in that
-/// author's view (seen deleted); or having seen an undo of the earlier
-/// region's transaction instead, the region again not live in its view (seen
-/// undone).
-fn region_cause(
-    history: &[OperationEnvelope],
-    effects: &BTreeMap<OperationId, OperationEffect>,
-    witness: &str,
-) -> Option<&'static str> {
-    let ids = witness_regions(witness);
-    let [a, b] = ids.as_slice() else {
-        return None;
-    };
-    let create = |id: RegionId| {
-        history.iter().find_map(|env| match &env.payload {
-            OperationPayload::Primitive(OperationKind::CreateRegion(op)) if op.region.id == id => {
-                Some((env, &op.region.time_extent))
-            }
-            _ => None,
-        })
-    };
-    let ((ea, xa), (eb, xb)) = (create(*a)?, create(*b)?);
-    if xa != xb {
-        return None;
-    }
-    let (later, earlier) = match (
-        ea.causal_context.covers(eb.id),
-        eb.causal_context.covers(ea.id),
-    ) {
-        (false, false) => return Some(REGION_NEVER_SEEN),
-        (true, false) => (ea, (eb, *b)),
-        (false, true) => (eb, (ea, *a)),
-        (true, true) => return None,
-    };
-    let (made, earlier) = earlier;
-    let refused_delete = history.iter().any(|env| {
-        later.causal_context.covers(env.id)
-            && matches!(&env.payload,
-                OperationPayload::Primitive(OperationKind::DeleteRegion(op)) if op.region == earlier)
-            && !matches!(
-                effects.get(&env.id),
-                Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
-            )
-    });
-    let undone = made.transaction.is_some_and(|tx| {
-        history.iter().any(|env| {
-            later.causal_context.covers(env.id)
-                && matches!(&env.payload, OperationPayload::UndoTransaction(undo) if undo.target == tx)
-        })
-    });
-    if !refused_delete && !undone {
-        return None;
-    }
-    let mut view = OperationSet::new();
-    view.accept_all(
-        history
-            .iter()
-            .filter(|env| later.causal_context.covers(env.id))
-            .cloned(),
-    );
-    let held = view
-        .reduce_onto(&empty_base())
-        .score
-        .canvas
-        .regions
-        .iter()
-        .any(|region| region.id == earlier);
-    (!held).then_some(if refused_delete {
-        REGION_SEEN_DELETED
-    } else {
-        REGION_SEEN_UNDONE
-    })
 }
 
 /// Counts per operation kind over a run: authored, and applied (with or
@@ -4206,6 +3989,10 @@ pub fn parse(text: &str) -> Result<Vec<OperationEnvelope>, epiphany_core::textva
 #[cfg(test)]
 mod tests {
     use super::witness_shape;
+    use super::{
+        BTreeMap, BTreeSet, DeleteEventOp, ModifyEventOp, OperationEffect, OperationEnvelope,
+        OperationKind, OperationPayload, TupletCompensation,
+    };
 
     #[test]
     fn a_witness_shape_names_its_cause_not_its_objects() {
@@ -4278,15 +4065,15 @@ mod tests {
         assert_eq!(now, compacted[twin - 1].envelope_hash());
     }
 
-    /// An overlap of another making stays out of the deferred class (D52): the
-    /// never-seen history's graph, its first region's staff instance taken
-    /// out while its staff extent still names the staff (as review 1's plant
-    /// B3 left one), overlaps the second region by a staff it holds no live
-    /// instance of, and every `RegionExtents` finding is the invariant's plain
-    /// class, which nothing excepts. The graph as reduced is the class.
+    /// A region overlap in a graph is the invariant's plain class, which
+    /// nothing excepts: the never-seen history (`110`) reduces whole, its
+    /// second fill refused, and its graph with that fill written in by hand,
+    /// as reduction version 4 applied it, breaks `RegionExtents` under the
+    /// invariant's own name.
     #[test]
-    fn an_overlap_of_another_making_is_not_the_deferred_class() {
-        use super::{deferred, empty_base, invariant_findings, OperationSet, RegionContent};
+    fn a_region_overlap_is_the_invariant_s_plain_class() {
+        use super::{empty_base, invariant_findings, OperationSet, RegionContent};
+        use crate::{NoOpReason, PreconditionFailureReason};
         let history = super::parse(include_str!(
             "../../tests/two_modes/110-invariant-region-extents.txt"
         ))
@@ -4294,137 +4081,164 @@ mod tests {
         let mut set = OperationSet::new();
         set.accept_all(history.iter().cloned());
         let aware = set.reduce_onto(&empty_base());
-        let effects = aware.state.effects.iter().cloned().collect();
-        let objects = &aware.state.objects;
-        let reduced: Vec<String> = invariant_findings(&history, &effects, &aware.score, objects)
-            .into_iter()
-            .map(|f| f.class)
-            .collect();
-        assert_eq!(reduced, vec![super::REGION_NEVER_SEEN]);
+        assert!(invariant_findings(&aware.score).is_empty());
+        let effects: BTreeMap<_, _> = aware.state.effects.iter().cloned().collect();
+        let refused = history
+            .iter()
+            .find_map(|env| match (&env.payload, effects.get(&env.id)) {
+                (
+                    OperationPayload::Primitive(OperationKind::CreateStaffInstance(op)),
+                    Some(OperationEffect::NoOp {
+                        reason:
+                            NoOpReason::PreconditionFailedUnderReduction {
+                                reason: PreconditionFailureReason::RegionsOverlap,
+                            },
+                    }),
+                ) => Some(op),
+                _ => None,
+            })
+            .expect("a fill refused for the overlap");
         let mut score = aware.score.clone();
-        let first = score
+        let region = score
             .canvas
             .regions
             .iter_mut()
-            .find(|region| !region.staff_instances().is_empty())
-            .expect("a filled region");
-        match &mut first.content {
-            RegionContent::StaffBased(content) => content.staff_instances.clear(),
+            .find(|region| region.id == refused.region)
+            .expect("the refused fill's region");
+        match &mut region.content {
+            RegionContent::StaffBased(content) => {
+                content.staff_instances.push(refused.instance.clone())
+            }
             other => panic!("a staff-based region, not {other:?}"),
         }
-        assert!(!first.staff_extent.staves.is_empty(), "the stale extent");
-        let classes: Vec<String> = invariant_findings(&history, &effects, &score, objects)
+        region.staff_extent.staves.push(refused.instance.staff);
+        let classes: Vec<String> = invariant_findings(&score)
             .into_iter()
             .map(|f| f.class)
             .collect();
+        assert!(!classes.is_empty());
         assert!(
             classes
                 .iter()
-                .any(|c| c.starts_with("invariant Invariant(RegionExtents: ")),
+                .all(|c| c.starts_with("invariant Invariant(RegionExtents: ")),
             "{classes:?}"
         );
-        assert!(classes.iter().all(|c| !deferred(c)), "{classes:?}");
     }
 
-    /// An overlap left by a removal the graph failed to make stays out of the
-    /// deferred class (X4a review 3's L1): the never-seen history's graph as
-    /// reduced, with one region's staff instance tombstoned in the ledger and
-    /// kept in the graph, as review 3's plant D2 (a delete leaving the
-    /// instance in the graph) leaves it, overlaps the other region by an
-    /// instance the ledger does not hold live, so the finding is the
-    /// invariant's plain class. Read from the graph alone, it was deferred as
-    /// never seen.
-    #[test]
-    fn an_overlap_by_an_instance_the_ledger_removed_is_not_the_deferred_class() {
-        use super::{
-            deferred, empty_base, invariant_findings, ObjectState, OperationSet, TypedObjectId,
-        };
-        let history = super::parse(include_str!(
-            "../../tests/two_modes/110-invariant-region-extents.txt"
-        ))
-        .expect("parses");
-        let mut set = OperationSet::new();
-        set.accept_all(history.iter().cloned());
-        let aware = set.reduce_onto(&empty_base());
-        let effects = aware.state.effects.iter().cloned().collect();
-        let instance = aware
-            .score
-            .canvas
-            .regions
-            .iter()
-            .find_map(|region| region.staff_instances().first().map(|i| i.id))
-            .expect("a filled region");
-        let mut objects = aware.state.objects.clone();
-        let deleted_by = history.last().expect("a history").id;
-        let minted_by = history.first().expect("a history").id;
-        let slot = objects
-            .get_mut(&TypedObjectId::StaffInstance(instance))
-            .expect("the ledger holds the instance");
-        assert_eq!(*slot, ObjectState::Live);
-        *slot = ObjectState::Tombstoned {
-            deleted_by,
-            minted_by,
-        };
-        let classes: Vec<String> = invariant_findings(&history, &effects, &aware.score, &objects)
-            .into_iter()
-            .map(|f| f.class)
-            .collect();
-        assert!(
-            classes
-                .iter()
-                .any(|c| c.starts_with("invariant Invariant(RegionExtents: ") && !deferred(c)),
-            "{classes:?}"
-        );
-        assert!(classes.iter().all(|c| !deferred(c)), "{classes:?}");
-    }
-
-    /// Every view is checked and every class it shows kept (review 1's L2):
-    /// three views of one simulation, each showing one deferred cause, all
-    /// reach the history's findings.
+    /// Every view is checked and every class it shows kept (review 1's L2).
+    /// The classes are references the owner parked (D54), which the fuzz
+    /// writes none of: a cue's source, an indeterminate event's alternative
+    /// and a trajectory endpoint naming another event's pitch, each left
+    /// dangling by a delete of what it names. Three views, each of one, all
+    /// reach the simulation's findings; one view of all three keeps them all.
     #[test]
     fn every_view_is_checked_and_every_class_kept() {
-        let never_seen = super::parse(include_str!(
-            "../../tests/two_modes/110-invariant-region-extents.txt"
-        ))
-        .expect("parses");
-        let seen_deleted = super::parse(include_str!(
-            "../../tests/two_modes/145-invariant-region-extents.txt"
-        ))
-        .expect("parses");
-        let seen_undone = super::parse(include_str!(
-            "../../tests/two_modes/150-invariant-region-extents.txt"
-        ))
-        .expect("parses");
-        let mut sim = super::Simulation::new(0);
-        for history in [never_seen.clone(), seen_deleted, seen_undone] {
+        use super::{genesis, render, Simulation};
+        use epiphany_core::{
+            CueEvent, CueRendering, Event, IndeterminacyHints, IndeterminacyKind,
+            IndeterminateEvent, TrajectoryDisplay, TrajectoryEndpoint, TrajectoryEvent,
+            TrajectoryShape,
+        };
+        // A genesis, its first note rewritten to name the voice's next note
+        // (as a cue, an indeterminate event or a trajectory, by `which`), and
+        // that next note deleted.
+        let dangling = |which: u8| -> Vec<OperationEnvelope> {
+            let mut sim = Simulation::new(0x5B03);
+            genesis(&mut sim);
+            let view = sim.view(0);
+            let score = &view.reduced.score;
+            let (a, b) = score
+                .voices()
+                .find_map(|(_, _, voice)| {
+                    let notes: Vec<_> = voice
+                        .events
+                        .iter()
+                        .filter_map(|id| match score.events.get(*id) {
+                            Some(Event::Pitched(note)) => Some(note.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    (notes.len() >= 2).then(|| (notes[0].clone(), notes[1].clone()))
+                })
+                .expect("a voice of two notes");
+            let (id, voice, position, duration) =
+                (a.id, a.voice, a.position.clone(), a.duration.clone());
+            let event = match which {
+                0 => Event::Cue(CueEvent {
+                    id,
+                    voice,
+                    position,
+                    duration,
+                    source: vec![b.id],
+                    rendering: CueRendering,
+                }),
+                1 => Event::Indeterminate(IndeterminateEvent {
+                    id,
+                    voice,
+                    position,
+                    duration,
+                    indeterminacy: IndeterminacyKind::Choice,
+                    hints: IndeterminacyHints {
+                        alternatives: vec![b.id],
+                        ..IndeterminacyHints::default()
+                    },
+                }),
+                _ => Event::Trajectory(TrajectoryEvent {
+                    id,
+                    voice,
+                    position,
+                    duration,
+                    start: TrajectoryEndpoint::ExplicitPitch(a.pitches[0].clone()),
+                    end: TrajectoryEndpoint::EventPitch(b.pitches[0].id),
+                    shape: TrajectoryShape::Linear,
+                    display: TrajectoryDisplay,
+                }),
+            };
+            for kind in [
+                OperationKind::ModifyEvent(ModifyEventOp { event }),
+                OperationKind::DeleteEvent(DeleteEventOp {
+                    event: b.id,
+                    tuplet_compensation: TupletCompensation::NotInTuplet,
+                }),
+            ] {
+                sim.author(0, OperationPayload::Primitive(kind));
+            }
+            sim.history
+        };
+        let histories = [dangling(0), dangling(1), dangling(2)];
+        let mut sim = Simulation::new(0);
+        let mut each = Vec::new();
+        for history in &histories {
+            let before: BTreeSet<String> = sim.view_findings.keys().cloned().collect();
             sim.replicas[0].seen = (0..history.len()).collect();
-            sim.history = history;
+            sim.history = history.clone();
             sim.view(0);
+            let now: BTreeSet<String> = sim.view_findings.keys().cloned().collect();
+            let new: Vec<String> = now.difference(&before).cloned().collect();
+            assert!(!new.is_empty(), "the view shows a class of its own");
+            each.extend(new);
         }
-        let classes: Vec<&String> = sim.view_findings.keys().collect();
-        let all = vec![
-            super::REGION_NEVER_SEEN,
-            super::REGION_SEEN_DELETED,
-            super::REGION_SEEN_UNDONE,
-        ];
-        assert_eq!(classes, all, "three views");
-        // One view showing all three: the later histories' replicas renamed
-        // apart.
-        let renamed = include_str!("../../tests/two_modes/145-invariant-region-extents.txt")
-            .replace("#x0000000000000001", "#x0000000000000004")
-            .replace("#x0000000000000003", "#x0000000000000006");
-        let renamed_undone = include_str!("../../tests/two_modes/150-invariant-region-extents.txt")
-            .replace("#x0000000000000001", "#x0000000000000007")
-            .replace("#x0000000000000002", "#x0000000000000008")
-            .replace("#x0000000000000003", "#x0000000000000009");
-        let mut one_view = never_seen;
-        one_view.extend(super::parse(&renamed).expect("parses"));
-        one_view.extend(super::parse(&renamed_undone).expect("parses"));
-        let mut sim = super::Simulation::new(0);
+        let all: Vec<&String> = sim.view_findings.keys().collect();
+        assert_eq!(all.len(), each.len(), "three views: {all:?}");
+        // One view of all three: the later histories' replicas renamed apart.
+        let renamed = |history: &[OperationEnvelope], to: [&str; 3]| {
+            let mut text = render(history, &[]);
+            for (from, to) in ["1", "2", "3"].iter().zip(to) {
+                text = text.replace(
+                    &format!("#x000000000000000{from}"),
+                    &format!("#x000000000000000{to}"),
+                );
+            }
+            super::parse(&text).expect("parses")
+        };
+        let mut one_view = histories[0].clone();
+        one_view.extend(renamed(&histories[1], ["4", "5", "6"]));
+        one_view.extend(renamed(&histories[2], ["7", "8", "9"]));
+        let mut sim = Simulation::new(0);
         sim.replicas[0].seen = (0..one_view.len()).collect();
         sim.history = one_view;
         sim.view(0);
-        let classes: Vec<&String> = sim.view_findings.keys().collect();
-        assert_eq!(classes, all, "one view");
+        let one: Vec<&String> = sim.view_findings.keys().collect();
+        assert_eq!(one.len(), all.len(), "one view: {one:?}, three: {all:?}");
     }
 }

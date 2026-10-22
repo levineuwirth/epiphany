@@ -2717,15 +2717,26 @@ fn a_clef_or_key_in_a_region_out_of_musical_time_is_refused_in_both_modes() {
     let set_clef = m.op(A, 3, 4, &[migrated.id], clef(instance));
     let set_key = m.op(A, 4, 5, &[migrated.id], key(instance));
     // The carrying instance goes into a second region, the first already
-    // manifesting the staff.
+    // manifesting the staff, over other time than the first, which holds the
+    // staff there (reduction version 5 refuses a fill overlapping it,
+    // `RegionsOverlap`).
     let other = RegionId::new(A, 1103);
+    let mut other_region = valuegen::region(other);
+    other_region.time_extent = epiphany_core::TimeExtent {
+        start: TimeAnchor::WallClock {
+            time: WallClockTime(2_000_000_000),
+        },
+        end: TimeAnchor::WallClock {
+            time: WallClockTime(2_000_001_000),
+        },
+    };
     let create_other = m.op(
         A,
         5,
         6,
         &[set_key.id],
         primitive(OperationKind::CreateRegion(CreateRegionOp {
-            region: valuegen::region(other),
+            region: other_region,
         })),
     );
     let migrated_other = m.op(

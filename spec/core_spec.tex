@@ -5432,6 +5432,14 @@ pub struct StaffExtent {
   two regions claim the same content, which is ambiguous.
 \end{rationale}
 
+Under concurrent reduction the constraint is kept where a region's staves
+grow, which is only a staff instance's creation: a \texttt{CreateStaffInstance}
+whose region overlaps in time another live region holding a live instance of
+the same staff is refused, the earlier in canonical order standing, and an
+extent the reduction cannot place on a common clock counts as overlapping
+(Operation Catalog, \sectionsc{Structural Containers}; reduction algorithm
+version~\texttt{5}).
+
 \subsection{Staff-Based Content}
 
 A staff-based region carries one or more staff \emph{instances}, each
@@ -17373,6 +17381,10 @@ layouts they own versus inherit:
   reader refuses a legacy container by name, though the bundle layer still
   decodes it, and holds every operation block to the boundary the Binary
   Format companion defines (\texttt{req:binfmt:op-block-boundary}).
+  \sectionsc{Region Overlap and Concurrency} states where concurrent
+  reduction keeps the overlap constraint: a staff instance's creation that
+  would overlap a region holding its staff is refused (reduction algorithm
+  version~\texttt{5}, which X5b opens).
   \\
   \bottomrule
 \end{longtable}

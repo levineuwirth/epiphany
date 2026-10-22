@@ -42,9 +42,9 @@ use epiphany_core::{
     SpellingAttachment, SpellingDirective, SpellingPrecedence, SpellingScope, SpellingSource,
     Staff, StaffGroup, StaffGroupId, StaffId, StaffInstance, StaffInstanceId,
     StaffLineConfiguration, TempoMap, TempoSegment, TempoShape, Tie, TieClass, TieId, TimeAnchor,
-    TimeSignature, TimeSignatureId, TransactionId, TransposeRefusal, TranspositionInterval,
-    TuningContextSettings, TupletId, TypedObjectId, ViewDefinition, ViewId, Voice, VoiceId,
-    VoiceOrigin, WallClockDuration,
+    TimeExtent, TimeSignature, TimeSignatureId, TransactionId, TransposeRefusal,
+    TranspositionInterval, TuningContextSettings, TupletId, TypedObjectId, ViewDefinition, ViewId,
+    Voice, VoiceId, VoiceOrigin, WallClockDuration,
 };
 use epiphany_determinism::CanonicalEncode;
 
@@ -1284,6 +1284,12 @@ struct Reducer<'a> {
     // precondition reads it base-free, as graph-aware reduction reads the
     // graph's region, so an insert after a migration reduces alike in both.
     region_disciplines: BTreeMap<RegionId, CoordinateDiscipline>,
+    // Each region's time extent, from its `CreateRegion` payload or a base,
+    // which no operation rewrites: a `CreateStaffInstance` is refused where
+    // its region overlaps in time another live region holding a live instance
+    // of its staff (`RegionsOverlap`, reduction version 5), the extents
+    // compared as this index places them, in both modes alike.
+    region_extents: BTreeMap<RegionId, TimeExtent>,
     migrated_regions: BTreeSet<RegionId>,
     region_migrator: BTreeMap<RegionId, OperationId>,
     descriptors: BTreeMap<TransactionId, OperationId>,
@@ -1427,6 +1433,7 @@ struct WorkingSnapshot {
     instance_staff: BTreeMap<StaffInstanceId, StaffId>,
     staff_based_regions: BTreeSet<RegionId>,
     region_disciplines: BTreeMap<RegionId, CoordinateDiscipline>,
+    region_extents: BTreeMap<RegionId, TimeExtent>,
     migrated_regions: BTreeSet<RegionId>,
     region_migrator: BTreeMap<RegionId, OperationId>,
     descriptors: BTreeMap<TransactionId, OperationId>,
@@ -2086,6 +2093,7 @@ impl<'a> Reducer<'a> {
             instance_staff: BTreeMap::new(),
             staff_based_regions: BTreeSet::new(),
             region_disciplines: BTreeMap::new(),
+            region_extents: BTreeMap::new(),
             migrated_regions: BTreeSet::new(),
             region_migrator: BTreeMap::new(),
             descriptors: BTreeMap::new(),
@@ -2259,6 +2267,8 @@ impl<'a> Reducer<'a> {
                 .insert(TypedObjectId::Region(region.id), ObjectState::Live);
             self.region_disciplines
                 .insert(region.id, region.time_model.coordinate_discipline());
+            self.region_extents
+                .insert(region.id, region.time_extent.clone());
             if let Some(content) = region.content.staff_based() {
                 self.staff_based_regions.insert(region.id);
                 self.metric_grid_chain
@@ -3910,6 +3920,72 @@ impl<'a> Reducer<'a> {
     // FreeGraphic region has neither a metric grid nor a break list). That verdict
     // reads only the base-free indices, so reduce() and reduce_onto() agree on it.
 
+    /// Whether filling `region` with an instance of `staff` would overlap in
+    /// time another live region holding a live instance of that staff. The
+    /// extents are compared as the ledger places them ([`Self::ledger_extent`]),
+    /// and one it cannot place counts as overlapping: a later edit to a tempo
+    /// map or an event could move it, so a refusal decided at the fill could
+    /// not hold otherwise. Read from the indices both modes keep, as the
+    /// one-instance-per-region refusal reads them: `region_instances` holds
+    /// live instances alone (a delete or an undo takes one out), so a region
+    /// it lists one under is live, and the liveness read below is that
+    /// refusal's, kept for symmetry rather than needed.
+    fn fill_overlaps(&self, region: RegionId, staff: StaffId) -> bool {
+        let live = |object| matches!(self.objects.get(&object), Some(ObjectState::Live));
+        let mine = self.ledger_extent(region);
+        self.region_instances.iter().any(|(other, instances)| {
+            *other != region
+                && instances.iter().any(|instance| {
+                    self.instance_staff.get(instance) == Some(&staff)
+                        && live(TypedObjectId::StaffInstance(*instance))
+                })
+                && match (mine, self.ledger_extent(*other)) {
+                    (Some((a0, a1)), Some((b0, b1))) => a0 < b1 && b0 < a1,
+                    _ => true,
+                }
+        })
+    }
+
+    /// `region`'s time extent as a wall-clock interval, placed on the ledger's
+    /// own index of region extents: `None` where either end cannot be placed
+    /// ([`Self::ledger_time`]).
+    fn ledger_extent(&self, region: RegionId) -> Option<(i64, i64)> {
+        let extent = self.region_extents.get(&region)?;
+        Some((
+            self.ledger_time(&extent.start, 8)?,
+            self.ledger_time(&extent.end, 8)?,
+        ))
+    }
+
+    /// The wall-clock coordinate the ledger places `anchor` at: a wall-clock
+    /// anchor is its time, and a region's edge, with no offset or a wall-clock
+    /// one, is that region's edge on this index plus the offset, to the
+    /// invariant checker's depth. An event or a measure, or a musical offset,
+    /// needs the graph and a tempo map to place: `None`, as is an overflowing
+    /// sum or a depth run out.
+    fn ledger_time(&self, anchor: &TimeAnchor, depth: u8) -> Option<i64> {
+        if depth == 0 {
+            return None;
+        }
+        match anchor {
+            TimeAnchor::WallClock { time } => Some(time.0),
+            TimeAnchor::Region { id, edge, offset } => {
+                let extent = self.region_extents.get(id)?;
+                let edge = match edge {
+                    RegionEdge::Start => &extent.start,
+                    RegionEdge::End => &extent.end,
+                };
+                let base = self.ledger_time(edge, depth - 1)?;
+                match offset {
+                    AnchorOffset::Zero => Some(base),
+                    AnchorOffset::WallClock(d) => base.checked_add(d.0),
+                    AnchorOffset::Musical(_) => None,
+                }
+            }
+            TimeAnchor::Event { .. } | TimeAnchor::Measure { .. } => None,
+        }
+    }
+
     /// `Some(NoOp)` when `region` cannot carry a metric grid or user break — it is
     /// missing, tombstoned, or FreeGraphic; `None` when it has a staff-based slot.
     /// Whether `region` takes a musically-anchored layout write: its
@@ -5310,6 +5386,8 @@ impl<'a> Reducer<'a> {
         self.region_instances.entry(op.region_id()).or_default();
         self.region_disciplines
             .insert(op.region_id(), op.region.time_model.coordinate_discipline());
+        self.region_extents
+            .insert(op.region_id(), op.region.time_extent.clone());
         if let Some(content) = op.region.content.staff_based() {
             self.staff_based_regions.insert(op.region_id());
             // Seed the region's layout/metric write chains from the carried
@@ -5410,6 +5488,18 @@ impl<'a> Reducer<'a> {
             });
         if taken {
             return container_not_empty();
+        }
+        // A region's staves grow only by this fill, so refusing a fill whose
+        // region overlaps in time another live region holding a live instance
+        // of the staff keeps `RegionExtents` for every history; the earlier
+        // fill in canonical order stands (reduction version 5: before it the
+        // fill applied and the two regions overlapped).
+        if self.fill_overlaps(op.region, op.instance.staff) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::RegionsOverlap,
+                },
+            };
         }
         // Its clef and key changes are anchors like any other: one anchored by
         // a musical offset into a region admitting none is refused (reduction
@@ -12615,6 +12705,7 @@ impl<'a> Reducer<'a> {
             instance_staff: self.instance_staff.clone(),
             staff_based_regions: self.staff_based_regions.clone(),
             region_disciplines: self.region_disciplines.clone(),
+            region_extents: self.region_extents.clone(),
             migrated_regions: self.migrated_regions.clone(),
             region_migrator: self.region_migrator.clone(),
             descriptors: self.descriptors.clone(),
@@ -12668,6 +12759,7 @@ impl<'a> Reducer<'a> {
         self.instance_staff = s.instance_staff;
         self.staff_based_regions = s.staff_based_regions;
         self.region_disciplines = s.region_disciplines;
+        self.region_extents = s.region_extents;
         self.migrated_regions = s.migrated_regions;
         self.region_migrator = s.region_migrator;
         self.descriptors = s.descriptors;
@@ -23230,10 +23322,20 @@ mod tests {
             c,
         );
         envs.push(env);
+        // The second region spans other time than the first, as it must to
+        // hold the same staff (reduction version 5 refuses the fill of a
+        // region over the first's span, `RegionsOverlap`).
+        let mut second = crate::valuegen::region(region2);
+        second.time_extent = TimeExtent {
+            start: TimeAnchor::WallClock {
+                time: epiphany_core::WallClockTime(2_000_000_000),
+            },
+            end: TimeAnchor::WallClock {
+                time: epiphany_core::WallClockTime(2_000_001_000),
+            },
+        };
         let (env, c) = next(
-            OperationKind::CreateRegion(CreateRegionOp {
-                region: crate::valuegen::region(region2),
-            }),
+            OperationKind::CreateRegion(CreateRegionOp { region: second }),
             c,
         );
         envs.push(env);

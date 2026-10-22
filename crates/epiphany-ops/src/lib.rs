@@ -756,6 +756,22 @@ pub mod vectors;
 ///   deleting only ties, slurs, beams and spanners. Base-free reduction,
 ///   holding no base, refuses it in both versions; only a canonical base,
 ///   which exists in tests alone (D4), reaches it.
+/// * `5` — **X5b** (2026-10-22), the format boundary and the region refusal
+///   (roadmap D80), one version for the phase:
+///   - **The region refusal** (X5b.3, a verdict and new ledger state): a
+///     `CreateStaffInstance` whose region overlaps in time another live
+///     region holding a live instance of its staff is refused
+///     `RegionsOverlap` (reason 21, epoch 16) in both modes, where version
+///     `4` applied it and the two regions overlapped in time and staff
+///     (`RegionExtents`, the class D48 and D50 to D52 deferred). The extents
+///     are compared on a new index of each region's time extent, kept from
+///     its `CreateRegion` or a base, which no operation rewrites; an extent
+///     that index cannot place (an event or measure anchor, a musical
+///     offset) counts as overlapping. The earlier fill in canonical order
+///     stands; a refused fill in a transaction conflicts the transaction
+///     whole, and nothing is repaired. Locked by the reducer's tests of the
+///     refusal in both modes and the nine committed region histories, `110`,
+///     `145` to `147`, `150` and `160` to `163`, which agree now.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.
@@ -776,7 +792,7 @@ pub mod vectors;
 /// `epiphany-bundle` in order to use that crate's `ReductionAlgorithmVersion`
 /// wrapper. The wrapper is constructed at the composition boundary by whoever
 /// depends on both (P13-S27 pin 1, §0.3).
-pub const CURRENT_REDUCTION_ALGORITHM_VERSION: u32 = 4;
+pub const CURRENT_REDUCTION_ALGORITHM_VERSION: u32 = 5;
 
 pub use anomaly::{
     AnomalousReplicaSegment, IntegrityAnomaly, IntegrityAnomalyKind, ReplicaAnomalyReason,

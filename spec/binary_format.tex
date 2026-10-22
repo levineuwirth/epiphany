@@ -1672,7 +1672,8 @@ trailing bytes are decode errors.
     \tablenums{15} TranspositionOutOfRange (both Push~4a);
     \tablenums{16} MeasureMeterMismatch, \tablenums{17} MeasureOutOfOrder,
     \tablenums{18} MeasureOrderUnverifiable (genesis tranche G3b);
-    \tablenums{19} SlotOccupied, \tablenums{20} HomeIsOwnStaff (both X4b). \\
+    \tablenums{19} SlotOccupied, \tablenums{20} HomeIsOwnStaff (both X4b);
+    \tablenums{21} RegionsOverlap (X5b). \\
   \texttt{RepairRecord} &
     (struct) \texttt{kind} (\texttt{RepairKind}) \cat{} \texttt{target}
     (\texttt{TypedObjectId}). \\
@@ -2460,7 +2461,7 @@ values need, so a file mixing majors is ordinary and reads.
       differs, in major or minor, from the version minimal stamping derives
       from them is refused as \emph{mis-stamped}.
   \end{enumerate}
-  The reference implementation's highest epoch is \tablenums{15}.
+  The reference implementation's highest epoch is \tablenums{16}.
 \end{requirement}
 
 \begin{rationale}
@@ -4188,7 +4189,9 @@ at format major~\tablenums{0} is refused as a legacy container.
   layouts, named by the block's version; a stamp other than minimal stamping
   derives. It refuses a legacy container by name. The decode corpus gains
   the \texttt{ops.operation\ub block} and \texttt{document.container}
-  surfaces. \\
+  surfaces. \texttt{PreconditionFailureReason} appends \tablenums{21}
+  \texttt{RegionsOverlap} at epoch~16. Semantics: Operation Catalog,
+  0.22.0. \\
 \bottomrule
 \end{longtable}
 

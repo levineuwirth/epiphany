@@ -3921,3 +3921,72 @@ as before. The review's histories are committed under every policy as `181`
 to `186`, `expect: agree`, the new verdict asserted by
 `a_marker_its_undo_restores_holds_no_region_in_both_modes`: the undo applies,
 the region goes with its contents, and the marker stands on the older note.
+
+## X5b.2 — the supported-layout boundary (2026-10-22)
+
+**One check holds every operation block to what the current writer writes.**
+Before the product's 1.0 release nothing is migrated (roadmap D4), so
+supported is exactly what the current writers produce: every envelope of a
+block decoding under the live layouts, and the block stamped as minimal
+stamping derives from them, major and minor. `decode_operation_block` is the
+check; the editor's document layer and the text projection call it on every
+block they read, so neither path is guarded alone. It takes the declared
+version as two numbers (`BlockStamp`), since this crate does not depend on the
+bundle, and derives the stamp itself (`BlockStamp::derive`); the testkit holds
+that derivation and the bundle's `SchemaVersion::for_major_at_epoch` to one
+answer over generated envelope sets.
+
+Its refusals, each by name and in this order: a minor later than
+`HIGHEST_SCHEMA_MINOR`, read before any envelope, so a later build's appended
+discriminant reads as a version boundary rather than a bare unknown tag; an
+envelope that does not decode, named by the block's declared version, a block
+whose hash verified being no corrupt block, and by the value where its
+historical layout is recognized (the tuplet before major 4, as before); and a
+block whose envelopes decode but whose stamp is not their derivation, which
+minimal stamping forbids a writer to make and which would give one envelope set
+several chunk identities. A legacy container is refused by the two document
+readers (`LegacyContainer`); the bundle layer still decodes one, as the binary
+format requires. Every document the current writers make reads: imports and
+their edits mix majors 0, 2 and 5, and the text projection's single block
+reaches 0 to 5, each reopened equal through both readers.
+
+## X5b.3 — the region refusal (2026-10-22)
+
+**A fill whose region overlaps another holding its staff is refused.**
+`RegionExtents` (no two regions overlap in both time and staff) was the one
+invariant the reducer did not keep: two `CreateStaffInstance`s of one staff
+into regions over one span both applied, the class D48 and D50 to D52 deferred
+from the fuzz by name. A region is born empty (`CreateRegion` refuses carried
+instances) and only `CreateStaffInstance` adds a staff to one; no restoration
+revives an instance and nothing rewrites a region's time extent. So refusing
+the fill is enough to keep the invariant for every history, and reduction
+version 5 does: `RegionsOverlap` (reason 21, epoch 16), the earlier fill in
+canonical order standing, a fill in a transaction conflicting it whole, no
+repair.
+
+Both modes read the verdict from the ledger's indices (`region_instances`,
+`instance_staff`, object liveness) and one new one, `region_extents`, each
+region's extent from its create or a base. The ledger places an extent as far
+as it can without the graph: a wall-clock anchor is its time, and a region's
+edge with no offset or a wall-clock one is that edge plus the offset, to the
+checker's depth of eight. An event or a measure anchor, or a musical offset,
+needs a tempo map, which a later edit could change, so a refusal decided at
+the fill could not hold; such an extent counts as overlapping every region
+with which it shares a staff. Every current writer uses wall-clock extents.
+
+The deferred class leaves the fuzz with its classifier (`DEFERRED_REGIONS`,
+its four causes, `overlap_made_by_regions`, `region_cause`, `deferred`):
+every `RegionExtents` finding is the invariant's plain class again, which
+nothing excepts. The nine committed region histories agree, each declaring
+the refusal (`# refused: RegionsOverlap`), which
+`every_history_declaring_a_refusal_shows_it_in_both_modes` asserts in both
+modes; the tests that read the classifier's causes now assert each cause's
+history and its variants refused. The view test (X4a review 1's L2) keeps
+three classes by references the owner parked (D54), which the fuzz writes
+none of.
+
+Found while testing it and left to the owner: a `CreateRegion` whose extent
+anchors a metric region's edge by a wall-clock offset is applied and breaks
+`AnchorOffsetModel`; `CreateRegion` checks no extent anchor against its
+target's time model. One author reaches it through the operations; no writer
+and no fuzz arm makes such an extent.

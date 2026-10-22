@@ -24,7 +24,7 @@ use crate::payload::operation_block_introduced_minor;
 /// ([`OperationBlockError::UnsupportedSchemaMinor`]), so a discriminant this
 /// build does not know reads as a version boundary rather than as corruption.
 /// An append at a new epoch raises it in the same change.
-pub const HIGHEST_SCHEMA_MINOR: u16 = 15;
+pub const HIGHEST_SCHEMA_MINOR: u16 = 16;
 
 /// An operation block's schema version: the major, then the minor.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -260,7 +260,7 @@ mod tests {
             .iter()
             .filter_map(OperationKindTag::introduced_minor)
             .chain(
-                [R::SlotOccupied, R::HomeIsOwnStaff]
+                [R::SlotOccupied, R::HomeIsOwnStaff, R::RegionsOverlap]
                     .iter()
                     .filter_map(R::introduced_minor),
             )

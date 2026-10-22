@@ -231,7 +231,7 @@
   {\Large\scshape\color{epiphanyslate}Operation Catalog}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.21.0 --- Expression and text}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.22.0 --- The region refusal}\\[4pt]
   {\small\color{epiphanyslate}Normative for the operation kinds it defines}
   \vfill
 \end{titlepage}
@@ -855,6 +855,14 @@ Section~\ref{sec:k0:set-voice-home}). Its second fix round, after its second
 review, adds one more: an undo reads a marker on an event it removes as the
 repair will leave it, so a marker the undo would orphan holds its region
 (Sections~\ref{sec:k0:create-cross-cutting} and~\ref{sec:k0:undo}).
+
+\noindent\textbf{Version 0.22.0 (X5b, the format boundary and the region
+refusal).} A \texttt{CreateStaffInstance} whose region overlaps in time
+another live region holding a live instance of its staff is refused,
+\texttt{PreconditionFailureReason} appending \texttt{RegionsOverlap}
+(discriminant~21, epoch~16; Section~\ref{sec:k0:structural-containers}).
+Accordingly \texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION}
+moves \texttt{4}~$\rightarrow$~\texttt{5}, one version for the phase.
 
 % ===========================================================================
 \chapter{The Catalog Framework}
@@ -1794,6 +1802,21 @@ live tempo segment of another map anchored to it and, since version~0.21.0, by
 a live marker or spanner anchored to it. Graph-aware reduction adds
 or removes the container and maintains the region's staff extent so
 \texttt{RegionExtents} stays satisfied.
+
+Since version~0.22.0 a \texttt{CreateStaffInstance} is also a precondition
+no-op, \texttt{RegionsOverlap} (discriminant~21), when its region overlaps in
+time another live region holding a live instance of the same staff. A region
+is created empty and only this create adds a staff to it, so the refusal keeps
+\texttt{RegionExtents} for every history: the earlier create in canonical
+order stands. Both modes compare the two time extents on a ledger index of
+each region's extent, taken from its \texttt{CreateRegion} (or a base) and
+never rewritten: a wall-clock anchor is its time, and a region's edge with no
+offset or a wall-clock one is that region's edge plus the offset, to a depth
+of eight; extents overlap when each starts before the other ends. An extent
+anchored to an event or a measure, or by a musical offset, cannot be placed
+without the graph and a tempo map, which a later edit could move, so it counts
+as overlapping every region with which it shares a staff. In a transaction the
+refused create conflicts the transaction whole; nothing is repaired.
 
 \textbf{Conflict cases.} None at reduction time: creation is set-union (a repeat
 create is idempotent), and the empty-only delete is a deterministic precondition
