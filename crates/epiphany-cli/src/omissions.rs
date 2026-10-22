@@ -25,7 +25,8 @@
 //!   (articulation, technique, ornament and its accidentals, tremolo, jazz
 //!   mark, arpeggio) with nothing drawn for it, by its class, and each
 //!   fermata, breath mark, caesura, dynamic, hairpin, syllable, staff text,
-//!   tempo mark, rehearsal mark, segno and coda with no ink; a mark of a
+//!   tempo mark, rehearsal mark, segno, coda and trill line with no ink, a
+//!   trill at a note a drawn trill line starts at standing as its sign; a mark of a
 //!   staff anchored at a region offset stands on no staff, so it is named as
 //!   drawn nowhere, while a tempo or rehearsal mark, segno or coda stands
 //!   over the system, drawn once where parts repeat it;
@@ -604,6 +605,19 @@ pub fn omissions(
                 .map(|s| s.provenance.stable_id),
         )
         .collect();
+    // A trill line draws the trill at its note as its sign.
+    let trill_lines_at: BTreeSet<epiphany_core::EventId> = score
+        .cross_cutting
+        .spanners
+        .iter()
+        .filter(|s| {
+            s.kind == SpannerKind::TrillExtension && inked.contains(&TypedObjectId::Spanner(s.id))
+        })
+        .filter_map(|s| match s.start {
+            TimeAnchor::Event { id, .. } => Some(id),
+            _ => None,
+        })
+        .collect();
     for event in score.events.iter().filter(|e| !graces.contains(&e.id())) {
         let (marks, ornaments) = match event {
             Event::Pitched(n) => (&n.marks, n.ornaments.as_slice()),
@@ -623,7 +637,9 @@ pub fn omissions(
         for ornament in ornaments {
             let tag = NoteMarkPart::ornament_tag(ornament.kind);
             let class = format!("{:?}", ornament.kind).to_lowercase();
-            if !drawn.contains(&NoteMarkPart::Glyph(tag).id(event.id())) {
+            let as_line = ornament.kind == epiphany_core::OrnamentKind::Trill
+                && trill_lines_at.contains(&event.id());
+            if !as_line && !drawn.contains(&NoteMarkPart::Glyph(tag).id(event.id())) {
                 out.add(&format!("ornament: {class}"));
             }
             for (above, accidental) in [
@@ -697,10 +713,13 @@ pub fn omissions(
         }
     }
     for spanner in &score.cross_cutting.spanners {
-        if matches!(spanner.kind, SpannerKind::Hairpin(_))
-            && !inked.contains(&TypedObjectId::Spanner(spanner.id))
-        {
-            out.add("hairpin");
+        let class = match spanner.kind {
+            SpannerKind::Hairpin(_) => "hairpin",
+            SpannerKind::TrillExtension => "trill line",
+            _ => continue,
+        };
+        if !inked.contains(&TypedObjectId::Spanner(spanner.id)) {
+            out.add(class);
         }
     }
 

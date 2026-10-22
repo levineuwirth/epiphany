@@ -1196,3 +1196,16 @@ column's spring the padding after it.
   column holds none stands as at a system's start. A dynamic in words there
   had named a slot no glyph realized, which validation refuses, so the
   score drew nothing.
+
+## Trill lines (X4c.7, 2026-10-22)
+
+- A trill extension is drawn as MuseScore draws its trill line
+  (`TLayout::layoutTrillSegment`): its sign, `ornamentTrill`, at its note's
+  column, its baseline half a space over the staff, or two under it in a
+  second voice, then wiggles to a space before the end of its last note
+  (`SLine::linePos`), a solver's to set (`FamilyLine::Trill`); placed first
+  of the family, a half space clear of the ink under it. The trill at the
+  note it starts at is its sign, not drawn again as a mark, and that
+  trill's upper accidental stands small over the sign, 0.35 off it.
+- A line ending at its region's end, a hairpin or a trill line, ends at the
+  final barline's column; it had found no column and drawn nothing.

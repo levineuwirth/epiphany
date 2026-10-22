@@ -1217,7 +1217,9 @@ fn a_chain_of_dynamics_and_hairpins_stands_in_one_row() {
 /// opening as MuseScore draws one: a crescendo from its tip to its mouth in
 /// the first, and in the next from a half-space opening to its mouth; a
 /// diminuendo from its mouth to a half-space opening, then from its mouth to
-/// its tip.
+/// its tip. Its first piece stops a quarter space short of its system's end
+/// and the next starts at its system's first note, as any line's
+/// (`TLayout::layoutSystemSLine`).
 #[test]
 fn a_hairpin_over_a_system_break_opens_each_piece() {
     for (kind, crescendo) in [("crescendo", true), ("diminuendo", false)] {
@@ -1251,6 +1253,14 @@ fn a_hairpin_over_a_system_break_opens_each_piece() {
         near(opening(one, 1), b, "the first piece's end");
         near(opening(two, 0), c, "the second piece's start");
         near(opening(two, 1), d, "the second piece's end");
+        let end = system_end(&layout, one[0].0 .1);
+        near(one[0].1 .0, end - 0.25, "short of the system's end");
+        let e = events(&loaded);
+        near(
+            two[0].0 .0,
+            head(&loaded, &layout, e[1])[0],
+            "from the system's first note",
+        );
     }
 }
 
@@ -2373,4 +2383,311 @@ fn a_mark_at_its_measures_start_clears_the_ink_where_it_stands() {
         outer[1] >= frame_top + 0.08 + 0.5 - 1e-3,
         "{outer:?} over {frame_top}"
     );
+}
+
+/// Where the staff lines nearest `y` end: their system's end.
+fn system_end(layout: &ResolvedLayoutIR, y: f32) -> f32 {
+    layout
+        .strokes
+        .iter()
+        .filter(|s| matches!(s.provenance.source, TypedObjectId::Staff(_)))
+        .min_by(|a, b| (a.from.y.0 - y).abs().total_cmp(&(b.from.y.0 - y).abs()))
+        .map(|s| s.from.x.0.max(s.to.x.0))
+        .expect("a staff line")
+}
+
+/// A note's notations: a trill mark and a wavy line, `kind` "start" or
+/// "stop", or both, a trill mark with a sharp over it and its line's start.
+fn trill(kind: &str) -> String {
+    match kind {
+        "sharp" => "<ornaments><trill-mark/><accidental-mark placement=\"above\">sharp\
+                    </accidental-mark><wavy-line type=\"start\"/></ornaments>"
+            .to_string(),
+        "start" => "<ornaments><trill-mark/><wavy-line type=\"start\"/></ornaments>".to_string(),
+        kind => format!("<ornaments><wavy-line type=\"{kind}\"/></ornaments>"),
+    }
+}
+
+/// A trill line's glyphs, its sign and its wiggles, left to right.
+fn trill_line(layout: &ResolvedLayoutIR) -> Vec<&ResolvedGlyph> {
+    let mut found: Vec<&ResolvedGlyph> = layout
+        .glyphs
+        .iter()
+        .filter(|g| matches!(g.provenance.source, TypedObjectId::Spanner(_)))
+        .collect();
+    found.sort_by(|a, b| {
+        b.position
+            .y
+            .0
+            .total_cmp(&a.position.y.0)
+            .then(a.position.x.0.total_cmp(&b.position.x.0))
+    });
+    found
+}
+
+/// A trill line stands half a space over its staff, or clear of the ink
+/// under it by half a space: from its note's column its sign, the trill it
+/// stands for, the trill's accidental small over it, then wiggles, one each
+/// advance, as many as reach to the nearest a space before the end of its
+/// last note; the trill draws no sign of its own there. One over a system
+/// break stops its wiggles a quarter space short of the system's end and
+/// starts them again, with no sign, at the next system's first note
+/// (`TLayout::layoutTrillSegment`, `LineSegment::symbolLine`).
+#[test]
+fn a_trill_line_is_its_sign_then_its_wiggles() {
+    let (sign_advance, wiggle_advance) = (2134.0 / 1024.0, 971.0 / 1024.0);
+    let measures = [
+        [
+            note("C5", 2, "quarter", 1, 1, &trill("sharp")),
+            note("C5", 2, "quarter", 1, 1, ""),
+            note("C5", 4, "half", 1, 1, &trill("stop")),
+        ]
+        .concat(),
+        note("C5", 8, "whole", 1, 1, ""),
+    ];
+    let loaded = part("trill.musicxml", 1, &measures);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let top = staff_lines(&layout)[0].1;
+    let line = trill_line(&layout);
+    let (sign, wiggles) = (line[0], &line[1..]);
+    assert_eq!(sign.glyph.as_str(), "ornamentTrill");
+    assert_eq!(
+        named(&layout, "ornamentTrill").len(),
+        1,
+        "no sign of its own"
+    );
+    near(
+        sign.position.x.0,
+        head(&loaded, &layout, e[0])[0],
+        "from its note",
+    );
+    // Half a space over the staff, or half a space clear of its top line.
+    let half_line = layout
+        .strokes
+        .iter()
+        .find(|s| matches!(s.provenance.source, TypedObjectId::Staff(_)))
+        .map(|s| s.thickness.0 * 0.5)
+        .expect("a staff line");
+    let at = (top + 0.5).max(top + half_line + 0.5 - sign.bounding_box.bottom.0);
+    near(sign.position.y.0, at, "the sign's baseline");
+    let end = named(&layout, "barlineSingle")[0][0] - 1.0;
+    let from = sign.position.x.0 + sign_advance;
+    let count = ((end - from) / wiggle_advance).round() as usize;
+    assert!(count > 5);
+    assert_eq!(wiggles.len(), count, "{wiggles:?}");
+    for (i, w) in wiggles.iter().enumerate() {
+        assert_eq!(w.glyph.as_str(), "wiggleTrill");
+        near(
+            w.position.x.0,
+            from + i as f32 * wiggle_advance,
+            "a wiggle's place",
+        );
+        near(w.position.y.0, sign.position.y.0, "on the sign's line");
+    }
+    // The sharp, small, centred over the sign 0.35 clear of it.
+    let sharp = layout
+        .texts
+        .iter()
+        .find(|t| t.text == "\u{E262}")
+        .expect("the trill's sharp");
+    let (ink, sign_ink) = (text_box(sharp), glyph_box(sign));
+    near(ink[1], sign_ink[3] + 0.35, "0.35 over the sign");
+    near(centre_x(ink), centre_x(sign_ink), "centred over the sign");
+
+    // Over a system break.
+    let measures = [
+        [
+            note("C5", 4, "half", 1, 1, &trill("start")),
+            note("C5", 4, "half", 1, 1, ""),
+        ]
+        .concat(),
+        [
+            "<print new-system=\"yes\"/>".to_string(),
+            note("C5", 4, "half", 1, 1, &trill("stop")),
+            note("rest", 4, "half", 1, 1, ""),
+        ]
+        .concat(),
+    ];
+    let loaded = part("trill_break.musicxml", 1, &measures);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    // The break's line, by its spanner, its pieces by their systems.
+    let line: Vec<_> = trill_line(&layout);
+    let source = line[0].provenance.source;
+    let line: Vec<_> = line
+        .into_iter()
+        .filter(|g| g.provenance.source == source)
+        .collect();
+    let y0 = line[0].position.y.0;
+    let first: Vec<_> = line
+        .iter()
+        .filter(|g| (g.position.y.0 - y0).abs() < 3.0)
+        .collect();
+    let second: Vec<_> = line
+        .iter()
+        .filter(|g| (g.position.y.0 - y0).abs() >= 3.0)
+        .collect();
+    // The first piece: its sign, then wiggles to a quarter space short of the
+    // system's end.
+    assert_eq!(first[0].glyph.as_str(), "ornamentTrill");
+    let end = system_end(&layout, first[0].position.y.0) - 0.25;
+    let from = first[0].position.x.0 + sign_advance;
+    assert_eq!(
+        first.len() - 1,
+        ((end - from) / wiggle_advance).round() as usize
+    );
+    // The second: wiggles alone from the system's first note to a space
+    // before the end of the line's last.
+    assert!(second.iter().all(|g| g.glyph.as_str() == "wiggleTrill"));
+    let from = head(&loaded, &layout, e[2])[0];
+    near(second[0].position.x.0, from, "from the system's first note");
+    let rest = layout
+        .glyphs
+        .iter()
+        .find(|g| g.glyph.as_str().starts_with("rest"))
+        .expect("the rest");
+    let end = rest.position.x.0 - 1.0;
+    assert_eq!(
+        second.len(),
+        ((end - from) / wiggle_advance).round() as usize
+    );
+}
+
+/// A trill line of a second voice stands under its staff, clear of the ink
+/// over it by half a space.
+#[test]
+fn a_second_voices_trill_line_stands_under_its_staff() {
+    let measure = [
+        note("C5", 8, "whole", 1, 1, ""),
+        backup(8),
+        note("D4", 4, "half", 2, 1, &trill("start")),
+        note("D4", 4, "half", 2, 1, &trill("stop")),
+    ]
+    .concat();
+    let loaded = part(
+        "trill_below.musicxml",
+        1,
+        &[measure, note("C5", 8, "whole", 1, 1, "")],
+    );
+    let layout = engrave(&loaded.reduced.score).layout;
+    let (bottom, _) = staff_lines(&layout)[0];
+    let line = trill_line(&layout);
+    let sign = glyph_box(line[0]);
+    assert!(sign[3] < bottom, "under the staff: {sign:?} {bottom}");
+    let e = events(&loaded);
+    let low = head(&loaded, &layout, e[1]);
+    let stem_bottom = stem(&layout, e[1]).1;
+    let ink = low[1].min(stem_bottom);
+    assert!(sign[3] <= ink - 0.5 + 1e-3, "{sign:?} under {ink}");
+
+    // With nothing under the staff, half a space under its bottom line.
+    let measure = [
+        note("C5", 8, "whole", 1, 1, ""),
+        backup(8),
+        note("A4", 8, "whole", 2, 1, &trill("start")),
+    ]
+    .concat();
+    let loaded = part(
+        "trill_below_alone.musicxml",
+        1,
+        &[measure, note("C5", 8, "whole", 1, 1, &trill("stop"))],
+    );
+    let layout = engrave(&loaded.reduced.score).layout;
+    let (bottom, _) = staff_lines(&layout)[0];
+    let half_line = layout
+        .strokes
+        .iter()
+        .find(|s| matches!(s.provenance.source, TypedObjectId::Staff(_)))
+        .map(|s| s.thickness.0 * 0.5)
+        .expect("a staff line");
+    let sign = glyph_box(trill_line(&layout)[0]);
+    near(
+        sign[3],
+        bottom - half_line - 0.5,
+        "half a space under the staff",
+    );
+}
+
+/// A trill line is placed before the rest of the family, so a fermata at its
+/// note stands outside it; its wiggles clear a high note under them by half
+/// a space, by their own ink.
+#[test]
+fn a_trill_line_stands_nearest_its_staff() {
+    let measure = [
+        note(
+            "C5",
+            4,
+            "half",
+            1,
+            1,
+            &format!("{}<fermata type=\"upright\"/>", trill("start")),
+        ),
+        note("C6", 2, "quarter", 1, 1, ""),
+        note("C5", 2, "quarter", 1, 1, &trill("stop")),
+    ]
+    .concat();
+    let loaded = part(
+        "trill_fermata.musicxml",
+        1,
+        &[measure, note("C5", 8, "whole", 1, 1, "")],
+    );
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let line = trill_line(&layout);
+    let sign = glyph_box(line[0]);
+    let fermata = named(&layout, "fermataAbove")[0];
+    assert!(
+        fermata[1] >= sign[3] + 0.4 - 1e-3,
+        "{fermata:?} over {sign:?}"
+    );
+    // The wiggles over the high note: their ink half a space over its head.
+    let high = head(&loaded, &layout, e[1]);
+    let over: Vec<_> = line
+        .iter()
+        .filter(|g| g.glyph.as_str() == "wiggleTrill")
+        .map(|g| glyph_box(g))
+        .filter(|w| w[0] < high[2] && w[2] > high[0])
+        .collect();
+    assert!(!over.is_empty());
+    let lowest = over.iter().map(|w| w[1]).fold(f32::INFINITY, f32::min);
+    near(
+        lowest,
+        high[3] + 0.5,
+        "the wiggles half a space over the note",
+    );
+}
+
+/// A line ending at the piece's end runs to a space before its final
+/// barline, as one ending at any barline does: a hairpin, and a trill line's
+/// wiggles.
+#[test]
+fn a_line_to_the_end_runs_to_a_space_before_the_final_barline() {
+    let measure = [
+        wedge("crescendo", 1),
+        note("C5", 8, "whole", 1, 1, ""),
+        wedge("stop", 1),
+    ]
+    .concat();
+    let loaded = part("hairpin_to_end.musicxml", 1, &[measure]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let end = named(&layout, "barlineFinal")[0][0] - 1.0;
+    let legs = hairpin_legs(&layout);
+    assert_eq!(legs.len(), 2, "{legs:?}");
+    for leg in &legs {
+        near(leg.1 .0, end, "the hairpin's end");
+    }
+
+    let measure = [
+        note("C5", 4, "half", 1, 1, &trill("start")),
+        note("C5", 4, "half", 1, 1, &trill("stop")),
+    ]
+    .concat();
+    let loaded = part("trill_to_end.musicxml", 1, &[measure]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let end = named(&layout, "barlineFinal")[0][0] - 1.0;
+    let line = trill_line(&layout);
+    let from = line[0].position.x.0 + 2134.0 / 1024.0;
+    let advance = 971.0 / 1024.0;
+    assert_eq!(line.len() - 1, ((end - from) / advance).round() as usize);
 }

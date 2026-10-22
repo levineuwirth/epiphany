@@ -615,3 +615,56 @@ fn text_marks_undrawn_are_counted_by_class() {
         1
     );
 }
+
+/// A trill line the engraver draws is no omission, nor the trill at its
+/// note, which its sign draws; taken away, each is counted.
+#[test]
+fn a_trill_line_and_its_trill_undrawn_are_counted() {
+    let note = |ornaments: &str| {
+        format!(
+            "<note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration>\
+             <voice>1</voice><type>half</type><notations><ornaments>{ornaments}\
+             </ornaments></notations></note>"
+        )
+    };
+    let measure = [
+        note("<trill-mark/><wavy-line type=\"start\"/>"),
+        note("<wavy-line type=\"stop\"/>"),
+    ]
+    .concat();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
+         <attributes><divisions>2</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time><clef><sign>G</sign><line>2</line></clef></attributes>{measure}</measure>\
+         </part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("trill_line_omissions.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let score = &loaded.reduced.score;
+    let counted = |engraved: &Engraved| -> Vec<(String, usize)> {
+        omissions(score, &engraved.layout, &engraved.diagnostics)
+            .kinds
+            .into_iter()
+            .filter(|(kind, _)| kind.starts_with("trill") || kind.starts_with("ornament"))
+            .collect()
+    };
+    let mut engraved = engrave(score);
+    assert_eq!(counted(&engraved), vec![], "drawn");
+    let region = TypedObjectId::Region(score.canvas.regions[0].id);
+    for g in &mut engraved.layout.glyphs {
+        if matches!(g.provenance.source, TypedObjectId::Spanner(_)) {
+            g.provenance.source = region;
+        }
+    }
+    let mut found = counted(&engraved);
+    found.sort();
+    assert_eq!(
+        found,
+        vec![
+            ("ornament: trill".to_owned(), 1),
+            ("trill line".to_owned(), 1)
+        ]
+    );
+}

@@ -14,9 +14,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::{
     Clef, EventId, EventMark, HairpinDirection, KeySignature, LineStyle, MarkerKind, MeasureId,
-    MeasurePosition, MusicalDuration, NoteValue, Ornament, PitchId, PitchSpelling, RationalTime,
-    RepeatStructureId, SpannerKind, SpellingNominal, StaffId, TimeAnchor, TypedObjectId,
-    WallClockTime,
+    MeasurePosition, MusicalDuration, NoteValue, Ornament, OrnamentKind, PitchId, PitchSpelling,
+    RationalTime, RepeatStructureId, SpannerKind, SpellingNominal, StaffId, TimeAnchor,
+    TypedObjectId, WallClockTime,
 };
 use epiphany_determinism::{DomainTag, Preimage};
 
@@ -251,7 +251,14 @@ pub enum FamilyLine {
     Hairpin(HairpinShape),
     Hyphen,
     Melisma,
+    /// A trill line's wiggles, along its stroke from after its sign
+    /// ([`TRILL_WIGGLE`], one in each of its advance, as many as the piece
+    /// holds to the nearest: `LineSegment::symbolLine`).
+    Trill,
 }
+
+/// A trill line's wiggle, which a solver sets along its line piece by piece.
+pub const TRILL_WIGGLE: &str = "wiggleTrill";
 
 /// A hyphen's dash length's bounds (`lyricsDashMinLength`,
 /// `lyricsDashMaxLength`), the longest stretch one dash serves
@@ -2435,6 +2442,27 @@ pub fn try_to_constrained(
                         .map(|object| (&object.provenance, object.staff, None)),
                 )
                 .collect();
+        // Each note a trill line starts at (X4c.7): its trill ornament is the
+        // line's first symbol, drawn with the line, not as a mark of its own
+        // (`TLayout::layoutTrillSegment`).
+        let trill_starts: BTreeSet<EventId> = specs
+            .iter()
+            .filter_map(|(_, _, content)| match content {
+                Some(LayoutContent::Spanner(SpannerContent {
+                    kind: SpannerKind::TrillExtension,
+                    start: MarkerPlace::Event { event, .. },
+                    ..
+                })) => Some(*event),
+                _ => None,
+            })
+            .collect();
+        let event_provenance: BTreeMap<EventId, &Provenance> = specs
+            .iter()
+            .filter_map(|(provenance, _, _)| match provenance.source {
+                TypedObjectId::Event(event) => Some((event, *provenance)),
+                _ => None,
+            })
+            .collect();
 
         // Where this region's glyphs begin in the global vector, so constraint
         // emission below can see exactly the glyphs pass 2 produced for it.
@@ -2502,7 +2530,12 @@ pub fn try_to_constrained(
                 yo: y_origin(staff),
                 beamed: seg.drawn && seg.flag.is_none() && seg.beams > 0,
             };
-            let placed = marks::place(&chord, event_marks_of, ornaments);
+            let ornaments: Vec<Ornament> = ornaments
+                .iter()
+                .filter(|o| !(o.kind == OrnamentKind::Trill && trill_starts.contains(eid)))
+                .cloned()
+                .collect();
+            let placed = marks::place(&chord, event_marks_of, &ornaments);
             if let Some(ink) = column_ink.get_mut(&(staff, seg.key.clone())) {
                 marks::into_ink(ink, &placed);
             }
@@ -4495,6 +4528,149 @@ pub fn try_to_constrained(
                                     for leg in legs {
                                         emit.stroke(leg);
                                     }
+                                    true
+                                }
+                                None => false,
+                            }
+                        }
+                        (
+                            Some(LayoutContent::Spanner(SpannerContent {
+                                kind: SpannerKind::TrillExtension,
+                                start,
+                                end,
+                            })),
+                            Some(_),
+                        ) => {
+                            // A trill line from its note's column to a space
+                            // before where its last note ends: the trill sign,
+                            // then wiggles a solver sets piece by piece, above
+                            // in a first or only voice and below in a second
+                            // (`TLayout::layoutTrillSegment`, `SLine::linePos`).
+                            let t1 = match end {
+                                MarkerPlace::Event { end, .. } => end.clone(),
+                                MarkerPlace::Time(time) => Some(time.clone()),
+                                MarkerPlace::Unresolved => None,
+                            };
+                            let ends = place_time(start)
+                                .zip(t1)
+                                .and_then(|(t0, t1)| {
+                                    let first = first_column(&columns, &t0, true)?;
+                                    let last = first_column(&columns, &t1, false)?;
+                                    Some((first, last))
+                                })
+                                .filter(|(first, last)| last.1.x > first.1.x);
+                            match ends {
+                                Some(((_, first), (_, last))) => {
+                                    let above = !matches!(
+                                        start,
+                                        MarkerPlace::Event {
+                                            voice: VoicePlace::Lower,
+                                            ..
+                                        }
+                                    );
+                                    let y = if above {
+                                        yo + STAFF_HEIGHT + TRILL_ABOVE
+                                    } else {
+                                        yo - TRILL_BELOW
+                                    };
+                                    let band = band_of(staff);
+                                    let sign = Provenance::synthesized(
+                                        provenance.source,
+                                        SynthesisKind::Registered(TRILL_SYNTHESIS),
+                                        SynthesisInstanceKey(0),
+                                        provenance.dependencies.clone(),
+                                    );
+                                    emit.glyph(
+                                        &sign,
+                                        TRILL_SIGN,
+                                        Point::new(first.x, y),
+                                        band,
+                                        staff,
+                                        first.slot,
+                                    );
+                                    // The trill's accidental over or under its
+                                    // sign, small, 0.35 off it, as over the
+                                    // ornament it stands for.
+                                    let mut runs = Vec::new();
+                                    let event = match start {
+                                        MarkerPlace::Event { event, .. } => Some(*event),
+                                        _ => None,
+                                    };
+                                    let accidental = event
+                                        .and_then(|e| mark_sources.get(&e))
+                                        .and_then(|(_, ornaments)| {
+                                            ornaments.iter().find(|o| o.kind == OrnamentKind::Trill)
+                                        })
+                                        .and_then(|o| o.accidental_above.as_ref())
+                                        .and_then(crate::engrave_theory::accidental_glyph);
+                                    let small = accidental.and_then(|name| {
+                                        Some((
+                                            marks::accidental_codepoint(name)?,
+                                            metrics(name)?.bounding_box(),
+                                            metrics(TRILL_SIGN)?.bounding_box(),
+                                            event.and_then(|e| event_provenance.get(&e))?,
+                                        ))
+                                    });
+                                    if let Some((codepoint, a, b, owner)) = small {
+                                        let x = first.x + (b.left.0 + b.right.0) * 0.5
+                                            - 0.6 * (a.left.0 + a.right.0) * 0.5;
+                                        let ay = y + b.top.0 + 0.35 - 0.6 * a.bottom.0;
+                                        let part = NoteMarkPart::Accidental {
+                                            tag: NoteMarkPart::ornament_tag(OrnamentKind::Trill),
+                                            above: true,
+                                        };
+                                        let run = symbol_run(
+                                            Provenance::synthesized(
+                                                owner.source,
+                                                SynthesisKind::Registered(MARK_SYNTHESIS),
+                                                part.key(),
+                                                owner.dependencies.clone(),
+                                            ),
+                                            &[Symbol {
+                                                codepoint,
+                                                at: SymbolPlace::Corner(Point::new(
+                                                    0.6 * a.left.0,
+                                                    0.6 * a.bottom.0,
+                                                )),
+                                                scale: 0.6,
+                                                turn: Turn::None,
+                                            }],
+                                            Point::new(x, ay),
+                                        );
+                                        runs.push(run.id());
+                                        texts.push(TextObject {
+                                            text: run,
+                                            horizontal_slot: first.slot,
+                                            vertical_band: band,
+                                        });
+                                    }
+                                    // The wiggles' line, from after the sign to
+                                    // its end, which a solver fills.
+                                    let carrier = line_stroke(
+                                        provenance.clone(),
+                                        Point::new(first.x + glyph_advance(TRILL_SIGN), y),
+                                        Point::new(last.x - TRILL_END_INSET, y),
+                                        TRILL_CARRIER_WIDTH,
+                                        band,
+                                    );
+                                    hairpin_anchors.push((carrier.id(), first.slot, last.slot));
+                                    family.push(FamilyMark {
+                                        band,
+                                        glyphs: vec![GlyphObjectId(sign.stable_id.0)],
+                                        strokes: vec![carrier.id()],
+                                        texts: runs,
+                                        room: Room::None,
+                                        placement: Some(Autoplace {
+                                            above,
+                                            order: PlaceOrder::Trill,
+                                            min_distance: TRILL_MIN_DISTANCE,
+                                            row: None,
+                                            between: None,
+                                            across: None,
+                                        }),
+                                        line: Some(FamilyLine::Trill),
+                                    });
+                                    emit.stroke(carrier);
                                     true
                                 }
                                 None => false,
@@ -7969,6 +8145,22 @@ const LYRIC_DASH_Y: f32 = 0.5 * 0.466 * LYRIC_TEXT_SIZE;
 const LYRIC_LINE_WIDTH: f32 = 0.1;
 const LYRIC_MELISMA_PAD: f32 = 0.2;
 
+/// A trill line's sign (`ornamentTrill`), its baseline half a space over its
+/// staff (`trillPosAbove`) or two under it (`trillPosBelow`), its end a
+/// space before its last note's end (`SLine::linePos`), a half space clear
+/// of the ink under it (`trillMinDistance`); the width of the line its
+/// wiggles are set along, which draws nothing itself.
+const TRILL_SIGN: &str = "ornamentTrill";
+const TRILL_ABOVE: f32 = 0.5;
+const TRILL_BELOW: f32 = 2.0;
+const TRILL_END_INSET: f32 = 1.0;
+const TRILL_MIN_DISTANCE: f32 = 0.5;
+const TRILL_CARRIER_WIDTH: f32 = 0.1;
+
+/// The registry id for a trill line's sign (key 0), synthesized from the
+/// line.
+const TRILL_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x5452_494C_4C49_4E45); // "TRILLINE"
+
 /// Text marks (X4c.6), in staff spaces at MuseScore's default points over
 /// its 1.75 mm space (D79's Q7): staff text in Edwin at 10 points, its
 /// baseline a space over its staff (`staffTextPosAbove`); a tempo mark in
@@ -8175,7 +8367,8 @@ fn place_time(place: &MarkerPlace) -> Option<TimePoint> {
 }
 
 /// The first column at `time` or after it (a note column alone, when
-/// `note`): where a line starting or ending there stands.
+/// `note`): where a line starting or ending there stands. A line ending at
+/// its region's end ends at the final barline's column.
 fn first_column<'a>(
     columns: &'a BTreeMap<ColumnKey, ColumnInfo>,
     time: &TimePoint,
@@ -8185,7 +8378,8 @@ fn first_column<'a>(
         .range(ColumnKey::Timed(time.clone(), ColumnRole::Breath)..)
         .find(|(key, _)| match key {
             ColumnKey::Timed(_, role) => !note || *role == ColumnRole::Note,
-            _ => false,
+            ColumnKey::End => !note,
+            ColumnKey::Lead => false,
         })
 }
 

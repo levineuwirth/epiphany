@@ -2317,3 +2317,18 @@ is set:
 - A tempo mark is not set right of a rehearsal mark at its measure, as
   MuseScore's `tempoAlignRightOfRehearsalMark` does; the two stand one over
   the other.
+
+## ENGRAVER_VERSION 61 → 62: trill lines (X4c.7, 2026-10-22)
+
+- A trill line's wiggles are set piece by piece once its system is: as many
+  `wiggleTrill` as reach along the piece to the nearest, one each advance
+  (`LineSegment::symbolLine`), from after the sign on its first piece and
+  from the system's first column on a piece carried into a later one; the
+  line's stroke then draws nothing, a traced anchor, and its wiggles' ink is
+  its piece's ink in the family's placing.
+- Every line of the family, a hairpin's legs as a hyphen, is split over a
+  system break as MuseScore splits a line (`TLayout::layoutSystemSLine`): a
+  piece going on stops a quarter space short of its system's end and a
+  piece carried into a later system starts at its first column. A hairpin's
+  first piece had run to the system's end, and its next from the system's
+  first ink.

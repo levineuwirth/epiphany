@@ -103,7 +103,7 @@ pub use constrained::{
     LayoutTransformError, LeadGlyph, MeasureMark, MeasureStart, NoteMarkPart, PlaceOrder, Room,
     Row, SpanAnchor, SpringSlot, Stroke, SystemLead, CROSS_STEM_MIN, HAIRPIN_CONT_HEIGHT,
     HAIRPIN_HEIGHT, HAIRPIN_MIN_LENGTH, LYRIC_DASH_MAX, LYRIC_DASH_MAX_DISTANCE, LYRIC_DASH_MIN,
-    LYRIC_MELISMA_MIN,
+    LYRIC_MELISMA_MIN, TRILL_WIGGLE,
 };
 pub use engrave_theory::{
     accidental_glyph, clef_glyph, clef_glyph_for, flag_count, flag_glyph, has_stem, key_signature,

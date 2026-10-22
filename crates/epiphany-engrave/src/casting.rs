@@ -91,7 +91,7 @@ use epiphany_layout_ir::{
     ResolvedText, Size2D, SpringSlotId, StaffSpace, Stroke, SynthesisInstanceKey, SynthesisKind,
     SynthesisRegistryId, SystemLead, TimePoint, Transform2D, VerticalBand, VerticalBandId,
     VerticalBandKind, HAIRPIN_CONT_HEIGHT, HAIRPIN_HEIGHT, HAIRPIN_MIN_LENGTH, LYRIC_DASH_MAX,
-    LYRIC_DASH_MAX_DISTANCE, LYRIC_DASH_MIN, LYRIC_MELISMA_MIN,
+    LYRIC_DASH_MAX_DISTANCE, LYRIC_DASH_MIN, LYRIC_MELISMA_MIN, TRILL_WIGGLE,
 };
 
 use crate::clearance::InkRect;
@@ -1408,11 +1408,12 @@ pub(crate) fn cast_off(
             (placement, compressed)
         })
         .collect();
-    // Each hyphen and melisma line, by its stroke.
-    let lyric_lines: BTreeMap<GlyphObjectId, FamilyLine> = input
+    // Each line of the family (a hairpin's leg, a hyphen, a melisma line, a
+    // trill line's wiggles), by its stroke.
+    let family_lines: BTreeMap<GlyphObjectId, FamilyLine> = input
         .family
         .iter()
-        .filter(|mark| matches!(mark.line, Some(FamilyLine::Hyphen | FamilyLine::Melisma)))
+        .filter(|mark| mark.line.is_some())
         .flat_map(|mark| {
             mark.strokes
                 .iter()
@@ -1430,7 +1431,7 @@ pub(crate) fn cast_off(
                 p,
                 anchors.get(&source.id()),
                 &slot_source_x,
-                lyric_lines.contains_key(&source.id()).then(|| {
+                family_lines.contains_key(&source.id()).then(|| {
                     let plan = &systems[s];
                     plan.slots
                         .first()
@@ -1614,12 +1615,20 @@ pub(crate) fn cast_off(
                     .collect(),
             };
             for (s, from, to) in segments {
-                let ink = rect(
-                    from.x.0 - half,
-                    to.x.0 + half,
-                    from.y.0.min(to.y.0) - half,
-                    from.y.0.max(to.y.0) + half,
-                );
+                let ink = if family_lines.get(&stroke.id()) == Some(&FamilyLine::Trill) {
+                    // A trill line's ink is its wiggles' along it.
+                    let w = metrics(TRILL_WIGGLE)
+                        .expect("the wiggle is bundled")
+                        .bounding_box();
+                    rect(from.x.0, to.x.0, from.y.0 + w.bottom.0, from.y.0 + w.top.0)
+                } else {
+                    rect(
+                        from.x.0 - half,
+                        to.x.0 + half,
+                        from.y.0.min(to.y.0) - half,
+                        from.y.0.max(to.y.0) + half,
+                    )
+                };
                 match placed.strokes.get(&stroke.id()) {
                     Some(&f) => {
                         let i = piece(&mut pieces, f, s);
@@ -2203,13 +2212,20 @@ pub(crate) fn cast_off(
                 if let (Some(s), TypedObjectId::Staff(staff)) = (sys, spaced.provenance.source) {
                     mark_staff(&mut staff_marks, *s, staff, &stroke);
                 }
-                let more = lyric_line(&mut stroke, lyric_lines.get(&source.id()), false);
+                let more = lyric_line(&mut stroke, family_lines.get(&source.id()), false);
                 for (j, dash) in more.into_iter().enumerate() {
                     continuations.push(Stroke {
                         provenance: extra_dash(spaced, 0, j),
                         ..dash
                     });
                     continuation_system.push(*sys);
+                }
+                if family_lines.get(&source.id()) == Some(&FamilyLine::Trill) {
+                    for (i, x) in trill_wiggles(&mut stroke).into_iter().enumerate() {
+                        glyphs.push(wiggle(spaced, 0, i, Point::new(x, stroke.from.y.0)));
+                        glyph_system.push(*sys);
+                        appended_bands.push(stroke.vertical_band);
+                    }
                 }
                 strokes.push(stroke);
                 stroke_system.push(*sys);
@@ -2287,13 +2303,20 @@ pub(crate) fn cast_off(
                     }
                     // A piece after the first ends at a syllable opening its
                     // system, or spans one whole, longer than any dash.
-                    let more = lyric_line(&mut stroke, lyric_lines.get(&source.id()), k > 0);
+                    let more = lyric_line(&mut stroke, family_lines.get(&source.id()), k > 0);
                     for (j, dash) in more.into_iter().enumerate() {
                         continuations.push(Stroke {
                             provenance: extra_dash(spaced, k, j),
                             ..dash
                         });
                         continuation_system.push(Some(*s));
+                    }
+                    if family_lines.get(&source.id()) == Some(&FamilyLine::Trill) {
+                        for (i, x) in trill_wiggles(&mut stroke).into_iter().enumerate() {
+                            glyphs.push(wiggle(spaced, k, i, Point::new(x, stroke.from.y.0)));
+                            glyph_system.push(Some(*s));
+                            appended_bands.push(stroke.vertical_band);
+                        }
                     }
                     if k == 0 {
                         strokes.push(stroke);
@@ -3377,7 +3400,7 @@ fn param_at_x(cp: [Point; 4], x: f32) -> f32 {
 /// Where piece `k` of a stroke split into `n` over systems stands across in
 /// its system, from the spaced ends of its piece: an anchored end rides its
 /// slot's delta, as it does within one system, so a justified system keeps
-/// it at its note; a hyphen or melisma line (`lyric_start` its system's
+/// it at its note; a line of the family (`line_start` its system's
 /// first column) carried into a later system starts at that column, the
 /// lesser of a space past the lead's ink and the first note
 /// (`Measure::firstNoteRestSegmentX`), the lead's gap being under a space,
@@ -3390,17 +3413,17 @@ fn split_piece_x(
     p: &Placement,
     anchor: Option<&(SpringSlotId, SpringSlotId)>,
     slot_source_x: &BTreeMap<SpringSlotId, f32>,
-    lyric_start: Option<f32>,
+    line_start: Option<f32>,
 ) -> (f32, f32) {
     let slot_dx = |slot: &SpringSlotId| slot_source_x.get(slot).map(|&sx| p.slot_dx(sx));
-    let from_x = match lyric_start {
+    let from_x = match line_start {
         Some(x) if k > 0 => x,
         _ => anchor
             .filter(|_| k == 0)
             .and_then(|(start, _)| slot_dx(start))
             .map_or_else(|| p.x(from), |dx| from + dx),
     };
-    let to_x = if lyric_start.is_some() && k + 1 < n {
+    let to_x = if line_start.is_some() && k + 1 < n {
         p.x(to) - LINE_END_GAP
     } else {
         anchor
@@ -3410,6 +3433,43 @@ fn split_piece_x(
     };
     (from_x, to_x)
 }
+
+/// A trill line's piece where the system sets it: the origins across of the
+/// wiggles along it, one in each wiggle's advance, as many as it holds to
+/// the nearest (`LineSegment::symbolLine`); the stroke itself then draws
+/// nothing, a traced anchor.
+fn trill_wiggles(line: &mut Stroke) -> Vec<f32> {
+    let advance = metrics(TRILL_WIGGLE).map_or(1.0, |m| m.advance as f32 / 1024.0);
+    let (x0, x1) = (line.from.x.0, line.to.x.0);
+    let n = ((x1 - x0) / advance).round().max(0.0) as usize;
+    line.to = line.from;
+    (0..n).map(|i| x0 + advance * i as f32).collect()
+}
+
+/// A trill line's wiggle `i` of its piece `piece`, at `at`: synthesized from
+/// the line.
+fn wiggle(spaced: &Stroke, piece: usize, i: usize, at: Point) -> ResolvedGlyph {
+    ResolvedGlyph {
+        provenance: Provenance::synthesized(
+            spaced.provenance.source,
+            SynthesisKind::Registered(TRILL_WIGGLE_SYNTHESIS),
+            SynthesisInstanceKey(((piece as u128) << 32) | i as u128),
+            spaced.provenance.dependencies.clone(),
+        ),
+        glyph: GlyphReference::borrowed(TRILL_WIGGLE),
+        position: at,
+        transform: None,
+        bounding_box: metrics(TRILL_WIGGLE)
+            .expect("the wiggle is bundled")
+            .bounding_box(),
+        style: GlyphStyle { rgba: 0x0000_00ff },
+        layer: 0,
+    }
+}
+
+/// The registry id for a trill line's wiggles, synthesized from the line,
+/// keyed by piece and place.
+const TRILL_WIGGLE_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x5452_4957_4947_4C45); // "TRIWIGLE"
 
 /// A hyphen's or melisma line's piece where the system sets it: a hyphen's
 /// as dashes, one in each `LYRIC_DASH_MAX_DISTANCE` of it, each between
@@ -4882,5 +4942,41 @@ mod tests {
         near(hyphen(0.2, false), (-0.1, 0.3));
         near(hyphen(0.2, true), (-0.2, 0.2));
         near(hyphen(0.5, true), (0.0, 0.5));
+    }
+
+    /// A trill line's piece holds as many wiggles as reach to the nearest
+    /// along it, none where it is shorter than half of one or its ends
+    /// cross, and then draws nothing itself (`LineSegment::symbolLine`).
+    #[test]
+    fn a_trill_lines_piece_holds_its_wiggles_to_the_nearest() {
+        use epiphany_core::{RegionId, ReplicaId};
+        let advance = 971.0 / 1024.0;
+        let line = |x1: f32| Stroke {
+            provenance: Provenance::projected(
+                TypedObjectId::Region(RegionId::new(ReplicaId(1), 1)),
+                Vec::new(),
+            ),
+            from: Point::new(1.0, 2.0),
+            to: Point::new(x1, 2.0),
+            thickness: StaffSpace(0.1),
+            layer: 0,
+            style: GlyphStyle::default(),
+            vertical_band: VerticalBandId(0),
+        };
+        for (x1, n) in [
+            (1.0 + 0.49 * advance, 0),
+            (1.0 + 0.51 * advance, 1),
+            (1.0 + 3.4 * advance, 3),
+            (1.0 + 3.6 * advance, 4),
+            (0.5, 0),
+        ] {
+            let mut stroke = line(x1);
+            let wiggles = trill_wiggles(&mut stroke);
+            assert_eq!(wiggles.len(), n, "{x1}");
+            for (i, x) in wiggles.iter().enumerate() {
+                assert!((x - (1.0 + i as f32 * advance)).abs() < 1e-5);
+            }
+            assert_eq!(stroke.to, stroke.from, "a traced anchor");
+        }
     }
 }
