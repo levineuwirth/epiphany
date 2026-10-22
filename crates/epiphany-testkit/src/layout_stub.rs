@@ -223,6 +223,7 @@ pub fn gen_layout_content(rng: &mut Rng) -> LayoutContent {
             components: components(rng),
             duration: None,
             staff_position: epiphany_core::StaffPosition(rng.range(0, 16) as i16 - 4),
+            marks: Vec::new(),
         }),
         1 => LayoutContent::Staff(StaffContent {
             default_clef: epiphany_core::Clef::default(),
@@ -231,6 +232,7 @@ pub fn gen_layout_content(rng: &mut Rng) -> LayoutContent {
             beams: Vec::new(),
             cross_beams: Vec::new(),
             visiting: Default::default(),
+            vocal: false,
         }),
         2 => LayoutContent::Note(NoteContent {
             voice: epiphany_layout_ir::VoicePlace::Alone,
@@ -241,6 +243,8 @@ pub fn gen_layout_content(rng: &mut Rng) -> LayoutContent {
                 pitch: epiphany_core::PitchId::new(epiphany_core::ReplicaId(7), rng.next_u64()),
                 spelling: spelling(rng),
             }],
+            marks: Vec::new(),
+            ornaments: Vec::new(),
         }),
         3 => LayoutContent::Rest(RestContent {
             voice: epiphany_layout_ir::VoicePlace::Alone,
@@ -424,7 +428,8 @@ pub fn gen_constrained_layout_ir(rng: &mut Rng) -> ConstrainedLayoutIR {
         .collect();
     let metrics_hash = metrics_hash_for(glyphs.iter().map(|g| g.glyph.as_str()));
     let decisions = rng.range_usize(0, 3);
-    ConstrainedLayoutIR {
+    let band_id = band.id;
+    let mut ir = ConstrainedLayoutIR {
         source: ScoreVersion::default(),
         regions: vec![],
         horizontal_slots,
@@ -435,6 +440,7 @@ pub fn gen_constrained_layout_ir(rng: &mut Rng) -> ConstrainedLayoutIR {
         curves: (0..rng.range_usize(0, 3))
             .map(|_| gen_curve(rng, band.id))
             .collect(),
+        texts: Vec::new(),
         vertical_bands: vec![band],
         constraints: vec![],
         break_origins: vec![],
@@ -450,6 +456,54 @@ pub fn gen_constrained_layout_ir(rng: &mut Rng) -> ConstrainedLayoutIR {
         system_leads: Vec::new(),
         staff_groups: Vec::new(),
         cross_staff_beams: Vec::new(),
+        family: Vec::new(),
+    };
+    // Text runs ride the slots and band above, drawn last so the glyphs,
+    // strokes and curves keep the values they took before runs existed.
+    let slots: Vec<SpringSlotId> = ir.horizontal_slots.iter().map(|s| s.id).collect();
+    if !slots.is_empty() {
+        ir.texts = (0..rng.range_usize(0, 3))
+            .map(|_| {
+                let slot = *rng.choose(&slots);
+                gen_text_object(rng, slot, band_id)
+            })
+            .collect();
+    }
+    ir
+}
+
+/// A shaped text run riding `slot` and owned by `band`, with generated
+/// provenance, words, face, size, alignment and place.
+pub fn gen_text_object(rng: &mut Rng, slot: SpringSlotId, band: VerticalBandId) -> TextObject {
+    let words = *rng.choose(&[
+        "Allegro",
+        "dolce",
+        "a tempo",
+        "Kyrie",
+        "e-",
+        "\u{ECA5} = 60",
+        "",
+    ]);
+    let face = *rng.choose(&[
+        TextFace::Roman,
+        TextFace::Italic,
+        TextFace::Bold,
+        TextFace::BoldItalic,
+    ]);
+    let align = *rng.choose(&[TextAlign::Left, TextAlign::Center, TextAlign::Right]);
+    let size = rng.range(1, 4) as f32 * 0.75;
+    let (text, _) = shape_text(
+        gen_provenance(rng),
+        words,
+        face,
+        size,
+        align,
+        gen_point(rng),
+    );
+    TextObject {
+        text,
+        horizontal_slot: slot,
+        vertical_band: band,
     }
 }
 
@@ -545,14 +599,17 @@ pub fn gen_round_trip_report(rng: &mut Rng) -> RoundTripReport {
         .map(|primitive| primitive.provenance.source)
         .chain(render.strokes.iter().map(|stroke| stroke.provenance.source))
         .chain(render.curves.iter().map(|curve| curve.provenance.source))
+        .chain(render.texts.iter().map(|text| text.provenance.source))
         .collect();
-    let total = render.primitives.len() + render.strokes.len() + render.curves.len();
+    let total =
+        render.primitives.len() + render.strokes.len() + render.curves.len() + render.texts.len();
     RoundTripReport {
         status: SolveStatus::Solved,
         logical_objects: total,
         glyphs: render.primitives.len(),
         render_strokes: render.strokes.len(),
         render_curves: render.curves.len(),
+        render_texts: render.texts.len(),
         render_primitives: total,
         recovered_sources,
     }
@@ -1626,7 +1683,7 @@ mod tests {
         assert!(report.glyphs > 0);
         assert_eq!(
             report.render_primitives,
-            report.glyphs + report.render_strokes + report.render_curves
+            report.glyphs + report.render_strokes + report.render_curves + report.render_texts
         );
 
         let measures = report

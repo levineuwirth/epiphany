@@ -79,6 +79,7 @@ pub mod resolved;
 pub mod roundtrip;
 pub mod solver;
 pub mod spatial;
+pub mod text;
 pub mod time_axis;
 pub mod vertical_band;
 pub mod written;
@@ -94,12 +95,15 @@ pub use cache::{
     ResolvedSystemCache, SystemId,
 };
 pub use constrained::{
-    active_clef, active_clef_or, is_beam_stroke, is_rigid_width_stroke, tie_arc, to_constrained,
-    try_to_constrained, Axis, BreakClass, BreakKind, BreakOrigin, ConstrainedLayoutIR,
-    ConstrainedLayoutRegion, ConstrainedValidationError, ConstraintParameters,
-    ConstraintRegistryId, CrossStaffBeam, Curve, GlyphObject, GlyphObjectId, GlyphStyle, GroupSign,
-    GroupSpan, LayoutConstraint, LayoutTransformError, LeadGlyph, SpanAnchor, SpringSlot, Stroke,
-    SystemLead, CROSS_STEM_MIN,
+    active_clef, active_clef_or, is_beam_stroke, is_rigid_width_stroke, text_diagnostics, tie_arc,
+    to_constrained, try_to_constrained, Autoplace, Axis, BreakClass, BreakKind, BreakOrigin,
+    ConstrainedLayoutIR, ConstrainedLayoutRegion, ConstrainedValidationError, ConstraintParameters,
+    ConstraintRegistryId, CrossStaffBeam, Curve, FamilyLine, FamilyMark, GlyphObject,
+    GlyphObjectId, GlyphStyle, GroupSign, GroupSpan, HairpinShape, LayoutConstraint,
+    LayoutTransformError, LeadGlyph, MeasureMark, MeasureStart, NoteMarkPart, PlaceOrder, Room,
+    Row, SpanAnchor, SpringSlot, Stroke, SystemLead, CROSS_STEM_MIN, HAIRPIN_CONT_HEIGHT,
+    HAIRPIN_HEIGHT, HAIRPIN_MIN_LENGTH, LYRIC_DASH_MAX, LYRIC_DASH_MAX_DISTANCE, LYRIC_DASH_MIN,
+    LYRIC_MELISMA_MIN, TRILL_WIGGLE,
 };
 pub use engrave_theory::{
     accidental_glyph, clef_glyph, clef_glyph_for, flag_count, flag_glyph, has_stem, key_signature,
@@ -121,12 +125,13 @@ pub use logical::{
     to_logical, BarLineLayout, BarlineKind, BeamGroupLayout, ChordLayout, ClefLayout,
     CompositeLayoutObject, CrossRegionObject, CueLayout, GraphicLayout, GroupContent, GroupLayout,
     KeySignatureLayout, LayoutContent, LayoutObject, LayoutRegion, LocalCoordinateSystem,
-    LogicalLayoutIR, MarkerLayout, MeasureContent, MultimeasureRestLayout, NoteContent, NoteLayout,
-    NotePitch, PlacedClef, PlacedComponent, PlacedKeySignature, RepeatContent, RepeatPlacement,
-    RestContent, RestLayout, ScoreVersion, SlurContent, SlurDirection, SlurEndpoint, SlurLayout,
-    SpannerLayout, StaffContent, StaffLayout, TextLayout, TieContent, TieLayout,
-    TimeSignatureContent, TimeSignatureDisplayLayout, TrajectoryLayout, TupletDisplayLayout,
-    UnpitchedContent, VerticalExtent, VoicePlace, VoltaContent,
+    LogicalLayoutIR, LyricContent, MarkerContent, MarkerLayout, MarkerPlace, MeasureContent,
+    MultimeasureRestLayout, NoteContent, NoteLayout, NotePitch, PlacedClef, PlacedComponent,
+    PlacedKeySignature, RepeatContent, RepeatPlacement, RestContent, RestLayout, ScoreVersion,
+    SlurContent, SlurDirection, SlurEndpoint, SlurLayout, SpannerContent, SpannerLayout,
+    StaffContent, StaffLayout, TextLayout, TieContent, TieLayout, TimeSignatureContent,
+    TimeSignatureDisplayLayout, TrajectoryLayout, TupletDisplayLayout, UnpitchedContent,
+    VerticalExtent, VoicePlace, VoltaContent,
 };
 pub use provenance::{
     continuation_instance_key, manifestation_layout_id, stable_layout_id, synthesized_layout_id,
@@ -155,6 +160,13 @@ pub use solver::{
 };
 pub use spatial::{
     BoundingBox, Margins, Point, Rect, ScaleContext, Size2D, StaffSpace, Transform2D,
+};
+pub use text::{
+    face_by_hash, shape_text, shaping_identity, symbol_run, AxisTag, CaretAffinity, CaretStop,
+    ClusterMap, FaceSynthesis, FeatureSetting, LanguageTag, PositionedGlyph, ResolvedText,
+    ScriptTag, ShapedSegment, ShaperId, ShapingGaps, Symbol, SymbolPlace, TextAlign, TextCluster,
+    TextDirection, TextFace, TextFaceIdentity, TextObject, TextShapingIdentity, Turn,
+    UnicodeVersion,
 };
 pub use time_axis::{
     time_axis_of, AleatoricTimeAxis, MetricTimeAxis, ProportionalTimeAxis,

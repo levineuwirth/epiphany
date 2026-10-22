@@ -21,6 +21,15 @@
 //!   system starts; a clef change after the start with no clef drawn for it;
 //! - a time signature missing from the measure where a meter takes effect;
 //! - on a layout of several pages, ink no system owns, which is on no page;
+//! - of the expression family the engraver draws, each mark of a note
+//!   (articulation, technique, ornament and its accidentals, tremolo, jazz
+//!   mark, arpeggio) with nothing drawn for it, by its class, and each
+//!   fermata, breath mark, caesura, dynamic, hairpin, syllable, staff text,
+//!   tempo mark, rehearsal mark, segno, coda and trill line with no ink, a
+//!   trill at a note a drawn trill line starts at standing as its sign; a mark of a
+//!   staff anchored at a region offset stands on no staff, so it is named as
+//!   drawn nowhere, while a tempo or rehearsal mark, segno or coda stands
+//!   over the system, drawn once where parts repeat it;
 //! - each diagnostic the projection raised, by kind.
 //!
 //! Not checked, and counted as such: whether an accidental is the one the
@@ -31,11 +40,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::{
-    AnchorOffset, Event, EventDuration, EventPosition, RationalTime, Score, StaffId,
-    StaffInstanceId, TimeAnchor, TypedObjectId,
+    AnchorOffset, Event, EventDuration, EventMark, EventPosition, MarkerKind, RationalTime, Score,
+    SpannerKind, StaffId, StaffInstanceId, TimeAnchor, TypedObjectId,
 };
 use epiphany_layout_ir::constrained::{LayoutDiagnostic, LayoutDiagnosticKind};
-use epiphany_layout_ir::{is_beam_stroke, ResolvedLayoutIR};
+use epiphany_layout_ir::{is_beam_stroke, NoteMarkPart, ResolvedLayoutIR};
 
 /// Engraving omissions by kind, with counts; and what was not checked.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
@@ -140,6 +149,25 @@ fn offset(anchor: &TimeAnchor) -> Option<RationalTime> {
     }
 }
 
+/// Where an anchor stands in its region's musical time: an event's onset or
+/// a region offset, with its own offset; `None` in wall-clock time.
+fn onset(score: &Score, anchor: &TimeAnchor) -> Option<RationalTime> {
+    match anchor {
+        TimeAnchor::Event { id, offset } => {
+            let EventPosition::Musical(start) = score.events.get(*id)?.position() else {
+                return None;
+            };
+            let by = match offset {
+                AnchorOffset::Zero => RationalTime::zero(),
+                AnchorOffset::Musical(d) => d.0.clone(),
+                _ => return None,
+            };
+            Some((start.clone() + epiphany_core::MusicalDuration(by)).0)
+        }
+        _ => offset(anchor),
+    }
+}
+
 /// Counts what the engraver left out of `score` in `layout`.
 pub fn omissions(
     score: &Score,
@@ -165,6 +193,9 @@ pub fn omissions(
     }
     for c in &layout.curves {
         inked.insert(c.provenance.source);
+    }
+    for t in &layout.texts {
+        inked.insert(t.provenance.source);
     }
     // The notes a beam joins, named among its dependencies.
     let beamed: BTreeSet<TypedObjectId> = layout
@@ -560,16 +591,182 @@ pub fn omissions(
         }
     }
 
+    // The expression family, by what each object's primitives are.
+    let drawn: BTreeSet<epiphany_layout_ir::LayoutObjectId> = layout
+        .glyphs
+        .iter()
+        .map(|g| g.provenance.stable_id)
+        .chain(layout.texts.iter().map(|t| t.provenance.stable_id))
+        .chain(
+            layout
+                .strokes
+                .iter()
+                .filter(|s| s.from != s.to)
+                .map(|s| s.provenance.stable_id),
+        )
+        .collect();
+    // A trill line draws the trill at its note as its sign.
+    let trill_lines_at: BTreeSet<epiphany_core::EventId> = score
+        .cross_cutting
+        .spanners
+        .iter()
+        .filter(|s| {
+            s.kind == SpannerKind::TrillExtension && inked.contains(&TypedObjectId::Spanner(s.id))
+        })
+        .filter_map(|s| match s.start {
+            TimeAnchor::Event { id, .. } => Some(id),
+            _ => None,
+        })
+        .collect();
+    for event in score.events.iter().filter(|e| !graces.contains(&e.id())) {
+        let (marks, ornaments) = match event {
+            Event::Pitched(n) => (&n.marks, n.ornaments.as_slice()),
+            Event::Unpitched(u) => (&u.marks, &[][..]),
+            _ => continue,
+        };
+        for mark in marks {
+            let part = match mark {
+                EventMark::Arpeggio { .. } => NoteMarkPart::Arpeggio,
+                EventMark::TremoloWithNext { .. } => NoteMarkPart::TremoloStroke(0),
+                mark => NoteMarkPart::Glyph(mark.tag()),
+            };
+            if !drawn.contains(&part.id(event.id())) {
+                out.add(&format!("note mark: {}", mark_class(mark)));
+            }
+        }
+        for ornament in ornaments {
+            let tag = NoteMarkPart::ornament_tag(ornament.kind);
+            let class = format!("{:?}", ornament.kind).to_lowercase();
+            let as_line = ornament.kind == epiphany_core::OrnamentKind::Trill
+                && trill_lines_at.contains(&event.id());
+            if !as_line && !drawn.contains(&NoteMarkPart::Glyph(tag).id(event.id())) {
+                out.add(&format!("ornament: {class}"));
+            }
+            for (above, accidental) in [
+                (true, ornament.accidental_above.is_some()),
+                (false, ornament.accidental_below.is_some()),
+            ] {
+                let part = NoteMarkPart::Accidental { tag, above };
+                if accidental && !drawn.contains(&part.id(event.id())) {
+                    out.add(&format!("ornament accidental: {class}"));
+                }
+            }
+        }
+    }
+    // A system mark (a tempo or rehearsal mark, a segno or coda) is drawn
+    // once over the system, whichever part holds it, so one repeating an
+    // inked mark's kind and time from another part is drawn too.
+    let system_mark = |kind: &MarkerKind| {
+        matches!(
+            kind,
+            MarkerKind::Tempo(_) | MarkerKind::Rehearsal(_) | MarkerKind::Segno | MarkerKind::Coda
+        )
+    };
+    let inked_system: Vec<(&MarkerKind, RationalTime)> = score
+        .cross_cutting
+        .markers
+        .iter()
+        .filter(|m| system_mark(&m.kind) && inked.contains(&TypedObjectId::Marker(m.id)))
+        .filter_map(|m| Some((&m.kind, onset(score, &m.anchor)?)))
+        .collect();
+    for marker in &score.cross_cutting.markers {
+        let class = match marker.kind {
+            MarkerKind::Fermata(_) => "fermata",
+            MarkerKind::Breath(_) => "breath mark",
+            MarkerKind::Caesura(_) => "caesura",
+            MarkerKind::Dynamic(_) => "dynamic",
+            MarkerKind::Text(_) => "staff text",
+            MarkerKind::Tempo(_) => "tempo mark",
+            MarkerKind::Rehearsal(_) => "rehearsal mark",
+            MarkerKind::Segno => "segno",
+            MarkerKind::Coda => "coda",
+        };
+        if inked.contains(&TypedObjectId::Marker(marker.id)) {
+            continue;
+        }
+        if system_mark(&marker.kind) {
+            let at = onset(score, &marker.anchor);
+            if inked_system
+                .iter()
+                .any(|(kind, t)| **kind == marker.kind && Some(t) == at.as_ref())
+            {
+                continue;
+            }
+            out.add(class);
+            continue;
+        }
+        match marker.anchor {
+            TimeAnchor::Region { .. } => {
+                out.add(&format!("{class} at a region offset: drawn nowhere"))
+            }
+            _ => out.add(class),
+        }
+    }
+    for lyric in score
+        .cross_cutting
+        .lyrics
+        .iter()
+        .filter(|l| !graces.contains(&l.event))
+    {
+        if !inked.contains(&TypedObjectId::LyricLine(lyric.id)) {
+            out.add("lyric");
+        }
+    }
+    for spanner in &score.cross_cutting.spanners {
+        let class = match spanner.kind {
+            SpannerKind::Hairpin(_) => "hairpin",
+            SpannerKind::TrillExtension => "trill line",
+            _ => continue,
+        };
+        if !inked.contains(&TypedObjectId::Spanner(spanner.id)) {
+            out.add(class);
+        }
+    }
+
     for diagnostic in diagnostics {
         let kind = match &diagnostic.kind {
             LayoutDiagnosticKind::MissingSpelling => String::from("diagnostic: missing spelling"),
             LayoutDiagnosticKind::UnbundledGlyph(glyph) => {
                 format!("diagnostic: unbundled glyph {}", glyph.as_str())
             }
+            LayoutDiagnosticKind::UncoveredCodepoint { codepoint } => {
+                format!("diagnostic: no text face covers U+{codepoint:04X}")
+            }
+            LayoutDiagnosticKind::RightToLeftText => {
+                String::from("diagnostic: right-to-left text shaped left to right")
+            }
         };
         out.add(&kind);
     }
     out
+}
+
+/// A note mark's class, as the report names it.
+fn mark_class(mark: &EventMark) -> &'static str {
+    match mark {
+        EventMark::Staccato => "staccato",
+        EventMark::Staccatissimo => "staccatissimo",
+        EventMark::Spiccato => "spiccato",
+        EventMark::Tenuto => "tenuto",
+        EventMark::DetachedLegato => "detached legato",
+        EventMark::Accent => "accent",
+        EventMark::Marcato => "marcato",
+        EventMark::Stress => "stress",
+        EventMark::Unstress => "unstress",
+        EventMark::UpBow => "up-bow",
+        EventMark::DownBow => "down-bow",
+        EventMark::Harmonic => "harmonic",
+        EventMark::OpenString => "open string",
+        EventMark::Stopped => "stopped",
+        EventMark::SnapPizzicato => "snap pizzicato",
+        EventMark::Scoop => "scoop",
+        EventMark::Plop => "plop",
+        EventMark::Doit => "doit",
+        EventMark::Falloff => "falloff",
+        EventMark::Tremolo { .. } => "tremolo",
+        EventMark::TremoloWithNext { .. } => "two-note tremolo",
+        EventMark::Arpeggio { .. } => "arpeggio",
+    }
 }
 
 #[cfg(test)]

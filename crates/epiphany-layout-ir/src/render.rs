@@ -11,6 +11,7 @@
 use crate::provenance::Provenance;
 use crate::resolved::ResolvedLayoutIR;
 use crate::spatial::{Point, ScaleContext};
+use crate::text::ResolvedText;
 use crate::{BoundingBox, Curve, GlyphReference, GlyphStyle, Stroke, Transform2D};
 
 /// A single renderer primitive (Chapter 7 §"RenderIR"). Interface only — it
@@ -39,6 +40,9 @@ pub struct RenderIR {
     pub strokes: Vec<Stroke>,
     /// Cubic-bézier curve primitives (slurs, …), traced like the strokes.
     pub curves: Vec<Curve>,
+    /// Shaped text runs, drawn as shaped (`req:layoutir:text-run`), traced
+    /// like the strokes.
+    pub texts: Vec<ResolvedText>,
 }
 
 /// The render target (Chapter 7 §"RenderIR": `RenderConfiguration.target`).
@@ -146,5 +150,6 @@ pub fn to_render(resolved: &ResolvedLayoutIR) -> RenderIR {
             .collect(),
         strokes: resolved.strokes.clone(),
         curves: resolved.curves.clone(),
+        texts: resolved.texts.clone(),
     }
 }

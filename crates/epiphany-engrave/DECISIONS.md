@@ -2191,3 +2191,166 @@ Besides these, as version 53 states, the lead's, signatures', changes' and
 barlines' springs are kept whole: the barline's own spring after it stands
 1.5 from its glyph's origin, where MuseScore's `barNoteDistance` is 1.25 from
 the barline's right edge.
+
+## ENGRAVER_VERSION 56 → 57: text runs ride their slots (X4c.2, 2026-10-22)
+
+The resolved layout carries shaped text runs (`texts`), a fourth primitive.
+The spacing pass moves each run by its slot's rigid delta, as it moves the
+slot's glyphs, and casting places it with the slot's system and its staff's
+shift. A run's ink is its staff's content by height alone: it joins the
+staff's extent, so the gap to the next staff makes room for it (D79's Q14),
+and it takes no room across, so a run neither widens a column nor a system.
+Lyrics, which do take room, are X4c.5's. No score draws a run yet, but the
+runs' count enters every layout's canonical bytes, so the version moves.
+Locked by `a_text_run_rides_its_slot_and_its_staff` and
+`a_text_run_takes_its_staffs_room_on_the_page`.
+
+## ENGRAVER_VERSION 57 → 58: marks at notes, fermatas and breath marks (X4c.3, 2026-10-22)
+
+The projection now draws a note's articulations, techniques, ornaments,
+tremolo strokes, jazz marks and arpeggio, and a fermata, breath mark or
+caesura, and names in `ConstrainedLayoutIR::family` how a solver must treat
+each. The engraver follows it:
+
+- A member taking no room across (`Room::None`: every mark but the arpeggio,
+  every fermata) gives its slot neither width nor its x: the spacing pass
+  takes a slot's source from its first glyph that takes room, so a mark the
+  projection emits before its note's head never moves the note. MuseScore's
+  chord shape leaves its articulations out of spacing too
+  (`ChordLayout::fillShape`; `an_arpeggio_takes_room_and_other_marks_take_none`,
+  `marks_take_no_room_at_the_floor`). An arpeggio takes room as an
+  accidental does (`Room::Ink`).
+- A breath mark or caesura stands right-aligned in a fixed column of its
+  own, whose spring is the 1.0 MuseScore pads a breath by after it. Before
+  it, it keeps 1.0 from the ink where their heights meet and from its
+  staff's heads, stems, dots and rests at any height, at natural spacing
+  and at the floor, MuseScore never kerning a breath against its voice; an
+  accidental after it keeps 1.0 where their heights meet (`Ink::Breath`;
+  `a_breath_mark_takes_a_column_after_its_note`,
+  `a_breath_mark_keeps_its_padding_at_the_floor`).
+- Once a system is set across, the family's placed members (a fermata now;
+  dynamics, syllables and tempo marks in later rows) are placed staff by
+  staff in MuseScore's order, each moved away from its staff until it clears
+  the ink under it by its distance, never toward it, a row's members at the
+  height the furthest needs (`family::place`). Their ink then joins their
+  staff's extent, so the gap to the next staff makes room for it
+  (`a_fermata_between_two_staves_holds_them_apart`).
+- A mark placed past the end of a stem meeting a beam across two staves
+  rides the beam's staff and stands between the staves with it, the content
+  of neither (`a_mark_past_a_beam_across_two_staves_stands_past_it`).
+
+## ENGRAVER_VERSION 58 → 59: dynamics and hairpins (X4c.4, 2026-10-22)
+
+The projection draws dynamics and hairpins, each a placed member of the
+family, and the engraver places them as MuseScore 4.7.5 does once a system
+is set:
+
+- Members are placed one by one in MuseScore's order, each joining the ink
+  the next is placed against; once all of one order are placed, the members
+  of a row (a dynamic and the hairpins meeting it, end to end) move out
+  until their optical centres stand at the outermost of theirs
+  (`AlignmentLayout::alignItemsWithTheirSnappingChain`), a dynamic's centre
+  half its x-height over its baseline and a hairpin's its axis
+  (`a_row_aligns_its_members_centres_at_the_outermost`,
+  `a_chain_of_dynamics_and_hairpins_stands_in_one_row`).
+- A dynamic or hairpin of a grand staff's upper staff, below it, stands
+  centred between the two staves once they are set, as far as the ink
+  between them lets it, a row's members together
+  (`dynamicsHairpinsAutoCenterOnGrandStaff`;
+  `a_grand_staffs_dynamic_stands_between_its_staves`).
+- A hairpin over a system break is drawn a piece in each system, each piece
+  opening from its axis as MuseScore draws one: to the full opening at its
+  wide end, and to the continuation's half space at a narrow end the break
+  leaves open (`a_hairpin_over_a_system_break_opens_each_piece`); a piece
+  the system sets shorter than a space has its end moved out to a space
+  (`a_hairpin_is_at_least_a_space_long`).
+
+## ENGRAVER_VERSION 59 → 60: lyrics (X4c.5, 2026-10-22)
+
+- A syllable takes room against its staff's verse alone (`Room::Verse`, D79's
+  Q13): it stands at least 0.25 after the verse's syllable before it
+  (`lyricsMinDistance`), or 0.5 where a hyphen joins them, room for the
+  shortest dash and its pads, at natural spacing and at the floor
+  (`a_verse_keeps_its_syllables_apart`). A run that takes room, a syllable
+  or an arpeggio, widens its slot in casting too, so a system holds it.
+- Once a system is set, a verse is placed against the ink under it, never
+  against another verse, its syllables aligned on their baseline a space
+  clear of that ink; a verse moved moves the verses outside it as far
+  (`LyricsLayout::checkCollisionsWithStaffElements`;
+  `verses_move_with_the_verses_inside_them`).
+- A stroke anchored in two systems (a hairpin, hyphen or melisma line over a
+  break) splits where they break, rather than by where its spaced ends fall:
+  a hairpin or line ending at a later system's first note no longer rides
+  its first system whole. Its anchored ends ride their slots' deltas, as
+  within one system, where it is placed as where it is drawn, so a
+  justified system no longer stretches a hairpin's or line's end away from
+  its note.
+- A hyphen is drawn as dashes along each of its pieces, one in each 16
+  spaces of it, each 0.4 to 0.6 long and centred in its share
+  (`lyricsDashMaxDistance`, `lyricsDashMinLength`, `lyricsDashMaxLength`);
+  one too short for its least dash grows to it about its centre. A hyphen
+  or melisma line going on past its system stops a quarter space short of
+  the system's end (`endingXForOpenEndedLines`); carried into a later system
+  it starts at that system's first column (`firstNoteRestSegmentX`: the
+  lesser of a space past the lead's ink and the first note), and a hyphen's
+  piece there too short for its least dash grows back from its end, so the
+  dash stands 0.05 before the syllable opening the system
+  (`LyricsLayout::layoutDashes`). A melisma line's piece shorter than a
+  space, less a tolerance of 0.05, is not drawn (`lyricsMelismaMinLength`,
+  `lyricsMelismaForce` off).
+
+## ENGRAVER_VERSION 60 → 61: tempo marks, staff text and rehearsal marks (X4c.6, 2026-10-22)
+
+- The family is placed in MuseScore's order with the rehearsal marks after
+  the tempo marks, so a rehearsal mark stands outside a tempo mark it meets
+  (`SystemLayout::layoutSystemElements` places them last), and a segno or
+  coda after both (`markersAndJumps`).
+- A member at its measure's start (`MeasureStart`) is set across once its
+  system is: a rehearsal mark centred on its barline's right edge, where
+  its measure starts, and a segno or coda on the barline's middle, both by
+  the ink of the barline column there; where the measure opens its system
+  or follows no barline, a rehearsal mark is centred just after the ink of
+  the system's lead and of the columns before its own (its signatures), and
+  a segno or coda on the system's left edge (`TLayout::layoutRehearsalMark`,
+  `MarkerLayout::doLayoutMarker`). Its runs and its frame move together, in
+  its placing as in its drawing.
+- A tempo mark is not set right of a rehearsal mark at its measure, as
+  MuseScore's `tempoAlignRightOfRehearsalMark` does; the two stand one over
+  the other.
+
+## ENGRAVER_VERSION 61 → 62: trill lines (X4c.7, 2026-10-22)
+
+- A trill line's wiggles are set piece by piece once its system is: as many
+  `wiggleTrill` as reach along the piece to the nearest, one each advance
+  (`LineSegment::symbolLine`), from after the sign on its first piece and
+  from the system's first column on a piece carried into a later one; the
+  line's stroke then draws nothing, a traced anchor, and its wiggles' ink is
+  its piece's ink in the family's placing.
+- Every line of the family, a hairpin's legs as a hyphen, is split over a
+  system break as MuseScore splits a line (`TLayout::layoutSystemSLine`): a
+  piece going on stops a quarter space short of its system's end and a
+  piece carried into a later system starts at its first column. A hairpin's
+  first piece had run to the system's end, and its next from the system's
+  first ink.
+
+## ENGRAVER_VERSION 62 → 63: the family's strokes take no room (X4c.9, 2026-10-22)
+
+- A stroke of a member taking no room across (a rehearsal mark's frame, a
+  hairpin's legs, a lyric line, a trill line's carrier, a two-note tremolo's
+  strokes) widens no slot in the spacing pass, as the member's glyphs do
+  not. A rehearsal mark's frame rides its measure's first slot at both ends,
+  so it had been folded into that slot's extent as a stem is, and a frame
+  wider than the room before its first note pushed the measure's content
+  right by the excess (`a_rehearsal_mark_takes_no_room`).
+
+## ENGRAVER_VERSION 63 → 64: a column's place is its first glyph that takes room (X4c.9, 2026-10-22)
+
+- Casting reads a column's reference x, by which it orders a region's
+  columns and shares a justified system's stretch among them, from its
+  first glyph that takes room, as the spacing pass reads a slot's source.
+  It had read the first glyph the projection emitted there, and the
+  projection emits a note's marks before its head: a scoop left of a note
+  opening a measure set its column before the barline it follows, and the
+  barline was drawn after the note, over it
+  (`a_mark_gives_its_column_no_place`). A column of marks alone keeps its
+  first glyph's x.

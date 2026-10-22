@@ -12,7 +12,9 @@
 //! Every distinct glyph is one form XObject, its outline filled with the
 //! nonzero rule as SVG fills it, drawn wherever the glyph occurs; a glyph with
 //! no bundled outline is drawn as its bounding box in red, with a
-//! [`Diagnostic`], as in SVG. Content streams are written uncompressed, and
+//! [`Diagnostic`], as in SVG. A text run is drawn as shaped, each glyph a form
+//! of its own from the face its segment names, in the face's units and scaled
+//! where it stands; its text is not selectable (a later question). Content streams are written uncompressed, and
 //! the output carries no date, so identical input yields identical bytes. The
 //! writer has no dependency: the format's object, cross-reference and stream
 //! syntax is written here.
@@ -80,6 +82,30 @@ pub fn render_pdf(pages: &[PdfPage<'_>], options: &PdfOptions) -> PdfOutput {
             }),
         }
     }
+    // Every text glyph drawn, by its face and id, with its outline in the
+    // face's units; a run naming a face this build lacks is diagnosed.
+    let mut text_outlines: BTreeMap<(epiphany_text::Face, u32), Vec<epiphany_text::PathCommand>> =
+        BTreeMap::new();
+    for page in pages {
+        for run in &page.layout.texts {
+            match crate::text::placed(run) {
+                Ok(glyphs) => {
+                    for g in glyphs {
+                        text_outlines
+                            .entry((g.face, g.glyph))
+                            .or_insert_with(|| g.face.outline(g.glyph));
+                    }
+                }
+                Err(face) => diagnostics.push(Diagnostic {
+                    message: format!(
+                        "a text run names a face this build does not carry ({face}); drew its bounds"
+                    ),
+                    glyph: None,
+                }),
+            }
+        }
+    }
+    text_outlines.retain(|_, outline| !outline.is_empty());
     let alphas: BTreeSet<u32> = pages
         .iter()
         .flat_map(|page| {
@@ -90,13 +116,15 @@ pub fn render_pdf(pages: &[PdfPage<'_>], options: &PdfOptions) -> PdfOutput {
                 .map(|g| g.style.rgba)
                 .chain(layout.strokes.iter().map(|s| s.style.rgba))
                 .chain(layout.curves.iter().map(|c| c.style.rgba))
+                .chain(layout.texts.iter().map(|t| t.style.rgba))
         })
         .map(|rgba| rgba & 0xff)
         .filter(|alpha| *alpha != 0xff)
         .collect();
 
     // Object numbers: 1 the catalog, 2 the page tree, then one per glyph form,
-    // one per opacity state, and two per page (the page and its content).
+    // one per text glyph form, one per opacity state, and two per page (the
+    // page and its content).
     let mut writer = Writer::new();
     let first_form = 3;
     let form_number: BTreeMap<&str, usize> = outlines
@@ -104,7 +132,13 @@ pub fn render_pdf(pages: &[PdfPage<'_>], options: &PdfOptions) -> PdfOutput {
         .enumerate()
         .map(|(i, name)| (*name, first_form + i))
         .collect();
-    let first_state = first_form + outlines.len();
+    let first_text_form = first_form + outlines.len();
+    let text_form_number: BTreeMap<(epiphany_text::Face, u32), usize> = text_outlines
+        .keys()
+        .enumerate()
+        .map(|(i, key)| (*key, first_text_form + i))
+        .collect();
+    let first_state = first_text_form + text_outlines.len();
     let state_number: BTreeMap<u32, usize> = alphas
         .iter()
         .enumerate()
@@ -120,6 +154,9 @@ pub fn render_pdf(pages: &[PdfPage<'_>], options: &PdfOptions) -> PdfOutput {
     let mut resources = String::from("<< /ProcSet [/PDF] /XObject <<");
     for (name, number) in &form_number {
         let _ = write!(resources, " /{} {number} 0 R", form_name(name, number));
+    }
+    for number in text_form_number.values() {
+        let _ = write!(resources, " /T{number} {number} 0 R");
     }
     resources.push_str(" >> /ExtGState <<");
     for (alpha, number) in &state_number {
@@ -189,6 +226,82 @@ pub fn render_pdf(pages: &[PdfPage<'_>], options: &PdfOptions) -> PdfOutput {
             path.as_bytes(),
         );
     }
+    for (key, outline) in &text_outlines {
+        let mut path = String::new();
+        let (mut left, mut bottom, mut right, mut top) = (0f32, 0f32, 0f32, 0f32);
+        let mut see = |x: f32, y: f32| {
+            left = left.min(x);
+            bottom = bottom.min(y);
+            right = right.max(x);
+            top = top.max(y);
+        };
+        // A quadratic segment is written as the cubic it equals, from the
+        // point the path stands at.
+        let mut at = (0f32, 0f32);
+        for command in outline {
+            match *command {
+                epiphany_text::PathCommand::MoveTo(x, y) => {
+                    see(x, y);
+                    let _ = writeln!(path, "{} {} m", num(x), num(y));
+                    at = (x, y);
+                }
+                epiphany_text::PathCommand::LineTo(x, y) => {
+                    see(x, y);
+                    let _ = writeln!(path, "{} {} l", num(x), num(y));
+                    at = (x, y);
+                }
+                epiphany_text::PathCommand::QuadTo(cx, cy, x, y) => {
+                    see(cx, cy);
+                    see(x, y);
+                    let c1 = (
+                        at.0 + (cx - at.0) * 2.0 / 3.0,
+                        at.1 + (cy - at.1) * 2.0 / 3.0,
+                    );
+                    let c2 = (x + (cx - x) * 2.0 / 3.0, y + (cy - y) * 2.0 / 3.0);
+                    let _ = writeln!(
+                        path,
+                        "{} {} {} {} {} {} c",
+                        num(c1.0),
+                        num(c1.1),
+                        num(c2.0),
+                        num(c2.1),
+                        num(x),
+                        num(y)
+                    );
+                    at = (x, y);
+                }
+                epiphany_text::PathCommand::CurveTo(c1x, c1y, c2x, c2y, x, y) => {
+                    for (px, py) in [(c1x, c1y), (c2x, c2y), (x, y)] {
+                        see(px, py);
+                    }
+                    let _ = writeln!(
+                        path,
+                        "{} {} {} {} {} {} c",
+                        num(c1x),
+                        num(c1y),
+                        num(c2x),
+                        num(c2y),
+                        num(x),
+                        num(y)
+                    );
+                    at = (x, y);
+                }
+                epiphany_text::PathCommand::Close => path.push_str("h\n"),
+            }
+        }
+        path.push_str("f\n");
+        writer.stream(
+            text_form_number[key],
+            &format!(
+                "/Type /XObject /Subtype /Form /BBox [{} {} {} {}]",
+                num(left - 1.0),
+                num(bottom - 1.0),
+                num(right + 1.0),
+                num(top + 1.0)
+            ),
+            path.as_bytes(),
+        );
+    }
     for (alpha, number) in &state_number {
         let a = num(*alpha as f32 / 255.0);
         writer.object(*number, &format!("<< /Type /ExtGState /ca {a} /CA {a} >>"));
@@ -207,7 +320,7 @@ pub fn render_pdf(pages: &[PdfPage<'_>], options: &PdfOptions) -> PdfOutput {
                 number + 1
             ),
         );
-        let content = page_content(page, scale, &form_number);
+        let content = page_content(page, scale, &form_number, &text_form_number);
         writer.stream(number + 1, "", content.as_bytes());
     }
     writer.object(info, "<< /Producer (epiphany-render-svg) >>");
@@ -224,12 +337,18 @@ fn form_name(_glyph: &str, number: &usize) -> String {
     format!("G{number}")
 }
 
-/// A layer's strokes, curves and glyphs, by index into the layout's arrays.
-type LayerIndices = (Vec<usize>, Vec<usize>, Vec<usize>);
+/// A layer's strokes, curves, glyphs and text runs, by index into the
+/// layout's arrays.
+type LayerIndices = (Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>);
 
 /// One page's content stream: the frame mapped onto the page, then every layer
-/// in ascending order, its strokes, curves and glyphs in that order.
-fn page_content(page: &PdfPage<'_>, scale: f32, forms: &BTreeMap<&str, usize>) -> String {
+/// in ascending order, its strokes, curves, glyphs and text runs in that order.
+fn page_content(
+    page: &PdfPage<'_>,
+    scale: f32,
+    forms: &BTreeMap<&str, usize>,
+    text_forms: &BTreeMap<(epiphany_text::Face, u32), usize>,
+) -> String {
     let layout = page.layout;
     let mut layers: BTreeMap<i32, LayerIndices> = BTreeMap::new();
     for (i, stroke) in layout.strokes.iter().enumerate() {
@@ -241,6 +360,9 @@ fn page_content(page: &PdfPage<'_>, scale: f32, forms: &BTreeMap<&str, usize>) -
     for (i, glyph) in layout.glyphs.iter().enumerate() {
         layers.entry(glyph.layer).or_default().2.push(i);
     }
+    for (i, run) in layout.texts.iter().enumerate() {
+        layers.entry(run.layer).or_default().3.push(i);
+    }
     let mut s = String::new();
     let _ = writeln!(
         s,
@@ -250,7 +372,7 @@ fn page_content(page: &PdfPage<'_>, scale: f32, forms: &BTreeMap<&str, usize>) -
         num(-page.frame.left * scale),
         num(-page.frame.bottom * scale)
     );
-    for (strokes, curves, glyphs) in layers.values() {
+    for (strokes, curves, glyphs, runs) in layers.values() {
         for &i in strokes {
             let stroke = &layout.strokes[i];
             let _ = writeln!(
@@ -312,6 +434,44 @@ fn page_content(page: &PdfPage<'_>, scale: f32, forms: &BTreeMap<&str, usize>) -
                         num(bb.bottom.0),
                         num((bb.right.0 - bb.left.0).max(0.0)),
                         num((bb.top.0 - bb.bottom.0).max(0.0))
+                    );
+                }
+            }
+        }
+        for &i in runs {
+            let run = &layout.texts[i];
+            match crate::text::placed(run) {
+                Ok(glyphs) => {
+                    for g in glyphs {
+                        let Some(number) = text_forms.get(&(g.face, g.glyph)) else {
+                            continue;
+                        };
+                        let k = crate::text::scale_number(g.scale);
+                        let turn = match crate::text::linear(&g.transform) {
+                            Some([a, b, c, d]) => {
+                                format!(" {} {} {} {} 0 0 cm", num(a), num(b), num(c), num(d))
+                            }
+                            None => String::new(),
+                        };
+                        let _ = writeln!(
+                            s,
+                            "q {}{} rg 1 0 0 1 {} {} cm{turn} {k} 0 0 {k} 0 0 cm /T{number} Do Q",
+                            state(run.style.rgba),
+                            rgb(run.style.rgba),
+                            num(g.x),
+                            num(g.y)
+                        );
+                    }
+                }
+                Err(_) => {
+                    let (l, b, r, t) = crate::text::ink(run);
+                    let _ = writeln!(
+                        s,
+                        "q 0.8 0 0 RG 0.05 w {} {} {} {} re S Q",
+                        num(l),
+                        num(b),
+                        num((r - l).max(0.0)),
+                        num((t - b).max(0.0))
                     );
                 }
             }
@@ -440,6 +600,20 @@ mod tests {
             .layout
     }
 
+    /// The stub's layout of a rich score without the runs its marks draw,
+    /// for a test of what it adds alone.
+    fn runless(seed: u64) -> ResolvedLayoutIR {
+        let mut layout = stub_layout(seed);
+        layout.texts.clear();
+        layout.unowned.texts.clear();
+        for page in &mut layout.pages {
+            for system in &mut page.systems {
+                system.primitives.texts.clear();
+            }
+        }
+        layout
+    }
+
     fn frame() -> Frame {
         Frame {
             left: -10.0,
@@ -502,7 +676,7 @@ mod tests {
     /// Each glyph is drawn once through its form, each stroke and curve once.
     #[test]
     fn every_primitive_is_drawn_once() {
-        let layout = stub_layout(5);
+        let layout = runless(5);
         let out = render_pdf(
             &[PdfPage {
                 layout: &layout,
@@ -552,5 +726,90 @@ mod tests {
             render_pdf(&page, &PdfOptions::default()),
             render_pdf(&page, &PdfOptions::default())
         );
+    }
+
+    #[test]
+    fn a_text_run_is_drawn_as_one_form_per_glyph() {
+        let mut layout = runless(3);
+        let (run, _) = epiphany_layout_ir::shape_text(
+            epiphany_layout_ir::Provenance::projected(
+                epiphany_core::TypedObjectId::Marker(epiphany_core::MarkerId::from_raw(9)),
+                vec![],
+            ),
+            "mezza voce",
+            epiphany_layout_ir::TextFace::Italic,
+            2.0,
+            epiphany_layout_ir::TextAlign::Left,
+            epiphany_layout_ir::Point::new(5.0, -20.0),
+        );
+        let glyphs: Vec<u32> = run.segments[0].glyphs.iter().map(|g| g.glyph_id).collect();
+        let distinct: std::collections::BTreeSet<u32> = glyphs
+            .iter()
+            .copied()
+            .filter(|&g| epiphany_text::Face::EdwinItalic.glyph_bounds(g).is_some())
+            .collect();
+        let drawn = glyphs.iter().filter(|g| distinct.contains(g)).count();
+        layout.texts.push(run);
+        let frame = crate::ink_frame(&layout).unwrap();
+        let out = render_pdf(
+            &[PdfPage {
+                layout: &layout,
+                frame,
+            }],
+            &PdfOptions::default(),
+        );
+        let text = String::from_utf8_lossy(&out.bytes);
+        assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
+        // A form per distinct inked glyph of the run, each drawn where it
+        // stands, scaled from its face's units.
+        let forms = text.matches("/Type /XObject /Subtype /Form").count();
+        let glyph_forms = layout
+            .glyphs
+            .iter()
+            .map(|g| g.glyph.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        assert_eq!(forms, glyph_forms + distinct.len());
+        let draws = text
+            .lines()
+            .filter(|l| l.contains(" cm 0.002 0 0 0.002 0 0 cm /T"))
+            .count();
+        assert_eq!(draws, drawn);
+    }
+
+    /// A turned glyph of a run is drawn turned, its turn after its place and
+    /// before its scale.
+    #[test]
+    fn a_turned_symbol_is_drawn_turned() {
+        use epiphany_layout_ir::{symbol_run, Symbol, SymbolPlace, Turn};
+        let mut layout = runless(3);
+        layout.texts.push(symbol_run(
+            epiphany_layout_ir::Provenance::projected(
+                epiphany_core::TypedObjectId::Marker(epiphany_core::MarkerId::from_raw(9)),
+                vec![],
+            ),
+            &[Symbol {
+                codepoint: '\u{EAA9}',
+                at: SymbolPlace::Origin(epiphany_layout_ir::Point::new(0.0, 0.0)),
+                scale: 1.0,
+                turn: Turn::Anticlockwise,
+            }],
+            epiphany_layout_ir::Point::new(5.0, -20.0),
+        ));
+        let frame = crate::ink_frame(&layout).unwrap();
+        let out = render_pdf(
+            &[PdfPage {
+                layout: &layout,
+                frame,
+            }],
+            &PdfOptions::default(),
+        );
+        let text = String::from_utf8_lossy(&out.bytes);
+        let [a, b, c, d] =
+            crate::text::linear(&layout.texts[0].segments[0].glyphs[0].transform).expect("turned");
+        let turn = format!(" cm {} {} {} {} 0 0 cm ", num(a), num(b), num(c), num(d));
+        let draws: Vec<&str> = text.lines().filter(|l| l.contains(" cm /T")).collect();
+        assert_eq!(draws.len(), 1);
+        assert!(draws[0].contains(&turn), "{}", draws[0]);
     }
 }

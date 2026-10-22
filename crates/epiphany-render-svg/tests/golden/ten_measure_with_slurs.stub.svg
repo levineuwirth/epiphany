@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="2253.616" height="148.52" viewBox="0 0 225.3616 14.852">
+<svg xmlns="http://www.w3.org/2000/svg" width="2253.616" height="181.9981" viewBox="0 0 225.3616 18.1998">
   <!-- epiphany-render-svg: glyphs are genuine Bravura SMuFL outlines inlined as paths; geometry is the resolved layout verbatim, no engraving performed here; every glyph, stroke, and curve carries a data-prov trace to its score-graph source -->
-  <g transform="translate(3.065 7.392) scale(1 -1)">
+  <g transform="translate(3.065 10.7398) scale(1 -1)">
     <g data-layer="0">
       <line x1="0" y1="0" x2="0" y2="0" stroke="#000000" stroke-width="0" data-prov="01550dc9d118134419219044f188e28a" data-source-kind="6" data-kind="stroke"/>
       <line x1="-1" y1="0" x2="219.8846" y2="0" stroke="#000000" stroke-width="0.13" data-prov="5235156954d3cdda987a3da1af222a55" data-source-kind="3" data-kind="stroke"/>
@@ -91,7 +91,10 @@
       <line x1="214.0652" y1="-1" x2="214.0652" y2="2.5" stroke="#000000" stroke-width="0.12" data-prov="9e9ba65603d31963bdc6d55dfacc5eba" data-source-kind="0" data-kind="stroke"/>
       <line x1="212.5846" y1="-1" x2="214.3652" y2="-1" stroke="#000000" stroke-width="0.13" data-prov="66a37f88caecfe799ec34469d2302afd" data-source-kind="1" data-kind="stroke"/>
       <line x1="0" y1="0" x2="0" y2="0" stroke="#000000" stroke-width="0" data-prov="10eb9773d25f0d7d64f92b36f88e5b38" data-source-kind="14" data-kind="stroke"/>
-      <line x1="0" y1="0" x2="0" y2="0" stroke="#000000" stroke-width="0" data-prov="86a982398112115027c54222505dd143" data-source-kind="15" data-kind="stroke"/>
+      <line x1="1.7014" y1="8.6598" x2="5.2677" y2="8.6598" stroke="#000000" stroke-width="0.16" data-prov="439edea56404c7aad10766c9ffce46d5" data-source-kind="15" data-kind="stroke"/>
+      <line x1="1.7014" y1="5.42" x2="5.2677" y2="5.42" stroke="#000000" stroke-width="0.16" data-prov="bd7ca0a21451094018bf8e5c89d8e8dd" data-source-kind="15" data-kind="stroke"/>
+      <line x1="1.7814" y1="5.42" x2="1.7814" y2="8.6598" stroke="#000000" stroke-width="0.16" data-prov="a4760a1f1b11ae5d5aa1e0d64904177a" data-source-kind="15" data-kind="stroke"/>
+      <line x1="5.1877" y1="5.42" x2="5.1877" y2="8.6598" stroke="#000000" stroke-width="0.16" data-prov="19cd584b4dc916fc8a0990a21e6fcf8a" data-source-kind="15" data-kind="stroke"/>
       <line x1="0" y1="0" x2="0" y2="0" stroke="#000000" stroke-width="0" data-prov="c183669ac91f35eb7a0040b48fde85ab" data-source-kind="25" data-kind="stroke"/>
       <path d="M 4.8152 -1.4 C 5.6951 -2.1039 7.4547 -2.1039 8.3346 -1.4" fill="none" stroke="#000000" stroke-width="0.14" data-prov="40a9a55985c8bf8b1eb66b6d8c8e7b7a" data-source-kind="12" data-kind="curve"/>
       <path d="M 4.0749 -2.2 C 9.0749 -5.4 14.0749 -5.4 19.0749 -2.2" fill="none" stroke="#000000" stroke-width="0.12" data-prov="cf7d96019ed88156f3cc33bf116fbae3" data-source-kind="11" data-kind="curve"/>
@@ -148,6 +151,9 @@
       <path d="M0.144 0V4H0V0Z" transform="translate(174.6846 0)" fill="#000000" data-prov="f21f4e337050d50f36f7d905196db794" data-source-kind="9" data-glyph="barlineSingle" data-class="barline"/>
       <path d="M0.144 0V4H0V0Z" transform="translate(196.2846 0)" fill="#000000" data-prov="f4a3968aa56472207e4e921c44dfa1d7" data-source-kind="9" data-glyph="barlineSingle" data-class="barline"/>
       <path d="M0.144 0V4H0V0ZM0.912 4H0.412V0H0.912Z" transform="translate(219.3846 0)" fill="#000000" data-prov="d99180b4838ec1269b3f4caee0201968" data-source-kind="9" data-glyph="barlineFinal" data-class="barline"/>
+      <g aria-label="A" data-prov="86a982398112115027c54222505dd143" data-source-kind="15" data-kind="text">
+        <path d="M351 737L124 207C78 99 41 60 -18 54L-18 0L271 0L271 54C200 58 172 77 172 123C172 140 176 156 187 180L203 218L452 218L490 120C501 92 502 87 502 79C502 61 488 55 444 55L427 54L427 0L778 0L778 54C721 56 705 66 684 117L427 737ZM330 524L427 285L229 285Z" transform="translate(2.4122 6) scale(0.002822)" fill="#000000"/>
+      </g>
     </g>
   </g>
 </svg>

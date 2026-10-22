@@ -17,6 +17,9 @@ epiphany-layout-ir.workspace = true
 # table privately. This crate still emits each glyph's stored `d` string
 # byte-for-byte in its SVG output, never the typed form.
 epiphany-glyphs.workspace = true
+# The text faces a shaped run names by hash: both exports draw a run's glyphs
+# as outlines from the same bytes the layout shaped.
+epiphany-text.workspace = true
 
 [dev-dependencies]
 # The demo binary's `--solver=real` path drives Agent I's engrave solver; only

@@ -1,0 +1,21 @@
+[package]
+name = "epiphany-text"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The text faces the engraver sets words in, pinned by content hash, and the shaper that sets them (disposition E of the text-run analysis)."
+# The faces are SIL OFL 1.1 files, carried unmodified with their licences.
+include = ["src/**", "tests/**", "faces/**", "Cargo.toml", "README.md"]
+
+[dependencies]
+# The `MUSCFNTF` tag a face's identity hash is taken under.
+epiphany-determinism.workspace = true
+# The shaper, HarfBuzz's Rust port, pinned exactly: a shaper release moves
+# glyphs, so its version is an input of every shaped run.
+harfrust.workspace = true
+# Outlines and metrics, read from the same bytes the shaper reads.
+skrifa.workspace = true
+# Grapheme boundaries, where a caret may stand.
+unicode-segmentation.workspace = true

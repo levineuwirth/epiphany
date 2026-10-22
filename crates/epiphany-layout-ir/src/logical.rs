@@ -74,6 +74,68 @@ pub enum LayoutContent {
     Tuplet(TupletContent),
     /// A staff group: its kind and its staves in this region, top first.
     Group(GroupContent),
+    /// A point mark: what it marks and where it stands.
+    Marker(MarkerContent),
+    /// A line: its kind, and where its ends stand.
+    Spanner(SpannerContent),
+    /// A syllable: its verse and text, its place in its word, and the
+    /// syllables and notes its hyphen or melisma line reaches.
+    Lyric(LyricContent),
+}
+
+/// A syllable's content, resolved so the constrained pass can draw it, its
+/// hyphen and its melisma line without the score.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct LyricContent {
+    /// Its note, and its note's onset.
+    pub event: EventId,
+    pub time: TimePoint,
+    /// Its verse, from 1.
+    pub verse: u16,
+    pub text: epiphany_core::Text,
+    pub syllabic: epiphany_core::Syllabic,
+    /// The next syllable of its verse in its note's voice: that note and its
+    /// onset.
+    pub next: Option<(EventId, TimePoint)>,
+    /// Where its melisma line, if it has one, ends: the last note of its
+    /// voice before that next syllable, and that note's onset.
+    pub melisma_end: Option<(EventId, TimePoint)>,
+}
+
+/// A line's content: its kind, and where each end stands, resolved as a
+/// point mark's place is.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SpannerContent {
+    pub kind: epiphany_core::SpannerKind,
+    pub start: MarkerPlace,
+    pub end: MarkerPlace,
+}
+
+/// A point mark's content: its kind, and where it stands, resolved so the
+/// constrained pass can place it without the score.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct MarkerContent {
+    pub kind: epiphany_core::MarkerKind,
+    pub at: MarkerPlace,
+}
+
+/// Where a point mark, or an end of a line, stands on its region's spacing
+/// axis.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum MarkerPlace {
+    /// On an event: its onset, where its sound ends (`None` in wall-clock
+    /// time), and where its voice stands among its staff's.
+    Event {
+        event: EventId,
+        time: TimePoint,
+        end: Option<TimePoint>,
+        voice: VoicePlace,
+    },
+    /// At a time in its region, where no event of its staff starts.
+    Time(TimePoint),
+    /// Not resolvable (a dangling anchor, a clock-mismatched offset): it
+    /// draws nothing.
+    Unresolved,
 }
 
 /// A tuplet's content: its ratio, whose `actual` term it shows, its member
@@ -130,6 +192,9 @@ pub struct StaffContent {
     /// another staff of the region (`Score::voice_homes`, D46): a rest of the
     /// instance's own voices stands clear of their ink.
     pub visiting: BTreeSet<EventId>,
+    /// Most of the staff's notes, across the score, carry a syllable: a
+    /// voice's staff, whose dynamics and hairpins stand above (D79's Q10).
+    pub vocal: bool,
 }
 
 /// A beamed group: two or more notes of one voice, each an eighth or shorter
@@ -170,6 +235,11 @@ pub struct NoteContent {
     pub duration: Option<MusicalDuration>,
     pub pitches: Vec<NotePitch>,
     pub voice: VoicePlace,
+    /// The marks written on it, a canonical set (articulations, techniques,
+    /// tremolos, an arpeggio).
+    pub marks: Vec<epiphany_core::EventMark>,
+    /// Its ornaments, a canonical set, with their accidentals.
+    pub ornaments: Vec<epiphany_core::Ornament>,
 }
 
 /// Where an event's voice stands among its staff's at the event's time. Alone,
@@ -240,6 +310,8 @@ pub struct UnpitchedContent {
     pub duration: Option<MusicalDuration>,
     pub staff_position: StaffPosition,
     pub voice: VoicePlace,
+    /// The marks written on it, a canonical set.
+    pub marks: Vec<epiphany_core::EventMark>,
 }
 
 /// A measure's notated content: its resolved start position, where it ends,
@@ -869,6 +941,7 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
     // dependencies. A single-region object joins that region and, when all
     // located dependencies agree, that staff. A multi-region object uses the
     // dedicated cross-region collection instead of being misfiled in region 0.
+    let mut lyrics = lyric_contents(score);
     for (src, deps) in cross_cutting_objects(score) {
         let provenance = Provenance::projected(src, deps.clone());
         if !seen.insert(provenance.stable_id) {
@@ -910,6 +983,35 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
                         ratio: tuplet.ratio,
                         members: tuplet.members.clone(),
                         display: tuplet.display,
+                    })
+                })
+                .unwrap_or_default(),
+            TypedObjectId::Marker(id) => score
+                .cross_cutting
+                .markers
+                .iter()
+                .find(|marker| marker.id == id)
+                .map(|marker| {
+                    LayoutContent::Marker(MarkerContent {
+                        kind: marker.kind.clone(),
+                        at: marker_place(score, &marker.anchor, &all_places),
+                    })
+                })
+                .unwrap_or_default(),
+            TypedObjectId::LyricLine(id) => lyrics
+                .remove(&id)
+                .map(LayoutContent::Lyric)
+                .unwrap_or_default(),
+            TypedObjectId::Spanner(id) => score
+                .cross_cutting
+                .spanners
+                .iter()
+                .find(|spanner| spanner.id == id)
+                .map(|spanner| {
+                    LayoutContent::Spanner(SpannerContent {
+                        kind: spanner.kind.clone(),
+                        start: marker_place(score, &spanner.start, &all_places),
+                        end: marker_place(score, &spanner.end, &all_places),
                     })
                 })
                 .unwrap_or_default(),
@@ -1109,7 +1211,98 @@ fn staff_content(
                 .flat_map(|voice| voice.events.iter().copied())
                 .collect()
         },
+        vocal: vocal_staff(score, si.staff),
     })
+}
+
+/// Each syllable's content: in each voice, by verse, the syllable that
+/// follows it and, for one extending a melisma, the last note before that
+/// one (or before the voice ends).
+fn lyric_contents(score: &Score) -> BTreeMap<epiphany_core::LyricLineId, LyricContent> {
+    let mut by_event: BTreeMap<EventId, Vec<&epiphany_core::Lyric>> = BTreeMap::new();
+    for lyric in &score.cross_cutting.lyrics {
+        by_event.entry(lyric.event).or_default().push(lyric);
+    }
+    let mut out = BTreeMap::new();
+    let is_note = |e: &EventId| {
+        matches!(
+            score.events.get(*e),
+            Some(Event::Pitched(_)) | Some(Event::Unpitched(_))
+        )
+    };
+    let voices = score
+        .canvas
+        .regions
+        .iter()
+        .flat_map(|r| r.staff_instances())
+        .flat_map(|si| si.voices.iter());
+    for voice in voices {
+        let events = &voice.events;
+        for (i, eid) in events.iter().enumerate() {
+            for lyric in by_event.get(eid).into_iter().flatten() {
+                let next_at = events[i + 1..].iter().position(|e| {
+                    by_event
+                        .get(e)
+                        .is_some_and(|ls| ls.iter().any(|l| l.verse == lyric.verse))
+                });
+                let onset = |e: &EventId| score.events.get(*e).map(|ev| event_time(ev.position()));
+                let next = next_at.and_then(|k| {
+                    let e = events[i + 1 + k];
+                    Some((e, onset(&e)?))
+                });
+                let until = next_at.map_or(events.len(), |k| i + 1 + k);
+                let melisma_end = lyric
+                    .extension
+                    .then(|| events[i + 1..until].iter().rev().find(|e| is_note(e)))
+                    .flatten()
+                    .and_then(|e| Some((*e, onset(e)?)));
+                let Some(time) = onset(eid) else {
+                    continue;
+                };
+                out.insert(
+                    lyric.id,
+                    LyricContent {
+                        event: *eid,
+                        time,
+                        verse: lyric.verse,
+                        text: lyric.text.clone(),
+                        syllabic: lyric.syllabic,
+                        next,
+                        melisma_end,
+                    },
+                );
+            }
+        }
+    }
+    out
+}
+
+/// Whether most of `staff`'s notes, across the score, carry a syllable of
+/// some verse, grace notes aside (D79's Q10). MuseScore sets a voice's
+/// dynamics and hairpins above, and the score does not say which staff is a
+/// voice's.
+fn vocal_staff(score: &Score, staff: epiphany_core::StaffId) -> bool {
+    let sung: BTreeSet<EventId> = score.cross_cutting.lyrics.iter().map(|l| l.event).collect();
+    if sung.is_empty() {
+        return false;
+    }
+    let (mut notes, mut with) = (0usize, 0usize);
+    for region in &score.canvas.regions {
+        for si in region
+            .staff_instances()
+            .iter()
+            .filter(|si| si.staff == staff)
+        {
+            for eid in si.voices.iter().flat_map(|v| v.events.iter()) {
+                if matches!(score.events.get(*eid), Some(e @ Event::Pitched(_)) if e.grace().is_none())
+                {
+                    notes += 1;
+                    with += usize::from(sung.contains(eid));
+                }
+            }
+        }
+    }
+    with * 2 > notes
 }
 
 /// The beamed groups of a staff instance's notes. A score that names beams
@@ -1423,6 +1616,8 @@ fn event_content(
                 duration: musical(&pitched.duration),
                 pitches,
                 voice,
+                marks: pitched.marks.clone(),
+                ornaments: pitched.ornaments.clone(),
             })
         }
         Event::Rest(rest) => {
@@ -1452,6 +1647,7 @@ fn event_content(
             duration: musical(&unpitched.duration),
             staff_position: unpitched.staff_position,
             voice,
+            marks: unpitched.marks.clone(),
         }),
         _ => LayoutContent::Structural,
     }
@@ -1825,6 +2021,43 @@ fn tie_content(score: &Score, tie: &epiphany_core::Tie) -> LayoutContent {
         end: tie.end_event,
         pairs,
     })
+}
+
+/// Where a point mark stands: on the event its anchor names, when the anchor
+/// is an event's own onset; otherwise at the time its anchor resolves to; or
+/// unresolved.
+fn marker_place(
+    score: &Score,
+    anchor: &TimeAnchor,
+    places: &BTreeMap<EventId, VoicePlace>,
+) -> MarkerPlace {
+    const DEPTH: u8 = 16;
+    if let TimeAnchor::Event { id, offset } = anchor {
+        if offset_is_zero(offset) {
+            if let Some(event) = score.events.get(*id) {
+                let time = event_time(event.position());
+                let end = match (event.position(), event.duration()) {
+                    (EventPosition::Musical(start), EventDuration::Musical(length)) => {
+                        Some(TimePoint::Musical(start.clone() + length.clone()))
+                    }
+                    _ => None,
+                };
+                return MarkerPlace::Event {
+                    event: *id,
+                    time,
+                    end,
+                    voice: places.get(id).copied().unwrap_or(VoicePlace::Alone),
+                };
+            }
+        }
+    }
+    match anchor {
+        TimeAnchor::WallClock { .. } => MarkerPlace::Unresolved,
+        _ => match resolve_time_anchor_inner(score, anchor, DEPTH) {
+            Some(time) => MarkerPlace::Time(time),
+            None => MarkerPlace::Unresolved,
+        },
+    }
 }
 
 /// A slur endpoint: the event's onset as a [`TimePoint`], or
