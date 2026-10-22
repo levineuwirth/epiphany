@@ -33,6 +33,18 @@ pub(crate) fn roomless_glyphs(input: &ConstrainedLayoutIR) -> BTreeSet<GlyphObje
         .collect()
 }
 
+/// The strokes of the family that take no room across (a rehearsal mark's
+/// frame, a hairpin's legs, a lyric line): as its roomless glyphs, they
+/// widen no slot.
+pub(crate) fn roomless_strokes(input: &ConstrainedLayoutIR) -> BTreeSet<GlyphObjectId> {
+    input
+        .family
+        .iter()
+        .filter(|mark| mark.room == Room::None)
+        .flat_map(|mark| mark.strokes.iter().copied())
+        .collect()
+}
+
 /// Each text run of the family with the room it takes.
 pub(crate) fn texts_with_room(input: &ConstrainedLayoutIR) -> Vec<(&TextObject, Room)> {
     let room: BTreeMap<GlyphObjectId, Room> = input

@@ -588,8 +588,14 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
     // span, its accidentals standing outside it to the left), so a ledger that
     // overhangs the notehead reserves room, and each stroke that rides one
     // slot at both ends (a stem), so a stem reaching another staff's beam is
-    // cleared where it reaches.
-    for stroke in &input.strokes {
+    // cleared where it reaches. The family's strokes take no room (a
+    // rehearsal mark's frame rides its measure's first slot at both ends).
+    let roomless_strokes = crate::family::roomless_strokes(input);
+    for stroke in input
+        .strokes
+        .iter()
+        .filter(|stroke| !roomless_strokes.contains(&stroke.id()))
+    {
         let rigid = is_rigid_width_stroke(stroke);
         let slot = if rigid {
             owning_glyph(stroke, &input.glyphs).map(|glyph| glyph.horizontal_slot)

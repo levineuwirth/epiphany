@@ -2332,3 +2332,13 @@ is set:
   piece carried into a later system starts at its first column. A hairpin's
   first piece had run to the system's end, and its next from the system's
   first ink.
+
+## ENGRAVER_VERSION 62 → 63: the family's strokes take no room (X4c.9, 2026-10-22)
+
+- A stroke of a member taking no room across (a rehearsal mark's frame, a
+  hairpin's legs, a lyric line, a trill line's carrier, a two-note tremolo's
+  strokes) widens no slot in the spacing pass, as the member's glyphs do
+  not. A rehearsal mark's frame rides its measure's first slot at both ends,
+  so it had been folded into that slot's extent as a stem is, and a frame
+  wider than the room before its first note pushed the measure's content
+  right by the excess (`a_rehearsal_mark_takes_no_room`).

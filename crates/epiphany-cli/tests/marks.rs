@@ -2185,6 +2185,48 @@ fn a_rehearsal_mark_stands_framed_at_its_measures_start() {
     );
 }
 
+/// A rehearsal mark takes no room across: a frame wider than its measure's
+/// first beat, at the piece's start or on a barline, moves no note or
+/// barline.
+#[test]
+fn a_rehearsal_mark_takes_no_room() {
+    let measures = |label: Option<&str>| {
+        let mark = label
+            .map(|label| {
+                format!(
+                    "<direction placement=\"above\"><direction-type><rehearsal>{label}\
+                     </rehearsal></direction-type><staff>1</staff></direction>"
+                )
+            })
+            .unwrap_or_default();
+        let beats = note("C5", 2, "quarter", 1, 1, "").repeat(4);
+        [
+            [mark.clone(), beats.clone()].concat(),
+            [mark, beats].concat(),
+        ]
+    };
+    let ink = |name: &str, label: Option<&str>| {
+        let loaded = part(name, 1, &measures(label));
+        let layout = engrave(&loaded.reduced.score).layout;
+        let mut xs: Vec<f32> = ["noteheadBlack", "barlineSingle", "barlineFinal"]
+            .into_iter()
+            .flat_map(|glyph| named(&layout, glyph))
+            .map(|ink| ink[0])
+            .collect();
+        xs.sort_by(f32::total_cmp);
+        xs
+    };
+    let (bare, marked) = (
+        ink("unmarked.musicxml", None),
+        ink("wide-rehearsal.musicxml", Some("A Long Section Label")),
+    );
+    assert_eq!(bare.len(), 10, "{bare:?}");
+    assert_eq!(bare.len(), marked.len());
+    for (b, m) in bare.iter().zip(&marked) {
+        near(*m, *b, "a note or barline beside a wide rehearsal mark");
+    }
+}
+
 /// A segno or coda stands in Bravura Text at 18 points over the system's
 /// top staff, its baseline 2.0 over it, centred on its measure's barline, or
 /// at the piece's start on the system's left edge.
