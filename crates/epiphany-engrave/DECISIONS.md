@@ -2191,3 +2191,16 @@ Besides these, as version 53 states, the lead's, signatures', changes' and
 barlines' springs are kept whole: the barline's own spring after it stands
 1.5 from its glyph's origin, where MuseScore's `barNoteDistance` is 1.25 from
 the barline's right edge.
+
+## ENGRAVER_VERSION 56 → 57: text runs ride their slots (X4c.2, 2026-10-22)
+
+The resolved layout carries shaped text runs (`texts`), a fourth primitive.
+The spacing pass moves each run by its slot's rigid delta, as it moves the
+slot's glyphs, and casting places it with the slot's system and its staff's
+shift. A run's ink is its staff's content by height alone: it joins the
+staff's extent, so the gap to the next staff makes room for it (D79's Q14),
+and it takes no room across, so a run neither widens a column nor a system.
+Lyrics, which do take room, are X4c.5's. No score draws a run yet, but the
+runs' count enters every layout's canonical bytes, so the version moves.
+Locked by `a_text_run_rides_its_slot_and_its_staff` and
+`a_text_run_takes_its_staffs_room_on_the_page`.

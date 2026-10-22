@@ -87,9 +87,9 @@ use epiphany_layout_ir::{
     DecisionSource, EngravingDecision, EngravingDecisionKind, EngravingOverrideId, GlyphObject,
     GlyphObjectId, GlyphReference, GlyphStyle, GroupSign, GroupSpan, LayoutConstraint,
     LayoutObjectId, LeadGlyph, Margins, Point, PrimitiveIndices, Provenance, Rect, ResolvedGlyph,
-    ResolvedMeasure, ResolvedPage, ResolvedStaff, ResolvedSystem, Size2D, SpringSlotId, StaffSpace,
-    Stroke, SynthesisInstanceKey, SynthesisKind, SynthesisRegistryId, SystemLead, TimePoint,
-    Transform2D, VerticalBand, VerticalBandId, VerticalBandKind,
+    ResolvedMeasure, ResolvedPage, ResolvedStaff, ResolvedSystem, ResolvedText, Size2D,
+    SpringSlotId, StaffSpace, Stroke, SynthesisInstanceKey, SynthesisKind, SynthesisRegistryId,
+    SystemLead, TimePoint, Transform2D, VerticalBand, VerticalBandId, VerticalBandKind,
 };
 
 use crate::clearance::InkRect;
@@ -282,6 +282,8 @@ pub(crate) struct CastLayout {
     /// Casteljau subdivision (the first keeps the source's provenance, the rest
     /// are synthesized continuations, like system-spanning strokes).
     pub curves: Vec<Curve>,
+    /// Final text runs, in input order, each moved with its slot's system.
+    pub texts: Vec<ResolvedText>,
     /// The populated page tree (empty when the input declares no regions).
     pub pages: Vec<ResolvedPage>,
     /// Break decisions this pass made (chosen breaks in reading order, then
@@ -563,6 +565,7 @@ pub(crate) fn cast_off(
     spaced_glyphs: &[ResolvedGlyph],
     spaced_strokes: &[Stroke],
     spaced_curves: &[Curve],
+    spaced_texts: &[ResolvedText],
     respacing: &Respacing,
     geometry: &PageGeometry,
 ) -> CastLayout {
@@ -1103,6 +1106,16 @@ pub(crate) fn cast_off(
         .iter()
         .map(|c| staff_of(c.vertical_band))
         .collect();
+    let text_staff_of: Vec<Option<StaffId>> = input
+        .texts
+        .iter()
+        .map(|t| staff_of(t.vertical_band))
+        .collect();
+    let text_system: Vec<Option<usize>> = input
+        .texts
+        .iter()
+        .map(|t| system_of_slot.get(&t.horizontal_slot).copied())
+        .collect();
 
     // The ink of each beam across two staves stands between them and is
     // neither staff's content: the solve keeps the lower staff from rising
@@ -1244,6 +1257,25 @@ pub(crate) fn cast_off(
                     None => extents[s].add_y(p.y.0 - half, p.y.0 + half),
                 }
             }
+        }
+    }
+
+    // A text run's ink is its staff's content, by height alone: a run takes
+    // no room across, beside the slot it rides.
+    for (ti, text) in spaced_texts.iter().enumerate() {
+        let Some(s) = text_system[ti] else {
+            continue;
+        };
+        let (y, b) = (text.origin.y.0, text.bounds);
+        match text_staff_of[ti] {
+            Some(_) => into_staff(
+                &mut staff_ext,
+                s,
+                text_staff_of[ti],
+                y + b.bottom.0,
+                y + b.top.0,
+            ),
+            None => extents[s].add_y(y + b.bottom.0, y + b.top.0),
         }
     }
 
@@ -1833,6 +1865,33 @@ pub(crate) fn cast_off(
     curves.extend(curve_continuations);
     curve_system.extend(curve_continuation_system);
 
+    // Text runs: each moves with its slot, as the glyphs of its slot do, and
+    // with its staff's shift.
+    let texts: Vec<ResolvedText> = spaced_texts
+        .iter()
+        .zip(&input.texts)
+        .enumerate()
+        .map(|(ti, (spaced, text))| {
+            let (dx, dy) = match text_system[ti] {
+                Some(s) => {
+                    let sx = slot_source_x
+                        .get(&text.horizontal_slot)
+                        .copied()
+                        .unwrap_or(spaced.origin.x.0);
+                    (
+                        placements[s].slot_dx(sx) - shift_of(text.horizontal_slot),
+                        placements[s].dy - staff_dy(s, text_staff_of[ti]),
+                    )
+                }
+                None => (0.0, 0.0),
+            };
+            ResolvedText {
+                origin: Point::new(spaced.origin.x.0 + dx, spaced.origin.y.0 + dy),
+                ..spaced.clone()
+            }
+        })
+        .collect();
+
     // ---- Staff groups and the systemic barline ------------------------------
     // A system of two or more staves opens with a line joining them; each
     // staff group marks its staves left of that line (a brace, a bracket, a
@@ -2045,6 +2104,12 @@ pub(crate) fn cast_off(
             None => unowned.curves.push(i as u32),
         }
     }
+    for (i, system) in text_system.iter().enumerate() {
+        match system {
+            Some(s) => owned[*s].texts.push(i as u32),
+            None => unowned.texts.push(i as u32),
+        }
+    }
 
     // ---- The resolved page tree ---------------------------------------------
     let resolved_systems: Vec<ResolvedSystem> = systems
@@ -2109,6 +2174,7 @@ pub(crate) fn cast_off(
         appended_bands,
         strokes,
         curves,
+        texts,
         pages,
         decisions,
         system_start_slots,

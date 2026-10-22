@@ -1053,3 +1053,41 @@ and `a_transposed_parts_quarter_tone_is_drawn_with_its_written_spelling`
 (`epiphany-musicxml`) and
 `a_transposed_file_is_drawn_at_written_pitch_and_a_concert_one_at_concert_pitch`
 (`epiphany-cli`), each failing with its part removed.
+
+## Text runs: the fourth primitive (X4c.2, 2026-10-22)
+
+Disposition E of `spec/ANALYSIS_TEXT_RUN_PRIMITIVES.md`, as roadmap D79 rules
+it and `req:layoutir:text-run` and `req:layoutir:text-faces` state it. A text
+run is shaped once, in the constrained pass (`text::shape_text`), and every
+consumer draws the glyphs it holds; none shapes the string again. The faces
+and the shaper are `epiphany-text`'s, so this crate gains its first outside
+dependencies through that crate (harfrust, skrifa, unicode-segmentation).
+
+- `TextObject` is a `ResolvedText` at its constrained place, riding one spring
+  slot and naming one band. It is not a slot or band *member*: membership
+  stays the glyphs', which the spacing solver derives a slot's source from,
+  so a run's slot and band are one-way references, validated to exist, as a
+  stroke's band is. A run moves rigidly with its slot.
+- `bounds` is the ink: each glyph's outline bounds, scaled and placed.
+  `reserved_box` is the line the run stands on, its advance across and the
+  first face's ascender to its descender: what the engraver allocates and
+  what a hit test selects, steadier than ink that differs between "a" and
+  "Ag".
+- Caret stops are the grapheme boundaries `unicode-segmentation` gives,
+  each at its cluster's start, a ligature's spread evenly over its advance.
+  The run's `unicode_version` is that segmentation's, 17.0.0. The shaper's
+  own character tables (its script itemization) are Unicode 18.0.0, and are
+  fixed by the shaper's version, which the identity also names.
+- A character no face of the chain covers stays in the string, in an
+  unresolved cluster with no glyph, and is reported once per character as
+  `UncoveredCodepoint` (`constrained::text_diagnostics`). A run that reads
+  right to left is shaped left to right and reported as `RightToLeftText`,
+  since the engraver shapes no other direction (D79's Q4); the drafted
+  amendment named the first diagnostic only, and the second is the record
+  Q4 asks for.
+- The canonical encoding carries every field of a run, its shaping identity
+  per run, so a fingerprint means what it says without a shared table.
+
+Locked by `text_runs_encode_the_same_on_every_run` (a digest of five runs'
+canonical bytes, the same on Rust 1.85, 1.95.0 and 1.99.0, debug and release)
+and `canonical_bytes_capture_text_runs`, besides `text.rs`'s own tests.

@@ -25,13 +25,15 @@ use crate::render::{RenderIR, RenderPrimitive};
 use crate::spatial::{BoundingBox, Point, Transform2D};
 
 /// Which [`RenderIR`] primitive a [`HitRegion`] belongs to: an index into
-/// [`RenderIR::primitives`] (a glyph), [`RenderIR::strokes`] (a stroke), or
-/// [`RenderIR::curves`] (a curve).
+/// [`RenderIR::primitives`] (a glyph), [`RenderIR::strokes`] (a stroke),
+/// [`RenderIR::curves`] (a curve), or [`RenderIR::texts`] (a text run).
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum PrimitiveRef {
     Glyph(usize),
     Stroke(usize),
     Curve(usize),
+    /// A shaped text run, by its index in the layout's texts.
+    Text(usize),
 }
 
 impl PrimitiveRef {
@@ -246,12 +248,14 @@ impl HitRegion {
     /// before glyphs at one layer, then primitive index). A larger key is painted
     /// later, i.e. on top.
     fn paint_order(&self) -> (i32, u8, usize) {
-        // The renderer paints strokes, then curves, then glyphs at one layer
-        // (a slur draws over the staff lines but under the noteheads it joins).
+        // The renderer paints strokes, then curves, then glyphs, then text
+        // runs at one layer (a slur draws over the staff lines but under the
+        // noteheads it joins).
         let (kind_rank, index) = match self.primitive {
             PrimitiveRef::Stroke(i) => (0, i),
             PrimitiveRef::Curve(i) => (1, i),
             PrimitiveRef::Glyph(i) => (2, i),
+            PrimitiveRef::Text(i) => (3, i),
         };
         (self.layer, kind_rank, index)
     }
@@ -310,8 +314,9 @@ impl RenderIR {
     /// primitive's preserved [`crate::Provenance`]; its shape is computed in world
     /// coordinates.
     pub fn hit_test_map(&self) -> HitTestMap {
-        let mut regions =
-            Vec::with_capacity(self.primitives.len() + self.strokes.len() + self.curves.len());
+        let mut regions = Vec::with_capacity(
+            self.primitives.len() + self.strokes.len() + self.curves.len() + self.texts.len(),
+        );
         for (i, p) in self.primitives.iter().enumerate() {
             regions.push(HitRegion {
                 primitive: PrimitiveRef::Glyph(i),
@@ -350,6 +355,25 @@ impl RenderIR {
                     half_width: c.thickness.0 / 2.0,
                 },
                 layer: c.layer,
+            });
+        }
+        // A text run is selected by the line it stands on: its reserved box,
+        // advance by ascender to descender, placed at its origin.
+        for (i, t) in self.texts.iter().enumerate() {
+            let (x, y) = (t.origin.x.0, t.origin.y.0);
+            let b = t.reserved_box;
+            regions.push(HitRegion {
+                primitive: PrimitiveRef::Text(i),
+                source: t.provenance.source,
+                layout_object: t.provenance.stable_id,
+                synthesis: t.provenance.synthesis,
+                shape: HitShape::Box(BoundingBox::new(
+                    x + b.left.0,
+                    y + b.bottom.0,
+                    x + b.right.0,
+                    y + b.top.0,
+                )),
+                layer: t.layer,
             });
         }
         HitTestMap { regions }
@@ -646,6 +670,7 @@ mod tests {
             primitives: vec![],
             strokes: vec![],
             curves: vec![curve],
+            texts: vec![],
         }
         .hit_test_map();
         assert_eq!(map.regions.len(), 1, "one region per curve");
@@ -672,6 +697,7 @@ mod tests {
             primitives: vec![p.clone()],
             strokes: vec![],
             curves: vec![],
+            texts: vec![],
         }
         .hit_test_map()
         .regions[0]
@@ -691,6 +717,7 @@ mod tests {
             primitives: vec![t],
             strokes: vec![],
             curves: vec![],
+            texts: vec![],
         }
         .hit_test_map()
         .regions[0]
@@ -708,7 +735,10 @@ mod tests {
         // One region per glyph and per stroke, none dropped or invented.
         assert_eq!(
             map.regions.len(),
-            render.primitives.len() + render.strokes.len() + render.curves.len()
+            render.primitives.len()
+                + render.strokes.len()
+                + render.curves.len()
+                + render.texts.len()
         );
         assert!(!map.regions.is_empty());
 
@@ -738,6 +768,14 @@ mod tests {
                         c.provenance.source,
                         c.provenance.stable_id,
                         c.provenance.synthesis,
+                    )
+                }
+                PrimitiveRef::Text(i) => {
+                    let t = &render.texts[i];
+                    (
+                        t.provenance.source,
+                        t.provenance.stable_id,
+                        t.provenance.synthesis,
                     )
                 }
             };
@@ -798,6 +836,7 @@ mod tests {
             ],
             strokes: vec![stroke(Point::new(-2.0, 0.0), Point::new(2.0, 0.0), 0)],
             curves: vec![],
+            texts: vec![],
         };
         let map = render.hit_test_map();
         let hits = map.hit(Point::ORIGIN);
@@ -826,6 +865,7 @@ mod tests {
             ],
             strokes: vec![stroke(Point::new(0.0, 0.0), Point::new(3.0, 0.0), 0)],
             curves: vec![],
+            texts: vec![],
         };
         let map = render.hit_test_map();
         // A rubber-band around the first glyph and the stroke, but not the far glyph.
@@ -850,6 +890,7 @@ mod tests {
             primitives: vec![],
             strokes: vec![stroke(Point::new(0.0, 0.0), Point::new(10.0, 10.0), 0)],
             curves: vec![],
+            texts: vec![],
         };
         let map = render.hit_test_map();
         // AABB-overlapping but body-missing rect near (0, 10): rejected.
@@ -869,6 +910,31 @@ mod tests {
             map.within(BoundingBox::new(5.15, 5.0, 5.25, 5.1)).len(),
             1,
             "a rect within the stroke's half-width selects it"
+        );
+    }
+
+    #[test]
+    fn a_click_on_a_text_run_resolves_to_its_source() {
+        use crate::text::{shape_text, TextAlign, TextFace};
+        use epiphany_core::MarkerId;
+        let source = TypedObjectId::Marker(MarkerId::from_raw(4));
+        let (run, _) = shape_text(
+            crate::Provenance::projected(source, vec![]),
+            "rit.",
+            TextFace::Italic,
+            2.0,
+            TextAlign::Left,
+            Point::new(50.0, 50.0),
+        );
+        let mut render = render_of(0x5EED);
+        render.texts.push(run);
+        let map = render.hit_test_map();
+        let hits = map.hit(Point::new(50.5, 50.5));
+        assert_eq!(hits.first().map(|r| r.source), Some(source));
+        assert_eq!(hits[0].primitive, PrimitiveRef::Text(0));
+        assert!(
+            map.hit(Point::new(48.0, 50.5)).is_empty(),
+            "left of its line"
         );
     }
 }

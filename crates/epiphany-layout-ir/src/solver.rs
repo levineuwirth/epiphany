@@ -476,8 +476,9 @@ impl StubSolver {
         } else {
             Vec::new()
         };
-        // Strokes and curves pass through verbatim (the stub resolves no
-        // geometry), gated on the same structural validity as the glyphs.
+        // Strokes, curves and text runs pass through verbatim (the stub
+        // resolves no geometry), gated on the same structural validity as the
+        // glyphs.
         let strokes = if structural_valid {
             input.strokes.clone()
         } else {
@@ -485,6 +486,11 @@ impl StubSolver {
         };
         let curves = if structural_valid {
             input.curves.clone()
+        } else {
+            Vec::new()
+        };
+        let texts = if structural_valid {
+            input.texts.iter().map(|t| t.text.clone()).collect()
         } else {
             Vec::new()
         };
@@ -497,6 +503,7 @@ impl StubSolver {
             glyphs: (0..glyphs.len() as u32).collect(),
             strokes: (0..strokes.len() as u32).collect(),
             curves: (0..curves.len() as u32).collect(),
+            texts: (0..texts.len() as u32).collect(),
         };
         let pages = input
             .regions
@@ -533,6 +540,7 @@ impl StubSolver {
                 glyphs,
                 strokes,
                 curves,
+                texts,
                 engraving_decisions: input.engraving_decisions.clone(),
                 catalog: input.catalog.clone(),
                 unowned,
@@ -629,6 +637,7 @@ mod tests {
             glyphs,
             strokes: vec![],
             curves: vec![],
+            texts: vec![],
             vertical_bands: vec![band],
             constraints: vec![],
             break_origins: vec![],
@@ -721,6 +730,7 @@ mod tests {
             glyphs: vec![unknown],
             strokes: vec![],
             curves: vec![],
+            texts: vec![],
             vertical_bands: vec![band],
             constraints: vec![],
             break_origins: vec![],

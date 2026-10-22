@@ -1081,6 +1081,7 @@ mod tests {
             &glyphs,
             &strokes,
             &curves,
+            &remap.texts(&input),
             &crate::casting::Respacing {
                 skyline: &remap.skyline,
                 curves: &remap.unpassed_curves(&input),

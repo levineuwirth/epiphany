@@ -566,6 +566,12 @@ pub fn omissions(
             LayoutDiagnosticKind::UnbundledGlyph(glyph) => {
                 format!("diagnostic: unbundled glyph {}", glyph.as_str())
             }
+            LayoutDiagnosticKind::UncoveredCodepoint { codepoint } => {
+                format!("diagnostic: no text face covers U+{codepoint:04X}")
+            }
+            LayoutDiagnosticKind::RightToLeftText => {
+                String::from("diagnostic: right-to-left text shaped left to right")
+            }
         };
         out.add(&kind);
     }

@@ -17,3 +17,6 @@ epiphany-core.workspace = true
 # drift from the real one, so the barrier types reference C's type directly.
 # This is the only use of epiphany-ops; see DECISIONS.md.
 epiphany-ops.workspace = true
+# The text faces and their shaper: a text run is shaped once, here, in the
+# constrained pass (disposition E), and drawn as shaped.
+epiphany-text.workspace = true

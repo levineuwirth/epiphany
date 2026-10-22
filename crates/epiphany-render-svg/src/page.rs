@@ -13,11 +13,13 @@ pub fn page_layout(layout: &ResolvedLayoutIR, number: usize) -> Option<ResolvedL
         owned.glyphs.extend(&system.primitives.glyphs);
         owned.strokes.extend(&system.primitives.strokes);
         owned.curves.extend(&system.primitives.curves);
+        owned.texts.extend(&system.primitives.texts);
     }
     if layout.pages.len() == 1 {
         owned.glyphs.extend(&layout.unowned.glyphs);
         owned.strokes.extend(&layout.unowned.strokes);
         owned.curves.extend(&layout.unowned.curves);
+        owned.texts.extend(&layout.unowned.texts);
     }
     let pick = |indices: &mut Vec<u32>| {
         indices.sort_unstable();
@@ -26,6 +28,7 @@ pub fn page_layout(layout: &ResolvedLayoutIR, number: usize) -> Option<ResolvedL
     pick(&mut owned.glyphs);
     pick(&mut owned.strokes);
     pick(&mut owned.curves);
+    pick(&mut owned.texts);
     let mut out = layout.clone();
     out.pages = vec![page.clone()];
     out.glyphs = owned
@@ -43,6 +46,11 @@ pub fn page_layout(layout: &ResolvedLayoutIR, number: usize) -> Option<ResolvedL
         .iter()
         .map(|&i| layout.curves[i as usize].clone())
         .collect();
+    out.texts = owned
+        .texts
+        .iter()
+        .map(|&i| layout.texts[i as usize].clone())
+        .collect();
     // The page's systems now index into the filtered arrays.
     let remap = |from: &[u32], kept: &[u32]| -> Vec<u32> {
         from.iter()
@@ -54,6 +62,7 @@ pub fn page_layout(layout: &ResolvedLayoutIR, number: usize) -> Option<ResolvedL
             glyphs: remap(&system.primitives.glyphs, &owned.glyphs),
             strokes: remap(&system.primitives.strokes, &owned.strokes),
             curves: remap(&system.primitives.curves, &owned.curves),
+            texts: remap(&system.primitives.texts, &owned.texts),
         };
     }
     out.unowned = PrimitiveIndices::default();

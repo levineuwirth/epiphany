@@ -157,3 +157,18 @@ throwaway probe captured `ResolvedLayoutIR::canonical_bytes()` for every
 reference-suite fixture plus the two named W1 fixtures, and all five GUI
 goldens were re-run; every byte was identical (reported in the W2 packet
 report, not committed here).
+
+## Text runs are drawn as shaped (X4c.2, 2026-10-22)
+
+Both writers draw a `ResolvedText` from the glyphs it holds, each from the
+face its segment names (found by the face file's hash, `face_by_hash`), never
+from its string: an SVG `<text>` or a PDF text operator would let the viewer
+shape the string again (`req:layoutir:text-run`). In SVG a run is a `<g>`
+carrying its string as its `aria-label`, around one `<path>` per inked glyph,
+its outline in the face's units scaled where it stands; the scale is written
+with eight decimals, since a face's unit is about a thousandth of an em. In
+PDF each distinct glyph of each face is a form, its quadratic segments
+written as the cubics they equal, drawn where it occurs. A run naming a face
+this build does not carry is drawn as its ink box, with a diagnostic. PDF
+text is not selectable; carrying a run's string as marked content is a
+named follow-up (D79's Q6).

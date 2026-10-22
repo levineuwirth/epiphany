@@ -37,6 +37,7 @@ use crate::provenance::{
 };
 use crate::solver::{ConstraintStrength, SpringSlotId};
 use crate::spatial::{BoundingBox, Point, Rect, Size2D, StaffSpace};
+use crate::text::{ShapingGaps, TextObject};
 use crate::time_axis::{time_cmp, SlotPlacement, TimeAxisModel, TimePoint};
 use crate::vertical_band::{inter_staff_gap_id, VerticalBand, VerticalBandId};
 
@@ -167,6 +168,10 @@ pub struct ConstrainedLayoutIR {
     pub strokes: Vec<Stroke>,
     /// Cubic-bézier curve primitives (slurs, …).
     pub curves: Vec<Curve>,
+    /// Shaped text runs (lyrics, tempo, staff and expression text, rehearsal
+    /// marks), each riding one spring slot and owned by one band, as a glyph
+    /// is ([`crate::text`]).
+    pub texts: Vec<TextObject>,
     pub vertical_bands: Vec<VerticalBand>,
     pub constraints: Vec<LayoutConstraint>,
     /// The user-override attributions behind the projected break constraints in
@@ -313,6 +318,36 @@ pub enum LayoutDiagnosticKind {
     /// sixteenth-or-shorter rest); the object is carried as a traced anchor
     /// rather than drawn at a guessed shape.
     UnbundledGlyph(GlyphReference),
+    /// A character of a text run no face of its chain covers: it stays in
+    /// the run's string, in an unresolved cluster, and is drawn from no face
+    /// (`req:layoutir:text-faces`).
+    UncoveredCodepoint { codepoint: u32 },
+    /// A text run with characters that read right to left, which the
+    /// engraver shapes left to right only: it is drawn, but not as it reads.
+    RightToLeftText,
+}
+
+/// What shaping a text run left to report, as diagnostics against its source
+/// (`req:layoutir:text-faces`): each character no face of its chain covers,
+/// in the order the string holds them, and a run that reads right to left.
+pub fn text_diagnostics(source: TypedObjectId, gaps: &ShapingGaps) -> Vec<LayoutDiagnostic> {
+    let mut out: Vec<LayoutDiagnostic> = gaps
+        .uncovered
+        .iter()
+        .map(|c| LayoutDiagnostic {
+            source,
+            kind: LayoutDiagnosticKind::UncoveredCodepoint {
+                codepoint: u32::from(*c),
+            },
+        })
+        .collect();
+    if gaps.right_to_left {
+        out.push(LayoutDiagnostic {
+            source,
+            kind: LayoutDiagnosticKind::RightToLeftText,
+        });
+    }
+    out
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
@@ -485,6 +520,11 @@ pub enum ConstrainedValidationError {
     InvalidCurveGeometry(GlyphObjectId),
     /// A span anchor names no stroke or curve, or a slot that does not exist.
     DanglingSpanAnchor(GlyphObjectId),
+    /// Two text runs share a stable id.
+    DuplicateTextId(GlyphObjectId),
+    /// A text run's origin, a glyph's offset, its size or its boxes do not
+    /// quantize, or a box is inverted.
+    InvalidTextGeometry(GlyphObjectId),
 }
 
 /// A malformed logical-stage value that cannot be transformed without losing
@@ -698,6 +738,40 @@ impl ConstrainedLayoutIR {
             }
             if !band_ids.contains(&curve.vertical_band) {
                 return Err(ConstrainedValidationError::UnknownBand(curve.vertical_band));
+            }
+        }
+
+        let mut text_ids = BTreeSet::new();
+        for text in &self.texts {
+            let id = text.id();
+            if !text_ids.insert(id) {
+                return Err(ConstrainedValidationError::DuplicateTextId(id));
+            }
+            let run = &text.text;
+            let boxed = |b: &BoundingBox| {
+                [b.left, b.bottom, b.right, b.top]
+                    .iter()
+                    .all(|v| v.quantize().is_some())
+                    && b.left.0 <= b.right.0
+                    && b.bottom.0 <= b.top.0
+            };
+            let geometry_quantizes = run.origin.quantize().is_some()
+                && boxed(&run.bounds)
+                && boxed(&run.reserved_box)
+                && run.segments.iter().all(|segment| {
+                    segment.size.quantize().is_some()
+                        && segment.glyphs.iter().all(|g| g.offset.quantize().is_some())
+                });
+            if !geometry_quantizes {
+                return Err(ConstrainedValidationError::InvalidTextGeometry(id));
+            }
+            if !slot_ids.contains(&text.horizontal_slot) {
+                return Err(ConstrainedValidationError::UnknownSlot(
+                    text.horizontal_slot,
+                ));
+            }
+            if !band_ids.contains(&text.vertical_band) {
+                return Err(ConstrainedValidationError::UnknownBand(text.vertical_band));
             }
         }
 
@@ -933,6 +1007,7 @@ pub fn try_to_constrained(
     let mut glyphs = Vec::new();
     let mut strokes = Vec::new();
     let mut curves = Vec::new();
+    let texts: Vec<TextObject> = Vec::new();
     let mut diagnostics = Vec::new();
     let mut vertical_bands = Vec::new();
     let mut horizontal_slots = Vec::new();
@@ -3499,6 +3574,7 @@ pub fn try_to_constrained(
         glyphs,
         strokes,
         curves,
+        texts,
         vertical_bands,
         constraints,
         break_origins,
@@ -9349,6 +9425,108 @@ mod tests {
         assert!(
             at_point.y.0 >= 3.0,
             "over its own notes it stands above the upper staff's ink there"
+        );
+    }
+
+    #[test]
+    fn a_runs_uncovered_characters_are_each_reported_against_its_source() {
+        use crate::text::{shape_text, TextAlign, TextFace};
+        use epiphany_core::MarkerId;
+        let source = TypedObjectId::Marker(MarkerId::from_raw(3));
+        let (_, gaps) = shape_text(
+            Provenance::projected(source, vec![]),
+            "a\u{4E2D}b\u{4E2E}",
+            TextFace::Roman,
+            2.0,
+            TextAlign::Left,
+            Point::new(0.0, 0.0),
+        );
+        assert_eq!(
+            text_diagnostics(source, &gaps),
+            vec![
+                LayoutDiagnostic {
+                    source,
+                    kind: LayoutDiagnosticKind::UncoveredCodepoint { codepoint: 0x4E2D },
+                },
+                LayoutDiagnostic {
+                    source,
+                    kind: LayoutDiagnosticKind::UncoveredCodepoint { codepoint: 0x4E2E },
+                },
+            ]
+        );
+        let covered = ShapingGaps::default();
+        assert!(text_diagnostics(source, &covered).is_empty());
+        let backwards = ShapingGaps {
+            uncovered: Vec::new(),
+            right_to_left: true,
+        };
+        assert_eq!(
+            text_diagnostics(source, &backwards),
+            vec![LayoutDiagnostic {
+                source,
+                kind: LayoutDiagnosticKind::RightToLeftText,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_text_run_must_ride_a_slot_and_a_band_that_exist_and_quantize() {
+        use crate::text::{shape_text, TextAlign, TextFace, TextObject};
+        use epiphany_core::MarkerId;
+        let base = to_constrained(&to_logical(&epiphany_core::generators::valid_score_rich(5)));
+        let glyph = base.glyphs[0].clone();
+        let run = |at: Point| {
+            shape_text(
+                Provenance::projected(TypedObjectId::Marker(MarkerId::from_raw(2)), vec![]),
+                "cresc.",
+                TextFace::Italic,
+                2.0,
+                TextAlign::Left,
+                at,
+            )
+            .0
+        };
+        let with = |text: TextObject| {
+            let mut ir = base.clone();
+            ir.texts.push(text);
+            ir.validate()
+        };
+        let good = TextObject {
+            text: run(Point::new(1.0, -6.0)),
+            horizontal_slot: glyph.horizontal_slot,
+            vertical_band: glyph.vertical_band,
+        };
+        assert_eq!(with(good.clone()), Ok(()));
+        let id = good.id();
+        let lost = SpringSlotId(u128::MAX - 1);
+        assert_eq!(
+            with(TextObject {
+                horizontal_slot: lost,
+                ..good.clone()
+            }),
+            Err(ConstrainedValidationError::UnknownSlot(lost))
+        );
+        let nowhere = VerticalBandId(u128::MAX - 1);
+        assert_eq!(
+            with(TextObject {
+                vertical_band: nowhere,
+                ..good.clone()
+            }),
+            Err(ConstrainedValidationError::UnknownBand(nowhere))
+        );
+        assert_eq!(
+            with(TextObject {
+                text: run(Point::new(f32::NAN, 0.0)),
+                ..good.clone()
+            }),
+            Err(ConstrainedValidationError::InvalidTextGeometry(id))
+        );
+        let mut twice = base.clone();
+        twice.texts.push(good.clone());
+        twice.texts.push(good);
+        assert_eq!(
+            twice.validate(),
+            Err(ConstrainedValidationError::DuplicateTextId(id))
         );
     }
 }
