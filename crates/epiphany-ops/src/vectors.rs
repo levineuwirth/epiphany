@@ -23,8 +23,9 @@ use epiphany_core::{
 use epiphany_determinism::CanonicalEncode;
 
 use crate::{
-    BlockStamp, BreakAnchor, IntegrityAnomaly, IntegrityAnomalyKind, MaterializedState,
-    ObjectState, OperationEnvelope, OperationKindRegistryId, OperationKindTag, PendingReason,
+    BlockStamp, BreakAnchor, IntegrityAnomaly, IntegrityAnomalyKind, MaterializedState, NoOpReason,
+    ObjectState, OperationEffect, OperationEnvelope, OperationKindRegistryId, OperationKindTag,
+    PendingReason, PreconditionFailureReason,
 };
 
 /// One vector: `(surface, verdict, class, name, bytes)`.
@@ -259,6 +260,41 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         "unknown-discriminant",
         "break_anchor_unknown_tag",
         breaks_section(&[unknown_anchor]),
+    ));
+
+    // A fill refused for an overlap (reduction version 5): one effect whose
+    // reason is `RegionsOverlap`, discriminant 21. The reason is the effect's
+    // last byte, and every section after the effects is empty; a reason no
+    // build names is refused.
+    let overlap = MaterializedState {
+        effects: vec![(
+            OperationId::new(ReplicaId(1), 3),
+            OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::RegionsOverlap,
+                },
+            },
+        )],
+        ..Default::default()
+    }
+    .canonical_bytes();
+    let reason_at = overlap.len() - (empty.len() - 4) - 1;
+    assert_eq!(overlap[reason_at], 21);
+    v.push(row(
+        MS,
+        "accept",
+        "-",
+        "a_fill_refused_for_an_overlap",
+        overlap.clone(),
+    ));
+    let mut unknown_reason = overlap;
+    unknown_reason[reason_at] = 0xFF;
+    v.push(row(
+        MS,
+        "reject",
+        "unknown-discriminant",
+        "precondition_reason_unknown",
+        unknown_reason,
     ));
 
     // --- OperationKindTag --------------------------------------------------
