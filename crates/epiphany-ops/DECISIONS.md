@@ -4051,3 +4051,41 @@ history reaches it (`187`, found by the X5b.0 arm's plant run). The
 cross-cutting arm now also supersedes a value anchored by a musical offset to
 a region out of musical time (`regions_anchored_in_musical_time`: a marker's
 anchor, a spanner's two ends), by that region's migration.
+
+## X5b.6 — the fuzz writes reduction version 5's verdicts (2026-10-22)
+
+**New shapes.** The two-mode fuzz now writes every verdict and shape version 5
+adds. One region create in three is one no editor writes: over the span of a
+region the view holds, with an instance of a staff that region holds (the
+fill refused `RegionsOverlap`), or starting with no offset at a region's end
+(placed through the ledger's index) or at an event (which the ledger cannot
+place). No extent takes an offset from what it names: a wall-clock offset from
+a metric region's edge is applied and breaks `AnchorOffsetModel`, which no
+verdict refuses yet (put to the owner). A user break is anchored to a
+measure's start, an event or an offset from its region's start, and one time
+in eight names another region the view holds (`TargetMissing`). One tempo
+segment in eight records its end tempo, built in memory since no decoder
+reads it (`TempoMapMalformed`); a history holding one renders but does not
+parse. Arm 65 places a mark at a new region's start by a musical offset, moves
+it onto an event in a transaction of its own, takes the region out of musical
+time and undoes the move, the migration superseding the restoration (Q17).
+Region placement for the gestures that add a passage moves to `placed_region`,
+which draws as arm 15 drew before. `valid` reads a region's extent anchors as
+references, so the minimizer keeps what an extent names.
+
+`Coverage` counts the expression-text marker, the measure- and event-anchored
+breaks and the anchored region start among `SHAPES`, which the CI budget holds
+authored and applied; `REFUSED` holds the constant segment with an end tempo,
+which it holds authored and never applied; and
+`the_ci_budget_refuses_what_reduction_version_5_refuses` holds a fill refused
+for an overlap. A break naming another region is counted where its anchor
+shows it, but a view seldom holds two regions, so the budget pins none.
+
+**Each arm's reach**, seed by seed at the final generator against the clean
+build, with each verdict removed by a plant: the overlap refusal in base-free
+reduction alone and in both modes, an unplaced extent counted disjoint, a
+region edge left unplaced, a break's validity, a measure- or event-anchored
+break keyed by its region's start, the constant segment admitted, and Q17's
+supersession in graph-aware reduction alone and in both modes. Each shows,
+Q17's at no seed before arm 65; the planted build with no plant live equals
+the clean one at every seed, and the earlier arms' plants show there too.

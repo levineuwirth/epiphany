@@ -17,8 +17,9 @@
 //!
 //! The CI budget runs a small number of generated histories, in two chunks of
 //! different lengths, and requires that every failure it finds is a committed
-//! `split` class, and that every operation kind and payload is authored and
-//! applied. The local budget is the `fuzz_modes` example.
+//! `split` class, that every operation kind and payload is authored and
+//! applied, and that what reduction version 5 refuses is written and refused.
+//! The local budget is the `fuzz_modes` example.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -317,6 +318,37 @@ fn the_ci_budget_authors_and_applies_every_kind() {
         }
     }
     assert!(missing.is_empty(), "{missing:#?}");
+}
+
+/// What reduction version 5 refuses is written and refused (X5b): a fill
+/// overlapping a region that holds its staff (`RegionsOverlap`), and each of
+/// [`modes::REFUSED`], authored and never applied.
+#[test]
+fn the_ci_budget_refuses_what_reduction_version_5_refuses() {
+    let sum = |count: &dyn Fn(&modes::Coverage) -> u64| {
+        ci_run()
+            .iter()
+            .map(|(_, report)| count(&report.coverage))
+            .sum::<u64>()
+    };
+    let overlaps = sum(&|c| {
+        c.other
+            .get(&(
+                String::from("InsertStaffInstance"),
+                String::from("NoOp PreconditionFailedUnderReduction RegionsOverlap"),
+            ))
+            .copied()
+            .unwrap_or(0)
+    });
+    assert!(overlaps > 0, "no fill refused for an overlap");
+    for shape in modes::REFUSED {
+        let authored = sum(&|c| c.authored.get(shape).copied().unwrap_or(0));
+        let applied = sum(&|c| c.applied.get(shape).copied().unwrap_or(0));
+        assert!(
+            authored > 0 && applied == 0,
+            "{shape}: authored {authored}, applied {applied}"
+        );
+    }
 }
 
 /// The refusal reads the overlap, not its authors (D52): the never-seen
