@@ -2342,3 +2342,15 @@ is set:
   so it had been folded into that slot's extent as a stem is, and a frame
   wider than the room before its first note pushed the measure's content
   right by the excess (`a_rehearsal_mark_takes_no_room`).
+
+## ENGRAVER_VERSION 63 → 64: a column's place is its first glyph that takes room (X4c.9, 2026-10-22)
+
+- Casting reads a column's reference x, by which it orders a region's
+  columns and shares a justified system's stretch among them, from its
+  first glyph that takes room, as the spacing pass reads a slot's source.
+  It had read the first glyph the projection emitted there, and the
+  projection emits a note's marks before its head: a scoop left of a note
+  opening a measure set its column before the barline it follows, and the
+  barline was drawn after the note, over it
+  (`a_mark_gives_its_column_no_place`). A column of marks alone keeps its
+  first glyph's x.

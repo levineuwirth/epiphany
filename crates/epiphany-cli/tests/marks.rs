@@ -2227,6 +2227,55 @@ fn a_rehearsal_mark_takes_no_room() {
     }
 }
 
+/// A mark beside or over its head gives its column neither its place nor
+/// its share of a justified system's stretch: a scoop left of a note opening
+/// a measure leaves the barline before it, and accents over a measure's
+/// notes move no note, in a system set to the width.
+#[test]
+fn a_mark_gives_its_column_no_place() {
+    let measures = |marked: bool| {
+        let (accent, scoop) = if marked {
+            (
+                "<articulations><accent/></articulations>",
+                "<articulations><scoop/></articulations>",
+            )
+        } else {
+            ("", "")
+        };
+        [
+            note("C5", 2, "quarter", 1, 1, accent).repeat(4),
+            note("F#4", 8, "whole", 1, 1, scoop),
+        ]
+    };
+    let ink = |name: &str, marked: bool| {
+        let loaded = part(name, 1, &measures(marked));
+        let layout = engrave(&loaded.reduced.score).layout;
+        let marks = named(&layout, "brassScoop").len() + named(&layout, "articAccentAbove").len();
+        assert_eq!(marks, if marked { 5 } else { 0 });
+        let mut xs: Vec<f32> = [
+            "noteheadBlack",
+            "noteheadWhole",
+            "barlineSingle",
+            "barlineFinal",
+        ]
+        .into_iter()
+        .flat_map(|glyph| named(&layout, glyph))
+        .map(|ink| ink[0])
+        .collect();
+        xs.sort_by(f32::total_cmp);
+        xs
+    };
+    let (bare, marked) = (
+        ink("unaccented.musicxml", false),
+        ink("scooped.musicxml", true),
+    );
+    assert_eq!(bare.len(), 7, "{bare:?}");
+    assert_eq!(bare.len(), marked.len());
+    for (b, m) in bare.iter().zip(&marked) {
+        near(*m, *b, "a note or barline beside its marks");
+    }
+}
+
 /// A segno or coda stands in Bravura Text at 18 points over the system's
 /// top staff, its baseline 2.0 over it, centred on its measure's barline, or
 /// at the piece's start on the system's left edge.

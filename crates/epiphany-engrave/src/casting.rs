@@ -636,6 +636,19 @@ pub(crate) fn cast_off(
             entry.note = true;
         }
     }
+    // A slot's reference x is its first glyph that takes room, as its source
+    // is in the spacing pass: the projection emits a note's marks before its
+    // head, and a mark standing off its note (a scoop left of its head) must
+    // neither order its column nor take its share of a justified stretch.
+    for info in slots.values_mut() {
+        if let Some(&i) = info
+            .members
+            .iter()
+            .find(|&&i| !roomless.contains(&input.glyphs[i].id()))
+        {
+            info.x = spaced_glyphs[i].position.x.0;
+        }
+    }
     // A slot holding only such glyphs stands at its source.
     for info in slots.values_mut() {
         if info.lo > info.hi {
