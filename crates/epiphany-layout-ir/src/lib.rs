@@ -99,8 +99,9 @@ pub use constrained::{
     to_constrained, try_to_constrained, Autoplace, Axis, BreakClass, BreakKind, BreakOrigin,
     ConstrainedLayoutIR, ConstrainedLayoutRegion, ConstrainedValidationError, ConstraintParameters,
     ConstraintRegistryId, CrossStaffBeam, Curve, FamilyMark, GlyphObject, GlyphObjectId,
-    GlyphStyle, GroupSign, GroupSpan, LayoutConstraint, LayoutTransformError, LeadGlyph,
-    NoteMarkPart, PlaceOrder, Room, SpanAnchor, SpringSlot, Stroke, SystemLead, CROSS_STEM_MIN,
+    GlyphStyle, GroupSign, GroupSpan, HairpinShape, LayoutConstraint, LayoutTransformError,
+    LeadGlyph, NoteMarkPart, PlaceOrder, Room, Row, SpanAnchor, SpringSlot, Stroke, SystemLead,
+    CROSS_STEM_MIN, HAIRPIN_CONT_HEIGHT, HAIRPIN_HEIGHT, HAIRPIN_MIN_LENGTH,
 };
 pub use engrave_theory::{
     accidental_glyph, clef_glyph, clef_glyph_for, flag_count, flag_glyph, has_stem, key_signature,
@@ -125,10 +126,10 @@ pub use logical::{
     LogicalLayoutIR, MarkerContent, MarkerLayout, MarkerPlace, MeasureContent,
     MultimeasureRestLayout, NoteContent, NoteLayout, NotePitch, PlacedClef, PlacedComponent,
     PlacedKeySignature, RepeatContent, RepeatPlacement, RestContent, RestLayout, ScoreVersion,
-    SlurContent, SlurDirection, SlurEndpoint, SlurLayout, SpannerLayout, StaffContent, StaffLayout,
-    TextLayout, TieContent, TieLayout, TimeSignatureContent, TimeSignatureDisplayLayout,
-    TrajectoryLayout, TupletDisplayLayout, UnpitchedContent, VerticalExtent, VoicePlace,
-    VoltaContent,
+    SlurContent, SlurDirection, SlurEndpoint, SlurLayout, SpannerContent, SpannerLayout,
+    StaffContent, StaffLayout, TextLayout, TieContent, TieLayout, TimeSignatureContent,
+    TimeSignatureDisplayLayout, TrajectoryLayout, TupletDisplayLayout, UnpitchedContent,
+    VerticalExtent, VoicePlace, VoltaContent,
 };
 pub use provenance::{
     continuation_instance_key, manifestation_layout_id, stable_layout_id, synthesized_layout_id,

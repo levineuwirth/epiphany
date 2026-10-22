@@ -232,6 +232,7 @@ pub fn gen_layout_content(rng: &mut Rng) -> LayoutContent {
             beams: Vec::new(),
             cross_beams: Vec::new(),
             visiting: Default::default(),
+            vocal: false,
         }),
         2 => LayoutContent::Note(NoteContent {
             voice: epiphany_layout_ir::VoicePlace::Alone,

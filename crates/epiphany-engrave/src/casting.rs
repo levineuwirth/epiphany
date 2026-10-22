@@ -85,11 +85,12 @@ use epiphany_layout_ir::{
     continuation_instance_key, inter_staff_gap_id, is_barline_glyph, is_rigid_width_stroke,
     metrics, synthesized_layout_id, tie_arc, BreakClass, BreakKind, ConstrainedLayoutIR, Curve,
     DecisionSource, EngravingDecision, EngravingDecisionKind, EngravingOverrideId, GlyphObject,
-    GlyphObjectId, GlyphReference, GlyphStyle, GroupSign, GroupSpan, LayoutConstraint,
-    LayoutObjectId, LeadGlyph, Margins, Point, PrimitiveIndices, Provenance, Rect, ResolvedGlyph,
-    ResolvedMeasure, ResolvedPage, ResolvedStaff, ResolvedSystem, ResolvedText, Size2D,
-    SpringSlotId, StaffSpace, Stroke, SynthesisInstanceKey, SynthesisKind, SynthesisRegistryId,
-    SystemLead, TimePoint, Transform2D, VerticalBand, VerticalBandId, VerticalBandKind,
+    GlyphObjectId, GlyphReference, GlyphStyle, GroupSign, GroupSpan, HairpinShape,
+    LayoutConstraint, LayoutObjectId, LeadGlyph, Margins, Point, PrimitiveIndices, Provenance,
+    Rect, ResolvedGlyph, ResolvedMeasure, ResolvedPage, ResolvedStaff, ResolvedSystem,
+    ResolvedText, Size2D, SpringSlotId, StaffSpace, Stroke, SynthesisInstanceKey, SynthesisKind,
+    SynthesisRegistryId, SystemLead, TimePoint, Transform2D, VerticalBand, VerticalBandId,
+    VerticalBandKind, HAIRPIN_CONT_HEIGHT, HAIRPIN_HEIGHT, HAIRPIN_MIN_LENGTH,
 };
 
 use crate::clearance::InkRect;
@@ -129,6 +130,9 @@ pub const SYSTEM_CONTINUATION_SYNTHESIS: SynthesisRegistryId =
 /// signature), synthesized from the staff instance and keyed by the system's
 /// region-local ordinal and the glyph.
 pub const SYSTEM_LEAD_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x5359_534C_4541_4447); // "SYSLEADG"
+
+/// A staff's height, bottom line to top, in staff spaces.
+const STAFF_SPAN: f32 = 4.0;
 
 /// The gap between a system-start lead's ink and the system's first column.
 const LEAD_GAP: f32 = 0.8;
@@ -1359,6 +1363,10 @@ pub(crate) fn cast_off(
         })
         .collect();
     let mut family_dy: BTreeMap<(usize, usize), f32> = BTreeMap::new();
+    // The placed family's pieces and the ink each was placed against, kept
+    // for centring a grand staff's once its staves are set.
+    let mut family_pieces: Vec<crate::family::Piece> = Vec::new();
+    let mut family_sky: BTreeMap<(usize, VerticalBandId), Vec<InkRect>> = BTreeMap::new();
     if !(placed.glyphs.is_empty() && placed.strokes.is_empty() && placed.texts.is_empty()) {
         let mut pieces: Vec<crate::family::Piece> = Vec::new();
         let mut piece_of: BTreeMap<(usize, usize), usize> = BTreeMap::new();
@@ -1547,6 +1555,8 @@ pub(crate) fn cast_off(
                 }
             }
         }
+        family_pieces = pieces;
+        family_sky = sky;
     }
 
     // A later system's leads are its staves' content too.
@@ -1659,6 +1669,102 @@ pub(crate) fn cast_off(
         }
         if staves.len() == 1 {
             staff_shift.insert((s, staves[0].0), 0.0);
+        }
+    }
+
+    // A dynamic or hairpin of a grand staff stands centred between its two
+    // staves once they are set, as far as the ink between them lets it, the
+    // members of a row together (`AlignmentLayout::alignStaffCenteredItems`).
+    let mut centred: BTreeMap<(usize, u128), Vec<usize>> = BTreeMap::new();
+    for (i, p) in family_pieces.iter().enumerate() {
+        let Some(place) = input.family[p.family].placement else {
+            continue;
+        };
+        if place.between.is_some() {
+            let row = place.row.map_or(u128::MAX - i as u128, |row| row.id);
+            centred.entry((p.system, row)).or_default().push(i);
+        }
+    }
+    for ((s, _), members) in centred {
+        let first = &input.family[family_pieces[members[0]].family];
+        let Some(place) = first.placement else {
+            continue;
+        };
+        let (own, Some(other)) = (first.band, place.between) else {
+            continue;
+        };
+        let line = |band: VerticalBandId| {
+            let st = staff_of(band)?;
+            Some((
+                *staff_ref.get(&(s, st))?,
+                staff_shift.get(&(s, st)).copied().unwrap_or(0.0),
+            ))
+        };
+        let (Some((own_top, own_shift)), Some((other_top, other_shift))) = (line(own), line(other))
+        else {
+            continue;
+        };
+        // The other staff in this one's frame, and the middle of the gap
+        // between their lines, a reference being a top line's ink.
+        let off = own_shift - other_shift;
+        let half = |band: VerticalBandId| {
+            input
+                .strokes
+                .iter()
+                .find(|s| {
+                    s.vertical_band == band
+                        && matches!(s.provenance.source, TypedObjectId::Staff(_))
+                })
+                .map_or(0.0, |s| s.thickness.0 * 0.5)
+        };
+        let target = (own_top - half(own) + other_top - half(other) + off - STAFF_SPAN) * 0.5;
+        let centre = place.row.map_or(0.0, |row| row.centre)
+            + family_dy
+                .get(&(first_of(&family_pieces, &members), s))
+                .copied()
+                .unwrap_or(0.0);
+        // As far as its own staff's ink and the other's let it.
+        let (mut up, mut down) = (f32::INFINITY, f32::NEG_INFINITY);
+        for &i in &members {
+            let p = &family_pieces[i];
+            let dy = family_dy.get(&(p.family, s)).copied().unwrap_or(0.0);
+            let min = input.family[p.family]
+                .placement
+                .map_or(0.0, |place| place.min_distance);
+            for b in &p.boxes {
+                let meets = |r: &&InkRect| r.left < b.right && r.right > b.left;
+                for r in family_sky
+                    .get(&(s, own))
+                    .into_iter()
+                    .flatten()
+                    .filter(meets)
+                {
+                    if place.above {
+                        down = down.max(r.top + min - (b.bottom + dy));
+                    } else {
+                        up = up.min(r.bottom - min - (b.top + dy));
+                    }
+                }
+                for r in family_sky
+                    .get(&(s, other))
+                    .into_iter()
+                    .flatten()
+                    .filter(meets)
+                {
+                    if place.above {
+                        up = up.min(r.bottom + off - min - (b.top + dy));
+                    } else {
+                        down = down.max(r.top + off + min - (b.bottom + dy));
+                    }
+                }
+            }
+        }
+        if down > up {
+            continue;
+        }
+        let delta = (target - centre).clamp(down, up);
+        for &i in &members {
+            *family_dy.entry((family_pieces[i].family, s)).or_insert(0.0) += delta;
         }
     }
 
@@ -1863,6 +1969,15 @@ pub(crate) fn cast_off(
         }
     }
 
+    // Each hairpin leg, by its stroke: its hairpin's shape, and which leg,
+    // up 1 and down -1.
+    let hairpin_legs: BTreeMap<GlyphObjectId, (HairpinShape, f32)> = input
+        .family
+        .iter()
+        .filter_map(|mark| Some((mark.hairpin?, &mark.strokes)))
+        .filter(|(_, legs)| legs.len() == 2)
+        .flat_map(|(shape, legs)| [(legs[0], (shape, 1.0)), (legs[1], (shape, -1.0))])
+        .collect();
     // Per-system staff-line marks, for the resolved staff records below.
     let mut staff_marks: BTreeMap<(usize, StaffId), StaffAgg> = BTreeMap::new();
     let mut strokes: Vec<Stroke> = Vec::with_capacity(spaced_strokes.len());
@@ -1901,6 +2016,9 @@ pub(crate) fn cast_off(
                             anchors.get(&source.id()),
                         );
                         end_staff_line(&mut stroke, staff_end[*s].map(|x| p.x(x)));
+                        if hairpin_legs.contains_key(&source.id()) {
+                            keep_hairpin_length(&mut stroke);
+                        }
                         // A stem reaching a beam across two staves: its beam
                         // end rides the staff the beam does.
                         if let Some(&upper) = reach_upper.get(&source.id()) {
@@ -1918,6 +2036,7 @@ pub(crate) fn cast_off(
                 stroke_system.push(*sys);
             }
             StrokeFate::Split(segments) => {
+                let leg = hairpin_legs.get(&source.id());
                 for (k, (s, from, to)) in segments.iter().enumerate() {
                     // A split stroke spans systems — a staff line or volta
                     // bracket, a hairpin — so each segment stretches with its
@@ -1949,16 +2068,41 @@ pub(crate) fn cast_off(
                     } else {
                         p.x(from.x.0)
                     };
+                    // A hairpin's piece opens from its axis as MuseScore draws
+                    // each piece of one over a system break: to its full
+                    // opening at its wide end, and to its continuation's at a
+                    // narrow end the break leaves open.
+                    let (from_y, to_y) = match leg {
+                        Some(&(shape, sign)) => {
+                            let (full, cont) = (HAIRPIN_HEIGHT * 0.5, HAIRPIN_CONT_HEIGHT * 0.5);
+                            let (open, last) = (k > 0, k + 1 < segments.len());
+                            if shape.crescendo {
+                                (
+                                    shape.axis + sign * if open { cont } else { 0.0 },
+                                    shape.axis + sign * full,
+                                )
+                            } else {
+                                (
+                                    shape.axis + sign * full,
+                                    shape.axis + sign * if last { cont } else { 0.0 },
+                                )
+                            }
+                        }
+                        None => (from.y.0, to.y.0),
+                    };
                     let mut stroke = Stroke {
                         provenance,
-                        from: Point::new(from_x, from.y.0 + p.dy),
-                        to: Point::new(p.x(to.x.0), to.y.0 + p.dy),
+                        from: Point::new(from_x, from_y + p.dy),
+                        to: Point::new(p.x(to.x.0), to_y + p.dy),
                         thickness: spaced.thickness,
                         layer: spaced.layer,
                         style: spaced.style,
                         vertical_band: spaced.vertical_band,
                     };
                     end_staff_line(&mut stroke, staff_end[*s].map(|x| p.x(x)));
+                    if leg.is_some() {
+                        keep_hairpin_length(&mut stroke);
+                    }
                     if let TypedObjectId::Staff(staff) = spaced.provenance.source {
                         mark_staff(&mut staff_marks, *s, staff, &stroke);
                     }
@@ -3038,6 +3182,20 @@ fn param_at_x(cp: [Point; 4], x: f32) -> f32 {
         }
     }
     0.5 * (lo + hi)
+}
+
+/// A hairpin's piece stands at least its least length, its end moved out
+/// where the system set it shorter (`TLayout::layoutHairpinSegment`).
+fn keep_hairpin_length(leg: &mut Stroke) {
+    let least = leg.from.x.0 + HAIRPIN_MIN_LENGTH;
+    if leg.to.x.0 < least {
+        leg.to = Point::new(least, leg.to.y.0);
+    }
+}
+
+/// The family member of a group's first piece.
+fn first_of(pieces: &[crate::family::Piece], members: &[usize]) -> usize {
+    pieces[members[0]].family
 }
 
 /// Linear interpolation between two points.

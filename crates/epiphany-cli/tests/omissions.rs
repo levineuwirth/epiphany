@@ -352,6 +352,19 @@ fn the_expression_familys_undrawn_members_are_counted_by_class() {
         ),
     ]
     .concat();
+    // A dynamic and a hairpin at the first note, the hairpin stopping at the
+    // third.
+    let measure = format!(
+        "<direction><direction-type><dynamics><p/></dynamics></direction-type></direction>\
+         <direction><direction-type><wedge type=\"crescendo\"/></direction-type></direction>\
+         {}",
+        measure.replacen(
+            "<note><pitch><step>G</step>",
+            "<direction><direction-type><wedge type=\"stop\"/></direction-type></direction>\
+             <note><pitch><step>G</step>",
+            1
+        )
+    );
     let xml = format!(
         "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
          </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
@@ -372,9 +385,17 @@ fn the_expression_familys_undrawn_members_are_counted_by_class() {
         .kinds
         .into_iter()
         .filter(|(kind, _)| {
-            ["note mark", "ornament", "fermata", "breath", "caesura"]
-                .iter()
-                .any(|class| kind.starts_with(class))
+            [
+                "note mark",
+                "ornament",
+                "fermata",
+                "breath",
+                "caesura",
+                "dynamic",
+                "hairpin",
+            ]
+            .iter()
+            .any(|class| kind.starts_with(class))
         })
         .collect()
     };
@@ -397,9 +418,14 @@ fn the_expression_familys_undrawn_members_are_counted_by_class() {
             g.provenance.stable_id = epiphany_layout_ir::LayoutObjectId(1);
         }
         if matches!(g.provenance.source, TypedObjectId::Marker(_))
-            && g.glyph.as_str().starts_with("fermata")
+            && (g.glyph.as_str().starts_with("fermata") || g.glyph.as_str().starts_with("dynamic"))
         {
             g.provenance.source = region;
+        }
+    }
+    for s in &mut engraved.layout.strokes {
+        if matches!(s.provenance.source, TypedObjectId::Spanner(_)) {
+            s.provenance.source = region;
         }
     }
     for t in &mut engraved.layout.texts {
@@ -413,13 +439,15 @@ fn the_expression_familys_undrawn_members_are_counted_by_class() {
         "ornament accidental: trill",
         "note mark: arpeggio",
         "fermata",
+        "dynamic",
+        "hairpin",
     ] {
         assert!(
             counted.contains(&(kind.to_owned(), 1)),
             "{kind}: {counted:?}"
         );
     }
-    assert_eq!(counted.len(), 4, "{counted:?}");
+    assert_eq!(counted.len(), 6, "{counted:?}");
 
     // A fermata at its region's start: on no staff, drawn nowhere.
     let mut moved = loaded.reduced.score.clone();

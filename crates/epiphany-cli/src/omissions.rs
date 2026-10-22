@@ -24,8 +24,9 @@
 //! - of the expression family the engraver draws, each mark of a note
 //!   (articulation, technique, ornament and its accidentals, tremolo, jazz
 //!   mark, arpeggio) with nothing drawn for it, by its class, and each
-//!   fermata, breath mark and caesura with no ink; one anchored at a region
-//!   offset stands on no staff, so it is named as drawn nowhere;
+//!   fermata, breath mark, caesura, dynamic and hairpin with no ink; one
+//!   anchored at a region offset stands on no staff, so it is named as drawn
+//!   nowhere;
 //! - each diagnostic the projection raised, by kind.
 //!
 //! Not checked, and counted as such: whether an accidental is the one the
@@ -37,7 +38,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::{
     AnchorOffset, Event, EventDuration, EventMark, EventPosition, MarkerKind, RationalTime, Score,
-    StaffId, StaffInstanceId, TimeAnchor, TypedObjectId,
+    SpannerKind, StaffId, StaffInstanceId, TimeAnchor, TypedObjectId,
 };
 use epiphany_layout_ir::constrained::{LayoutDiagnostic, LayoutDiagnosticKind};
 use epiphany_layout_ir::{is_beam_stroke, NoteMarkPart, ResolvedLayoutIR};
@@ -170,6 +171,9 @@ pub fn omissions(
     }
     for c in &layout.curves {
         inked.insert(c.provenance.source);
+    }
+    for t in &layout.texts {
+        inked.insert(t.provenance.source);
     }
     // The notes a beam joins, named among its dependencies.
     let beamed: BTreeSet<TypedObjectId> = layout
@@ -617,6 +621,7 @@ pub fn omissions(
             MarkerKind::Fermata(_) => "fermata",
             MarkerKind::Breath(_) => "breath mark",
             MarkerKind::Caesura(_) => "caesura",
+            MarkerKind::Dynamic(_) => "dynamic",
             _ => continue,
         };
         if inked.contains(&TypedObjectId::Marker(marker.id)) {
@@ -627,6 +632,13 @@ pub fn omissions(
                 out.add(&format!("{class} at a region offset: drawn nowhere"))
             }
             _ => out.add(class),
+        }
+    }
+    for spanner in &score.cross_cutting.spanners {
+        if matches!(spanner.kind, SpannerKind::Hairpin(_))
+            && !inked.contains(&TypedObjectId::Spanner(spanner.id))
+        {
+            out.add("hairpin");
         }
     }
 

@@ -360,7 +360,7 @@ pub struct Engraver {
 /// when the resolved layout began carrying shaped text runs, a fourth
 /// primitive each riding its slot and joining its staff's extent, whose count
 /// enters every layout's canonical bytes though no score yet draws one.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(58);
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(59);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -1274,6 +1274,7 @@ mod tests {
                             beams: Vec::new(),
                             cross_beams: Vec::new(),
                             visiting: Default::default(),
+                            vocal: false,
                         }),
                     ),
                     manifested(
@@ -1727,6 +1728,7 @@ mod tests {
                 beams: Vec::new(),
                 cross_beams: Vec::new(),
                 visiting: Default::default(),
+                vocal: false,
             }),
         )];
         objects.extend(note(1, 101, MusicalPosition::origin()));
@@ -2252,6 +2254,7 @@ mod tests {
                             beams: Vec::new(),
                             cross_beams: Vec::new(),
                             visiting: Default::default(),
+                            vocal: false,
                         }),
                     ),
                     manifested(

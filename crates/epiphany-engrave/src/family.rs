@@ -16,7 +16,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_layout_ir::{
-    ConstrainedLayoutIR, FamilyMark, GlyphObjectId, PlaceOrder, Room, TextObject, VerticalBandId,
+    Autoplace, ConstrainedLayoutIR, FamilyMark, GlyphObjectId, Room, TextObject, VerticalBandId,
 };
 
 use crate::clearance::InkRect;
@@ -77,6 +77,7 @@ impl Placed {
 
 /// One system's share of a placed member: its ink there, where the system
 /// sets it across, at the height the projection gave it.
+#[derive(Clone)]
 pub(crate) struct Piece {
     pub family: usize,
     pub system: usize,
@@ -85,10 +86,13 @@ pub(crate) struct Piece {
 
 /// How far each piece moves, up positive: in each system and staff, every
 /// piece placed in order (`PlaceOrder`, then left to right, then by member),
-/// away from the staff until it clears the ink under it by its distance; a
-/// row's pieces in one system together, at the furthest any of them needs.
-/// `family` is the layout's (`ConstrainedLayoutIR::family`), and `ink` each
-/// system's and staff's ink the family does not place.
+/// away from the staff until it clears the ink under it by its distance,
+/// each joining the ink the next is placed against; then, once all of one
+/// order are placed, a row's pieces in one system moved further out until
+/// their optical centres stand at the outermost of theirs
+/// (`AlignmentLayout::alignItemsWithTheirSnappingChain`). `family` is the
+/// layout's (`ConstrainedLayoutIR::family`), and `ink` each system's and
+/// staff's ink the family does not place.
 pub(crate) fn place(
     family: &[FamilyMark],
     pieces: &[Piece],
@@ -112,46 +116,25 @@ pub(crate) fn place(
             .map(|b| b.left)
             .fold(f32::INFINITY, f32::min)
     };
-    let order = |i: usize| -> PlaceOrder {
+    let placement = |i: usize| -> Autoplace {
         family[pieces[i].family]
             .placement
             .expect("grouped pieces are placed")
-            .order
     };
     for (key, mut members) in groups {
         members.sort_by(|&a, &b| {
-            order(a)
-                .cmp(&order(b))
+            placement(a)
+                .order
+                .cmp(&placement(b).order)
                 .then(left(a).total_cmp(&left(b)))
                 .then(pieces[a].family.cmp(&pieces[b].family))
         });
         let mut sky: Vec<InkRect> = ink.get(&key).cloned().unwrap_or_default();
-        let mut done = vec![false; members.len()];
-        for k in 0..members.len() {
-            if done[k] {
-                continue;
-            }
-            let first = members[k];
-            let placement = family[pieces[first].family]
-                .placement
-                .expect("grouped pieces are placed");
-            // The piece, and the rest of its row in this system.
-            let row: Vec<usize> = match placement.row {
-                Some(r) => (k..members.len())
-                    .filter(|&j| {
-                        !done[j]
-                            && family[pieces[members[j]].family]
-                                .placement
-                                .and_then(|p| p.row)
-                                == Some(r)
-                    })
-                    .collect(),
-                None => vec![k],
-            };
-            let need = |i: usize| -> f32 {
-                let p = family[pieces[i].family]
-                    .placement
-                    .expect("grouped pieces are placed");
+        for same in members.chunk_by(|&a, &b| placement(a).order == placement(b).order) {
+            // Each piece of this order, where its boxes join the sky.
+            let mut joined: Vec<(usize, std::ops::Range<usize>)> = Vec::new();
+            for &i in same {
+                let p = placement(i);
                 let mut need = 0.0f32;
                 for b in &pieces[i].boxes {
                     for s in sky.iter().filter(|s| s.left < b.right && s.right > b.left) {
@@ -162,23 +145,40 @@ pub(crate) fn place(
                         }
                     }
                 }
-                need
-            };
-            let needs: Vec<f32> = row.iter().map(|&j| need(members[j])).collect();
-            let by = if placement.above {
-                needs.iter().copied().fold(f32::NEG_INFINITY, f32::max)
-            } else {
-                needs.iter().copied().fold(f32::INFINITY, f32::min)
-            };
-            for &j in &row {
-                done[j] = true;
-                let i = members[j];
-                shift[i] = by;
+                shift[i] = need;
+                let from = sky.len();
                 sky.extend(pieces[i].boxes.iter().map(|b| InkRect {
-                    bottom: b.bottom + by,
-                    top: b.top + by,
+                    bottom: b.bottom + need,
+                    top: b.top + need,
                     ..*b
                 }));
+                joined.push((i, from..sky.len()));
+            }
+            // Each row of this order, aligned at its outermost centre.
+            let mut rows: BTreeMap<u128, Vec<(usize, std::ops::Range<usize>)>> = BTreeMap::new();
+            for (i, at) in joined {
+                if let Some(row) = placement(i).row {
+                    rows.entry(row.id).or_default().push((i, at));
+                }
+            }
+            for row in rows.values() {
+                let centres: Vec<f32> = row
+                    .iter()
+                    .map(|&(i, _)| placement(i).row.expect("a row's member").centre + shift[i])
+                    .collect();
+                let target = if placement(row[0].0).above {
+                    centres.iter().copied().fold(f32::NEG_INFINITY, f32::max)
+                } else {
+                    centres.iter().copied().fold(f32::INFINITY, f32::min)
+                };
+                for ((i, at), centre) in row.iter().zip(centres) {
+                    let delta = target - centre;
+                    shift[*i] += delta;
+                    for b in &mut sky[at.clone()] {
+                        b.bottom += delta;
+                        b.top += delta;
+                    }
+                }
             }
         }
     }
@@ -188,11 +188,11 @@ pub(crate) fn place(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use epiphany_layout_ir::Autoplace;
+    use epiphany_layout_ir::{PlaceOrder, Row};
 
     const STAFF: VerticalBandId = VerticalBandId(7);
 
-    fn member(above: bool, order: PlaceOrder, row: Option<u128>) -> FamilyMark {
+    fn member(above: bool, order: PlaceOrder, row: Option<Row>) -> FamilyMark {
         FamilyMark {
             band: STAFF,
             glyphs: Vec::new(),
@@ -204,7 +204,9 @@ mod tests {
                 order,
                 min_distance: 0.5,
                 row,
+                between: None,
             }),
+            hairpin: None,
         }
     }
 
@@ -284,9 +286,13 @@ mod tests {
 
         // Two syllables of a verse, one over a low note and one over a high
         // one: both take the height the high one needs.
+        let row = Some(Row {
+            id: 1,
+            centre: -2.5,
+        });
         let family = [
-            member(false, PlaceOrder::Lyric, Some(1)),
-            member(false, PlaceOrder::Lyric, Some(1)),
+            member(false, PlaceOrder::Lyric, row),
+            member(false, PlaceOrder::Lyric, row),
         ];
         let pieces = [
             piece(0, vec![rect(0.0, 1.0, -3.0, -2.0)]),
@@ -296,5 +302,50 @@ mod tests {
         let shift = place(&family, &pieces, &ink);
         assert!((shift[0] + 2.5).abs() < 1e-6, "{shift:?}");
         assert_eq!(shift[0], shift[1]);
+    }
+
+    /// A row aligns its members on their optical centres, not their ink: a
+    /// dynamic, whose centre stands half its x-height over its baseline, and
+    /// the hairpin it meets, whose centre is its axis, each placed clear of
+    /// what is under it, then both moved out to the outermost centre; a
+    /// member of another row stays where it was placed.
+    #[test]
+    fn a_row_aligns_its_members_centres_at_the_outermost() {
+        let row = |id: u128, centre: f32| Some(Row { id, centre });
+        let family = [
+            // A dynamic, baseline at -2.0, centre at -1.54.
+            member(false, PlaceOrder::Dynamic, row(7, -1.54)),
+            // Its hairpin, axis at -1.75, over a note reaching -3.0.
+            member(false, PlaceOrder::Dynamic, row(7, -1.75)),
+            // Another chain's dynamic, alone.
+            member(false, PlaceOrder::Dynamic, row(8, -1.54)),
+        ];
+        let pieces = [
+            piece(0, vec![rect(0.0, 1.5, -2.4, -0.9)]),
+            piece(1, vec![rect(2.0, 8.0, -2.325, -1.175)]),
+            piece(2, vec![rect(20.0, 21.5, -2.4, -0.9)]),
+        ];
+        let ink = sky(vec![rect(4.0, 5.0, -3.0, 4.0)]);
+        let shift = place(&family, &pieces, &ink);
+        // The hairpin clears the note by its distance: its top to -3.5.
+        assert!((shift[1] - (-3.5 - -1.175)).abs() < 1e-5, "{shift:?}");
+        // The dynamic moves so that its centre meets the hairpin's.
+        let centre = -1.75 + shift[1];
+        assert!((shift[0] - (centre - -1.54)).abs() < 1e-5, "{shift:?}");
+        // The other chain stays.
+        assert_eq!(shift[2], 0.0);
+
+        // A member of a later order is placed against the row as aligned:
+        // a syllable under the dynamic clears it where the row set it.
+        let mut family = family.to_vec();
+        family.push(member(false, PlaceOrder::Lyric, None));
+        let mut pieces = pieces.to_vec();
+        pieces.push(piece(3, vec![rect(0.0, 1.5, -3.0, -2.0)]));
+        let shift = place(&family, &pieces, &ink);
+        let dynamic_bottom = -2.4 + shift[0];
+        assert!(
+            (shift[3] - (dynamic_bottom - 0.5 - -2.0)).abs() < 1e-5,
+            "{shift:?}"
+        );
     }
 }

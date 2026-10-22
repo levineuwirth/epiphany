@@ -1,6 +1,7 @@
-//! Marks at their notes, fermatas, breath marks and caesuras on the page
-//! (X4c.3), each on a hand-written file, against MuseScore 4.7.5's default
-//! rules as `marks.rs` and the constrained pass cite them.
+//! The expression family on the page: marks at their notes, fermatas, breath
+//! marks and caesuras (X4c.3), dynamics and hairpins (X4c.4), each on a
+//! hand-written file, against MuseScore 4.7.5's default rules as `marks.rs`
+//! and the constrained pass cite them.
 
 use std::path::Path;
 
@@ -79,6 +80,57 @@ fn note(pitch: &str, duration: u8, kind: &str, voice: u8, staff: u8, notations: 
 /// The same note sounding with the one before it.
 fn chord(pitch: &str, duration: u8, kind: &str, voice: u8, staff: u8, notations: &str) -> String {
     note(pitch, duration, kind, voice, staff, notations).replacen("<note>", "<note><chord/>", 1)
+}
+
+/// A direction on `staff` holding `content`, standing at the next note.
+fn direction(staff: u8, content: &str) -> String {
+    format!(
+        "<direction><direction-type>{content}</direction-type><staff>{staff}</staff></direction>"
+    )
+}
+
+fn dynamic(name: &str, staff: u8) -> String {
+    direction(staff, &format!("<dynamics><{name}/></dynamics>"))
+}
+
+fn wedge(kind: &str, staff: u8) -> String {
+    direction(staff, &format!("<wedge type=\"{kind}\"/>"))
+}
+
+/// `note` sung to a syllable.
+fn sung(note: String) -> String {
+    note.replacen(
+        "</note>",
+        "<lyric number=\"1\"><syllabic>single</syllabic><text>la</text></lyric></note>",
+        1,
+    )
+}
+
+/// The resolved glyph named `name`, the only one.
+fn only<'a>(layout: &'a ResolvedLayoutIR, name: &str) -> &'a ResolvedGlyph {
+    let found: Vec<&ResolvedGlyph> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str() == name)
+        .collect();
+    assert_eq!(found.len(), 1, "{name}");
+    found[0]
+}
+
+/// A stroke's ends, `(from, to)`, each as `(x, y)`.
+type Leg = ((f32, f32), (f32, f32));
+
+/// A hairpin's legs, upper first: each `(from, to)` as `(x, y)` pairs, by
+/// the spanner it draws, every piece of it on the page.
+fn hairpin_legs(layout: &ResolvedLayoutIR) -> Vec<Leg> {
+    let mut legs: Vec<Leg> = layout
+        .strokes
+        .iter()
+        .filter(|s| matches!(s.provenance.source, TypedObjectId::Spanner(_)) && s.from != s.to)
+        .map(|s| ((s.from.x.0, s.from.y.0), (s.to.x.0, s.to.y.0)))
+        .collect();
+    legs.sort_by(|a, b| a.0 .0.total_cmp(&b.0 .0).then(b.1 .1.total_cmp(&a.1 .1)));
+    legs
 }
 
 fn backup(duration: u8) -> String {
@@ -926,5 +978,318 @@ fn a_fermata_clears_the_slur_over_its_note() {
     assert!(
         fermata[1] >= top + 0.4 - 0.01,
         "{fermata:?} over the slur at {top}"
+    );
+}
+
+/// A dynamic stands below its staff, its optical centre on its note's head,
+/// its baseline two spaces under the staff, and further down where ink there
+/// needs it, half a space clear: under a G with its stem up, and under a low
+/// C on a ledger line.
+#[test]
+fn a_dynamic_stands_below_its_note_centred_on_its_head() {
+    let measure = [
+        dynamic("f", 1),
+        note("G4", 2, "quarter", 1, 1, ""),
+        dynamic("pp", 1),
+        note("C4", 2, "quarter", 1, 1, ""),
+        note("rest", 4, "half", 1, 1, ""),
+    ]
+    .concat();
+    let loaded = part("dynamics.musicxml", 1, &[measure]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let (bottom_line, _) = staff_lines(&layout)[0];
+    let forte = only(&layout, "dynamicForte");
+    near(
+        forte.position.x.0 + 1.256,
+        centre_x(head(&loaded, &layout, e[0])),
+        "f's optical centre",
+    );
+    // Two spaces under the staff, or lower, its top half a space under the
+    // bottom line's ink.
+    let rise = named(&layout, "dynamicForte")[0][3] - forte.position.y.0;
+    let clear = bottom_line - 0.065 - 0.5 - rise;
+    near(
+        forte.position.y.0,
+        (bottom_line - 2.0).min(clear),
+        "f's baseline",
+    );
+    let pp = only(&layout, "dynamicPP");
+    near(
+        pp.position.x.0 + 1.708,
+        centre_x(head(&loaded, &layout, e[1])),
+        "pp's optical centre",
+    );
+    let below = head(&loaded, &layout, e[1])[1];
+    let pp_ink = named(&layout, "dynamicPP")[0];
+    assert!(
+        pp_ink[3] <= below - 0.5 + 0.01,
+        "clear of the low C: {pp_ink:?} under {below}"
+    );
+    assert!(
+        pp.position.y.0 < bottom_line - 2.0 - 0.1,
+        "pushed down: {}",
+        pp.position.y.0
+    );
+}
+
+/// A staff most of whose notes carry a syllable takes its dynamics and
+/// hairpins above; one with fewer, below (D79's Q10).
+#[test]
+fn a_voices_staff_takes_its_dynamics_above() {
+    let measure = |syllables: usize| {
+        let mut notes = vec![dynamic("p", 1), wedge("diminuendo", 1)];
+        for k in 0..4 {
+            let n = note("A4", 2, "quarter", 1, 1, "");
+            notes.push(if k < syllables { sung(n) } else { n });
+            if k == 1 {
+                notes.push(wedge("stop", 1));
+            }
+        }
+        notes.concat()
+    };
+    for (syllables, above) in [(3, true), (2, false)] {
+        let loaded = part(
+            &format!("vocal_{syllables}.musicxml"),
+            1,
+            &[measure(syllables)],
+        );
+        let layout = engrave(&loaded.reduced.score).layout;
+        let (bottom_line, top_line) = staff_lines(&layout)[0];
+        let piano = only(&layout, "dynamicPiano");
+        let axis = hairpin_legs(&layout)[0].1 .1;
+        if above {
+            assert!(
+                piano.position.y.0 >= top_line + 1.0 - 0.01,
+                "{}",
+                piano.position.y.0
+            );
+            assert!(axis >= top_line + 1.75 - 0.01, "{axis}");
+        } else {
+            assert!(
+                piano.position.y.0 <= bottom_line - 2.0 + 0.01,
+                "{}",
+                piano.position.y.0
+            );
+            assert!(axis <= bottom_line - 1.75 + 0.01, "{axis}");
+        }
+    }
+}
+
+/// A dynamic no glyph names is its words, in italic, centred on its note.
+#[test]
+fn a_dynamic_in_words_is_an_italic_run() {
+    let measure = [
+        direction(
+            1,
+            "<dynamics><other-dynamics>sempre</other-dynamics></dynamics>",
+        ),
+        note("C5", 2, "quarter", 1, 1, ""),
+        note("rest", 6, "half", 1, 1, "").replace("<type>half</type>", "<type>half</type><dot/>"),
+    ]
+    .concat();
+    let loaded = part("dynamic_words.musicxml", 1, &[measure]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let runs: Vec<&ResolvedText> = layout.texts.iter().filter(|t| t.text == "sempre").collect();
+    assert_eq!(runs.len(), 1);
+    let run = runs[0];
+    assert!(
+        run.shaping.faces[0].family.0.contains("Italic"),
+        "{:?}",
+        run.shaping.faces[0].family
+    );
+    let ink = text_box(run);
+    assert!(
+        (centre_x([
+            run.origin.x.0 + run.reserved_box.left.0,
+            0.0,
+            run.origin.x.0 + run.reserved_box.right.0,
+            0.0
+        ]) - centre_x(head(&loaded, &layout, e[0])))
+        .abs()
+            < 0.01,
+        "{ink:?}"
+    );
+}
+
+/// A hairpin runs from its first note to a space before the note it ends
+/// at, its legs opening from its axis, a crescendo to its end and a
+/// diminuendo from its start, the axis 1.75 under the staff.
+#[test]
+fn a_hairpin_opens_from_its_axis_between_its_notes() {
+    for (kind, crescendo) in [("crescendo", true), ("diminuendo", false)] {
+        let measure = [
+            wedge(kind, 1),
+            note("G4", 2, "quarter", 1, 1, ""),
+            note("A4", 2, "quarter", 1, 1, ""),
+            wedge("stop", 1),
+            note("G4", 2, "quarter", 1, 1, ""),
+            note("rest", 2, "quarter", 1, 1, ""),
+        ]
+        .concat();
+        let loaded = part(&format!("hairpin_{kind}.musicxml"), 1, &[measure]);
+        let layout = engrave(&loaded.reduced.score).layout;
+        let e = events(&loaded);
+        let (bottom_line, _) = staff_lines(&layout)[0];
+        let legs = hairpin_legs(&layout);
+        assert_eq!(legs.len(), 2, "{legs:?}");
+        let (upper, lower) = (legs[0], legs[1]);
+        near(upper.0 .0, head(&loaded, &layout, e[0])[0], "its start");
+        near(upper.1 .0, head(&loaded, &layout, e[2])[0] - 1.0, "its end");
+        let (narrow, wide) = if crescendo { (0, 1) } else { (1, 0) };
+        let at = |leg: Leg, end: usize| if end == 0 { leg.0 .1 } else { leg.1 .1 };
+        near(at(upper, narrow), at(lower, narrow), "its tip");
+        near(at(upper, wide) - at(lower, wide), 1.15, "its mouth");
+        // Its stems up, nothing under the staff moves it.
+        near(at(upper, narrow), bottom_line - 1.75, "its axis");
+    }
+}
+
+/// A dynamic and the hairpins meeting it are one chain: each hairpin keeps
+/// half a space from the dynamic at either end, and the chain stands in one
+/// row, aligned on the optical centres, as low as its lowest member needs.
+#[test]
+fn a_chain_of_dynamics_and_hairpins_stands_in_one_row() {
+    let measure = [
+        dynamic("p", 1),
+        wedge("crescendo", 1),
+        note("C5", 2, "quarter", 1, 1, ""),
+        note("C4", 2, "quarter", 1, 1, ""),
+        wedge("stop", 1),
+        dynamic("ff", 1),
+        note("C5", 2, "quarter", 1, 1, ""),
+        note("rest", 2, "quarter", 1, 1, ""),
+    ]
+    .concat();
+    let loaded = part("chain.musicxml", 1, &[measure]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let legs = hairpin_legs(&layout);
+    assert_eq!(legs.len(), 2);
+    let p = named(&layout, "dynamicPiano")[0];
+    let ff = named(&layout, "dynamicFF")[0];
+    near(legs[0].0 .0, p[2] + 0.5, "the hairpin after p");
+    assert!(legs[0].1 .0 <= ff[0] - 0.5 + 0.01, "the hairpin before ff");
+    let axis = legs[0].0 .1;
+    let centre = |name: &str| only(&layout, name).position.y.0 + 0.46;
+    near(centre("dynamicPiano"), axis, "p on the row");
+    near(centre("dynamicFF"), axis, "ff on the row");
+    // The low C under the hairpin set the row.
+    assert!(axis < staff_lines(&layout)[0].0 - 1.75 - 0.1, "{axis}");
+}
+
+/// A hairpin over a system break is drawn a piece in each system, each
+/// opening as MuseScore draws one: a crescendo from its tip to its mouth in
+/// the first, and in the next from a half-space opening to its mouth; a
+/// diminuendo from its mouth to a half-space opening, then from its mouth to
+/// its tip.
+#[test]
+fn a_hairpin_over_a_system_break_opens_each_piece() {
+    for (kind, crescendo) in [("crescendo", true), ("diminuendo", false)] {
+        let first = [wedge(kind, 1), note("C5", 8, "whole", 1, 1, "")].concat();
+        let second = [
+            "<print new-system=\"yes\"/>".to_string(),
+            note("C5", 4, "half", 1, 1, ""),
+            wedge("stop", 1),
+            note("C5", 4, "half", 1, 1, ""),
+        ]
+        .concat();
+        let name = format!("hairpin_break_{kind}.musicxml");
+        let loaded = part(&name, 1, &[first, second]);
+        let layout = engrave(&loaded.reduced.score).layout;
+        let legs = hairpin_legs(&layout);
+        assert_eq!(legs.len(), 4, "{legs:?}");
+        // Two systems: the pieces in page order, upper legs first in each.
+        let mut pieces: Vec<_> = legs.clone();
+        pieces.sort_by(|a, b| b.0 .1.total_cmp(&a.0 .1));
+        let (one, two) = (&pieces[..2], &pieces[2..]);
+        let opening = |piece: &[Leg], end: usize| {
+            let y = |leg: &Leg| if end == 0 { leg.0 .1 } else { leg.1 .1 };
+            (y(&piece[0]) - y(&piece[1])).abs()
+        };
+        let (a, b, c, d) = if crescendo {
+            (0.0, 1.15, 0.5, 1.15)
+        } else {
+            (1.15, 0.5, 1.15, 0.0)
+        };
+        near(opening(one, 0), a, "the first piece's start");
+        near(opening(one, 1), b, "the first piece's end");
+        near(opening(two, 0), c, "the second piece's start");
+        near(opening(two, 1), d, "the second piece's end");
+    }
+}
+
+/// A hairpin is at least a space long: one over a sixty-fourth in a measure
+/// of them too wide for its line, whose next stands less than two spaces
+/// after it.
+#[test]
+fn a_hairpin_is_at_least_a_space_long() {
+    // A measure of sixty-fourths, too many for its line.
+    let mut notes = vec![wedge("crescendo", 1), note("C5", 1, "64th", 1, 1, "")];
+    notes.push(wedge("stop", 1));
+    notes.extend((1..64).map(|_| note("D5", 1, "64th", 1, 1, "")));
+    let measure = notes.concat();
+    let loaded = part_in("short_hairpin.musicxml", 1, 16, &[measure]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let step = head(&loaded, &layout, e[1])[0] - head(&loaded, &layout, e[0])[0];
+    assert!(step < 2.0, "the notes stand {step} apart");
+    let legs = hairpin_legs(&layout);
+    assert_eq!(legs.len(), 2);
+    assert!(legs[0].1 .0 - legs[0].0 .0 >= 1.0 - 1e-3, "{legs:?}");
+}
+
+/// A dynamic where no note of its staff starts stands at its own time, in a
+/// column made for it: one anchored half a note into its measure, over a
+/// whole note.
+#[test]
+fn a_dynamic_where_no_note_starts_stands_at_its_time() {
+    use epiphany_core::{
+        AnchorOffset, MarkerKind, MeasurePosition, MusicalDuration, RationalTime, TimeAnchor,
+    };
+    let measure = [dynamic("mf", 1), note("C5", 8, "whole", 1, 1, "")].concat();
+    let loaded = part("dynamic_between.musicxml", 1, &[measure]);
+    let mut score = loaded.reduced.score.clone();
+    let id = loaded.import.ids.measures[0][0][0];
+    for marker in &mut score.cross_cutting.markers {
+        if matches!(marker.kind, MarkerKind::Dynamic(_)) {
+            marker.anchor = TimeAnchor::Measure {
+                id,
+                position: MeasurePosition::Start,
+                offset: AnchorOffset::Musical(MusicalDuration(
+                    RationalTime::new(1, 2).expect("a half"),
+                )),
+            };
+        }
+    }
+    let layout = engrave(&score).layout;
+    let e = events(&loaded);
+    let mf = only(&layout, "dynamicMF");
+    assert!(
+        mf.position.x.0 > head(&loaded, &layout, e[0])[2],
+        "after the whole note's head: {}",
+        mf.position.x.0
+    );
+}
+
+/// On a grand staff a dynamic of the upper staff stands centred between the
+/// two staves, where the ink between them lets it.
+#[test]
+fn a_grand_staffs_dynamic_stands_between_its_staves() {
+    let measure = [
+        dynamic("mf", 1),
+        note("C5", 8, "whole", 1, 1, ""),
+        backup(8),
+        note("C3", 8, "whole", 5, 2, ""),
+    ]
+    .concat();
+    let loaded = part("grand_dynamic.musicxml", 2, &[measure]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let lines = staff_lines(&layout);
+    let middle = (lines[0].0 + lines[1].1) * 0.5;
+    near(
+        only(&layout, "dynamicMF").position.y.0 + 0.46,
+        middle,
+        "mf's centre",
     );
 }

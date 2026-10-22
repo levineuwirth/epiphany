@@ -76,6 +76,17 @@ pub enum LayoutContent {
     Group(GroupContent),
     /// A point mark: what it marks and where it stands.
     Marker(MarkerContent),
+    /// A line: its kind, and where its ends stand.
+    Spanner(SpannerContent),
+}
+
+/// A line's content: its kind, and where each end stands, resolved as a
+/// point mark's place is.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SpannerContent {
+    pub kind: epiphany_core::SpannerKind,
+    pub start: MarkerPlace,
+    pub end: MarkerPlace,
 }
 
 /// A point mark's content: its kind, and where it stands, resolved so the
@@ -86,7 +97,8 @@ pub struct MarkerContent {
     pub at: MarkerPlace,
 }
 
-/// Where a point mark stands on its region's spacing axis.
+/// Where a point mark, or an end of a line, stands on its region's spacing
+/// axis.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum MarkerPlace {
     /// On an event: its onset, where its sound ends (`None` in wall-clock
@@ -158,6 +170,9 @@ pub struct StaffContent {
     /// another staff of the region (`Score::voice_homes`, D46): a rest of the
     /// instance's own voices stands clear of their ink.
     pub visiting: BTreeSet<EventId>,
+    /// Most of the staff's notes, across the score, carry a syllable: a
+    /// voice's staff, whose dynamics and hairpins stand above (D79's Q10).
+    pub vocal: bool,
 }
 
 /// A beamed group: two or more notes of one voice, each an eighth or shorter
@@ -960,6 +975,19 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
                     })
                 })
                 .unwrap_or_default(),
+            TypedObjectId::Spanner(id) => score
+                .cross_cutting
+                .spanners
+                .iter()
+                .find(|spanner| spanner.id == id)
+                .map(|spanner| {
+                    LayoutContent::Spanner(SpannerContent {
+                        kind: spanner.kind.clone(),
+                        start: marker_place(score, &spanner.start, &all_places),
+                        end: marker_place(score, &spanner.end, &all_places),
+                    })
+                })
+                .unwrap_or_default(),
             _ => LayoutContent::Structural,
         };
         let mut anchored_regions = Vec::new();
@@ -1156,7 +1184,36 @@ fn staff_content(
                 .flat_map(|voice| voice.events.iter().copied())
                 .collect()
         },
+        vocal: vocal_staff(score, si.staff),
     })
+}
+
+/// Whether most of `staff`'s notes, across the score, carry a syllable of
+/// some verse, grace notes aside (D79's Q10). MuseScore sets a voice's
+/// dynamics and hairpins above, and the score does not say which staff is a
+/// voice's.
+fn vocal_staff(score: &Score, staff: epiphany_core::StaffId) -> bool {
+    let sung: BTreeSet<EventId> = score.cross_cutting.lyrics.iter().map(|l| l.event).collect();
+    if sung.is_empty() {
+        return false;
+    }
+    let (mut notes, mut with) = (0usize, 0usize);
+    for region in &score.canvas.regions {
+        for si in region
+            .staff_instances()
+            .iter()
+            .filter(|si| si.staff == staff)
+        {
+            for eid in si.voices.iter().flat_map(|v| v.events.iter()) {
+                if matches!(score.events.get(*eid), Some(e @ Event::Pitched(_)) if e.grace().is_none())
+                {
+                    notes += 1;
+                    with += usize::from(sung.contains(eid));
+                }
+            }
+        }
+    }
+    with * 2 > notes
 }
 
 /// The beamed groups of a staff instance's notes. A score that names beams

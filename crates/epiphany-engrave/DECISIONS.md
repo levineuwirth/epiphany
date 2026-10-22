@@ -2238,3 +2238,29 @@ each. The engraver follows it:
 - A mark placed past the end of a stem meeting a beam across two staves
   rides the beam's staff and stands between the staves with it, the content
   of neither (`a_mark_past_a_beam_across_two_staves_stands_past_it`).
+
+## ENGRAVER_VERSION 58 → 59: dynamics and hairpins (X4c.4, 2026-10-22)
+
+The projection draws dynamics and hairpins, each a placed member of the
+family, and the engraver places them as MuseScore 4.7.5 does once a system
+is set:
+
+- Members are placed one by one in MuseScore's order, each joining the ink
+  the next is placed against; once all of one order are placed, the members
+  of a row (a dynamic and the hairpins meeting it, end to end) move out
+  until their optical centres stand at the outermost of theirs
+  (`AlignmentLayout::alignItemsWithTheirSnappingChain`), a dynamic's centre
+  half its x-height over its baseline and a hairpin's its axis
+  (`a_row_aligns_its_members_centres_at_the_outermost`,
+  `a_chain_of_dynamics_and_hairpins_stands_in_one_row`).
+- A dynamic or hairpin of a grand staff's upper staff, below it, stands
+  centred between the two staves once they are set, as far as the ink
+  between them lets it, a row's members together
+  (`dynamicsHairpinsAutoCenterOnGrandStaff`;
+  `a_grand_staffs_dynamic_stands_between_its_staves`).
+- A hairpin over a system break is drawn a piece in each system, each piece
+  opening from its axis as MuseScore draws one: to the full opening at its
+  wide end, and to the continuation's half space at a narrow end the break
+  leaves open (`a_hairpin_over_a_system_break_opens_each_piece`); a piece
+  the system sets shorter than a space has its end moved out to a space
+  (`a_hairpin_is_at_least_a_space_long`).

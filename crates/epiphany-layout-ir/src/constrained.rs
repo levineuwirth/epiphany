@@ -13,9 +13,10 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::{
-    Clef, EventId, EventMark, KeySignature, LineStyle, MarkerKind, MeasureId, MeasurePosition,
-    MusicalDuration, NoteValue, Ornament, PitchId, PitchSpelling, RationalTime, RepeatStructureId,
-    SpellingNominal, StaffId, TimeAnchor, TypedObjectId, WallClockTime,
+    Clef, EventId, EventMark, HairpinDirection, KeySignature, LineStyle, MarkerKind, MeasureId,
+    MeasurePosition, MusicalDuration, NoteValue, Ornament, PitchId, PitchSpelling, RationalTime,
+    RepeatStructureId, SpannerKind, SpellingNominal, StaffId, TimeAnchor, TypedObjectId,
+    WallClockTime,
 };
 use epiphany_determinism::{DomainTag, Preimage};
 
@@ -29,7 +30,7 @@ use crate::glyph::{metrics, BravuraCatalog, GlyphCatalog, GlyphCatalogIdentity, 
 use crate::logical::{
     apply_offset, BarlineKind, LayoutContent, LogicalLayoutIR, MarkerContent, MarkerPlace,
     PlacedClef, PlacedKeySignature, RepeatContent, RepeatPlacement, ScoreVersion, SlurContent,
-    SlurDirection, SlurEndpoint, StaffContent, VoicePlace,
+    SlurDirection, SlurEndpoint, SpannerContent, StaffContent, VoicePlace,
 };
 use crate::provenance::{
     manifestation_layout_id, synthesized_layout_id, LayoutObjectId, Provenance,
@@ -37,7 +38,10 @@ use crate::provenance::{
 };
 use crate::solver::{ConstraintStrength, SpringSlotId};
 use crate::spatial::{BoundingBox, Point, Rect, Size2D, StaffSpace};
-use crate::text::{symbol_run, ResolvedText, ShapingGaps, Symbol, SymbolPlace, TextObject, Turn};
+use crate::text::{
+    shape_text, symbol_run, ResolvedText, ShapingGaps, Symbol, SymbolPlace, TextAlign, TextFace,
+    TextObject, Turn,
+};
 use crate::time_axis::{time_cmp, SlotPlacement, TimeAxisModel, TimePoint};
 use crate::vertical_band::{inter_staff_gap_id, VerticalBand, VerticalBandId};
 
@@ -231,7 +235,30 @@ pub struct FamilyMark {
     pub room: Room,
     /// How a solver places it off its staff, if it does.
     pub placement: Option<Autoplace>,
+    /// A hairpin's shape, its strokes its upper and its lower leg: a solver
+    /// setting it across a system break draws each piece by it.
+    pub hairpin: Option<HairpinShape>,
 }
+
+/// A hairpin's shape (MuseScore's `TLayout::layoutHairpinSegment`): its legs
+/// open from its axis to [`HAIRPIN_HEIGHT`] at its wide end, a crescendo's
+/// at its end and a diminuendo's at its start, and a piece continuing over a
+/// system break opens [`HAIRPIN_CONT_HEIGHT`] at its narrow end.
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub struct HairpinShape {
+    pub crescendo: bool,
+    /// Its axis's height in the projection's frame.
+    pub axis: f32,
+}
+
+/// A hairpin's opening at its wide end (`hairpinHeight`) and at the narrow
+/// end of a piece continuing over a system break (`hairpinContHeight`), in
+/// staff spaces.
+pub const HAIRPIN_HEIGHT: f32 = 1.15;
+pub const HAIRPIN_CONT_HEIGHT: f32 = 0.5;
+/// The least length of a hairpin's piece, which a solver keeps where the
+/// system sets it.
+pub const HAIRPIN_MIN_LENGTH: f32 = 1.0;
 
 impl FamilyMark {
     /// A glyph the projection places for good at its note, taking no room
@@ -244,6 +271,7 @@ impl FamilyMark {
             texts: Vec::new(),
             room: Room::None,
             placement: None,
+            hairpin: None,
         }
     }
 }
@@ -270,10 +298,24 @@ pub struct Autoplace {
     pub above: bool,
     pub order: PlaceOrder,
     pub min_distance: f32,
-    /// Members of one row, in one system, are set to the height the
-    /// furthest of them needs: a verse's syllables, a dynamic and the
-    /// hairpins it meets.
-    pub row: Option<u128>,
+    /// Its row, if it stands in one: a verse's syllables, a dynamic and the
+    /// hairpins that meet it.
+    pub row: Option<Row>,
+    /// The band of the other staff of its grand staff it stands toward, if
+    /// any: once the staves are set, a solver centres it between the two, as
+    /// far as the ink between them lets it (MuseScore's
+    /// `dynamicsHairpinsAutoCenterOnGrandStaff`).
+    pub between: Option<VerticalBandId>,
+}
+
+/// A row of the family: its members in one system, once each is placed, are
+/// aligned on their optical centres at the outermost of them, as MuseScore's
+/// `AlignmentLayout` aligns a dynamic and the hairpins snapped to it.
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub struct Row {
+    pub id: u128,
+    /// The member's optical centre's height in the projection's frame.
+    pub centre: f32,
 }
 
 /// The order a solver places the family off its staves in, MuseScore's
@@ -1642,6 +1684,13 @@ pub fn try_to_constrained(
                 // A breath mark or caesura stands in a column of its own where
                 // its note's sound ends, before what follows there.
                 (TypedObjectId::Marker(_), LayoutContent::Marker(marker)) if staff.is_some() => {
+                    // A dynamic where no note of its staff starts stands in the
+                    // note column of its time, made for it where none is.
+                    if let (MarkerKind::Dynamic(_), MarkerPlace::Time(time)) =
+                        (&marker.kind, &marker.at)
+                    {
+                        keys.insert(ColumnKey::Timed(time.clone(), ColumnRole::Note));
+                    }
                     if let Some((time, name)) = breath_place(marker) {
                         let key = ColumnKey::Timed(time, ColumnRole::Breath);
                         // The mark stands left of its column: room for it
@@ -2498,6 +2547,130 @@ pub fn try_to_constrained(
         }
         clear_visitors(&mut event_rests, &visiting, &visitor_ink, &columns);
 
+        // The dynamics and hairpins of each staff, placed before any is
+        // emitted: a hairpin keeps its distance from a dynamic at either of its
+        // ends, and a dynamic and the hairpins meeting it, end to end, are one
+        // chain, which a solver sets in one row. A voice's staff takes its
+        // dynamics and hairpins above (D79's Q10).
+        let vocal: BTreeSet<StaffId> = region
+            .objects
+            .iter()
+            .filter_map(|object| match (object.staff(), object.content()) {
+                (Some(st), LayoutContent::Staff(content)) if content.vocal => Some(st),
+                _ => None,
+            })
+            .collect();
+        // Each grand staff's staves, top first.
+        let grand: Vec<Vec<StaffId>> = region
+            .objects
+            .iter()
+            .filter_map(|object| match object.content() {
+                LayoutContent::Group(group)
+                    if group.kind == epiphany_core::StaffGroupKind::GrandStaff =>
+                {
+                    Some(group.staves.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        let mut dynamics: BTreeMap<u128, DynamicPlacing> = BTreeMap::new();
+        // Keyed by staff and the note column of a time.
+        let note_at = |time: TimePoint| ColumnKey::Timed(time, ColumnRole::Note);
+        let mut dynamic_ink: BTreeMap<(StaffId, ColumnKey), (f32, f32)> = BTreeMap::new();
+        let mut chains: BTreeMap<u128, u128> = BTreeMap::new();
+        let mut chain_ends: BTreeMap<(StaffId, ColumnKey), Vec<u128>> = BTreeMap::new();
+        for (provenance, staff, content) in &specs {
+            let Some(st) = *staff else {
+                continue;
+            };
+            let id = provenance.stable_id.0;
+            match content {
+                Some(LayoutContent::Marker(MarkerContent {
+                    kind: MarkerKind::Dynamic(dynamic),
+                    at,
+                })) => {
+                    let (event, time) = match at {
+                        MarkerPlace::Event { event, time, .. } => (Some(*event), time.clone()),
+                        MarkerPlace::Time(time) => (None, time.clone()),
+                        MarkerPlace::Unresolved => continue,
+                    };
+                    let key = ColumnKey::Timed(time.clone(), ColumnRole::Note);
+                    let Some(info) = columns.get(&key) else {
+                        continue;
+                    };
+                    let centre = info.x + note_centre(event, &event_stems, &event_rests);
+                    let yo = y_origin(st);
+                    let above = vocal.contains(&st);
+                    let baseline = if above {
+                        yo + STAFF_HEIGHT + DYNAMIC_ABOVE
+                    } else {
+                        yo - DYNAMIC_BELOW
+                    };
+                    let (ink, left, right) = match dynamic_glyph(dynamic) {
+                        Some(name) => {
+                            let b = metrics(name)
+                                .expect("dynamic metrics are bundled")
+                                .bounding_box();
+                            // Its optical centre on the head's.
+                            let x = centre - dynamic_optical_centre(name);
+                            (DynamicInk::Glyph { name, x }, x + b.left.0, x + b.right.0)
+                        }
+                        None => {
+                            let epiphany_core::Dynamic::Other(words) = dynamic else {
+                                continue;
+                            };
+                            let (run, gaps) = shape_text(
+                                (*provenance).clone(),
+                                words.as_str(),
+                                TextFace::Italic,
+                                DYNAMIC_TEXT_SIZE,
+                                TextAlign::Center,
+                                Point::new(centre, baseline),
+                            );
+                            for d in text_diagnostics(provenance.source, &gaps) {
+                                emit.diag(d.source, d.kind);
+                            }
+                            let (l, r) = (centre + run.bounds.left.0, centre + run.bounds.right.0);
+                            (DynamicInk::Words(Box::new(run)), l, r)
+                        }
+                    };
+                    dynamic_ink.insert((st, note_at(time.clone())), (left, right));
+                    chain_ends.entry((st, note_at(time))).or_default().push(id);
+                    dynamics.insert(
+                        id,
+                        DynamicPlacing {
+                            key,
+                            above,
+                            baseline,
+                            ink,
+                        },
+                    );
+                }
+                Some(LayoutContent::Spanner(SpannerContent {
+                    kind: SpannerKind::Hairpin(_),
+                    start,
+                    end,
+                })) => {
+                    for time in [place_time(start), place_time(end)].into_iter().flatten() {
+                        chain_ends.entry((st, note_at(time))).or_default().push(id);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for members in chain_ends.values() {
+            for pair in members.windows(2) {
+                let (a, b) = (
+                    chain_of(&mut chains, pair[0]),
+                    chain_of(&mut chains, pair[1]),
+                );
+                chains.insert(a.max(b), a.min(b));
+            }
+        }
+        // Each hairpin leg's slots, anchored once the columns they ride are
+        // known to hold glyphs.
+        let mut hairpin_anchors: Vec<(GlyphObjectId, SpringSlotId, SpringSlotId)> = Vec::new();
+
         // Pass 2 — emit. Each logical object's exact provenance lands on exactly
         // one primitive; the extras a multi-component object owns are synthesized.
         for (provenance, staff, content) in specs {
@@ -2546,6 +2719,7 @@ pub fn try_to_constrained(
                                 beams: Vec::new(),
                                 cross_beams: Vec::new(),
                                 visiting: Default::default(),
+                                vocal: false,
                             };
                             &default_content
                         }
@@ -2853,6 +3027,7 @@ pub fn try_to_constrained(
                                     texts: Vec::new(),
                                     room: Room::None,
                                     placement: None,
+                                    hairpin: None,
                                 });
                                 emit.stroke(stroke);
                             }
@@ -2884,6 +3059,7 @@ pub fn try_to_constrained(
                                     texts: vec![id],
                                     room,
                                     placement: None,
+                                    hairpin: None,
                                 });
                             }
                         }
@@ -3536,29 +3712,7 @@ pub fn try_to_constrained(
                                             .expect("fermata metrics are bundled")
                                             .bounding_box();
                                         // Centred on its chord's heads or its rest.
-                                        let head = metrics("noteheadBlack")
-                                            .expect("notehead metrics are bundled")
-                                            .bounding_box();
-                                        let centre = event
-                                            .and_then(|e| {
-                                                match event_stems.get(&e).and_then(|segs| {
-                                                    segs.iter().find(|s| s.comp == 0)
-                                                }) {
-                                                    Some(seg) => Some(
-                                                        seg.dx + (head.left.0 + head.right.0) * 0.5,
-                                                    ),
-                                                    None => {
-                                                        let rest =
-                                                            event_rests.get(&e)?.iter().find(
-                                                                |r| r.visible && r.name.is_some(),
-                                                            )?;
-                                                        let rb =
-                                                            metrics(rest.name?)?.bounding_box();
-                                                        Some((rb.left.0 + rb.right.0) * 0.5)
-                                                    }
-                                                }
-                                            })
-                                            .unwrap_or((head.left.0 + head.right.0) * 0.5);
+                                        let centre = note_centre(event, &event_stems, &event_rests);
                                         let x = info.x + centre - (b.left.0 + b.right.0) * 0.5;
                                         // Off its staff; a solver clears it of the ink
                                         // under it once the system is set, as
@@ -3587,7 +3741,9 @@ pub fn try_to_constrained(
                                                 order: PlaceOrder::Fermata,
                                                 min_distance: FERMATA_MIN_DISTANCE,
                                                 row: None,
+                                                between: None,
                                             }),
+                                            hairpin: None,
                                         });
                                         true
                                     }
@@ -3634,8 +3790,172 @@ pub fn try_to_constrained(
                                     None => false,
                                 }
                             }
+                            MarkerKind::Dynamic(_) => match dynamics.get(&provenance.stable_id.0) {
+                                Some(d) => {
+                                    let info = column(&d.key);
+                                    let band = band_of(staff);
+                                    let placement = Some(Autoplace {
+                                        above: d.above,
+                                        order: PlaceOrder::Dynamic,
+                                        min_distance: DYNAMIC_MIN_DISTANCE,
+                                        row: Some(Row {
+                                            id: chain_of(&mut chains, provenance.stable_id.0),
+                                            centre: d.baseline + DYNAMIC_CENTRE,
+                                        }),
+                                        between: staff
+                                            .and_then(|st| grand_neighbour(&grand, st, d.above))
+                                            .map(|n| band_of(Some(n))),
+                                    });
+                                    let (glyphs, runs) = match &d.ink {
+                                        DynamicInk::Glyph { name, x } => {
+                                            emit.glyph(
+                                                provenance,
+                                                name,
+                                                Point::new(*x, d.baseline),
+                                                band,
+                                                staff,
+                                                info.slot,
+                                            );
+                                            (
+                                                vec![GlyphObjectId(provenance.stable_id.0)],
+                                                Vec::new(),
+                                            )
+                                        }
+                                        DynamicInk::Words(run) => {
+                                            texts.push(TextObject {
+                                                text: (**run).clone(),
+                                                horizontal_slot: info.slot,
+                                                vertical_band: band,
+                                            });
+                                            (Vec::new(), vec![run.id()])
+                                        }
+                                    };
+                                    family.push(FamilyMark {
+                                        band,
+                                        glyphs,
+                                        strokes: Vec::new(),
+                                        texts: runs,
+                                        room: Room::None,
+                                        placement,
+                                        hairpin: None,
+                                    });
+                                    true
+                                }
+                                None => false,
+                            },
                             _ => false,
                         },
+                        _ => false,
+                    };
+                    if !drawn {
+                        emit.stroke(anchor(
+                            provenance,
+                            Point::new(default_x, yo),
+                            band_of(staff),
+                        ));
+                    }
+                }
+                TypedObjectId::Spanner(_) => {
+                    // A hairpin from its start's column to before its end's,
+                    // clear of a dynamic at either end, its legs opening from
+                    // its axis, placed again by a solver once its system is
+                    // set. Any other line, or one with no staff, keeps a traced
+                    // anchor.
+                    let drawn = match (content, staff) {
+                        (
+                            Some(LayoutContent::Spanner(SpannerContent {
+                                kind: SpannerKind::Hairpin(direction),
+                                start,
+                                end,
+                            })),
+                            Some(st),
+                        ) => {
+                            let ends = place_time(start)
+                                .zip(place_time(end))
+                                .and_then(|(t0, t1)| {
+                                    let first = first_column(&columns, &t0, true)?;
+                                    let last = first_column(&columns, &t1, false)?;
+                                    Some((t0, t1, first, last))
+                                })
+                                .filter(|(_, _, first, last)| last.1.x > first.1.x);
+                            match ends {
+                                Some((t0, t1, (_, first), (_, last))) => {
+                                    let mut x0 = first.x;
+                                    if let Some(&(_, right)) = dynamic_ink.get(&(st, note_at(t0))) {
+                                        x0 = x0.max(right + HAIRPIN_DYNAMIC_GAP);
+                                    }
+                                    let mut x1 = last.x - HAIRPIN_END_INSET;
+                                    if let Some(&(left, _)) = dynamic_ink.get(&(st, note_at(t1))) {
+                                        // Short of a dynamic it meets.
+                                        x1 = x1.min(left - HAIRPIN_DYNAMIC_GAP);
+                                    }
+                                    let above = vocal.contains(&st);
+                                    let axis = if above {
+                                        yo + STAFF_HEIGHT + HAIRPIN_POS
+                                    } else {
+                                        yo - HAIRPIN_POS
+                                    };
+                                    let crescendo = *direction == HairpinDirection::Crescendo;
+                                    let h = HAIRPIN_HEIGHT * 0.5;
+                                    let (narrow, wide) =
+                                        if crescendo { (x0, x1) } else { (x1, x0) };
+                                    let band = band_of(staff);
+                                    let legs: Vec<Stroke> = [h, -h]
+                                        .into_iter()
+                                        .enumerate()
+                                        .map(|(k, dy)| {
+                                            let prov = if k == 0 {
+                                                provenance.clone()
+                                            } else {
+                                                Provenance::synthesized(
+                                                    provenance.source,
+                                                    SynthesisKind::Registered(HAIRPIN_SYNTHESIS),
+                                                    SynthesisInstanceKey(k as u128),
+                                                    provenance.dependencies.clone(),
+                                                )
+                                            };
+                                            let (tip, mouth) = (
+                                                Point::new(narrow, axis),
+                                                Point::new(wide, axis + dy),
+                                            );
+                                            let (from, to) = if crescendo {
+                                                (tip, mouth)
+                                            } else {
+                                                (mouth, tip)
+                                            };
+                                            line_stroke(prov, from, to, HAIRPIN_LINE_WIDTH, band)
+                                        })
+                                        .collect();
+                                    for leg in &legs {
+                                        hairpin_anchors.push((leg.id(), first.slot, last.slot));
+                                    }
+                                    family.push(FamilyMark {
+                                        band,
+                                        glyphs: Vec::new(),
+                                        strokes: legs.iter().map(Stroke::id).collect(),
+                                        texts: Vec::new(),
+                                        room: Room::None,
+                                        placement: Some(Autoplace {
+                                            above,
+                                            order: PlaceOrder::Dynamic,
+                                            min_distance: HAIRPIN_MIN_DISTANCE,
+                                            row: Some(Row {
+                                                id: chain_of(&mut chains, provenance.stable_id.0),
+                                                centre: axis,
+                                            }),
+                                            between: grand_neighbour(&grand, st, above)
+                                                .map(|n| band_of(Some(n))),
+                                        }),
+                                        hairpin: Some(HairpinShape { crescendo, axis }),
+                                    });
+                                    for leg in legs {
+                                        emit.stroke(leg);
+                                    }
+                                    true
+                                }
+                                None => false,
+                            }
+                        }
                         _ => false,
                     };
                     if !drawn {
@@ -3790,6 +4110,19 @@ pub fn try_to_constrained(
                     primitive,
                     start: slot,
                     end: slot,
+                });
+            }
+        }
+        // A hairpin's legs ride the columns of its ends where both hold
+        // glyphs, and map as a whole otherwise.
+        let realized =
+            |slot: &SpringSlotId| column_members.get(slot).is_some_and(|m| !m.is_empty());
+        for (primitive, start, end) in hairpin_anchors {
+            if realized(&start) && realized(&end) {
+                span_anchors.push(SpanAnchor {
+                    primitive,
+                    start,
+                    end,
                 });
             }
         }
@@ -7010,6 +7343,198 @@ const BREATH_GAP: f32 = 1.0;
 /// and from its chord's ink and other ink (`fermataMinDistance`).
 const FERMATA_OFFSET: f32 = 0.5;
 const FERMATA_MIN_DISTANCE: f32 = 0.4;
+/// A dynamic's baseline below its staff and above it (`dynamicsPosBelow`,
+/// `dynamicsPosAbove`), its distance from other ink (`dynamicsMinDistance`),
+/// and its optical centre's height over its baseline, half a dynamic's
+/// x-height (`AlignmentLayout::yOpticalCenter`).
+const DYNAMIC_BELOW: f32 = 2.0;
+const DYNAMIC_ABOVE: f32 = 1.0;
+const DYNAMIC_MIN_DISTANCE: f32 = 0.5;
+const DYNAMIC_CENTRE: f32 = 0.46;
+/// A dynamic set as words: italic at 10 points (`dynamicsFontSize`), in
+/// staff spaces.
+const DYNAMIC_TEXT_SIZE: f32 = 2.016;
+/// A hairpin's axis off its staff (`hairpinPosBelow`, `hairpinPosAbove`), its
+/// line width (`hairpinLineWidth`), its distance from other ink
+/// (`hairpinMinDistance`) and from a dynamic it meets
+/// (`autoplaceHairpinDynamicsDistance`, `TLayout::manageHairpinSnapping`),
+/// and how far before the column of its end it stops (`SLine::linePos`).
+const HAIRPIN_POS: f32 = 1.75;
+const HAIRPIN_LINE_WIDTH: f32 = 0.12;
+const HAIRPIN_MIN_DISTANCE: f32 = 0.7;
+const HAIRPIN_DYNAMIC_GAP: f32 = 0.5;
+const HAIRPIN_END_INSET: f32 = 1.0;
+
+/// A dynamic placed before it is emitted: its column, its side and baseline,
+/// and its ink.
+struct DynamicPlacing {
+    key: ColumnKey,
+    above: bool,
+    baseline: f32,
+    ink: DynamicInk,
+}
+
+/// A dynamic's ink: its SMuFL glyph at its origin's x, or, for a dynamic no
+/// glyph names, its words as a run.
+enum DynamicInk {
+    Glyph { name: &'static str, x: f32 },
+    Words(Box<ResolvedText>),
+}
+
+/// A dynamic's SMuFL glyph; `None` for one written as words.
+fn dynamic_glyph(dynamic: &epiphany_core::Dynamic) -> Option<&'static str> {
+    use epiphany_core::Dynamic::*;
+    Some(match dynamic {
+        Pppppp => "dynamicPPPPPP",
+        Ppppp => "dynamicPPPPP",
+        Pppp => "dynamicPPPP",
+        Ppp => "dynamicPPP",
+        Pp => "dynamicPP",
+        P => "dynamicPiano",
+        Mp => "dynamicMP",
+        Mf => "dynamicMF",
+        F => "dynamicForte",
+        Ff => "dynamicFF",
+        Fff => "dynamicFFF",
+        Ffff => "dynamicFFFF",
+        Fffff => "dynamicFFFFF",
+        Ffffff => "dynamicFFFFFF",
+        Fp => "dynamicFortePiano",
+        Sf => "dynamicSforzando1",
+        Sfz => "dynamicSforzato",
+        Sffz => "dynamicSforzatoFF",
+        Sfp => "dynamicSforzandoPiano",
+        Sfpp => "dynamicSforzandoPianissimo",
+        Rf => "dynamicRinforzando1",
+        Rfz => "dynamicRinforzando2",
+        Fz => "dynamicForzando",
+        Niente => "dynamicNiente",
+        Other(_) => return None,
+    })
+}
+
+/// A dynamic glyph's optical centre across, from its origin, in staff
+/// spaces: Bravura 1.392's `opticalCenter` anchors (`bravura_metadata.json` at
+/// the commit the catalog pins, SHA-256 `5c18a034…9881c`), which MuseScore
+/// centres a dynamic on its note by (`DynamicsLayout::doLayoutDynamic`).
+fn dynamic_optical_centre(name: &str) -> f32 {
+    match name {
+        "dynamicPPPPPP" => 4.248,
+        "dynamicPPPPP" => 3.552,
+        "dynamicPPPP" => 3.004,
+        "dynamicPPP" => 2.368,
+        "dynamicPP" => 1.708,
+        "dynamicPiano" => 1.22,
+        "dynamicMP" => 1.848,
+        "dynamicMF" => 1.796,
+        "dynamicForte" => 1.256,
+        "dynamicFF" => 1.852,
+        "dynamicFFF" => 2.472,
+        "dynamicFFFF" => 2.824,
+        "dynamicFFFFF" => 2.976,
+        "dynamicFFFFFF" => 3.504,
+        "dynamicFortePiano" => 1.5,
+        "dynamicSforzando1" => 1.3,
+        "dynamicSforzato" => 1.76,
+        "dynamicSforzatoFF" => 2.276,
+        "dynamicSforzandoPiano" => 1.904,
+        "dynamicSforzandoPianissimo" => 1.972,
+        "dynamicRinforzando1" => 1.564,
+        "dynamicRinforzando2" => 2.084,
+        "dynamicForzando" => 1.352,
+        "dynamicNiente" => 0.616,
+        _ => metrics(name).map_or(0.0, |m| {
+            let b = m.bounding_box();
+            (b.left.0 + b.right.0) * 0.5
+        }),
+    }
+}
+
+/// The staff of `staff`'s grand staff a mark below it, or above it, stands
+/// toward: the next staff down, or up, of the grand staff, if there is one.
+fn grand_neighbour(grand: &[Vec<StaffId>], staff: StaffId, above: bool) -> Option<StaffId> {
+    grand.iter().find_map(|staves| {
+        let at = staves.iter().position(|s| *s == staff)?;
+        if above {
+            at.checked_sub(1).map(|k| staves[k])
+        } else {
+            staves.get(at + 1).copied()
+        }
+    })
+}
+
+/// Where a point mark or a line's end stands in time, if anywhere.
+fn place_time(place: &MarkerPlace) -> Option<TimePoint> {
+    match place {
+        MarkerPlace::Event { time, .. } | MarkerPlace::Time(time) => Some(time.clone()),
+        MarkerPlace::Unresolved => None,
+    }
+}
+
+/// The first column at `time` or after it (a note column alone, when
+/// `note`): where a line starting or ending there stands.
+fn first_column<'a>(
+    columns: &'a BTreeMap<ColumnKey, ColumnInfo>,
+    time: &TimePoint,
+    note: bool,
+) -> Option<(&'a ColumnKey, &'a ColumnInfo)> {
+    columns
+        .range(ColumnKey::Timed(time.clone(), ColumnRole::Breath)..)
+        .find(|(key, _)| match key {
+            ColumnKey::Timed(_, role) => !note || *role == ColumnRole::Note,
+            _ => false,
+        })
+}
+
+/// The chain a dynamic or hairpin belongs to, by the least stable id of its
+/// members.
+fn chain_of(chains: &mut BTreeMap<u128, u128>, id: u128) -> u128 {
+    let mut root = id;
+    while let Some(&up) = chains.get(&root) {
+        if up == root {
+            break;
+        }
+        root = up;
+    }
+    if root != id {
+        chains.insert(id, root);
+    }
+    root
+}
+
+/// The x a mark centred on a note stands on, from its column: its first
+/// component's head's centre, or its rest's, or a black head's where it has
+/// neither.
+fn note_centre(
+    event: Option<EventId>,
+    stems: &BTreeMap<EventId, Vec<StemSeg>>,
+    rests: &BTreeMap<EventId, Vec<RestSeg>>,
+) -> f32 {
+    let head = metrics("noteheadBlack")
+        .expect("notehead metrics are bundled")
+        .bounding_box();
+    event
+        .and_then(|e| {
+            match stems
+                .get(&e)
+                .and_then(|segs| segs.iter().find(|s| s.comp == 0))
+            {
+                Some(seg) => Some(seg.dx + (head.left.0 + head.right.0) * 0.5),
+                None => {
+                    let rest = rests
+                        .get(&e)?
+                        .iter()
+                        .find(|r| r.visible && r.name.is_some())?;
+                    let rb = metrics(rest.name?)?.bounding_box();
+                    Some((rb.left.0 + rb.right.0) * 0.5)
+                }
+            }
+        })
+        .unwrap_or((head.left.0 + head.right.0) * 0.5)
+}
+
+/// The registry id for a hairpin's lower leg, synthesized from the hairpin.
+const HAIRPIN_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x4841_4952_5049_4E53); // "HAIRPINS"
 
 /// A breath mark's or caesura's glyph.
 fn breath_glyph(kind: &MarkerKind) -> Option<&'static str> {
@@ -8195,6 +8720,7 @@ mod tests {
             beams: Vec::new(),
             cross_beams: Vec::new(),
             visiting: Default::default(),
+            vocal: false,
         });
         let logical = LogicalLayoutIR {
             source: ScoreVersion::default(),
@@ -8531,6 +9057,7 @@ mod tests {
             beams: Vec::new(),
             cross_beams: Vec::new(),
             visiting: Default::default(),
+            vocal: false,
         });
         let logical = LogicalLayoutIR {
             source: ScoreVersion::default(),
@@ -8904,6 +9431,7 @@ mod tests {
                         beams: Vec::new(),
                         cross_beams: Vec::new(),
                         visiting: Default::default(),
+                        vocal: false,
                     }),
                 ),
                 with_content(
@@ -10225,6 +10753,7 @@ mod tests {
             texts: Vec::new(),
             room: Room::None,
             placement: None,
+            hairpin: None,
         };
         assert_eq!(with(good.clone()), Ok(()));
         // A glyph named as a stroke, a stroke as a text run.
