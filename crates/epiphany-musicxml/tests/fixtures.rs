@@ -82,6 +82,23 @@ fn offset(anchor: &TimeAnchor) -> String {
     }
 }
 
+/// The measure (counted from 1) whose start, in the region's first staff
+/// instance, a break is anchored to, as the importer anchors one (reduction
+/// version 5 keys a break by its anchor); `None` for any other anchor.
+fn break_measure(run: &Run, anchor: &TimeAnchor) -> Option<usize> {
+    match anchor {
+        TimeAnchor::Measure {
+            id,
+            position: epiphany_core::MeasurePosition::Start,
+            offset: AnchorOffset::Zero,
+        } => run.import.ids.measures[0][0]
+            .iter()
+            .position(|m| m == id)
+            .map(|i| i + 1),
+        _ => None,
+    }
+}
+
 /// A pitch's name: `Bb4`, or for a quarter-tone in `cmn-24` its alteration
 /// in signed quarter-tones, `G-1q4`.
 fn pitch_name(scale: &ScalePosition) -> String {
@@ -2351,28 +2368,29 @@ fn the_fidelity_comparison_catches_a_spoiled_score() {
 
 /// A file's line and page breaks are the score's user breaks before the
 /// measures that start the systems and pages, one per measure whichever parts
-/// mark it, a page break winning; and the score lays out there.
+/// mark it, a page break winning, each anchored to its measure's start in the
+/// region's first staff instance; and the score lays out there.
 #[test]
 fn breaks_are_imported_where_the_file_makes_them_and_laid_out_there() {
     let run = run("breaks.musicxml");
     all_applied(&run);
-    let breaks: Vec<(&str, String)> = run
+    let breaks: Vec<(&str, Option<usize>)> = run
         .import
         .envelopes
         .iter()
         .filter_map(|e| match &e.payload {
             epiphany_ops::OperationPayload::Primitive(
                 epiphany_ops::OperationKind::SetUserSystemBreak(op),
-            ) => Some(("system", offset(&op.anchor))),
+            ) => Some(("system", break_measure(&run, &op.anchor))),
             epiphany_ops::OperationPayload::Primitive(
                 epiphany_ops::OperationKind::SetUserPageBreak(op),
-            ) => Some(("page", offset(&op.anchor))),
+            ) => Some(("page", break_measure(&run, &op.anchor))),
             _ => None,
         })
         .collect();
     assert_eq!(
         breaks,
-        vec![("system", "2".to_owned()), ("page", "4".to_owned())],
+        vec![("system", Some(3)), ("page", Some(5))],
         "a line break before measure 3, a page break before measure 5"
     );
     assert!(
@@ -2451,23 +2469,23 @@ fn a_file_with_breaks_and_expression_imports_both() {
 
     let run = run("breaks_and_expression.musicxml");
     all_applied(&run);
-    let breaks: Vec<(&str, String)> = run
+    let breaks: Vec<(&str, Option<usize>)> = run
         .import
         .envelopes
         .iter()
         .filter_map(|e| match &e.payload {
             OperationPayload::Primitive(OperationKind::SetUserSystemBreak(op)) => {
-                Some(("system", offset(&op.anchor)))
+                Some(("system", break_measure(&run, &op.anchor)))
             }
             OperationPayload::Primitive(OperationKind::SetUserPageBreak(op)) => {
-                Some(("page", offset(&op.anchor)))
+                Some(("page", break_measure(&run, &op.anchor)))
             }
             _ => None,
         })
         .collect();
     assert_eq!(
         breaks,
-        vec![("system", "1".to_owned()), ("page", "2".to_owned())],
+        vec![("system", Some(2)), ("page", Some(3))],
         "a line break before measure 2, a page break before measure 3"
     );
     let features = &run.import.source.features;

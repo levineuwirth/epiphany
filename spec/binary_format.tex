@@ -1788,9 +1788,11 @@ bytes are identical across any permutation of the input operation set:
     (16 BE, raw) \cat{} $\mathrm{lp}$(\texttt{PitchSpelling}), ascending
     \texttt{PitchId};
   \item \textbf{breaks} --- count, then per entry \texttt{RegionId}
-    (16 BE, raw) \cat{} \texttt{MusicalPosition} (raw \texttt{RationalTime}
-    form, self-describing, \emph{not} leaf-framed) \cat{} \texttt{present}
-    (bool, 1); ascending $(\mathit{region}, \mathit{position})$;
+    (16 BE, raw) \cat{} $\mathrm{lp}$(\texttt{TimeAnchor}), the break's
+    anchor, its slot's key \cat{} \texttt{present} (bool, 1); ascending by
+    region, then by the anchor's canonical bytes compared as byte strings
+    (since 0.22.0, reduction algorithm version~5; before it each entry held
+    the anchor's resolved \texttt{MusicalPosition}, raw);
   \item \textbf{page breaks} --- same shape and order as breaks;
   \item \textbf{pending} --- count, then per entry \texttt{OperationId}
     (16 BE, raw) \cat{} \texttt{PendingReason}, ascending
@@ -4190,8 +4192,11 @@ at format major~\tablenums{0} is refused as a legacy container.
   derives. It refuses a legacy container by name. The decode corpus gains
   the \texttt{ops.operation\ub block} and \texttt{document.container}
   surfaces. \texttt{PreconditionFailureReason} appends \tablenums{21}
-  \texttt{RegionsOverlap} at epoch~16. Semantics: Operation Catalog,
-  0.22.0. \\
+  \texttt{RegionsOverlap} at epoch~16. \texttt{MaterializedState}'s break
+  and page-break sections key each break by its anchor,
+  $\mathrm{lp}$(\texttt{TimeAnchor}) in place of a resolved position, with a
+  decode vector of a non-empty section and its rejections. Semantics:
+  Operation Catalog, 0.22.0. \\
 \bottomrule
 \end{longtable}
 

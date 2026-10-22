@@ -3990,3 +3990,40 @@ anchors a metric region's edge by a wall-clock offset is applied and breaks
 `AnchorOffsetModel`; `CreateRegion` checks no extent anchor against its
 target's time model. One author reaches it through the operations; no writer
 and no fuzz arm makes such an extent.
+
+## X5b.4 — breaks by anchor (2026-10-22)
+
+**A user break's slot is its anchor.** The reducer keyed a break's
+last-writer slot by the musical position its anchor resolved to
+(`resolved_anchor_position`), which gives every anchor but a musical offset
+from the region's start the region's origin, so two breaks anchored to
+different measures or events of one region shared a slot and the later
+silently replaced the earlier. Reduction version 5 keys the slot by the
+anchor itself (`BreakAnchor`, ordered by the anchor's canonical bytes): the
+ledger's chains, `MaterializedState`'s break and page-break sections, the
+restorations and the measure strand guard all read the new key, and the
+graph's break list drops and re-adds an anchor by equality. A break anchored
+to a measure or an event moves with its music, the layout resolving it
+there (`break_anchor_time`).
+
+A break must name what its region holds: an event or a measure live in it, or
+its own edge; otherwise it is refused `TargetMissing` in both modes, from the
+indices both keep (`event_voice` with `indexed_voice_region`, `measure_values`
+with `instance_region_of`). One whose event a later delete removes stays
+keyed and places nothing; a measure cannot be undone from under a live break
+naming it (the strand guard, as before). The importer and the editor anchor a
+break to the start of the measure it precedes, in the region's first staff
+instance. Breaks a document wrote before, at offsets past the origin, kept
+their own slots under the old key and keep them under the new one: nothing is
+migrated (D4). Meter changes and tempo segments keep the coarse key, a named
+follow-up, every writer anchoring them at region-start offsets.
+
+Tests built on version 4's key change with it: the G3b undo-surface tests
+placed a break in a second region naming the first region's measure, which
+version 5 refuses, so their break rows stand in the measure's own region (a
+same-transaction teardown now mints a passage of its own region, instance and
+measure, and the tombstoned-owner rows assert the refusal); the redo test's
+break rows assert that the undo's removal of a slot the transaction opened is
+no write the redo could reverse; the collapse test became
+`user_breaks_at_distinct_anchors_keep_their_own_slots`; and the seeded base
+digest is re-pinned, the break sections' new layout moving it.

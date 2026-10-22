@@ -772,6 +772,19 @@ pub mod vectors;
 ///     whole, and nothing is repaired. Locked by the reducer's tests of the
 ///     refusal in both modes and the nine committed region histories, `110`,
 ///     `145` to `147`, `150` and `160` to `163`, which agree now.
+///   - **Breaks by anchor** (X5b.4, reduced state and a verdict): a user
+///     break's last-writer slot is keyed by its anchor (`BreakAnchor`), not
+///     by the musical position the anchor resolves to, so two breaks
+///     anchored to different measures or events of one region keep their
+///     own slots where version `4` kept the last writer at the region's
+///     origin. The ledger's break chains, the restorations, the measure
+///     strand guard and the graph's break lists read the new key, and
+///     `MaterializedState`'s break and page-break sections are written under
+///     the anchor's canonical bytes. A break naming an event or a measure
+///     its region does not hold live, or another region, is refused
+///     `TargetMissing` in both modes, where version `4` applied it. Locked by
+///     `break_keys.rs`, `user_breaks_at_distinct_anchors_keep_their_own_slots`
+///     and the undo-surface tests' break rows.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.
@@ -830,8 +843,8 @@ pub use payload::{
     TransposeIntervalOp, TransposeOp, TupletCompensation,
 };
 pub use reduce::{
-    canonical_reduction_order, measure_anchor_relation_for_agreement_test, GraphMaterialization,
-    MaterializedState, ObjectState, PendingReason,
+    canonical_reduction_order, measure_anchor_relation_for_agreement_test, BreakAnchor,
+    GraphMaterialization, MaterializedState, ObjectState, PendingReason,
 };
 pub use slot::OperationSlot;
 pub use stamp::{HybridLogicalClock, OperationStamp, StampTuple};

@@ -120,3 +120,73 @@ fn a_break_toggles_after_the_selected_note_s_measure() {
     assert!(!session.has_break(LayoutBreak::System, region, &at(2, 1)));
     assert_eq!(shape(&session), vec![1]);
 }
+
+/// The region's system breaks as the graph holds them.
+fn system_breaks(session: &EditorSession, region: RegionId) -> Vec<epiphany_core::TimeAnchor> {
+    session
+        .score()
+        .canvas
+        .regions
+        .iter()
+        .find(|r| r.id == region)
+        .and_then(|r| r.content.staff_based())
+        .map(|content| content.user_system_breaks.clone())
+        .unwrap_or_default()
+}
+
+/// A break is written at the start of the measure it comes before, in the
+/// region's first staff instance (reduction version 5 keys a break by its
+/// anchor, so it moves with its measure).
+#[test]
+fn a_break_is_anchored_to_its_measure_s_start() {
+    let (mut session, region) = four_measures();
+    session
+        .set_break(LayoutBreak::System, region, at(2, 1), true)
+        .expect("a break before measure 3");
+    let third = session
+        .score()
+        .staff_instances()
+        .find(|(r, _)| *r == region)
+        .map(|(_, si)| si.measures[2].id)
+        .expect("a third measure");
+    assert_eq!(
+        system_breaks(&session, region),
+        [epiphany_core::TimeAnchor::Measure {
+            id: third,
+            position: epiphany_core::MeasurePosition::Start,
+            offset: epiphany_core::AnchorOffset::Zero,
+        }]
+    );
+}
+
+/// A break a document written before reduction version 5 holds, at a musical
+/// offset from the region's start, is read as standing there and is cleared
+/// in its own form, which is the slot it holds.
+#[test]
+fn an_older_break_at_an_offset_is_read_and_cleared_in_its_own_form() {
+    let (mut session, region) = four_measures();
+    let offset = epiphany_core::TimeAnchor::Region {
+        id: region,
+        edge: epiphany_core::RegionEdge::Start,
+        offset: epiphany_core::AnchorOffset::Musical(MusicalDuration(
+            RationalTime::new(2, 1).unwrap(),
+        )),
+    };
+    session
+        .apply(epiphany_ops::OperationKind::SetUserSystemBreak(
+            epiphany_ops::SetUserSystemBreakOp {
+                region,
+                anchor: offset.clone(),
+                present: true,
+            },
+        ))
+        .expect("an offset break applies");
+    assert!(session.has_break(LayoutBreak::System, region, &at(2, 1)));
+    assert_eq!(shape(&session), vec![2]);
+    session
+        .set_break(LayoutBreak::System, region, at(2, 1), false)
+        .expect("cleared");
+    assert!(!session.has_break(LayoutBreak::System, region, &at(2, 1)));
+    assert_eq!(system_breaks(&session, region), []);
+    assert_eq!(shape(&session), vec![1]);
+}

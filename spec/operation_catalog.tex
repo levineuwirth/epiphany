@@ -861,8 +861,11 @@ refusal).} A \texttt{CreateStaffInstance} whose region overlaps in time
 another live region holding a live instance of its staff is refused,
 \texttt{PreconditionFailureReason} appending \texttt{RegionsOverlap}
 (discriminant~21, epoch~16; Section~\ref{sec:k0:structural-containers}).
-Accordingly \texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION}
-moves \texttt{4}~$\rightarrow$~\texttt{5}, one version for the phase.
+A user break's slot is keyed by its anchor, and a break naming an event or a
+measure its region does not hold live is refused \texttt{TargetMissing}
+(Section~\ref{sec:k0:set-user-system-break}). Accordingly
+\texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION} moves
+\texttt{4}~$\rightarrow$~\texttt{5}, one version for the phase.
 
 % ===========================================================================
 \chapter{The Catalog Framework}
@@ -2689,17 +2692,26 @@ anchor: TimeAnchor, present: bool \}} --- the full anchor value (v1).
 value, then the boolean.
 
 \textbf{Reduction rule.} A last-writer-wins advisory. The break preference is
-recorded for the region keyed by the anchor's \emph{resolved musical position};
-graph-aware reduction adds or removes the anchor from the region's user
-system-break list.
+recorded for the region keyed by its \emph{anchor} (since version~0.22.0,
+reduction algorithm version~5; before it by the anchor's resolved musical
+position, so two anchors to measures or events of one region, all resolving
+to its origin, shared one slot): distinct anchors are distinct breaks, and a
+break anchored to a measure or an event keeps its slot when its music moves.
+Graph-aware reduction adds or removes the anchor in the region's user
+system-break list. The anchor must name what the region holds: an event or a
+measure live in that region, or that region's own edge; a break naming a dead
+or foreign event or measure, or another region, is a precondition no-op,
+\texttt{TargetMissing}, in both modes, read from the ledger's indices. A
+break whose event a later delete removes stays keyed and places nothing.
 
 \textbf{Conflict cases.} None (LWW advisory).
 
 \textbf{Undo semantics.} Undo restores the prior advisory value for the
-\texttt{(region, resolved-position)} key.
+\texttt{(region, anchor)} key; a restored break naming a target tombstoned
+since is superseded by that tombstoning.
 
-\textbf{Re-anchoring.} Not applicable in the prototype (the advisory is keyed by
-resolved position; a tombstoned anchor target degrades to the region origin).
+\textbf{Re-anchoring.} Not applicable (the advisory is keyed by its anchor; a
+tombstoned anchor target leaves the break keyed, placing nothing).
 
 \section{Score Settings}
 \label{sec:k0:score-settings}
@@ -2727,11 +2739,12 @@ meter sequence names a time signature that is not live (the Chapter~5 invariant
 forbids installing such a grid); a grid set in a region whose time model admits
 no musical offset is refused with \texttt{WrongRegionTimeModel} in both modes
 (since version~0.19.0; clearing it still applies). \emph{SetUserPageBreak} is a canonical LWW
-advisory keyed by the anchor's resolved musical position, with the same
-staff-based precondition. Graph-aware reduction overwrites the metadata singleton,
-sets the region's default metric grid, or adds/removes the page-break anchor
-under its resolved-position key (so two anchors resolving to one position occupy a
-single slot).
+advisory keyed by its anchor (since version~0.22.0; before it by the anchor's
+resolved musical position), with the same staff-based precondition and the
+same requirement that its anchor name what its region holds
+(Section~\ref{sec:k0:set-user-system-break}). Graph-aware reduction overwrites
+the metadata singleton, sets the region's default metric grid, or adds/removes
+the page-break anchor under its own key.
 
 \textbf{Conflict cases.} SetMetadata and SetUserPageBreak: none (advisory LWW).
 SetMetricGrid: two concurrent differing grids for one region produce a

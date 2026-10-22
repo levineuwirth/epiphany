@@ -7,17 +7,18 @@
 use std::collections::BTreeMap;
 
 use epiphany_core::{
-    CanonicalValue, MusicalPosition, OperationId, PitchId, PitchSpelling, RegionId, TypedObjectId,
+    CanonicalValue, OperationId, PitchId, PitchSpelling, RegionId, TimeAnchor, TypedObjectId,
 };
 use epiphany_determinism::CanonicalDecode;
 
 use crate::{
-    ConflictId, ConflictKind, ConflictKindRegistryId, ConflictRecord, ConflictRegistry,
-    ConflictResolutionState, ExtensionPreconditionId, IntegrityAnomaly, IntegrityAnomalyKind,
-    IntegrityAnomalyRegistryId, MaterializedState, NoOpReason, ObjectKind, ObjectState,
-    OperationEffect, PendingReason, PreconditionFailureReason, PreconditionFailureRegistryId,
-    ReanchorReason, ReanchorReasonRegistryId, RepairKind, RepairKindRegistryId, RepairRecord,
-    ResolutionAction, ResolutionRegistryId, SerializedCanonicalInputs, TupletCompensationKind,
+    BreakAnchor, ConflictId, ConflictKind, ConflictKindRegistryId, ConflictRecord,
+    ConflictRegistry, ConflictResolutionState, ExtensionPreconditionId, IntegrityAnomaly,
+    IntegrityAnomalyKind, IntegrityAnomalyRegistryId, MaterializedState, NoOpReason, ObjectKind,
+    ObjectState, OperationEffect, PendingReason, PreconditionFailureReason,
+    PreconditionFailureRegistryId, ReanchorReason, ReanchorReasonRegistryId, RepairKind,
+    RepairKindRegistryId, RepairRecord, ResolutionAction, ResolutionRegistryId,
+    SerializedCanonicalInputs, TupletCompensationKind,
 };
 
 /// Failure to decode a canonical [`MaterializedState`] snapshot.
@@ -157,15 +158,17 @@ fn typed_object_id(reader: &mut Reader<'_>) -> Result<TypedObjectId> {
     fixed(reader, width, "TypedObjectId")
 }
 
-fn musical_position(reader: &mut Reader<'_>) -> Result<MusicalPosition> {
-    let start = reader.pos;
-    reader.byte()?;
-    let numer_len = reader.len()?;
-    reader.take(numer_len)?;
-    let denom_len = reader.len()?;
-    reader.take(denom_len)?;
-    MusicalPosition::decode_canonical(&reader.bytes[start..reader.pos])
-        .map_err(|_| MaterializedDecodeError::InvalidValue("MusicalPosition"))
+/// A user break's slot key: the anchor's canonical bytes, length-prefixed
+/// (reduction version 5), decoded strictly.
+fn break_anchor(reader: &mut Reader<'_>) -> Result<BreakAnchor> {
+    let bytes = reader.lp_bytes()?;
+    let anchor = TimeAnchor::decode_canonical(bytes)
+        .map_err(|_| MaterializedDecodeError::InvalidValue("TimeAnchor"))?;
+    let key = BreakAnchor::new(anchor);
+    if key.canonical_bytes() != bytes {
+        return Err(MaterializedDecodeError::NonCanonical);
+    }
+    Ok(key)
 }
 
 fn registry_id<T>(reader: &mut Reader<'_>, ctor: impl FnOnce(u128) -> T) -> Result<T> {
@@ -548,7 +551,7 @@ pub(crate) fn decode_materialized_state(bytes: &[u8]) -> Result<MaterializedStat
     let mut breaks = BTreeMap::new();
     for _ in 0..break_count {
         let region = fixed::<RegionId>(&mut reader, 16, "RegionId")?;
-        let anchor = musical_position(&mut reader)?;
+        let anchor = break_anchor(&mut reader)?;
         let present = match reader.byte()? {
             0 => false,
             1 => true,
@@ -561,7 +564,7 @@ pub(crate) fn decode_materialized_state(bytes: &[u8]) -> Result<MaterializedStat
     let mut page_breaks = BTreeMap::new();
     for _ in 0..page_break_count {
         let region = fixed::<RegionId>(&mut reader, 16, "RegionId")?;
-        let anchor = musical_position(&mut reader)?;
+        let anchor = break_anchor(&mut reader)?;
         let present = match reader.byte()? {
             0 => false,
             1 => true,

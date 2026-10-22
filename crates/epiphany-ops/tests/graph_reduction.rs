@@ -1835,13 +1835,16 @@ fn set_metric_grid_rejects_an_undeclared_time_signature_reference() {
     assert!(check_invariants(&result.score).is_empty());
 }
 
+/// A user break's slot is keyed by its anchor (reduction version 5): two
+/// structurally distinct anchors that resolve to one musical position (a
+/// region's start and its end, each offset by four) keep a slot each, where
+/// version 4 keyed both by the resolved position and kept the last writer
+/// alone. A later write at one of the anchors still overwrites its own slot.
 #[test]
-fn user_breaks_at_one_resolved_position_collapse_to_a_single_anchor() {
+fn user_breaks_at_distinct_anchors_keep_their_own_slots() {
     let base = epiphany_core::generators::valid_score(100);
     let region = base.canvas.regions[0].id;
     let offset = RationalTime::from_int(4);
-    // Two structurally distinct anchors (region start vs. end) that resolve to the
-    // *same* musical position — the canonical LWW key — both set present.
     let start_anchor = TimeAnchor::Region {
         id: region,
         edge: RegionEdge::Start,
@@ -1852,60 +1855,60 @@ fn user_breaks_at_one_resolved_position_collapse_to_a_single_anchor() {
         edge: RegionEdge::End,
         offset: AnchorOffset::Musical(MusicalDuration(offset.clone())),
     };
-    let first = envelope(
-        61,
-        0,
-        10,
-        CausalContext::new(),
-        None,
-        OperationPayload::Primitive(OperationKind::SetUserPageBreak(
-            epiphany_ops::SetUserPageBreakOp {
-                region,
-                anchor: start_anchor,
-                present: true,
+    let page_break = |counter: u64, clock: i64, anchor: &TimeAnchor, present: bool| {
+        envelope(
+            61,
+            counter,
+            clock,
+            match counter {
+                0 => CausalContext::new(),
+                n => CausalContext::new().with_seen(ReplicaId(61), n - 1),
             },
-        )),
-    );
-    let second = envelope(
-        61,
-        1,
-        11,
-        CausalContext::new().with_seen(ReplicaId(61), 0),
-        None,
-        OperationPayload::Primitive(OperationKind::SetUserPageBreak(
-            epiphany_ops::SetUserPageBreakOp {
-                region,
-                anchor: end_anchor.clone(),
-                present: true,
-            },
-        )),
-    );
-    let mut set = OperationSet::new();
-    set.accept_all(vec![first, second]);
-    let result = set.reduce_onto(&base);
-
-    let breaks = &result
-        .score
-        .canvas
-        .regions
-        .iter()
-        .find(|r| r.id == region)
-        .expect("the region survives")
-        .content
-        .staff_based()
-        .expect("fixture is staff based")
-        .user_page_breaks;
+            None,
+            OperationPayload::Primitive(OperationKind::SetUserPageBreak(
+                epiphany_ops::SetUserPageBreakOp {
+                    region,
+                    anchor: anchor.clone(),
+                    present,
+                },
+            )),
+        )
+    };
+    let breaks_of = |envelopes: Vec<OperationEnvelope>| {
+        let mut set = OperationSet::new();
+        set.accept_all(envelopes);
+        let result = set.reduce_onto(&base);
+        assert!(check_invariants(&result.score).is_empty());
+        let breaks = result
+            .score
+            .canvas
+            .regions
+            .iter()
+            .find(|r| r.id == region)
+            .expect("the region survives")
+            .content
+            .staff_based()
+            .expect("fixture is staff based")
+            .user_page_breaks
+            .clone();
+        (breaks, result.state.page_breaks.len())
+    };
+    let both = vec![
+        page_break(0, 10, &start_anchor, true),
+        page_break(1, 11, &end_anchor, true),
+    ];
     assert_eq!(
-        breaks.as_slice(),
-        &[end_anchor],
-        "two anchors at one resolved position collapse to the single last writer"
+        breaks_of(both.clone()),
+        (vec![start_anchor.clone(), end_anchor.clone()], 2),
+        "two anchors at one resolved position keep two slots"
     );
+    let mut withdrawn = both;
+    withdrawn.push(page_break(2, 12, &start_anchor, false));
     assert_eq!(
-        result.state.page_breaks.len(),
-        1,
-        "exactly one canonical LWW slot for the resolved position"
+        breaks_of(withdrawn),
+        (vec![end_anchor], 2),
+        "a later write at one anchor overwrites its own slot alone"
     );
-    assert!(check_invariants(&result.score).is_empty());
 }
 
 #[test]

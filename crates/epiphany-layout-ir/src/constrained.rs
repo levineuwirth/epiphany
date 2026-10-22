@@ -6327,6 +6327,57 @@ fn column_slot_id(region: LayoutObjectId, rank: usize) -> SpringSlotId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A break anchored to its music is placed where the music is (X5b.4,
+    /// breaks keyed by their anchors): an event's onset plus the offset, a
+    /// measure's start, so it moves with them; a musical offset from the
+    /// region's start stays where it was written.
+    #[test]
+    fn a_break_anchored_to_its_music_is_placed_where_the_music_is() {
+        use epiphany_core::{EventId, MeasureId, MusicalPosition, RegionEdge, RegionId, ReplicaId};
+        let region = RegionId::new(ReplicaId(1), 1);
+        let (event, measure) = (
+            EventId::new(ReplicaId(1), 2),
+            MeasureId::new(ReplicaId(1), 3),
+        );
+        let quarters = |n: i64| {
+            TimePoint::Musical(MusicalPosition(
+                RationalTime::new(n, 4).expect("a position"),
+            ))
+        };
+        let musical = |n: i64| {
+            AnchorOffset::Musical(MusicalDuration(
+                RationalTime::new(n, 4).expect("a duration"),
+            ))
+        };
+        let by_event = TimeAnchor::Event {
+            id: event,
+            offset: musical(1),
+        };
+        let by_measure = TimeAnchor::Measure {
+            id: measure,
+            position: MeasurePosition::Start,
+            offset: AnchorOffset::Zero,
+        };
+        let by_offset = TimeAnchor::Region {
+            id: region,
+            edge: RegionEdge::Start,
+            offset: musical(8),
+        };
+        for (onset, start) in [(4, 4), (6, 12)] {
+            let events = BTreeMap::from([(event, quarters(onset))]);
+            let measures = BTreeMap::from([(measure, quarters(start))]);
+            let place = |anchor| break_anchor_time(anchor, region, &events, &measures);
+            assert_eq!(place(&by_event), Some(quarters(onset + 1)));
+            assert_eq!(place(&by_measure), Some(quarters(start)));
+            assert_eq!(place(&by_offset), Some(quarters(8)));
+        }
+        // An event the layout cannot place (a delete took it) places nothing.
+        assert_eq!(
+            break_anchor_time(&by_event, region, &BTreeMap::new(), &BTreeMap::new()),
+            None
+        );
+    }
     use crate::logical::to_logical;
     use crate::time_axis::TimeAxis;
     use epiphany_core::generators::valid_score_rich;

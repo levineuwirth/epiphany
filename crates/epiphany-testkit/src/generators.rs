@@ -2159,14 +2159,32 @@ mod tests {
             state
                 .spellings
                 .insert(pitch_id(&mut rng), valuegen::spelling(rng.below(7) as u8));
-            state.breaks.insert(
-                (region_id(&mut rng), musical_position(&mut rng)),
-                rng.boolean(),
-            );
-            state.page_breaks.insert(
-                (region_id(&mut rng), musical_position(&mut rng)),
-                rng.boolean(),
-            );
+            // A break keyed by its anchor (reduction version 5): a region-start
+            // offset, or a measure's start.
+            let break_key = |rng: &mut Rng| {
+                let region = region_id(rng);
+                let anchor = if rng.boolean() {
+                    epiphany_core::TimeAnchor::Region {
+                        id: region,
+                        edge: epiphany_core::RegionEdge::Start,
+                        offset: epiphany_core::AnchorOffset::Musical(
+                            epiphany_core::MusicalDuration(musical_position(rng).0),
+                        ),
+                    }
+                } else {
+                    epiphany_core::TimeAnchor::Measure {
+                        id: epiphany_core::MeasureId::new(
+                            ReplicaId(rng.below(4) + 1),
+                            rng.below(64),
+                        ),
+                        position: epiphany_core::MeasurePosition::Start,
+                        offset: epiphany_core::AnchorOffset::Zero,
+                    }
+                };
+                (region, epiphany_ops::BreakAnchor::new(anchor))
+            };
+            state.breaks.insert(break_key(&mut rng), rng.boolean());
+            state.page_breaks.insert(break_key(&mut rng), rng.boolean());
             state
                 .pending
                 .push((operation_id(&mut rng), pending_reason(&mut rng)));

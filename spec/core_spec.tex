@@ -9390,11 +9390,15 @@ pub struct SetUserSystemBreakOp {
 \textbf{Invariant preconditions:}
 \begin{itemize}
   \item The region exists and is staff-based.
-  \item The anchor resolves within the region.
+  \item The anchor resolves within the region: an event or a measure it
+    names is live in that region, and a region edge it names is that
+    region's (reduction algorithm version~\texttt{5}).
 \end{itemize}
 
 \textbf{Effect:} The region's \texttt{user\_system\_breaks} list is
-updated to include or exclude the anchor. Layout caches that depend
+updated to include or exclude the anchor, which is the break's own
+last-writer slot: two breaks at distinct anchors are two breaks, though
+they resolve to one musical position. Layout caches that depend
 on system breaks are invalidated.
 
 \textbf{Postconditions:}
@@ -17384,7 +17388,9 @@ layouts they own versus inherit:
   \sectionsc{Region Overlap and Concurrency} states where concurrent
   reduction keeps the overlap constraint: a staff instance's creation that
   would overlap a region holding its staff is refused (reduction algorithm
-  version~\texttt{5}, which X5b opens).
+  version~\texttt{5}, which X5b opens). \texttt{SetUserSystemBreak}'s
+  preconditions and effect state a break's key: its anchor, naming what its
+  region holds.
   \\
   \bottomrule
 \end{longtable}

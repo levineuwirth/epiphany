@@ -1285,8 +1285,7 @@ fn push_len_pairs(out: &mut Vec<u8>, entries: &[(EventId, MusicalPosition)]) {
 
 /// Set a user system-break preference (Chapter 6 §6.10 SetUserSystemBreak).
 /// Carries the full [`TimeAnchor`] value (v1, value-typed); the reduction's LWW
-/// bucketing key is the anchor's resolved [`MusicalPosition`]
-/// ([`SetUserSystemBreakOp::resolved_position`]).
+/// key is the anchor itself (`BreakAnchor`, reduction version 5).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SetUserSystemBreakOp {
     pub region: RegionId,
@@ -1294,12 +1293,11 @@ pub struct SetUserSystemBreakOp {
     pub present: bool,
 }
 
-/// The musical position a [`TimeAnchor`] resolves to for user-break LWW
-/// bucketing. A region-relative musical offset resolves to that offset; any
-/// other anchor shape resolves to the region origin (the break still applies to
-/// the region, the prototype LWW key is coarse — see `DECISIONS.md`). The graph
-/// reducer keys break anchors by this same position, so two anchors resolving
-/// here to one position occupy a single LWW slot.
+/// The musical position a [`TimeAnchor`] resolves to for the coarse LWW keys:
+/// a meter change's and a tempo segment's (a named follow-up keeps them so),
+/// and the v0 projection of a user break. A region-relative musical offset
+/// resolves to that offset; any other anchor shape resolves to the region
+/// origin. A user break's own key is its anchor since reduction version 5.
 pub(crate) fn resolved_anchor_position(anchor: &TimeAnchor) -> MusicalPosition {
     match anchor {
         TimeAnchor::Region {
@@ -1311,8 +1309,9 @@ pub(crate) fn resolved_anchor_position(anchor: &TimeAnchor) -> MusicalPosition {
 }
 
 impl SetUserSystemBreakOp {
-    /// The anchor's resolved musical position — the canonical LWW bucketing key
-    /// (see the private `resolved_anchor_position` helper).
+    /// The anchor's resolved musical position, as the v0 form records a break
+    /// (see the private `resolved_anchor_position` helper); not the LWW key,
+    /// which is the anchor since reduction version 5.
     pub fn resolved_position(&self) -> MusicalPosition {
         resolved_anchor_position(&self.anchor)
     }
@@ -1763,8 +1762,7 @@ impl CanonicalEncode for SetMetricGridOp {
 
 /// Set a user page-break preference (Chapter 6 §6.10 SetUserPageBreak) — the
 /// page-break sibling of [`SetUserSystemBreakOp`]. Carries the full
-/// [`TimeAnchor`] (v1); the LWW bucketing key is the anchor's resolved
-/// [`MusicalPosition`].
+/// [`TimeAnchor`] (v1); the LWW key is the anchor itself (reduction version 5).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SetUserPageBreakOp {
     pub region: RegionId,
@@ -1773,8 +1771,9 @@ pub struct SetUserPageBreakOp {
 }
 
 impl SetUserPageBreakOp {
-    /// The anchor's resolved musical position — the canonical LWW bucketing key
-    /// (see the private `resolved_anchor_position` helper).
+    /// The anchor's resolved musical position (see the private
+    /// `resolved_anchor_position` helper); not the LWW key, which is the anchor
+    /// since reduction version 5.
     pub fn resolved_position(&self) -> MusicalPosition {
         resolved_anchor_position(&self.anchor)
     }

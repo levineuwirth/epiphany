@@ -23,8 +23,8 @@ use epiphany_core::{
 use epiphany_determinism::CanonicalEncode;
 
 use crate::{
-    BlockStamp, IntegrityAnomaly, IntegrityAnomalyKind, MaterializedState, ObjectState,
-    OperationEnvelope, OperationKindRegistryId, OperationKindTag, PendingReason,
+    BlockStamp, BreakAnchor, IntegrityAnomaly, IntegrityAnomalyKind, MaterializedState,
+    ObjectState, OperationEnvelope, OperationKindRegistryId, OperationKindTag, PendingReason,
 };
 
 /// One vector: `(surface, verdict, class, name, bytes)`.
@@ -194,6 +194,71 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         "count-exceeds-remaining",
         "effects_count_u32_max",
         huge_count,
+    ));
+
+    // Breaks keyed by their anchors (reduction version 5): a measure's start
+    // and a musical offset from the region's start, in one region, a slot
+    // each. Every other section is empty, so the breaks section stands at
+    // byte 20 (its count) and the two sections after it take 8 bytes.
+    let region = epiphany_core::RegionId::new(ReplicaId(1), 7);
+    let mut keys = [
+        BreakAnchor::new(epiphany_core::TimeAnchor::Measure {
+            id: epiphany_core::MeasureId::new(ReplicaId(1), 8),
+            position: epiphany_core::MeasurePosition::Start,
+            offset: epiphany_core::AnchorOffset::Zero,
+        }),
+        BreakAnchor::new(crate::valuegen::region_start_anchor(
+            region,
+            epiphany_core::MusicalPosition(epiphany_core::RationalTime::from_int(4)),
+        )),
+    ];
+    keys.sort();
+    let with_breaks = |entries: &[(&BreakAnchor, bool)]| {
+        MaterializedState {
+            breaks: entries
+                .iter()
+                .map(|(key, present)| ((region, (*key).clone()), *present))
+                .collect(),
+            ..Default::default()
+        }
+        .canonical_bytes()
+    };
+    let entry = |key: &BreakAnchor, present: bool| {
+        let bytes = with_breaks(&[(key, present)]);
+        bytes[24..bytes.len() - 8].to_vec()
+    };
+    let breaks_section = |entries: &[Vec<u8>]| {
+        let mut out = empty[..20].to_vec();
+        out.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+        for e in entries {
+            out.extend_from_slice(e);
+        }
+        out.extend_from_slice(&empty[24..]);
+        out
+    };
+    let two_breaks = with_breaks(&[(&keys[0], true), (&keys[1], false)]);
+    assert_eq!(
+        two_breaks,
+        breaks_section(&[entry(&keys[0], true), entry(&keys[1], false)])
+    );
+    v.push(row(MS, "accept", "-", "two_breaks", two_breaks));
+    v.push(row(
+        MS,
+        "reject",
+        "non-canonical-map-order",
+        "breaks_out_of_order",
+        breaks_section(&[entry(&keys[1], false), entry(&keys[0], true)]),
+    ));
+    let mut unknown_anchor = region.canonical_bytes().to_vec();
+    unknown_anchor.extend_from_slice(&1u32.to_le_bytes());
+    unknown_anchor.push(0xFF);
+    unknown_anchor.push(1);
+    v.push(row(
+        MS,
+        "reject",
+        "unknown-discriminant",
+        "break_anchor_unknown_tag",
+        breaks_section(&[unknown_anchor]),
     ));
 
     // --- OperationKindTag --------------------------------------------------
