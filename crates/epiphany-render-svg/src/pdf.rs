@@ -447,9 +447,15 @@ fn page_content(
                             continue;
                         };
                         let k = crate::text::scale_number(g.scale);
+                        let turn = match crate::text::linear(&g.transform) {
+                            Some([a, b, c, d]) => {
+                                format!(" {} {} {} {} 0 0 cm", num(a), num(b), num(c), num(d))
+                            }
+                            None => String::new(),
+                        };
                         let _ = writeln!(
                             s,
-                            "q {}{} rg 1 0 0 1 {} {} cm {k} 0 0 {k} 0 0 cm /T{number} Do Q",
+                            "q {}{} rg 1 0 0 1 {} {} cm{turn} {k} 0 0 {k} 0 0 cm /T{number} Do Q",
                             state(run.style.rgba),
                             rgb(run.style.rgba),
                             num(g.x),
@@ -755,5 +761,41 @@ mod tests {
             .filter(|l| l.contains(" cm 0.002 0 0 0.002 0 0 cm /T"))
             .count();
         assert_eq!(draws, drawn);
+    }
+
+    /// A turned glyph of a run is drawn turned, its turn after its place and
+    /// before its scale.
+    #[test]
+    fn a_turned_symbol_is_drawn_turned() {
+        use epiphany_layout_ir::{symbol_run, Symbol, SymbolPlace, Turn};
+        let mut layout = stub_layout(3);
+        layout.texts.push(symbol_run(
+            epiphany_layout_ir::Provenance::projected(
+                epiphany_core::TypedObjectId::Marker(epiphany_core::MarkerId::from_raw(9)),
+                vec![],
+            ),
+            &[Symbol {
+                codepoint: '\u{EAA9}',
+                at: SymbolPlace::Origin(epiphany_layout_ir::Point::new(0.0, 0.0)),
+                scale: 1.0,
+                turn: Turn::Anticlockwise,
+            }],
+            epiphany_layout_ir::Point::new(5.0, -20.0),
+        ));
+        let frame = crate::ink_frame(&layout).unwrap();
+        let out = render_pdf(
+            &[PdfPage {
+                layout: &layout,
+                frame,
+            }],
+            &PdfOptions::default(),
+        );
+        let text = String::from_utf8_lossy(&out.bytes);
+        let [a, b, c, d] =
+            crate::text::linear(&layout.texts[0].segments[0].glyphs[0].transform).expect("turned");
+        let turn = format!(" cm {} {} {} {} 0 0 cm ", num(a), num(b), num(c), num(d));
+        let draws: Vec<&str> = text.lines().filter(|l| l.contains(" cm /T")).collect();
+        assert_eq!(draws.len(), 1);
+        assert!(draws[0].contains(&turn), "{}", draws[0]);
     }
 }

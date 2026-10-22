@@ -226,17 +226,20 @@ pub enum TextFace {
     Italic,
     Bold,
     BoldItalic,
+    /// SMuFL symbols alone, from Bravura Text: a mark the engraver sets
+    /// scaled or turned ([`symbol_run`]).
+    Symbols,
 }
 
 impl TextFace {
-    fn chain(self) -> [Face; 2] {
-        let first = match self {
-            TextFace::Roman => Face::EdwinRoman,
-            TextFace::Italic => Face::EdwinItalic,
-            TextFace::Bold => Face::EdwinBold,
-            TextFace::BoldItalic => Face::EdwinBoldItalic,
-        };
-        [first, Face::BravuraText]
+    fn chain(self) -> &'static [Face] {
+        match self {
+            TextFace::Roman => &[Face::EdwinRoman, Face::BravuraText],
+            TextFace::Italic => &[Face::EdwinItalic, Face::BravuraText],
+            TextFace::Bold => &[Face::EdwinBold, Face::BravuraText],
+            TextFace::BoldItalic => &[Face::EdwinBoldItalic, Face::BravuraText],
+            TextFace::Symbols => &[Face::BravuraText],
+        }
     }
 }
 
@@ -264,7 +267,8 @@ fn identity(face: Face) -> TextFaceIdentity {
 /// The shaping identity of a run set in `face`, shared by every run so set.
 pub fn shaping_identity(face: TextFace) -> Arc<TextShapingIdentity> {
     use std::sync::OnceLock;
-    static IDS: [OnceLock<Arc<TextShapingIdentity>>; 4] = [
+    static IDS: [OnceLock<Arc<TextShapingIdentity>>; 5] = [
+        OnceLock::new(),
         OnceLock::new(),
         OnceLock::new(),
         OnceLock::new(),
@@ -275,7 +279,7 @@ pub fn shaping_identity(face: TextFace) -> Arc<TextShapingIdentity> {
             let (major, minor, patch) = epiphany_text::SHAPER_VERSION;
             let (u_major, u_minor, u_update) = epiphany_text::UNICODE_VERSION;
             Arc::new(TextShapingIdentity {
-                faces: face.chain().into_iter().map(identity).collect(),
+                faces: face.chain().iter().copied().map(identity).collect(),
                 shaper: ShaperId(Cow::Borrowed(epiphany_text::SHAPER)),
                 shaper_version: SemVer::new(major, minor, patch),
                 features: Vec::new(),
@@ -315,7 +319,7 @@ pub fn shape_text(
     origin: Point,
 ) -> (ResolvedText, ShapingGaps) {
     let chain = face.chain();
-    let shaped = epiphany_text::shape(text, &chain);
+    let shaped = epiphany_text::shape(text, chain);
     let boundaries = epiphany_text::grapheme_boundaries(text);
     let mut gaps = ShapingGaps::default();
 
@@ -497,6 +501,107 @@ pub fn shape_text(
     (run, gaps)
 }
 
+/// One SMuFL symbol of a [`symbol_run`]: its codepoint, where it stands
+/// (from the run's origin, in staff spaces), its size against Bravura's
+/// (1 is full size), and its turn.
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub struct Symbol {
+    pub codepoint: char,
+    pub at: SymbolPlace,
+    pub scale: f32,
+    pub turn: Turn,
+}
+
+/// Where a symbol stands: its glyph's origin, or its ink box's bottom-left
+/// corner. Bravura Text raises some symbols (noteheads, accidentals) to sit
+/// on a text's baseline, so a symbol drawn where Bravura's glyph would stand
+/// is placed by its box.
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub enum SymbolPlace {
+    Origin(Point),
+    Corner(Point),
+}
+
+/// A quarter turn about a symbol's origin, or none.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum Turn {
+    None,
+    /// `(x, y)` to `(-y, x)`.
+    Anticlockwise,
+    /// `(x, y)` to `(y, -x)`.
+    Clockwise,
+}
+
+/// A run of SMuFL symbols the engraver places itself, scaled or turned as
+/// the music glyphs cannot be (an ornament's small accidental, an arpeggio's
+/// upright wiggles): set from Bravura Text, whose symbols are Bravura's at
+/// 0.8 of its em, so at an em of five staff spaces they stand full size.
+/// Each symbol's glyph is the one shaping its codepoint gives, put where its
+/// place says; the run's string is the symbols' codepoints, and a consumer
+/// draws the glyphs it holds as for any run. Every symbol must be one
+/// Bravura Text maps.
+pub fn symbol_run(provenance: Provenance, symbols: &[Symbol], origin: Point) -> ResolvedText {
+    let text: String = symbols.iter().map(|s| s.codepoint).collect();
+    let face = Face::BravuraText;
+    let upem = f32::from(face.units_per_em());
+    let (mut run, _) = shape_text(
+        provenance,
+        &text,
+        TextFace::Symbols,
+        5.0,
+        TextAlign::Left,
+        origin,
+    );
+    let mut ink: Option<[f32; 4]> = None;
+    let mut index = 0;
+    for segment in &mut run.segments {
+        for glyph in &mut segment.glyphs {
+            let Some(symbol) = symbols.get(index) else {
+                break;
+            };
+            index += 1;
+            let size = 5.0 * symbol.scale;
+            segment.size = StaffSpace(size);
+            let unit = size / upem;
+            let [l, b, r, t] = face.glyph_bounds(glyph.glyph_id).unwrap_or([0.0; 4]);
+            let (l, b, r, t) = (l * unit, b * unit, r * unit, t * unit);
+            // The glyph's box about its origin once turned.
+            let (bl, bb, br, bt, matrix) = match symbol.turn {
+                Turn::None => (l, b, r, t, None),
+                Turn::Anticlockwise => (-t, l, -b, r, Some([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0]])),
+                Turn::Clockwise => (b, -r, t, -l, Some([[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]])),
+            };
+            let offset = match symbol.at {
+                SymbolPlace::Origin(at) => at,
+                SymbolPlace::Corner(corner) => Point::new(corner.x.0 - bl, corner.y.0 - bb),
+            };
+            glyph.offset = offset;
+            glyph.transform = matrix.map(|[row0, row1]| Transform2D {
+                matrix: [row0, row1, [0.0, 0.0, 1.0]],
+            });
+            let placed = [
+                offset.x.0 + bl,
+                offset.y.0 + bb,
+                offset.x.0 + br,
+                offset.y.0 + bt,
+            ];
+            ink = Some(match ink {
+                None => placed,
+                Some(i) => [
+                    i[0].min(placed[0]),
+                    i[1].min(placed[1]),
+                    i[2].max(placed[2]),
+                    i[3].max(placed[3]),
+                ],
+            });
+        }
+    }
+    let [l, b, r, t] = ink.unwrap_or([0.0; 4]);
+    run.bounds = BoundingBox::new(l, b, r, t);
+    run.reserved_box = run.bounds;
+    run
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -549,6 +654,86 @@ mod tests {
         assert!(unresolved[0].glyphs.is_empty(), "and drawn from no face");
     }
 
+    /// A symbol set from Bravura Text at an em of five spaces stands at the
+    /// music font's own size, though raised as the text face raises it;
+    /// scaled, placed by its box's corner, it stands on that corner; turned
+    /// a quarter, its box turns with it.
+    #[test]
+    fn a_symbol_stands_at_its_size_and_place_turned_or_not() {
+        let sharp = crate::glyph::metrics("accidentalSharp")
+            .expect("bundled")
+            .bounding_box();
+        let symbol = |at: SymbolPlace, scale: f32, turn: Turn| Symbol {
+            codepoint: '\u{E262}',
+            at,
+            scale,
+            turn,
+        };
+        let full = symbol_run(
+            provenance(),
+            &[symbol(
+                SymbolPlace::Origin(Point::new(0.0, 0.0)),
+                1.0,
+                Turn::None,
+            )],
+            Point::new(0.0, 0.0),
+        );
+        let b = full.bounds;
+        for (got, want) in [
+            (b.right.0 - b.left.0, sharp.right.0 - sharp.left.0),
+            (b.top.0 - b.bottom.0, sharp.top.0 - sharp.bottom.0),
+        ] {
+            assert!((got - want).abs() < 0.02, "{b:?} against {sharp:?}");
+        }
+        assert!(b.bottom.0 > sharp.bottom.0 + 1.0, "raised: {b:?}");
+        assert!(full.segments[0].glyphs[0].transform.is_none());
+
+        let small = symbol_run(
+            provenance(),
+            &[symbol(
+                SymbolPlace::Corner(Point::new(1.0, 2.0)),
+                0.6,
+                Turn::None,
+            )],
+            Point::new(10.0, 20.0),
+        );
+        let b = small.bounds;
+        assert!(
+            (b.left.0 - 1.0).abs() < 1e-4 && (b.bottom.0 - 2.0).abs() < 1e-4,
+            "{b:?}"
+        );
+        let height = sharp.top.0 - sharp.bottom.0;
+        assert!(
+            ((b.top.0 - b.bottom.0) - 0.6 * height).abs() < 0.02,
+            "{b:?}"
+        );
+
+        let turned = symbol_run(
+            provenance(),
+            &[symbol(
+                SymbolPlace::Origin(Point::new(0.0, 0.0)),
+                1.0,
+                Turn::Anticlockwise,
+            )],
+            Point::new(0.0, 0.0),
+        );
+        let (b, f) = (turned.bounds, full.bounds);
+        for (got, want) in [
+            (b.left.0, -f.top.0),
+            (b.bottom.0, f.left.0),
+            (b.right.0, -f.bottom.0),
+            (b.top.0, f.right.0),
+        ] {
+            assert!((got - want).abs() < 1e-4, "{b:?} against {f:?}");
+        }
+        let m = turned.segments[0].glyphs[0]
+            .transform
+            .expect("turned")
+            .matrix;
+        // (1, 0) to (0, 1).
+        assert_eq!((m[0][0], m[1][0]), (0.0, 1.0));
+    }
+
     #[test]
     fn caret_stops_follow_the_pen_and_end_at_the_advance() {
         let (run, _) = run("ab", TextAlign::Left);
@@ -592,7 +777,12 @@ mod tests {
     fn every_run_names_its_faces_by_hash() {
         let (run, _) = run("a", TextAlign::Left);
         assert_eq!(run.shaping.faces.len(), 2);
-        for (identity, face) in run.shaping.faces.iter().zip(TextFace::Roman.chain()) {
+        for (identity, face) in run
+            .shaping
+            .faces
+            .iter()
+            .zip(TextFace::Roman.chain().iter().copied())
+        {
             assert_eq!(identity.file_hash, face.file_hash());
             assert_eq!(face_by_hash(&identity.file_hash), Some(face));
         }

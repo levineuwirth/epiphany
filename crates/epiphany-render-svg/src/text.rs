@@ -2,7 +2,7 @@
 //! each is drawn from the face its segment names, at the run's origin plus its
 //! offset, never from the string. Both exports draw text through this.
 
-use epiphany_layout_ir::{face_by_hash, ResolvedText};
+use epiphany_layout_ir::{face_by_hash, ResolvedText, Transform2D};
 use epiphany_text::{Face, PathCommand};
 
 /// One glyph of a run, placed: its face and id, where its origin stands in
@@ -14,6 +14,8 @@ pub(crate) struct TextGlyph {
     pub x: f32,
     pub y: f32,
     pub scale: f32,
+    /// A turn or slant about its origin, applied after the scale.
+    pub transform: Option<Transform2D>,
 }
 
 /// Each glyph of `run`, placed; or the name of a face of its chain this build
@@ -36,6 +38,7 @@ pub(crate) fn placed(run: &ResolvedText) -> Result<Vec<TextGlyph>, String> {
                 x: run.origin.x.0 + g.offset.x.0,
                 y: run.origin.y.0 + g.offset.y.0,
                 scale,
+                transform: g.transform,
             });
         }
     }
@@ -87,4 +90,14 @@ pub(crate) fn scale_number(v: f32) -> String {
         }
     }
     s
+}
+
+/// The linear part of a glyph's transform as `a b c d`, the matrix SVG's
+/// `matrix(a b c d e f)` and PDF's `cm` take, its translation dropped (a
+/// glyph's offset carries it); `None` for no transform.
+pub(crate) fn linear(transform: &Option<Transform2D>) -> Option<[f32; 4]> {
+    transform.map(|t| {
+        let m = t.matrix;
+        [m[0][0], m[1][0], m[0][1], m[1][1]]
+    })
 }

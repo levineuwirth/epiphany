@@ -1,0 +1,930 @@
+//! Marks at their notes, fermatas, breath marks and caesuras on the page
+//! (X4c.3), each on a hand-written file, against MuseScore 4.7.5's default
+//! rules as `marks.rs` and the constrained pass cite them.
+
+use std::path::Path;
+
+use epiphany_cli::{engrave, load, Loaded};
+use epiphany_core::{Event, EventId, TypedObjectId};
+use epiphany_layout_ir::{is_beam_stroke, ResolvedGlyph, ResolvedLayoutIR, ResolvedText};
+
+/// A part of one treble staff, or of a treble and a bass staff, in 4/4 with
+/// an eighth per division, its measures as written.
+fn part(name: &str, staves: u8, measures: &[String]) -> Loaded {
+    part_in(name, staves, 2, measures)
+}
+
+/// [`part`] with `divisions` to the quarter.
+fn part_in(name: &str, staves: u8, divisions: u8, measures: &[String]) -> Loaded {
+    let clefs = if staves == 2 {
+        "<staves>2</staves><clef number=\"1\"><sign>G</sign><line>2</line></clef>\
+         <clef number=\"2\"><sign>F</sign><line>4</line></clef>"
+    } else {
+        "<clef><sign>G</sign><line>2</line></clef>"
+    };
+    let body: String = measures
+        .iter()
+        .enumerate()
+        .map(|(m, content)| {
+            let attributes = if m == 0 {
+                format!(
+                    "<attributes><divisions>{divisions}</divisions><time><beats>4</beats>\
+                     <beat-type>4</beat-type></time>{clefs}</attributes>"
+                )
+            } else {
+                String::new()
+            };
+            format!(
+                "<measure number=\"{}\">{attributes}{content}</measure>",
+                m + 1
+            )
+        })
+        .collect();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\">{body}</part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    assert!(loaded.fidelity.passed(), "{:#?}", loaded.fidelity.failures);
+    loaded
+}
+
+/// A note: its pitch as a step and octave (`"C5"`, `"F#4"`) or `"rest"`, its
+/// duration in eighths and type, its voice and staff, and what its
+/// `<notations>` hold, if anything.
+fn note(pitch: &str, duration: u8, kind: &str, voice: u8, staff: u8, notations: &str) -> String {
+    let what = if pitch == "rest" {
+        String::from("<rest/>")
+    } else {
+        let (step, rest) = pitch.split_at(1);
+        let (alter, octave) = match rest.strip_prefix('#') {
+            Some(octave) => ("<alter>1</alter>", octave),
+            None => ("", rest),
+        };
+        format!("<pitch><step>{step}</step>{alter}<octave>{octave}</octave></pitch>")
+    };
+    let notations = if notations.is_empty() {
+        String::new()
+    } else {
+        format!("<notations>{notations}</notations>")
+    };
+    format!(
+        "<note>{what}<duration>{duration}</duration><voice>{voice}</voice><type>{kind}</type>\
+         <staff>{staff}</staff>{notations}</note>"
+    )
+}
+
+/// The same note sounding with the one before it.
+fn chord(pitch: &str, duration: u8, kind: &str, voice: u8, staff: u8, notations: &str) -> String {
+    note(pitch, duration, kind, voice, staff, notations).replacen("<note>", "<note><chord/>", 1)
+}
+
+fn backup(duration: u8) -> String {
+    format!("<backup><duration>{duration}</duration></backup>")
+}
+
+/// The part's events in the file's order.
+fn events(loaded: &Loaded) -> Vec<EventId> {
+    loaded.import.ids.events[0].clone()
+}
+
+/// An ink box, `[left, bottom, right, top]`.
+type Ink = [f32; 4];
+
+fn glyph_box(glyph: &ResolvedGlyph) -> Ink {
+    let (x, y, b) = (glyph.position.x.0, glyph.position.y.0, &glyph.bounding_box);
+    [x + b.left.0, y + b.bottom.0, x + b.right.0, y + b.top.0]
+}
+
+fn text_box(text: &ResolvedText) -> Ink {
+    let (x, y, b) = (text.origin.x.0, text.origin.y.0, &text.bounds);
+    [x + b.left.0, y + b.bottom.0, x + b.right.0, y + b.top.0]
+}
+
+fn centre_x(ink: Ink) -> f32 {
+    (ink[0] + ink[2]) * 0.5
+}
+
+/// Every glyph named `name` that `event` draws, its own or synthesized from
+/// it, left to right.
+fn glyphs(layout: &ResolvedLayoutIR, event: EventId, name: &str) -> Vec<Ink> {
+    let mut found: Vec<Ink> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.provenance.source == TypedObjectId::Event(event) && g.glyph.as_str() == name)
+        .map(glyph_box)
+        .collect();
+    found.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    found
+}
+
+/// The one glyph named `name` that `event` draws.
+fn the_glyph(layout: &ResolvedLayoutIR, event: EventId, name: &str) -> Ink {
+    let found = glyphs(layout, event, name);
+    assert_eq!(found.len(), 1, "{name} of {event:?}");
+    found[0]
+}
+
+/// Every glyph named `name` on the page, left to right: a fermata, breath
+/// mark or caesura is its marker's, not its note's.
+fn named(layout: &ResolvedLayoutIR, name: &str) -> Vec<Ink> {
+    let mut found: Vec<Ink> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str() == name)
+        .map(glyph_box)
+        .collect();
+    found.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    found
+}
+
+/// A note's heads, lowest first.
+fn heads(loaded: &Loaded, layout: &ResolvedLayoutIR, event: EventId) -> Vec<Ink> {
+    let Some(Event::Pitched(n)) = loaded.reduced.score.events.get(event) else {
+        panic!("a note");
+    };
+    let mut found: Vec<Ink> = layout
+        .glyphs
+        .iter()
+        .filter(|g| {
+            matches!(&g.provenance.source, TypedObjectId::Pitch(p) if n.pitches.iter().any(|q| q.id == *p))
+                && g.glyph.as_str().starts_with("notehead")
+        })
+        .map(glyph_box)
+        .collect();
+    found.sort_by(|a, b| a[1].total_cmp(&b[1]));
+    found
+}
+
+fn head(loaded: &Loaded, layout: &ResolvedLayoutIR, event: EventId) -> Ink {
+    let found = heads(loaded, layout, event);
+    assert_eq!(found.len(), 1, "one head");
+    found[0]
+}
+
+/// A note's ledger lines.
+fn ledgers(loaded: &Loaded, layout: &ResolvedLayoutIR, event: EventId) -> Vec<Ink> {
+    let Some(Event::Pitched(n)) = loaded.reduced.score.events.get(event) else {
+        panic!("a note");
+    };
+    layout
+        .strokes
+        .iter()
+        .filter(|s| {
+            matches!(&s.provenance.source, TypedObjectId::Pitch(p) if n.pitches.iter().any(|q| q.id == *p))
+                && s.from.y == s.to.y
+                && s.from.x != s.to.x
+        })
+        .map(|s| {
+            let half = s.thickness.0 * 0.5;
+            [s.from.x.0.min(s.to.x.0), s.from.y.0 - half, s.from.x.0.max(s.to.x.0), s.from.y.0 + half]
+        })
+        .collect()
+}
+
+/// A note's stem: its x, and its lower and upper ends.
+fn stem(layout: &ResolvedLayoutIR, event: EventId) -> (f32, f32, f32) {
+    let stems: Vec<_> = layout
+        .strokes
+        .iter()
+        .filter(|s| {
+            s.provenance.source == TypedObjectId::Event(event)
+                && s.from.x == s.to.x
+                && s.from.y != s.to.y
+                && !is_beam_stroke(s)
+        })
+        .map(|s| {
+            (
+                s.from.x.0,
+                s.from.y.0.min(s.to.y.0),
+                s.from.y.0.max(s.to.y.0),
+            )
+        })
+        .collect();
+    assert_eq!(stems.len(), 1, "one stem of {event:?}");
+    stems[0]
+}
+
+/// The bottom and top lines of each staff of the first system, top staff
+/// first.
+fn staff_lines(layout: &ResolvedLayoutIR) -> Vec<(f32, f32)> {
+    let mut ys: Vec<f32> = layout
+        .strokes
+        .iter()
+        .filter(|s| matches!(s.provenance.source, TypedObjectId::Staff(_)))
+        .map(|s| s.from.y.0)
+        .collect();
+    ys.sort_by(|a, b| b.total_cmp(a));
+    ys.dedup_by(|a, b| (*a - *b).abs() < 1e-3);
+    ys.chunks(5)
+        .take_while(|lines| lines.len() == 5)
+        .map(|lines| (lines[4], lines[0]))
+        .collect()
+}
+
+fn near(a: f32, b: f32, what: &str) {
+    assert!((a - b).abs() < 0.01, "{what}: {a} against {b}");
+}
+
+/// Alone in its staff, a staccato stands on the head's side in the first
+/// space clear of it, an accent outside the staff clear of the head, a
+/// marcato and an ornament above whatever the stem's side, past the stem's
+/// end, and an up-bow above always; a scoop leads into its head from the
+/// left.
+#[test]
+fn marks_stand_on_their_side_of_a_note_alone() {
+    let measure = [
+        note(
+            "C5",
+            2,
+            "quarter",
+            1,
+            1,
+            "<articulations><staccato/></articulations>",
+        ),
+        note(
+            "E4",
+            2,
+            "quarter",
+            1,
+            1,
+            "<articulations><accent/><scoop/></articulations>",
+        ),
+        note(
+            "G4",
+            2,
+            "quarter",
+            1,
+            1,
+            "<articulations><strong-accent/></articulations>",
+        ),
+        note("E4", 2, "quarter", 1, 1, "<technical><up-bow/></technical>"),
+    ]
+    .concat();
+    let second = [
+        note(
+            "G4",
+            2,
+            "quarter",
+            1,
+            1,
+            "<ornaments><trill-mark/></ornaments>",
+        ),
+        note("rest", 2, "quarter", 1, 1, ""),
+        note("rest", 4, "half", 1, 1, ""),
+    ]
+    .concat();
+    let loaded = part("marks_alone.musicxml", 1, &[measure, second]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let (bottom_line, top_line) = staff_lines(&layout)[0];
+
+    // Over C5, stem down: centred in the space under the top line.
+    let staccato = the_glyph(&layout, e[0], "articStaccatoAbove");
+    near(
+        (staccato[1] + staccato[3]) * 0.5,
+        top_line - 0.5,
+        "staccato's centre",
+    );
+    near(
+        centre_x(staccato),
+        centre_x(head(&loaded, &layout, e[0])),
+        "staccato's x",
+    );
+
+    // Under E4, stem up: 0.4 under its head, which stands below the staff.
+    let accent = the_glyph(&layout, e[1], "articAccentBelow");
+    let e4 = head(&loaded, &layout, e[1]);
+    near(accent[3], e4[1] - 0.4, "accent's top");
+    assert!(accent[3] < bottom_line - 0.4 + 1e-3);
+    let scoop = the_glyph(&layout, e[1], "brassScoop");
+    near(scoop[2], e4[0] - 0.2, "scoop's right edge");
+
+    // Over G4's up stem, 0.4 past its end.
+    let marcato = the_glyph(&layout, e[2], "articMarcatoAbove");
+    near(marcato[1], stem(&layout, e[2]).2 + 0.4, "marcato's bottom");
+
+    // An up-bow over E4 too, though its head's side is below: outside the
+    // staff, its up stem ending inside it.
+    let bow = the_glyph(&layout, e[3], "stringsUpBow");
+    assert!(stem(&layout, e[3]).2 < top_line);
+    near(bow[1], top_line + 0.4, "up-bow's bottom");
+
+    // A trill over G4's up stem, 0.4 past its end.
+    let trill = the_glyph(&layout, e[4], "ornamentTrill");
+    near(trill[1], stem(&layout, e[4]).2 + 0.4, "trill's bottom");
+}
+
+/// With another voice at the note, each voice's marks stand at its stem:
+/// the upper voice's above and the lower's below; an ornament stands above
+/// in the upper voice and below in the lower.
+#[test]
+fn with_another_voice_marks_stand_at_the_stem() {
+    let measure = [
+        note(
+            "C5",
+            4,
+            "half",
+            1,
+            1,
+            "<articulations><accent/></articulations>",
+        ),
+        note(
+            "C5",
+            4,
+            "half",
+            1,
+            1,
+            "<ornaments><trill-mark/></ornaments>",
+        ),
+        backup(8),
+        note(
+            "E4",
+            4,
+            "half",
+            2,
+            1,
+            "<articulations><accent/></articulations>",
+        ),
+        note(
+            "E4",
+            4,
+            "half",
+            2,
+            1,
+            "<ornaments><trill-mark/></ornaments>",
+        ),
+    ]
+    .concat();
+    let loaded = part("marks_voices.musicxml", 1, &[measure]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let (bottom_line, top_line) = staff_lines(&layout)[0];
+
+    let upper = the_glyph(&layout, e[0], "articAccentAbove");
+    near(
+        upper[1],
+        stem(&layout, e[0]).2 + 0.4,
+        "upper accent's bottom",
+    );
+    let lower = the_glyph(&layout, e[2], "articAccentBelow");
+    near(lower[3], stem(&layout, e[2]).1 - 0.4, "lower accent's top");
+
+    let trill = the_glyph(&layout, e[1], "ornamentTrill");
+    assert!(
+        trill[1] > top_line,
+        "the upper voice's trill above: {trill:?}"
+    );
+    let trill = the_glyph(&layout, e[3], "ornamentTrill");
+    assert!(
+        trill[3] < bottom_line,
+        "the lower voice's trill below: {trill:?}"
+    );
+}
+
+/// A fermata stands centred over its note or rest, half a space off the
+/// staff or 0.4 clear of a note beyond it, and of the marks on its side;
+/// an inverted one the same below.
+#[test]
+fn a_fermata_stands_off_the_staff_and_clear_of_its_note() {
+    let measure = [
+        note("E4", 2, "quarter", 1, 1, "<fermata/>"),
+        note("A5", 2, "quarter", 1, 1, "<fermata/>"),
+        note("E4", 2, "quarter", 1, 1, "<fermata type=\"inverted\"/>"),
+        note(
+            "C5",
+            2,
+            "quarter",
+            1,
+            1,
+            "<articulations><accent/></articulations><fermata/>",
+        ),
+    ]
+    .concat();
+    let second = [
+        note("rest", 4, "half", 1, 1, "<fermata/>"),
+        note("rest", 4, "half", 1, 1, ""),
+    ]
+    .concat();
+    let loaded = part("fermatas.musicxml", 1, &[measure, second]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let (bottom_line, top_line) = staff_lines(&layout)[0];
+
+    let above = named(&layout, "fermataAbove");
+    assert_eq!(above.len(), 4, "{above:?}");
+    let low = above[0];
+    near(low[1], top_line + 0.5, "over a note in the staff");
+    near(
+        centre_x(low),
+        centre_x(head(&loaded, &layout, e[0])),
+        "centred on its head",
+    );
+
+    let high = above[1];
+    near(
+        high[1],
+        head(&loaded, &layout, e[1])[3] + 0.4,
+        "over a note above the staff",
+    );
+
+    let below = named(&layout, "fermataBelow");
+    assert_eq!(below.len(), 1);
+    let e4 = head(&loaded, &layout, e[2]);
+    near(
+        below[0][3],
+        (bottom_line - 0.5).min(e4[1] - 0.4),
+        "under a note",
+    );
+
+    let accent = the_glyph(&layout, e[3], "articAccentAbove");
+    near(above[2][1], accent[3] + 0.4, "over an accent");
+
+    let rest = named(&layout, "restHalf");
+    near(centre_x(above[3]), centre_x(rest[0]), "centred on its rest");
+}
+
+/// A breath mark stands half a space over the staff after its note, in a
+/// column of its own a space clear of its note's head and of the next
+/// note's, at any height, as MuseScore pads it; a caesura stands across
+/// the staff's top line, a space clear of the next note's accidental.
+#[test]
+fn a_breath_mark_takes_a_column_after_its_note() {
+    let measure = |mark: &str| {
+        [
+            note("C5", 2, "quarter", 1, 1, mark),
+            note("D#5", 2, "quarter", 1, 1, ""),
+            note("rest", 4, "half", 1, 1, ""),
+        ]
+        .concat()
+    };
+    let plain = part("no_breath.musicxml", 1, &[measure("")]);
+    let breath = part(
+        "breath.musicxml",
+        1,
+        &[measure("<articulations><breath-mark/></articulations>")],
+    );
+    let caesura = part(
+        "caesura.musicxml",
+        1,
+        &[measure("<articulations><caesura/></articulations>")],
+    );
+    let accidental_left = |loaded: &Loaded, layout: &ResolvedLayoutIR| {
+        let e = events(loaded);
+        layout
+            .glyphs
+            .iter()
+            .filter(|g| match &g.provenance.source {
+                TypedObjectId::Event(id) => *id == e[1],
+                TypedObjectId::Pitch(_) => g.glyph.as_str() == "accidentalSharp",
+                _ => false,
+            })
+            .map(|g| glyph_box(g)[0])
+            .fold(f32::INFINITY, f32::min)
+    };
+
+    let plain_layout = engrave(&plain.reduced.score).layout;
+    let layout = engrave(&breath.reduced.score).layout;
+    let e = events(&breath);
+    let (_, top_line) = staff_lines(&layout)[0];
+    let mark = named(&layout, "breathMarkComma")[0];
+    near(mark[1], top_line + 0.5, "the breath mark's bottom");
+    assert!(
+        mark[0] >= head(&breath, &layout, e[0])[2] + 1.0 - 1e-3,
+        "after its note"
+    );
+    let next = head(&breath, &layout, e[1]);
+    assert!(
+        next[0] >= mark[2] + 1.0 - 1e-3,
+        "the next head {next:?} after {mark:?}"
+    );
+    assert!(
+        head(&breath, &layout, e[1])[0] > head(&plain, &plain_layout, events(&plain)[1])[0] + 0.5,
+        "the column widens the measure"
+    );
+
+    let layout = engrave(&caesura.reduced.score).layout;
+    let (_, top_line) = staff_lines(&layout)[0];
+    let mark = named(&layout, "caesura")[0];
+    near((mark[1] + mark[3]) * 0.5, top_line, "the caesura's centre");
+    let acc = accidental_left(&caesura, &layout);
+    assert!(acc >= mark[2] + 1.0 - 1e-3, "{acc} after {mark:?}");
+}
+
+/// An arpeggio is a run of turned wiggles left of its chord, 0.4 clear of
+/// its heads, reaching from its lowest head to its highest, and takes room
+/// as an accidental does; every other mark takes none, so the heads stand
+/// where they stand without them.
+#[test]
+fn an_arpeggio_takes_room_and_other_marks_take_none() {
+    let measure = |arpeggio: &str, marks: &str| {
+        [
+            note("C4", 2, "quarter", 1, 1, arpeggio),
+            chord("E4", 2, "quarter", 1, 1, arpeggio),
+            chord("G4", 2, "quarter", 1, 1, arpeggio),
+            note("C5", 2, "quarter", 1, 1, marks),
+            note("E5", 2, "quarter", 1, 1, marks),
+            note("G4", 2, "quarter", 1, 1, marks),
+        ]
+        .concat()
+    };
+    let marks = "<articulations><accent/><staccato/><tenuto/></articulations><fermata/>";
+    let plain = part("no_arpeggio.musicxml", 1, &[measure("", "")]);
+    let marked = part("marked.musicxml", 1, &[measure("", marks)]);
+    let rolled = part("arpeggio.musicxml", 1, &[measure("<arpeggiate/>", "")]);
+    let x_of = |loaded: &Loaded| -> Vec<f32> {
+        let layout = engrave(&loaded.reduced.score).layout;
+        events(loaded)
+            .iter()
+            .filter_map(|e| heads(loaded, &layout, *e).first().map(|h| h[0]))
+            .collect()
+    };
+    let plain_x = x_of(&plain);
+    assert_eq!(plain_x, x_of(&marked), "marks take no room");
+
+    let layout = engrave(&rolled.reduced.score).layout;
+    let e = events(&rolled);
+    let chord_heads = heads(&rolled, &layout, e[0]);
+    let runs: Vec<Ink> = layout
+        .texts
+        .iter()
+        .filter(|t| t.provenance.source == TypedObjectId::Event(e[0]))
+        .map(text_box)
+        .collect();
+    assert_eq!(runs.len(), 1, "one arpeggio");
+    let run = runs[0];
+    let left = chord_heads
+        .iter()
+        .map(|h| h[0])
+        .fold(f32::INFINITY, f32::min);
+    assert!(
+        run[2] <= left - 0.4 + 0.01,
+        "left of its heads: {run:?}, {left}"
+    );
+    let (low, high) = (chord_heads[0], chord_heads[2]);
+    assert!(run[1] <= (low[1] + low[3]) * 0.5 && run[3] >= (high[1] + high[3]) * 0.5);
+    // At its measure's start, the chord stands right of the time signature
+    // by the arpeggio's room as well.
+    let rolled_x = x_of(&rolled);
+    assert!(
+        rolled_x[0] > plain_x[0] + (run[2] - run[0]) * 0.5,
+        "room for it: {rolled_x:?} against {plain_x:?}"
+    );
+}
+
+/// A one-note tremolo's strokes stand on its stem between head and tip; a
+/// two-note tremolo's join the two stems, midway along each, one per stroke.
+#[test]
+fn tremolo_strokes_stand_on_their_stems() {
+    let measure = [
+        note(
+            "G4",
+            2,
+            "quarter",
+            1,
+            1,
+            "<ornaments><tremolo type=\"single\">3</tremolo></ornaments>",
+        ),
+        note("rest", 2, "quarter", 1, 1, ""),
+        note(
+            "C5",
+            2,
+            "quarter",
+            1,
+            1,
+            "<ornaments><tremolo type=\"start\">2</tremolo></ornaments>",
+        ),
+        note(
+            "E5",
+            2,
+            "quarter",
+            1,
+            1,
+            "<ornaments><tremolo type=\"stop\">2</tremolo></ornaments>",
+        ),
+    ]
+    .concat();
+    let loaded = part("tremolos.musicxml", 1, &[measure]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+
+    let strokes = the_glyph(&layout, e[0], "tremolo3");
+    let (x, low, high) = stem(&layout, e[0]);
+    near(centre_x(strokes), x, "on its stem");
+    assert!(
+        strokes[1] > head(&loaded, &layout, e[0])[3] && strokes[3] < high,
+        "{strokes:?}"
+    );
+    let _ = low;
+
+    let (a, a_low, a_high) = stem(&layout, e[2]);
+    let (b, b_low, b_high) = stem(&layout, e[3]);
+    let between: Vec<_> = layout
+        .strokes
+        .iter()
+        .filter(|s| s.provenance.source == TypedObjectId::Event(e[2]) && s.from.x != s.to.x)
+        .collect();
+    assert_eq!(between.len(), 2, "two strokes");
+    let (a_mid, b_mid) = ((a_low + a_high) * 0.5, (b_low + b_high) * 0.5);
+    for s in between {
+        near(s.from.x.0, a, "from the first stem");
+        near(s.to.x.0, b, "to the second");
+        assert!((s.from.y.0 - a_mid).abs() < 0.5 && (s.to.y.0 - b_mid).abs() < 0.5);
+    }
+}
+
+/// A mark past the end of a stem meeting a beam across two staves stands
+/// past the beam, wherever the staves come to stand: an up-bow over a note
+/// of the lower staff whose stem rises to the beam, in a system whose next
+/// measure holds the staves further apart than the beam alone would. Like
+/// the beam, it is the ink of neither staff: alone in its system, the
+/// staves stand as far apart with it as without it.
+#[test]
+fn a_mark_past_a_beam_across_two_staves_stands_past_it() {
+    let beamed = |pitch: &str, staff: u8, beam: &str, notations: &str| {
+        note(pitch, 1, "eighth", 5, staff, notations).replacen(
+            "</staff>",
+            &format!("</staff><beam number=\"1\">{beam}</beam>"),
+            1,
+        )
+    };
+    let measure = |bow: &str| {
+        [
+            note("rest", 8, "whole", 1, 1, ""),
+            backup(8),
+            beamed("A2", 2, "begin", bow),
+            beamed("C5", 1, "continue", ""),
+            beamed("A2", 2, "continue", ""),
+            beamed("C5", 1, "end", ""),
+            note("rest", 4, "half", 5, 2, ""),
+        ]
+        .concat()
+    };
+    let gap = |bow: &str, name: &str| {
+        let layout = engrave(&part(name, 2, &[measure(bow)]).reduced.score).layout;
+        let lines = staff_lines(&layout);
+        lines[0].0 - lines[1].1
+    };
+    let up_bow = "<technical><up-bow/></technical>";
+    assert_eq!(
+        gap(up_bow, "bow_between.musicxml"),
+        gap("", "no_bow_between.musicxml"),
+        "the staves' gap"
+    );
+    let first = measure(up_bow);
+    let second = [
+        note("C3", 8, "whole", 1, 1, ""),
+        backup(8),
+        note("C5", 8, "whole", 5, 2, ""),
+    ]
+    .concat();
+    let loaded = part("mark_past_a_cross_beam.musicxml", 2, &[first, second]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let bow = the_glyph(&layout, e[1], "stringsUpBow");
+    // Where its stem meets the beam.
+    let x = stem(&layout, e[1]).0;
+    let beam_top = layout
+        .strokes
+        .iter()
+        .filter(|s| is_beam_stroke(s) && s.from.x.0 <= x && s.to.x.0 >= x)
+        .map(|s| {
+            let t = (x - s.from.x.0) / (s.to.x.0 - s.from.x.0);
+            s.from.y.0 + (s.to.y.0 - s.from.y.0) * t + s.thickness.0 * 0.5
+        })
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(beam_top.is_finite(), "a beam over the up-bow");
+    near(bow[1], beam_top + 0.4, "the up-bow's bottom, past the beam");
+}
+
+/// A fermata over a note above the lower staff of two is its staff's ink:
+/// the staves stand apart so that it clears the upper staff's.
+#[test]
+fn a_fermata_between_two_staves_holds_them_apart() {
+    let measure = |fermata: &str| {
+        [
+            note("C4", 8, "whole", 1, 1, ""),
+            backup(8),
+            note("E4", 8, "whole", 5, 2, fermata),
+        ]
+        .concat()
+    };
+    let gap = |loaded: &Loaded| {
+        let layout = engrave(&loaded.reduced.score).layout;
+        let lines = staff_lines(&layout);
+        (lines[0].0 - lines[1].1, layout)
+    };
+    let (plain, _) = gap(&part("no_fermata_between.musicxml", 2, &[measure("")]));
+    let loaded = part("fermata_between.musicxml", 2, &[measure("<fermata/>")]);
+    let (held, layout) = gap(&loaded);
+    let e = events(&loaded);
+    let fermata = named(&layout, "fermataAbove")[0];
+    let upper = head(&loaded, &layout, e[0]);
+    assert!(
+        held > plain,
+        "the staves move apart: {held} against {plain}"
+    );
+    assert!(
+        fermata[3] < upper[1],
+        "clear of the upper staff's C4: {fermata:?}, {upper:?}"
+    );
+}
+
+/// A breath mark keeps a space from the heads before and after it, though
+/// it stands over the staff and they in it, their stems turned down, and
+/// from a ledger line beside it: at its measure's natural width and set
+/// toward its floor alike, sixteen sixteenths and sixty-four sixty-fourths,
+/// whose springs are shorter than that, in the staff or over it on ledger
+/// lines, a breath mark after every other note, the file breaking the
+/// system after them, on pages from one too narrow for their floor, where
+/// they stand at their natural width, to one that holds them so.
+#[test]
+fn a_breath_mark_keeps_its_padding_at_the_floor() {
+    for (count, kind, divisions, octave, pages) in [
+        (16, "16th", 4, 5, 60..=80),
+        (64, "64th", 16, 5, 80..=80),
+        (64, "64th", 16, 6, 80..=80),
+    ] {
+        let first: String = (0..count)
+            .map(|k| {
+                let mark = if k % 2 == 0 {
+                    "<notations><articulations><breath-mark/></articulations></notations>"
+                } else {
+                    ""
+                };
+                let step = ["C", "D"][k % 2];
+                format!(
+                    "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+                     <duration>1</duration><voice>1</voice><type>{kind}</type>{mark}</note>"
+                )
+            })
+            .collect();
+        let second = format!(
+            "<print new-system=\"yes\"/><note><pitch><step>C</step><octave>5</octave>\
+             </pitch><duration>{}</duration><voice>1</voice><type>whole</type></note>",
+            divisions * 4
+        );
+        let mut spans = Vec::new();
+        for width in pages.map(|w| w as f32) {
+            let xml = format!(
+                "<score-partwise version=\"4.0\"><defaults><scaling><millimeters>7\
+                 </millimeters><tenths>40</tenths></scaling><page-layout><page-height>3000\
+                 </page-height><page-width>{}</page-width><page-margins type=\"both\">\
+                 <left-margin>75</left-margin><right-margin>75</right-margin><top-margin>75\
+                 </top-margin><bottom-margin>75</bottom-margin></page-margins></page-layout>\
+                 </defaults><part-list><score-part id=\"P1\"><part-name>A</part-name>\
+                 </score-part></part-list><part id=\"P1\"><measure number=\"1\"><attributes>\
+                 <divisions>{}</divisions><time><beats>4</beats><beat-type>4</beat-type></time>\
+                 <clef><sign>G</sign><line>2</line></clef></attributes>{first}</measure>\
+                 <measure number=\"2\">{second}</measure></part></score-partwise>",
+                width * 10.0,
+                divisions
+            );
+            let name = format!("breaths_{count}_{octave}_{width}.musicxml");
+            let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+            std::fs::write(&path, xml).expect("written");
+            let loaded = load(&path).expect("loads");
+            let layout = epiphany_cli::engrave_loaded(&loaded).layout;
+            let e = events(&loaded);
+            let marks = named(&layout, "breathMarkComma");
+            assert_eq!(marks.len(), count / 2);
+            for (k, mark) in marks.iter().enumerate() {
+                // The note before: its head, and its ledger lines at the
+                // mark's height.
+                let before = head(&loaded, &layout, e[2 * k]);
+                let before_right = ledgers(&loaded, &layout, e[2 * k])
+                    .into_iter()
+                    .filter(|l| l[3] > mark[1] - 0.2 && l[1] < mark[3] + 0.2)
+                    .map(|l| l[2])
+                    .fold(before[2], f32::max);
+                let after = head(&loaded, &layout, e[2 * k + 1]);
+                let at = format!("{count} at octave {octave} on {width}, mark {k}");
+                assert!(
+                    mark[0] >= before_right + 1.0 - 1e-3,
+                    "{at}: {before:?} to {before_right} then {mark:?}"
+                );
+                assert!(
+                    after[0] >= mark[2] + 1.0 - 1e-3,
+                    "{at}: {mark:?} then {after:?}"
+                );
+            }
+            spans.push(head(&loaded, &layout, e[count - 1])[2] - head(&loaded, &layout, e[0])[0]);
+        }
+        // The narrowest page leaves the measure at its natural width; for the
+        // sixteenths some wider one sets it tighter, toward its floor.
+        if count == 16 {
+            assert!(spans.iter().any(|&s| s < spans[0] - 1.0), "{spans:?}");
+        }
+    }
+}
+
+/// Set toward its floor too, a note's marks take no room: thirty-two
+/// thirty-seconds, each with an accent and a staccato, the file breaking the
+/// system after them, stand where the same notes without marks do, on every
+/// page from one that compresses them hard to one that holds them whole.
+#[test]
+fn marks_take_no_room_at_the_floor() {
+    let page = |marks: &str, width: f32| {
+        let first: String = (0..32)
+            .map(|k| {
+                let (step, octave) = [("C", 5), ("G", 4)][k % 2];
+                format!(
+                    "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+                     <duration>1</duration><voice>1</voice><type>32nd</type>{marks}</note>"
+                )
+            })
+            .collect();
+        format!(
+            "<score-partwise version=\"4.0\"><defaults><scaling><millimeters>7</millimeters>\
+             <tenths>40</tenths></scaling><page-layout><page-height>3000</page-height>\
+             <page-width>{}</page-width><page-margins type=\"both\"><left-margin>75\
+             </left-margin><right-margin>75</right-margin><top-margin>75</top-margin>\
+             <bottom-margin>75</bottom-margin></page-margins></page-layout></defaults>\
+             <part-list><score-part id=\"P1\"><part-name>A</part-name></score-part>\
+             </part-list><part id=\"P1\"><measure number=\"1\"><attributes><divisions>8\
+             </divisions><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G\
+             </sign><line>2</line></clef></attributes>{first}</measure><measure number=\"2\">\
+             <print new-system=\"yes\"/><note><pitch><step>C</step><octave>5</octave></pitch>\
+             <duration>32</duration><voice>1</voice><type>whole</type></note></measure></part>\
+             </score-partwise>",
+            width * 10.0
+        )
+    };
+    let marked = "<notations><articulations><accent/><staccato/></articulations></notations>";
+    let mut spans = Vec::new();
+    for width in (40..=100).step_by(4).map(|w| w as f32) {
+        let heads_x = |marks: &str, name: &str| -> Vec<f32> {
+            let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+            std::fs::write(&path, page(marks, width)).expect("written");
+            let loaded = load(&path).expect("loads");
+            let layout = epiphany_cli::engrave_loaded(&loaded).layout;
+            events(&loaded)
+                .iter()
+                .filter_map(|e| heads(&loaded, &layout, *e).first().map(|h| h[0]))
+                .collect()
+        };
+        let plain = heads_x("", &format!("plain_{width}.musicxml"));
+        let with = heads_x(marked, &format!("marked_{width}.musicxml"));
+        assert_eq!(plain, with, "on a page {width} wide");
+        spans.push(plain[31] - plain[0]);
+    }
+    assert!(
+        spans.iter().any(|&s| s < spans[0] - 1.0) || spans.iter().any(|&s| s > spans[0] + 1.0),
+        "some page sets them otherwise than another: {spans:?}"
+    );
+}
+
+/// A fermata is placed once its system is set, after the slurs, as
+/// MuseScore lays it out: over a note under a slur's arc it rises until it
+/// clears the slur by its distance, though the note alone would hold it
+/// lower.
+#[test]
+fn a_fermata_clears_the_slur_over_its_note() {
+    let slurred = |notations: &str, slur: &str| {
+        let both = format!("{notations}{slur}");
+        note("C5", 2, "quarter", 1, 1, &both)
+    };
+    let measure = [
+        slurred(
+            "",
+            "<slur type=\"start\" number=\"1\" placement=\"above\"/>",
+        ),
+        note("D5", 2, "quarter", 1, 1, "<fermata/>"),
+        note("D5", 2, "quarter", 1, 1, ""),
+        slurred("", "<slur type=\"stop\" number=\"1\"/>"),
+    ]
+    .concat();
+    let loaded = part("fermata_under_a_slur.musicxml", 1, &[measure]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let fermata = named(&layout, "fermataAbove")[0];
+    let slur = layout
+        .curves
+        .iter()
+        .find(|c| matches!(c.provenance.source, TypedObjectId::Slur(_)))
+        .expect("the slur");
+    let cp = slur.control_points();
+    // The slur's highest point over the fermata's width.
+    let mut top = f32::NEG_INFINITY;
+    for k in 0..=64 {
+        let t = k as f32 / 64.0;
+        let u = 1.0 - t;
+        let w = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+        let x: f32 = (0..4).map(|i| w[i] * cp[i].x.0).sum();
+        let y: f32 = (0..4).map(|i| w[i] * cp[i].y.0).sum();
+        if x >= fermata[0] && x <= fermata[2] {
+            top = top.max(y + slur.thickness.0 * 0.5);
+        }
+    }
+    assert!(top.is_finite(), "the slur passes over the fermata's note");
+    let (_, top_line) = staff_lines(&layout)[0];
+    assert!(
+        top > top_line + 0.5,
+        "the slur stands where the fermata would: {top}"
+    );
+    assert!(
+        fermata[1] >= top + 0.4 - 0.01,
+        "{fermata:?} over the slur at {top}"
+    );
+}

@@ -74,6 +74,34 @@ pub enum LayoutContent {
     Tuplet(TupletContent),
     /// A staff group: its kind and its staves in this region, top first.
     Group(GroupContent),
+    /// A point mark: what it marks and where it stands.
+    Marker(MarkerContent),
+}
+
+/// A point mark's content: its kind, and where it stands, resolved so the
+/// constrained pass can place it without the score.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct MarkerContent {
+    pub kind: epiphany_core::MarkerKind,
+    pub at: MarkerPlace,
+}
+
+/// Where a point mark stands on its region's spacing axis.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum MarkerPlace {
+    /// On an event: its onset, where its sound ends (`None` in wall-clock
+    /// time), and where its voice stands among its staff's.
+    Event {
+        event: EventId,
+        time: TimePoint,
+        end: Option<TimePoint>,
+        voice: VoicePlace,
+    },
+    /// At a time in its region, where no event of its staff starts.
+    Time(TimePoint),
+    /// Not resolvable (a dangling anchor, a clock-mismatched offset): it
+    /// draws nothing.
+    Unresolved,
 }
 
 /// A tuplet's content: its ratio, whose `actual` term it shows, its member
@@ -170,6 +198,11 @@ pub struct NoteContent {
     pub duration: Option<MusicalDuration>,
     pub pitches: Vec<NotePitch>,
     pub voice: VoicePlace,
+    /// The marks written on it, a canonical set (articulations, techniques,
+    /// tremolos, an arpeggio).
+    pub marks: Vec<epiphany_core::EventMark>,
+    /// Its ornaments, a canonical set, with their accidentals.
+    pub ornaments: Vec<epiphany_core::Ornament>,
 }
 
 /// Where an event's voice stands among its staff's at the event's time. Alone,
@@ -240,6 +273,8 @@ pub struct UnpitchedContent {
     pub duration: Option<MusicalDuration>,
     pub staff_position: StaffPosition,
     pub voice: VoicePlace,
+    /// The marks written on it, a canonical set.
+    pub marks: Vec<epiphany_core::EventMark>,
 }
 
 /// A measure's notated content: its resolved start position, where it ends,
@@ -913,6 +948,18 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
                     })
                 })
                 .unwrap_or_default(),
+            TypedObjectId::Marker(id) => score
+                .cross_cutting
+                .markers
+                .iter()
+                .find(|marker| marker.id == id)
+                .map(|marker| {
+                    LayoutContent::Marker(MarkerContent {
+                        kind: marker.kind.clone(),
+                        at: marker_place(score, &marker.anchor, &all_places),
+                    })
+                })
+                .unwrap_or_default(),
             _ => LayoutContent::Structural,
         };
         let mut anchored_regions = Vec::new();
@@ -1423,6 +1470,8 @@ fn event_content(
                 duration: musical(&pitched.duration),
                 pitches,
                 voice,
+                marks: pitched.marks.clone(),
+                ornaments: pitched.ornaments.clone(),
             })
         }
         Event::Rest(rest) => {
@@ -1452,6 +1501,7 @@ fn event_content(
             duration: musical(&unpitched.duration),
             staff_position: unpitched.staff_position,
             voice,
+            marks: unpitched.marks.clone(),
         }),
         _ => LayoutContent::Structural,
     }
@@ -1825,6 +1875,43 @@ fn tie_content(score: &Score, tie: &epiphany_core::Tie) -> LayoutContent {
         end: tie.end_event,
         pairs,
     })
+}
+
+/// Where a point mark stands: on the event its anchor names, when the anchor
+/// is an event's own onset; otherwise at the time its anchor resolves to; or
+/// unresolved.
+fn marker_place(
+    score: &Score,
+    anchor: &TimeAnchor,
+    places: &BTreeMap<EventId, VoicePlace>,
+) -> MarkerPlace {
+    const DEPTH: u8 = 16;
+    if let TimeAnchor::Event { id, offset } = anchor {
+        if offset_is_zero(offset) {
+            if let Some(event) = score.events.get(*id) {
+                let time = event_time(event.position());
+                let end = match (event.position(), event.duration()) {
+                    (EventPosition::Musical(start), EventDuration::Musical(length)) => {
+                        Some(TimePoint::Musical(start.clone() + length.clone()))
+                    }
+                    _ => None,
+                };
+                return MarkerPlace::Event {
+                    event: *id,
+                    time,
+                    end,
+                    voice: places.get(id).copied().unwrap_or(VoicePlace::Alone),
+                };
+            }
+        }
+    }
+    match anchor {
+        TimeAnchor::WallClock { .. } => MarkerPlace::Unresolved,
+        _ => match resolve_time_anchor_inner(score, anchor, DEPTH) {
+            Some(time) => MarkerPlace::Time(time),
+            None => MarkerPlace::Unresolved,
+        },
+    }
 }
 
 /// A slur endpoint: the event's onset as a [`TimePoint`], or

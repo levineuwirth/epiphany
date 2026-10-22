@@ -850,10 +850,16 @@ mod tests {
                 run(5, "a\u{4E2D}b \u{0301}", TextFace::Roman),
             ])
         };
+        // The runs' own encoding, apart from the rest of the layout, whose
+        // catalog identity hashes the whole metrics table.
         let digest = |l: &ResolvedLayoutIR| -> String {
+            let mut bytes = Vec::new();
+            for text in &l.texts {
+                encode_text(&mut bytes, text);
+            }
             let mut preimage =
                 epiphany_determinism::Preimage::new(epiphany_determinism::DomainTag::FONT_FILE);
-            preimage.push_bytes(&l.canonical_bytes());
+            preimage.push_bytes(&bytes);
             preimage
                 .finish()
                 .as_bytes()
@@ -865,7 +871,7 @@ mod tests {
         assert_eq!(first, digest(&layout()));
         assert_eq!(
             first,
-            "73c27caf3b518d5b89be258bf4f28bbbbafa8407734c00e2145a01a69df0effd"
+            "5b7599651187eaf8951360eacfee1991c637630d5f8947ab4d452853c5da3fba"
         );
     }
 }

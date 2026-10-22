@@ -570,12 +570,21 @@ pub(crate) fn cast_off(
     geometry: &PageGeometry,
 ) -> CastLayout {
     // ---- Slot table (spaced coordinates) --------------------------------
+    // The family's glyphs that take no room across keep their slot but give
+    // it no width.
+    let roomless = crate::family::roomless_glyphs(input);
     let mut slots: BTreeMap<SpringSlotId, SlotInfo> = BTreeMap::new();
     for (i, (glyph, spaced)) in input.glyphs.iter().zip(spaced_glyphs).enumerate() {
         let name = glyph.glyph.as_str();
         let x = spaced.position.x.0;
-        let lo = x + glyph.bounding_box.left.0;
-        let hi = x + glyph.bounding_box.right.0;
+        let (lo, hi) = if roomless.contains(&glyph.id()) {
+            (f32::INFINITY, f32::NEG_INFINITY)
+        } else {
+            (
+                x + glyph.bounding_box.left.0,
+                x + glyph.bounding_box.right.0,
+            )
+        };
         let entry = slots.entry(glyph.horizontal_slot).or_insert(SlotInfo {
             id: glyph.horizontal_slot,
             x,
@@ -612,6 +621,12 @@ pub(crate) fn cast_off(
         }
         if name.starts_with("notehead") || name.starts_with("rest") {
             entry.note = true;
+        }
+    }
+    // A slot holding only such glyphs stands at its source.
+    for info in slots.values_mut() {
+        if info.lo > info.hi {
+            (info.lo, info.hi) = (info.x, info.x);
         }
     }
     // Fold each rigid stroke (a ledger line) into its owning slot's extent, so
@@ -1176,19 +1191,29 @@ pub(crate) fn cast_off(
                 .or_insert((lo_y, hi_y));
         }
     };
+    // The family a solver places off its staves joins them below, once
+    // placed; the rest of the family's ink takes height on its staff and no
+    // room across.
+    let placed = crate::family::Placed::of(input);
     for (s, plan) in systems.iter().enumerate() {
         for &i in &plan.slots {
             for &g in &region_slots[plan.region][i].members {
+                let id = input.glyphs[g].id();
+                if placed.glyphs.contains_key(&id) {
+                    continue;
+                }
                 let glyph = &spaced_glyphs[g];
                 let (x, y) = (glyph.position.x.0, glyph.position.y.0);
                 let (lo_y, hi_y) = (
                     y + glyph.bounding_box.bottom.0,
                     y + glyph.bounding_box.top.0,
                 );
-                extents[s].add_x(
-                    x + glyph.bounding_box.left.0,
-                    x + glyph.bounding_box.right.0,
-                );
+                if !roomless.contains(&id) {
+                    extents[s].add_x(
+                        x + glyph.bounding_box.left.0,
+                        x + glyph.bounding_box.right.0,
+                    );
+                }
                 if between.contains(&input.glyphs[g].id()) {
                     continue;
                 }
@@ -1200,6 +1225,9 @@ pub(crate) fn cast_off(
         }
     }
     for (si, (fate, spaced)) in fates.iter().zip(spaced_strokes).enumerate() {
+        if placed.strokes.contains_key(&spaced.id()) {
+            continue;
+        }
         let half = (spaced.thickness.0 * 0.5).max(0.0);
         let staff = stroke_staff_of[si];
         let is_staff_line = matches!(spaced.provenance.source, TypedObjectId::Staff(_));
@@ -1263,9 +1291,12 @@ pub(crate) fn cast_off(
     // A text run's ink is its staff's content, by height alone: a run takes
     // no room across, beside the slot it rides.
     for (ti, text) in spaced_texts.iter().enumerate() {
-        let Some(s) = text_system[ti] else {
+        let Some(s) = text_system[ti].filter(|_| !placed.texts.contains_key(&text.id())) else {
             continue;
         };
+        if between.contains(&text.id()) {
+            continue;
+        }
         let (y, b) = (text.origin.y.0, text.bounds);
         match text_staff_of[ti] {
             Some(_) => into_staff(
@@ -1276,6 +1307,245 @@ pub(crate) fn cast_off(
                 y + b.top.0,
             ),
             None => extents[s].add_y(y + b.bottom.0, y + b.top.0),
+        }
+    }
+
+    // ---- The family placed off its staves (X4c) -----------------------------
+    // Each system's map across depends on its extent across alone, so it is
+    // set here, before the family a solver places off its staves is placed
+    // against each staff's ink where the system sets it (`family::place`);
+    // that ink then joins its staff's extent, so the gap to the next staff
+    // makes room for it.
+    let springs: BTreeMap<SpringSlotId, f32> = input
+        .horizontal_slots
+        .iter()
+        .map(|slot| (slot.id, slot.stretch_factor * slot.preferred_width.0))
+        .collect();
+    let hplace: Vec<(Placement, bool)> = systems
+        .iter()
+        .enumerate()
+        .map(|(s, plan)| {
+            let ext = extents[s].normalized();
+            // A later system's content starts after its lead.
+            let base_dx = geometry.margins.left.0 + lead_w[s] - ext.min_x;
+            let width = width_limit - lead_w[s];
+            let squeezed = held_system[s]
+                .then(|| {
+                    compress_system(
+                        plan,
+                        &ext,
+                        base_dx,
+                        0.0,
+                        &region_slots,
+                        respacing.skyline,
+                        width,
+                    )
+                })
+                .flatten();
+            let compressed = squeezed.is_some();
+            let placement = squeezed.unwrap_or_else(|| {
+                justify_system(
+                    plan,
+                    &ext,
+                    base_dx,
+                    0.0,
+                    &region_slots,
+                    &region_systems,
+                    &springs,
+                    width,
+                )
+            });
+            (placement, compressed)
+        })
+        .collect();
+    let mut family_dy: BTreeMap<(usize, usize), f32> = BTreeMap::new();
+    if !(placed.glyphs.is_empty() && placed.strokes.is_empty() && placed.texts.is_empty()) {
+        let mut pieces: Vec<crate::family::Piece> = Vec::new();
+        let mut piece_of: BTreeMap<(usize, usize), usize> = BTreeMap::new();
+        let mut piece = |pieces: &mut Vec<crate::family::Piece>, family: usize, system: usize| {
+            *piece_of.entry((family, system)).or_insert_with(|| {
+                pieces.push(crate::family::Piece {
+                    family,
+                    system,
+                    boxes: Vec::new(),
+                });
+                pieces.len() - 1
+            })
+        };
+        let mut sky: BTreeMap<(usize, VerticalBandId), Vec<InkRect>> = BTreeMap::new();
+        let rect = |l: f32, r: f32, b: f32, t: f32| InkRect {
+            left: l.min(r),
+            right: l.max(r),
+            bottom: b.min(t),
+            top: b.max(t),
+        };
+        // Glyphs, each moved with its slot.
+        for (glyph, spaced) in input.glyphs.iter().zip(spaced_glyphs) {
+            let Some(&s) = system_of_slot.get(&glyph.horizontal_slot) else {
+                continue;
+            };
+            let sx = slot_source_x
+                .get(&glyph.horizontal_slot)
+                .copied()
+                .unwrap_or(spaced.position.x.0);
+            let x = spaced.position.x.0 + hplace[s].0.slot_dx(sx) - shift_of(glyph.horizontal_slot);
+            let (y, b) = (spaced.position.y.0, glyph.bounding_box);
+            let ink = rect(x + b.left.0, x + b.right.0, y + b.bottom.0, y + b.top.0);
+            match placed.glyphs.get(&glyph.id()) {
+                Some(&f) => {
+                    let i = piece(&mut pieces, f, s);
+                    pieces[i].boxes.push(ink);
+                }
+                None if !between.contains(&glyph.id()) => {
+                    sky.entry((s, glyph.vertical_band)).or_default().push(ink)
+                }
+                None => {}
+            }
+        }
+        // Strokes, each where its system sets it; a traced anchor draws
+        // nothing.
+        for (si, ((stroke, spaced), fate)) in input
+            .strokes
+            .iter()
+            .zip(spaced_strokes)
+            .zip(&fates)
+            .enumerate()
+        {
+            let _ = si;
+            if stroke.from == stroke.to || between.contains(&stroke.id()) {
+                continue;
+            }
+            let half = (spaced.thickness.0 * 0.5).max(0.0);
+            let segments: Vec<(usize, Point, Point)> = match fate {
+                StrokeFate::Rigid(Some(s)) => {
+                    let p = place_stroke(
+                        stroke,
+                        spaced,
+                        &hplace[*s].0,
+                        &slot_source_x,
+                        &input.glyphs,
+                        anchors.get(&stroke.id()),
+                    );
+                    vec![(*s, p.from, p.to)]
+                }
+                StrokeFate::Rigid(None) => Vec::new(),
+                StrokeFate::Split(segments) => segments
+                    .iter()
+                    .map(|(s, from, to)| {
+                        let p = &hplace[*s].0;
+                        (
+                            *s,
+                            Point::new(p.x(from.x.0), from.y.0),
+                            Point::new(p.x(to.x.0), to.y.0),
+                        )
+                    })
+                    .collect(),
+            };
+            for (s, from, to) in segments {
+                let ink = rect(
+                    from.x.0 - half,
+                    to.x.0 + half,
+                    from.y.0.min(to.y.0) - half,
+                    from.y.0.max(to.y.0) + half,
+                );
+                match placed.strokes.get(&stroke.id()) {
+                    Some(&f) => {
+                        let i = piece(&mut pieces, f, s);
+                        pieces[i].boxes.push(ink);
+                    }
+                    None => sky.entry((s, stroke.vertical_band)).or_default().push(ink),
+                }
+            }
+        }
+        // Curves, sampled along their arcs where their systems set them.
+        for (curve, fate) in spaced_curves.iter().zip(&curve_fates) {
+            let half = (curve.thickness.0 * 0.5).max(0.0);
+            let segments: Vec<(usize, [Point; 4])> = match fate {
+                CurveFate::Rigid(Some(s)) => {
+                    let p = &hplace[*s].0;
+                    let slot_dx =
+                        |slot: &SpringSlotId| slot_source_x.get(slot).map(|&sx| p.slot_dx(sx));
+                    let cp = match anchors
+                        .get(&curve.id())
+                        .and_then(|(start, end)| Some((slot_dx(start)?, slot_dx(end)?)))
+                    {
+                        Some((start, end)) => {
+                            crate::anchored_curve(curve.control_points(), start, end)
+                        }
+                        None => curve
+                            .control_points()
+                            .map(|pt| Point::new(p.x(pt.x.0), pt.y.0)),
+                    };
+                    vec![(*s, cp)]
+                }
+                CurveFate::Rigid(None) => Vec::new(),
+                CurveFate::Split(segments) => segments
+                    .iter()
+                    .map(|(s, cp)| {
+                        let p = &hplace[*s].0;
+                        (*s, cp.map(|pt| Point::new(p.x(pt.x.0), pt.y.0)))
+                    })
+                    .collect(),
+            };
+            for (s, cp) in segments {
+                let at = |t: f32| {
+                    let u = 1.0 - t;
+                    let w = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+                    (
+                        (0..4).map(|k| w[k] * cp[k].x.0).sum::<f32>(),
+                        (0..4).map(|k| w[k] * cp[k].y.0).sum::<f32>(),
+                    )
+                };
+                const SAMPLES: usize = 12;
+                let band = sky.entry((s, curve.vertical_band)).or_default();
+                let mut last = at(0.0);
+                for k in 1..=SAMPLES {
+                    let next = at(k as f32 / SAMPLES as f32);
+                    band.push(rect(
+                        last.0 - half,
+                        next.0 + half,
+                        last.1.min(next.1) - half,
+                        last.1.max(next.1) + half,
+                    ));
+                    last = next;
+                }
+            }
+        }
+        // Text runs, each moved with its slot.
+        for ((text, spaced), system) in input.texts.iter().zip(spaced_texts).zip(&text_system) {
+            let Some(s) = *system else {
+                continue;
+            };
+            let sx = slot_source_x
+                .get(&text.horizontal_slot)
+                .copied()
+                .unwrap_or(spaced.origin.x.0);
+            let x = spaced.origin.x.0 + hplace[s].0.slot_dx(sx) - shift_of(text.horizontal_slot);
+            let (y, b) = (spaced.origin.y.0, spaced.bounds);
+            let ink = rect(x + b.left.0, x + b.right.0, y + b.bottom.0, y + b.top.0);
+            match placed.texts.get(&text.id()) {
+                Some(&f) => {
+                    let i = piece(&mut pieces, f, s);
+                    pieces[i].boxes.push(ink);
+                }
+                None if !between.contains(&text.id()) => {
+                    sky.entry((s, text.vertical_band)).or_default().push(ink)
+                }
+                None => {}
+            }
+        }
+        let shifts = crate::family::place(&input.family, &pieces, &sky);
+        for (p, by) in pieces.iter().zip(shifts) {
+            family_dy.insert((p.family, p.system), by);
+            let staff = staff_of(input.family[p.family].band);
+            for b in &p.boxes {
+                match staff {
+                    Some(_) => {
+                        into_staff(&mut staff_ext, p.system, staff, b.bottom + by, b.top + by)
+                    }
+                    None => extents[p.system].add_y(b.bottom + by, b.top + by),
+                }
+            }
         }
     }
 
@@ -1408,13 +1678,6 @@ pub(crate) fn cast_off(
         .0;
     let content_height = geometry.content_height();
     let bounded = content_height > 0.0;
-    // Each slot's spring, the share of a justified system's slack the
-    // interval after it takes.
-    let springs: BTreeMap<SpringSlotId, f32> = input
-        .horizontal_slots
-        .iter()
-        .map(|slot| (slot.id, slot.stretch_factor * slot.preferred_width.0))
-        .collect();
     let mut placements: Vec<Placement> = Vec::with_capacity(systems.len());
     // Whether each system is compressed, its curves then passed again.
     let mut compressed: Vec<bool> = Vec::with_capacity(systems.len());
@@ -1434,36 +1697,12 @@ pub(crate) fn cast_off(
             page_floor = cursor - content_height.max(0.0);
             page_systems.push(Vec::new());
         }
-        // A later system's content starts after its lead.
-        let base_dx = geometry.margins.left.0 + lead_w[s] - ext.min_x;
-        let dy = cursor - ext.max_y;
-        let width = width_limit - lead_w[s];
-        let squeezed = held_system[s]
-            .then(|| {
-                compress_system(
-                    plan,
-                    ext,
-                    base_dx,
-                    dy,
-                    &region_slots,
-                    respacing.skyline,
-                    width,
-                )
-            })
-            .flatten();
-        compressed.push(squeezed.is_some());
-        placements.push(squeezed.unwrap_or_else(|| {
-            justify_system(
-                plan,
-                ext,
-                base_dx,
-                dy,
-                &region_slots,
-                &region_systems,
-                &springs,
-                width,
-            )
-        }));
+        // The system's map across, set before the family was placed; its
+        // height now.
+        let (mut placement, squeezed) = hplace[s].clone();
+        placement.dy = cursor - ext.max_y;
+        compressed.push(squeezed);
+        placements.push(placement);
         page_systems
             .last_mut()
             .expect("a page was opened above")
@@ -1572,9 +1811,15 @@ pub(crate) fn cast_off(
                         .get(&glyph.horizontal_slot)
                         .copied()
                         .unwrap_or(spaced.position.x.0);
+                    let lift = placed
+                        .glyphs
+                        .get(&glyph.id())
+                        .and_then(|f| family_dy.get(&(*f, s)))
+                        .copied()
+                        .unwrap_or(0.0);
                     (
                         placements[s].slot_dx(sx) - shift_of(glyph.horizontal_slot),
-                        placements[s].dy - staff_dy(s, glyph_staff_of[gi]),
+                        placements[s].dy - staff_dy(s, glyph_staff_of[gi]) + lift,
                     )
                 }
                 None => (0.0, 0.0),
@@ -1636,9 +1881,17 @@ pub(crate) fn cast_off(
     {
         match fate {
             StrokeFate::Rigid(sys) => {
+                let lift = |s: usize| {
+                    placed
+                        .strokes
+                        .get(&source.id())
+                        .and_then(|f| family_dy.get(&(*f, s)))
+                        .copied()
+                        .unwrap_or(0.0)
+                };
                 let stroke = match sys {
                     Some(s) => {
-                        let p = placements[*s].sunk(staff_dy(*s, stroke_staff_of[si]));
+                        let p = placements[*s].sunk(staff_dy(*s, stroke_staff_of[si]) - lift(*s));
                         let mut stroke = place_stroke(
                             source,
                             spaced,
@@ -1667,8 +1920,15 @@ pub(crate) fn cast_off(
             StrokeFate::Split(segments) => {
                 for (k, (s, from, to)) in segments.iter().enumerate() {
                     // A split stroke spans systems — a staff line or volta
-                    // bracket — so each segment stretches with its system.
-                    let p = placements[*s].sunk(staff_dy(*s, stroke_staff_of[si]));
+                    // bracket, a hairpin — so each segment stretches with its
+                    // system, a placed one lifted as its piece there is.
+                    let lift = placed
+                        .strokes
+                        .get(&source.id())
+                        .and_then(|f| family_dy.get(&(*f, *s)))
+                        .copied()
+                        .unwrap_or(0.0);
+                    let p = placements[*s].sunk(staff_dy(*s, stroke_staff_of[si]) - lift);
                     let provenance = if k == 0 {
                         // The first segment carries the original stroke's exact
                         // provenance: the object survives, re-shaped.
@@ -1878,9 +2138,15 @@ pub(crate) fn cast_off(
                         .get(&text.horizontal_slot)
                         .copied()
                         .unwrap_or(spaced.origin.x.0);
+                    let lift = placed
+                        .texts
+                        .get(&text.id())
+                        .and_then(|f| family_dy.get(&(*f, s)))
+                        .copied()
+                        .unwrap_or(0.0);
                     (
                         placements[s].slot_dx(sx) - shift_of(text.horizontal_slot),
-                        placements[s].dy - staff_dy(s, text_staff_of[ti]),
+                        placements[s].dy - staff_dy(s, text_staff_of[ti]) + lift,
                     )
                 }
                 None => (0.0, 0.0),

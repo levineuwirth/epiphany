@@ -21,6 +21,11 @@
 //!   system starts; a clef change after the start with no clef drawn for it;
 //! - a time signature missing from the measure where a meter takes effect;
 //! - on a layout of several pages, ink no system owns, which is on no page;
+//! - of the expression family the engraver draws, each mark of a note
+//!   (articulation, technique, ornament and its accidentals, tremolo, jazz
+//!   mark, arpeggio) with nothing drawn for it, by its class, and each
+//!   fermata, breath mark and caesura with no ink; one anchored at a region
+//!   offset stands on no staff, so it is named as drawn nowhere;
 //! - each diagnostic the projection raised, by kind.
 //!
 //! Not checked, and counted as such: whether an accidental is the one the
@@ -31,11 +36,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::{
-    AnchorOffset, Event, EventDuration, EventPosition, RationalTime, Score, StaffId,
-    StaffInstanceId, TimeAnchor, TypedObjectId,
+    AnchorOffset, Event, EventDuration, EventMark, EventPosition, MarkerKind, RationalTime, Score,
+    StaffId, StaffInstanceId, TimeAnchor, TypedObjectId,
 };
 use epiphany_layout_ir::constrained::{LayoutDiagnostic, LayoutDiagnosticKind};
-use epiphany_layout_ir::{is_beam_stroke, ResolvedLayoutIR};
+use epiphany_layout_ir::{is_beam_stroke, NoteMarkPart, ResolvedLayoutIR};
 
 /// Engraving omissions by kind, with counts; and what was not checked.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
@@ -560,6 +565,71 @@ pub fn omissions(
         }
     }
 
+    // The expression family, by what each object's primitives are.
+    let drawn: BTreeSet<epiphany_layout_ir::LayoutObjectId> = layout
+        .glyphs
+        .iter()
+        .map(|g| g.provenance.stable_id)
+        .chain(layout.texts.iter().map(|t| t.provenance.stable_id))
+        .chain(
+            layout
+                .strokes
+                .iter()
+                .filter(|s| s.from != s.to)
+                .map(|s| s.provenance.stable_id),
+        )
+        .collect();
+    for event in score.events.iter().filter(|e| !graces.contains(&e.id())) {
+        let (marks, ornaments) = match event {
+            Event::Pitched(n) => (&n.marks, n.ornaments.as_slice()),
+            Event::Unpitched(u) => (&u.marks, &[][..]),
+            _ => continue,
+        };
+        for mark in marks {
+            let part = match mark {
+                EventMark::Arpeggio { .. } => NoteMarkPart::Arpeggio,
+                EventMark::TremoloWithNext { .. } => NoteMarkPart::TremoloStroke(0),
+                mark => NoteMarkPart::Glyph(mark.tag()),
+            };
+            if !drawn.contains(&part.id(event.id())) {
+                out.add(&format!("note mark: {}", mark_class(mark)));
+            }
+        }
+        for ornament in ornaments {
+            let tag = NoteMarkPart::ornament_tag(ornament.kind);
+            let class = format!("{:?}", ornament.kind).to_lowercase();
+            if !drawn.contains(&NoteMarkPart::Glyph(tag).id(event.id())) {
+                out.add(&format!("ornament: {class}"));
+            }
+            for (above, accidental) in [
+                (true, ornament.accidental_above.is_some()),
+                (false, ornament.accidental_below.is_some()),
+            ] {
+                let part = NoteMarkPart::Accidental { tag, above };
+                if accidental && !drawn.contains(&part.id(event.id())) {
+                    out.add(&format!("ornament accidental: {class}"));
+                }
+            }
+        }
+    }
+    for marker in &score.cross_cutting.markers {
+        let class = match marker.kind {
+            MarkerKind::Fermata(_) => "fermata",
+            MarkerKind::Breath(_) => "breath mark",
+            MarkerKind::Caesura(_) => "caesura",
+            _ => continue,
+        };
+        if inked.contains(&TypedObjectId::Marker(marker.id)) {
+            continue;
+        }
+        match marker.anchor {
+            TimeAnchor::Region { .. } => {
+                out.add(&format!("{class} at a region offset: drawn nowhere"))
+            }
+            _ => out.add(class),
+        }
+    }
+
     for diagnostic in diagnostics {
         let kind = match &diagnostic.kind {
             LayoutDiagnosticKind::MissingSpelling => String::from("diagnostic: missing spelling"),
@@ -576,6 +646,34 @@ pub fn omissions(
         out.add(&kind);
     }
     out
+}
+
+/// A note mark's class, as the report names it.
+fn mark_class(mark: &EventMark) -> &'static str {
+    match mark {
+        EventMark::Staccato => "staccato",
+        EventMark::Staccatissimo => "staccatissimo",
+        EventMark::Spiccato => "spiccato",
+        EventMark::Tenuto => "tenuto",
+        EventMark::DetachedLegato => "detached legato",
+        EventMark::Accent => "accent",
+        EventMark::Marcato => "marcato",
+        EventMark::Stress => "stress",
+        EventMark::Unstress => "unstress",
+        EventMark::UpBow => "up-bow",
+        EventMark::DownBow => "down-bow",
+        EventMark::Harmonic => "harmonic",
+        EventMark::OpenString => "open string",
+        EventMark::Stopped => "stopped",
+        EventMark::SnapPizzicato => "snap pizzicato",
+        EventMark::Scoop => "scoop",
+        EventMark::Plop => "plop",
+        EventMark::Doit => "doit",
+        EventMark::Falloff => "falloff",
+        EventMark::Tremolo { .. } => "tremolo",
+        EventMark::TremoloWithNext { .. } => "two-note tremolo",
+        EventMark::Arpeggio { .. } => "arpeggio",
+    }
 }
 
 #[cfg(test)]

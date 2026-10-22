@@ -74,6 +74,7 @@
 
 pub mod casting;
 mod clearance;
+mod family;
 mod quality;
 mod spacing;
 
@@ -359,7 +360,7 @@ pub struct Engraver {
 /// when the resolved layout began carrying shaped text runs, a fourth
 /// primitive each riding its slot and joining its staff's extent, whose count
 /// enters every layout's canonical bytes though no score yet draws one.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(57);
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(58);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -1286,6 +1287,8 @@ mod tests {
                                 pitch,
                                 spelling: Some(PitchSpelling::cmn(CmnNominal::C, 5)),
                             }],
+                            marks: Vec::new(),
+                            ornaments: Vec::new(),
                         }),
                     ),
                     manifested(TypedObjectId::Pitch(pitch), LayoutContent::Structural),
@@ -1708,6 +1711,8 @@ mod tests {
                             pitch,
                             spelling: Some(PitchSpelling::cmn(CmnNominal::C, 6)),
                         }],
+                        marks: Vec::new(),
+                        ornaments: Vec::new(),
                     }),
                 ),
                 manifested(TypedObjectId::Pitch(pitch), LayoutContent::Structural),
@@ -2142,6 +2147,8 @@ mod tests {
                     pitch: pid,
                     spelling: Some(spelling),
                 }],
+                marks: Vec::new(),
+                ornaments: Vec::new(),
             })
         };
         let logical = LogicalLayoutIR {
@@ -2258,6 +2265,8 @@ mod tests {
                                 pitch,
                                 spelling: Some(PitchSpelling::cmn(CmnNominal::C, 5)),
                             }],
+                            marks: Vec::new(),
+                            ornaments: Vec::new(),
                         }),
                     ),
                     manifested(TypedObjectId::Pitch(pitch), LayoutContent::Structural),

@@ -172,3 +172,12 @@ written as the cubics they equal, drawn where it occurs. A run naming a face
 this build does not carry is drawn as its ink box, with a diagnostic. PDF
 text is not selectable; carrying a run's string as marked content is a
 named follow-up (D79's Q6).
+
+## A turned glyph of a run (X4c.3, 2026-10-22)
+
+A glyph of a run may carry a transform (an arpeggio's wiggles stand turned a
+quarter). Both writers apply its linear part about the glyph's origin,
+between the placement and the face's scale: SVG as `matrix(a b c d 0 0)` in
+the path's transform, PDF as a further `cm`. The glyph's offset carries the
+translation, so the transform's own is dropped. Locked by
+`a_turned_symbol_is_drawn_turned` in both writers.

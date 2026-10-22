@@ -96,11 +96,11 @@ pub use cache::{
 };
 pub use constrained::{
     active_clef, active_clef_or, is_beam_stroke, is_rigid_width_stroke, text_diagnostics, tie_arc,
-    to_constrained, try_to_constrained, Axis, BreakClass, BreakKind, BreakOrigin,
+    to_constrained, try_to_constrained, Autoplace, Axis, BreakClass, BreakKind, BreakOrigin,
     ConstrainedLayoutIR, ConstrainedLayoutRegion, ConstrainedValidationError, ConstraintParameters,
-    ConstraintRegistryId, CrossStaffBeam, Curve, GlyphObject, GlyphObjectId, GlyphStyle, GroupSign,
-    GroupSpan, LayoutConstraint, LayoutTransformError, LeadGlyph, SpanAnchor, SpringSlot, Stroke,
-    SystemLead, CROSS_STEM_MIN,
+    ConstraintRegistryId, CrossStaffBeam, Curve, FamilyMark, GlyphObject, GlyphObjectId,
+    GlyphStyle, GroupSign, GroupSpan, LayoutConstraint, LayoutTransformError, LeadGlyph,
+    NoteMarkPart, PlaceOrder, Room, SpanAnchor, SpringSlot, Stroke, SystemLead, CROSS_STEM_MIN,
 };
 pub use engrave_theory::{
     accidental_glyph, clef_glyph, clef_glyph_for, flag_count, flag_glyph, has_stem, key_signature,
@@ -122,12 +122,13 @@ pub use logical::{
     to_logical, BarLineLayout, BarlineKind, BeamGroupLayout, ChordLayout, ClefLayout,
     CompositeLayoutObject, CrossRegionObject, CueLayout, GraphicLayout, GroupContent, GroupLayout,
     KeySignatureLayout, LayoutContent, LayoutObject, LayoutRegion, LocalCoordinateSystem,
-    LogicalLayoutIR, MarkerLayout, MeasureContent, MultimeasureRestLayout, NoteContent, NoteLayout,
-    NotePitch, PlacedClef, PlacedComponent, PlacedKeySignature, RepeatContent, RepeatPlacement,
-    RestContent, RestLayout, ScoreVersion, SlurContent, SlurDirection, SlurEndpoint, SlurLayout,
-    SpannerLayout, StaffContent, StaffLayout, TextLayout, TieContent, TieLayout,
-    TimeSignatureContent, TimeSignatureDisplayLayout, TrajectoryLayout, TupletDisplayLayout,
-    UnpitchedContent, VerticalExtent, VoicePlace, VoltaContent,
+    LogicalLayoutIR, MarkerContent, MarkerLayout, MarkerPlace, MeasureContent,
+    MultimeasureRestLayout, NoteContent, NoteLayout, NotePitch, PlacedClef, PlacedComponent,
+    PlacedKeySignature, RepeatContent, RepeatPlacement, RestContent, RestLayout, ScoreVersion,
+    SlurContent, SlurDirection, SlurEndpoint, SlurLayout, SpannerLayout, StaffContent, StaffLayout,
+    TextLayout, TieContent, TieLayout, TimeSignatureContent, TimeSignatureDisplayLayout,
+    TrajectoryLayout, TupletDisplayLayout, UnpitchedContent, VerticalExtent, VoicePlace,
+    VoltaContent,
 };
 pub use provenance::{
     continuation_instance_key, manifestation_layout_id, stable_layout_id, synthesized_layout_id,
@@ -158,10 +159,11 @@ pub use spatial::{
     BoundingBox, Margins, Point, Rect, ScaleContext, Size2D, StaffSpace, Transform2D,
 };
 pub use text::{
-    face_by_hash, shape_text, shaping_identity, AxisTag, CaretAffinity, CaretStop, ClusterMap,
-    FaceSynthesis, FeatureSetting, LanguageTag, PositionedGlyph, ResolvedText, ScriptTag,
-    ShapedSegment, ShaperId, ShapingGaps, TextAlign, TextCluster, TextDirection, TextFace,
-    TextFaceIdentity, TextObject, TextShapingIdentity, UnicodeVersion,
+    face_by_hash, shape_text, shaping_identity, symbol_run, AxisTag, CaretAffinity, CaretStop,
+    ClusterMap, FaceSynthesis, FeatureSetting, LanguageTag, PositionedGlyph, ResolvedText,
+    ScriptTag, ShapedSegment, ShaperId, ShapingGaps, Symbol, SymbolPlace, TextAlign, TextCluster,
+    TextDirection, TextFace, TextFaceIdentity, TextObject, TextShapingIdentity, Turn,
+    UnicodeVersion,
 };
 pub use time_axis::{
     time_axis_of, AleatoricTimeAxis, MetricTimeAxis, ProportionalTimeAxis,

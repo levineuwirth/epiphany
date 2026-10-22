@@ -223,6 +223,7 @@ pub fn gen_layout_content(rng: &mut Rng) -> LayoutContent {
             components: components(rng),
             duration: None,
             staff_position: epiphany_core::StaffPosition(rng.range(0, 16) as i16 - 4),
+            marks: Vec::new(),
         }),
         1 => LayoutContent::Staff(StaffContent {
             default_clef: epiphany_core::Clef::default(),
@@ -241,6 +242,8 @@ pub fn gen_layout_content(rng: &mut Rng) -> LayoutContent {
                 pitch: epiphany_core::PitchId::new(epiphany_core::ReplicaId(7), rng.next_u64()),
                 spelling: spelling(rng),
             }],
+            marks: Vec::new(),
+            ornaments: Vec::new(),
         }),
         3 => LayoutContent::Rest(RestContent {
             voice: epiphany_layout_ir::VoicePlace::Alone,
@@ -452,6 +455,7 @@ pub fn gen_constrained_layout_ir(rng: &mut Rng) -> ConstrainedLayoutIR {
         system_leads: Vec::new(),
         staff_groups: Vec::new(),
         cross_staff_beams: Vec::new(),
+        family: Vec::new(),
     };
     // Text runs ride the slots and band above, drawn last so the glyphs,
     // strokes and curves keep the values they took before runs existed.

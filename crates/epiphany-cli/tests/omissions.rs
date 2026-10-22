@@ -314,3 +314,129 @@ fn a_tuplet_member_is_read_at_its_written_value() {
         .count();
     assert_eq!(heads, 6, "six quarter-note heads, none dotted or split");
 }
+
+/// Every mark of a note and every fermata, breath mark and caesura the
+/// engraver draws is no omission; each whose ink is taken away is counted
+/// by its class; and a fermata anchored at its region's offset, on no
+/// staff, is named as drawn nowhere.
+#[test]
+fn the_expression_familys_undrawn_members_are_counted_by_class() {
+    use epiphany_core::{MarkerKind, TimeAnchor};
+    use epiphany_layout_ir::NoteMarkPart;
+
+    let note = |pitch: &str, notations: &str| {
+        let (step, octave) = pitch.split_at(1);
+        format!(
+            "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+             <duration>2</duration><voice>1</voice><type>quarter</type>\
+             <notations>{notations}</notations></note>"
+        )
+    };
+    let measure = [
+        note(
+            "C5",
+            "<articulations><accent/><breath-mark/></articulations>",
+        ),
+        note(
+            "E5",
+            "<ornaments><trill-mark/><accidental-mark placement=\"above\">sharp\
+             </accidental-mark></ornaments><fermata/>",
+        ),
+        note(
+            "G4",
+            "<arpeggiate/><articulations><caesura/></articulations>",
+        ),
+        note(
+            "D5",
+            "<ornaments><tremolo type=\"single\">2</tremolo></ornaments>",
+        ),
+    ]
+    .concat();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
+         <attributes><divisions>2</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time><clef><sign>G</sign><line>2</line></clef></attributes>{measure}</measure>\
+         </part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("family_omissions.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let mut engraved = engrave(&loaded.reduced.score);
+    let family = |loaded: &Loaded, engraved: &Engraved| -> Vec<(String, usize)> {
+        omissions(
+            &loaded.reduced.score,
+            &engraved.layout,
+            &engraved.diagnostics,
+        )
+        .kinds
+        .into_iter()
+        .filter(|(kind, _)| {
+            ["note mark", "ornament", "fermata", "breath", "caesura"]
+                .iter()
+                .any(|class| kind.starts_with(class))
+        })
+        .collect()
+    };
+    assert_eq!(family(&loaded, &engraved), vec![], "every class drawn");
+
+    // The accent's glyph, the ornament's accidental and the arpeggio's run
+    // taken away, and the fermata's glyph re-attributed.
+    let score = &loaded.reduced.score;
+    let events: Vec<epiphany_core::EventId> = score.events.iter().map(Event::id).collect();
+    let accent = NoteMarkPart::Glyph(epiphany_core::EventMark::Accent.tag()).id(events[0]);
+    let accidental = NoteMarkPart::Accidental {
+        tag: NoteMarkPart::ornament_tag(epiphany_core::OrnamentKind::Trill),
+        above: true,
+    }
+    .id(events[1]);
+    let arpeggio = NoteMarkPart::Arpeggio.id(events[2]);
+    let region = TypedObjectId::Region(score.canvas.regions[0].id);
+    for g in &mut engraved.layout.glyphs {
+        if g.provenance.stable_id == accent {
+            g.provenance.stable_id = epiphany_layout_ir::LayoutObjectId(1);
+        }
+        if matches!(g.provenance.source, TypedObjectId::Marker(_))
+            && g.glyph.as_str().starts_with("fermata")
+        {
+            g.provenance.source = region;
+        }
+    }
+    for t in &mut engraved.layout.texts {
+        if [accidental, arpeggio].contains(&t.provenance.stable_id) {
+            t.provenance.stable_id = epiphany_layout_ir::LayoutObjectId(2);
+        }
+    }
+    let counted = family(&loaded, &engraved);
+    for kind in [
+        "note mark: accent",
+        "ornament accidental: trill",
+        "note mark: arpeggio",
+        "fermata",
+    ] {
+        assert!(
+            counted.contains(&(kind.to_owned(), 1)),
+            "{kind}: {counted:?}"
+        );
+    }
+    assert_eq!(counted.len(), 4, "{counted:?}");
+
+    // A fermata at its region's start: on no staff, drawn nowhere.
+    let mut moved = loaded.reduced.score.clone();
+    for marker in &mut moved.cross_cutting.markers {
+        if matches!(marker.kind, MarkerKind::Fermata(_)) {
+            marker.anchor = TimeAnchor::Region {
+                id: moved.canvas.regions[0].id,
+                edge: epiphany_core::RegionEdge::Start,
+                offset: epiphany_core::AnchorOffset::Zero,
+            };
+        }
+    }
+    let engraved = engrave(&moved);
+    let kinds = omissions(&moved, &engraved.layout, &engraved.diagnostics).kinds;
+    assert_eq!(
+        kinds.get("fermata at a region offset: drawn nowhere"),
+        Some(&1)
+    );
+    assert_eq!(kinds.get("fermata"), None);
+}

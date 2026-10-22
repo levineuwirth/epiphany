@@ -2204,3 +2204,37 @@ Lyrics, which do take room, are X4c.5's. No score draws a run yet, but the
 runs' count enters every layout's canonical bytes, so the version moves.
 Locked by `a_text_run_rides_its_slot_and_its_staff` and
 `a_text_run_takes_its_staffs_room_on_the_page`.
+
+## ENGRAVER_VERSION 57 → 58: marks at notes, fermatas and breath marks (X4c.3, 2026-10-22)
+
+The projection now draws a note's articulations, techniques, ornaments,
+tremolo strokes, jazz marks and arpeggio, and a fermata, breath mark or
+caesura, and names in `ConstrainedLayoutIR::family` how a solver must treat
+each. The engraver follows it:
+
+- A member taking no room across (`Room::None`: every mark but the arpeggio,
+  every fermata) gives its slot neither width nor its x: the spacing pass
+  takes a slot's source from its first glyph that takes room, so a mark the
+  projection emits before its note's head never moves the note. MuseScore's
+  chord shape leaves its articulations out of spacing too
+  (`ChordLayout::fillShape`; `an_arpeggio_takes_room_and_other_marks_take_none`,
+  `marks_take_no_room_at_the_floor`). An arpeggio takes room as an
+  accidental does (`Room::Ink`).
+- A breath mark or caesura stands right-aligned in a fixed column of its
+  own, whose spring is the 1.0 MuseScore pads a breath by after it. Before
+  it, it keeps 1.0 from the ink where their heights meet and from its
+  staff's heads, stems, dots and rests at any height, at natural spacing
+  and at the floor, MuseScore never kerning a breath against its voice; an
+  accidental after it keeps 1.0 where their heights meet (`Ink::Breath`;
+  `a_breath_mark_takes_a_column_after_its_note`,
+  `a_breath_mark_keeps_its_padding_at_the_floor`).
+- Once a system is set across, the family's placed members (a fermata now;
+  dynamics, syllables and tempo marks in later rows) are placed staff by
+  staff in MuseScore's order, each moved away from its staff until it clears
+  the ink under it by its distance, never toward it, a row's members at the
+  height the furthest needs (`family::place`). Their ink then joins their
+  staff's extent, so the gap to the next staff makes room for it
+  (`a_fermata_between_two_staves_holds_them_apart`).
+- A mark placed past the end of a stem meeting a beam across two staves
+  rides the beam's staff and stands between the staves with it, the content
+  of neither (`a_mark_past_a_beam_across_two_staves_stands_past_it`).

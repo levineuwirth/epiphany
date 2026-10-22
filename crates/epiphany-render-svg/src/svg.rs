@@ -557,13 +557,24 @@ pub fn render(resolved: &ResolvedLayoutIR, options: &RenderOptions) -> RenderOut
                                 continue;
                             }
                             run_glyph_count += 1;
+                            let turn = match crate::text::linear(&g.transform) {
+                                Some([a, b, c, d]) => format!(
+                                    " matrix({} {} {} {} 0 0)",
+                                    num(a),
+                                    num(b),
+                                    num(c),
+                                    num(d)
+                                ),
+                                None => String::new(),
+                            };
                             let _ = writeln!(
                                 s,
-                                "        <path d=\"{}\" transform=\"translate({} {}) scale({})\" \
+                                "        <path d=\"{}\" transform=\"translate({} {}){} scale({})\" \
                                  fill=\"{}\"{}/>",
                                 d,
                                 num(g.x),
                                 num(g.y),
+                                turn,
                                 crate::text::scale_number(g.scale),
                                 fill,
                                 opacity,
@@ -1371,6 +1382,44 @@ mod tests {
         let [min_x, min_y, w, h] = out.stats.view_box;
         let (l, b, r, t) = crate::text::ink(run);
         assert!(l >= min_x && b >= min_y && r <= min_x + w && t <= min_y + h);
+    }
+
+    /// A symbol run's turned glyph is drawn turned about its origin, its
+    /// transform's linear part between the placement and the scale; an
+    /// unturned one carries none.
+    #[test]
+    fn a_turned_symbol_is_drawn_turned() {
+        use epiphany_layout_ir::{symbol_run, Symbol, SymbolPlace, Turn};
+        let mut layout = stub_layout(3);
+        let symbol = |turn: Turn| Symbol {
+            codepoint: '\u{EAA9}',
+            at: SymbolPlace::Origin(Point::new(0.0, 0.0)),
+            scale: 1.0,
+            turn,
+        };
+        let provenance = epiphany_layout_ir::Provenance::projected(
+            epiphany_core::TypedObjectId::Marker(epiphany_core::MarkerId::from_raw(9)),
+            vec![],
+        );
+        layout.texts.push(symbol_run(
+            provenance,
+            &[symbol(Turn::Anticlockwise), symbol(Turn::None)],
+            Point::new(5.0, -20.0),
+        ));
+        let out = render(&layout, &RenderOptions::default());
+        assert!(out.is_well_formed());
+        assert_eq!(out.stats.run_glyph_count, 2);
+        let [a, b, c, d] =
+            crate::text::linear(&layout.texts[0].segments[0].glyphs[0].transform).expect("turned");
+        let turned = format!(
+            ") matrix({} {} {} {} 0 0) scale(",
+            num(a),
+            num(b),
+            num(c),
+            num(d)
+        );
+        assert_eq!(out.svg.matches(&turned).count(), 1, "{turned}");
+        assert_eq!(out.svg.matches(" matrix(").count(), 1);
     }
 
     #[test]

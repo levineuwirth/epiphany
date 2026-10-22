@@ -13,9 +13,9 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::{
-    Clef, EventId, KeySignature, LineStyle, MeasureId, MeasurePosition, MusicalDuration, NoteValue,
-    PitchId, PitchSpelling, RationalTime, RepeatStructureId, SpellingNominal, StaffId, TimeAnchor,
-    TypedObjectId, WallClockTime,
+    Clef, EventId, EventMark, KeySignature, LineStyle, MarkerKind, MeasureId, MeasurePosition,
+    MusicalDuration, NoteValue, Ornament, PitchId, PitchSpelling, RationalTime, RepeatStructureId,
+    SpellingNominal, StaffId, TimeAnchor, TypedObjectId, WallClockTime,
 };
 use epiphany_determinism::{DomainTag, Preimage};
 
@@ -27,17 +27,17 @@ use crate::engrave_theory::{
 use crate::engraving::{EngravingDecision, OverrideKind, OverridePriority, OverrideTarget};
 use crate::glyph::{metrics, BravuraCatalog, GlyphCatalog, GlyphCatalogIdentity, GlyphReference};
 use crate::logical::{
-    apply_offset, BarlineKind, LayoutContent, LogicalLayoutIR, PlacedClef, PlacedKeySignature,
-    RepeatContent, RepeatPlacement, ScoreVersion, SlurContent, SlurDirection, SlurEndpoint,
-    StaffContent, VoicePlace,
+    apply_offset, BarlineKind, LayoutContent, LogicalLayoutIR, MarkerContent, MarkerPlace,
+    PlacedClef, PlacedKeySignature, RepeatContent, RepeatPlacement, ScoreVersion, SlurContent,
+    SlurDirection, SlurEndpoint, StaffContent, VoicePlace,
 };
 use crate::provenance::{
-    manifestation_layout_id, LayoutObjectId, Provenance, SynthesisInstanceKey, SynthesisKind,
-    SynthesisRegistryId,
+    manifestation_layout_id, synthesized_layout_id, LayoutObjectId, Provenance,
+    SynthesisInstanceKey, SynthesisKind, SynthesisRegistryId,
 };
 use crate::solver::{ConstraintStrength, SpringSlotId};
 use crate::spatial::{BoundingBox, Point, Rect, Size2D, StaffSpace};
-use crate::text::{ShapingGaps, TextObject};
+use crate::text::{symbol_run, ResolvedText, ShapingGaps, Symbol, SymbolPlace, TextObject, Turn};
 use crate::time_axis::{time_cmp, SlotPlacement, TimeAxisModel, TimePoint};
 use crate::vertical_band::{inter_staff_gap_id, VerticalBand, VerticalBandId};
 
@@ -206,6 +206,87 @@ pub struct ConstrainedLayoutIR {
     /// lower staff from rising past its `rise_limit`, and moves the beam end
     /// of each stem reaching it from the lower staff with the upper.
     pub cross_staff_beams: Vec<CrossStaffBeam>,
+    /// The expression family's marks, dynamics, lines and words (X4c), as a
+    /// solver treats them: which primitives move together, whether they take
+    /// room across, and, for those a solver places off their staff once the
+    /// system is set, how.
+    pub family: Vec<FamilyMark>,
+}
+
+/// One member of the expression family as a solver must treat it (see
+/// [`ConstrainedLayoutIR::family`]): a mark at a note, a dynamic, a hairpin,
+/// a syllable, a tempo mark. Its primitives are drawn where the projection
+/// put them, unless it is placed: then a solver moves them together, away
+/// from their staff, until they clear the staff's ink as the system sets it,
+/// as MuseScore's autoplace does.
+#[derive(Clone, PartialEq, Debug)]
+pub struct FamilyMark {
+    /// Its staff's band.
+    pub band: VerticalBandId,
+    /// Its glyphs, strokes and text runs, by stable id.
+    pub glyphs: Vec<GlyphObjectId>,
+    pub strokes: Vec<GlyphObjectId>,
+    pub texts: Vec<GlyphObjectId>,
+    /// The room it takes across in the spacing pass.
+    pub room: Room,
+    /// How a solver places it off its staff, if it does.
+    pub placement: Option<Autoplace>,
+}
+
+impl FamilyMark {
+    /// A glyph the projection places for good at its note, taking no room
+    /// across: an articulation, an ornament, a tremolo's strokes.
+    pub fn marking(band: VerticalBandId, glyph: GlyphObjectId) -> Self {
+        FamilyMark {
+            band,
+            glyphs: vec![glyph],
+            strokes: Vec::new(),
+            texts: Vec::new(),
+            room: Room::None,
+            placement: None,
+        }
+    }
+}
+
+/// The room a member of the family takes across.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum Room {
+    /// None: its ink meets other ink freely, as MuseScore lets a dynamic or
+    /// an articulation's do.
+    None,
+    /// As any ink of its column: an arpeggio left of its chord.
+    Ink,
+    /// A syllable's: clear of the earlier syllables of its staff and verse
+    /// at any height, and of no other ink.
+    Verse(u16),
+}
+
+/// How a solver places a member of the family off its staff once the
+/// system is set: on which side, after which other members (`order`, so
+/// what MuseScore lays out first stands nearest the staff), how far clear
+/// of the ink already there, and with which others it stands in one row.
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub struct Autoplace {
+    pub above: bool,
+    pub order: PlaceOrder,
+    pub min_distance: f32,
+    /// Members of one row, in one system, are set to the height the
+    /// furthest of them needs: a verse's syllables, a dynamic and the
+    /// hairpins it meets.
+    pub row: Option<u128>,
+}
+
+/// The order a solver places the family off its staves in, MuseScore's
+/// (`SystemLayout::layoutSystemElements`): what comes first stands nearest.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum PlaceOrder {
+    Trill,
+    Fermata,
+    Dynamic,
+    Lyric,
+    StaffText,
+    Rehearsal,
+    Tempo,
 }
 
 /// A beam joining notes on two staves of a region (see
@@ -221,7 +302,8 @@ pub struct CrossStaffBeam {
     /// The staff whose notes' stems turn up to it.
     pub lower: StaffId,
     /// Every primitive standing between the two staves: the beam's strokes,
-    /// each member's stem, and the number of a tuplet the beam carries.
+    /// each member's stem, the number of a tuplet the beam carries, and the
+    /// marks placed from a member's stem end.
     pub ink: Vec<GlyphObjectId>,
     /// The stems from the lower staff's notes: each one's `from` (at its
     /// head) rides the lower staff, and its `to` (at the beam) the upper.
@@ -525,6 +607,9 @@ pub enum ConstrainedValidationError {
     /// A text run's origin, a glyph's offset, its size or its boxes do not
     /// quantize, or a box is inverted.
     InvalidTextGeometry(GlyphObjectId),
+    /// A member of the family names a primitive that does not exist, or a
+    /// band that does not.
+    DanglingFamilyMember(GlyphObjectId),
 }
 
 /// A malformed logical-stage value that cannot be transformed without losing
@@ -775,6 +860,22 @@ impl ConstrainedLayoutIR {
             }
         }
 
+        let stroke_ids: BTreeSet<GlyphObjectId> = self.strokes.iter().map(Stroke::id).collect();
+        for mark in &self.family {
+            let dangling = mark
+                .glyphs
+                .iter()
+                .find(|id| !glyphs_by_id.contains_key(id))
+                .or_else(|| mark.strokes.iter().find(|id| !stroke_ids.contains(id)))
+                .or_else(|| mark.texts.iter().find(|id| !text_ids.contains(id)));
+            if let Some(id) = dangling {
+                return Err(ConstrainedValidationError::DanglingFamilyMember(*id));
+            }
+            if !band_ids.contains(&mark.band) {
+                return Err(ConstrainedValidationError::UnknownBand(mark.band));
+            }
+        }
+
         let spanning: BTreeSet<GlyphObjectId> = self
             .strokes
             .iter()
@@ -881,6 +982,52 @@ const DOT_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x4155_474D_444F_
 /// The registry id for a flag, synthesized from its event and keyed by
 /// component.
 const FLAG_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x464C_4147_474C_5948); // "FLAGGLYH"
+/// The marks drawn at a note (X4c.3): its articulations, techniques,
+/// ornaments, tremolo strokes, jazz marks and arpeggio, each keyed by its
+/// part ([`NoteMarkPart`]).
+const MARK_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x4E4F_5445_4D41_524B); // "NOTEMARK"
+
+/// One primitive of a note's marks, by its role: a mark's glyph, by its tag
+/// (an [`EventMark`]'s wire tag, or [`NoteMarkPart::ornament_tag`]'s), an
+/// ornament's small accidental above or below it, the arpeggio's run, or a
+/// two-note tremolo's `k`-th stroke. A note's marks are a set, one of each
+/// tag, so the part names its primitive.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum NoteMarkPart {
+    Glyph(u8),
+    Accidental { tag: u8, above: bool },
+    Arpeggio,
+    TremoloStroke(u8),
+}
+
+impl NoteMarkPart {
+    /// An ornament's tag among a note's marks: past every [`EventMark`]'s.
+    pub fn ornament_tag(kind: epiphany_core::OrnamentKind) -> u8 {
+        32 + kind as u8
+    }
+
+    fn key(self) -> SynthesisInstanceKey {
+        SynthesisInstanceKey(match self {
+            NoteMarkPart::Glyph(tag) => u128::from(tag) << 8,
+            NoteMarkPart::Accidental { tag, above } => {
+                1 << 32 | u128::from(tag) << 8 | u128::from(above)
+            }
+            NoteMarkPart::Arpeggio => 2 << 32,
+            NoteMarkPart::TremoloStroke(k) => 3 << 32 | u128::from(k),
+        })
+    }
+
+    /// The stable id of this part of `event`'s marks, as the projection
+    /// draws it.
+    pub fn id(self, event: EventId) -> LayoutObjectId {
+        synthesized_layout_id(
+            &TypedObjectId::Event(event),
+            SynthesisKind::Registered(MARK_SYNTHESIS),
+            self.key(),
+        )
+    }
+}
+
 /// The registry id for an unpitched note's stem, synthesized from its event
 /// (whose exact provenance its first notehead carries) and keyed by component.
 const STEM_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x5354_454D_5354_524B); // "STEMSTRK"
@@ -1007,7 +1154,8 @@ pub fn try_to_constrained(
     let mut glyphs = Vec::new();
     let mut strokes = Vec::new();
     let mut curves = Vec::new();
-    let texts: Vec<TextObject> = Vec::new();
+    let mut texts: Vec<TextObject> = Vec::new();
+    let mut family: Vec<FamilyMark> = Vec::new();
     let mut diagnostics = Vec::new();
     let mut vertical_bands = Vec::new();
     let mut horizontal_slots = Vec::new();
@@ -1141,12 +1289,30 @@ pub fn try_to_constrained(
         // The staves whose region-closing barline is a final one (the rest
         // close on a single barline, their run continuing in a later region).
         let mut final_staves: BTreeSet<StaffId> = BTreeSet::new();
+        // Each note's and unpitched note's marks and ornaments, and each
+        // voice's events in order: a two-note tremolo joins an event to the
+        // next of its voice.
+        let mut mark_sources: BTreeMap<EventId, (Vec<EventMark>, Vec<Ornament>)> = BTreeMap::new();
+        let mut voice_events: BTreeMap<epiphany_core::VoiceId, Vec<EventId>> = BTreeMap::new();
+        let mut current_voice: Option<epiphany_core::VoiceId> = None;
 
         for object in &region.objects {
             let staff = object.staff();
             let yo = staff.map(&y_origin).unwrap_or(0.0);
+            match object.provenance().source {
+                TypedObjectId::Voice(voice) => current_voice = Some(voice),
+                TypedObjectId::Event(eid) => {
+                    if let Some(voice) = current_voice {
+                        voice_events.entry(voice).or_default().push(eid);
+                    }
+                }
+                _ => {}
+            }
             match (object.provenance().source, object.content()) {
                 (TypedObjectId::Event(eid), LayoutContent::Note(note)) => {
+                    if !note.marks.is_empty() || !note.ornaments.is_empty() {
+                        mark_sources.insert(eid, (note.marks.clone(), note.ornaments.clone()));
+                    }
                     event_staff.extend(staff.map(|st| (eid, st)));
                     spans.extend(component_spans(
                         &note.position,
@@ -1247,6 +1413,9 @@ pub fn try_to_constrained(
                     event_voices.insert(eid, note.voice);
                 }
                 (TypedObjectId::Event(eid), LayoutContent::Unpitched(unpitched)) => {
+                    if !unpitched.marks.is_empty() {
+                        mark_sources.insert(eid, (unpitched.marks.clone(), Vec::new()));
+                    }
                     event_staff.extend(staff.map(|st| (eid, st)));
                     // An unpitched note: a notehead at its staff position, read
                     // as on a five-line staff, with the stem, flag and dots of
@@ -1469,6 +1638,19 @@ pub fn try_to_constrained(
                     // absent staff-instance content; collect the lead column it
                     // will use.
                     keys.insert(ColumnKey::Lead);
+                }
+                // A breath mark or caesura stands in a column of its own where
+                // its note's sound ends, before what follows there.
+                (TypedObjectId::Marker(_), LayoutContent::Marker(marker)) if staff.is_some() => {
+                    if let Some((time, name)) = breath_place(marker) {
+                        let key = ColumnKey::Timed(time, ColumnRole::Breath);
+                        // The mark stands left of its column: room for it
+                        // and its padding before the column.
+                        let width = metrics(name).map_or(0.0, |m| m.bounding_box().right.0);
+                        let entry = column_overhang.entry(key.clone()).or_insert(0.0);
+                        *entry = entry.max(width + BREATH_GAP);
+                        keys.insert(key);
+                    }
                 }
                 _ => {}
             }
@@ -2145,6 +2327,64 @@ pub fn try_to_constrained(
             staves_in_order: Vec::new(),
         };
 
+        // Each note's marks, placed by its own heads, stem, flag and beam and its
+        // staff's lines (`marks`), now that its stem and beam are settled; the
+        // column's ink takes them in, so a slur passes over them.
+        let mut first_heads: BTreeMap<EventId, Vec<&Head>> = BTreeMap::new();
+        for head in pitch_heads
+            .values()
+            .chain(unpitched_heads.values())
+            .flatten()
+            .filter(|head| head.comp == 0)
+        {
+            first_heads.entry(head.event).or_default().push(head);
+        }
+        let mut event_marks: BTreeMap<EventId, marks::Placed> = BTreeMap::new();
+        let next_in_voice: BTreeMap<EventId, EventId> = voice_events
+            .values()
+            .flat_map(|events| events.windows(2).map(|pair| (pair[0], pair[1])))
+            .collect();
+        for (eid, (event_marks_of, ornaments)) in &mark_sources {
+            let (Some(seg), Some(&staff), Some(heads)) = (
+                event_stems
+                    .get(eid)
+                    .and_then(|segs| segs.iter().find(|seg| seg.comp == 0)),
+                event_staff.get(eid),
+                first_heads.get(eid),
+            ) else {
+                continue;
+            };
+            let head = heads.first().map_or("noteheadBlack", |h| h.name);
+            let head_box = metrics(head).map(|m| m.bounding_box());
+            let (head_left, head_right) =
+                head_box.map_or((0.0, NOTEHEAD_STEM_X), |b| (b.left.0, b.right.0));
+            let mut left = f32::INFINITY;
+            let mut right = f32::NEG_INFINITY;
+            for h in heads {
+                left = left.min(h.dx + head_left);
+                right = right.max(h.dx + head_right);
+                for (name, x) in h.accidentals.iter().zip(&h.accidental_x) {
+                    if let Some(b) = metrics(name).map(|m| m.bounding_box()) {
+                        left = left.min(x + b.left.0);
+                    }
+                }
+            }
+            let chord = marks::Chord {
+                seg,
+                head,
+                heads_left: left,
+                heads_right: right,
+                voice: event_voices.get(eid).copied().unwrap_or(VoicePlace::Alone),
+                yo: y_origin(staff),
+                beamed: seg.drawn && seg.flag.is_none() && seg.beams > 0,
+            };
+            let placed = marks::place(&chord, event_marks_of, ornaments);
+            if let Some(ink) = column_ink.get_mut(&(staff, seg.key.clone())) {
+                marks::into_ink(ink, &placed);
+            }
+            event_marks.insert(*eid, placed);
+        }
+
         // Regroup the note-column ink by staff: a slur's obstacle field is its own
         // staff's columns, never the sibling staff that shares their x.
         let mut staff_notes: BTreeMap<StaffId, BTreeMap<ColumnKey, ColumnInk>> = BTreeMap::new();
@@ -2498,6 +2738,153 @@ pub fn try_to_constrained(
                                     staff,
                                     info.slot,
                                 );
+                            }
+                        }
+                        // The note's marks (`marks`), each synthesized from it:
+                        // glyphs at the column of its first component, and an
+                        // ornament's small accidentals and an arpeggio set as
+                        // symbol runs. They take no room across, but for the
+                        // arpeggio, which stands left of the chord as an
+                        // accidental does.
+                        if let (Some(placed), Some(seg)) =
+                            (event_marks.get(&eid), segs.iter().find(|seg| seg.comp == 0))
+                        {
+                            let info = column(&seg.key);
+                            let band = band_of(staff);
+                            // A mark past the end of a stem meeting a beam across
+                            // two staves stands between them with the beam: it
+                            // rides the beam's staff and is neither staff's ink.
+                            let beam = kneed_stems.get(&eid).map(|&(record, _)| {
+                                (record, Some(cross_staff_beams[record].upper))
+                            });
+                            let staff_at = |at_stem_end: bool| match beam {
+                                Some((_, upper)) if at_stem_end => upper,
+                                _ => staff,
+                            };
+                            let band_at = |at_stem_end: bool| band_of(staff_at(at_stem_end));
+                            let mark_provenance = |part: NoteMarkPart| {
+                                Provenance::synthesized(
+                                    provenance.source,
+                                    SynthesisKind::Registered(MARK_SYNTHESIS),
+                                    part.key(),
+                                    provenance.dependencies.clone(),
+                                )
+                            };
+                            for g in &placed.glyphs {
+                                let p = mark_provenance(NoteMarkPart::Glyph(g.tag));
+                                let id = GlyphObjectId(p.stable_id.0);
+                                emit.glyph(
+                                    &p,
+                                    g.name,
+                                    Point::new(info.x + g.x, g.y),
+                                    band_at(g.at_stem_end),
+                                    staff_at(g.at_stem_end),
+                                    info.slot,
+                                );
+                                if let (Some((record, _)), true) = (beam, g.at_stem_end) {
+                                    cross_staff_beams[record].ink.push(id);
+                                }
+                                family.push(FamilyMark::marking(band_at(g.at_stem_end), id));
+                            }
+                            let mut runs: Vec<(ResolvedText, Room, bool)> = Vec::new();
+                            for a in &placed.accidentals {
+                                let (Some(codepoint), Some(b)) = (
+                                    marks::accidental_codepoint(a.name),
+                                    metrics(a.name).map(|m| m.bounding_box()),
+                                ) else {
+                                    continue;
+                                };
+                                let symbol = Symbol {
+                                    codepoint,
+                                    at: SymbolPlace::Corner(Point::new(
+                                        0.6 * b.left.0,
+                                        0.6 * b.bottom.0,
+                                    )),
+                                    scale: 0.6,
+                                    turn: Turn::None,
+                                };
+                                runs.push((
+                                    symbol_run(
+                                        mark_provenance(NoteMarkPart::Accidental {
+                                            tag: a.tag,
+                                            above: a.above,
+                                        }),
+                                        &[symbol],
+                                        Point::new(info.x + a.x, a.y),
+                                    ),
+                                    Room::None,
+                                    a.at_stem_end,
+                                ));
+                            }
+                            // A two-note tremolo: strokes as beams between this
+                            // note's stem and the next note's of its voice, riding
+                            // both columns.
+                            for (k, (from, to)) in two_note_tremolo(
+                                eid,
+                                seg,
+                                &mark_sources,
+                                &next_in_voice,
+                                &event_stems,
+                                &columns,
+                            )
+                            .into_iter()
+                            .enumerate()
+                            {
+                                let (stroke, start, end) = (
+                                    line_stroke(
+                                        mark_provenance(NoteMarkPart::TremoloStroke(k as u8)),
+                                        from.0,
+                                        to.0,
+                                        BEAM_THICKNESS,
+                                        band,
+                                    ),
+                                    from.1,
+                                    to.1,
+                                );
+                                span_anchors.push(SpanAnchor {
+                                    primitive: stroke.id(),
+                                    start,
+                                    end,
+                                });
+                                family.push(FamilyMark {
+                                    band,
+                                    glyphs: Vec::new(),
+                                    strokes: vec![stroke.id()],
+                                    texts: Vec::new(),
+                                    room: Room::None,
+                                    placement: None,
+                                });
+                                emit.stroke(stroke);
+                            }
+                            if let Some(arpeggio) = &placed.arpeggio {
+                                runs.push((
+                                    symbol_run(
+                                        mark_provenance(NoteMarkPart::Arpeggio),
+                                        &marks::arpeggio_symbols(arpeggio),
+                                        Point::new(info.x + arpeggio.right, arpeggio.bottom),
+                                    ),
+                                    Room::Ink,
+                                    false,
+                                ));
+                            }
+                            for (run, room, at_stem_end) in runs {
+                                let id = run.id();
+                                texts.push(TextObject {
+                                    text: run,
+                                    horizontal_slot: info.slot,
+                                    vertical_band: band_at(at_stem_end),
+                                });
+                                if let (Some((record, _)), true) = (beam, at_stem_end) {
+                                    cross_staff_beams[record].ink.push(id);
+                                }
+                                family.push(FamilyMark {
+                                    band: band_at(at_stem_end),
+                                    glyphs: Vec::new(),
+                                    strokes: Vec::new(),
+                                    texts: vec![id],
+                                    room,
+                                    placement: None,
+                                });
                             }
                         }
                     }
@@ -3119,6 +3506,146 @@ pub fn try_to_constrained(
                         ));
                     }
                 }
+                TypedObjectId::Marker(_) => {
+                    // A point mark this tier draws: a fermata over its chord or
+                    // rest, placed again by a solver once its system is set; a
+                    // breath mark or caesura in its column. Any other, or one
+                    // with no staff, keeps a traced anchor.
+                    let drawn = match (content, staff) {
+                        (Some(LayoutContent::Marker(marker)), Some(_)) => match &marker.kind {
+                            MarkerKind::Fermata(fermata) => {
+                                let place = match &marker.at {
+                                    MarkerPlace::Event { event, time, .. } => {
+                                        Some((Some(*event), time.clone()))
+                                    }
+                                    MarkerPlace::Time(time) => Some((None, time.clone())),
+                                    MarkerPlace::Unresolved => None,
+                                };
+                                let key = place
+                                    .as_ref()
+                                    .map(|(_, time)| {
+                                        ColumnKey::Timed(time.clone(), ColumnRole::Note)
+                                    })
+                                    .filter(|key| columns.contains_key(key));
+                                match (place, key) {
+                                    (Some((event, _)), Some(key)) => {
+                                        let info = column(&key);
+                                        let above = !fermata.inverted;
+                                        let name = fermata_glyph(fermata, above);
+                                        let b = metrics(name)
+                                            .expect("fermata metrics are bundled")
+                                            .bounding_box();
+                                        // Centred on its chord's heads or its rest.
+                                        let head = metrics("noteheadBlack")
+                                            .expect("notehead metrics are bundled")
+                                            .bounding_box();
+                                        let centre = event
+                                            .and_then(|e| {
+                                                match event_stems.get(&e).and_then(|segs| {
+                                                    segs.iter().find(|s| s.comp == 0)
+                                                }) {
+                                                    Some(seg) => Some(
+                                                        seg.dx + (head.left.0 + head.right.0) * 0.5,
+                                                    ),
+                                                    None => {
+                                                        let rest =
+                                                            event_rests.get(&e)?.iter().find(
+                                                                |r| r.visible && r.name.is_some(),
+                                                            )?;
+                                                        let rb =
+                                                            metrics(rest.name?)?.bounding_box();
+                                                        Some((rb.left.0 + rb.right.0) * 0.5)
+                                                    }
+                                                }
+                                            })
+                                            .unwrap_or((head.left.0 + head.right.0) * 0.5);
+                                        let x = info.x + centre - (b.left.0 + b.right.0) * 0.5;
+                                        // Off its staff; a solver clears it of the ink
+                                        // under it once the system is set, as
+                                        // MuseScore's autoplace does.
+                                        let y = if above {
+                                            yo + STAFF_HEIGHT + FERMATA_OFFSET - b.bottom.0
+                                        } else {
+                                            yo - FERMATA_OFFSET - b.top.0
+                                        };
+                                        emit.glyph(
+                                            provenance,
+                                            name,
+                                            Point::new(x, y),
+                                            band_of(staff),
+                                            staff,
+                                            info.slot,
+                                        );
+                                        family.push(FamilyMark {
+                                            band: band_of(staff),
+                                            glyphs: vec![GlyphObjectId(provenance.stable_id.0)],
+                                            strokes: Vec::new(),
+                                            texts: Vec::new(),
+                                            room: Room::None,
+                                            placement: Some(Autoplace {
+                                                above,
+                                                order: PlaceOrder::Fermata,
+                                                min_distance: FERMATA_MIN_DISTANCE,
+                                                row: None,
+                                            }),
+                                        });
+                                        true
+                                    }
+                                    _ => false,
+                                }
+                            }
+                            MarkerKind::Breath(_) | MarkerKind::Caesura(_) => {
+                                match breath_place(marker) {
+                                    Some((time, name)) => {
+                                        let info =
+                                            column(&ColumnKey::Timed(time, ColumnRole::Breath));
+                                        let b = metrics(name)
+                                            .expect("breath metrics are bundled")
+                                            .bounding_box();
+                                        let h = b.top.0 - b.bottom.0;
+                                        let below = matches!(
+                                            marker.at,
+                                            MarkerPlace::Event {
+                                                voice: VoicePlace::Lower,
+                                                ..
+                                            }
+                                        );
+                                        // A breath mark half a space off its staff, a
+                                        // caesura across its outer line, each ending at
+                                        // its column (`TLayout::layoutBreath`).
+                                        let bottom = match (&marker.kind, below) {
+                                            (MarkerKind::Caesura(_), false) => {
+                                                yo + STAFF_HEIGHT - h * 0.5
+                                            }
+                                            (MarkerKind::Caesura(_), true) => yo - h * 0.5,
+                                            (_, false) => yo + STAFF_HEIGHT + 0.5,
+                                            (_, true) => yo - 0.5 - h,
+                                        };
+                                        emit.glyph(
+                                            provenance,
+                                            name,
+                                            Point::new(info.x - b.right.0, bottom - b.bottom.0),
+                                            band_of(staff),
+                                            staff,
+                                            info.slot,
+                                        );
+                                        true
+                                    }
+                                    None => false,
+                                }
+                            }
+                            _ => false,
+                        },
+                        _ => false,
+                    };
+                    if !drawn {
+                        emit.stroke(anchor(
+                            provenance,
+                            Point::new(default_x, yo),
+                            band_of(staff),
+                        ));
+                    }
+                }
                 TypedObjectId::Slur(_) => {
                     // A slur engraves to a cubic-bézier curve arcing between its
                     // two endpoint columns. No curve is honest — the traced
@@ -3314,6 +3841,8 @@ pub fn try_to_constrained(
                         + gap
                 })
             };
+            // A breath mark's column keeps its padding after the mark's right
+            // edge, and no more.
             let preferred = match key {
                 ColumnKey::Lead => reserve(LEAD_GAP),
                 ColumnKey::Timed(_, ColumnRole::Signature) => reserve(SIGNATURE_GAP),
@@ -3321,9 +3850,13 @@ pub fn try_to_constrained(
                 ColumnKey::Timed(_, ColumnRole::Barline) if key_change_reach.contains_key(key) => {
                     reserve(CLEF_CHANGE_GAP)
                 }
+                ColumnKey::Timed(_, ColumnRole::Breath) => reserve(BREATH_GAP),
                 _ => 0.0,
             }
-            .max(COLUMN_PREFERRED_WIDTH);
+            .max(match key {
+                ColumnKey::Timed(_, ColumnRole::Breath) => 0.0,
+                _ => COLUMN_PREFERRED_WIDTH,
+            });
             let (preferred, stretch) = match durations.get(key) {
                 Some(&width) => (width, 1.0),
                 None if info.note_column => (preferred, 1.0),
@@ -3585,6 +4118,7 @@ pub fn try_to_constrained(
         system_leads,
         staff_groups,
         cross_staff_beams,
+        family,
     })
 }
 
@@ -3932,13 +4466,16 @@ enum ColumnKey {
     End,
 }
 
-/// Within one musical time: a clef change taking effect there, then the
-/// barline ending the measure before it, then the signatures the measure
-/// starting there introduces, then its notes. A system break falls between
-/// the barline and what follows it, so a clef change at a measure's start
-/// ends the system before it, as a courtesy, when that measure opens the next.
+/// Within one musical time: a breath mark after the note whose sound ends
+/// there, a clef change taking effect there, then the barline ending the
+/// measure before it, then the signatures the measure starting there
+/// introduces, then its notes. A system break falls between the barline and
+/// what follows it, so a clef change at a measure's start ends the system
+/// before it, as a courtesy, when that measure opens the next.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum ColumnRole {
+    /// A breath mark or caesura, where the note before it ends.
+    Breath,
     Clef,
     Barline,
     Signature,
@@ -6400,6 +6937,126 @@ fn column_slot_id(region: LayoutObjectId, rank: usize) -> SpringSlotId {
     SpringSlotId(preimage.finish_trunc128())
 }
 
+/// A two-note tremolo's strokes from `eid` to the next event of its voice,
+/// each a beam's thickness and `BEAM_STEP` apart about the line joining the
+/// two stems' midpoints (a stemless note's head), from stem to stem; each
+/// end with the slot it rides. Empty where `eid` writes none, or no next
+/// note of its voice is drawn.
+fn two_note_tremolo(
+    eid: EventId,
+    seg: &StemSeg,
+    sources: &BTreeMap<EventId, (Vec<EventMark>, Vec<Ornament>)>,
+    next_in_voice: &BTreeMap<EventId, EventId>,
+    stems: &BTreeMap<EventId, Vec<StemSeg>>,
+    columns: &BTreeMap<ColumnKey, ColumnInfo>,
+) -> Vec<((Point, SpringSlotId), (Point, SpringSlotId))> {
+    let Some(strokes) = sources.get(&eid).and_then(|(marks, _)| {
+        marks.iter().find_map(|m| match m {
+            EventMark::TremoloWithNext { strokes } => Some(*strokes),
+            _ => None,
+        })
+    }) else {
+        return Vec::new();
+    };
+    let Some(other) = next_in_voice
+        .get(&eid)
+        .and_then(|next| stems.get(next))
+        .and_then(|segs| segs.iter().find(|s| s.comp == 0))
+    else {
+        return Vec::new();
+    };
+    let (Some(a), Some(b)) = (columns.get(&seg.key), columns.get(&other.key)) else {
+        return Vec::new();
+    };
+    let head = metrics("noteheadBlack").map_or((0.0, NOTEHEAD_STEM_X), |m| {
+        let b = m.bounding_box();
+        (b.left.0, b.right.0)
+    });
+    // Where each end stands: on a drawn stem, midway along it; between two
+    // stemless heads, clear of them.
+    let end = |s: &StemSeg, info: &ColumnInfo, start: bool| -> Point {
+        if s.drawn {
+            let base = if s.up { s.lo } else { s.hi };
+            Point::new(info.x + s.dx + s.x_off, (base + s.end) * 0.5)
+        } else {
+            let x = if start {
+                info.x + s.dx + head.1 + 0.25
+            } else {
+                info.x + s.dx + head.0 - 0.25
+            };
+            Point::new(x, (s.lo + s.hi) * 0.5)
+        }
+    };
+    let (from, to) = (end(seg, a, true), end(other, b, false));
+    if to.x.0 <= from.x.0 {
+        return Vec::new();
+    }
+    let n = strokes.max(1);
+    (0..n)
+        .map(|k| {
+            let off = (f32::from(k) - f32::from(n - 1) * 0.5) * BEAM_STEP;
+            (
+                (Point::new(from.x.0, from.y.0 + off), a.slot),
+                (Point::new(to.x.0, to.y.0 + off), b.slot),
+            )
+        })
+        .collect()
+}
+
+/// The gap a breath mark or caesura keeps from what stands before and after
+/// it: MuseScore's padding for a breath (`PaddingTable::createTable`).
+const BREATH_GAP: f32 = 1.0;
+/// A fermata's distance off its staff (`fermataPosAbove`, `fermataPosBelow`)
+/// and from its chord's ink and other ink (`fermataMinDistance`).
+const FERMATA_OFFSET: f32 = 0.5;
+const FERMATA_MIN_DISTANCE: f32 = 0.4;
+
+/// A breath mark's or caesura's glyph.
+fn breath_glyph(kind: &MarkerKind) -> Option<&'static str> {
+    use epiphany_core::{BreathMark, CaesuraMark};
+    Some(match kind {
+        MarkerKind::Breath(BreathMark::Comma) => "breathMarkComma",
+        MarkerKind::Breath(BreathMark::Tick) => "breathMarkTick",
+        MarkerKind::Caesura(CaesuraMark::Normal) => "caesura",
+        MarkerKind::Caesura(CaesuraMark::Thick) => "caesuraThick",
+        MarkerKind::Caesura(CaesuraMark::Short) => "caesuraShort",
+        MarkerKind::Caesura(CaesuraMark::Curved) => "caesuraCurved",
+        _ => return None,
+    })
+}
+
+/// Where a breath mark or caesura stands, and its glyph: where its note's
+/// sound ends, or at its time where it stands on no note.
+fn breath_place(marker: &MarkerContent) -> Option<(TimePoint, &'static str)> {
+    let name = breath_glyph(&marker.kind)?;
+    let time = match &marker.at {
+        MarkerPlace::Event { end: Some(end), .. } => end.clone(),
+        MarkerPlace::Time(time) => time.clone(),
+        _ => return None,
+    };
+    Some((time, name))
+}
+
+/// A fermata's glyph by its shape and side.
+fn fermata_glyph(fermata: &epiphany_core::Fermata, above: bool) -> &'static str {
+    use epiphany_core::FermataShape::*;
+    match (fermata.shape, above) {
+        (Normal, true) => "fermataAbove",
+        (Normal, false) => "fermataBelow",
+        (Short, true) => "fermataShortAbove",
+        (Short, false) => "fermataShortBelow",
+        (Long, true) => "fermataLongAbove",
+        (Long, false) => "fermataLongBelow",
+        (VeryShort, true) => "fermataVeryShortAbove",
+        (VeryShort, false) => "fermataVeryShortBelow",
+        (VeryLong, true) => "fermataVeryLongAbove",
+        (VeryLong, false) => "fermataVeryLongBelow",
+    }
+}
+
+#[path = "marks.rs"]
+mod marks;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6932,6 +7589,8 @@ mod tests {
             components: vec![],
             duration: None,
             pitches: vec![],
+            marks: Vec::new(),
+            ornaments: Vec::new(),
         });
         let logical = LogicalLayoutIR {
             source: ScoreVersion::default(),
@@ -7054,6 +7713,8 @@ mod tests {
                 pitch,
                 spelling: Some(spelling),
             }],
+            marks: Vec::new(),
+            ornaments: Vec::new(),
         });
         let manifested = |src, content| {
             LayoutObject::from_projection_with_content(
@@ -7134,6 +7795,8 @@ mod tests {
                 pitch,
                 spelling: Some(spelling),
             }],
+            marks: Vec::new(),
+            ornaments: Vec::new(),
         });
         let manifested = |src, content| {
             LayoutObject::from_projection_with_content(
@@ -7256,6 +7919,8 @@ mod tests {
                     components: vec![component(NoteValue::Quarter, 0, false)],
                     duration: None,
                     pitches,
+                    marks: Vec::new(),
+                    ornaments: Vec::new(),
                 }),
             ));
         }
@@ -7290,6 +7955,8 @@ mod tests {
                     pitch: split,
                     spelling: Some(PitchSpelling::cmn(CmnNominal::A, 4)),
                 }],
+                marks: Vec::new(),
+                ornaments: Vec::new(),
             }),
         ));
         let c = to_constrained(&LogicalLayoutIR {
@@ -7416,6 +8083,8 @@ mod tests {
                             pitch,
                             spelling: Some(PitchSpelling::cmn(CmnNominal::E, 4)),
                         }],
+                        marks: Vec::new(),
+                        ornaments: Vec::new(),
                     }),
                 ),
                 manifested(TypedObjectId::Pitch(pitch), LayoutContent::Structural),
@@ -7483,6 +8152,7 @@ mod tests {
                 components: vec![component(NoteValue::Sixteenth, 0)],
                 duration: None,
                 staff_position: StaffPosition(4),
+                marks: Vec::new(),
             }),
         )]);
         let head = named(&c, "noteheadBlack");
@@ -7736,6 +8406,8 @@ mod tests {
                 pitch,
                 spelling: Some(PitchSpelling::cmn(CmnNominal::C, 4)),
             }],
+            marks: Vec::new(),
+            ornaments: Vec::new(),
         });
         let manifested = |src, content| {
             LayoutObject::from_projection_with_content(
@@ -8112,6 +8784,8 @@ mod tests {
                     spelling: Some(PitchSpelling::cmn(CmnNominal::E, 4)),
                 },
             ],
+            marks: Vec::new(),
+            ornaments: Vec::new(),
         });
         let logical = LogicalLayoutIR {
             source: ScoreVersion::default(),
@@ -8244,6 +8918,8 @@ mod tests {
                             pitch,
                             spelling: Some(PitchSpelling::cmn(CmnNominal::C, 4)),
                         }],
+                        marks: Vec::new(),
+                        ornaments: Vec::new(),
                     }),
                 ),
                 with_content(
@@ -9083,6 +9759,8 @@ mod tests {
                                 pitch,
                                 spelling: Some(spelling),
                             }],
+                            marks: Vec::new(),
+                            ornaments: Vec::new(),
                         }),
                     ),
                     manifested(TypedObjectId::Pitch(pitch), LayoutContent::Structural),
@@ -9466,6 +10144,119 @@ mod tests {
                 source,
                 kind: LayoutDiagnosticKind::RightToLeftText,
             }]
+        );
+    }
+
+    /// A breath mark stands right-aligned against its own column, which
+    /// holds nothing else, and its column's spring is the padding after its
+    /// right edge: the constrained frame states MuseScore's rule, whatever a
+    /// solver does with it.
+    #[test]
+    fn a_breath_mark_ends_at_its_column_and_keeps_its_padding_after() {
+        use epiphany_core::{AnchorOffset, BreathMark, Marker, MarkerKind};
+        let mut score = epiphany_core::generators::valid_score_rich(5);
+        let event = region_a_events(&score)[0];
+        let id = score.identity.mint();
+        score.cross_cutting.markers.push(Marker {
+            id,
+            anchor: TimeAnchor::Event {
+                id: event,
+                offset: AnchorOffset::Zero,
+            },
+            kind: MarkerKind::Breath(BreathMark::Comma),
+        });
+        let c = to_constrained(&to_logical(&score));
+        let mark = c
+            .glyphs
+            .iter()
+            .find(|g| g.provenance.source == TypedObjectId::Marker(id))
+            .expect("the breath mark is drawn");
+        assert_eq!(mark.glyph.as_str(), "breathMarkComma");
+        let alone = c
+            .glyphs
+            .iter()
+            .filter(|g| g.horizontal_slot == mark.horizontal_slot)
+            .count();
+        assert_eq!(alone, 1, "its column holds it alone");
+        let slot = c
+            .horizontal_slots
+            .iter()
+            .find(|s| s.id == mark.horizontal_slot)
+            .expect("its slot");
+        assert_eq!(slot.stretch_factor, 0.0, "a fixed column");
+        let right = mark.bounding_box.right.0;
+        assert!(
+            (slot.preferred_width.0 - (right + BREATH_GAP)).abs() < 1e-4,
+            "{} against {right}",
+            slot.preferred_width.0
+        );
+        // Its right edge at the column: the next note's column, at the same
+        // time, stands the column's step and the note's own room after it.
+        let column_x = mark.baseline.x.0 + right;
+        let next = c
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str().starts_with("notehead"))
+            .map(|g| g.baseline.x.0)
+            .filter(|&x| x > mark.baseline.x.0)
+            .fold(f32::INFINITY, f32::min);
+        assert!(
+            next >= column_x + COLUMN_X_STEP - 1e-4,
+            "{next} after {column_x}"
+        );
+    }
+
+    /// Every member of the family names primitives the layout holds, by
+    /// their kind, and a band that exists.
+    #[test]
+    fn a_family_member_must_name_what_the_layout_holds() {
+        let base = to_constrained(&to_logical(&epiphany_core::generators::valid_score_rich(5)));
+        let (glyph, stroke) = (base.glyphs[0].id(), base.strokes[0].id());
+        let band = base.glyphs[0].vertical_band;
+        let with = |mark: FamilyMark| {
+            let mut ir = base.clone();
+            ir.family.push(mark);
+            ir.validate()
+        };
+        let good = FamilyMark {
+            band,
+            glyphs: vec![glyph],
+            strokes: vec![stroke],
+            texts: Vec::new(),
+            room: Room::None,
+            placement: None,
+        };
+        assert_eq!(with(good.clone()), Ok(()));
+        // A glyph named as a stroke, a stroke as a text run.
+        assert_eq!(
+            with(FamilyMark {
+                strokes: vec![glyph],
+                ..good.clone()
+            }),
+            Err(ConstrainedValidationError::DanglingFamilyMember(glyph))
+        );
+        assert_eq!(
+            with(FamilyMark {
+                texts: vec![stroke],
+                ..good.clone()
+            }),
+            Err(ConstrainedValidationError::DanglingFamilyMember(stroke))
+        );
+        let lost = GlyphObjectId(u128::MAX - 3);
+        assert_eq!(
+            with(FamilyMark {
+                glyphs: vec![lost],
+                ..good.clone()
+            }),
+            Err(ConstrainedValidationError::DanglingFamilyMember(lost))
+        );
+        let nowhere = VerticalBandId(u128::MAX - 1);
+        assert_eq!(
+            with(FamilyMark {
+                band: nowhere,
+                ..good
+            }),
+            Err(ConstrainedValidationError::UnknownBand(nowhere))
         );
     }
 
