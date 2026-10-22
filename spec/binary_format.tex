@@ -240,7 +240,7 @@
   {\Large\scshape\color{epiphanyslate}Binary Format}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.21.0 --- Schema major 5: expression and text}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.22.0 --- The supported-layout boundary}\\[4pt]
   {\small\color{epiphanyslate}Normative for the byte layouts it defines}
   \vfill
 \end{titlepage}
@@ -1846,7 +1846,10 @@ format major version. All integers little-endian.
     be opened only while it carries no canonical base, and \MUSTNOT{}
     acquire one --- the epoch is fixed at creation and cannot be
     inherited by a later commit (Core Specification,
-    \sectionsc{The Container Epoch}) \\
+    \sectionsc{The Container Epoch}). A document reader
+    (Requirement~\ref{req:binfmt:op-block-boundary}) \MUST{} refuse a
+    legacy container by name: no current writer makes one, and it is
+    outside the supported boundary \\
   \tablenums{10..12} & \texttt{format\_minor} (\texttt{u16}) & \tablenums{0}
     written in this version; minor numbering restarts at a new major \\
   \tablenums{12..16} & \texttt{header\_length} (\texttt{u32}) &
@@ -2421,8 +2424,54 @@ Every chunk declares a \texttt{SchemaVersion} (major, minor) in its
     a writer \MUST{} raise the chunk schema minor when it emits any
     discriminant appended after the minor it otherwise declares, so that a
     decode failure on an unknown appended discriminant is attributable to a
-    version skew rather than corruption.
+    version skew rather than corruption. From 0.22.0 an operation-envelope
+    block's minor is also a gate for a reader that decodes its envelopes
+    (Requirement~\ref{req:binfmt:op-block-boundary}).
 \end{itemize}
+
+Before the product's 1.0 release nothing is migrated: what a reader supports
+is what the current writer writes, and anything else is refused by name. For
+an operation-envelope block that is a block whose envelopes all decode under
+the live layouts and whose version is the one minimal stamping derives from
+them (Section~\ref{sec:evolution:major2}, \textbf{Minimal stamping}). Every
+block the current writers produce is such a block, at whatever major its
+values need, so a file mixing majors is ordinary and reads.
+
+\begin{requirement}
+  \label{req:binfmt:op-block-boundary}
+  A reader that decodes an operation-envelope block's envelopes into
+  operations --- a \emph{document reader}, which reduces them into a score or
+  projects them as text --- \MUST{} hold every block it reads to the
+  supported-layout boundary, and \MUST{} refuse a block outside it by name:
+  \begin{enumerate}
+    \item a block whose schema minor is above the highest epoch the reader
+      assigns to any appended discriminant
+      (Section~\ref{sec:evolution:additive}) is refused before any of its
+      envelopes is decoded: an \emph{unsupported schema minor}, written by a
+      later build;
+    \item a block holding an envelope that does not decode under the
+      reader's live layouts is refused as an \emph{unsupported layout},
+      named by the block's declared version, and by the value where the
+      reader recognizes the historical layout (the five-field
+      \texttt{Tuplet} of majors~0 to~3,
+      Section~\ref{sec:evolution:major4}). A block whose content hash
+      verified is not corrupt, and its layout is not migrated;
+    \item a block whose envelopes decode but whose declared version
+      differs, in major or minor, from the version minimal stamping derives
+      from them is refused as \emph{mis-stamped}.
+  \end{enumerate}
+  The reference implementation's highest epoch is \tablenums{15}.
+\end{requirement}
+
+\begin{rationale}
+  Without the minor gate a later build's block fails on its first unknown
+  discriminant as a bare unknown tag, refused but not by name. Without the
+  stamp check a block stamped above or below its derivation reads exactly as
+  a correctly stamped one, though minimal stamping forbids a writer to make
+  it: the stamp is in the chunk's hash preimage, so one envelope set would
+  have several chunk identities. Both refuse only what no conforming writer
+  produces.
+\end{rationale}
 
 \section{What ``Additive'' Means Here}
 \label{sec:evolution:additive}
@@ -2828,7 +2877,9 @@ The major is assigned per payload type, exactly as in major~1:
     layout, so the kind append is a schema \emph{minor}, and a
     \texttt{TransposeInterval} rides in a major-0 block); every
     other payload keeps its prior major. A block stamps the maximum
-    over its payloads.
+    over its payloads. A document reader holds every block to this
+    derivation, major and minor, and refuses a block stamped otherwise
+    by name (Requirement~\ref{req:binfmt:op-block-boundary}).
     (Operation names are the Operation Catalog's; core Chapter~6's
     enum spells the creates \texttt{InsertStaff} /
     \texttt{InsertStaffInstance} / \texttt{InsertRegion}.)
@@ -3716,6 +3767,17 @@ Each line is \texttt{surface\ \ verdict\ \ class\ \ name\ \ hex}. The
 names \emph{why} a rejected vector is rejected and is \textbf{informative
 only}: implementations need not agree on an error taxonomy.
 
+Two surfaces pin the supported-layout boundary
+(Requirement~\ref{req:binfmt:op-block-boundary}). An
+\texttt{ops.operation\ub block} vector is a block's declared version, major
+then minor as \texttt{u16} LE, followed by the block payload
+(Section~\ref{sec:bundle:blocks}); it is accepted only when the block is
+inside the boundary, and its reject vectors carry a later minor, a stamp above
+and below the derivation, a historical tuplet and an envelope that does not
+decode. A \texttt{document.container} vector is a whole bundle image as a
+document reader opens it: the current container is read, and the same image
+at format major~\tablenums{0} is refused as a legacy container.
+
 \begin{requirement}
   \label{req:binfmt:decode-vectors}
   A conforming decoder \MUST{} accept every \texttt{accept} vector for a
@@ -4118,6 +4180,15 @@ only}: implementations need not agree on an error taxonomy.
   repeating a kind, a lyric not in NFC, and a filled
   \texttt{dynamic} slot under both majors. Semantics: Operation Catalog,
   0.21.0. \\
+    \today & Schema evolution, bundle, decode corpus & 0.22.0 --- X5b: the
+  supported-layout boundary (roadmap D4). A document reader holds every
+  operation-envelope block to it and refuses a block outside it by name
+  (Requirement~\ref{req:binfmt:op-block-boundary}): a minor later than its
+  highest epoch, read before any envelope; an envelope outside the live
+  layouts, named by the block's version; a stamp other than minimal stamping
+  derives. It refuses a legacy container by name. The decode corpus gains
+  the \texttt{ops.operation\ub block} and \texttt{document.container}
+  surfaces. \\
 \bottomrule
 \end{longtable}
 

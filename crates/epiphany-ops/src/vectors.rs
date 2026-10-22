@@ -23,8 +23,8 @@ use epiphany_core::{
 use epiphany_determinism::CanonicalEncode;
 
 use crate::{
-    IntegrityAnomaly, IntegrityAnomalyKind, MaterializedState, ObjectState, OperationEnvelope,
-    OperationKindRegistryId, OperationKindTag, PendingReason,
+    BlockStamp, IntegrityAnomaly, IntegrityAnomalyKind, MaterializedState, ObjectState,
+    OperationEnvelope, OperationKindRegistryId, OperationKindTag, PendingReason,
 };
 
 /// One vector: `(surface, verdict, class, name, bytes)`.
@@ -731,7 +731,155 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         v.push(row(OE, "accept", "-", name, envelope.to_canonical_bytes()));
     }
 
+    // ---- ops.operation_block ------------------------------------------------
+    // An operation block as a reader holds it to the supported-layout boundary
+    // (Binary Format companion §"The Chunk-Level Gate"): the block's declared
+    // schema version, major then minor as little-endian `u16`s, followed by
+    // the block payload in `bundle.block`'s framing. Accepted only when every
+    // envelope decodes under the live layouts, the version is what minimal
+    // stamping derives from them, and the minor is no later than this
+    // build's.
+    const OB: &str = "ops.operation_block";
+    let envelope = |name: &str| {
+        v.iter()
+            .find(|(s, verdict, _, n, _)| *s == OE && *n == name && *verdict == "accept")
+            .map(|row| row.4.clone())
+            .expect("the envelope vector exists")
+    };
+    let derive = |payloads: &[Vec<u8>]| {
+        let decoded: Vec<OperationEnvelope> = payloads
+            .iter()
+            .map(|bytes| crate::envdecode::decode_envelope(bytes).expect("an accept vector"))
+            .collect();
+        BlockStamp::derive(&decoded)
+    };
+    let clef = vec![envelope("set_clef")];
+    let mixed = vec![
+        envelope("create_instrument"),
+        envelope("set_clef"),
+        envelope("create_tuplet"),
+    ];
+    let (clef_stamp, mixed_stamp) = (derive(&clef), derive(&mixed));
+    let at = |major, minor| BlockStamp { major, minor };
+    let historical = v
+        .iter()
+        .find(|(s, _, _, n, _)| *s == OE && n == "create_tuplet_before_major_4")
+        .map(|row| row.4.clone())
+        .expect("the historical tuplet vector exists");
+    let mut truncated = envelope("set_clef");
+    truncated.pop();
+    for (verdict, class, name, declared, payloads) in [
+        ("accept", "-", "one_major_0_operation", clef_stamp, &clef),
+        ("accept", "-", "mixed_majors", mixed_stamp, &mixed),
+        (
+            "reject",
+            "unsupported-schema-minor",
+            "later_minor",
+            at(clef_stamp.major, crate::block::HIGHEST_SCHEMA_MINOR + 1),
+            &clef,
+        ),
+        (
+            "reject",
+            "mis-stamped",
+            "major_above_derived",
+            at(clef_stamp.major + 1, clef_stamp.minor),
+            &clef,
+        ),
+        (
+            "reject",
+            "mis-stamped",
+            "major_below_derived",
+            at(mixed_stamp.major - 1, mixed_stamp.minor),
+            &mixed,
+        ),
+        (
+            "reject",
+            "mis-stamped",
+            "minor_below_derived",
+            at(clef_stamp.major, 1),
+            &clef,
+        ),
+        (
+            "reject",
+            "unsupported-layout",
+            "tuplet_before_major_4",
+            at(0, 13),
+            &vec![historical],
+        ),
+        (
+            "reject",
+            "unsupported-layout",
+            "undecodable_envelope",
+            clef_stamp,
+            &vec![truncated],
+        ),
+    ] {
+        v.push(row(
+            OB,
+            verdict,
+            class,
+            name,
+            block_vector(declared, payloads),
+        ));
+    }
+    let mut trailing = block_vector(clef_stamp, &clef);
+    trailing.push(0);
+    v.push(row(
+        OB,
+        "reject",
+        "trailing-bytes",
+        "trailing_byte",
+        trailing,
+    ));
+
     v
+}
+
+/// An `ops.operation_block` vector: `declared`'s major and minor, then
+/// `payloads` framed as an operation block is (a `u32` count, then each
+/// envelope as a `u32` length and its bytes, all little-endian).
+fn block_vector(declared: BlockStamp, payloads: &[Vec<u8>]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&declared.major.to_le_bytes());
+    out.extend_from_slice(&declared.minor.to_le_bytes());
+    out.extend_from_slice(&(payloads.len() as u32).to_le_bytes());
+    for payload in payloads {
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(payload);
+    }
+    out
+}
+
+/// The inverse of [`block_vector`]'s framing, or `None` where it is malformed.
+fn split_block_vector(bytes: &[u8]) -> Option<(BlockStamp, Vec<Vec<u8>>)> {
+    fn u32_at(bytes: &[u8], at: usize) -> Option<usize> {
+        let field = bytes.get(at..at + 4)?;
+        usize::try_from(u32::from_le_bytes(field.try_into().ok()?)).ok()
+    }
+    let major = u16::from_le_bytes(bytes.get(0..2)?.try_into().ok()?);
+    let minor = u16::from_le_bytes(bytes.get(2..4)?.try_into().ok()?);
+    let count = u32_at(bytes, 4)?;
+    let mut at = 8;
+    let mut payloads = Vec::new();
+    for _ in 0..count {
+        let len = u32_at(bytes, at)?;
+        at += 4;
+        payloads.push(bytes.get(at..at.checked_add(len)?)?.to_vec());
+        at += len;
+    }
+    (at == bytes.len()).then_some((BlockStamp { major, minor }, payloads))
+}
+
+fn check_block(bytes: &[u8]) -> Result<bool, String> {
+    let (declared, payloads) =
+        split_block_vector(bytes).ok_or_else(|| "malformed block framing".to_owned())?;
+    match crate::block::decode_operation_block(&payloads, declared) {
+        Ok(decoded) => {
+            let reencoded: Vec<Vec<u8>> = decoded.iter().map(|e| e.to_canonical_bytes()).collect();
+            Ok(block_vector(declared, &reencoded) == bytes)
+        }
+        Err(e) => Err(format!("{e:?}")),
+    }
 }
 
 /// Applies `surface`'s decoder to `bytes`.
@@ -757,6 +905,7 @@ pub fn check(surface: &str, bytes: &[u8]) -> Option<Result<bool, String>> {
             Ok(env) => Ok(env.to_canonical_bytes() == bytes),
             Err(e) => Err(format!("{e:?}")),
         }),
+        "ops.operation_block" => Some(check_block(bytes)),
         _ => None,
     }
 }
@@ -829,6 +978,7 @@ mod tests {
             "ops.materialized_state",
             "ops.operation_kind_tag",
             "ops.operation_envelope",
+            "ops.operation_block",
         ] {
             let rows: Vec<_> = decode_vectors()
                 .into_iter()
@@ -843,6 +993,43 @@ mod tests {
                 "{surface} has no reject vector"
             );
         }
+    }
+
+    /// Each `ops.operation_block` rejection is refused by the name its class
+    /// gives, not by another of the boundary's refusals.
+    #[test]
+    fn each_block_rejection_is_refused_by_its_own_name() {
+        use crate::block::OperationBlockError as E;
+        let mut seen = std::collections::BTreeSet::new();
+        for (surface, verdict, class, name, bytes) in decode_vectors() {
+            if surface != "ops.operation_block" || verdict != "reject" {
+                continue;
+            }
+            let Some((declared, payloads)) = split_block_vector(&bytes) else {
+                assert_eq!(class, "trailing-bytes", "{name}");
+                continue;
+            };
+            let refusal = crate::block::decode_operation_block(&payloads, declared)
+                .expect_err("a reject vector");
+            match (class, &refusal) {
+                ("unsupported-schema-minor", E::UnsupportedSchemaMinor { .. })
+                | ("mis-stamped", E::MisStamped { .. }) => {}
+                ("unsupported-layout", E::UnsupportedLayout { value, .. }) => {
+                    let expected = (name == "tuplet_before_major_4").then_some("Tuplet");
+                    assert_eq!(*value, expected, "{name}");
+                }
+                _ => panic!("{name} ({class}): refused as {refusal:?}"),
+            }
+            seen.insert(class);
+        }
+        assert_eq!(
+            seen.into_iter().collect::<Vec<_>>(),
+            [
+                "mis-stamped",
+                "unsupported-layout",
+                "unsupported-schema-minor"
+            ]
+        );
     }
 
     /// The two rejection classes that need *different* machinery: a map order a

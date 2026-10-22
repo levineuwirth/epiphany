@@ -41,13 +41,14 @@
 use std::collections::BTreeSet;
 
 use epiphany_bundle::{
-    BlobId, BlockStore, Bundle, BundleError, ChunkKind, DocumentId, LineageId, Manifest,
-    ProfileConstraints, ProfileDeclaration, ProfileId, RetentionPolicy, SchemaVersion, SemVer,
+    BlobId, BlockStore, Bundle, BundleError, ChunkKind, DocumentId, FormatEpoch, LineageId,
+    Manifest, ProfileConstraints, ProfileDeclaration, ProfileId, RetentionPolicy, SchemaVersion,
+    SemVer,
 };
 use epiphany_core::textvalue::Sexp;
 use epiphany_ops::{
-    canonical_reduction_order, decode_envelope, project_envelope, EnvelopeDecodeError,
-    OperationEnvelope,
+    canonical_reduction_order, decode_operation_block, project_envelope, BlockStamp,
+    OperationBlockError, OperationEnvelope,
 };
 
 use crate::{
@@ -64,9 +65,33 @@ pub enum ProjectError {
     /// Reading a chunk, an operation-envelope block, or a blob through the
     /// bundle failed.
     Bundle(BundleError),
-    /// A stored operation-envelope block held bytes that do not decode to a
-    /// canonical [`OperationEnvelope`].
-    Envelope(EnvelopeDecodeError),
+    /// The container is format major 0, which the bundle layer still decodes
+    /// and no current writer makes: outside the supported boundary (D4).
+    LegacyContainer,
+    /// An operation block declares a schema minor later than this build's
+    /// ([`OperationBlockError::UnsupportedSchemaMinor`]).
+    UnsupportedSchemaMinor {
+        /// The block's declared major.
+        major: u16,
+        /// The block's declared minor.
+        minor: u16,
+    },
+    /// An operation block's envelopes decode, but it is not stamped as minimal
+    /// stamping derives from them ([`OperationBlockError::MisStamped`]).
+    MisStamped {
+        /// The version the block declares.
+        declared: BlockStamp,
+        /// The version its envelopes derive.
+        derived: BlockStamp,
+    },
+    /// An operation block holds an envelope that does not decode under the live
+    /// layouts ([`OperationBlockError::UnsupportedLayout`]).
+    UnsupportedLayout {
+        /// The version the block declares.
+        declared: BlockStamp,
+        /// The value whose historical layout was recognized, if one was.
+        value: Option<&'static str>,
+    },
     /// The bundle's manifest carries a canonical base
     /// (`spec/CONTRACT_FORMAT_EPOCH_MAJOR1.md` pin 3b: "text projection
     /// cannot mint a canonical base"). Symmetric with
@@ -82,7 +107,34 @@ impl core::fmt::Display for ProjectError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             ProjectError::Bundle(e) => write!(f, "bundle read failed: {e}"),
-            ProjectError::Envelope(e) => write!(f, "operation envelope failed to decode: {e}"),
+            ProjectError::LegacyContainer => f.write_str(
+                "the bundle is a legacy (format 0) container, which this companion does not \
+                 project",
+            ),
+            ProjectError::UnsupportedSchemaMinor { major, minor } => write!(
+                f,
+                "{}",
+                OperationBlockError::UnsupportedSchemaMinor {
+                    major: *major,
+                    minor: *minor
+                }
+            ),
+            ProjectError::MisStamped { declared, derived } => write!(
+                f,
+                "{}",
+                OperationBlockError::MisStamped {
+                    declared: *declared,
+                    derived: *derived
+                }
+            ),
+            ProjectError::UnsupportedLayout { declared, value } => write!(
+                f,
+                "{}",
+                OperationBlockError::UnsupportedLayout {
+                    declared: *declared,
+                    value: *value
+                }
+            ),
             ProjectError::CanonicalBaseUnsupported => f.write_str(
                 "the bundle's manifest carries a canonical base, which this companion cannot \
                  project: text projection cannot mint a canonical base",
@@ -95,8 +147,11 @@ impl std::error::Error for ProjectError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             ProjectError::Bundle(e) => Some(e),
-            ProjectError::Envelope(e) => Some(e),
-            ProjectError::CanonicalBaseUnsupported => None,
+            ProjectError::LegacyContainer
+            | ProjectError::UnsupportedSchemaMinor { .. }
+            | ProjectError::MisStamped { .. }
+            | ProjectError::UnsupportedLayout { .. }
+            | ProjectError::CanonicalBaseUnsupported => None,
         }
     }
 }
@@ -107,9 +162,19 @@ impl From<BundleError> for ProjectError {
     }
 }
 
-impl From<EnvelopeDecodeError> for ProjectError {
-    fn from(e: EnvelopeDecodeError) -> Self {
-        ProjectError::Envelope(e)
+impl From<OperationBlockError> for ProjectError {
+    fn from(e: OperationBlockError) -> Self {
+        match e {
+            OperationBlockError::UnsupportedSchemaMinor { major, minor } => {
+                ProjectError::UnsupportedSchemaMinor { major, minor }
+            }
+            OperationBlockError::MisStamped { declared, derived } => {
+                ProjectError::MisStamped { declared, derived }
+            }
+            OperationBlockError::UnsupportedLayout { declared, value } => {
+                ProjectError::UnsupportedLayout { declared, value }
+            }
+        }
     }
 }
 
@@ -474,20 +539,30 @@ fn reject_canonical_base(manifest: &Manifest) -> Result<(), ProjectError> {
 /// Operation envelopes are decoded from **every** operation-envelope block the
 /// manifest references (`manifest.operation_roots`; block boundaries are a
 /// storage artifact, not semantic structure) via
-/// [`epiphany_ops::decode_envelope`], then put into
+/// [`epiphany_ops::decode_operation_block`], which holds each block to the
+/// supported-layout boundary, then put into
 /// [`epiphany_ops::canonical_reduction_order`] — computed once over the whole
 /// gathered set, because the order is causal and cannot be decided per block.
+/// A legacy (format 0) container is refused by name before anything is read.
 pub fn document_from_bundle<S: BlockStore>(
     bundle: &Bundle<S>,
 ) -> Result<TextDocument, ProjectError> {
+    if bundle.header().epoch == FormatEpoch::Legacy {
+        return Err(ProjectError::LegacyContainer);
+    }
     let manifest = bundle.manifest();
     reject_canonical_base(manifest)?;
 
     let mut decoded = Vec::new();
     for root in &manifest.operation_roots {
-        for raw in bundle.read_operation_block(root)? {
-            decoded.push(decode_envelope(&raw)?);
-        }
+        let declared = BlockStamp {
+            major: root.schema_version.major,
+            minor: root.schema_version.minor,
+        };
+        decoded.extend(decode_operation_block(
+            &bundle.read_operation_block(root)?,
+            declared,
+        )?);
     }
     let envelopes: Vec<OperationEnvelope> = {
         let refs: Vec<&OperationEnvelope> = decoded.iter().collect();
@@ -1120,6 +1195,62 @@ mod tests {
         assert_eq!(via_one_call, via_two_stages);
     }
 
+    /// A block outside the supported-layout boundary is refused by name, as the
+    /// document layer refuses it: a minor later than this build's, and a stamp
+    /// other than the one minimal stamping derives. The same operations stamped
+    /// as derived project.
+    #[test]
+    fn a_block_outside_the_boundary_is_refused_by_name() {
+        let mut rng = epiphany_determinism::fuzz::SplitMix64::new(0x5B2B);
+        let envelopes = epiphany_ops::fuzz::gen_envelope_set(&mut rng, 8);
+        let payloads: Vec<Vec<u8>> = envelopes.iter().map(|e| e.to_canonical_bytes()).collect();
+        let derived = BlockStamp::derive(&envelopes);
+        let bundle_with = |declared: BlockStamp| {
+            let mut bundle = Bundle::create(
+                MemStore::new(),
+                FileUuid([3; 16]),
+                Manifest::empty(DocumentId([4; 16])),
+                crate::production_caps(),
+            )
+            .unwrap();
+            let block = StagedChunk::operation_block_versioned(
+                encode_block(&payloads),
+                SchemaVersion::new(declared.major, declared.minor),
+            );
+            bundle
+                .commit_versioned(
+                    &[block],
+                    bundle.superblock().manifest_schema_version,
+                    |ctx| {
+                        let mut manifest = ctx.previous_manifest.clone();
+                        manifest.operation_roots = vec![ctx.new_chunks[0]];
+                        manifest
+                    },
+                )
+                .unwrap();
+            bundle
+        };
+        let document = document_from_bundle(&bundle_with(derived)).expect("stamped as derived");
+        assert_eq!(document.envelopes.len(), envelopes.len());
+        let later = epiphany_ops::HIGHEST_SCHEMA_MINOR + 1;
+        assert!(matches!(
+            document_from_bundle(&bundle_with(BlockStamp {
+                minor: later,
+                ..derived
+            })),
+            Err(ProjectError::UnsupportedSchemaMinor { major, minor })
+                if major == derived.major && minor == later
+        ));
+        let above = BlockStamp {
+            major: derived.major + 1,
+            ..derived
+        };
+        assert!(matches!(
+            document_from_bundle(&bundle_with(above)),
+            Err(ProjectError::MisStamped { declared, derived: d }) if declared == above && d == derived
+        ));
+    }
+
     #[test]
     fn a_corrupt_operation_envelope_is_a_typed_error_not_a_panic() {
         let mut initial = Manifest::empty(DocumentId([5; 16]));
@@ -1141,7 +1272,10 @@ mod tests {
             .expect("the block's framing is well-formed even though its one envelope is not");
 
         match document_from_bundle(&bundle) {
-            Err(ProjectError::Envelope(_)) => {}
+            Err(ProjectError::UnsupportedLayout {
+                declared: BlockStamp { major: 0, minor: 1 },
+                value: None,
+            }) => {}
             other => panic!("expected a decode error for garbage envelope bytes, got {other:?}"),
         }
     }

@@ -11214,6 +11214,11 @@ guarantee, and no sequence of commits can promote one into the other.
   \begin{itemize}
     \item \emph{Legacy, no canonical base} --- the bundle \MAY{} be
       opened. Nothing whose validity cannot be established is exposed.
+      A document reader, which decodes the container's operations into a
+      score or a text, refuses it by name all the same: no current writer
+      makes one, so it is outside the supported boundary (Binary Format
+      companion, \sectionsc{The Fixed Header} and
+      \sectionsc{The Chunk-Level Gate}).
     \item \emph{Legacy, canonical base present} --- the bundle
       \MUST{} be refused. A base predating any reduction authority is
       not safe materialized state, and \MUSTNOT{} be served in a
@@ -17362,6 +17367,12 @@ layouts they own versus inherit:
   the wire from schema major~5 (Binary Format companion
   \sectionsc{Schema Major 5}); the reduction algorithm version is
   \texttt{4}, which X4b opened.
+  \\
+  \today & \sectionsc{The Container Epoch} &
+  \textbf{X5b: the supported-layout boundary} (roadmap D4). A document
+  reader refuses a legacy container by name, though the bundle layer still
+  decodes it, and holds every operation block to the boundary the Binary
+  Format companion defines (\texttt{req:binfmt:op-block-boundary}).
   \\
   \bottomrule
 \end{longtable}

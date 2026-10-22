@@ -36,6 +36,11 @@
 //! * `envelope` — [`OperationEnvelope`], its canonical serialization, the
 //!   [`EnvelopeHash`] (`MUSCENVH`), and the well-formedness contract including
 //!   the `stamp.id == id` invariant (Chapter 6 §6.4).
+//! * `block` — [`decode_operation_block`], an operation block's envelopes held
+//!   to the supported-layout boundary: decoding under the live layouts, the
+//!   block stamped as minimal stamping derives ([`BlockStamp`]), and its minor
+//!   no later than this build's ([`HIGHEST_SCHEMA_MINOR`]); refused by name
+//!   otherwise ([`OperationBlockError`]).
 //! * `slot` — the order-independent [`OperationSlot`] model: `Single` or
 //!   `Equivocated`, with the Pass-10 transition rules (Chapter 6 §6.5).
 //! * `anomaly` — [`AnomalousReplicaSegment`] and the [`IntegrityAnomaly`]
@@ -78,6 +83,7 @@
 //! and sorted projections (Appendix D §"Ordered Iteration").
 
 mod anomaly;
+mod block;
 mod causal;
 mod conflict;
 mod decode;
@@ -775,6 +781,7 @@ pub const CURRENT_REDUCTION_ALGORITHM_VERSION: u32 = 4;
 pub use anomaly::{
     AnomalousReplicaSegment, IntegrityAnomaly, IntegrityAnomalyKind, ReplicaAnomalyReason,
 };
+pub use block::{decode_operation_block, BlockStamp, OperationBlockError, HIGHEST_SCHEMA_MINOR};
 pub use causal::CausalContext;
 pub use conflict::{
     derive_conflict_id, ConflictId, ConflictKind, ConflictRecord, ConflictRegistry,
