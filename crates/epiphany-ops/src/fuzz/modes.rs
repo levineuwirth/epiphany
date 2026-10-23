@@ -83,12 +83,11 @@
 //! placed over another's span with an instance of a staff that region holds,
 //! or starts at a region's end or at an event, so that a fill overlapping a
 //! region holding its staff is refused (`RegionsOverlap`); a region's extent
-//! takes no offset from what it names, since a wall-clock one from a metric
-//! region's edge is applied and breaks invariant 9, which no verdict yet
-//! refuses. A user break is anchored to a measure's start, an event or an
-//! offset from its region's start, now and then in another region
-//! (`TargetMissing`). A constant tempo segment now and then records its end
-//! tempo (`TempoMapMalformed`), built in memory since no decoder reads it.
+//! takes no offset from what it names. A user break is anchored to a
+//! measure's start, an event or an offset from its region's start, now and
+//! then in another region (`TargetMissing`). A constant tempo segment now and
+//! then records its end tempo (`TempoMapMalformed`), built in memory since no
+//! decoder reads it.
 //! Expression text is one of a marker's kinds.
 //!
 //! Everything is seeded: [`generate`] is a function of its seed and length, so
@@ -2144,9 +2143,7 @@ fn make(
             // starting, with no offset, at a region's end, which the ledger
             // places through its index of extents, or at an event, which it
             // cannot place, so that a fill of a staff another live region
-            // holds is refused. No offset is written: a wall-clock one from a
-            // metric region's edge is applied and breaks invariant 9, which
-            // no verdict yet refuses.
+            // holds is refused. No offset is written.
             let mut region = placed_region(sim, r, h);
             let mut fill = None;
             match sim.rng.below(9) {

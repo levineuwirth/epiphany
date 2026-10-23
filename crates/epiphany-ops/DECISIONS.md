@@ -4089,3 +4089,52 @@ break keyed by its region's start, the constant segment admitted, and Q17's
 supersession in graph-aware reduction alone and in both modes. Each shows,
 Q17's at no seed before arm 65; the planted build with no plant live equals
 the clean one at every seed, and the earlier arms' plants show there too.
+
+## X5b.8 — a region's extent answers to its target's time model (2026-10-23)
+
+**A time extent's offset is held to its target, as invariant 9 reads it.**
+`AnchorOffsetModel` holds every stored anchor's offset to its target's time
+model: a wall-clock offset to a model admitting wall-clock time, a musical one
+to a model admitting musical time. `CreateRegion` checked no extent anchor, and
+a migration stranded markers, spanners, tempo segments and a region's own
+measures and changes, never another region's extent, so one author broke the
+invariant through a region's extent by D81's four routes: an extent at a metric
+region's edge by a wall-clock offset, or at a proportional region's by a
+musical one; a migration out of musical time of a region another region's
+extent anchors by a musical offset; and a migration of a region whose own end
+is its start plus a musical length. Probing them found their mirrors and three
+more of the same object: a migration into metric time of a region another's
+extent, or its own bound, anchors by a wall-clock offset; an extent at a
+metric region's event or measure by a wall-clock offset; and an extent naming
+a region before it is made, the region then made with a model the offset
+contradicts.
+
+Reduction version 5 takes one rule for all of them, read from the indices both
+modes keep. A `CreateRegion` is refused `WrongRegionTimeModel` where its own
+extent anchors its target by an offset the target's model does not admit (a
+region's edge by that region's discipline, its own edge by its own model, an
+event or a measure by its region's, and an event in an aleatoric region where
+each event fixes its clock by the event's, musical for every event an
+operation places), or where a live region's extent already anchors the new
+region so. A migration strands each live region whose extent anchors its
+region by an offset the target does not admit, the migrated region itself
+where its own bound is so anchored, named in its
+`TimeModelMigrationFailure` as a marker anchored there is; a region a tempo
+segment strands too is named once. A target that is not live is not judged:
+the extent index keeps a removed region's extent and discipline, and the
+measure values a removed measure, but the invariant cannot find either. The
+check is the invariant's own reading, `CoordinateDiscipline::admits_offset`,
+which the checker now calls too.
+
+No undo reaches these: a migration writes nothing an undo restores, so no undo
+gives a region back an earlier time model; a region's or an instance's delete
+is not undone; and a redo of an undone region create restores nothing. No
+writer makes an extent with an offset (the importer and the editor place
+regions in wall-clock time).
+
+Found by the same probes and left to the owner: the other holders of a region
+anchor have the wall-clock half of the gap. A marker or a spanner anchored to a
+metric region by a wall-clock offset is applied, as is a tempo segment so
+anchored, and a migration into metric time strands none of them, breaking
+`AnchorOffsetModel`; version 4's rule refuses and strands only their musical
+offsets out of musical time.

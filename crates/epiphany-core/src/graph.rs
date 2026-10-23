@@ -513,6 +513,29 @@ impl CoordinateDiscipline {
         )
     }
 
+    /// Whether an anchor offset of `kind` is valid against a region of this
+    /// discipline (graph invariant `AnchorOffsetModel`): no offset always, a
+    /// musical one as [`Self::admits_musical_offsets`] says, and a wall-clock
+    /// one in a proportional region, or an aleatoric region anchored in
+    /// wall-clock time, either way per event, or freely mixed. The
+    /// invariant's own reading, shared with reduction, so a region's time
+    /// extent is judged as the invariant will judge it.
+    pub fn admits_offset(&self, kind: crate::time::OffsetKind) -> bool {
+        use crate::time::OffsetKind;
+        use AleatoricAnchoringDiscipline as A;
+        match kind {
+            OffsetKind::Zero => true,
+            OffsetKind::Musical => self.admits_musical_offsets(),
+            OffsetKind::WallClock => matches!(
+                self,
+                CoordinateDiscipline::WallClock
+                    | CoordinateDiscipline::Aleatoric(
+                        A::WallClock | A::EitherPerEvent | A::FreelyMixed
+                    )
+            ),
+        }
+    }
+
     /// Whether an event placed at `position` for `duration` keeps invariant 4
     /// (`EventCoordinateModel`) in a region of this discipline: the
     /// invariant's own reading, shared with reduction, so a migration judges

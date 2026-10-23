@@ -3187,20 +3187,9 @@ fn duration_bounds_kind(b: &crate::time::DurationBounds) -> BoundsKind {
 }
 
 /// Whether an anchor offset kind matches a region's coordinate discipline
-/// (invariant 9).
+/// (invariant 9), as reduction reads it too.
 fn offset_matches(offset: OffsetKind, disc: CoordinateDiscipline) -> bool {
-    use crate::graph::AleatoricAnchoringDiscipline as A;
-    match offset {
-        OffsetKind::Zero => true,
-        OffsetKind::Musical => disc.admits_musical_offsets(),
-        OffsetKind::WallClock => matches!(
-            disc,
-            CoordinateDiscipline::WallClock
-                | CoordinateDiscipline::Aleatoric(A::WallClock)
-                | CoordinateDiscipline::Aleatoric(A::EitherPerEvent)
-                | CoordinateDiscipline::Aleatoric(A::FreelyMixed)
-        ),
-    }
+    disc.admits_offset(offset)
 }
 
 /// Whether an anchor offset kind matches a *specific* coordinate clock — used

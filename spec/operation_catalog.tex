@@ -871,7 +871,13 @@ musical time since is superseded by that migration
 (Section~\ref{sec:k0:undo}). A marker's kind may be expression text
 (\texttt{MarkerKind::ExpressionText}, appended at epoch~16): a
 \texttt{CreateCrossCutting} or \texttt{ModifyCrossCutting} carrying one
-requires that minor, and reduces as any marker does. Accordingly
+requires that minor, and reduces as any marker does. A region's time extent
+answers to its target's time model: a \texttt{CreateRegion} whose extent
+anchors its target by an offset the target's model does not admit is refused
+\texttt{WrongRegionTimeModel}, and a migration strands a live region whose
+extent the target model would contradict
+(Sections~\ref{sec:k0:structural-containers}
+and~\ref{sec:k0:change-region-time-model}). Accordingly
 \texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION} moves
 \texttt{4}~$\rightarrow$~\texttt{5}, one version for the phase.
 
@@ -1749,7 +1755,12 @@ strands the region itself, named among them, the segment having no identifier,
 and a live staff instance of the region holding a clef or key change, which
 stands at a musical offset, strands that instance, named among them,
 and an applied such migration drops the region's system and page breaks and
-its default and local metric grids (since version~0.19.0). Graph-aware
+its default and local metric grids (since version~0.19.0). Since
+version~0.22.0, a target that does not admit an offset by which a live
+region's time extent anchors the region strands that region, named among
+them, the migrated region itself where its own bound is so anchored: a
+musical offset out of musical time, and a wall-clock offset into a model
+admitting none (a metric target, or an aleatoric one anchored musically). Graph-aware
 reduction also judges, from the graph, the region's events the index does not
 hold (a base's events of another coordinate kind, which base-free reduction
 never has), against the target's discipline as invariant~4 does (an aleatoric
@@ -1828,6 +1839,21 @@ anchored to an event or a measure, or by a musical offset, cannot be placed
 without the graph and a tempo map, which a later edit could move, so it counts
 as overlapping every region with which it shares a staff. In a transaction the
 refused create conflicts the transaction whole; nothing is repaired.
+
+Since version~0.22.0 a \texttt{CreateRegion} is a precondition no-op,
+\texttt{WrongRegionTimeModel}, when its time extent anchors its target by an
+offset the target's time model does not admit, as invariant~9
+(\texttt{AnchorOffsetModel}) reads it: a wall-clock offset needs a model
+admitting wall-clock time and a musical one a model admitting musical time. A
+region's edge answers to that region's model, the new region's own edge to its
+own; an event to its region's, but in an aleatoric region whose events each
+fix their clock, to the event's, musical for every event an operation places;
+and a measure to its region's. It is refused likewise when a live region's
+extent already anchors the new region by an offset the new region's model does
+not admit. A target that is not live is not judged, as the invariant cannot
+find it. Both modes read the verdict from the ledger's indices: the region
+extents and coordinate disciplines, object liveness, the occupancy index and
+the measure values.
 
 \textbf{Conflict cases.} None at reduction time: creation is set-union (a repeat
 create is idempotent), and the empty-only delete is a deterministic precondition

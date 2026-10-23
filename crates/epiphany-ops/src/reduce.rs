@@ -1287,7 +1287,10 @@ struct Reducer<'a> {
     // which no operation rewrites: a `CreateStaffInstance` is refused where
     // its region overlaps in time another live region holding a live instance
     // of its staff (`RegionsOverlap`, reduction version 5), the extents
-    // compared as this index places them, in both modes alike.
+    // compared as this index places them, in both modes alike; and a
+    // `CreateRegion` or a migration reads here the live extents anchored to
+    // a region by an offset, held to its time model (X5b.8). A removed
+    // region's extent stays, so a reader asks the region's liveness beside.
     region_extents: BTreeMap<RegionId, TimeExtent>,
     migrated_regions: BTreeSet<RegionId>,
     region_migrator: BTreeMap<RegionId, OperationId>,
@@ -4112,6 +4115,102 @@ impl<'a> Reducer<'a> {
         })
     }
 
+    /// The coordinate discipline an extent anchor's offset answers to
+    /// (invariant 9), read from the indices both modes keep: a region's edge
+    /// to that region's, the region being created (`own`) to its own model;
+    /// an event to its region's, or in a region where each event fixes its
+    /// own clock to the event's, musical for every event the occupancy index
+    /// holds; a measure to its instance's region's. `None` where the target
+    /// is not live or not placed, which the invariant cannot judge either.
+    fn extent_anchor_discipline(
+        &self,
+        anchor: &TimeAnchor,
+        own: (RegionId, CoordinateDiscipline),
+    ) -> Option<CoordinateDiscipline> {
+        let live = |object| matches!(self.objects.get(&object), Some(ObjectState::Live));
+        let region = match anchor {
+            TimeAnchor::WallClock { .. } => return None,
+            TimeAnchor::Region { id, .. } if *id == own.0 => return Some(own.1),
+            TimeAnchor::Region { id, .. } => {
+                Some(*id).filter(|id| live(TypedObjectId::Region(*id)))
+            }
+            TimeAnchor::Event { id, .. } => Some(*id)
+                .filter(|id| live(TypedObjectId::Event(*id)))
+                .and_then(|id| self.event_voice(id))
+                .and_then(|voice| self.indexed_voice_region(voice)),
+            TimeAnchor::Measure { id, .. } => Some(*id)
+                .filter(|id| live(TypedObjectId::Measure(*id)))
+                .and_then(|id| self.measure_values.get(&id))
+                .and_then(|(instance, _)| self.instance_region_of(*instance)),
+        }?;
+        let discipline = *self.region_disciplines.get(&region)?;
+        Some(match (anchor, discipline) {
+            (
+                TimeAnchor::Event { .. },
+                CoordinateDiscipline::Aleatoric(
+                    epiphany_core::AleatoricAnchoringDiscipline::EitherPerEvent,
+                ),
+            ) => CoordinateDiscipline::Musical,
+            _ => discipline,
+        })
+    }
+
+    /// `Some(NoOp)` when a `CreateRegion` would leave a time extent whose
+    /// offset its target's time model does not admit: its own extent
+    /// anchoring a target so ([`Self::extent_anchor_discipline`]; its own
+    /// edge by its own model), or a live region's extent already anchoring
+    /// the new region's edge so, named before the region was made. Refused
+    /// `WrongRegionTimeModel` in both modes (reduction version 5, X5b.8:
+    /// before it the region applied, `AnchorOffsetModel`).
+    fn extent_offset_slot(&self, region: &epiphany_core::Region) -> Option<OperationEffect> {
+        let own = (region.id, region.time_model.coordinate_discipline());
+        let admitted = |anchor: &TimeAnchor| match (
+            anchor.offset(),
+            self.extent_anchor_discipline(anchor, own),
+        ) {
+            (Some(offset), Some(discipline)) => discipline.admits_offset(offset.kind()),
+            _ => true,
+        };
+        let disagrees = !admitted(&region.time_extent.start)
+            || !admitted(&region.time_extent.end)
+            || !self.extents_anchored_against(region.id, own.1).is_empty();
+        disagrees.then_some(OperationEffect::NoOp {
+            reason: NoOpReason::PreconditionFailedUnderReduction {
+                reason: PreconditionFailureReason::WrongRegionTimeModel,
+            },
+        })
+    }
+
+    /// The live regions whose time extent anchors `region`'s edge by an
+    /// offset `discipline` does not admit, `region` among them where its own
+    /// bound is so anchored: a migration of `region` to `discipline` strands
+    /// each, as it strands a marker anchored there, and a create of `region`
+    /// under it is refused (reduction version 5, X5b.8). Read from the
+    /// extent index both modes keep, which keeps a removed region's extent,
+    /// so its liveness is read beside it.
+    fn extents_anchored_against(
+        &self,
+        region: RegionId,
+        discipline: CoordinateDiscipline,
+    ) -> Vec<RegionId> {
+        self.region_extents
+            .iter()
+            .filter(|(id, _)| {
+                matches!(
+                    self.objects.get(&TypedObjectId::Region(**id)),
+                    Some(ObjectState::Live)
+                )
+            })
+            .filter(|(_, extent)| {
+                [&extent.start, &extent.end].into_iter().any(|anchor| {
+                    matches!(anchor, TimeAnchor::Region { id, offset, .. }
+                        if *id == region && !discipline.admits_offset(offset.kind()))
+                })
+            })
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
     /// The migration that took `region` out of musical time, where it now
     /// admits no musical offset: a value an undo would restore there in
     /// musical time is superseded by it, as its setter is refused there
@@ -5486,6 +5585,9 @@ impl<'a> Reducer<'a> {
             || !op.region.content.graphic_objects().is_empty()
         {
             return container_not_empty();
+        }
+        if let Some(effect) = self.extent_offset_slot(&op.region) {
+            return effect;
         }
         self.graph_create_region(&op.region);
         self.mint_container(env, robj);
@@ -8136,16 +8238,33 @@ impl<'a> Reducer<'a> {
                 .chain(anchored)
                 .collect()
         };
-        if !incompatible_events.is_empty() || !stranded_measures.is_empty() {
+        // A live region whose time extent anchors this region's edge by an
+        // offset the target does not admit strands that region, named among
+        // them, this region too where its own bound is so anchored: out of
+        // musical time a musical offset, and into a model admitting no
+        // wall-clock offset a wall-clock one (reduction version 5, X5b.8:
+        // before it the migration applied, `AnchorOffsetModel`).
+        let stranded_extents: Vec<TypedObjectId> = self
+            .extents_anchored_against(op.region, target)
+            .into_iter()
+            .map(TypedObjectId::Region)
+            .collect();
+        if !incompatible_events.is_empty()
+            || !stranded_measures.is_empty()
+            || !stranded_extents.is_empty()
+        {
             // In canonical order, as the conflict encodes it: the region a
-            // tempo segment strands does not sort after the events.
-            let incompatible: Vec<TypedObjectId> = epiphany_determinism::sorted_canonical(
+            // tempo segment strands does not sort after the events. A region
+            // a tempo segment and its own bound both strand is named once.
+            let mut incompatible: Vec<TypedObjectId> = epiphany_determinism::sorted_canonical(
                 incompatible_events
                     .into_iter()
                     .map(TypedObjectId::Event)
                     .chain(stranded_measures)
+                    .chain(stranded_extents)
                     .collect(),
             );
+            incompatible.dedup();
             // The region once, though a tempo segment names it incompatible.
             let mut affected = vec![TypedObjectId::Region(op.region)];
             affected.extend(

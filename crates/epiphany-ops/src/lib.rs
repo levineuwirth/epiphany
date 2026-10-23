@@ -757,7 +757,7 @@ pub mod vectors;
 ///   holding no base, refuses it in both versions; only a canonical base,
 ///   which exists in tests alone (D4), reaches it.
 /// * `5` — **X5b** (2026-10-22), the format boundary and the region refusal
-///   (roadmap D80), one version for the phase:
+///   (roadmap D80, and D81 for X5b.8), one version for the phase:
 ///   - **The region refusal** (X5b.3, a verdict and new ledger state): a
 ///     `CreateStaffInstance` whose region overlaps in time another live
 ///     region holding a live instance of its staff is refused
@@ -799,6 +799,23 @@ pub mod vectors;
 ///     breaking `AnchorOffsetModel` (one author, D80 Q17). Locked by the
 ///     committed history `187` and
 ///     `a_marker_an_undo_would_restore_into_a_migrated_region_stays_out_in_both_modes`.
+///   - **A region's extent and its target's time model** (X5b.8, D81,
+///     verdicts): a `CreateRegion` whose time extent anchors its target by an
+///     offset the target's time model does not admit, read as invariant 9
+///     reads it (`CoordinateDiscipline::admits_offset`; a region's edge by
+///     that region's model, its own edge by its own, an event or a measure by
+///     its region's, an event in a region where each event fixes its clock by
+///     the event's), or whose own model contradicts a live region's extent
+///     already anchored to it, is refused `WrongRegionTimeModel` in both
+///     modes; and a `ChangeRegionTimeModel` whose target does not admit an
+///     offset by which a live region's extent anchors its region, the
+///     region's own bound included, conflicts `TimeModelMigrationFailure`
+///     naming each such region, a musical offset out of musical time and a
+///     wall-clock one into a model admitting none. Version `4` applied both
+///     and broke `AnchorOffsetModel` (one author, D81's four routes and their
+///     mirrors). Read from the indices both modes keep; a target that is not
+///     live is not judged, as the invariant cannot find it. Locked by
+///     `extent_offsets.rs`.
 ///
 ///   With it, at the same epoch 16, a wire addition that changes no verdict:
 ///   `MarkerKind` appends `ExpressionText` (X5b.7, D79 Q9), reduced as any
