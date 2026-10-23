@@ -82,8 +82,12 @@
 //! Of reduction version 5's verdicts (X5b), each is written. A region is
 //! placed over another's span with an instance of a staff that region holds,
 //! or starts at a region's end or at an event, so that a fill overlapping a
-//! region holding its staff is refused (`RegionsOverlap`); a region's extent
-//! takes no offset from what it names. A user break is anchored to a
+//! region holding its staff is refused (`RegionsOverlap`). A region's extent
+//! takes an offset of either kind from a region's end, from its own start, or
+//! from an event or a measure, refused `WrongRegionTimeModel` where its
+//! target's time model does not admit it, and a region so anchored has the
+//! region it names migrated to a model of any kind, which strands it where
+//! the target does not admit its offset (X5b.8). A user break is anchored to a
 //! measure's start, an event or an offset from its region's start, now and
 //! then in another region (`TargetMissing`). A constant tempo segment now and
 //! then records its end tempo (`TempoMapMalformed`), built in memory since no
@@ -602,7 +606,7 @@ impl Coverage {
 
 /// The payload shapes schema major 5 adds, and those reduction version 5
 /// reads (X5b), each counted beside its kind.
-const SHAPES: [&str; 20] = [
+const SHAPES: [&str; 22] = [
     "InsertEvent+marks",
     "InsertEvent+ornaments",
     "InsertEvent+grace",
@@ -623,6 +627,8 @@ const SHAPES: [&str; 20] = [
     "SetUserPageBreak+measure anchor",
     "SetUserPageBreak+event anchor",
     "CreateRegion+anchored start",
+    "CreateRegion+musical offset",
+    "CreateRegion+wall-clock offset",
 ];
 
 /// The shapes reduction version 5 refuses wherever they are written, each
@@ -731,10 +737,30 @@ fn shape_names(payload: &OperationPayload) -> Vec<&'static str> {
                 "SetUserPageBreak+event anchor",
             ],
         ),
-        OperationKind::CreateRegion(op) => match op.region.time_extent.start {
-            epiphany_core::TimeAnchor::WallClock { .. } => Vec::new(),
-            _ => vec!["CreateRegion+anchored start"],
-        },
+        OperationKind::CreateRegion(op) => {
+            let extent = &op.region.time_extent;
+            let offsets: Vec<_> = [&extent.start, &extent.end]
+                .into_iter()
+                .filter_map(|anchor| anchor.offset())
+                .collect();
+            let mut out = Vec::new();
+            if !matches!(extent.start, epiphany_core::TimeAnchor::WallClock { .. }) {
+                out.push("CreateRegion+anchored start");
+            }
+            if offsets
+                .iter()
+                .any(|o| matches!(o, epiphany_core::AnchorOffset::Musical(_)))
+            {
+                out.push("CreateRegion+musical offset");
+            }
+            if offsets
+                .iter()
+                .any(|o| matches!(o, epiphany_core::AnchorOffset::WallClock(_)))
+            {
+                out.push("CreateRegion+wall-clock offset");
+            }
+            out
+        }
         OperationKind::SetTempoSegment(op) => op
             .segment
             .as_ref()
@@ -2137,16 +2163,19 @@ fn make(
         }
         15 => {
             // CreateRegion: one an editor places ([`placed_region`]), or one
-            // in three times one no editor writes (reduction version 5): over
+            // in two times one no editor writes (reduction version 5): over
             // the span of a region the view holds, with an instance of a staff
             // that region holds, the fill refused `RegionsOverlap`; or
             // starting, with no offset, at a region's end, which the ledger
             // places through its index of extents, or at an event, which it
             // cannot place, so that a fill of a staff another live region
-            // holds is refused. No offset is written.
+            // holds is refused; or with an offset of either kind from a
+            // region's end, from its own start, or from an event or a
+            // measure, refused `WrongRegionTimeModel` where its target's time
+            // model does not admit the offset (X5b.8).
             let mut region = placed_region(sim, r, h);
             let mut fill = None;
-            match sim.rng.below(9) {
+            match sim.rng.below(12) {
                 0 => {
                     let (other, _, instances) = sim.rng.pick(&h.regions)?;
                     region.time_extent = h
@@ -2172,6 +2201,44 @@ fn make(
                     region.time_extent.start = epiphany_core::TimeAnchor::Event {
                         id: event,
                         offset: epiphany_core::AnchorOffset::Zero,
+                    };
+                }
+                3 => {
+                    let other = sim.rng.pick(&h.score.canvas.regions)?.id;
+                    let offset = random_offset(&mut sim.rng);
+                    let at = |offset| epiphany_core::TimeAnchor::Region {
+                        id: other,
+                        edge: epiphany_core::RegionEdge::End,
+                        offset,
+                    };
+                    region.time_extent.start = at(epiphany_core::AnchorOffset::Zero);
+                    region.time_extent.end = at(offset);
+                }
+                4 => {
+                    region.time_extent.end = epiphany_core::TimeAnchor::Region {
+                        id: region.id,
+                        edge: epiphany_core::RegionEdge::Start,
+                        offset: random_offset(&mut sim.rng),
+                    };
+                }
+                5 => {
+                    let offset = random_offset(&mut sim.rng);
+                    region.time_extent.start = if sim.rng.chance(2) {
+                        epiphany_core::TimeAnchor::Event {
+                            id: rng_event(sim)?.id(),
+                            offset,
+                        }
+                    } else {
+                        let measures: Vec<MeasureId> = h
+                            .instances()
+                            .iter()
+                            .flat_map(|(_, instance)| instance.measures.iter().map(|m| m.id))
+                            .collect();
+                        epiphany_core::TimeAnchor::Measure {
+                            id: *sim.rng.pick(&measures)?,
+                            position: epiphany_core::MeasurePosition::Start,
+                            offset,
+                        }
                     };
                 }
                 _ => {}
@@ -3452,8 +3519,88 @@ fn make(
                 }),
             ]
         }
+        66 => {
+            // A region anchored by an offset, and the region it names
+            // migrated (X5b.8): a region placed as an editor places one, its
+            // end at a region's end the view holds, or at its own start, by
+            // an offset of a kind the named region's model admits (of either
+            // kind one time in four, refused `WrongRegionTimeModel` where its
+            // model does not admit it); then the named region migrated to a
+            // model of any kind, which strands the anchored region where it
+            // does not admit the offset.
+            let mut region = placed_region(sim, r, h);
+            let (named, edge, model) = if sim.rng.chance(2) {
+                let (other, model, _) = sim.rng.pick(&h.regions)?;
+                (*other, epiphany_core::RegionEdge::End, (*model).clone())
+            } else {
+                let own = region.time_model.clone();
+                (region.id, epiphany_core::RegionEdge::Start, own)
+            };
+            let offset = if sim.rng.chance(4) {
+                random_offset(&mut sim.rng)
+            } else if model.coordinate_discipline().admits_musical_offsets() {
+                epiphany_core::AnchorOffset::Musical(duration(1 + sim.rng.below(4) as i64, 4))
+            } else {
+                epiphany_core::AnchorOffset::WallClock(WallClockDuration(
+                    250 * (1 + sim.rng.below(4) as i64),
+                ))
+            };
+            region.time_extent.end = epiphany_core::TimeAnchor::Region {
+                id: named,
+                edge,
+                offset,
+            };
+            if named != region.id {
+                region.time_extent.start = epiphany_core::TimeAnchor::Region {
+                    id: named,
+                    edge,
+                    offset: epiphany_core::AnchorOffset::Zero,
+                };
+            }
+            vec![
+                prim(OperationKind::CreateRegion(CreateRegionOp { region })),
+                prim(OperationKind::ChangeRegionTimeModel(
+                    ChangeRegionTimeModelOp {
+                        region: named,
+                        new_time_model: random_migration_target(&mut sim.rng),
+                        declared_incompatible: Vec::new(),
+                        remapping: PositionRemapping::PreserveTime,
+                    },
+                )),
+            ]
+        }
         _ => return None,
     })
+}
+
+/// An anchor offset of either kind, as an extent written by hand may take
+/// one: a musical one of a quarter to a whole, or a wall-clock one.
+fn random_offset(rng: &mut Rng) -> epiphany_core::AnchorOffset {
+    if rng.chance(2) {
+        epiphany_core::AnchorOffset::Musical(duration(1 + rng.below(4) as i64, 4))
+    } else {
+        epiphany_core::AnchorOffset::WallClock(WallClockDuration(250 * (1 + rng.below(4) as i64)))
+    }
+}
+
+/// A migration's target model of any kind: proportional, aleatoric by any
+/// anchoring discipline, or metric.
+fn random_migration_target(rng: &mut Rng) -> RegionTimeModel {
+    match rng.below(3) {
+        0 => valuegen::proportional_model(),
+        1 => RegionTimeModel::Aleatoric(AleatoricTimeModel {
+            ordering: EventOrderingDAG::default(),
+            anchoring: match rng.below(4) {
+                0 => AleatoricAnchoringDiscipline::Musical,
+                1 => AleatoricAnchoringDiscipline::WallClock,
+                2 => AleatoricAnchoringDiscipline::EitherPerEvent,
+                _ => AleatoricAnchoringDiscipline::FreelyMixed,
+            },
+            bounds: BTreeMap::new(),
+            duration_hint: WallClockDuration(1),
+        }),
+        _ => valuegen::metric_model(),
+    }
 }
 
 /// An undo's policy, each of the three alike.
@@ -3630,7 +3777,7 @@ fn tie_entry(
 /// Each arm of [`make`] and how often it is drawn: the editing of notes,
 /// pitches and their marks three times as often as the score's structure and
 /// settings, as an editor's history runs.
-const ARMS: [(u64, u64); 66] = [
+const ARMS: [(u64, u64); 67] = [
     (0, 4),
     (1, 3),
     (2, 3),
@@ -3697,6 +3844,7 @@ const ARMS: [(u64, u64); 66] = [
     (63, 1),
     (64, 1),
     (65, 1),
+    (66, 1),
 ];
 
 fn draw_arm(rng: &mut Rng) -> u64 {

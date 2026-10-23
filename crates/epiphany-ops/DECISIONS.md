@@ -4132,6 +4132,19 @@ is not undone; and a redo of an undone region create restores nothing. No
 writer makes an extent with an offset (the importer and the editor place
 regions in wall-clock time).
 
+**The fuzz writes them.** One region create in two is one no editor writes,
+where it was one in three: besides the overlap, a region's end and an event
+with no offset, an extent now takes an offset of either kind from a region's
+end, from its own start, or from an event or a measure, refused where its
+target does not admit it. A new arm, 66, places a region anchored to a
+region's end or to its own start by an offset its named region's model
+admits (of either kind one time in four), then migrates the named region to a
+model of any kind, which strands the anchored region where the target does
+not admit the offset. `SHAPES` gains an extent's musical and wall-clock
+offsets, held authored and applied by the CI budget, and
+`the_ci_budget_refuses_what_reduction_version_5_refuses` holds a region
+create refused `WrongRegionTimeModel`.
+
 Found by the same probes and left to the owner: the other holders of a region
 anchor have the wall-clock half of the gap. A marker or a spanner anchored to a
 metric region by a wall-clock offset is applied, as is a tempo segment so

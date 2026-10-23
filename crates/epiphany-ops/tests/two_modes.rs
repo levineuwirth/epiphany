@@ -321,8 +321,10 @@ fn the_ci_budget_authors_and_applies_every_kind() {
 }
 
 /// What reduction version 5 refuses is written and refused (X5b): a fill
-/// overlapping a region that holds its staff (`RegionsOverlap`), and each of
-/// [`modes::REFUSED`], authored and never applied.
+/// overlapping a region that holds its staff (`RegionsOverlap`), a region
+/// whose extent's offset its target's time model does not admit
+/// (`WrongRegionTimeModel`, X5b.8), and each of [`modes::REFUSED`], authored
+/// and never applied.
 #[test]
 fn the_ci_budget_refuses_what_reduction_version_5_refuses() {
     let sum = |count: &dyn Fn(&modes::Coverage) -> u64| {
@@ -331,16 +333,26 @@ fn the_ci_budget_refuses_what_reduction_version_5_refuses() {
             .map(|(_, report)| count(&report.coverage))
             .sum::<u64>()
     };
-    let overlaps = sum(&|c| {
-        c.other
-            .get(&(
-                String::from("InsertStaffInstance"),
-                String::from("NoOp PreconditionFailedUnderReduction RegionsOverlap"),
-            ))
-            .copied()
-            .unwrap_or(0)
-    });
-    assert!(overlaps > 0, "no fill refused for an overlap");
+    let refused = |kind: &str, reason: &str| {
+        let (kind, effect) = (
+            String::from(kind),
+            format!("NoOp PreconditionFailedUnderReduction {reason}"),
+        );
+        sum(&|c| {
+            c.other
+                .get(&(kind.clone(), effect.clone()))
+                .copied()
+                .unwrap_or(0)
+        })
+    };
+    assert!(
+        refused("InsertStaffInstance", "RegionsOverlap") > 0,
+        "no fill refused for an overlap"
+    );
+    assert!(
+        refused("InsertRegion", "WrongRegionTimeModel") > 0,
+        "no region refused for its extent's offset"
+    );
     for shape in modes::REFUSED {
         let authored = sum(&|c| c.authored.get(shape).copied().unwrap_or(0));
         let applied = sum(&|c| c.applied.get(shape).copied().unwrap_or(0));
