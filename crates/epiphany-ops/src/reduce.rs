@@ -42,9 +42,9 @@ use epiphany_core::{
     SpellingAttachment, SpellingDirective, SpellingPrecedence, SpellingScope, SpellingSource,
     Staff, StaffGroup, StaffGroupId, StaffId, StaffInstance, StaffInstanceId,
     StaffLineConfiguration, TempoMap, TempoSegment, TempoShape, Tie, TieClass, TieId, TimeAnchor,
-    TimeSignature, TimeSignatureId, TransactionId, TransposeRefusal, TranspositionInterval,
-    TuningContextSettings, TupletId, TypedObjectId, ViewDefinition, ViewId, Voice, VoiceId,
-    VoiceOrigin, WallClockDuration,
+    TimeExtent, TimeSignature, TimeSignatureId, TransactionId, TransposeRefusal,
+    TranspositionInterval, TuningContextSettings, TupletId, TypedObjectId, ViewDefinition, ViewId,
+    Voice, VoiceId, VoiceOrigin, WallClockDuration,
 };
 use epiphany_determinism::CanonicalEncode;
 
@@ -519,11 +519,12 @@ pub struct MaterializedState {
     pub objects: BTreeMap<TypedObjectId, ObjectState>,
     /// Current resolved spelling per pitch (the `RespellPitch` field).
     pub spellings: BTreeMap<PitchId, PitchSpelling>,
-    /// User system-break preferences (LWW advisory), keyed by region+anchor.
-    pub breaks: BTreeMap<(RegionId, MusicalPosition), bool>,
+    /// User system-break preferences (LWW advisory), keyed by the region and
+    /// the break's anchor itself ([`BreakAnchor`], reduction version 5).
+    pub breaks: BTreeMap<(RegionId, BreakAnchor), bool>,
     /// User page-break preferences (LWW advisory), keyed by region+anchor (the
     /// page-break sibling of [`MaterializedState::breaks`], M2d).
-    pub page_breaks: BTreeMap<(RegionId, MusicalPosition), bool>,
+    pub page_breaks: BTreeMap<(RegionId, BreakAnchor), bool>,
     /// Operations held pending, ordered by `OperationId`.
     pub pending: Vec<(OperationId, PendingReason)>,
 }
@@ -580,14 +581,14 @@ impl MaterializedState {
         push_len(&mut out, self.breaks.len());
         for ((region, anchor), present) in &self.breaks {
             push_canon(&mut out, region);
-            push_canon(&mut out, anchor);
+            push_lp_bytes(&mut out, anchor.canonical_bytes());
             push_u8_bool(&mut out, *present);
         }
         // Page breaks (region+anchor order) — sibling of breaks (M2d).
         push_len(&mut out, self.page_breaks.len());
         for ((region, anchor), present) in &self.page_breaks {
             push_canon(&mut out, region);
-            push_canon(&mut out, anchor);
+            push_lp_bytes(&mut out, anchor.canonical_bytes());
             push_u8_bool(&mut out, *present);
         }
         // Pending (OperationId order).
@@ -981,27 +982,25 @@ enum ValueRestoration {
     },
     SystemBreak {
         region: RegionId,
-        position: MusicalPosition,
+        anchor: BreakAnchor,
         predecessor: Option<Predecessor<(TimeAnchor, bool)>>,
     },
     PageBreak {
         region: RegionId,
-        position: MusicalPosition,
+        anchor: BreakAnchor,
         predecessor: Option<Predecessor<(TimeAnchor, bool)>>,
     },
 }
 
 /// Whether a tempo segment's shape carries the end data it requires
 /// (operation_catalog §"Meter and Tempo Overwrites"): a non-constant shape
-/// needs both an explicit `end` and an `end_tempo`; a constant segment's
-/// `end_tempo`, when present, must equal its `start_tempo` (the same structural
-/// rules the graph-invariant checker applies to tempo maps).
+/// needs both an explicit `end` and an `end_tempo`; a constant segment records
+/// no `end_tempo` (reduction version 5, P13-S8: before it one equal to its
+/// `start_tempo` was admitted), the same structural rules the graph-invariant
+/// checker applies to tempo maps.
 fn tempo_segment_shape_well_formed(segment: &TempoSegment) -> bool {
     match segment.shape {
-        TempoShape::Constant => segment
-            .end_tempo
-            .as_ref()
-            .is_none_or(|end| end == &segment.start_tempo),
+        TempoShape::Constant => segment.end_tempo.is_none(),
         TempoShape::Linear | TempoShape::Exponential | TempoShape::Curve => {
             segment.end_tempo.is_some() && segment.end.is_some()
         }
@@ -1095,6 +1094,25 @@ fn anchored_in_musical_time(anchor: &TimeAnchor) -> bool {
     )
 }
 
+/// The discipline an extent anchor's offset answers to in a region of
+/// `discipline` (invariant 9): the region's own, but for an event in a region
+/// where each event fixes its clock, which answers to the event's, musical for
+/// every event the occupancy index holds.
+fn extent_anchor_judged(
+    anchor: &TimeAnchor,
+    discipline: CoordinateDiscipline,
+) -> CoordinateDiscipline {
+    match (anchor, discipline) {
+        (
+            TimeAnchor::Event { .. },
+            CoordinateDiscipline::Aleatoric(
+                epiphany_core::AleatoricAnchoringDiscipline::EitherPerEvent,
+            ),
+        ) => CoordinateDiscipline::Musical,
+        _ => discipline,
+    }
+}
+
 fn region_position_anchor(region: RegionId, position: &MusicalPosition) -> TimeAnchor {
     TimeAnchor::Region {
         id: region,
@@ -1129,8 +1147,8 @@ struct Reducer<'a> {
     // Canonical results.
     objects: BTreeMap<TypedObjectId, ObjectState>,
     spellings: BTreeMap<PitchId, PitchSpelling>,
-    breaks: BTreeMap<(RegionId, MusicalPosition), bool>,
-    page_breaks: BTreeMap<(RegionId, MusicalPosition), bool>,
+    breaks: BTreeMap<(RegionId, BreakAnchor), bool>,
+    page_breaks: BTreeMap<(RegionId, BreakAnchor), bool>,
     conflicts: ConflictRegistry,
     effects: Vec<(OperationId, OperationEffect)>,
     anomalies: BTreeMap<epiphany_core::IntegrityAnomalyId, IntegrityAnomaly>,
@@ -1189,8 +1207,8 @@ struct Reducer<'a> {
     // never participates in undo, because no operation ever writes it and
     // undo must leave it exactly as it found it.
     tuning_context_chain: WriteChain<TuningContextSettings>,
-    break_chain: BTreeMap<(RegionId, MusicalPosition), WriteChain<(TimeAnchor, bool)>>,
-    page_break_chain: BTreeMap<(RegionId, MusicalPosition), WriteChain<(TimeAnchor, bool)>>,
+    break_chain: BTreeMap<(RegionId, BreakAnchor), WriteChain<(TimeAnchor, bool)>>,
+    page_break_chain: BTreeMap<(RegionId, BreakAnchor), WriteChain<(TimeAnchor, bool)>>,
     // Meter/tempo overwrite chains (Phase-3 tranche): `Some` = a set/replace at
     // the key, `None` = an explicit removal. The meter value is the graph-level
     // `MeterChange` (anchor + signature id) so a restoration can re-install it.
@@ -1284,6 +1302,15 @@ struct Reducer<'a> {
     // precondition reads it base-free, as graph-aware reduction reads the
     // graph's region, so an insert after a migration reduces alike in both.
     region_disciplines: BTreeMap<RegionId, CoordinateDiscipline>,
+    // Each region's time extent, from its `CreateRegion` payload or a base,
+    // which no operation rewrites: a `CreateStaffInstance` is refused where
+    // its region overlaps in time another live region holding a live instance
+    // of its staff (`RegionsOverlap`, reduction version 5), the extents
+    // compared as this index places them, in both modes alike; and a
+    // `CreateRegion` or a migration reads here the live extents anchored to
+    // a region by an offset, held to its time model (X5b.8). A removed
+    // region's extent stays, so a reader asks the region's liveness beside.
+    region_extents: BTreeMap<RegionId, TimeExtent>,
     migrated_regions: BTreeSet<RegionId>,
     region_migrator: BTreeMap<RegionId, OperationId>,
     descriptors: BTreeMap<TransactionId, OperationId>,
@@ -1364,8 +1391,8 @@ impl ScoreSettings {
 struct WorkingSnapshot {
     objects: BTreeMap<TypedObjectId, ObjectState>,
     spellings: BTreeMap<PitchId, PitchSpelling>,
-    breaks: BTreeMap<(RegionId, MusicalPosition), bool>,
-    page_breaks: BTreeMap<(RegionId, MusicalPosition), bool>,
+    breaks: BTreeMap<(RegionId, BreakAnchor), bool>,
+    page_breaks: BTreeMap<(RegionId, BreakAnchor), bool>,
     conflicts: ConflictRegistry,
     minted_by: BTreeMap<TypedObjectId, OperationId>,
     event_pitches: BTreeMap<EventId, Vec<PitchId>>,
@@ -1400,8 +1427,8 @@ struct WorkingSnapshot {
     canvas_layout_defaults_chain: WriteChain<CanvasLayoutDefaults>,
     spelling_precedence_chain: WriteChain<SpellingPrecedence>,
     tuning_context_chain: WriteChain<TuningContextSettings>,
-    break_chain: BTreeMap<(RegionId, MusicalPosition), WriteChain<(TimeAnchor, bool)>>,
-    page_break_chain: BTreeMap<(RegionId, MusicalPosition), WriteChain<(TimeAnchor, bool)>>,
+    break_chain: BTreeMap<(RegionId, BreakAnchor), WriteChain<(TimeAnchor, bool)>>,
+    page_break_chain: BTreeMap<(RegionId, BreakAnchor), WriteChain<(TimeAnchor, bool)>>,
     meter_change_chain: BTreeMap<(RegionId, MusicalPosition), WriteChain<Option<MeterChange>>>,
     tempo_segment_chain:
         BTreeMap<(Option<RegionId>, MusicalPosition), WriteChain<Option<TempoSegment>>>,
@@ -1427,6 +1454,7 @@ struct WorkingSnapshot {
     instance_staff: BTreeMap<StaffInstanceId, StaffId>,
     staff_based_regions: BTreeSet<RegionId>,
     region_disciplines: BTreeMap<RegionId, CoordinateDiscipline>,
+    region_extents: BTreeMap<RegionId, TimeExtent>,
     migrated_regions: BTreeSet<RegionId>,
     region_migrator: BTreeMap<RegionId, OperationId>,
     descriptors: BTreeMap<TransactionId, OperationId>,
@@ -1445,16 +1473,60 @@ fn container_not_empty() -> OperationEffect {
     }
 }
 
-/// Apply a user break to a region's break list under the canonical LWW key — the
-/// anchor's resolved musical position. Any existing anchor resolving to that same
-/// position is dropped first, so two anchors at one position never both persist,
-/// then the new anchor is pushed iff the break is present. The graph break list
-/// then matches the resolved-position-keyed ledger map.
+/// Apply a user break to a region's break list under its LWW key, the anchor
+/// itself (reduction version 5): the anchor is dropped and, iff the break is
+/// present, pushed again, so the graph's list holds each anchor once and matches
+/// the anchor-keyed ledger map. Two anchors resolving to one place keep their
+/// own slots; before version 5 the key was the anchor's resolved musical
+/// position, and every anchor but a region-start offset shared the region's
+/// origin.
 fn apply_break_lww(breaks: &mut Vec<TimeAnchor>, anchor: &TimeAnchor, present: bool) {
-    let resolved = crate::payload::resolved_anchor_position(anchor);
-    breaks.retain(|existing| crate::payload::resolved_anchor_position(existing) != resolved);
+    breaks.retain(|existing| existing != anchor);
     if present {
         breaks.push(anchor.clone());
+    }
+}
+
+/// A user break's slot key (reduction version 5): the break's anchor itself, so
+/// two breaks anchored to different measures or events of one region keep
+/// their own slots, and a break anchored to a measure or an event keeps its
+/// slot when its music moves. Ordered by the anchor's canonical bytes, the
+/// order the materialized state's break sections are written in.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct BreakAnchor {
+    bytes: Vec<u8>,
+    anchor: TimeAnchor,
+}
+
+impl BreakAnchor {
+    /// The key of a break at `anchor`.
+    pub fn new(anchor: TimeAnchor) -> Self {
+        BreakAnchor {
+            bytes: anchor.canonical_bytes(),
+            anchor,
+        }
+    }
+
+    /// The anchor.
+    pub fn anchor(&self) -> &TimeAnchor {
+        &self.anchor
+    }
+
+    /// The anchor's canonical bytes, by which keys are ordered.
+    pub fn canonical_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl PartialOrd for BreakAnchor {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for BreakAnchor {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.bytes.cmp(&other.bytes)
     }
 }
 
@@ -1880,6 +1952,30 @@ fn anchor_object_refs<'a>(anchors: impl IntoIterator<Item = &'a TimeAnchor>) -> 
         .collect()
 }
 
+/// The regions a cross-cutting value is anchored to by a musical offset: a
+/// marker's anchor, a spanner's two ends.
+fn regions_anchored_in_musical_time(value: &CrossCuttingValue) -> Vec<RegionId> {
+    let anchors: Vec<&TimeAnchor> = match value {
+        CrossCuttingValue::Marker(marker) => vec![&marker.anchor],
+        CrossCuttingValue::Spanner(spanner) => vec![&spanner.start, &spanner.end],
+        CrossCuttingValue::Tie(_)
+        | CrossCuttingValue::Slur(_)
+        | CrossCuttingValue::Beam(_)
+        | CrossCuttingValue::Lyric(_) => Vec::new(),
+    };
+    anchors
+        .into_iter()
+        .filter_map(|anchor| match anchor {
+            TimeAnchor::Region {
+                id,
+                offset: AnchorOffset::Musical(_),
+                ..
+            } => Some(*id),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Every object a cross-cutting value names: its anchors' objects
 /// ([`CrossCuttingValue::anchor_object_refs`]) and, for a spanner, its staves.
 /// An undo's restoration of the value is superseded by the tombstoning of any
@@ -2086,6 +2182,7 @@ impl<'a> Reducer<'a> {
             instance_staff: BTreeMap::new(),
             staff_based_regions: BTreeSet::new(),
             region_disciplines: BTreeMap::new(),
+            region_extents: BTreeMap::new(),
             migrated_regions: BTreeSet::new(),
             region_migrator: BTreeMap::new(),
             descriptors: BTreeMap::new(),
@@ -2259,6 +2356,8 @@ impl<'a> Reducer<'a> {
                 .insert(TypedObjectId::Region(region.id), ObjectState::Live);
             self.region_disciplines
                 .insert(region.id, region.time_model.coordinate_discipline());
+            self.region_extents
+                .insert(region.id, region.time_extent.clone());
             if let Some(content) = region.content.staff_based() {
                 self.staff_based_regions.insert(region.id);
                 self.metric_grid_chain
@@ -2275,13 +2374,13 @@ impl<'a> Reducer<'a> {
                 }
                 for anchor in &content.user_system_breaks {
                     self.break_chain
-                        .entry((region.id, resolved_anchor_position(anchor)))
+                        .entry((region.id, BreakAnchor::new(anchor.clone())))
                         .or_insert_with(WriteChain::new)
                         .seed((anchor.clone(), true));
                 }
                 for anchor in &content.user_page_breaks {
                     self.page_break_chain
-                        .entry((region.id, resolved_anchor_position(anchor)))
+                        .entry((region.id, BreakAnchor::new(anchor.clone())))
                         .or_insert_with(WriteChain::new)
                         .seed((anchor.clone(), true));
                 }
@@ -3877,6 +3976,9 @@ impl<'a> Reducer<'a> {
         if let Some(effect) = self.musical_slot(op.region, Some(&op.anchor)) {
             return effect;
         }
+        if let Some(effect) = self.break_target(op.region, &op.anchor) {
+            return effect;
+        }
         if let Some(score) = self.graph.as_mut() {
             if let Some(region) = score.canvas.regions.iter_mut().find(|r| r.id == op.region) {
                 if let Some(content) = region.content.staff_based_mut() {
@@ -3885,8 +3987,8 @@ impl<'a> Reducer<'a> {
             }
         }
 
-        // The LWW bucketing key is the anchor's resolved musical position.
-        let key = (op.region, op.resolved_position());
+        // The LWW key is the anchor itself (reduction version 5).
+        let key = (op.region, BreakAnchor::new(op.anchor.clone()));
         self.breaks.insert(key.clone(), op.present);
         self.break_chain
             .entry(key)
@@ -3910,6 +4012,105 @@ impl<'a> Reducer<'a> {
     // FreeGraphic region has neither a metric grid nor a break list). That verdict
     // reads only the base-free indices, so reduce() and reduce_onto() agree on it.
 
+    /// Whether filling `region` with an instance of `staff` would overlap in
+    /// time another live region holding a live instance of that staff. The
+    /// extents are compared as the ledger places them ([`Self::ledger_extent`]),
+    /// and one it cannot place counts as overlapping: a later edit to a tempo
+    /// map or an event could move it, so a refusal decided at the fill could
+    /// not hold otherwise. Read from the indices both modes keep, as the
+    /// one-instance-per-region refusal reads them: `region_instances` holds
+    /// live instances alone (a delete or an undo takes one out), so a region
+    /// it lists one under is live, and the liveness read below is that
+    /// refusal's, kept for symmetry rather than needed.
+    fn fill_overlaps(&self, region: RegionId, staff: StaffId) -> bool {
+        let live = |object| matches!(self.objects.get(&object), Some(ObjectState::Live));
+        let mine = self.ledger_extent(region);
+        self.region_instances.iter().any(|(other, instances)| {
+            *other != region
+                && instances.iter().any(|instance| {
+                    self.instance_staff.get(instance) == Some(&staff)
+                        && live(TypedObjectId::StaffInstance(*instance))
+                })
+                && match (mine, self.ledger_extent(*other)) {
+                    (Some((a0, a1)), Some((b0, b1))) => a0 < b1 && b0 < a1,
+                    _ => true,
+                }
+        })
+    }
+
+    /// `Some(NoOp)` when a user break's anchor names what its region does not
+    /// hold live (reduction version 5): an event or a measure not live or not
+    /// in `region`, or a region other than `region`. Refused `TargetMissing`,
+    /// read from the indices both modes keep. A wall-clock anchor names
+    /// nothing.
+    fn break_target(&self, region: RegionId, anchor: &TimeAnchor) -> Option<OperationEffect> {
+        let live = |object| matches!(self.objects.get(&object), Some(ObjectState::Live));
+        let held = match anchor {
+            TimeAnchor::WallClock { .. } => true,
+            TimeAnchor::Region { id, .. } => *id == region,
+            TimeAnchor::Event { id, .. } => {
+                live(TypedObjectId::Event(*id))
+                    && self
+                        .event_voice(*id)
+                        .and_then(|voice| self.indexed_voice_region(voice))
+                        == Some(region)
+            }
+            TimeAnchor::Measure { id, .. } => {
+                live(TypedObjectId::Measure(*id))
+                    && self
+                        .measure_values
+                        .get(id)
+                        .and_then(|(instance, _)| self.instance_region_of(*instance))
+                        == Some(region)
+            }
+        };
+        (!held).then_some(OperationEffect::NoOp {
+            reason: NoOpReason::PreconditionFailedUnderReduction {
+                reason: PreconditionFailureReason::TargetMissing,
+            },
+        })
+    }
+
+    /// `region`'s time extent as a wall-clock interval, placed on the ledger's
+    /// own index of region extents: `None` where either end cannot be placed
+    /// ([`Self::ledger_time`]).
+    fn ledger_extent(&self, region: RegionId) -> Option<(i64, i64)> {
+        let extent = self.region_extents.get(&region)?;
+        Some((
+            self.ledger_time(&extent.start, 8)?,
+            self.ledger_time(&extent.end, 8)?,
+        ))
+    }
+
+    /// The wall-clock coordinate the ledger places `anchor` at: a wall-clock
+    /// anchor is its time, and a region's edge, with no offset or a wall-clock
+    /// one, is that region's edge on this index plus the offset, to the
+    /// invariant checker's depth. An event or a measure, or a musical offset,
+    /// needs the graph and a tempo map to place: `None`, as is an overflowing
+    /// sum or a depth run out.
+    fn ledger_time(&self, anchor: &TimeAnchor, depth: u8) -> Option<i64> {
+        if depth == 0 {
+            return None;
+        }
+        match anchor {
+            TimeAnchor::WallClock { time } => Some(time.0),
+            TimeAnchor::Region { id, edge, offset } => {
+                let extent = self.region_extents.get(id)?;
+                let edge = match edge {
+                    RegionEdge::Start => &extent.start,
+                    RegionEdge::End => &extent.end,
+                };
+                let base = self.ledger_time(edge, depth - 1)?;
+                match offset {
+                    AnchorOffset::Zero => Some(base),
+                    AnchorOffset::WallClock(d) => base.checked_add(d.0),
+                    AnchorOffset::Musical(_) => None,
+                }
+            }
+            TimeAnchor::Event { .. } | TimeAnchor::Measure { .. } => None,
+        }
+    }
+
     /// `Some(NoOp)` when `region` cannot carry a metric grid or user break — it is
     /// missing, tombstoned, or FreeGraphic; `None` when it has a staff-based slot.
     /// Whether `region` takes a musically-anchored layout write: its
@@ -3931,6 +4132,111 @@ impl<'a> Reducer<'a> {
                 reason: PreconditionFailureReason::WrongRegionTimeModel,
             },
         })
+    }
+
+    /// The region an extent anchor's target stands in, read from the indices
+    /// both modes keep: a region's edge that region, and a live event or
+    /// measure the region its index places it in. `None` for a wall-clock
+    /// anchor, and where an event or a measure is not live or not placed,
+    /// which the invariant cannot judge either.
+    fn extent_anchor_region(&self, anchor: &TimeAnchor) -> Option<RegionId> {
+        let live = |object| matches!(self.objects.get(&object), Some(ObjectState::Live));
+        match anchor {
+            TimeAnchor::WallClock { .. } => None,
+            TimeAnchor::Region { id, .. } => Some(*id),
+            TimeAnchor::Event { id, .. } => Some(*id)
+                .filter(|id| live(TypedObjectId::Event(*id)))
+                .and_then(|id| self.event_voice(id))
+                .and_then(|voice| self.indexed_voice_region(voice)),
+            TimeAnchor::Measure { id, .. } => Some(*id)
+                .filter(|id| live(TypedObjectId::Measure(*id)))
+                .and_then(|id| self.measure_values.get(&id))
+                .and_then(|(instance, _)| self.instance_region_of(*instance)),
+        }
+    }
+
+    /// The coordinate discipline an extent anchor's offset answers to
+    /// (invariant 9): its target's region's ([`Self::extent_anchor_region`]),
+    /// the region being created (`own`) answering by its own model, as
+    /// [`extent_anchor_judged`] reads it. `None` where the target or its
+    /// region is not live, which the invariant cannot judge either.
+    fn extent_anchor_discipline(
+        &self,
+        anchor: &TimeAnchor,
+        own: (RegionId, CoordinateDiscipline),
+    ) -> Option<CoordinateDiscipline> {
+        let region = self.extent_anchor_region(anchor)?;
+        let discipline = if region == own.0 {
+            own.1
+        } else {
+            if !matches!(
+                self.objects.get(&TypedObjectId::Region(region)),
+                Some(ObjectState::Live)
+            ) {
+                return None;
+            }
+            *self.region_disciplines.get(&region)?
+        };
+        Some(extent_anchor_judged(anchor, discipline))
+    }
+
+    /// `Some(NoOp)` when a `CreateRegion` would leave a time extent whose
+    /// offset its target's time model does not admit: its own extent
+    /// anchoring a target so ([`Self::extent_anchor_discipline`]; its own
+    /// edge by its own model), or a live region's extent already anchoring
+    /// the new region's edge so, named before the region was made. Refused
+    /// `WrongRegionTimeModel` in both modes (reduction version 5, X5b.8:
+    /// before it the region applied, `AnchorOffsetModel`).
+    fn extent_offset_slot(&self, region: &epiphany_core::Region) -> Option<OperationEffect> {
+        let own = (region.id, region.time_model.coordinate_discipline());
+        let admitted = |anchor: &TimeAnchor| match (
+            anchor.offset(),
+            self.extent_anchor_discipline(anchor, own),
+        ) {
+            (Some(offset), Some(discipline)) => discipline.admits_offset(offset.kind()),
+            _ => true,
+        };
+        let disagrees = !admitted(&region.time_extent.start)
+            || !admitted(&region.time_extent.end)
+            || !self.extents_anchored_against(region.id, own.1).is_empty();
+        disagrees.then_some(OperationEffect::NoOp {
+            reason: NoOpReason::PreconditionFailedUnderReduction {
+                reason: PreconditionFailureReason::WrongRegionTimeModel,
+            },
+        })
+    }
+
+    /// The live regions whose time extent anchors `region`'s edge, or an
+    /// event or a measure in it, by an offset `discipline` does not admit as
+    /// [`extent_anchor_judged`] reads it, `region` among them where its own
+    /// bound is so anchored: a migration of `region` to `discipline` strands
+    /// each, as it strands a marker anchored there, and a create of `region`
+    /// under it is refused (reduction version 5, X5b.8). Read from the
+    /// extent index both modes keep, which keeps a removed region's extent,
+    /// so its liveness is read beside it.
+    fn extents_anchored_against(
+        &self,
+        region: RegionId,
+        discipline: CoordinateDiscipline,
+    ) -> Vec<RegionId> {
+        self.region_extents
+            .iter()
+            .filter(|(id, _)| {
+                matches!(
+                    self.objects.get(&TypedObjectId::Region(**id)),
+                    Some(ObjectState::Live)
+                )
+            })
+            .filter(|(_, extent)| {
+                [&extent.start, &extent.end].into_iter().any(|anchor| {
+                    self.extent_anchor_region(anchor) == Some(region)
+                        && anchor.offset().is_some_and(|offset| {
+                            !extent_anchor_judged(anchor, discipline).admits_offset(offset.kind())
+                        })
+                })
+            })
+            .map(|(id, _)| *id)
+            .collect()
     }
 
     /// The migration that took `region` out of musical time, where it now
@@ -4152,6 +4458,9 @@ impl<'a> Reducer<'a> {
         if let Some(effect) = self.musical_slot(op.region, Some(&op.anchor)) {
             return effect;
         }
+        if let Some(effect) = self.break_target(op.region, &op.anchor) {
+            return effect;
+        }
         if let Some(score) = self.graph.as_mut() {
             if let Some(region) = score.canvas.regions.iter_mut().find(|r| r.id == op.region) {
                 if let Some(content) = region.content.staff_based_mut() {
@@ -4159,7 +4468,7 @@ impl<'a> Reducer<'a> {
                 }
             }
         }
-        let key = (op.region, op.resolved_position());
+        let key = (op.region, BreakAnchor::new(op.anchor.clone()));
         self.page_breaks.insert(key.clone(), op.present);
         self.page_break_chain
             .entry(key)
@@ -5305,11 +5614,16 @@ impl<'a> Reducer<'a> {
         {
             return container_not_empty();
         }
+        if let Some(effect) = self.extent_offset_slot(&op.region) {
+            return effect;
+        }
         self.graph_create_region(&op.region);
         self.mint_container(env, robj);
         self.region_instances.entry(op.region_id()).or_default();
         self.region_disciplines
             .insert(op.region_id(), op.region.time_model.coordinate_discipline());
+        self.region_extents
+            .insert(op.region_id(), op.region.time_extent.clone());
         if let Some(content) = op.region.content.staff_based() {
             self.staff_based_regions.insert(op.region_id());
             // Seed the region's layout/metric write chains from the carried
@@ -5330,13 +5644,13 @@ impl<'a> Reducer<'a> {
             }
             for anchor in &content.user_system_breaks {
                 self.break_chain
-                    .entry((op.region_id(), resolved_anchor_position(anchor)))
+                    .entry((op.region_id(), BreakAnchor::new(anchor.clone())))
                     .or_insert_with(WriteChain::new)
                     .seed((anchor.clone(), true));
             }
             for anchor in &content.user_page_breaks {
                 self.page_break_chain
-                    .entry((op.region_id(), resolved_anchor_position(anchor)))
+                    .entry((op.region_id(), BreakAnchor::new(anchor.clone())))
                     .or_insert_with(WriteChain::new)
                     .seed((anchor.clone(), true));
             }
@@ -5410,6 +5724,18 @@ impl<'a> Reducer<'a> {
             });
         if taken {
             return container_not_empty();
+        }
+        // A region's staves grow only by this fill, so refusing a fill whose
+        // region overlaps in time another live region holding a live instance
+        // of the staff keeps `RegionExtents` for every history; the earlier
+        // fill in canonical order stands (reduction version 5: before it the
+        // fill applied and the two regions overlapped).
+        if self.fill_overlaps(op.region, op.instance.staff) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::RegionsOverlap,
+                },
+            };
         }
         // Its clef and key changes are anchors like any other: one anchored by
         // a musical offset into a region admitting none is refused (reduction
@@ -7940,16 +8266,34 @@ impl<'a> Reducer<'a> {
                 .chain(anchored)
                 .collect()
         };
-        if !incompatible_events.is_empty() || !stranded_measures.is_empty() {
+        // A live region whose time extent anchors this region's edge, or an
+        // event or a measure in it, by an offset the target does not admit
+        // strands that region, named among them, this region too where its
+        // own bound is so anchored: out of musical time a musical offset, and
+        // into a model admitting no wall-clock offset a wall-clock one
+        // (reduction version 5, X5b.8: before it the migration applied,
+        // `AnchorOffsetModel`).
+        let stranded_extents: Vec<TypedObjectId> = self
+            .extents_anchored_against(op.region, target)
+            .into_iter()
+            .map(TypedObjectId::Region)
+            .collect();
+        if !incompatible_events.is_empty()
+            || !stranded_measures.is_empty()
+            || !stranded_extents.is_empty()
+        {
             // In canonical order, as the conflict encodes it: the region a
-            // tempo segment strands does not sort after the events.
-            let incompatible: Vec<TypedObjectId> = epiphany_determinism::sorted_canonical(
+            // tempo segment strands does not sort after the events. A region
+            // a tempo segment and its own bound both strand is named once.
+            let mut incompatible: Vec<TypedObjectId> = epiphany_determinism::sorted_canonical(
                 incompatible_events
                     .into_iter()
                     .map(TypedObjectId::Event)
                     .chain(stranded_measures)
+                    .chain(stranded_extents)
                     .collect(),
             );
+            incompatible.dedup();
             // The region once, though a tempo segment names it incompatible.
             let mut affected = vec![TypedObjectId::Region(op.region)];
             affected.extend(
@@ -8871,15 +9215,15 @@ impl<'a> Reducer<'a> {
                     .or_else(|| {
                         self.break_chain
                             .iter()
-                            .find_map(|((region, position), chain)| {
+                            .find_map(|((region, key), chain)| {
                                 let names = prospective_references_target(
                                     restorations,
                                     |restoration| match restoration {
                                         ValueRestoration::SystemBreak {
                                             region: r,
-                                            position: p,
+                                            anchor: k,
                                             predecessor,
-                                        } if r == region && p == position => {
+                                        } if r == region && k == key => {
                                             Some(predecessor.clone().map(Predecessor::into_value))
                                         }
                                         _ => None,
@@ -8898,15 +9242,15 @@ impl<'a> Reducer<'a> {
                     .or_else(|| {
                         self.page_break_chain
                             .iter()
-                            .find_map(|((region, position), chain)| {
+                            .find_map(|((region, key), chain)| {
                                 let names = prospective_references_target(
                                     restorations,
                                     |restoration| match restoration {
                                         ValueRestoration::PageBreak {
                                             region: r,
-                                            position: p,
+                                            anchor: k,
                                             predecessor,
-                                        } if r == region && p == position => {
+                                        } if r == region && k == key => {
                                             Some(predecessor.clone().map(Predecessor::into_value))
                                         }
                                         _ => None,
@@ -9192,10 +9536,21 @@ impl<'a> Reducer<'a> {
                     // spanner's staff) is superseded by its tombstoning:
                     // restoring it would reinstate a dangling reference
                     // (`CrossCuttingRefsResolve`; reduction version 3, before
-                    // which it was restored).
-                    let deleted = value
-                        .as_ref()
-                        .and_then(|value| self.tombstoned_since(cross_cutting_referents(value)));
+                    // which it was restored). One anchored by a musical offset
+                    // to a region a migration took out of musical time since is
+                    // superseded by that migration, as the seven restorations
+                    // of reduction version 3 are: restoring it would anchor it
+                    // by an offset the region no longer admits
+                    // (`AnchorOffsetModel`; reduction version 5, before which
+                    // a marker's was restored).
+                    let deleted = value.as_ref().and_then(|value| {
+                        self.tombstoned_since(cross_cutting_referents(value))
+                            .or_else(|| {
+                                regions_anchored_in_musical_time(value)
+                                    .into_iter()
+                                    .find_map(|region| self.out_of_musical_time(region))
+                            })
+                    });
                     match deleted {
                         Some(by) => superseded.push(by),
                         None => {
@@ -9456,7 +9811,7 @@ impl<'a> Reducer<'a> {
                 }
             }
         }
-        for ((region, position), chain) in &self.break_chain {
+        for ((region, key), chain) in &self.break_chain {
             if !slot_live(TypedObjectId::Region(*region)) {
                 continue;
             }
@@ -9487,13 +9842,13 @@ impl<'a> Reducer<'a> {
                     }
                     restorations.push(ValueRestoration::SystemBreak {
                         region: *region,
-                        position: position.clone(),
+                        anchor: key.clone(),
                         predecessor,
                     })
                 }
             }
         }
-        for ((region, position), chain) in &self.page_break_chain {
+        for ((region, key), chain) in &self.page_break_chain {
             if !slot_live(TypedObjectId::Region(*region)) {
                 continue;
             }
@@ -9524,7 +9879,7 @@ impl<'a> Reducer<'a> {
                     }
                     restorations.push(ValueRestoration::PageBreak {
                         region: *region,
-                        position: position.clone(),
+                        anchor: key.clone(),
                         predecessor,
                     })
                 }
@@ -9823,14 +10178,14 @@ impl<'a> Reducer<'a> {
                 }
                 ValueRestoration::SystemBreak {
                     region,
-                    position,
+                    anchor,
                     predecessor,
-                } => self.restore_break(env, region, position, predecessor, false),
+                } => self.restore_break(env, region, anchor, predecessor, false),
                 ValueRestoration::PageBreak {
                     region,
-                    position,
+                    anchor,
                     predecessor,
-                } => self.restore_break(env, region, position, predecessor, true),
+                } => self.restore_break(env, region, anchor, predecessor, true),
             }
         }
     }
@@ -9843,11 +10198,11 @@ impl<'a> Reducer<'a> {
         &mut self,
         env: &OperationEnvelope,
         region: RegionId,
-        position: MusicalPosition,
+        slot: BreakAnchor,
         predecessor: Option<Predecessor<(TimeAnchor, bool)>>,
         page: bool,
     ) {
-        let key = (region, position.clone());
+        let key = (region, slot.clone());
         match predecessor {
             Some(Predecessor::Write((anchor, present))) => {
                 if page {
@@ -9887,7 +10242,7 @@ impl<'a> Reducer<'a> {
                 } else {
                     self.breaks.remove(&key);
                 }
-                self.graph_clear_break(region, &position, page);
+                self.graph_clear_break(region, slot.anchor(), page);
             }
         }
     }
@@ -9914,7 +10269,7 @@ impl<'a> Reducer<'a> {
         }
     }
 
-    fn graph_clear_break(&mut self, region: RegionId, position: &MusicalPosition, page: bool) {
+    fn graph_clear_break(&mut self, region: RegionId, anchor: &TimeAnchor, page: bool) {
         let Some(score) = self.graph.as_mut() else {
             return;
         };
@@ -9925,7 +10280,7 @@ impl<'a> Reducer<'a> {
                 } else {
                     &mut content.user_system_breaks
                 };
-                list.retain(|existing| resolved_anchor_position(existing) != *position);
+                list.retain(|existing| existing != anchor);
             }
         }
     }
@@ -12615,6 +12970,7 @@ impl<'a> Reducer<'a> {
             instance_staff: self.instance_staff.clone(),
             staff_based_regions: self.staff_based_regions.clone(),
             region_disciplines: self.region_disciplines.clone(),
+            region_extents: self.region_extents.clone(),
             migrated_regions: self.migrated_regions.clone(),
             region_migrator: self.region_migrator.clone(),
             descriptors: self.descriptors.clone(),
@@ -12668,6 +13024,7 @@ impl<'a> Reducer<'a> {
         self.instance_staff = s.instance_staff;
         self.staff_based_regions = s.staff_based_regions;
         self.region_disciplines = s.region_disciplines;
+        self.region_extents = s.region_extents;
         self.migrated_regions = s.migrated_regions;
         self.region_migrator = s.region_migrator;
         self.descriptors = s.descriptors;
@@ -16267,6 +16624,14 @@ mod tests {
         // came to mint the pitches it carries that nothing minted: this
         // stream's modifies carry such pitches, now live (the mint disabled,
         // the previous digest returns).
+        //
+        // Re-pinned at X5b.4, reduction version 5: the break sections key
+        // each break by its anchor and write the anchor's canonical bytes
+        // where they wrote a resolved position, so this stream's breaks,
+        // anchored to regions by offsets and to events and measures, are
+        // written apart and in another form. The new refusal of a break
+        // naming what its region does not hold moves nothing here: with it
+        // disabled the digest is the same. No value enters the base.
         let mut rng = epiphany_determinism::fuzz::SplitMix64::new(0xBA5E);
         let envelopes = crate::fuzz::gen_envelope_set(&mut rng, 200);
         let mut set = OperationSet::new();
@@ -16276,7 +16641,7 @@ mod tests {
         let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
             hex,
-            "ad881d02f3aeaecaedebd6277a3bc0b1af80373c8659962f3b0412da4fa47841"
+            "5f0f5ec77de787a497f0768373bec890509bef3de6a4c19510e6ddddc253eb74"
         );
     }
 
@@ -23230,10 +23595,20 @@ mod tests {
             c,
         );
         envs.push(env);
+        // The second region spans other time than the first, as it must to
+        // hold the same staff (reduction version 5 refuses the fill of a
+        // region over the first's span, `RegionsOverlap`).
+        let mut second = crate::valuegen::region(region2);
+        second.time_extent = TimeExtent {
+            start: TimeAnchor::WallClock {
+                time: epiphany_core::WallClockTime(2_000_000_000),
+            },
+            end: TimeAnchor::WallClock {
+                time: epiphany_core::WallClockTime(2_000_001_000),
+            },
+        };
         let (env, c) = next(
-            OperationKind::CreateRegion(CreateRegionOp {
-                region: crate::valuegen::region(region2),
-            }),
+            OperationKind::CreateRegion(CreateRegionOp { region: second }),
             c,
         );
         envs.push(env);
@@ -25212,6 +25587,60 @@ mod tests {
             }
         }
 
+        /// Opens `tx` minting a passage of its own: a second region, over
+        /// other time than the fixture's, an instance of the fixture's staff
+        /// in it, and a measure of that instance; returns the region and the
+        /// measure. An undo of `tx` tears the passage down whole.
+        fn open_tx_minting_a_passage(f: &mut G3bUndoFixture) -> (RegionId, MeasureId) {
+            let region2 = RegionId::new(ReplicaId(1), 6);
+            let instance2 = StaffInstanceId::new(ReplicaId(1), 7);
+            let measure2 = MeasureId::new(ReplicaId(1), 101);
+            let staff = StaffId::new(ReplicaId(1), 3);
+            let tx = f.tx;
+            f.push_tx(
+                "DeclareTransaction",
+                OperationKind::DeclareTransaction(crate::payload::TransactionDescriptor {
+                    id: tx,
+                    label: String::from("g3b undo surface, a passage"),
+                    category: None,
+                }),
+            );
+            let mut region = crate::valuegen::region(region2);
+            region.time_extent = TimeExtent {
+                start: TimeAnchor::WallClock {
+                    time: epiphany_core::WallClockTime(2_000_000_000),
+                },
+                end: TimeAnchor::WallClock {
+                    time: epiphany_core::WallClockTime(2_000_001_000),
+                },
+            };
+            f.push_tx(
+                "CreateRegion 2 (same tx)",
+                OperationKind::CreateRegion(CreateRegionOp { region }),
+            );
+            f.push_tx(
+                "CreateStaffInstance 2 (same tx)",
+                OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                    region: region2,
+                    instance: crate::valuegen::staff_instance(instance2, staff),
+                }),
+            );
+            f.push_tx(
+                "CreateMeasure 2 (same tx)",
+                OperationKind::CreateMeasure(CreateMeasureOp {
+                    instance: instance2,
+                    measure: Measure {
+                        id: measure2,
+                        start: g3b_region_anchor(region2, 0),
+                        time_signature: None,
+                        explicit_number: None,
+                        number_visibility: Default::default(),
+                    },
+                }),
+            );
+            (region2, measure2)
+        }
+
         fn assert_blocks(out: &GraphMaterialization, env: &OperationEnvelope, why: &str) {
             assert!(
                 matches!(
@@ -25419,21 +25848,17 @@ mod tests {
         }
 
         /// (M56) A live user system-break whose anchor names the measure
-        /// under test blocks its undo (`break_chain`).
+        /// under test blocks its undo (`break_chain`). The break stands in the
+        /// measure's own region, where reduction version 5 admits one naming
+        /// it.
         #[test]
         fn m56_system_break_surface_blocks_measure_undo() {
             let mut f = g3b_undo_fixture();
-            let region2 = RegionId::new(ReplicaId(1), 6);
+            let region = f.region;
             f.push(
-                "CreateRegion 2 (empty)",
-                OperationKind::CreateRegion(CreateRegionOp {
-                    region: crate::valuegen::region(region2),
-                }),
-            );
-            f.push(
-                "SetUserSystemBreak region2 -> measure",
+                "SetUserSystemBreak region -> measure",
                 OperationKind::SetUserSystemBreak(crate::payload::SetUserSystemBreakOp {
-                    region: region2,
+                    region,
                     anchor: measure_anchor(f.measure, MeasurePosition::Start),
                     present: true,
                 }),
@@ -25443,22 +25868,18 @@ mod tests {
             assert_blocks(&out, &undo, "a live system break anchored to the measure");
         }
 
-        /// (M57) A live user page-break whose anchor names the measure under
-        /// test blocks its undo (`page_break_chain`).
+        /// (M57) A live user page-break whose anchor names the measure
+        /// under test blocks its undo (`page_break_chain`). The break stands in the
+        /// measure's own region, where reduction version 5 admits one naming
+        /// it.
         #[test]
         fn m57_page_break_surface_blocks_measure_undo() {
             let mut f = g3b_undo_fixture();
-            let region2 = RegionId::new(ReplicaId(1), 6);
+            let region = f.region;
             f.push(
-                "CreateRegion 2 (empty)",
-                OperationKind::CreateRegion(CreateRegionOp {
-                    region: crate::valuegen::region(region2),
-                }),
-            );
-            f.push(
-                "SetUserPageBreak region2 -> measure",
+                "SetUserPageBreak region -> measure",
                 OperationKind::SetUserPageBreak(SetUserPageBreakOp {
-                    region: region2,
+                    region,
                     anchor: measure_anchor(f.measure, MeasurePosition::Start),
                     present: true,
                 }),
@@ -25698,22 +26119,19 @@ mod tests {
         }
 
         /// (M61, row 5/7: system break) The owning region is minted in the
-        /// same tx.
+        /// same tx, with the instance and the measure the break names: a
+        /// break stands in its measure's own region (reduction version 5
+        /// refuses one naming another region's measure), and the undo tears
+        /// that region down with the measure.
         #[test]
         fn m61_same_transaction_teardown_exempts_system_break() {
-            let mut f = g3b_undo_fixture();
-            let region2 = RegionId::new(ReplicaId(1), 6);
-            f.push_tx(
-                "CreateRegion 2 (same tx)",
-                OperationKind::CreateRegion(CreateRegionOp {
-                    region: crate::valuegen::region(region2),
-                }),
-            );
+            let mut f = g3b_undo_fixture_prereqs_only();
+            let (region2, measure2) = open_tx_minting_a_passage(&mut f);
             f.push(
-                "SetUserSystemBreak region2 -> measure",
+                "SetUserSystemBreak region2 -> its measure",
                 OperationKind::SetUserSystemBreak(crate::payload::SetUserSystemBreakOp {
                     region: region2,
-                    anchor: measure_anchor(f.measure, MeasurePosition::Start),
+                    anchor: measure_anchor(measure2, MeasurePosition::Start),
                     present: true,
                 }),
             );
@@ -25723,22 +26141,19 @@ mod tests {
         }
 
         /// (M61, row 6/7: page break) The owning region is minted in the
-        /// same tx.
+        /// same tx, with the instance and the measure the break names: a
+        /// break stands in its measure's own region (reduction version 5
+        /// refuses one naming another region's measure), and the undo tears
+        /// that region down with the measure.
         #[test]
         fn m61_same_transaction_teardown_exempts_page_break() {
-            let mut f = g3b_undo_fixture();
-            let region2 = RegionId::new(ReplicaId(1), 6);
-            f.push_tx(
-                "CreateRegion 2 (same tx)",
-                OperationKind::CreateRegion(CreateRegionOp {
-                    region: crate::valuegen::region(region2),
-                }),
-            );
+            let mut f = g3b_undo_fixture_prereqs_only();
+            let (region2, measure2) = open_tx_minting_a_passage(&mut f);
             f.push(
-                "SetUserPageBreak region2 -> measure",
+                "SetUserPageBreak region2 -> its measure",
                 OperationKind::SetUserPageBreak(SetUserPageBreakOp {
                     region: region2,
-                    anchor: measure_anchor(f.measure, MeasurePosition::Start),
+                    anchor: measure_anchor(measure2, MeasurePosition::Start),
                     present: true,
                 }),
             );
@@ -26010,9 +26425,14 @@ mod tests {
             );
         }
 
-        /// (M62, row 5/7: system break) Delete the owning region.
+        /// (M62, row 5/7: system break) Before reduction version 5 a break
+        /// in a second region could name the measure, and deleting that
+        /// region left nothing to block. Version 5 refuses the break itself
+        /// (`TargetMissing`): one naming a measure stands only in the
+        /// measure's own region, which cannot be deleted while it holds the
+        /// measure. Nothing stands, and the undo applies.
         #[test]
-        fn m62_tombstoned_system_break_owner_does_not_block() {
+        fn m62_system_break_naming_another_regions_measure_is_refused() {
             let mut f = g3b_undo_fixture();
             let region2 = RegionId::new(ReplicaId(1), 6);
             f.push(
@@ -26021,30 +26441,35 @@ mod tests {
                     region: crate::valuegen::region(region2),
                 }),
             );
-            f.push(
-                "SetUserSystemBreak region2 -> measure",
+            let set = f.push(
+                "SetUserSystemBreak region2 -> measure (refused)",
                 OperationKind::SetUserSystemBreak(crate::payload::SetUserSystemBreakOp {
                     region: region2,
                     anchor: measure_anchor(f.measure, MeasurePosition::Start),
                     present: true,
                 }),
             );
-            f.push(
-                "DeleteRegion 2 (empty, so deletable)",
-                OperationKind::DeleteRegion(crate::payload::DeleteRegionOp { region: region2 }),
-            );
             let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
-            let out = f.run_allowing_tail_conflict(1);
-            assert_undo_applied(
-                &out,
-                &undo,
-                "a tombstoned owning region must not strand-block via system break",
+            let out = f.run_allowing_tail_conflict(2);
+            assert_eq!(
+                g3b_effect_of(&out.state, set.id),
+                Some(OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::TargetMissing,
+                    },
+                })
             );
+            assert_undo_applied(&out, &undo, "a refused break blocks nothing");
         }
 
-        /// (M62, row 6/7: page break) Delete the owning region.
+        /// (M62, row 6/7: page break) Before reduction version 5 a break
+        /// in a second region could name the measure, and deleting that
+        /// region left nothing to block. Version 5 refuses the break itself
+        /// (`TargetMissing`): one naming a measure stands only in the
+        /// measure's own region, which cannot be deleted while it holds the
+        /// measure. Nothing stands, and the undo applies.
         #[test]
-        fn m62_tombstoned_page_break_owner_does_not_block() {
+        fn m62_page_break_naming_another_regions_measure_is_refused() {
             let mut f = g3b_undo_fixture();
             let region2 = RegionId::new(ReplicaId(1), 6);
             f.push(
@@ -26053,25 +26478,25 @@ mod tests {
                     region: crate::valuegen::region(region2),
                 }),
             );
-            f.push(
-                "SetUserPageBreak region2 -> measure",
+            let set = f.push(
+                "SetUserPageBreak region2 -> measure (refused)",
                 OperationKind::SetUserPageBreak(SetUserPageBreakOp {
                     region: region2,
                     anchor: measure_anchor(f.measure, MeasurePosition::Start),
                     present: true,
                 }),
             );
-            f.push(
-                "DeleteRegion 2 (empty, so deletable)",
-                OperationKind::DeleteRegion(crate::payload::DeleteRegionOp { region: region2 }),
-            );
             let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
-            let out = f.run_allowing_tail_conflict(1);
-            assert_undo_applied(
-                &out,
-                &undo,
-                "a tombstoned owning region must not strand-block via page break",
+            let out = f.run_allowing_tail_conflict(2);
+            assert_eq!(
+                g3b_effect_of(&out.state, set.id),
+                Some(OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::TargetMissing,
+                    },
+                })
             );
+            assert_undo_applied(&out, &undo, "a refused break blocks nothing");
         }
 
         /// (M62, row 7/7: region-scoped tempo) Delete the owning region.
@@ -26198,33 +26623,27 @@ mod tests {
             );
         }
 
-        /// (M60, 3/6: system break) A benign break pre-exists at the SAME
-        /// key; a same-tx `SetUserSystemBreak` overwrites it to reference the
+        /// (M60, 3/6: system break) A benign break pre-exists in the
+        /// measure's region at its start; a same-tx `SetUserSystemBreak` overwrites it to reference the
         /// fresh measure.
         #[test]
         fn m60_added_direction_system_break_does_not_block() {
             let mut f = g3b_undo_fixture_prereqs_only();
-            let region2 = RegionId::new(ReplicaId(1), 6);
+            let home = f.region;
             f.push(
-                "CreateRegion 2 (empty)",
-                OperationKind::CreateRegion(CreateRegionOp {
-                    region: crate::valuegen::region(region2),
-                }),
-            );
-            f.push(
-                "SetUserSystemBreak region2 (benign, pre-tx)",
+                "SetUserSystemBreak home (benign, pre-tx)",
                 OperationKind::SetUserSystemBreak(crate::payload::SetUserSystemBreakOp {
-                    region: region2,
-                    anchor: g3b_region_anchor(region2, 0),
+                    region: home,
+                    anchor: g3b_region_anchor(home, 0),
                     present: true,
                 }),
             );
             let measure = f.measure;
             f.open_target_tx();
             f.push_tx(
-                "SetUserSystemBreak region2 -> measure (same tx, adds the reference)",
+                "SetUserSystemBreak home -> measure (same tx, adds the reference)",
                 OperationKind::SetUserSystemBreak(crate::payload::SetUserSystemBreakOp {
-                    region: region2,
+                    region: home,
                     anchor: measure_anchor(measure, MeasurePosition::Start),
                     present: true,
                 }),
@@ -26242,27 +26661,21 @@ mod tests {
         #[test]
         fn m60_added_direction_page_break_does_not_block() {
             let mut f = g3b_undo_fixture_prereqs_only();
-            let region2 = RegionId::new(ReplicaId(1), 6);
+            let home = f.region;
             f.push(
-                "CreateRegion 2 (empty)",
-                OperationKind::CreateRegion(CreateRegionOp {
-                    region: crate::valuegen::region(region2),
-                }),
-            );
-            f.push(
-                "SetUserPageBreak region2 (benign, pre-tx)",
+                "SetUserPageBreak home (benign, pre-tx)",
                 OperationKind::SetUserPageBreak(SetUserPageBreakOp {
-                    region: region2,
-                    anchor: g3b_region_anchor(region2, 0),
+                    region: home,
+                    anchor: g3b_region_anchor(home, 0),
                     present: true,
                 }),
             );
             let measure = f.measure;
             f.open_target_tx();
             f.push_tx(
-                "SetUserPageBreak region2 -> measure (same tx, adds the reference)",
+                "SetUserPageBreak home -> measure (same tx, adds the reference)",
                 OperationKind::SetUserPageBreak(SetUserPageBreakOp {
-                    region: region2,
+                    region: home,
                     anchor: measure_anchor(measure, MeasurePosition::Start),
                     present: true,
                 }),
@@ -26481,27 +26894,21 @@ mod tests {
             );
         }
 
-        /// (M59, 3/6: system break) The base graph's region2 already carries
+        /// (M59, 3/6: system break) The base graph's region, the measure's own, already carries
         /// a user system-break anchored to the fixture's own (not-yet-
         /// minted) measure.
         #[test]
         fn m59_reinstated_direction_system_break_blocks() {
-            let mut prereqs = g3b_undo_fixture_prereqs_only();
-            let region2 = RegionId::new(ReplicaId(1), 6);
-            prereqs.push(
-                "CreateRegion 2 (empty)",
-                OperationKind::CreateRegion(CreateRegionOp {
-                    region: crate::valuegen::region(region2),
-                }),
-            );
+            let prereqs = g3b_undo_fixture_prereqs_only();
+            let home = prereqs.region;
             let mut base = prereqs.run_allowing_tail_conflict(0).score;
             {
                 let region = base
                     .canvas
                     .regions
                     .iter_mut()
-                    .find(|r| r.id == region2)
-                    .expect("region2 present");
+                    .find(|r| r.id == home)
+                    .expect("the fixture's region present");
                 let content = region.content.staff_based_mut().expect("staff-based");
                 content
                     .user_system_breaks
@@ -26511,9 +26918,9 @@ mod tests {
             let mut f = g3b_fixture_onto(&prereqs);
             f.open_target_tx();
             f.push_tx(
-                "SetUserSystemBreak region2 (same tx, removes the reference)",
+                "SetUserSystemBreak home (same tx, removes the reference)",
                 OperationKind::SetUserSystemBreak(crate::payload::SetUserSystemBreakOp {
-                    region: region2,
+                    region: home,
                     anchor: measure_anchor(prereqs.measure, MeasurePosition::Start),
                     present: false,
                 }),
@@ -26531,22 +26938,16 @@ mod tests {
         /// `SetUserPageBreak`.
         #[test]
         fn m59_reinstated_direction_page_break_blocks() {
-            let mut prereqs = g3b_undo_fixture_prereqs_only();
-            let region2 = RegionId::new(ReplicaId(1), 6);
-            prereqs.push(
-                "CreateRegion 2 (empty)",
-                OperationKind::CreateRegion(CreateRegionOp {
-                    region: crate::valuegen::region(region2),
-                }),
-            );
+            let prereqs = g3b_undo_fixture_prereqs_only();
+            let home = prereqs.region;
             let mut base = prereqs.run_allowing_tail_conflict(0).score;
             {
                 let region = base
                     .canvas
                     .regions
                     .iter_mut()
-                    .find(|r| r.id == region2)
-                    .expect("region2 present");
+                    .find(|r| r.id == home)
+                    .expect("the fixture's region present");
                 let content = region.content.staff_based_mut().expect("staff-based");
                 content
                     .user_page_breaks
@@ -26556,9 +26957,9 @@ mod tests {
             let mut f = g3b_fixture_onto(&prereqs);
             f.open_target_tx();
             f.push_tx(
-                "SetUserPageBreak region2 (same tx, removes the reference)",
+                "SetUserPageBreak home (same tx, removes the reference)",
                 OperationKind::SetUserPageBreak(SetUserPageBreakOp {
-                    region: region2,
+                    region: home,
                     anchor: measure_anchor(prereqs.measure, MeasurePosition::Start),
                     present: false,
                 }),

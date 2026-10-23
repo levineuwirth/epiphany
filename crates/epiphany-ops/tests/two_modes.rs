@@ -9,17 +9,17 @@
 //! failure (`split`), for a failure not yet fixed. A fix flips its histories
 //! from `split` to `agree`; a `split` history whose failure has gone fails
 //! here until it is flipped, so a fix cannot pass unrecorded, and one that
-//! shows a second failure beside its own fails too. A failure the
-//! owner has deferred is `# expect: deferred`, with a `# deferred:` line
-//! giving the reason: its class must be a cause the owner deferred by name
-//! (`modes::deferred`), its history must still fail as its class alone, as
-//! a `split` one does, and it is run by an ignored test, which requires it to
-//! agree, so `cargo test -- --ignored` shows it failing until the fix lands.
+//! shows a second failure beside its own fails too. A history a refusal fixed
+//! says so in a `# refused:` line naming the reason, and must show that
+//! refusal in both modes. No class is deferred: the region class the owner
+//! deferred (D48, D50 to D52) closed when reduction version 5 refused the
+//! fill that made it (X5b), and its histories agree.
 //!
 //! The CI budget runs a small number of generated histories, in two chunks of
 //! different lengths, and requires that every failure it finds is a committed
-//! `split` or `deferred` class, and that every operation kind and payload is
-//! authored and applied. The local budget is the `fuzz_modes` example.
+//! `split` class, that every operation kind and payload is authored and
+//! applied, and that what reduction version 5 refuses is written and refused.
+//! The local budget is the `fuzz_modes` example.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -30,8 +30,12 @@ use epiphany_ops::fuzz::modes;
 /// The CI budget, in chunks: histories, their first seed, and the operations
 /// each authors after its genesis. The longer chunk reaches states the shorter
 /// does not within its histories (review 1's L4: a planted break the first
-/// chunk alone missed).
-const CI_BUDGET: [(u64, u64, usize); 2] = [(96, 0x4A_0001, 24), (64, 0x4A_0001, 64)];
+/// chunk alone missed). It holds 128 histories, not 64, so that the rarest
+/// payload shapes (a grace rewritten, a pedal line without its sign, a
+/// syllable deleted) each come to about six in the budget rather than three or
+/// four; at 64, an arm added to the generator lost the syllable's delete from
+/// the budget by the draws moving alone.
+const CI_BUDGET: [(u64, u64, usize); 2] = [(96, 0x4A_0001, 24), (128, 0x4A_0001, 64)];
 
 /// The CI budget's runs, one per chunk with its authored count, shared by the
 /// tests that read them.
@@ -50,14 +54,14 @@ fn ci_run() -> &'static [(usize, modes::Report)] {
 enum Expect {
     Agree,
     Split,
-    /// Deferred by the owner, with the reason.
-    Deferred(String),
 }
 
 struct Committed {
     file: String,
     class: String,
     expect: Expect,
+    /// The reason a refusal that fixed it gives, from its `# refused:` line.
+    refused: Option<String>,
     history: Vec<epiphany_ops::OperationEnvelope>,
 }
 
@@ -84,15 +88,19 @@ fn committed() -> Vec<Committed> {
             let expect = match header("expect").as_str() {
                 "split" => Expect::Split,
                 "agree" => Expect::Agree,
-                "deferred" => Expect::Deferred(header("deferred")),
-                other => panic!("{file}: `# expect: {other}` is not split, agree or deferred"),
+                other => panic!("{file}: `# expect: {other}` is not split or agree"),
             };
+            let refused = text
+                .lines()
+                .find_map(|l| l.strip_prefix("# refused: "))
+                .map(|reason| reason.split(',').next().unwrap_or(reason).to_owned());
             let history = modes::parse(&text).unwrap_or_else(|e| panic!("{file}: {e:?}"));
             assert!(!history.is_empty(), "{file} holds no envelope");
             Committed {
                 file,
                 class,
                 expect,
+                refused,
                 history,
             }
         })
@@ -100,8 +108,8 @@ fn committed() -> Vec<Committed> {
 }
 
 /// Whether `found` shows `class` and nothing else: a history declared to
-/// split or deferred must show exactly its declared failure, so a second
-/// break joining it does not pass unseen (review 2's L5).
+/// split must show exactly its declared failure, so a second break joining
+/// it does not pass unseen (review 2's L5).
 fn shows_only(found: &[modes::Finding], class: &str) -> bool {
     !found.is_empty() && found.iter().all(|f| f.class == class)
 }
@@ -116,14 +124,6 @@ fn every_committed_history_reduces_as_it_declares() {
             "{}: names an object no operation its author saw minted",
             c.file
         );
-        if matches!(c.expect, Expect::Deferred(_)) {
-            assert!(
-                modes::deferred(&c.class),
-                "{}: declared deferred, but `{}` is no cause the owner deferred",
-                c.file,
-                c.class
-            );
-        }
         let found = modes::findings(&c.history);
         if c.expect != Expect::Agree {
             assert!(
@@ -146,72 +146,138 @@ fn every_committed_history_reduces_as_it_declares() {
 }
 
 /// A history showing its declared class and another fails its declaration:
-/// the never-seen and seen-deleted histories, their replicas renamed apart and
-/// run as one history, show both classes, so neither alone is what the
-/// history shows, while each history by itself shows its own.
+/// a history declared to split as one class passes only while it shows that
+/// class alone.
 #[test]
 fn a_history_showing_a_second_class_fails_its_declaration() {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/two_modes");
-    let read = |file: &str| std::fs::read_to_string(dir.join(file)).expect("readable");
-    let never_seen = read("110-invariant-region-extents.txt");
-    let seen_deleted = read("145-invariant-region-extents.txt")
-        .replace("#x0000000000000001", "#x0000000000000004")
-        .replace("#x0000000000000003", "#x0000000000000006");
-    let alone = |text: &str| modes::findings(&modes::parse(text).expect("parses"));
-    assert!(shows_only(&alone(&never_seen), modes::REGION_NEVER_SEEN));
-    assert!(shows_only(
-        &alone(&seen_deleted),
-        modes::REGION_SEEN_DELETED
-    ));
-    let mut both = modes::parse(&never_seen).expect("parses");
-    both.extend(modes::parse(&seen_deleted).expect("parses"));
-    let found = modes::findings(&both);
-    assert!(found.iter().any(|f| f.class == modes::REGION_NEVER_SEEN));
-    assert!(found.iter().any(|f| f.class == modes::REGION_SEEN_DELETED));
-    assert!(!shows_only(&found, modes::REGION_NEVER_SEEN));
-    assert!(!shows_only(&found, modes::REGION_SEEN_DELETED));
+    let finding = |class: &str| modes::Finding {
+        class: class.to_owned(),
+        detail: String::new(),
+    };
+    assert!(shows_only(&[finding("one")], "one"));
+    assert!(!shows_only(&[finding("one"), finding("two")], "one"));
+    assert!(!shows_only(&[finding("two")], "one"));
+    assert!(!shows_only(&[], "one"));
 }
 
-/// Every region overlap made by creating or filling regions is deferred
-/// (owner's rulings D48 and D50 to D52), whatever its cause and however many
-/// authors: two authors each creating a region over the same time and staves,
-/// neither having seen the other's; an author creating one where its own
-/// delete of a region, refused in the merged history, or its own undo of the
-/// region's transaction, blocked there, left none in its view; or an author
-/// placing one where its view holds one. Refusing a region's creation or fill
-/// where it would overlap one the merged history keeps needs region extents
-/// compared in both modes, which X5 brings, closing the class; until then the
-/// histories are kept and run here.
+/// Every history a refusal fixed shows that refusal in both modes: a fill its
+/// `# refused:` line names the reason of is refused in base-free and in
+/// graph-aware reduction alike, its own effect the refusal, or, in a
+/// transaction, the transaction conflicting with it among the members that
+/// failed. The nine region histories the owner deferred (D48, D50 to D52) are
+/// such: reduction version 5 refuses the fill that overlapped them
+/// (`RegionsOverlap`), and they agree.
 #[test]
-#[ignore = "every region overlap made by creating or filling regions is deferred \
-            (D48, D50 to D52) until X5 refuses it by region extents compared in \
-            both modes"]
-fn every_deferred_history_reduces_alike() {
-    let deferred: Vec<Committed> = committed()
+fn every_history_declaring_a_refusal_shows_it_in_both_modes() {
+    let declaring: Vec<Committed> = committed()
         .into_iter()
-        .filter(|c| matches!(c.expect, Expect::Deferred(_)))
+        .filter(|c| c.refused.is_some())
         .collect();
-    assert!(!deferred.is_empty(), "no deferred history was read");
-    for c in &deferred {
-        let found = modes::findings(&c.history);
-        assert!(
-            found.is_empty(),
-            "{} (deferred: {}): finds {:#?}",
-            c.file,
-            match &c.expect {
-                Expect::Deferred(reason) => reason.as_str(),
-                _ => unreachable!(),
-            },
-            found
+    assert_eq!(
+        declaring
+            .iter()
+            .map(|c| c.file.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "110-invariant-region-extents.txt",
+            "145-invariant-region-extents.txt",
+            "146-invariant-region-extents.txt",
+            "147-invariant-region-extents.txt",
+            "150-invariant-region-extents.txt",
+            "160-invariant-region-extents.txt",
+            "161-invariant-region-extents.txt",
+            "162-invariant-region-extents.txt",
+            "163-invariant-region-extents.txt",
+        ]
+    );
+    for c in &declaring {
+        let reason = c.refused.as_deref().expect("declared");
+        let [in_free, in_aware] = refused_fills(&c.history, reason);
+        assert!(!in_free.is_empty(), "{}: no fill refused {reason}", c.file);
+        assert_eq!(
+            in_free, in_aware,
+            "{}: the modes refuse differently",
+            c.file
         );
     }
+}
+
+/// The fills of `history` each mode refuses for `reason` (a
+/// `PreconditionFailureReason` by name), base-free first: a fill refused
+/// itself, or one its transaction's conflict names among the members that
+/// failed.
+fn refused_fills(
+    history: &[epiphany_ops::OperationEnvelope],
+    reason: &str,
+) -> [Vec<epiphany_core::OperationId>; 2] {
+    use epiphany_core::{IdentityContext, ReplicaId, Score};
+    use epiphany_ops::{
+        ConflictKind, MaterializedState, NoOpReason, OperationEffect, OperationKind,
+        OperationPayload, OperationSet,
+    };
+    let mut set = OperationSet::new();
+    for envelope in history {
+        set.accept(envelope.clone());
+    }
+    let refused = |state: &MaterializedState| {
+        let failed_in_transaction: Vec<_> = state
+            .conflicts
+            .records()
+            .iter()
+            .flat_map(|record| match &record.kind {
+                ConflictKind::TransactionConflict { failed_members, .. } => failed_members.clone(),
+                _ => Vec::new(),
+            })
+            .collect();
+        state
+            .effects
+            .iter()
+            .filter(|(id, effect)| {
+                let fill = history.iter().any(|env| {
+                    env.id == *id
+                        && matches!(
+                            env.payload,
+                            OperationPayload::Primitive(OperationKind::CreateStaffInstance(_))
+                        )
+                });
+                let refused = match effect {
+                    OperationEffect::NoOp {
+                        reason: NoOpReason::PreconditionFailedUnderReduction { reason: r },
+                    } => format!("{r:?}") == reason,
+                    OperationEffect::NoOp {
+                        reason: NoOpReason::TransactionConflict,
+                    } => failed_in_transaction.contains(id),
+                    _ => false,
+                };
+                fill && refused
+            })
+            .map(|(id, _)| *id)
+            .collect()
+    };
+    [
+        refused(&set.reduce()),
+        refused(
+            &set.reduce_onto(&Score::empty(IdentityContext::new(ReplicaId(0))))
+                .state,
+        ),
+    ]
+}
+
+/// Whether `history` agrees and both modes refuse one fill of it for the
+/// overlap, the same fill: the refusal closes the region class whatever its
+/// cause and however many authors (D52).
+fn refuses_the_overlapping_fill(history: &[epiphany_ops::OperationEnvelope]) -> bool {
+    assert!(modes::valid(history));
+    let found = modes::findings(history);
+    let [free, aware] = refused_fills(history, "RegionsOverlap");
+    found.is_empty() && free.len() == 1 && free == aware
 }
 
 #[test]
 fn the_ci_budget_finds_no_failure_that_is_not_committed() {
     let known: BTreeSet<String> = committed()
         .into_iter()
-        .filter(|c| c.expect != Expect::Agree)
+        .filter(|c| c.expect == Expect::Split)
         .map(|c| c.class)
         .collect();
     let unknown: Vec<_> = ci_run()
@@ -254,13 +320,55 @@ fn the_ci_budget_authors_and_applies_every_kind() {
     assert!(missing.is_empty(), "{missing:#?}");
 }
 
-/// The deferred class is read by its mechanism (D52), not its authors: the
-/// never-seen history, its second region's author made to have seen the
-/// first region's create, still overlaps them, an overlap one author makes
-/// directly, and is in the class under its general name, the cause being none
-/// the classifier names.
+/// What reduction version 5 refuses is written and refused (X5b): a fill
+/// overlapping a region that holds its staff (`RegionsOverlap`), a region
+/// whose extent's offset its target's time model does not admit
+/// (`WrongRegionTimeModel`, X5b.8), and each of [`modes::REFUSED`], authored
+/// and never applied.
 #[test]
-fn a_region_overlap_its_author_saw_is_the_deferred_class() {
+fn the_ci_budget_refuses_what_reduction_version_5_refuses() {
+    let sum = |count: &dyn Fn(&modes::Coverage) -> u64| {
+        ci_run()
+            .iter()
+            .map(|(_, report)| count(&report.coverage))
+            .sum::<u64>()
+    };
+    let refused = |kind: &str, reason: &str| {
+        let (kind, effect) = (
+            String::from(kind),
+            format!("NoOp PreconditionFailedUnderReduction {reason}"),
+        );
+        sum(&|c| {
+            c.other
+                .get(&(kind.clone(), effect.clone()))
+                .copied()
+                .unwrap_or(0)
+        })
+    };
+    assert!(
+        refused("InsertStaffInstance", "RegionsOverlap") > 0,
+        "no fill refused for an overlap"
+    );
+    assert!(
+        refused("InsertRegion", "WrongRegionTimeModel") > 0,
+        "no region refused for its extent's offset"
+    );
+    for shape in modes::REFUSED {
+        let authored = sum(&|c| c.authored.get(shape).copied().unwrap_or(0));
+        let applied = sum(&|c| c.applied.get(shape).copied().unwrap_or(0));
+        assert!(
+            authored > 0 && applied == 0,
+            "{shape}: authored {authored}, applied {applied}"
+        );
+    }
+}
+
+/// The refusal reads the overlap, not its authors (D52): the never-seen
+/// history (`110`), its second region's author made to have seen the first
+/// region's create, an overlap one author makes directly, has its second fill
+/// refused in both modes, as the history itself does.
+#[test]
+fn a_region_overlap_its_author_saw_is_refused() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/two_modes/110-invariant-region-extents.txt");
     let text = std::fs::read_to_string(path).expect("readable");
@@ -276,46 +384,25 @@ fn a_region_overlap_its_author_saw_is_the_deferred_class() {
         "(stamp 37 0 #x00000000000000010000000000000003) \
          (causal ((#x0000000000000001 2) (#x0000000000000002 0)) ())",
     );
-    let history = modes::parse(&aware).expect("parses");
-    assert!(modes::valid(&history));
-    let classes: Vec<String> = modes::findings(&history)
-        .into_iter()
-        .map(|f| f.class)
-        .collect();
-    assert_eq!(classes, vec![modes::REGION_OVERLAP], "{classes:?}");
-    assert!(modes::deferred(modes::REGION_OVERLAP));
-    let unchanged = modes::findings(&modes::parse(&text).expect("parses"));
-    assert!(unchanged
-        .iter()
-        .any(|f| f.class == modes::REGION_NEVER_SEEN));
+    assert!(refuses_the_overlapping_fill(
+        &modes::parse(&aware).expect("parses")
+    ));
+    assert!(refuses_the_overlapping_fill(
+        &modes::parse(&text).expect("parses")
+    ));
 }
 
-/// The deferred class's second cause (D50) is named apart, and holds only
-/// where its author's view did not hold the region live because of its own
-/// delete, which the merged history refuses: the committed history is so
-/// classed; with the second create's author having also seen the concurrent
-/// fill, so that its view refused the delete too and held the region, or
-/// with the delete gone, the overlap is in the class under its general name
-/// (D52).
+/// A region created where its author's own delete, refused in the merged
+/// history, left none (D50's cause, `145`) has its fill refused in both
+/// modes; so has the same history with the second create's author having
+/// also seen the concurrent fill, and with the delete gone.
 #[test]
-fn a_region_created_where_its_authors_refused_delete_left_none_is_deferred() {
+fn a_region_created_where_its_authors_refused_delete_left_none_is_refused() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/two_modes/145-invariant-region-extents.txt");
     let text = std::fs::read_to_string(path).expect("readable");
-    let classes = |history: &[epiphany_ops::OperationEnvelope]| -> Vec<String> {
-        assert!(modes::valid(history));
-        modes::findings(history)
-            .into_iter()
-            .map(|f| f.class)
-            .collect()
-    };
-    let general = |found: &[String]| found == [modes::REGION_OVERLAP];
     let history = modes::parse(&text).expect("parses");
-    let found = classes(&history);
-    assert!(
-        found.iter().any(|c| c == modes::REGION_SEEN_DELETED),
-        "{found:?}"
-    );
+    assert!(refuses_the_overlapping_fill(&history));
 
     // The second create's author saw the fill as well.
     let blind =
@@ -326,8 +413,9 @@ fn a_region_created_where_its_authors_refused_delete_left_none_is_deferred() {
         "(stamp 63 0 #x00000000000000010000000000000004) \
          (causal ((#x0000000000000001 3) (#x0000000000000003 0)) ())",
     );
-    let found = classes(&modes::parse(&saw_fill).expect("parses"));
-    assert!(general(&found), "{found:?}");
+    assert!(refuses_the_overlapping_fill(
+        &modes::parse(&saw_fill).expect("parses")
+    ));
 
     // No delete: the author saw the region live.
     let without: Vec<_> = history
@@ -343,20 +431,16 @@ fn a_region_created_where_its_authors_refused_delete_left_none_is_deferred() {
         .cloned()
         .collect();
     assert_eq!(without.len() + 1, history.len());
-    let found = classes(&modes::compact(&without));
-    assert!(general(&found), "{found:?}");
+    assert!(refuses_the_overlapping_fill(&modes::compact(&without)));
 }
 
-/// The deferred class's third cause (D51) is named apart, and holds only
-/// where its author's view did not hold the region live because of its own
-/// undo of the region's transaction, which the merged history blocks: an
-/// author undoes the transaction that created a region another author has
-/// concurrently filled, so the merged history keeps the region, and creates a
-/// region in its place. With the second create's author having also seen the
-/// fill, so that its view blocked the undo too and held the region, or with
-/// the undo gone, the overlap is in the class under its general name (D52).
+/// A region created where its author's own undo of the region's transaction,
+/// blocked in the merged history by a concurrent fill, left none (D51's
+/// cause) has its fill refused in both modes; so has the same history with
+/// the second create's author having also seen the fill, and with the undo
+/// gone.
 #[test]
-fn a_region_created_where_its_authors_blocked_undo_left_none_is_deferred() {
+fn a_region_created_where_its_authors_blocked_undo_left_none_is_refused() {
     use epiphany_core::{
         InstrumentId, OperationId, RegionId, ReplicaId, StaffId, StaffInstanceId, TimeAnchor,
         TimeExtent, TransactionId, WallClockTime,
@@ -484,20 +568,7 @@ fn a_region_created_where_its_authors_blocked_undo_left_none_is_deferred() {
             instance: valuegen::staff_instance(StaffInstanceId::new(one, 106), staff),
         })),
     );
-    let classes = |history: &[OperationEnvelope]| -> Vec<String> {
-        assert!(modes::valid(history));
-        modes::findings(history)
-            .into_iter()
-            .map(|f| f.class)
-            .collect()
-    };
-    let general = |found: &[String]| found == [modes::REGION_OVERLAP];
-    let found = classes(&history);
-    assert!(
-        found.iter().any(|c| c == modes::REGION_SEEN_UNDONE),
-        "{found:?}"
-    );
-    assert!(modes::deferred(modes::REGION_SEEN_UNDONE));
+    assert!(refuses_the_overlapping_fill(&history));
 
     // The second create's author saw the fill as well.
     let saw_fill: Vec<OperationEnvelope> = history
@@ -510,8 +581,7 @@ fn a_region_created_where_its_authors_blocked_undo_left_none_is_deferred() {
             env
         })
         .collect();
-    let found = classes(&saw_fill);
-    assert!(general(&found), "{found:?}");
+    assert!(refuses_the_overlapping_fill(&saw_fill));
 
     // No undo: the author saw the region live.
     let without: Vec<OperationEnvelope> = history
@@ -520,8 +590,7 @@ fn a_region_created_where_its_authors_blocked_undo_left_none_is_deferred() {
         .cloned()
         .collect();
     assert_eq!(without.len() + 1, history.len());
-    let found = classes(&modes::compact(&without));
-    assert!(general(&found), "{found:?}");
+    assert!(refuses_the_overlapping_fill(&modes::compact(&without)));
 }
 
 /// The committed history `name` (`tests/two_modes/<name>`), parsed.
@@ -867,4 +936,83 @@ fn a_marker_its_undo_restores_holds_no_region_in_both_modes() {
             );
         }
     }
+}
+
+/// An undo would restore a marker to a region's start by a musical offset,
+/// in a region a later migration took out of musical time: the migration
+/// supersedes the restoration, in both modes, as it supersedes the seven
+/// value restorations reduction version 3 reads so (reduction version 5, D80
+/// Q17). One author's history (`187`): a marker on a region's start moved by
+/// one transaction to a second region's start and by another onto a third
+/// region's note, the second region migrated to proportional time, and the
+/// last transaction undone, best effort. The undo applies and leaves the
+/// marker out of the migrated region; before the fix it returned there,
+/// anchored by an offset the region no longer admits (`AnchorOffsetModel`).
+#[test]
+fn a_marker_an_undo_would_restore_into_a_migrated_region_stays_out_in_both_modes() {
+    use epiphany_core::{AnchorOffset, IdentityContext, ReplicaId, Score, TimeAnchor};
+    use epiphany_ops::{
+        CrossCuttingValue, OperationEffect, OperationKind, OperationPayload, OperationSet,
+    };
+    let history = committed_history("187-invariant-anchor-offset-model.txt");
+    assert!(modes::valid(&history));
+    assert!(modes::findings(&history).is_empty());
+    let migrated = history
+        .iter()
+        .find_map(|env| match &env.payload {
+            OperationPayload::Primitive(OperationKind::ChangeRegionTimeModel(op)) => {
+                Some(op.region)
+            }
+            _ => None,
+        })
+        .expect("a migration");
+    let undo = history.last().expect("the undo");
+    assert!(matches!(undo.payload, OperationPayload::UndoTransaction(_)));
+    let mut set = OperationSet::new();
+    for envelope in &history {
+        set.accept(envelope.clone());
+    }
+    let marker = history
+        .iter()
+        .rev()
+        .find_map(|env| match &env.payload {
+            OperationPayload::Primitive(OperationKind::ModifyCrossCutting(op)) => {
+                match &op.structure {
+                    CrossCuttingValue::Marker(m) => Some(m.id),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+        .expect("the moved marker");
+    let free = set.reduce();
+    let aware = set.reduce_onto(&Score::empty(IdentityContext::new(ReplicaId(0))));
+    assert_eq!(free.effects, aware.state.effects);
+    assert_eq!(free.canonical_bytes(), aware.state.canonical_bytes());
+    let Some((_, OperationEffect::AppliedWithRepair { repairs })) =
+        free.effects.iter().find(|(id, _)| *id == undo.id)
+    else {
+        panic!("the undo applies, repairing");
+    };
+    assert!(
+        repairs
+            .iter()
+            .any(|r| r.target == epiphany_core::TypedObjectId::Marker(marker)),
+        "{repairs:?}"
+    );
+    let anchor = &aware
+        .score
+        .cross_cutting
+        .markers
+        .iter()
+        .find(|m| m.id == marker)
+        .expect("the marker stands")
+        .anchor;
+    assert!(
+        !matches!(
+            anchor,
+            TimeAnchor::Region { id, offset: AnchorOffset::Musical(_), .. } if *id == migrated
+        ),
+        "the marker went back into the migrated region: {anchor:?}"
+    );
 }

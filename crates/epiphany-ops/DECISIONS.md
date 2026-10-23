@@ -3921,3 +3921,242 @@ as before. The review's histories are committed under every policy as `181`
 to `186`, `expect: agree`, the new verdict asserted by
 `a_marker_its_undo_restores_holds_no_region_in_both_modes`: the undo applies,
 the region goes with its contents, and the marker stands on the older note.
+
+## X5b.2 — the supported-layout boundary (2026-10-22)
+
+**One check holds every operation block to what the current writer writes.**
+Before the product's 1.0 release nothing is migrated (roadmap D4), so
+supported is exactly what the current writers produce: every envelope of a
+block decoding under the live layouts, and the block stamped as minimal
+stamping derives from them, major and minor. `decode_operation_block` is the
+check; the editor's document layer and the text projection call it on every
+block they read, so neither path is guarded alone. It takes the declared
+version as two numbers (`BlockStamp`), since this crate does not depend on the
+bundle, and derives the stamp itself (`BlockStamp::derive`); the testkit holds
+that derivation and the bundle's `SchemaVersion::for_major_at_epoch` to one
+answer over generated envelope sets.
+
+Its refusals, each by name and in this order: a minor later than
+`HIGHEST_SCHEMA_MINOR`, read before any envelope, so a later build's appended
+discriminant reads as a version boundary rather than a bare unknown tag; an
+envelope that does not decode, named by the block's declared version, a block
+whose hash verified being no corrupt block, and by the value where its
+historical layout is recognized (the tuplet before major 4, as before); and a
+block whose envelopes decode but whose stamp is not their derivation, which
+minimal stamping forbids a writer to make and which would give one envelope set
+several chunk identities. A legacy container is refused by the two document
+readers (`LegacyContainer`); the bundle layer still decodes one, as the binary
+format requires. Every document the current writers make reads: imports and
+their edits mix majors 0, 2 and 5, and the text projection's single block
+reaches 0 to 5, each reopened equal through both readers.
+
+## X5b.3 — the region refusal (2026-10-22)
+
+**A fill whose region overlaps another holding its staff is refused.**
+`RegionExtents` (no two regions overlap in both time and staff) was the one
+invariant the reducer did not keep: two `CreateStaffInstance`s of one staff
+into regions over one span both applied, the class D48 and D50 to D52 deferred
+from the fuzz by name. A region is born empty (`CreateRegion` refuses carried
+instances) and only `CreateStaffInstance` adds a staff to one; no restoration
+revives an instance and nothing rewrites a region's time extent. So refusing
+the fill is enough to keep the invariant for every history, and reduction
+version 5 does: `RegionsOverlap` (reason 21, epoch 16), the earlier fill in
+canonical order standing, a fill in a transaction conflicting it whole, no
+repair.
+
+Both modes read the verdict from the ledger's indices (`region_instances`,
+`instance_staff`, object liveness) and one new one, `region_extents`, each
+region's extent from its create or a base. The ledger places an extent as far
+as it can without the graph: a wall-clock anchor is its time, and a region's
+edge with no offset or a wall-clock one is that edge plus the offset, to the
+checker's depth of eight. An event or a measure anchor, or a musical offset,
+needs a tempo map, which a later edit could change, so a refusal decided at
+the fill could not hold; such an extent counts as overlapping every region
+with which it shares a staff. Every current writer uses wall-clock extents.
+
+The deferred class leaves the fuzz with its classifier (`DEFERRED_REGIONS`,
+its four causes, `overlap_made_by_regions`, `region_cause`, `deferred`):
+every `RegionExtents` finding is the invariant's plain class again, which
+nothing excepts. The nine committed region histories agree, each declaring
+the refusal (`# refused: RegionsOverlap`), which
+`every_history_declaring_a_refusal_shows_it_in_both_modes` asserts in both
+modes; the tests that read the classifier's causes now assert each cause's
+history and its variants refused. The view test (X4a review 1's L2) keeps
+three classes by references the owner parked (D54), which the fuzz writes
+none of.
+
+Found while testing it and left to the owner: a `CreateRegion` whose extent
+anchors a metric region's edge by a wall-clock offset is applied and breaks
+`AnchorOffsetModel`; `CreateRegion` checks no extent anchor against its
+target's time model. One author reaches it through the operations; no writer
+and no fuzz arm makes such an extent.
+
+## X5b.4 — breaks by anchor (2026-10-22)
+
+**A user break's slot is its anchor.** The reducer keyed a break's
+last-writer slot by the musical position its anchor resolved to
+(`resolved_anchor_position`), which gives every anchor but a musical offset
+from the region's start the region's origin, so two breaks anchored to
+different measures or events of one region shared a slot and the later
+silently replaced the earlier. Reduction version 5 keys the slot by the
+anchor itself (`BreakAnchor`, ordered by the anchor's canonical bytes): the
+ledger's chains, `MaterializedState`'s break and page-break sections, the
+restorations and the measure strand guard all read the new key, and the
+graph's break list drops and re-adds an anchor by equality. A break anchored
+to a measure or an event moves with its music, the layout resolving it
+there (`break_anchor_time`).
+
+A break must name what its region holds: an event or a measure live in it, or
+its own edge; otherwise it is refused `TargetMissing` in both modes, from the
+indices both keep (`event_voice` with `indexed_voice_region`, `measure_values`
+with `instance_region_of`). One whose event a later delete removes stays
+keyed and places nothing; a measure cannot be undone from under a live break
+naming it (the strand guard, as before). The importer and the editor anchor a
+break to the start of the measure it precedes, in the region's first staff
+instance. Breaks a document wrote before, at offsets past the origin, kept
+their own slots under the old key and keep them under the new one: nothing is
+migrated (D4). Meter changes and tempo segments keep the coarse key, a named
+follow-up, every writer anchoring them at region-start offsets.
+
+Tests built on version 4's key change with it: the G3b undo-surface tests
+placed a break in a second region naming the first region's measure, which
+version 5 refuses, so their break rows stand in the measure's own region (a
+same-transaction teardown now mints a passage of its own region, instance and
+measure, and the tombstoned-owner rows assert the refusal); the redo test's
+break rows assert that the undo's removal of a slot the transaction opened is
+no write the redo could reverse; the collapse test became
+`user_breaks_at_distinct_anchors_keep_their_own_slots`; and the seeded base
+digest is re-pinned, the break sections' new layout moving it.
+
+## X5b.5 — the constant tempo spelling and a restoration into a migrated region (2026-10-22)
+
+**A constant tempo segment records no end tempo (P13-S8).** The rule said a
+constant segment's `end_tempo` "MUST be None or equal to start_tempo", and the
+derived codec accepted both, so one constant tempo had two spellings and two
+hashes; no constructor emits the second. It is rejected everywhere the rule is
+written: `TempoSegment`'s codec is written out and refuses it at decode (every
+major sharing it) and in the text projection's parser, the checker reports it
+under `req:time:tempo-segment-shape`, the integrator calls the map malformed,
+and reduction refuses a value built in memory `TempoMapMalformed`, in both
+modes. The specification says "MUST be absent".
+
+**A restoration into a migrated region is superseded (D80 Q17).** The undo's
+restorations ask of a value whether its region now admits a musical offset
+(`out_of_musical_time`) for the seven kinds X4a's M5 named, but the
+cross-cutting arm asked only whether a referent was tombstoned since. A marker
+anchored by a musical offset to a region's start, moved away by one
+transaction, its region then migrated to proportional time, could be restored
+there by an undo of the transaction, breaking `AnchorOffsetModel`; one author's
+history reaches it (`187`, found by the X5b.0 arm's plant run). The
+cross-cutting arm now also supersedes a value anchored by a musical offset to
+a region out of musical time (`regions_anchored_in_musical_time`: a marker's
+anchor, a spanner's two ends), by that region's migration.
+
+## X5b.6 — the fuzz writes reduction version 5's verdicts (2026-10-22)
+
+**New shapes.** The two-mode fuzz now writes every verdict and shape version 5
+adds. One region create in three is one no editor writes: over the span of a
+region the view holds, with an instance of a staff that region holds (the
+fill refused `RegionsOverlap`), or starting with no offset at a region's end
+(placed through the ledger's index) or at an event (which the ledger cannot
+place). No extent takes an offset from what it names: a wall-clock offset from
+a metric region's edge is applied and breaks `AnchorOffsetModel`, which no
+verdict refuses yet (put to the owner). A user break is anchored to a
+measure's start, an event or an offset from its region's start, and one time
+in eight names another region the view holds (`TargetMissing`). One tempo
+segment in eight records its end tempo, built in memory since no decoder
+reads it (`TempoMapMalformed`); a history holding one renders but does not
+parse. Arm 65 places a mark at a new region's start by a musical offset, moves
+it onto an event in a transaction of its own, takes the region out of musical
+time and undoes the move, the migration superseding the restoration (Q17).
+Region placement for the gestures that add a passage moves to `placed_region`,
+which draws as arm 15 drew before. `valid` reads a region's extent anchors as
+references, so the minimizer keeps what an extent names.
+
+`Coverage` counts the expression-text marker, the measure- and event-anchored
+breaks and the anchored region start among `SHAPES`, which the CI budget holds
+authored and applied; `REFUSED` holds the constant segment with an end tempo,
+which it holds authored and never applied; and
+`the_ci_budget_refuses_what_reduction_version_5_refuses` holds a fill refused
+for an overlap. A break naming another region is counted where its anchor
+shows it, but a view seldom holds two regions, so the budget pins none.
+
+**Each arm's reach**, seed by seed at the final generator against the clean
+build, with each verdict removed by a plant: the overlap refusal in base-free
+reduction alone and in both modes, an unplaced extent counted disjoint, a
+region edge left unplaced, a break's validity, a measure- or event-anchored
+break keyed by its region's start, the constant segment admitted, and Q17's
+supersession in graph-aware reduction alone and in both modes. Each shows,
+Q17's at no seed before arm 65; the planted build with no plant live equals
+the clean one at every seed, and the earlier arms' plants show there too.
+
+## X5b.8 — a region's extent answers to its target's time model (2026-10-23)
+
+**A time extent's offset is held to its target, as invariant 9 reads it.**
+`AnchorOffsetModel` holds every stored anchor's offset to its target's time
+model: a wall-clock offset to a model admitting wall-clock time, a musical one
+to a model admitting musical time. `CreateRegion` checked no extent anchor, and
+a migration stranded markers, spanners, tempo segments and a region's own
+measures and changes, never another region's extent, so one author broke the
+invariant through a region's extent by D81's four routes: an extent at a metric
+region's edge by a wall-clock offset, or at a proportional region's by a
+musical one; a migration out of musical time of a region another region's
+extent anchors by a musical offset; and a migration of a region whose own end
+is its start plus a musical length. Probing them found their mirrors and three
+more of the same object: a migration into metric time of a region another's
+extent, or its own bound, anchors by a wall-clock offset; an extent at a
+metric region's event or measure by a wall-clock offset; and an extent naming
+a region before it is made, the region then made with a model the offset
+contradicts.
+
+Reduction version 5 takes one rule for all of them, read from the indices both
+modes keep. A `CreateRegion` is refused `WrongRegionTimeModel` where its own
+extent anchors its target by an offset the target's model does not admit (a
+region's edge by that region's discipline, its own edge by its own model, an
+event or a measure by its region's, and an event in an aleatoric region where
+each event fixes its clock by the event's, musical for every event an
+operation places), or where a live region's extent already anchors the new
+region so. A migration strands each live region whose extent anchors its
+region, or an event or a measure in it, by an offset the target does not
+admit, read as the create reads it, the migrated region itself where its own
+bound is so anchored, named in its `TimeModelMigrationFailure` as a marker
+anchored there is; a region a tempo segment strands too is named once. The
+event's and the measure's half was found by D50's bar at the first generator
+(history `188`): a note in a region admitting either clock took an extent by a
+wall-clock offset, and the region then migrated into musical time; the note
+and the measure themselves keep such a migration, so the strand has to read
+the extents anchored to them. A target that is not live is not judged:
+the extent index keeps a removed region's extent and discipline, and the
+measure values a removed measure, but the invariant cannot find either. The
+check is the invariant's own reading, `CoordinateDiscipline::admits_offset`,
+which the checker now calls too.
+
+No undo reaches these: a migration writes nothing an undo restores, so no undo
+gives a region back an earlier time model; a region's or an instance's delete
+is not undone; and a redo of an undone region create restores nothing. No
+writer makes an extent with an offset (the importer and the editor place
+regions in wall-clock time).
+
+**The fuzz writes them.** One region create in two is one no editor writes,
+where it was one in three: besides the overlap, a region's end and an event
+with no offset, an extent now takes an offset of either kind from a region's
+end, from its own start, or from an event or a measure, refused where its
+target does not admit it. A new arm, 66, places a region anchored to a
+region's end or to its own start by an offset its named region's model
+admits (of either kind one time in four), then migrates the named region to a
+model of any kind, which strands the anchored region where the target does
+not admit the offset. One time in three it anchors the region's start instead
+at a note or a measure the view holds, by a wall-clock offset, after giving
+their region a model admitting either clock, and then migrates that region,
+the shape of history `188`, which the arm met once in 100,000 histories of 64
+before it. `SHAPES` gains an extent's musical and wall-clock
+offsets, held authored and applied by the CI budget, and
+`the_ci_budget_refuses_what_reduction_version_5_refuses` holds a region
+create refused `WrongRegionTimeModel`.
+
+Found by the same probes and left to the owner: the other holders of a region
+anchor have the wall-clock half of the gap. A marker or a spanner anchored to a
+metric region by a wall-clock offset is applied, as is a tempo segment so
+anchored, and a migration into metric time strands none of them, breaking
+`AnchorOffsetModel`; version 4's rule refuses and strands only their musical
+offsets out of musical time.

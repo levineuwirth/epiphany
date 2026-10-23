@@ -36,6 +36,11 @@
 //! * `envelope` — [`OperationEnvelope`], its canonical serialization, the
 //!   [`EnvelopeHash`] (`MUSCENVH`), and the well-formedness contract including
 //!   the `stamp.id == id` invariant (Chapter 6 §6.4).
+//! * `block` — [`decode_operation_block`], an operation block's envelopes held
+//!   to the supported-layout boundary: decoding under the live layouts, the
+//!   block stamped as minimal stamping derives ([`BlockStamp`]), and its minor
+//!   no later than this build's ([`HIGHEST_SCHEMA_MINOR`]); refused by name
+//!   otherwise ([`OperationBlockError`]).
 //! * `slot` — the order-independent [`OperationSlot`] model: `Single` or
 //!   `Equivocated`, with the Pass-10 transition rules (Chapter 6 §6.5).
 //! * `anomaly` — [`AnomalousReplicaSegment`] and the [`IntegrityAnomaly`]
@@ -78,6 +83,7 @@
 //! and sorted projections (Appendix D §"Ordered Iteration").
 
 mod anomaly;
+mod block;
 mod causal;
 mod conflict;
 mod decode;
@@ -750,6 +756,73 @@ pub mod vectors;
 ///   deleting only ties, slurs, beams and spanners. Base-free reduction,
 ///   holding no base, refuses it in both versions; only a canonical base,
 ///   which exists in tests alone (D4), reaches it.
+/// * `5` — **X5b** (2026-10-22), the format boundary and the region refusal
+///   (roadmap D80, and D81 for X5b.8), one version for the phase:
+///   - **The region refusal** (X5b.3, a verdict and new ledger state): a
+///     `CreateStaffInstance` whose region overlaps in time another live
+///     region holding a live instance of its staff is refused
+///     `RegionsOverlap` (reason 21, epoch 16) in both modes, where version
+///     `4` applied it and the two regions overlapped in time and staff
+///     (`RegionExtents`, the class D48 and D50 to D52 deferred). The extents
+///     are compared on a new index of each region's time extent, kept from
+///     its `CreateRegion` or a base, which no operation rewrites; an extent
+///     that index cannot place (an event or measure anchor, a musical
+///     offset) counts as overlapping. The earlier fill in canonical order
+///     stands; a refused fill in a transaction conflicts the transaction
+///     whole, and nothing is repaired. Locked by the reducer's tests of the
+///     refusal in both modes and the nine committed region histories, `110`,
+///     `145` to `147`, `150` and `160` to `163`, which agree now.
+///   - **Breaks by anchor** (X5b.4, reduced state and a verdict): a user
+///     break's last-writer slot is keyed by its anchor (`BreakAnchor`), not
+///     by the musical position the anchor resolves to, so two breaks
+///     anchored to different measures or events of one region keep their
+///     own slots where version `4` kept the last writer at the region's
+///     origin. The ledger's break chains, the restorations, the measure
+///     strand guard and the graph's break lists read the new key, and
+///     `MaterializedState`'s break and page-break sections are written under
+///     the anchor's canonical bytes. A break naming an event or a measure
+///     its region does not hold live, or another region, is refused
+///     `TargetMissing` in both modes, where version `4` applied it. Locked by
+///     `break_keys.rs`, `user_breaks_at_distinct_anchors_keep_their_own_slots`
+///     and the undo-surface tests' break rows.
+///   - **S8** (X5b.5, a verdict): a `SetTempoSegment` carrying a `Constant`
+///     segment that records an end tempo is refused `TempoMapMalformed` in
+///     both modes, where version `4` applied one whose end tempo equalled its
+///     start (P13-S8; such a segment also fails its decoder now, so only a
+///     value built in memory reaches reduction). Locked by
+///     `constant_tempo.rs`.
+///   - **A restoration into a migrated region** (X5b.5, a verdict): an undo's
+///     restoration of a marker or a spanner anchored by a musical offset to a
+///     region a migration took out of musical time since is superseded by
+///     that migration, in both modes, as version `3` supersedes the seven
+///     value restorations it reads so; version `4` restored a marker there,
+///     breaking `AnchorOffsetModel` (one author, D80 Q17). Locked by the
+///     committed history `187` and
+///     `a_marker_an_undo_would_restore_into_a_migrated_region_stays_out_in_both_modes`.
+///   - **A region's extent and its target's time model** (X5b.8, D81,
+///     verdicts): a `CreateRegion` whose time extent anchors its target by an
+///     offset the target's time model does not admit, read as invariant 9
+///     reads it (`CoordinateDiscipline::admits_offset`; a region's edge by
+///     that region's model, its own edge by its own, an event or a measure by
+///     its region's, an event in a region where each event fixes its clock by
+///     the event's), or whose own model contradicts a live region's extent
+///     already anchored to it, is refused `WrongRegionTimeModel` in both
+///     modes; and a `ChangeRegionTimeModel` whose target does not admit,
+///     read so, an offset by which a live region's extent anchors its region
+///     or an event or a measure in it, the region's own bound included,
+///     conflicts `TimeModelMigrationFailure` naming each such region, a
+///     musical offset out of musical time and a wall-clock one into a model
+///     admitting none. Version `4` applied both and broke `AnchorOffsetModel`
+///     (one author, D81's four routes, their mirrors, and an event's extent
+///     whose region migrates from a model admitting either clock, which the
+///     fuzz found). Read from the indices both modes keep; a target that is
+///     not live is not judged, as the invariant cannot find it. Locked by
+///     `extent_offsets.rs` and the committed history `188`.
+///
+///   With it, at the same epoch 16, a wire addition that changes no verdict:
+///   `MarkerKind` appends `ExpressionText` (X5b.7, D79 Q9), reduced as any
+///   marker is; an operation carrying one requires minor 16. Every value
+///   that existed before decodes, reduces and stamps as it did.
 ///
 /// A bump without its entry above leaves a number nobody can account for: this
 /// list is the only record of *why* each version exists.
@@ -770,11 +843,12 @@ pub mod vectors;
 /// `epiphany-bundle` in order to use that crate's `ReductionAlgorithmVersion`
 /// wrapper. The wrapper is constructed at the composition boundary by whoever
 /// depends on both (P13-S27 pin 1, §0.3).
-pub const CURRENT_REDUCTION_ALGORITHM_VERSION: u32 = 4;
+pub const CURRENT_REDUCTION_ALGORITHM_VERSION: u32 = 5;
 
 pub use anomaly::{
     AnomalousReplicaSegment, IntegrityAnomaly, IntegrityAnomalyKind, ReplicaAnomalyReason,
 };
+pub use block::{decode_operation_block, BlockStamp, OperationBlockError, HIGHEST_SCHEMA_MINOR};
 pub use causal::CausalContext;
 pub use conflict::{
     derive_conflict_id, ConflictId, ConflictKind, ConflictRecord, ConflictRegistry,
@@ -807,8 +881,8 @@ pub use payload::{
     TransposeIntervalOp, TransposeOp, TupletCompensation,
 };
 pub use reduce::{
-    canonical_reduction_order, measure_anchor_relation_for_agreement_test, GraphMaterialization,
-    MaterializedState, ObjectState, PendingReason,
+    canonical_reduction_order, measure_anchor_relation_for_agreement_test, BreakAnchor,
+    GraphMaterialization, MaterializedState, ObjectState, PendingReason,
 };
 pub use slot::OperationSlot;
 pub use stamp::{HybridLogicalClock, OperationStamp, StampTuple};

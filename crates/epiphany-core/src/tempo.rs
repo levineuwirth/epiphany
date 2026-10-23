@@ -447,12 +447,10 @@ impl TempoMap {
             let model = match seg.shape {
                 TempoShape::Curve => return Err(TempoError::CurveIntegrationUnsupported),
                 TempoShape::Constant => {
-                    // A Constant segment's end_tempo MUST be absent or equal to
-                    // start_tempo (Chapter 3).
-                    if let Some(et) = &seg.end_tempo {
-                        if et != &seg.start_tempo {
-                            return Err(TempoError::MalformedTempoMap);
-                        }
+                    // A Constant segment's end_tempo MUST be absent (Chapter
+                    // 3, `req:time:tempo-segment-shape`; P13-S8).
+                    if seg.end_tempo.is_some() {
+                        return Err(TempoError::MalformedTempoMap);
                     }
                     SpeedModel::Const(s0)
                 }
@@ -879,6 +877,60 @@ mod tests {
             bad_constant.musical_to_wallclock(&MusicalPosition(RationalTime::from_int(1))),
             Err(TempoError::MalformedTempoMap)
         );
+
+        // So is one recording an end_tempo equal to its start_tempo (P13-S8):
+        // a constant segment records none.
+        let equal_constant = TempoMap {
+            initial: None,
+            segments: vec![TempoSegment {
+                start: region_at(RationalTime::zero()),
+                end: None,
+                start_tempo: Tempo::quarter(120.0).unwrap(),
+                end_tempo: Some(Tempo::quarter(120.0).unwrap()),
+                shape: TempoShape::Constant,
+            }],
+        };
+        assert_eq!(
+            equal_constant.musical_to_wallclock(&MusicalPosition(RationalTime::from_int(1))),
+            Err(TempoError::MalformedTempoMap)
+        );
+    }
+
+    /// A constant segment recording an end tempo, equal or not, is rejected by
+    /// its decoder and by its text parser (P13-S8, reduction version 5); the
+    /// same segment without one round-trips both ways.
+    #[test]
+    fn a_constant_segment_recording_an_end_tempo_is_rejected_at_decode_and_in_text() {
+        use crate::textvalue::{read_sexp, TextError, TextValue};
+        use crate::{CanonicalValue, ScoreDecodeError};
+        let tempo = Tempo::quarter(120.0).unwrap();
+        let open = TempoSegment {
+            start: region_at(RationalTime::zero()),
+            end: None,
+            start_tempo: tempo.clone(),
+            end_tempo: None,
+            shape: TempoShape::Constant,
+        };
+        assert_eq!(
+            TempoSegment::decode_canonical(&open.canonical_bytes()).as_ref(),
+            Ok(&open)
+        );
+        assert_eq!(TempoSegment::parse(&open.project()).as_ref(), Ok(&open));
+        for end in [tempo.clone(), Tempo::quarter(60.0).unwrap()] {
+            let spelled = TempoSegment {
+                end_tempo: Some(end),
+                ..open.clone()
+            };
+            assert_eq!(
+                TempoSegment::decode_canonical(&spelled.canonical_bytes()),
+                Err(ScoreDecodeError::Reconstruct("TempoSegment"))
+            );
+            let text = read_sexp(&spelled.project().render()).unwrap();
+            assert_eq!(
+                TempoSegment::parse(&text),
+                Err(TextError::NotCanonical("TempoSegment"))
+            );
+        }
     }
 
     #[test]

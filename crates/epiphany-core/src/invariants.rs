@@ -1611,10 +1611,8 @@ impl<'a> GraphIndex<'a> {
                 match seg.shape {
                     TempoShape::Constant => flag(
                         ViolationKind::Requirement("req:time:tempo-segment-shape"),
-                        seg.end_tempo
-                            .as_ref()
-                            .is_none_or(|et| et == &seg.start_tempo),
-                        "constant tempo segment has end_tempo != start_tempo".to_string(),
+                        seg.end_tempo.is_none(),
+                        "constant tempo segment records an end_tempo".to_string(),
                     ),
                     TempoShape::Linear | TempoShape::Exponential | TempoShape::Curve => flag(
                         ViolationKind::Requirement("req:time:tempo-segment-shape"),
@@ -3189,20 +3187,9 @@ fn duration_bounds_kind(b: &crate::time::DurationBounds) -> BoundsKind {
 }
 
 /// Whether an anchor offset kind matches a region's coordinate discipline
-/// (invariant 9).
+/// (invariant 9), as reduction reads it too.
 fn offset_matches(offset: OffsetKind, disc: CoordinateDiscipline) -> bool {
-    use crate::graph::AleatoricAnchoringDiscipline as A;
-    match offset {
-        OffsetKind::Zero => true,
-        OffsetKind::Musical => disc.admits_musical_offsets(),
-        OffsetKind::WallClock => matches!(
-            disc,
-            CoordinateDiscipline::WallClock
-                | CoordinateDiscipline::Aleatoric(A::WallClock)
-                | CoordinateDiscipline::Aleatoric(A::EitherPerEvent)
-                | CoordinateDiscipline::Aleatoric(A::FreelyMixed)
-        ),
-    }
+    disc.admits_offset(offset)
 }
 
 /// Whether an anchor offset kind matches a *specific* coordinate clock — used
@@ -7142,11 +7129,23 @@ mod s29_violation_kind_tests {
             end_tempo: Some(tempo(120.0)),
             shape: TempoShape::Constant,
         });
-        assert_requirement_condition(
-            &s,
-            SHAPE,
-            "constant tempo segment has end_tempo != start_tempo",
-        );
+        assert_requirement_condition(&s, SHAPE, "constant tempo segment records an end_tempo");
+    }
+
+    /// A constant segment recording an end tempo equal to its start tempo is
+    /// reported too (P13-S8, reduction version 5): the requirement says the
+    /// end tempo is absent, and an equal one is a second spelling of one
+    /// tempo.
+    #[test]
+    fn tempo_constant_with_an_equal_end_reports_shape() {
+        let s = one_segment(405, |rid| TempoSegment {
+            start: anchor(rid, 0),
+            end: None,
+            start_tempo: tempo(120.0),
+            end_tempo: Some(tempo(120.0)),
+            shape: TempoShape::Constant,
+        });
+        assert_requirement_condition(&s, SHAPE, "constant tempo segment records an end_tempo");
     }
 
     #[test]
@@ -7416,12 +7415,13 @@ mod s29_violation_kind_tests {
     }
 
     #[test]
-    /// Pin 3a. The `.tex` requirement block equals pin 3's pinned source, by
+    /// Pin 3a. The `.tex` requirement block equals its pinned source, by
     /// whitespace-collapsed **equality** — not required phrases plus a
     /// forbidden-stem list. A stem inventory cannot anticipate the sentence
-    /// someone will actually write, and M14e is exactly that sentence: it uses
-    /// no forbidden stem and settles P13-S8 inside a requirement minted not to.
-    fn tempo_segment_shape_requirement_states_its_clauses_and_stays_s8_neutral() {
+    /// someone will actually write. The block was minted neutral on P13-S8;
+    /// X5b settled S8 (D80 Q14: a constant segment's `end_tempo` is absent),
+    /// and the pin moved with it, deliberately.
+    fn tempo_segment_shape_requirement_states_its_clauses() {
         const TEX: &str = include_str!("../../../spec/core_spec.tex");
         const LABEL: &str = r"\label{req:time:tempo-segment-shape}";
 
@@ -7439,13 +7439,17 @@ mod s29_violation_kind_tests {
                 r"\begin{requirement}
   \label{req:time:tempo-segment-shape}
   A tempo segment's \texttt{shape} and its \texttt{end\_tempo} \MUST{} be
-  compatible. If \texttt{shape} is \texttt{Constant} and \texttt{end\_tempo}
-  is present, it \MUST{} equal \texttt{start\_tempo}. If \texttt{shape} is
-  \texttt{Linear}, \texttt{Exponential} or \texttt{Curve}, \texttt{end\_tempo}
-  \MUST{} be present.
+  compatible. If \texttt{shape} is \texttt{Constant}, \texttt{end\_tempo}
+  \MUST{} be absent. If \texttt{shape} is \texttt{Linear},
+  \texttt{Exponential} or \texttt{Curve}, \texttt{end\_tempo} \MUST{} be
+  present.
 
-  This requirement states the compatibility that is enforced. It does not
-  determine whether a constant segment records an \texttt{end\_tempo} at all.
+  A constant segment that recorded an \texttt{end\_tempo} equal to its
+  \texttt{start\_tempo} would be a second spelling of one tempo, with a hash of
+  its own. A decoder rejects one rather than normalizing it (Binary Format
+  companion, \sectionsc{Graph Value Layouts}), and reduction refuses a value
+  built in memory (reduction algorithm version~\texttt{5}; until then an equal
+  end tempo was admitted).
 \end{requirement}"
             ),
             "pin 3's block is frozen; any edit must be deliberate"

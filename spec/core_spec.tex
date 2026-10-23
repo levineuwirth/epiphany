@@ -2217,9 +2217,8 @@ pub struct TempoSegment {
     pub start_tempo: Tempo,
 
     /// Tempo at the end of this segment.
-    /// Required if shape != Constant; ignored (and SHOULD be None)
-    /// if shape == Constant. A Constant segment holds start_tempo
-    /// throughout.
+    /// Required if shape != Constant; MUST be None if shape ==
+    /// Constant. A Constant segment holds start_tempo throughout.
     pub end_tempo: Option<Tempo>,
 
     /// Shape of the tempo change over this segment.
@@ -2227,8 +2226,7 @@ pub struct TempoSegment {
 }
 
 pub enum TempoShape {
-    /// Constant tempo throughout: end_tempo MUST be None or equal to
-    /// start_tempo.
+    /// Constant tempo throughout: end_tempo MUST be absent.
     Constant,
 
     /// Linear interpolation from start_tempo to end_tempo.
@@ -2280,13 +2278,17 @@ pub struct Tempo {
 \begin{requirement}
   \label{req:time:tempo-segment-shape}
   A tempo segment's \texttt{shape} and its \texttt{end\_tempo} \MUST{} be
-  compatible. If \texttt{shape} is \texttt{Constant} and \texttt{end\_tempo}
-  is present, it \MUST{} equal \texttt{start\_tempo}. If \texttt{shape} is
-  \texttt{Linear}, \texttt{Exponential} or \texttt{Curve}, \texttt{end\_tempo}
-  \MUST{} be present.
+  compatible. If \texttt{shape} is \texttt{Constant}, \texttt{end\_tempo}
+  \MUST{} be absent. If \texttt{shape} is \texttt{Linear},
+  \texttt{Exponential} or \texttt{Curve}, \texttt{end\_tempo} \MUST{} be
+  present.
 
-  This requirement states the compatibility that is enforced. It does not
-  determine whether a constant segment records an \texttt{end\_tempo} at all.
+  A constant segment that recorded an \texttt{end\_tempo} equal to its
+  \texttt{start\_tempo} would be a second spelling of one tempo, with a hash of
+  its own. A decoder rejects one rather than normalizing it (Binary Format
+  companion, \sectionsc{Graph Value Layouts}), and reduction refuses a value
+  built in memory (reduction algorithm version~\texttt{5}; until then an equal
+  end tempo was admitted).
 \end{requirement}
 
 \subsection{Conversion}
@@ -5432,6 +5434,14 @@ pub struct StaffExtent {
   two regions claim the same content, which is ambiguous.
 \end{rationale}
 
+Under concurrent reduction the constraint is kept where a region's staves
+grow, which is only a staff instance's creation: a \texttt{CreateStaffInstance}
+whose region overlaps in time another live region holding a live instance of
+the same staff is refused, the earlier in canonical order standing, and an
+extent the reduction cannot place on a common clock counts as overlapping
+(Operation Catalog, \sectionsc{Structural Containers}; reduction algorithm
+version~\texttt{5}).
+
 \subsection{Staff-Based Content}
 
 A staff-based region carries one or more staff \emph{instances}, each
@@ -6295,6 +6305,10 @@ pub enum MarkerKind {
     Rehearsal(Text),
     Segno,
     Coda,
+    /// Expression text: the engraver styles it as expression (italic,
+    /// below the staff), where staff text stands upright above.
+    /// Appended at schema-minor epoch 16 (X5b).
+    ExpressionText(Text),
 }
 
 pub enum Dynamic {
@@ -9382,11 +9396,15 @@ pub struct SetUserSystemBreakOp {
 \textbf{Invariant preconditions:}
 \begin{itemize}
   \item The region exists and is staff-based.
-  \item The anchor resolves within the region.
+  \item The anchor resolves within the region: an event or a measure it
+    names is live in that region, and a region edge it names is that
+    region's (reduction algorithm version~\texttt{5}).
 \end{itemize}
 
 \textbf{Effect:} The region's \texttt{user\_system\_breaks} list is
-updated to include or exclude the anchor. Layout caches that depend
+updated to include or exclude the anchor, which is the break's own
+last-writer slot: two breaks at distinct anchors are two breaks, though
+they resolve to one musical position. Layout caches that depend
 on system breaks are invalidated.
 
 \textbf{Postconditions:}
@@ -11214,6 +11232,11 @@ guarantee, and no sequence of commits can promote one into the other.
   \begin{itemize}
     \item \emph{Legacy, no canonical base} --- the bundle \MAY{} be
       opened. Nothing whose validity cannot be established is exposed.
+      A document reader, which decodes the container's operations into a
+      score or a text, refuses it by name all the same: no current writer
+      makes one, so it is outside the supported boundary (Binary Format
+      companion, \sectionsc{The Fixed Header} and
+      \sectionsc{The Chunk-Level Gate}).
     \item \emph{Legacy, canonical base present} --- the bundle
       \MUST{} be refused. A base predating any reduction authority is
       not safe materialized state, and \MUSTNOT{} be served in a
@@ -17362,6 +17385,22 @@ layouts they own versus inherit:
   the wire from schema major~5 (Binary Format companion
   \sectionsc{Schema Major 5}); the reduction algorithm version is
   \texttt{4}, which X4b opened.
+  \\
+  \today & \sectionsc{The Container Epoch} &
+  \textbf{X5b: the supported-layout boundary} (roadmap D4). A document
+  reader refuses a legacy container by name, though the bundle layer still
+  decodes it, and holds every operation block to the boundary the Binary
+  Format companion defines (\texttt{req:binfmt:op-block-boundary}).
+  \sectionsc{Region Overlap and Concurrency} states where concurrent
+  reduction keeps the overlap constraint: a staff instance's creation that
+  would overlap a region holding its staff is refused (reduction algorithm
+  version~\texttt{5}, which X5b opens). \texttt{SetUserSystemBreak}'s
+  preconditions and effect state a break's key: its anchor, naming what its
+  region holds. \texttt{req:time:tempo-segment-shape} settles P13-S8: a
+  constant tempo segment's \texttt{end\_tempo} is absent, and
+  \texttt{TempoShape}'s listing says so. \texttt{MarkerKind} appends
+  \texttt{ExpressionText} (roadmap D79 Q9): expression text, which an import
+  writes for italic words, apart from staff text.
   \\
   \bottomrule
 \end{longtable}

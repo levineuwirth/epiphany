@@ -82,6 +82,23 @@ fn offset(anchor: &TimeAnchor) -> String {
     }
 }
 
+/// The measure (counted from 1) whose start, in the region's first staff
+/// instance, a break is anchored to, as the importer anchors one (reduction
+/// version 5 keys a break by its anchor); `None` for any other anchor.
+fn break_measure(run: &Run, anchor: &TimeAnchor) -> Option<usize> {
+    match anchor {
+        TimeAnchor::Measure {
+            id,
+            position: epiphany_core::MeasurePosition::Start,
+            offset: AnchorOffset::Zero,
+        } => run.import.ids.measures[0][0]
+            .iter()
+            .position(|m| m == id)
+            .map(|i| i + 1),
+        _ => None,
+    }
+}
+
 /// A pitch's name: `Bb4`, or for a quarter-tone in `cmn-24` its alteration
 /// in signed quarter-tones, `G-1q4`.
 fn pitch_name(scale: &ScalePosition) -> String {
@@ -2351,28 +2368,29 @@ fn the_fidelity_comparison_catches_a_spoiled_score() {
 
 /// A file's line and page breaks are the score's user breaks before the
 /// measures that start the systems and pages, one per measure whichever parts
-/// mark it, a page break winning; and the score lays out there.
+/// mark it, a page break winning, each anchored to its measure's start in the
+/// region's first staff instance; and the score lays out there.
 #[test]
 fn breaks_are_imported_where_the_file_makes_them_and_laid_out_there() {
     let run = run("breaks.musicxml");
     all_applied(&run);
-    let breaks: Vec<(&str, String)> = run
+    let breaks: Vec<(&str, Option<usize>)> = run
         .import
         .envelopes
         .iter()
         .filter_map(|e| match &e.payload {
             epiphany_ops::OperationPayload::Primitive(
                 epiphany_ops::OperationKind::SetUserSystemBreak(op),
-            ) => Some(("system", offset(&op.anchor))),
+            ) => Some(("system", break_measure(&run, &op.anchor))),
             epiphany_ops::OperationPayload::Primitive(
                 epiphany_ops::OperationKind::SetUserPageBreak(op),
-            ) => Some(("page", offset(&op.anchor))),
+            ) => Some(("page", break_measure(&run, &op.anchor))),
             _ => None,
         })
         .collect();
     assert_eq!(
         breaks,
-        vec![("system", "2".to_owned()), ("page", "4".to_owned())],
+        vec![("system", Some(3)), ("page", Some(5))],
         "a line break before measure 3, a page break before measure 5"
     );
     assert!(
@@ -2451,23 +2469,23 @@ fn a_file_with_breaks_and_expression_imports_both() {
 
     let run = run("breaks_and_expression.musicxml");
     all_applied(&run);
-    let breaks: Vec<(&str, String)> = run
+    let breaks: Vec<(&str, Option<usize>)> = run
         .import
         .envelopes
         .iter()
         .filter_map(|e| match &e.payload {
             OperationPayload::Primitive(OperationKind::SetUserSystemBreak(op)) => {
-                Some(("system", offset(&op.anchor)))
+                Some(("system", break_measure(&run, &op.anchor)))
             }
             OperationPayload::Primitive(OperationKind::SetUserPageBreak(op)) => {
-                Some(("page", offset(&op.anchor)))
+                Some(("page", break_measure(&run, &op.anchor)))
             }
             _ => None,
         })
         .collect();
     assert_eq!(
         breaks,
-        vec![("system", "1".to_owned()), ("page", "2".to_owned())],
+        vec![("system", Some(2)), ("page", Some(3))],
         "a line break before measure 2, a page break before measure 3"
     );
     let features = &run.import.source.features;
@@ -2585,4 +2603,57 @@ fn a_file_with_breaks_and_expression_imports_both() {
         })
         .expect("the first C");
     assert!(drawn(principal) > 0, "the C the graces precede is drawn");
+}
+
+/// MuseScore writes expression text as italic words and staff text upright:
+/// a direction's words become an expression-text marker where its first
+/// `<words>` is italic, a staff-text one where it is upright, and italic
+/// words a tempo mark takes stay the tempo's (X5b.7, roadmap D79 Q9). The
+/// independent census counts the two apart, and an operation carrying an
+/// expression-text marker requires schema minor 16.
+#[test]
+fn italic_words_import_as_expression_text() {
+    use epiphany_core::{MarkerKind, Text};
+    use epiphany_musicxml::fidelity::expression_counts;
+    use epiphany_ops::{OperationKind, OperationPayload};
+    let run = run("expression_text.musicxml");
+    all_applied(&run);
+    let score = &run.reduced.score;
+    let mut kinds: Vec<MarkerKind> = score
+        .cross_cutting
+        .markers
+        .iter()
+        .map(|m| m.kind.clone())
+        .filter(|k| matches!(k, MarkerKind::Text(_) | MarkerKind::ExpressionText(_)))
+        .collect();
+    kinds.sort_by_key(|k| format!("{k:?}"));
+    assert_eq!(
+        kinds,
+        [
+            MarkerKind::ExpressionText(Text::new("espressivo")),
+            MarkerKind::ExpressionText(Text::new("sotto voce,")),
+            MarkerKind::Text(Text::new("pizz.")),
+        ]
+    );
+    let counts = expression_counts(score);
+    assert_eq!(counts.get("marker expression text"), Some(&2));
+    assert_eq!(counts.get("marker text"), Some(&1));
+    assert_eq!(counts.get("marker tempo"), Some(&1));
+    let epochs: Vec<Option<u16>> = run
+        .import
+        .envelopes
+        .iter()
+        .filter(|e| {
+            matches!(
+                &e.payload,
+                OperationPayload::Primitive(OperationKind::CreateCrossCutting(op))
+                    if matches!(&op.structure, epiphany_ops::CrossCuttingValue::Marker(m)
+                        if matches!(m.kind, MarkerKind::Text(_) | MarkerKind::ExpressionText(_)))
+            )
+        })
+        .map(|e| e.introduced_minor())
+        .collect();
+    let mut sorted = epochs.clone();
+    sorted.sort();
+    assert_eq!(sorted, [None, Some(16), Some(16)]);
 }
