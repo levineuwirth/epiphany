@@ -87,7 +87,9 @@
 //! from an event or a measure, refused `WrongRegionTimeModel` where its
 //! target's time model does not admit it, and a region so anchored has the
 //! region it names migrated to a model of any kind, which strands it where
-//! the target does not admit its offset (X5b.8). A user break is anchored to a
+//! the target does not admit its offset; a region anchored at a note or a
+//! measure by a wall-clock offset, in a region first given a model admitting
+//! either clock, has that region migrated so too (X5b.8). A user break is anchored to a
 //! measure's start, an event or an offset from its region's start, now and
 //! then in another region (`TargetMissing`). A constant tempo segment now and
 //! then records its end tempo (`TempoMapMalformed`), built in memory since no
@@ -3527,9 +3529,69 @@ fn make(
             // kind one time in four, refused `WrongRegionTimeModel` where its
             // model does not admit it); then the named region migrated to a
             // model of any kind, which strands the anchored region where it
-            // does not admit the offset.
+            // does not admit the offset. Or, one time in three, its start at
+            // a note or a measure the view holds, whose region is first given
+            // a model admitting either clock, so that a wall-clock offset
+            // there applies, before that region is migrated to a model of any
+            // kind, which strands the anchored region where it does not admit
+            // the offset as it reads the note or the measure.
             let mut region = placed_region(sim, r, h);
-            let (named, edge, model) = if sim.rng.chance(2) {
+            let gesture = sim.rng.below(3);
+            if gesture == 2 {
+                let offset = if sim.rng.chance(4) {
+                    random_offset(&mut sim.rng)
+                } else {
+                    epiphany_core::AnchorOffset::WallClock(WallClockDuration(
+                        250 * (1 + sim.rng.below(4) as i64),
+                    ))
+                };
+                let (held_in, anchoring, start) = if sim.rng.chance(2) {
+                    let event = rng_event(sim)?;
+                    let held_in = h.voices.iter().find(|(v, _, _)| *v == event.voice())?.2;
+                    let start = epiphany_core::TimeAnchor::Event {
+                        id: event.id(),
+                        offset,
+                    };
+                    (held_in, AleatoricAnchoringDiscipline::FreelyMixed, start)
+                } else {
+                    let measures: Vec<(RegionId, MeasureId)> = h
+                        .instances()
+                        .iter()
+                        .flat_map(|(held_in, instance)| {
+                            instance.measures.iter().map(move |m| (*held_in, m.id))
+                        })
+                        .collect();
+                    let &(held_in, measure) = sim.rng.pick(&measures)?;
+                    let anchoring = if sim.rng.chance(2) {
+                        AleatoricAnchoringDiscipline::FreelyMixed
+                    } else {
+                        AleatoricAnchoringDiscipline::EitherPerEvent
+                    };
+                    let start = epiphany_core::TimeAnchor::Measure {
+                        id: measure,
+                        position: epiphany_core::MeasurePosition::Start,
+                        offset,
+                    };
+                    (held_in, anchoring, start)
+                };
+                region.time_extent.start = start;
+                let migrate = |model| {
+                    prim(OperationKind::ChangeRegionTimeModel(
+                        ChangeRegionTimeModelOp {
+                            region: held_in,
+                            new_time_model: model,
+                            declared_incompatible: Vec::new(),
+                            remapping: PositionRemapping::PreserveTime,
+                        },
+                    ))
+                };
+                return Some(vec![
+                    migrate(aleatoric_model(anchoring)),
+                    prim(OperationKind::CreateRegion(CreateRegionOp { region })),
+                    migrate(random_migration_target(&mut sim.rng)),
+                ]);
+            }
+            let (named, edge, model) = if gesture == 0 {
                 let (other, model, _) = sim.rng.pick(&h.regions)?;
                 (*other, epiphany_core::RegionEdge::End, (*model).clone())
             } else {
@@ -3588,19 +3650,24 @@ fn random_offset(rng: &mut Rng) -> epiphany_core::AnchorOffset {
 fn random_migration_target(rng: &mut Rng) -> RegionTimeModel {
     match rng.below(3) {
         0 => valuegen::proportional_model(),
-        1 => RegionTimeModel::Aleatoric(AleatoricTimeModel {
-            ordering: EventOrderingDAG::default(),
-            anchoring: match rng.below(4) {
-                0 => AleatoricAnchoringDiscipline::Musical,
-                1 => AleatoricAnchoringDiscipline::WallClock,
-                2 => AleatoricAnchoringDiscipline::EitherPerEvent,
-                _ => AleatoricAnchoringDiscipline::FreelyMixed,
-            },
-            bounds: BTreeMap::new(),
-            duration_hint: WallClockDuration(1),
+        1 => aleatoric_model(match rng.below(4) {
+            0 => AleatoricAnchoringDiscipline::Musical,
+            1 => AleatoricAnchoringDiscipline::WallClock,
+            2 => AleatoricAnchoringDiscipline::EitherPerEvent,
+            _ => AleatoricAnchoringDiscipline::FreelyMixed,
         }),
         _ => valuegen::metric_model(),
     }
+}
+
+/// An aleatoric model anchored by `anchoring`, with no ordering or bounds.
+fn aleatoric_model(anchoring: AleatoricAnchoringDiscipline) -> RegionTimeModel {
+    RegionTimeModel::Aleatoric(AleatoricTimeModel {
+        ordering: EventOrderingDAG::default(),
+        anchoring,
+        bounds: BTreeMap::new(),
+        duration_hint: WallClockDuration(1),
+    })
 }
 
 /// An undo's policy, each of the three alike.

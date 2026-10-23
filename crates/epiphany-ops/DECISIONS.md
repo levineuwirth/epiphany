@@ -4145,7 +4145,11 @@ target does not admit it. A new arm, 66, places a region anchored to a
 region's end or to its own start by an offset its named region's model
 admits (of either kind one time in four), then migrates the named region to a
 model of any kind, which strands the anchored region where the target does
-not admit the offset. `SHAPES` gains an extent's musical and wall-clock
+not admit the offset. One time in three it anchors the region's start instead
+at a note or a measure the view holds, by a wall-clock offset, after giving
+their region a model admitting either clock, and then migrates that region,
+the shape of history `188`, which the arm met once in 100,000 histories of 64
+before it. `SHAPES` gains an extent's musical and wall-clock
 offsets, held authored and applied by the CI budget, and
 `the_ci_budget_refuses_what_reduction_version_5_refuses` holds a region
 create refused `WrongRegionTimeModel`.
