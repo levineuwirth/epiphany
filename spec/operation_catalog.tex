@@ -1757,10 +1757,12 @@ stands at a musical offset, strands that instance, named among them,
 and an applied such migration drops the region's system and page breaks and
 its default and local metric grids (since version~0.19.0). Since
 version~0.22.0, a target that does not admit an offset by which a live
-region's time extent anchors the region strands that region, named among
-them, the migrated region itself where its own bound is so anchored: a
-musical offset out of musical time, and a wall-clock offset into a model
-admitting none (a metric target, or an aleatoric one anchored musically). Graph-aware
+region's time extent anchors the region, or an event or a measure in it,
+strands that region, named among them, the migrated region itself where its
+own bound is so anchored: a musical offset out of musical time, and a
+wall-clock offset into a model admitting none (a metric target, or an
+aleatoric one anchored musically, or, for an event, one where each event
+fixes its clock). The target is read as \texttt{CreateRegion} reads one. Graph-aware
 reduction also judges, from the graph, the region's events the index does not
 hold (a base's events of another coordinate kind, which base-free reduction
 never has), against the target's discipline as invariant~4 does (an aleatoric

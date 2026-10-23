@@ -5,9 +5,9 @@
 //! region's, is refused. A `CreateRegion` whose extent anchors a region's
 //! edge, an event or a measure so, or whose own model a live region's extent
 //! already contradicts, is refused `WrongRegionTimeModel`; a migration strands
-//! every live region whose extent anchors its region by an offset the target
-//! model does not admit, the region's own bound included, as it strands a
-//! marker anchored there.
+//! every live region whose extent anchors its region, or an event or a
+//! measure in it, by an offset the target model does not admit, the region's
+//! own bound included, as it strands a marker anchored there.
 //!
 //! Each history is one author's, built by hand: an instrument and a staff,
 //! then regions. Each is reduced both ways, the two held to each other, the
@@ -639,4 +639,120 @@ fn a_removed_target_judges_no_extent_anchored_to_it() {
     assert!(applied(&free, at_region));
     assert!(applied(&free, at_measure));
     assert_eq!(aware.score.canvas.regions.len(), 3);
+}
+
+/// A migration strands a region whose extent anchors an event or a measure of
+/// the migrated region by an offset the target does not admit, as the
+/// invariant reads the target once migrated: a region whose model admits
+/// either clock holds a note and a measure, and extents anchored to each by a
+/// wall-clock offset apply there, then a migration into musical time
+/// conflicts, naming them (history `188`, which D50's bar found). An event in
+/// a region where each event fixes its clock answers to its own, musical, so
+/// a migration there strands an extent at the note, not one at the measure;
+/// an extent at the note by a musical offset strands nothing.
+#[test]
+fn a_migration_strands_a_region_anchored_to_its_event_or_measure() {
+    let stranding = |anchor: fn(epiphany_core::EventId, MeasureId) -> TimeAnchor,
+                     model: RegionTimeModel| {
+        let mut h = History::new();
+        let region = h.placed(10, valuegen::metric_model());
+        let instance = StaffInstanceId::new(AUTHOR, 20);
+        h.push(OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+            region,
+            instance: valuegen::staff_instance(instance, h.staff),
+        }));
+        let measure = MeasureId::new(AUTHOR, 30);
+        h.push(OperationKind::CreateMeasure(CreateMeasureOp {
+            instance,
+            measure: Measure {
+                id: measure,
+                start: valuegen::region_start_anchor(region, MusicalPosition::origin()),
+                time_signature: None,
+                explicit_number: None,
+                number_visibility: MeasureNumberVisibility::Auto,
+            },
+        }));
+        let voice = VoiceId::new(AUTHOR, 40);
+        h.push(OperationKind::CreateVoice(CreateVoiceOp {
+            staff_instance: instance,
+            voice: valuegen::voice(voice),
+        }));
+        let note = epiphany_core::EventId::new(AUTHOR, 50);
+        h.push(OperationKind::InsertEvent(InsertEventOp {
+            staff_instance: instance,
+            event: valuegen::insert_event_value(
+                note,
+                voice,
+                MusicalPosition::origin(),
+                MusicalDuration(RationalTime::new(1, 4).expect("a quarter")),
+                &[PitchId::new(AUTHOR, 51)],
+            ),
+        }));
+        let mixed = h.migrate(region, aleatoric(AleatoricAnchoringDiscipline::FreelyMixed));
+        let (anchored, create) = h.region(
+            11,
+            valuegen::proportional_model(),
+            anchor(note, measure),
+            wall(9000),
+        );
+        let migration = h.migrate(region, model);
+        let (free, _) = h.reduce();
+        assert!(applied(&free, mixed));
+        assert!(applied(&free, create));
+        (
+            stranded(&free, migration),
+            anchored,
+            applied(&free, migration),
+        )
+    };
+    fn note_by_wall_clock(note: epiphany_core::EventId, _: MeasureId) -> TimeAnchor {
+        TimeAnchor::Event {
+            id: note,
+            offset: wall_clock(),
+        }
+    }
+    fn note_by_music(note: epiphany_core::EventId, _: MeasureId) -> TimeAnchor {
+        TimeAnchor::Event {
+            id: note,
+            offset: musical(),
+        }
+    }
+    fn measure_by_wall_clock(_: epiphany_core::EventId, measure: MeasureId) -> TimeAnchor {
+        TimeAnchor::Measure {
+            id: measure,
+            position: MeasurePosition::Start,
+            offset: wall_clock(),
+        }
+    }
+    for (anchor, model, strands) in [
+        (
+            note_by_wall_clock as fn(_, _) -> _,
+            valuegen::metric_model(),
+            true,
+        ),
+        (measure_by_wall_clock, valuegen::metric_model(), true),
+        (
+            note_by_wall_clock,
+            aleatoric(AleatoricAnchoringDiscipline::Musical),
+            true,
+        ),
+        (
+            note_by_wall_clock,
+            aleatoric(AleatoricAnchoringDiscipline::EitherPerEvent),
+            true,
+        ),
+        (
+            measure_by_wall_clock,
+            aleatoric(AleatoricAnchoringDiscipline::EitherPerEvent),
+            false,
+        ),
+        (note_by_music, valuegen::metric_model(), false),
+    ] {
+        let (named, anchored, migrated) = stranding(anchor, model);
+        if strands {
+            assert_eq!(named, Some(vec![TypedObjectId::Region(anchored)]));
+        } else {
+            assert!(migrated, "{named:?}");
+        }
+    }
 }

@@ -1094,6 +1094,25 @@ fn anchored_in_musical_time(anchor: &TimeAnchor) -> bool {
     )
 }
 
+/// The discipline an extent anchor's offset answers to in a region of
+/// `discipline` (invariant 9): the region's own, but for an event in a region
+/// where each event fixes its clock, which answers to the event's, musical for
+/// every event the occupancy index holds.
+fn extent_anchor_judged(
+    anchor: &TimeAnchor,
+    discipline: CoordinateDiscipline,
+) -> CoordinateDiscipline {
+    match (anchor, discipline) {
+        (
+            TimeAnchor::Event { .. },
+            CoordinateDiscipline::Aleatoric(
+                epiphany_core::AleatoricAnchoringDiscipline::EitherPerEvent,
+            ),
+        ) => CoordinateDiscipline::Musical,
+        _ => discipline,
+    }
+}
+
 fn region_position_anchor(region: RegionId, position: &MusicalPosition) -> TimeAnchor {
     TimeAnchor::Region {
         id: region,
@@ -4115,25 +4134,16 @@ impl<'a> Reducer<'a> {
         })
     }
 
-    /// The coordinate discipline an extent anchor's offset answers to
-    /// (invariant 9), read from the indices both modes keep: a region's edge
-    /// to that region's, the region being created (`own`) to its own model;
-    /// an event to its region's, or in a region where each event fixes its
-    /// own clock to the event's, musical for every event the occupancy index
-    /// holds; a measure to its instance's region's. `None` where the target
-    /// is not live or not placed, which the invariant cannot judge either.
-    fn extent_anchor_discipline(
-        &self,
-        anchor: &TimeAnchor,
-        own: (RegionId, CoordinateDiscipline),
-    ) -> Option<CoordinateDiscipline> {
+    /// The region an extent anchor's target stands in, read from the indices
+    /// both modes keep: a region's edge that region, and a live event or
+    /// measure the region its index places it in. `None` for a wall-clock
+    /// anchor, and where an event or a measure is not live or not placed,
+    /// which the invariant cannot judge either.
+    fn extent_anchor_region(&self, anchor: &TimeAnchor) -> Option<RegionId> {
         let live = |object| matches!(self.objects.get(&object), Some(ObjectState::Live));
-        let region = match anchor {
-            TimeAnchor::WallClock { .. } => return None,
-            TimeAnchor::Region { id, .. } if *id == own.0 => return Some(own.1),
-            TimeAnchor::Region { id, .. } => {
-                Some(*id).filter(|id| live(TypedObjectId::Region(*id)))
-            }
+        match anchor {
+            TimeAnchor::WallClock { .. } => None,
+            TimeAnchor::Region { id, .. } => Some(*id),
             TimeAnchor::Event { id, .. } => Some(*id)
                 .filter(|id| live(TypedObjectId::Event(*id)))
                 .and_then(|id| self.event_voice(id))
@@ -4142,17 +4152,32 @@ impl<'a> Reducer<'a> {
                 .filter(|id| live(TypedObjectId::Measure(*id)))
                 .and_then(|id| self.measure_values.get(&id))
                 .and_then(|(instance, _)| self.instance_region_of(*instance)),
-        }?;
-        let discipline = *self.region_disciplines.get(&region)?;
-        Some(match (anchor, discipline) {
-            (
-                TimeAnchor::Event { .. },
-                CoordinateDiscipline::Aleatoric(
-                    epiphany_core::AleatoricAnchoringDiscipline::EitherPerEvent,
-                ),
-            ) => CoordinateDiscipline::Musical,
-            _ => discipline,
-        })
+        }
+    }
+
+    /// The coordinate discipline an extent anchor's offset answers to
+    /// (invariant 9): its target's region's ([`Self::extent_anchor_region`]),
+    /// the region being created (`own`) answering by its own model, as
+    /// [`extent_anchor_judged`] reads it. `None` where the target or its
+    /// region is not live, which the invariant cannot judge either.
+    fn extent_anchor_discipline(
+        &self,
+        anchor: &TimeAnchor,
+        own: (RegionId, CoordinateDiscipline),
+    ) -> Option<CoordinateDiscipline> {
+        let region = self.extent_anchor_region(anchor)?;
+        let discipline = if region == own.0 {
+            own.1
+        } else {
+            if !matches!(
+                self.objects.get(&TypedObjectId::Region(region)),
+                Some(ObjectState::Live)
+            ) {
+                return None;
+            }
+            *self.region_disciplines.get(&region)?
+        };
+        Some(extent_anchor_judged(anchor, discipline))
     }
 
     /// `Some(NoOp)` when a `CreateRegion` would leave a time extent whose
@@ -4181,8 +4206,9 @@ impl<'a> Reducer<'a> {
         })
     }
 
-    /// The live regions whose time extent anchors `region`'s edge by an
-    /// offset `discipline` does not admit, `region` among them where its own
+    /// The live regions whose time extent anchors `region`'s edge, or an
+    /// event or a measure in it, by an offset `discipline` does not admit as
+    /// [`extent_anchor_judged`] reads it, `region` among them where its own
     /// bound is so anchored: a migration of `region` to `discipline` strands
     /// each, as it strands a marker anchored there, and a create of `region`
     /// under it is refused (reduction version 5, X5b.8). Read from the
@@ -4203,8 +4229,10 @@ impl<'a> Reducer<'a> {
             })
             .filter(|(_, extent)| {
                 [&extent.start, &extent.end].into_iter().any(|anchor| {
-                    matches!(anchor, TimeAnchor::Region { id, offset, .. }
-                        if *id == region && !discipline.admits_offset(offset.kind()))
+                    self.extent_anchor_region(anchor) == Some(region)
+                        && anchor.offset().is_some_and(|offset| {
+                            !extent_anchor_judged(anchor, discipline).admits_offset(offset.kind())
+                        })
                 })
             })
             .map(|(id, _)| *id)
@@ -8238,12 +8266,13 @@ impl<'a> Reducer<'a> {
                 .chain(anchored)
                 .collect()
         };
-        // A live region whose time extent anchors this region's edge by an
-        // offset the target does not admit strands that region, named among
-        // them, this region too where its own bound is so anchored: out of
-        // musical time a musical offset, and into a model admitting no
-        // wall-clock offset a wall-clock one (reduction version 5, X5b.8:
-        // before it the migration applied, `AnchorOffsetModel`).
+        // A live region whose time extent anchors this region's edge, or an
+        // event or a measure in it, by an offset the target does not admit
+        // strands that region, named among them, this region too where its
+        // own bound is so anchored: out of musical time a musical offset, and
+        // into a model admitting no wall-clock offset a wall-clock one
+        // (reduction version 5, X5b.8: before it the migration applied,
+        // `AnchorOffsetModel`).
         let stranded_extents: Vec<TypedObjectId> = self
             .extents_anchored_against(op.region, target)
             .into_iter()

@@ -4117,10 +4117,15 @@ event or a measure by its region's, and an event in an aleatoric region where
 each event fixes its clock by the event's, musical for every event an
 operation places), or where a live region's extent already anchors the new
 region so. A migration strands each live region whose extent anchors its
-region by an offset the target does not admit, the migrated region itself
-where its own bound is so anchored, named in its
-`TimeModelMigrationFailure` as a marker anchored there is; a region a tempo
-segment strands too is named once. A target that is not live is not judged:
+region, or an event or a measure in it, by an offset the target does not
+admit, read as the create reads it, the migrated region itself where its own
+bound is so anchored, named in its `TimeModelMigrationFailure` as a marker
+anchored there is; a region a tempo segment strands too is named once. The
+event's and the measure's half was found by D50's bar at the first generator
+(history `188`): a note in a region admitting either clock took an extent by a
+wall-clock offset, and the region then migrated into musical time; the note
+and the measure themselves keep such a migration, so the strand has to read
+the extents anchored to them. A target that is not live is not judged:
 the extent index keeps a removed region's extent and discipline, and the
 measure values a removed measure, but the invariant cannot find either. The
 check is the invariant's own reading, `CoordinateDiscipline::admits_offset`,

@@ -807,15 +807,17 @@ pub mod vectors;
 ///     its region's, an event in a region where each event fixes its clock by
 ///     the event's), or whose own model contradicts a live region's extent
 ///     already anchored to it, is refused `WrongRegionTimeModel` in both
-///     modes; and a `ChangeRegionTimeModel` whose target does not admit an
-///     offset by which a live region's extent anchors its region, the
-///     region's own bound included, conflicts `TimeModelMigrationFailure`
-///     naming each such region, a musical offset out of musical time and a
-///     wall-clock one into a model admitting none. Version `4` applied both
-///     and broke `AnchorOffsetModel` (one author, D81's four routes and their
-///     mirrors). Read from the indices both modes keep; a target that is not
-///     live is not judged, as the invariant cannot find it. Locked by
-///     `extent_offsets.rs`.
+///     modes; and a `ChangeRegionTimeModel` whose target does not admit,
+///     read so, an offset by which a live region's extent anchors its region
+///     or an event or a measure in it, the region's own bound included,
+///     conflicts `TimeModelMigrationFailure` naming each such region, a
+///     musical offset out of musical time and a wall-clock one into a model
+///     admitting none. Version `4` applied both and broke `AnchorOffsetModel`
+///     (one author, D81's four routes, their mirrors, and an event's extent
+///     whose region migrates from a model admitting either clock, which the
+///     fuzz found). Read from the indices both modes keep; a target that is
+///     not live is not judged, as the invariant cannot find it. Locked by
+///     `extent_offsets.rs` and the committed history `188`.
 ///
 ///   With it, at the same epoch 16, a wire addition that changes no verdict:
 ///   `MarkerKind` appends `ExpressionText` (X5b.7, D79 Q9), reduced as any
