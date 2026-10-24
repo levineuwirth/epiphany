@@ -2662,6 +2662,18 @@ pub fn try_to_constrained(
             first_heads.entry(head.event).or_default().push(head);
         }
         let mut event_marks: BTreeMap<EventId, marks::Placed> = BTreeMap::new();
+        // A chord visiting another staff whose own staff shows no other
+        // voice there stands as a chord alone (`StaffContent::visiting_alone`).
+        let visiting_alone: BTreeSet<EventId> = region
+            .objects
+            .iter()
+            .filter_map(|object| match object.content() {
+                LayoutContent::Staff(content) => Some(&content.visiting_alone),
+                _ => None,
+            })
+            .flatten()
+            .copied()
+            .collect();
         for (eid, (event_marks_of, ornaments)) in &mark_sources {
             let (Some(seg), Some(&staff), Some(heads)) = (
                 event_stems
@@ -2692,7 +2704,11 @@ pub fn try_to_constrained(
                 head,
                 heads_left: left,
                 heads_right: right,
-                voice: event_voices.get(eid).copied().unwrap_or(VoicePlace::Alone),
+                voice: if visiting_alone.contains(eid) {
+                    VoicePlace::Alone
+                } else {
+                    event_voices.get(eid).copied().unwrap_or(VoicePlace::Alone)
+                },
                 yo: y_origin(staff),
                 beamed: seg.drawn && seg.flag.is_none() && seg.beams > 0,
             };
@@ -3257,6 +3273,7 @@ pub fn try_to_constrained(
                                 beams: Vec::new(),
                                 cross_beams: Vec::new(),
                                 visiting: Default::default(),
+                                visiting_alone: Default::default(),
                                 vocal: false,
                             };
                             &default_content
@@ -9854,6 +9871,7 @@ mod tests {
             beams: Vec::new(),
             cross_beams: Vec::new(),
             visiting: Default::default(),
+            visiting_alone: Default::default(),
             vocal: false,
         });
         let logical = LogicalLayoutIR {
@@ -10191,6 +10209,7 @@ mod tests {
             beams: Vec::new(),
             cross_beams: Vec::new(),
             visiting: Default::default(),
+            visiting_alone: Default::default(),
             vocal: false,
         });
         let logical = LogicalLayoutIR {
@@ -10565,6 +10584,7 @@ mod tests {
                         beams: Vec::new(),
                         cross_beams: Vec::new(),
                         visiting: Default::default(),
+                        visiting_alone: Default::default(),
                         vocal: false,
                     }),
                 ),

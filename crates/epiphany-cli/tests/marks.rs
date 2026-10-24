@@ -600,6 +600,63 @@ fn a_breath_mark_takes_a_column_after_its_note() {
     assert!(acc >= mark[2] + 1.0 - 1e-3, "{acc} after {mark:?}");
 }
 
+/// A chord visiting another staff sets its marks by the voices of the staff
+/// it belongs to, as MuseScore's `Measure::hasVoices` reads that staff: an
+/// accent on a note of the upper staff's voice drawn on the lower staff, its
+/// stem up toward its home, stands under its head where the upper staff
+/// shows no other voice meanwhile, and over its stem where it does, the
+/// upper staff's second voice drawn on it or visiting the lower staff too.
+#[test]
+fn a_visiting_chords_marks_follow_its_own_staffs_voices() {
+    let accent = "<articulations><accent/></articulations>";
+    let measure = |company: &str| {
+        [
+            note("C5", 2, "quarter", 1, 1, ""),
+            note("G3", 2, "quarter", 1, 2, accent),
+            note("C5", 4, "half", 1, 1, ""),
+            backup(8),
+            note("C3", 8, "whole", 5, 2, ""),
+            company.to_owned(),
+        ]
+        .concat()
+    };
+    // The second voice's half note starts with the visiting note, between
+    // rests that touch it and no more.
+    let beside = [
+        backup(8),
+        note("rest", 2, "quarter", 2, 1, ""),
+        note("E4", 4, "half", 2, 1, ""),
+        note("rest", 2, "quarter", 2, 1, ""),
+    ]
+    .concat();
+    let elsewhere = [backup(8), note("E3", 8, "whole", 2, 2, "")].concat();
+    let loaded = part(
+        "visiting_marks.musicxml",
+        2,
+        &[measure(""), measure(&beside), measure(&elsewhere)],
+    );
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+
+    let (x, _, _) = stem(&layout, e[1]);
+    let h = head(&loaded, &layout, e[1]);
+    assert!(x >= h[2] - 0.1, "its stem up, toward its home");
+    let below = the_glyph(&layout, e[1], "articAccentBelow");
+    assert!(
+        below[3] <= h[1],
+        "alone at home: under its head {below:?} {h:?}"
+    );
+
+    for k in [5, 12] {
+        let (_, _, high) = stem(&layout, e[k]);
+        let above = the_glyph(&layout, e[k], "articAccentAbove");
+        assert!(
+            above[1] >= high,
+            "with company: over its stem {above:?} {high}"
+        );
+    }
+}
+
 /// An arpeggio is a run of turned wiggles left of its chord, 0.4 clear of
 /// its heads, reaching from its lowest head to its highest, and takes room
 /// as an accidental does; every other mark takes none, so the heads stand

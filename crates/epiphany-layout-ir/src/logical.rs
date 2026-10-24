@@ -192,6 +192,11 @@ pub struct StaffContent {
     /// another staff of the region (`Score::voice_homes`, D46): a rest of the
     /// instance's own voices stands clear of their ink.
     pub visiting: BTreeSet<EventId>,
+    /// Those of `visiting` during which their home staff shows no other
+    /// voice's ink: alone on the staff they belong to, their marks stand as
+    /// a chord alone's do, as MuseScore reads that staff's voices
+    /// (`Measure::hasVoices`).
+    pub visiting_alone: BTreeSet<EventId>,
     /// Most of the staff's notes, across the score, carry a syllable: a
     /// voice's staff, whose dynamics and hairpins stand above (D79's Q10).
     pub vocal: bool,
@@ -1211,6 +1216,7 @@ fn staff_content(
                 .flat_map(|voice| voice.events.iter().copied())
                 .collect()
         },
+        visiting_alone: visitors_alone(score, si),
         vocal: vocal_staff(score, si.staff),
     })
 }
@@ -1735,6 +1741,74 @@ fn voice_places(score: &Score, si: &epiphany_core::StaffInstance) -> BTreeMap<Ev
         }
     }
     places
+}
+
+/// An event's inked span: a note's, an unpitched note's or a visible rest's,
+/// at a musical position with a musical duration.
+fn inked_span(score: &Score, eid: &EventId) -> Option<(MusicalPosition, MusicalPosition)> {
+    let (position, duration, visible) = match score.events.get(*eid)? {
+        Event::Pitched(e) => (&e.position, &e.duration, true),
+        Event::Unpitched(e) => (&e.position, &e.duration, true),
+        Event::Rest(e) => (&e.position, &e.duration, e.visible),
+        _ => return None,
+    };
+    match (position, duration, visible) {
+        (EventPosition::Musical(start), EventDuration::Musical(length), true) => {
+            Some((start.clone(), start.clone() + length.clone()))
+        }
+        _ => None,
+    }
+}
+
+/// The events of the voices visiting a staff instance from their home on
+/// another staff of its region during which that home staff shows no other
+/// voice's ink: no note, unpitched note or visible rest of a voice at home
+/// there sounds with them, whether drawn on it or visiting another staff in
+/// turn. MuseScore sets a chord's marks at its stem only where the staff the
+/// chord belongs to has voices besides its first (`Measure::hasVoices`); a
+/// chord visiting from a staff silent but for it is that staff's first
+/// voice, its marks standing as a chord alone's do.
+fn visitors_alone(score: &Score, si: &epiphany_core::StaffInstance) -> BTreeSet<EventId> {
+    let homes = home_sides(score, si);
+    let Some(region) = score
+        .canvas
+        .regions
+        .iter()
+        .find(|region| region.staff_instances().iter().any(|i| i.id == si.id))
+    else {
+        return BTreeSet::new();
+    };
+    let mut alone = BTreeSet::new();
+    for voice in si.voices.iter().filter(|v| homes.contains_key(&v.id)) {
+        let Some(home) = score.voice_homes.get(&voice.id) else {
+            continue;
+        };
+        // Every voice at home on that staff but this one: its own voices
+        // (none visiting it from elsewhere) and those visiting other staves.
+        let others: Vec<(MusicalPosition, MusicalPosition)> = region
+            .staff_instances()
+            .iter()
+            .flat_map(|instance| instance.voices.iter().map(move |v| (instance, v)))
+            .filter(|(instance, v)| {
+                v.id != voice.id
+                    && match score.voice_homes.get(&v.id) {
+                        Some(h) => h == home,
+                        None => instance.staff == *home,
+                    }
+            })
+            .flat_map(|(_, v)| v.events.iter())
+            .filter_map(|e| inked_span(score, e))
+            .collect();
+        for eid in &voice.events {
+            let Some((start, end)) = inked_span(score, eid) else {
+                continue;
+            };
+            if !others.iter().any(|(s, e)| *s < end && *e > start) {
+                alone.insert(*eid);
+            }
+        }
+    }
+    alone
 }
 
 /// The side of each voice of a staff instance that visits it from its home on

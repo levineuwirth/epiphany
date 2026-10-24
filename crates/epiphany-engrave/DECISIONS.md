@@ -2390,3 +2390,12 @@ is set:
   MuseScore's padding for a chord line and, as for a beam, for a tremolo
   (`PaddingTable::createTable`; `Ink::ChordLine`, `Ink::Tremolo`;
   `a_tremolo_and_a_chord_line_take_room`).
+
+## ENGRAVER_VERSION 67 → 68: a visiting chord's marks by its own staff's voices (X4c.10, 2026-10-24)
+
+- A chord visiting another staff sets its marks at its stem only where the
+  staff it belongs to shows another voice while it sounds, and otherwise as
+  a chord alone does, at its head, as MuseScore reads that staff's voices
+  (`Measure::hasVoices`; `a_visiting_chords_marks_follow_its_own_staffs_voices`).
+  Every visiting chord had taken its marks at its stem. The engraver itself
+  is unchanged.

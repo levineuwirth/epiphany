@@ -1244,3 +1244,13 @@ column's spring the padding after it.
   `ChordLayout::fillShape` adds both to the chord's shape and no
   articulation. No member of the family gives its column its place, so
   room taken never moves a column's source off its head.
+- A chord visiting another staff (D46) sets its marks by the voices of the
+  staff it belongs to, as MuseScore's articulation anchor asks
+  `Measure::hasVoices` of that staff, its voices but the first, visible ink
+  only: where no other voice at home there (drawn on it or visiting another
+  staff) shows a note or a visible rest while the chord sounds, the chord
+  is that staff's first voice alone, and its marks stand as a chord alone's
+  (`StaffContent::visiting_alone`); elsewhere at its stem as before. Its
+  stem still turns toward its home. Read against the exports this way, the
+  rule gives MuseScore's side for every marked visiting note the importer
+  writes, the visiting note itself being a staff's second voice included.
