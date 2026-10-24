@@ -636,15 +636,17 @@ pub(crate) fn cast_off(
             entry.note = true;
         }
     }
-    // A slot's reference x is its first glyph that takes room, as its source
-    // is in the spacing pass: the projection emits a note's marks before its
-    // head, and a mark standing off its note (a scoop left of its head) must
-    // neither order its column nor take its share of a justified stretch.
+    // A slot's reference x is its first glyph not of the family, as its
+    // source is in the spacing pass: the projection emits a note's marks
+    // before its head, and a mark standing off its note (a scoop left of its
+    // head), even one taking room, must neither order its column nor take
+    // its share of a justified stretch.
+    let family = crate::family::family_glyphs(input);
     for info in slots.values_mut() {
         if let Some(&i) = info
             .members
             .iter()
-            .find(|&&i| !roomless.contains(&input.glyphs[i].id()))
+            .find(|&&i| !family.contains(&input.glyphs[i].id()))
         {
             info.x = spaced_glyphs[i].position.x.0;
         }

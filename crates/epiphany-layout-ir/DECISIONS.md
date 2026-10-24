@@ -1239,3 +1239,8 @@ column's spring the padding after it.
   strokes stand where they stood, 0.5 in from the stem's end and further in
   past a flag or beams, now clear of the head. A beam across two staves
   does not lengthen its stems for a tremolo.
+- A one-note tremolo and a chord line (a scoop, plop, doit or fall) take
+  room across as their chord's ink (`Room::Ink`), as MuseScore's
+  `ChordLayout::fillShape` adds both to the chord's shape and no
+  articulation. No member of the family gives its column its place, so
+  room taken never moves a column's source off its head.

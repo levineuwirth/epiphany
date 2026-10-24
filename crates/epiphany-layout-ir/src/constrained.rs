@@ -305,13 +305,17 @@ impl FamilyMark {
     }
 }
 
-/// The room a member of the family takes across.
+/// The room a member of the family takes across. A member never gives its
+/// column its place: a column's source is its first glyph not of the
+/// family, so a mark the projection emits before its note's head never
+/// moves the note's column.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Room {
     /// None: its ink meets other ink freely, as MuseScore lets a dynamic or
     /// an articulation's do.
     None,
-    /// As any ink of its column: an arpeggio left of its chord.
+    /// As any ink of its column: an arpeggio left of its chord, a one-note
+    /// tremolo on its stem, a chord line beside its head.
     Ink,
     /// A syllable's: clear of the earlier syllables of its staff and verse
     /// at any height, by more where a hyphen follows it, and of no other ink.
@@ -3492,7 +3496,12 @@ pub fn try_to_constrained(
                                 if let (Some((record, _)), true) = (beam, g.at_stem_end) {
                                     cross_staff_beams[record].ink.push(id);
                                 }
-                                family.push(FamilyMark::marking(band_at(g.at_stem_end), id));
+                                // A tremolo or chord line takes room in its
+                                // column as its chord's ink does.
+                                family.push(FamilyMark {
+                                    room: if g.room { Room::Ink } else { Room::None },
+                                    ..FamilyMark::marking(band_at(g.at_stem_end), id)
+                                });
                             }
                             let mut runs: Vec<(ResolvedText, Room, bool)> = Vec::new();
                             for a in &placed.accidentals {

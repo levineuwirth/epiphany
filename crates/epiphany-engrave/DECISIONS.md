@@ -2373,3 +2373,20 @@ is set:
   run to the head on a stem of the plain length
   (`a_one_note_tremolo_lengthens_its_stem`). The engraver itself is
   unchanged.
+
+## ENGRAVER_VERSION 66 → 67: a one-note tremolo and a chord line take room (X4c.10, 2026-10-24)
+
+- A member of the family taking room as its chord's ink (`Room::Ink`: a
+  one-note tremolo, a chord line, an arpeggio) widens its slot as the
+  chord's own ink does, as MuseScore's `ChordLayout::fillShape` adds a
+  tremolo and a chord line to the chord's shape; the other marks still take
+  none.
+- No member of the family gives its column its place: a slot's source in
+  the spacing pass, and its reference x in casting, is its first glyph not
+  of the family, which a member taking room no longer is by taking it
+  (`a_mark_gives_its_column_no_place`).
+- A chord line keeps 0.35 from the ink either side of it at its height and
+  0.65 before a barline, and a one-note tremolo 0.35 from the ink after it,
+  MuseScore's padding for a chord line and, as for a beam, for a tremolo
+  (`PaddingTable::createTable`; `Ink::ChordLine`, `Ink::Tremolo`;
+  `a_tremolo_and_a_chord_line_take_room`).

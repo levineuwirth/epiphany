@@ -1136,6 +1136,118 @@ fn marks_take_no_room_at_the_floor() {
     );
 }
 
+/// A one-note tremolo and a chord line take room as their chord's ink, as
+/// MuseScore's `ChordLayout::fillShape` adds them to its shape, and keep
+/// its padding (0.35) from ink beside them at their height: set toward its
+/// floor on pages from one too narrow for it to one that holds it, a note
+/// after a doit stands clear of the doit, a rest after a tremolo clear of
+/// the tremolo, and a scoop clear of the note before it, where on some such
+/// page the same notes without them stand closer. At ease on a wide page, a
+/// doit or a scoop moves no note: its column keeps its head's place.
+#[test]
+fn a_tremolo_and_a_chord_line_take_room() {
+    let doit = "<notations><articulations><doit/></articulations></notations>";
+    let tremolo =
+        "<notations><ornaments><tremolo type=\"single\">3</tremolo></ornaments></notations>";
+    let scoop = "<notations><articulations><scoop/></articulations></notations>";
+    let page = |marks: [&str; 3], width: f32| {
+        let [doit, tremolo, scoop] = marks;
+        let quarter = |marks: &str| {
+            format!(
+                "<note><pitch><step>G</step><octave>4</octave></pitch><duration>2</duration>\
+                 <voice>1</voice><type>quarter</type>{marks}</note>"
+            )
+        };
+        let rest = "<note><rest/><duration>2</duration><voice>1</voice><type>quarter</type></note>";
+        let first = [
+            quarter(doit),
+            quarter(""),
+            quarter(tremolo),
+            rest.to_owned(),
+            quarter(""),
+            quarter(scoop),
+        ]
+        .concat();
+        format!(
+            "<score-partwise version=\"4.0\"><defaults><scaling><millimeters>7</millimeters>\
+             <tenths>40</tenths></scaling><page-layout><page-height>3000</page-height>\
+             <page-width>{}</page-width><page-margins type=\"both\"><left-margin>75\
+             </left-margin><right-margin>75</right-margin><top-margin>75</top-margin>\
+             <bottom-margin>75</bottom-margin></page-margins></page-layout></defaults>\
+             <part-list><score-part id=\"P1\"><part-name>A</part-name></score-part>\
+             </part-list><part id=\"P1\"><measure number=\"1\"><attributes><divisions>2\
+             </divisions><time><beats>6</beats><beat-type>4</beat-type></time><clef><sign>G\
+             </sign><line>2</line></clef></attributes>{first}</measure><measure number=\"2\">\
+             <print new-system=\"yes\"/><note><rest measure=\"yes\"/><duration>12</duration>\
+             <voice>1</voice></note></measure></part></score-partwise>",
+            width * 10.0
+        )
+    };
+    let engraved = |marks: [&str; 3], width: f32| {
+        let kind: String = marks.iter().map(|m| m.len().to_string()).collect();
+        let name = format!("quarters_{kind}_{width}.musicxml");
+        let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+        std::fs::write(&path, page(marks, width)).expect("written");
+        let loaded = load(&path).expect("loads");
+        let layout = epiphany_cli::engrave_loaded(&loaded).layout;
+        (loaded, layout)
+    };
+    // How far each mark's next ink stands clear of it: the note after the
+    // doit, the rest after the tremolo, the scoop after the note before
+    // it; in the plain file, of where the mark would stand by its note.
+    let clearances = |marks: [&str; 3], width: f32| -> [f32; 3] {
+        let (loaded, layout) = engraved(marks, width);
+        let e = events(&loaded);
+        let head_of = |k: usize| head(&loaded, &layout, e[k]);
+        let rest = named(&layout, "restQuarter");
+        let (stem_x, _, _) = stem(&layout, e[2]);
+        // Each mark where the file draws it; else where it would stand: a
+        // doit's left edge 0.2 right of its head, a tremolo centred on its
+        // stem, a scoop's right edge 0.2 left of its head, Bravura's doit
+        // and scoop 1.28 wide and its three strokes 1.2.
+        let drawn = |name: &str| named(&layout, name).first().copied();
+        let doit_right = drawn("brassDoitShort").map_or(head_of(0)[2] + 0.2 + 1.28, |g| g[2]);
+        let tremolo_right = drawn("tremolo3").map_or(stem_x + 0.6, |g| g[2]);
+        let scoop_left = drawn("brassScoop").map_or(head_of(5)[0] - 0.2 - 1.28, |g| g[0]);
+        [
+            head_of(1)[0] - doit_right,
+            rest[0][0] - tremolo_right,
+            scoop_left - head_of(4)[2],
+        ]
+    };
+    let mut plain_closer = [false; 3];
+    for width in (24..=48).map(|w| w as f32) {
+        for (k, marks) in [[doit, "", ""], ["", tremolo, ""], ["", "", scoop]]
+            .into_iter()
+            .enumerate()
+        {
+            let clear = clearances(marks, width)[k];
+            assert!(
+                clear >= 0.35 - 0.02,
+                "{width}: mark {k} stands {clear} from the ink beside it"
+            );
+            if clearances(["", "", ""], width)[k] < 0.35 - 0.05 {
+                plain_closer[k] = true;
+            }
+        }
+    }
+    assert_eq!(
+        plain_closer, [true; 3],
+        "some page sets the plain notes closer"
+    );
+    let heads_x = |marks: [&str; 3]| -> Vec<f32> {
+        let (loaded, layout) = engraved(marks, 120.0);
+        let e = events(&loaded);
+        [0, 1, 2, 4, 5]
+            .iter()
+            .map(|&k| head(&loaded, &layout, e[k])[0])
+            .collect()
+    };
+    let plain = heads_x(["", "", ""]);
+    assert_eq!(plain, heads_x([doit, "", ""]), "a doit moves no note");
+    assert_eq!(plain, heads_x(["", "", scoop]), "a scoop moves no note");
+}
+
 /// A fermata is placed once its system is set, after the slurs, as
 /// MuseScore lays it out: over a note under a slur's arc it rises until it
 /// clears the slur by its distance, though the note alone would hold it
@@ -2401,30 +2513,25 @@ fn a_rehearsal_mark_takes_no_room() {
 }
 
 /// A mark beside or over its head gives its column neither its place nor
-/// its share of a justified system's stretch: a scoop left of a note opening
-/// a measure leaves the barline before it, and accents over a measure's
-/// notes move no note, in a system set to the width.
+/// its share of a justified system's stretch: accents over a measure's
+/// notes move no note, in a system set to the width; and a scoop left of a
+/// note opening a measure, which takes room as its chord's ink does
+/// (`ChordLayout::fillShape`), leaves the barline before its note, though
+/// under the staff, left of the note's accidental, it reaches left past the
+/// barline.
 #[test]
 fn a_mark_gives_its_column_no_place() {
-    let measures = |marked: bool| {
-        let (accent, scoop) = if marked {
-            (
-                "<articulations><accent/></articulations>",
-                "<articulations><scoop/></articulations>",
-            )
-        } else {
-            ("", "")
-        };
+    let measures = |accent: &str, scoop: &str| {
         [
             note("C5", 2, "quarter", 1, 1, accent).repeat(4),
-            note("F#4", 8, "whole", 1, 1, scoop),
+            note("A#3", 8, "whole", 1, 1, scoop),
         ]
     };
-    let ink = |name: &str, marked: bool| {
-        let loaded = part(name, 1, &measures(marked));
+    let accent = "<articulations><accent/></articulations>";
+    let scoop = "<articulations><scoop/></articulations>";
+    let ink = |name: &str, accent: &str, scoop: &str| {
+        let loaded = part(name, 1, &measures(accent, scoop));
         let layout = engrave(&loaded.reduced.score).layout;
-        let marks = named(&layout, "brassScoop").len() + named(&layout, "articAccentAbove").len();
-        assert_eq!(marks, if marked { 5 } else { 0 });
         let mut xs: Vec<f32> = [
             "noteheadBlack",
             "noteheadWhole",
@@ -2436,17 +2543,30 @@ fn a_mark_gives_its_column_no_place() {
         .map(|ink| ink[0])
         .collect();
         xs.sort_by(f32::total_cmp);
-        xs
+        (xs, layout)
     };
-    let (bare, marked) = (
-        ink("unaccented.musicxml", false),
-        ink("scooped.musicxml", true),
-    );
+    let (bare, _) = ink("unaccented.musicxml", "", "");
+    let (accented, layout) = ink("accented.musicxml", accent, "");
+    assert_eq!(named(&layout, "articAccentAbove").len(), 4);
     assert_eq!(bare.len(), 7, "{bare:?}");
-    assert_eq!(bare.len(), marked.len());
-    for (b, m) in bare.iter().zip(&marked) {
+    assert_eq!(bare.len(), accented.len());
+    for (b, m) in bare.iter().zip(&accented) {
         near(*m, *b, "a note or barline beside its marks");
     }
+    let (_, layout) = ink("scooped.musicxml", "", scoop);
+    let scoop = named(&layout, "brassScoop");
+    assert_eq!(scoop.len(), 1);
+    let barline = named(&layout, "barlineSingle");
+    assert_eq!(barline.len(), 1);
+    let whole = named(&layout, "noteheadWhole");
+    assert!(
+        barline[0][2] < whole[0][0] && whole[0][0] > scoop[0][2],
+        "the barline before the note, the scoop beside it: {barline:?} {whole:?} {scoop:?}"
+    );
+    assert!(
+        scoop[0][0] < barline[0][0],
+        "the scoop reaches past the barline"
+    );
 }
 
 /// A segno or coda stands in Bravura Text at 18 points over the system's

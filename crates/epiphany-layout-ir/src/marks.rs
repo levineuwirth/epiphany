@@ -67,6 +67,11 @@ pub(super) struct MarkGlyph {
     /// It is placed from the stem's end, so it rides with what that end
     /// meets: a beam across two staves.
     pub at_stem_end: bool,
+    /// It is part of its chord's shape, taking room across as the chord's
+    /// own ink does: a one-note tremolo or a chord line, which MuseScore's
+    /// `ChordLayout::fillShape` adds to the chord's shape, as it adds no
+    /// articulation.
+    pub room: bool,
 }
 
 /// An arpeggio: its glyphs stand upright, from the bottom up, each wiggle a
@@ -436,6 +441,7 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
             x,
             y,
             at_stem_end: !head_side,
+            room: false,
         });
     }
 
@@ -494,6 +500,7 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
                 x,
                 y,
                 at_stem_end,
+                room: false,
             });
             let mut top = y + b.top.0;
             if let Some((Some(above_name), _)) = m.accidental {
@@ -532,6 +539,7 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
                 x,
                 y,
                 at_stem_end,
+                room: false,
             });
             let mut bottom = y + b.bottom.0;
             if let Some((_, Some(below))) = m.accidental {
@@ -592,6 +600,7 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
             x: x - (b.left.0 + b.right.0) * 0.5,
             y: centre_y - (b.bottom.0 + b.top.0) * 0.5,
             at_stem_end: seg.drawn,
+            room: true,
         });
     }
 
@@ -628,6 +637,7 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
             x,
             y,
             at_stem_end: false,
+            room: true,
         });
     }
 

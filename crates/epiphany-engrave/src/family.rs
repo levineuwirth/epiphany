@@ -33,6 +33,16 @@ pub(crate) fn roomless_glyphs(input: &ConstrainedLayoutIR) -> BTreeSet<GlyphObje
         .collect()
 }
 
+/// Every glyph of the family, whatever room it takes: none gives its column
+/// its place, which is its first glyph not of the family.
+pub(crate) fn family_glyphs(input: &ConstrainedLayoutIR) -> BTreeSet<GlyphObjectId> {
+    input
+        .family
+        .iter()
+        .flat_map(|mark| mark.glyphs.iter().copied())
+        .collect()
+}
+
 /// The strokes of the family that take no room across (a rehearsal mark's
 /// frame, a hairpin's legs, a lyric line): as its roomless glyphs, they
 /// widen no slot.

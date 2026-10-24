@@ -129,15 +129,19 @@ pub(crate) enum Ink {
     Clef,
     KeySig,
     TimeSig,
+    /// A one-note tremolo's strokes on a stem.
+    Tremolo,
+    /// A chord line beside its head: a scoop, plop, doit or fall.
+    ChordLine,
 }
 
 /// How many kinds of [`Ink`] there are.
-const INKS: usize = 13;
+const INKS: usize = 15;
 
 impl Ink {
     /// The kinds a note column's ink takes, the ones [`floor_gap`] reads as
     /// the earlier of two.
-    const NOTE_COLUMN: [Ink; 8] = [
+    const NOTE_COLUMN: [Ink; 10] = [
         Ink::Head,
         Ink::Stem,
         Ink::Ledger,
@@ -146,6 +150,8 @@ impl Ink {
         Ink::Flag,
         Ink::Rest,
         Ink::Other,
+        Ink::Tremolo,
+        Ink::ChordLine,
     ];
 
     /// A glyph's kind by its name; an accidental in a slot whose spring is
@@ -174,6 +180,13 @@ impl Ink {
             Ink::TimeSig
         } else if name.starts_with("breathMark") || name.starts_with("caesura") {
             Ink::Breath
+        } else if name.starts_with("tremolo") {
+            Ink::Tremolo
+        } else if ["brassScoop", "brassPlop", "brassDoit", "brassFall"]
+            .iter()
+            .any(|kind| name.starts_with(kind))
+        {
+            Ink::ChordLine
         } else {
             Ink::Other
         }
@@ -210,7 +223,9 @@ impl Ink {
 /// 0.33 (`styledef.cpp`); a head meeting a head keeps `minNoteDistance`
 /// whatever their voices, where `HorizontalSpacing::computeNotePadding`
 /// raises the table's 0.1 to it only for two notes of one voice, or two
-/// neighbours by duration, whose shapes meet.
+/// neighbours by duration, whose shapes meet. A chord line keeps 0.35 from
+/// any ink either side and 0.65 before a barline, and a one-note tremolo
+/// 0.35 from any ink after it, as the table's rows for a beam do.
 pub(crate) fn floor_gap(earlier: Ink, later: Ink) -> f32 {
     use Ink::*;
     // The ledger line's reach past its head, which the table takes off a
@@ -220,6 +235,8 @@ pub(crate) fn floor_gap(earlier: Ink, later: Ink) -> f32 {
         // A breath mark's column is fixed: the clearance it keeps after its
         // ink is its slot's.
         (_, Breath) => BREATH_PADDING,
+        (ChordLine, Barline) => 0.65,
+        (ChordLine | Tremolo, _) | (_, ChordLine) => 0.35,
         (Head, Head | Stem | Ledger | Accidental) => 0.35,
         (Head | Stem, Rest) => 0.5,
         (Head | Stem, Barline) => 1.5,
@@ -493,14 +510,16 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
     };
     // The family's glyphs that take no room across (an articulation, a
     // fermata, a dynamic): they keep their slot, and their ink meets other
-    // ink freely, as MuseScore's does. A slot's source is its first glyph
-    // that takes room, never a mark standing off its note.
+    // ink freely, as MuseScore's does. A slot's source is its first glyph not
+    // of the family, never a mark standing off its note, even one that takes
+    // room as its chord's ink (a tremolo, a chord line).
     let roomless = crate::family::roomless_glyphs(input);
-    let (rooming, marks): (Vec<_>, Vec<_>) = input
+    let family = crate::family::family_glyphs(input);
+    let (own, marks): (Vec<_>, Vec<_>) = input
         .glyphs
         .iter()
-        .partition(|glyph| !roomless.contains(&glyph.id()));
-    for glyph in rooming.into_iter().chain(marks) {
+        .partition(|glyph| !family.contains(&glyph.id()));
+    for glyph in own.into_iter().chain(marks) {
         let x = glyph.baseline.x.0;
         let y = glyph.baseline.y.0;
         let b = glyph.bounding_box;
