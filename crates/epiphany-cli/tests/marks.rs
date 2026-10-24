@@ -661,8 +661,7 @@ fn an_arpeggio_takes_room_and_other_marks_take_none() {
     );
 }
 
-/// A one-note tremolo's strokes stand on its stem between head and tip; a
-/// two-note tremolo's join the two stems, midway along each, one per stroke.
+/// A one-note tremolo's strokes stand on its stem between head and tip.
 #[test]
 fn tremolo_strokes_stand_on_their_stems() {
     let measure = [
@@ -674,52 +673,144 @@ fn tremolo_strokes_stand_on_their_stems() {
             1,
             "<ornaments><tremolo type=\"single\">3</tremolo></ornaments>",
         ),
-        note("rest", 2, "quarter", 1, 1, ""),
-        note(
-            "C5",
-            2,
-            "quarter",
-            1,
-            1,
-            "<ornaments><tremolo type=\"start\">2</tremolo></ornaments>",
-        ),
-        note(
-            "E5",
-            2,
-            "quarter",
-            1,
-            1,
-            "<ornaments><tremolo type=\"stop\">2</tremolo></ornaments>",
-        ),
+        note("rest", 6, "half", 1, 1, ""),
     ]
-    .concat();
+    .concat()
+    .replacen("<type>half</type>", "<type>half</type><dot/>", 1);
     let loaded = part("tremolos.musicxml", 1, &[measure]);
     let layout = engrave(&loaded.reduced.score).layout;
     let e = events(&loaded);
 
     let strokes = the_glyph(&layout, e[0], "tremolo3");
-    let (x, low, high) = stem(&layout, e[0]);
+    let (x, _, high) = stem(&layout, e[0]);
     near(centre_x(strokes), x, "on its stem");
     assert!(
         strokes[1] > head(&loaded, &layout, e[0])[3] && strokes[3] < high,
         "{strokes:?}"
     );
-    let _ = low;
+}
 
-    let (a, a_low, a_high) = stem(&layout, e[2]);
-    let (b, b_low, b_high) = stem(&layout, e[3]);
-    let between: Vec<_> = layout
+/// The strokes a two-note tremolo `event` starts, each `(from, to)` as
+/// `(x, y)` along its centre, the outermost first by its height on `up`.
+fn tremolo_lines(layout: &ResolvedLayoutIR, event: EventId, up: bool) -> Vec<Leg> {
+    let mut found: Vec<Leg> = layout
         .strokes
         .iter()
-        .filter(|s| s.provenance.source == TypedObjectId::Event(e[2]) && s.from.x != s.to.x)
+        .filter(|s| s.provenance.source == TypedObjectId::Event(event) && s.from.x != s.to.x)
+        .map(|s| ((s.from.x.0, s.from.y.0), (s.to.x.0, s.to.y.0)))
         .collect();
-    assert_eq!(between.len(), 2, "two strokes");
-    let (a_mid, b_mid) = ((a_low + a_high) * 0.5, (b_low + b_high) * 0.5);
-    for s in between {
-        near(s.from.x.0, a, "from the first stem");
-        near(s.to.x.0, b, "to the second");
-        assert!((s.from.y.0 - a_mid).abs() < 0.5 && (s.to.y.0 - b_mid).abs() < 0.5);
+    found.sort_by(|a, b| {
+        let (a, b) = (a.0 .1, b.0 .1);
+        if up {
+            b.total_cmp(&a)
+        } else {
+            a.total_cmp(&b)
+        }
+    });
+    found
+}
+
+/// A two-note tremolo is laid out as a beam of its two notes, as MuseScore
+/// lays it out: both stems turn the way a beam group's would and reach the
+/// outermost stroke, which runs along their ends from a space inside the
+/// first stem to a space inside the second, each further stroke 0.75 nearer
+/// the heads; the stems are as long as a beam of that many levels asks. Two
+/// whole notes' strokes stand where their stems would.
+#[test]
+fn a_two_note_tremolo_is_a_beam_inset_from_its_stems() {
+    let start = "<ornaments><tremolo type=\"start\">3</tremolo></ornaments>";
+    let stop = "<ornaments><tremolo type=\"stop\">3</tremolo></ornaments>";
+    let halves = [
+        note("G4", 4, "half", 1, 1, start),
+        note("B4", 4, "half", 1, 1, stop),
+    ]
+    .concat();
+    let low = [
+        note("C6", 4, "half", 1, 1, start),
+        note("A5", 4, "half", 1, 1, stop),
+    ]
+    .concat();
+    let wholes = [
+        note("F4", 8, "whole", 1, 1, start),
+        note("A4", 8, "whole", 1, 1, stop),
+    ];
+    let loaded = part(
+        "two_note_tremolos.musicxml",
+        1,
+        &[halves, low, wholes[0].clone(), wholes[1].clone()],
+    );
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+
+    for (pair, up) in [((e[0], e[1]), true), ((e[2], e[3]), false)] {
+        let lines = tremolo_lines(&layout, pair.0, up);
+        assert_eq!(lines.len(), 3, "three strokes");
+        let sign = if up { 1.0 } else { -1.0 };
+        let (a, a_low, a_high) = stem(&layout, pair.0);
+        let (b, b_low, b_high) = stem(&layout, pair.1);
+        // The stems turn one way, by the heads furthest from the middle line.
+        for (event, x) in [(pair.0, a), (pair.1, b)] {
+            let h = head(&loaded, &layout, event);
+            if up {
+                assert!(x >= h[2] - 0.1, "an up stem right of its head");
+            } else {
+                assert!(x <= h[0] + 0.1, "a down stem left of its head");
+            }
+        }
+        let ((x0, y0), (x1, y1)) = lines[0];
+        near(x0, a - 0.06 + 1.0, "a space inside the first stem");
+        near(x1, b + 0.06 - 1.0, "a space inside the second");
+        let along = |x: f32| y0 + (y1 - y0) * (x - x0) / (x1 - x0);
+        // The stems reach the outermost stroke's outer edge, within the tenth
+        // of a space the strokes' slope moves by once spacing sets their ends
+        // apart otherwise than the projection did.
+        let (a_end, b_end) = if up { (a_high, b_high) } else { (a_low, b_low) };
+        let reaches = |end: f32, x: f32, what: &str| {
+            let edge = along(x) + sign * 0.25;
+            assert!((end - edge).abs() < 0.1, "{what}: {end} against {edge}");
+        };
+        reaches(a_end, a, "the first stem reaches the stroke");
+        reaches(b_end, b, "the second stem reaches it");
+        // As long as a beam of three levels asks: 4.25 from the head
+        // nearest the strokes, or more.
+        let (a_base, b_base) = if up { (a_low, b_low) } else { (a_high, b_high) };
+        assert!(
+            (a_end - a_base).abs() >= 4.25 - 0.01,
+            "{a_end} from {a_base}"
+        );
+        assert!(
+            (b_end - b_base).abs() >= 4.25 - 0.01,
+            "{b_end} from {b_base}"
+        );
+        for (k, line) in lines.iter().enumerate().skip(1) {
+            near(line.0 .0, x0, "every stroke starts as the first");
+            near(line.1 .0, x1, "and ends as it");
+            near(
+                line.0 .1,
+                y0 - sign * 0.75 * k as f32,
+                "a step nearer the heads",
+            );
+            near(line.1 .1, y1 - sign * 0.75 * k as f32, "at both ends");
+        }
     }
+
+    // Two whole notes: no stems, the strokes standing where an up stem
+    // would end, a space inside where each would stand.
+    let lines = tremolo_lines(&layout, e[4], true);
+    assert_eq!(lines.len(), 3, "three strokes");
+    let (first, second) = (head(&loaded, &layout, e[4]), head(&loaded, &layout, e[5]));
+    let ((x0, y0), (x1, y1)) = lines[0];
+    near(
+        x0,
+        first[2] - 0.06 + 1.0,
+        "a space inside the first head's right",
+    );
+    near(x1, second[2] + 0.06 - 1.0, "a space inside the second's");
+    let first_y = (first[1] + first[3]) * 0.5;
+    assert!(
+        y0 + 0.25 >= first_y + 4.25 - 0.01 && y1 > y0 - 1.0,
+        "{y0} over {first_y}"
+    );
 }
 
 /// A mark past the end of a stem meeting a beam across two staves stands

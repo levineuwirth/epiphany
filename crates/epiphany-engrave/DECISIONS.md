@@ -2354,3 +2354,13 @@ is set:
   barline was drawn after the note, over it
   (`a_mark_gives_its_column_no_place`). A column of marks alone keeps its
   first glyph's x.
+
+## ENGRAVER_VERSION 64 → 65: a two-note tremolo laid out as a beam (X4c.10, 2026-10-24)
+
+- The projection lays a two-note tremolo out as MuseScore does, as a beam of
+  its two notes whose strokes are its levels: both stems turn one way and
+  reach the outermost stroke, and the strokes stand a space inside each
+  stem (`a_two_note_tremolo_is_a_beam_inset_from_its_stems`). They had been
+  drawn about the line joining the stems' midpoints, from stem to stem, so
+  they crossed the second chord's accidentals. Each stroke's ends ride the
+  two notes' columns, as a beam's do; the engraver itself is unchanged.

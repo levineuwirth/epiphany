@@ -2424,6 +2424,151 @@ pub fn try_to_constrained(
             }
         }
 
+        // Two-note tremolos, laid out as MuseScore lays them out
+        // (`TremoloLayout::layoutTwoNotesTremolo`): as a beam of the two notes,
+        // its strokes counted as beams, their stems turned as a beam group's
+        // and lengthened to it (`BeamTremoloLayout::calculateAnchors`,
+        // `extendStem`); a stemless note's anchor stands where its stem would
+        // (`chordBeamAnchorX`). The strokes are that beam's levels, the first
+        // outermost and each further one `BEAM_STEP` nearer the heads, inset
+        // from each stem by `TREMOLO_STEM_GAP`, by less where they would run
+        // shorter than `TREMOLO_MIN_RUN`, but never under
+        // `TREMOLO_MIN_STEM_GAP` (`TremoloLayout::createBeamSegments`). A pair
+        // whose stems a beam already sets keeps them, its strokes the beam's
+        // further levels. Each stroke's ends ride the two notes' columns.
+        let next_in_voice: BTreeMap<EventId, EventId> = voice_events
+            .values()
+            .flat_map(|events| events.windows(2).map(|pair| (pair[0], pair[1])))
+            .collect();
+        let mut tremolo_strokes: BTreeMap<EventId, TremoloStrokes> = BTreeMap::new();
+        for (eid, (event_marks_of, _)) in &mark_sources {
+            let Some(strokes) = event_marks_of.iter().find_map(|m| match m {
+                EventMark::TremoloWithNext { strokes } => Some((*strokes).max(1)),
+                _ => None,
+            }) else {
+                continue;
+            };
+            let Some(&next) = next_in_voice.get(eid) else {
+                continue;
+            };
+            let pair = [*eid, next];
+            let segs: Option<Vec<&StemSeg>> = pair
+                .iter()
+                .map(|e| event_stems.get(e)?.iter().find(|s| s.comp == 0))
+                .collect();
+            let (Some(segs), Some(&staff)) = (segs, event_staff.get(eid)) else {
+                continue;
+            };
+            let (Some(a), Some(b)) = (columns.get(&segs[0].key), columns.get(&segs[1].key)) else {
+                continue;
+            };
+            let slots = [a.slot, b.slot];
+            let beamed = |s: &StemSeg| s.drawn && s.flag.is_none() && s.beams > 0;
+            let middle = y_origin(staff) + STAFF_HEIGHT * 0.5;
+            let up = if segs.iter().any(|s| beamed(s)) {
+                segs[0].up
+            } else {
+                let above = segs
+                    .iter()
+                    .map(|s| s.hi - middle)
+                    .fold(f32::NEG_INFINITY, f32::max);
+                let below = segs
+                    .iter()
+                    .map(|s| middle - s.lo)
+                    .fold(f32::NEG_INFINITY, f32::max);
+                segs.iter().find_map(|s| s.voiced).unwrap_or(below > above)
+            };
+            let sign = if up { 1.0 } else { -1.0 };
+            let x_off = |s: &StemSeg| {
+                metrics(s.head).map_or(if up { NOTEHEAD_STEM_X } else { 0.0 }, |m| {
+                    let b = m.bounding_box();
+                    if up {
+                        b.right.0
+                    } else {
+                        b.left.0
+                    }
+                })
+            };
+            let xs = [
+                a.x + segs[0].dx + x_off(segs[0]),
+                b.x + segs[1].dx + x_off(segs[1]),
+            ];
+            if xs[1] <= xs[0] {
+                continue;
+            }
+            // The outer edge of the outermost stroke, along the beam.
+            let edge: Box<dyn Fn(f32) -> f32> = if segs.iter().any(|s| beamed(s)) {
+                let ends = [segs[0].end, segs[1].end];
+                let most = segs.iter().map(|s| s.beams).max().unwrap_or(0);
+                let slope = (ends[1] - ends[0]) / (xs[1] - xs[0]);
+                let inset = sign * f32::from(most) * BEAM_STEP;
+                let x0 = xs[0];
+                Box::new(move |x| ends[0] + slope * (x - x0) - inset)
+            } else {
+                let near = [
+                    if up { segs[0].hi } else { segs[0].lo },
+                    if up { segs[1].hi } else { segs[1].lo },
+                ];
+                let length = STEM_LENGTH + f32::from(strokes.saturating_sub(2)) * BEAM_STEP;
+                let rise = (near[1] - near[0]).clamp(-MAX_BEAM_RISE, MAX_BEAM_RISE);
+                let slope = rise / (xs[1] - xs[0]);
+                let x0 = xs[0];
+                let needs = (0..2).map(|i| {
+                    let need = if up {
+                        (near[i] + length).max(middle)
+                    } else {
+                        (near[i] - length).min(middle)
+                    };
+                    need - slope * (xs[i] - x0)
+                });
+                let intercept = if up {
+                    needs.fold(f32::NEG_INFINITY, f32::max)
+                } else {
+                    needs.fold(f32::INFINITY, f32::min)
+                };
+                for (i, e) in pair.iter().enumerate() {
+                    let at = edge_at(intercept, slope, x0, xs[i]);
+                    let seg = event_stems
+                        .get_mut(e)
+                        .and_then(|segs| segs.iter_mut().find(|s| s.comp == 0))
+                        .expect("a member has a stem");
+                    seg.up = up;
+                    seg.x_off = x_off(seg);
+                    seg.end = at;
+                    seg.tip = at;
+                    seg.flag = None;
+                    if !seg.drawn {
+                        continue;
+                    }
+                    let key = seg.key.clone();
+                    if let Some(ink) = column_ink.get_mut(&(event_staff[e], key)) {
+                        ink.stem_up = Some(up);
+                        if up {
+                            ink.top = ink.top.max(at);
+                        } else {
+                            ink.bottom = ink.bottom.min(at);
+                        }
+                    }
+                }
+                Box::new(move |x| edge_at(intercept, slope, x0, x))
+            };
+            // The strokes run between the stems' outer edges, inset.
+            let (from, to) = (xs[0] - STEM_THICKNESS / 2.0, xs[1] + STEM_THICKNESS / 2.0);
+            let gap = tremolo_stem_gap(to - from);
+            let (from, to) = (from + gap, to - gap);
+            let lines = (0..strokes)
+                .map(|k| {
+                    let centre =
+                        |x: f32| edge(x) - sign * (BEAM_THICKNESS / 2.0 + f32::from(k) * BEAM_STEP);
+                    (
+                        (Point::new(from, centre(from)), slots[0]),
+                        (Point::new(to, centre(to)), slots[1]),
+                    )
+                })
+                .collect();
+            tremolo_strokes.insert(*eid, lines);
+        }
+
         // (provenance, owning staff, engraving content) for the region object,
         // then its contents, then this region's spanning cross-region objects.
         let specs: Vec<(&Provenance, Option<StaffId>, Option<&LayoutContent>)> =
@@ -2492,10 +2637,6 @@ pub fn try_to_constrained(
             first_heads.entry(head.event).or_default().push(head);
         }
         let mut event_marks: BTreeMap<EventId, marks::Placed> = BTreeMap::new();
-        let next_in_voice: BTreeMap<EventId, EventId> = voice_events
-            .values()
-            .flat_map(|events| events.windows(2).map(|pair| (pair[0], pair[1])))
-            .collect();
         for (eid, (event_marks_of, ornaments)) in &mark_sources {
             let (Some(seg), Some(&staff), Some(heads)) = (
                 event_stems
@@ -3362,19 +3503,15 @@ pub fn try_to_constrained(
                                     a.at_stem_end,
                                 ));
                             }
-                            // A two-note tremolo: strokes as beams between this
-                            // note's stem and the next note's of its voice, riding
-                            // both columns.
-                            for (k, (from, to)) in two_note_tremolo(
-                                eid,
-                                seg,
-                                &mark_sources,
-                                &next_in_voice,
-                                &event_stems,
-                                &columns,
-                            )
-                            .into_iter()
-                            .enumerate()
+                            // A two-note tremolo: strokes as the levels of a beam
+                            // between this note's stem and the next note's of its
+                            // voice, riding both columns.
+                            for (k, (from, to)) in tremolo_strokes
+                                .get(&eid)
+                                .cloned()
+                                .unwrap_or_default()
+                                .into_iter()
+                                .enumerate()
                             {
                                 let (stroke, start, end) = (
                                     line_stroke(
@@ -5301,6 +5438,8 @@ struct StemSeg {
     voiced: Option<bool>,
     /// Where the stem attaches, as an x offset from the column's notehead x.
     x_off: f32,
+    /// The notehead glyph its heads draw, whose edges the stem attaches to.
+    head: &'static str,
     /// How far its voice stands right of the column's x, beside another
     /// voice's head a second away.
     dx: f32,
@@ -6360,6 +6499,7 @@ fn note_stem(
         up,
         voiced,
         x_off,
+        head: name,
         dx: 0.0,
         tip,
         end,
@@ -8031,70 +8171,35 @@ fn column_slot_id(region: LayoutObjectId, rank: usize) -> SpringSlotId {
     SpringSlotId(preimage.finish_trunc128())
 }
 
-/// A two-note tremolo's strokes from `eid` to the next event of its voice,
-/// each a beam's thickness and `BEAM_STEP` apart about the line joining the
-/// two stems' midpoints (a stemless note's head), from stem to stem; each
-/// end with the slot it rides. Empty where `eid` writes none, or no next
-/// note of its voice is drawn.
-fn two_note_tremolo(
-    eid: EventId,
-    seg: &StemSeg,
-    sources: &BTreeMap<EventId, (Vec<EventMark>, Vec<Ornament>)>,
-    next_in_voice: &BTreeMap<EventId, EventId>,
-    stems: &BTreeMap<EventId, Vec<StemSeg>>,
-    columns: &BTreeMap<ColumnKey, ColumnInfo>,
-) -> Vec<((Point, SpringSlotId), (Point, SpringSlotId))> {
-    let Some(strokes) = sources.get(&eid).and_then(|(marks, _)| {
-        marks.iter().find_map(|m| match m {
-            EventMark::TremoloWithNext { strokes } => Some(*strokes),
-            _ => None,
-        })
-    }) else {
-        return Vec::new();
-    };
-    let Some(other) = next_in_voice
-        .get(&eid)
-        .and_then(|next| stems.get(next))
-        .and_then(|segs| segs.iter().find(|s| s.comp == 0))
-    else {
-        return Vec::new();
-    };
-    let (Some(a), Some(b)) = (columns.get(&seg.key), columns.get(&other.key)) else {
-        return Vec::new();
-    };
-    let head = metrics("noteheadBlack").map_or((0.0, NOTEHEAD_STEM_X), |m| {
-        let b = m.bounding_box();
-        (b.left.0, b.right.0)
-    });
-    // Where each end stands: on a drawn stem, midway along it; between two
-    // stemless heads, clear of them.
-    let end = |s: &StemSeg, info: &ColumnInfo, start: bool| -> Point {
-        if s.drawn {
-            let base = if s.up { s.lo } else { s.hi };
-            Point::new(info.x + s.dx + s.x_off, (base + s.end) * 0.5)
-        } else {
-            let x = if start {
-                info.x + s.dx + head.1 + 0.25
-            } else {
-                info.x + s.dx + head.0 - 0.25
-            };
-            Point::new(x, (s.lo + s.hi) * 0.5)
-        }
-    };
-    let (from, to) = (end(seg, a, true), end(other, b, false));
-    if to.x.0 <= from.x.0 {
-        return Vec::new();
+/// A two-note tremolo's strokes, each `((from, its slot), (to, its slot))`,
+/// the outermost first.
+type TremoloStrokes = Vec<((Point, SpringSlotId), (Point, SpringSlotId))>;
+
+/// The height at `x` of a beam's outer edge standing at `intercept` over
+/// `x0` and rising by `slope`.
+fn edge_at(intercept: f32, slope: f32, x0: f32, x: f32) -> f32 {
+    intercept + slope * (x - x0)
+}
+
+/// How far a two-note tremolo's strokes stand in from each stem (MuseScore's
+/// `stemGapSp`), how short they may run before it gives some of that up,
+/// half the shortfall from each end, and the least it keeps
+/// (`TremoloLayout::createBeamSegments`).
+const TREMOLO_STEM_GAP: f32 = 1.0;
+const TREMOLO_MIN_RUN: f32 = 0.6;
+const TREMOLO_MIN_STEM_GAP: f32 = 0.4;
+
+/// How far a two-note tremolo's strokes stand in from each end of `span`,
+/// the distance between its stems' outer edges. A run within a ten-thousandth
+/// of `TREMOLO_MIN_RUN` is as long as it, as MuseScore compares them
+/// (`RealIsEqualOrMore`).
+fn tremolo_stem_gap(span: f32) -> f32 {
+    let run = span - 2.0 * TREMOLO_STEM_GAP;
+    if run + 1e-4 < TREMOLO_MIN_RUN {
+        (TREMOLO_STEM_GAP - (TREMOLO_MIN_RUN - run) * 0.5).max(TREMOLO_MIN_STEM_GAP)
+    } else {
+        TREMOLO_STEM_GAP
     }
-    let n = strokes.max(1);
-    (0..n)
-        .map(|k| {
-            let off = (f32::from(k) - f32::from(n - 1) * 0.5) * BEAM_STEP;
-            (
-                (Point::new(from.x.0, from.y.0 + off), a.slot),
-                (Point::new(to.x.0, to.y.0 + off), b.slot),
-            )
-        })
-        .collect()
 }
 
 /// The gap a breath mark or caesura keeps from what stands before and after
@@ -11510,6 +11615,7 @@ mod tests {
             up: true,
             voiced: None,
             x_off: 0.0,
+            head: "noteheadBlack",
             dx: 0.0,
             tip: 0.0,
             end: 0.0,
@@ -11774,5 +11880,17 @@ mod tests {
             twice.validate(),
             Err(ConstrainedValidationError::DuplicateTextId(id))
         );
+    }
+
+    /// A two-note tremolo's strokes stand a space in from each stem, but
+    /// where that leaves them under 0.6 long they give up half the shortfall
+    /// at each end, down to 0.4 (`TremoloLayout::createBeamSegments`).
+    #[test]
+    fn a_two_note_tremolo_gives_up_its_inset_only_when_short() {
+        assert_eq!(tremolo_stem_gap(5.0), 1.0);
+        assert_eq!(tremolo_stem_gap(2.6), 1.0);
+        assert!((tremolo_stem_gap(2.3) - 0.85).abs() < 1e-6);
+        assert!((tremolo_stem_gap(1.4) - 0.4).abs() < 1e-6);
+        assert_eq!(tremolo_stem_gap(0.5), 0.4);
     }
 }

@@ -1209,3 +1209,22 @@ column's spring the padding after it.
   trill's upper accidental stands small over the sign, 0.35 off it.
 - A line ending at its region's end, a hairpin or a trill line, ends at the
   final barline's column; it had found no column and drawn nothing.
+
+## Tremolos and chord lines (X4c.10, 2026-10-24)
+
+- A two-note tremolo is laid out as MuseScore lays it out
+  (`TremoloLayout::layoutTwoNotesTremolo`): as a beam of its two notes, its
+  strokes counted as that beam's levels. Both stems turn the way a beam
+  group's would (a voice beside another its own way, else the head furthest
+  from the middle line, down on a tie) and are drawn to the outer edge of
+  the outermost stroke, which stands where the engraver's beam rule puts a
+  beam of that many levels (`BeamTremoloLayout::calculateAnchors`,
+  `extendStem`); a stemless note's anchor stands where its stem would
+  (`chordBeamAnchorX`). The strokes run from a space inside the first stem
+  to a space inside the second, by less where that would leave them under
+  0.6 long, never under 0.4, each further stroke 0.75 nearer the heads
+  (`TremoloLayout::createBeamSegments`). A pair whose stems a beam already
+  sets keeps them, its strokes the beam's further levels.
+- The strokes' ends ride the two notes' columns, so a system spaced
+  otherwise than the projection tilts them a little off the line the stems
+  were cut to: the stems meet it within a tenth of a space.
