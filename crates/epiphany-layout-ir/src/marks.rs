@@ -215,6 +215,25 @@ fn articulation(mark: &EventMark) -> Option<(&'static str, &'static str, Kind, b
     })
 }
 
+/// A one-note tremolo's glyph, by its strokes.
+pub(super) fn tremolo_glyph(strokes: u8) -> &'static str {
+    match strokes {
+        0 | 1 => "tremolo1",
+        2 => "tremolo2",
+        3 => "tremolo3",
+        4 => "tremolo4",
+        _ => "tremolo5",
+    }
+}
+
+/// The one-note tremolo among a note's marks, as its glyph.
+pub(super) fn one_note_tremolo(marks: &[EventMark]) -> Option<&'static str> {
+    marks.iter().find_map(|m| match m {
+        EventMark::Tremolo { strokes } => Some(tremolo_glyph(*strokes)),
+        _ => None,
+    })
+}
+
 /// An ornament's glyph.
 pub(super) fn ornament_glyph(kind: OrnamentKind) -> &'static str {
     match kind {
@@ -539,13 +558,7 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
         let EventMark::Tremolo { strokes } = mark else {
             continue;
         };
-        let name = match strokes {
-            0 | 1 => "tremolo1",
-            2 => "tremolo2",
-            3 => "tremolo3",
-            4 => "tremolo4",
-            _ => "tremolo5",
-        };
+        let name = tremolo_glyph(*strokes);
         let b = bbox(name);
         let h = b.top.0 - b.bottom.0;
         let centre_y;

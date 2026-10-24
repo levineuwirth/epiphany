@@ -690,6 +690,88 @@ fn tremolo_strokes_stand_on_their_stems() {
     );
 }
 
+/// A stem carrying a one-note tremolo is as long as it must be to hold it,
+/// as MuseScore's `StemLayout::calcMinStemLength` counts it in quarter
+/// spaces from the head nearest its end: the strokes' height, half a space
+/// at the stem's end and 1.25 at the head. Three strokes (Bravura's 2.23
+/// tall, nine quarters, as MuseScore's own three) take a quarter's stem from
+/// 3.5 to 4.0 and four (twelve quarters) to 4.75, while two leave it; a head
+/// two spaces outside the staff on the stem's side keeps its strokes two
+/// spaces from it, its stem 4.75; a flag adds its height less its curl's
+/// cutout, six quarters up and four down for one flag, eight up for two;
+/// and a beamed eighth asks the beam to stand 4.5 out, its strokes inside
+/// the beam.
+#[test]
+fn a_one_note_tremolo_lengthens_its_stem() {
+    let trem = |n: u8| format!("<ornaments><tremolo type=\"single\">{n}</tremolo></ornaments>");
+    let beam = |note: String, kind: &str| {
+        note.replacen(
+            "</staff>",
+            &format!("</staff><beam number=\"1\">{kind}</beam>"),
+            1,
+        )
+    };
+    let first = [
+        note("G4", 4, "quarter", 1, 1, ""),
+        note("G4", 4, "quarter", 1, 1, &trem(2)),
+        note("G4", 4, "quarter", 1, 1, &trem(3)),
+        note("G4", 4, "quarter", 1, 1, &trem(4)),
+    ]
+    .concat();
+    let second = [
+        note("A3", 4, "quarter", 1, 1, &trem(3)),
+        note("G4", 2, "eighth", 1, 1, &trem(3)),
+        note("rest", 2, "eighth", 1, 1, ""),
+        beam(note("G4", 2, "eighth", 1, 1, &trem(3)), "begin"),
+        beam(note("G4", 2, "eighth", 1, 1, ""), "end"),
+        note("C6", 4, "quarter", 1, 1, &trem(3)),
+    ]
+    .concat();
+    let third = [
+        note("G4", 1, "16th", 1, 1, &trem(3)),
+        note("rest", 1, "16th", 1, 1, ""),
+        note("rest", 2, "eighth", 1, 1, ""),
+        note("B4", 2, "eighth", 1, 1, &trem(3)),
+        note("rest", 2, "eighth", 1, 1, ""),
+        note("rest", 8, "half", 1, 1, ""),
+    ]
+    .concat();
+    let loaded = part_in("one_note_tremolos.musicxml", 1, 4, &[first, second, third]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    // From the head's centre to the stem's far end, whichever way it turns.
+    let length = |event: EventId| {
+        let h = head(&loaded, &layout, event);
+        let centre = (h[1] + h[3]) * 0.5;
+        let (_, low, high) = stem(&layout, event);
+        (high - centre).max(centre - low)
+    };
+    near(length(e[0]), 3.5, "a quarter's stem");
+    near(length(e[1]), 3.5, "two strokes fit it");
+    near(length(e[2]), 4.0, "three strokes lengthen it");
+    near(length(e[3]), 4.75, "four strokes more");
+    near(length(e[4]), 4.75, "two spaces under the staff");
+    near(length(e[5]), 5.5, "past an eighth's flag");
+    // A beamed stem ends a stem's thickness inside the beam's outer edge.
+    near(length(e[7]), 4.5 - 0.12, "a beam stands out for it");
+    near(length(e[8]), 4.5 - 0.12, "and its fellow reaches it");
+    near(length(e[9]), 4.75, "two spaces over the staff");
+    near(length(e[10]), 6.0, "past a sixteenth's flags");
+    near(length(e[13]), 5.0, "past an eighth's flag turned down");
+    // The strokes stand clear of their heads by 1.25 or more.
+    for event in [e[2], e[5], e[10]] {
+        let strokes = the_glyph(&layout, event, "tremolo3");
+        let h = head(&loaded, &layout, event);
+        assert!(
+            strokes[1] >= (h[1] + h[3]) * 0.5 + 1.25 - 0.01,
+            "{strokes:?} over {h:?}"
+        );
+    }
+    let strokes = the_glyph(&layout, e[3], "tremolo4");
+    let h = head(&loaded, &layout, e[3]);
+    assert!(strokes[1] >= (h[1] + h[3]) * 0.5 + 1.25 - 0.01);
+}
+
 /// The strokes a two-note tremolo `event` starts, each `(from, to)` as
 /// `(x, y)` along its centre, the outermost first by its height on `up`.
 fn tremolo_lines(layout: &ResolvedLayoutIR, event: EventId, up: bool) -> Vec<Leg> {

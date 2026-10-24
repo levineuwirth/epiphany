@@ -1510,6 +1510,9 @@ pub fn try_to_constrained(
                             key,
                             comp,
                             voiced_up(note.voice),
+                            (comp == 0)
+                                .then(|| marks::one_note_tremolo(&note.marks))
+                                .flatten(),
                         );
                         if let Some(staff) = staff {
                             merge_ink(&mut column_ink, staff, &seg.key, ink);
@@ -1581,6 +1584,9 @@ pub fn try_to_constrained(
                             key,
                             comp,
                             voiced_up(unpitched.voice),
+                            (comp == 0)
+                                .then(|| marks::one_note_tremolo(&unpitched.marks))
+                                .flatten(),
                         );
                         if let Some(staff) = staff {
                             merge_ink(&mut column_ink, staff, &seg.key, ink);
@@ -2107,11 +2113,26 @@ pub fn try_to_constrained(
                     (ends[1] - ends[0]).clamp(-MAX_BEAM_RISE, MAX_BEAM_RISE)
                 };
                 let slope = if xn > x0 { rise / (xn - x0) } else { 0.0 };
+                // A member carrying a one-note tremolo asks the length that
+                // holds it inside the beam (`tremolo_stem_min`).
+                let lengths: Vec<f32> = (0..n)
+                    .map(|i| {
+                        mark_sources
+                            .get(&members[i])
+                            .and_then(|(marks, _)| marks::one_note_tremolo(marks))
+                            .map_or(length, |glyph| {
+                                let outside = tremolo_outside(yo, near[i], up);
+                                length.max(tremolo_stem_min(
+                                    glyph, up, outside, None, counts[i], true,
+                                ))
+                            })
+                    })
+                    .collect();
                 let needs = (0..n).map(|i| {
                     let need = if up {
-                        (near[i] + length).max(middle)
+                        (near[i] + lengths[i]).max(middle)
                     } else {
-                        (near[i] - length).min(middle)
+                        (near[i] - lengths[i]).min(middle)
                     };
                     need - slope * (xs[i] - x0)
                 });
@@ -6418,7 +6439,8 @@ fn voiced_up(place: VoicePlace) -> Option<bool> {
 /// shorter takes its flag at that tip, the stem lengthened to the flag's far
 /// edge where its ink passes the tip. `fallback` is where a head-less
 /// component's stem would sit. A voice beside another (`voiced`) turns the
-/// stem its own way instead.
+/// stem its own way instead. A stem carrying a one-note `tremolo` is as long
+/// as it needs to hold it ([`tremolo_stem_min`]).
 #[allow(clippy::too_many_arguments)]
 fn note_stem(
     value: NoteValue,
@@ -6429,6 +6451,7 @@ fn note_stem(
     key: ColumnKey,
     comp: usize,
     voiced: Option<bool>,
+    tremolo: Option<&'static str>,
 ) -> (StemSeg, ColumnInk) {
     let ys: Vec<f32> = steps.iter().map(|step| step_to_y(yo, *step)).collect();
     let drawn = has_stem(value) && !ys.is_empty();
@@ -6449,17 +6472,31 @@ fn note_stem(
     } else {
         head_box.map_or(0.0, |b| b.left.0)
     };
-    let tip = if up {
-        (top + STEM_LENGTH).max(middle)
-    } else {
-        (bottom - STEM_LENGTH).min(middle)
-    };
     let direction = if up {
         epiphany_core::StemDirection::Up
     } else {
         epiphany_core::StemDirection::Down
     };
     let flag = drawn.then(|| flag_glyph(value, direction)).flatten();
+    let length = match tremolo {
+        Some(glyph) => {
+            let outside = tremolo_outside(yo, if up { top } else { bottom }, up);
+            STEM_LENGTH.max(tremolo_stem_min(
+                glyph,
+                up,
+                outside,
+                flag,
+                flag_count(value),
+                false,
+            ))
+        }
+        None => STEM_LENGTH,
+    };
+    let tip = if up {
+        (top + length).max(middle)
+    } else {
+        (bottom - length).min(middle)
+    };
     let flag_box = flag.and_then(metrics).map(|m| m.bounding_box());
     // A 32nd's or shorter flag reaches back past the tip, and the stem is
     // lengthened to meet its far edge; an eighth's or sixteenth's ends at the
@@ -6507,6 +6544,63 @@ fn note_stem(
         beams: flag_count(value),
     };
     (seg, ink)
+}
+
+/// The least length, from the head nearest its end, of a stem carrying the
+/// one-note tremolo `glyph`, as MuseScore's `StemLayout::calcMinStemLength`
+/// counts it in quarter spaces: the tremolo's height, the 0.5 it keeps from
+/// the stem's end (`tremoloOutSidePadding`) and the 1.25 from that head
+/// (`tremoloNoteSidePadding`), or `outside` quarters where the head stands
+/// outside the staff on the stem's side ([`tremolo_outside`]); past a
+/// `flag`, the flag's height less two quarters and the cutout its curl
+/// leaves (`hookOffset`, at most 11, less 5 up or 7 down, 2 less again for
+/// two flags or more), so the tremolo stands clear of the flag as
+/// `TremoloLayout::layoutOneNoteTremolo` sets it; in a beam of `beams`
+/// levels, the beams' height on top (3 quarters each, less 1). MuseScore
+/// keeps a beamed stem at least an inner length besides (10 quarters for one
+/// beam, 7 for three or more), which never binds here: Bravura's single
+/// stroke and paddings alone make 10.
+fn tremolo_stem_min(
+    glyph: &str,
+    up: bool,
+    outside: i32,
+    flag: Option<&str>,
+    beams: u8,
+    beamed: bool,
+) -> f32 {
+    let height = |name: &str| {
+        metrics(name).map_or(0.0, |m| {
+            let b = m.bounding_box();
+            b.top.0 - b.bottom.0
+        })
+    };
+    let mut quarters = (height(glyph) * 4.0).ceil() as i32 + 2 + outside.max(5);
+    if let Some(flag) = flag.filter(|_| !beamed) {
+        let hook = ((height(flag) * 4.0).floor() as i32 - 2).min(11);
+        let cutout = if up { 5 } else { 7 } - if beams >= 2 { 2 } else { 0 };
+        quarters += hook - cutout;
+    }
+    if beamed {
+        quarters += i32::from(beams) * 3 - 1;
+    }
+    quarters as f32 / 4.0
+}
+
+/// How far, in quarter spaces, the head nearest a stem's end, at `y`,
+/// stands outside its staff on the stem's side, as
+/// `StemLayout::calcMinStemLength` reads it: a down stem's head more than
+/// half a space over the top line by its distance above that line, an up
+/// stem's head more than a space under the bottom line by its distance
+/// under the line a space above that; zero otherwise.
+fn tremolo_outside(yo: f32, y: f32, up: bool) -> i32 {
+    let line = ((yo + STAFF_HEIGHT - y) * 4.0).round() as i32;
+    if !up && line < -2 {
+        -line
+    } else if up && line > 20 {
+        line - 16
+    } else {
+        0
+    }
 }
 
 /// Folds one component's ink into its staff's column record.

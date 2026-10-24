@@ -1228,3 +1228,14 @@ column's spring the padding after it.
 - The strokes' ends ride the two notes' columns, so a system spaced
   otherwise than the projection tilts them a little off the line the stems
   were cut to: the stems meet it within a tenth of a space.
+- A stem carrying a one-note tremolo is at least as long, from the head
+  nearest its end, as MuseScore's `StemLayout::calcMinStemLength` counts in
+  quarter spaces: the strokes' height (Bravura's glyphs come to MuseScore's
+  own count for two to five strokes), 0.5 at the stem's end and 1.25 at the
+  head, or the head's distance outside the staff on the stem's side where
+  it stands more than half a space over the top line or a space under the
+  bottom; past a flag, the flag's height less its curl's cutout; in a beam,
+  the beams' height besides, which a one-staff beam's position honours. The
+  strokes stand where they stood, 0.5 in from the stem's end and further in
+  past a flag or beams, now clear of the head. A beam across two staves
+  does not lengthen its stems for a tremolo.

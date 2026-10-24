@@ -2364,3 +2364,12 @@ is set:
   drawn about the line joining the stems' midpoints, from stem to stem, so
   they crossed the second chord's accidentals. Each stroke's ends ride the
   two notes' columns, as a beam's do; the engraver itself is unchanged.
+
+## ENGRAVER_VERSION 65 → 66: a one-note tremolo lengthens its stem (X4c.10, 2026-10-24)
+
+- A stem carrying a one-note tremolo is as long as MuseScore's
+  `StemLayout::calcMinStemLength` makes it to hold the strokes, and a beam
+  over such a stem stands far enough out for it; three strokes or more had
+  run to the head on a stem of the plain length
+  (`a_one_note_tremolo_lengthens_its_stem`). The engraver itself is
+  unchanged.
