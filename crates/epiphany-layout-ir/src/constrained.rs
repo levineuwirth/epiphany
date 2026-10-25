@@ -3119,16 +3119,28 @@ pub fn try_to_constrained(
                 run
             };
             let placing = match &marker.kind {
+                // Each line of the text a run, the first on the baseline and
+                // each further one a line lower (`TextLayout`, `BASELINE`).
                 MarkerKind::Text(words) => TextMarkPlacing {
                     key: note,
                     staff: st,
-                    runs: vec![shape(
-                        words.as_str(),
-                        TextFace::Roman,
-                        STAFF_TEXT_SIZE,
-                        Point::new(left, top + STAFF_TEXT_ABOVE),
-                        0,
-                    )],
+                    runs: words
+                        .as_str()
+                        .split('\n')
+                        .enumerate()
+                        .filter(|(_, line)| !line.is_empty())
+                        .map(|(i, line)| {
+                            let baseline =
+                                top + STAFF_TEXT_ABOVE - i as f32 * TEXT_LINE * STAFF_TEXT_SIZE;
+                            shape(
+                                line,
+                                TextFace::Roman,
+                                STAFF_TEXT_SIZE,
+                                Point::new(left, baseline),
+                                i as u128,
+                            )
+                        })
+                        .collect(),
                     frame: None,
                     order: PlaceOrder::StaffText,
                     across: None,
@@ -3141,40 +3153,61 @@ pub fn try_to_constrained(
                         .map(|m| signature_column(m))
                         .and_then(|key| Some((columns.get(&key)?.x + TIME_SIG_X, key)));
                     let (x, key) = signature.unwrap_or((left, note));
-                    let baseline = top + TEMPO_ABOVE;
+                    // The pen, across and the baseline it stands on.
+                    let mut at = (x, top + TEMPO_ABOVE);
                     let mut runs = Vec::new();
-                    let mut pen = x;
                     let mut k = 0u128;
-                    let mut set = |runs: &mut Vec<ResolvedText>, text: &str, face, size| {
-                        let run = shape(text, face, size, Point::new(pen, baseline), k);
-                        pen += run.reserved_box.right.0 - run.reserved_box.left.0;
+                    let mut set = |runs: &mut Vec<ResolvedText>,
+                                   at: &mut (f32, f32),
+                                   text: &str,
+                                   face,
+                                   size| {
+                        let run = shape(text, face, size, Point::new(at.0, at.1), k);
+                        at.0 += run.reserved_box.right.0 - run.reserved_box.left.0;
                         k += 1;
                         runs.push(run);
                     };
-                    let words = tempo
+                    // Its words' lines before their last each a run a line
+                    // above the next, as staff text's; the last and the
+                    // metronome after it on the last line.
+                    let mut words = tempo
                         .text
                         .as_ref()
                         .map(|t| t.as_str())
                         .filter(|t| !t.is_empty());
+                    if let Some((lines, last)) = words.and_then(|w| w.rsplit_once('\n')) {
+                        for line in lines.split('\n') {
+                            if !line.is_empty() {
+                                set(&mut runs, &mut at, line, TextFace::Bold, TEMPO_SIZE);
+                            }
+                            at = (x, at.1 - TEXT_LINE * TEMPO_SIZE);
+                        }
+                        words = Some(last).filter(|t| !t.is_empty());
+                    }
                     match (&tempo.metronome, words) {
                         (Some(metronome), words) => {
                             if let Some(words) = words {
-                                set(&mut runs, &format!("{words} "), TextFace::Bold, TEMPO_SIZE);
+                                let words = format!("{words} ");
+                                set(&mut runs, &mut at, &words, TextFace::Bold, TEMPO_SIZE);
                             }
                             set(
                                 &mut runs,
+                                &mut at,
                                 &metronome_beat(metronome),
                                 TextFace::Symbols,
                                 TEMPO_SYMBOL_SIZE,
                             );
                             set(
                                 &mut runs,
+                                &mut at,
                                 &format!(" = {}", metronome.per_minute.as_str()),
                                 TextFace::Bold,
                                 TEMPO_SIZE,
                             );
                         }
-                        (None, Some(words)) => set(&mut runs, words, TextFace::Bold, TEMPO_SIZE),
+                        (None, Some(words)) => {
+                            set(&mut runs, &mut at, words, TextFace::Bold, TEMPO_SIZE)
+                        }
                         (None, None) => {}
                     }
                     TextMarkPlacing {
@@ -8446,6 +8479,10 @@ const TRILL_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x5452_494C_4C4
 /// clear of the ink under it (`staffTextMinDistance`, `tempoMinDistance`,
 /// `rehearsalMarkMinDistance`, `repeatMinDistance`).
 const STAFF_TEXT_SIZE: f32 = 2.016;
+/// A text's line, Edwin's ascender, descender and gap, 1200 of its 1000
+/// units, as a share of its size: the step from one line of a staff text
+/// or tempo mark to the next.
+const TEXT_LINE: f32 = 1.2;
 const STAFF_TEXT_ABOVE: f32 = 1.0;
 const TEMPO_SIZE: f32 = 2.419;
 const TEMPO_SYMBOL_SIZE: f32 = 4.032;
@@ -8458,9 +8495,11 @@ const REPEAT_SYMBOL_SIZE: f32 = 3.629;
 const REPEAT_ABOVE: f32 = 2.0;
 const TEXT_MIN_DISTANCE: f32 = 0.5;
 
-/// The registry ids for a tempo mark's further runs (its metronome's beat,
-/// key 1, and figure, key 2, or its beat key 0 where it has no words) and
-/// for a rehearsal mark's frame (keys 1 to 4), synthesized from the mark.
+/// The registry ids for a staff text's further lines (key `i` for its `i`th
+/// line), a tempo mark's further runs (each next key in turn: its words'
+/// further lines, then its metronome's beat and figure, the first run of
+/// all key 0) and a rehearsal mark's frame (keys 1 to 4), synthesized from
+/// the mark.
 const TEXT_MARK_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x5445_5854_4D41_524B); // "TEXTMARK"
 const TEXT_FRAME_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x5445_5854_4652_4D45); // "TEXTFRME"
 

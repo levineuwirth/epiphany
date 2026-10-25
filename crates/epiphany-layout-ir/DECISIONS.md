@@ -1266,3 +1266,9 @@ column's spring the padding after it.
   `EndingStart`): the barline slot it opens at, its start hook, its numbers
   and its line. The projection draws it at that barline as before; a solver
   breaking a system there draws it on the next system instead.
+- A text written in lines (D81's Q2) is a run a line: a staff text's first
+  line on its baseline and each further one Edwin's line, 1.2 of its size,
+  lower, as MuseScore sets a baseline-aligned text (`TextLayout`); a tempo
+  mark's lines so too, its metronome after its last line. An empty line
+  takes its step and draws nothing. The shaped faces cover no U+000A, so a
+  line break is never shaped.

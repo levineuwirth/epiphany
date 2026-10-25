@@ -2426,3 +2426,13 @@ is set:
   where their place is not yet known; an ending opening mid-system is drawn
   as before. The repeat fixture's first ending opens a system: its engraved
   golden and snapshot are re-blessed under D10.
+
+## ENGRAVER_VERSION 70 → 71: a text's lines drawn stacked (X4c.10, 2026-10-24)
+
+- A staff text or tempo mark written in lines is drawn a run a line, the
+  first on its baseline and each further line Edwin's line (1.2 of its
+  size) lower, as MuseScore sets a text on its baseline (`TextLayout`,
+  `BASELINE`); a tempo mark's metronome follows its last line. The runs
+  move together, so the whole text clears the staff as one
+  (`a_text_in_lines_is_drawn_in_lines`). The importer now keeps a text's
+  line breaks (D81's Q2); a line break had been an uncovered codepoint.

@@ -2412,6 +2412,52 @@ fn staff_text_stands_over_its_staff_from_its_note() {
     near(high[1], a5[3] + 0.5, "a half space over the high note");
 }
 
+/// A text written in lines is drawn in lines (D81's Q2), as MuseScore sets a
+/// text on its baseline (`TextLayout`, `BASELINE`): each line a run from its
+/// note, the first on the text's baseline and each further one Edwin's line,
+/// 1.2 of its size, lower, the whole moved clear of the staff as one; a
+/// tempo mark's lines so too, its metronome after its last line.
+#[test]
+fn a_text_in_lines_is_drawn_in_lines() {
+    let measure = [
+        words("play softly\nand slowly", 1, false),
+        note("C5", 4, "half", 1, 1, ""),
+        tempo(Some("Allegro\nmolto"), Some(("quarter", 0, 120)), 1),
+        note("C5", 4, "half", 1, 1, ""),
+    ]
+    .concat();
+    let loaded = part("text_lines.musicxml", 1, &[measure]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let (_, top) = staff_lines(&layout)[0];
+    let (first, second) = (
+        runs(&layout, "play softly")[0],
+        runs(&layout, "and slowly")[0],
+    );
+    near(pen(first).0, pen(second).0, "both from the note");
+    near(
+        first.origin.y.0 - second.origin.y.0,
+        1.2 * 2.016,
+        "a line apart",
+    );
+    assert!(
+        text_box(second)[1] >= top + 0.5 - 0.01,
+        "the lower line clear of the staff"
+    );
+    let (allegro, molto) = (runs(&layout, "Allegro")[0], runs(&layout, "molto ")[0]);
+    near(pen(allegro).0, pen(molto).0, "both from the tempo's note");
+    near(
+        allegro.origin.y.0 - molto.origin.y.0,
+        1.2 * 2.419,
+        "a line apart",
+    );
+    let figure = runs(&layout, " = 120")[0];
+    near(
+        figure.origin.y.0,
+        molto.origin.y.0,
+        "the metronome on the last line",
+    );
+}
+
 /// A tempo mark stands over the system's top staff, whatever staff holds
 /// it: its words in Edwin bold at 12 points, its metronome's beat in Bravura
 /// Text at 20 and its figure in bold after it, pen to pen, on one baseline 2.0
