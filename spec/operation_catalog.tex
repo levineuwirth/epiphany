@@ -887,7 +887,10 @@ superseded by the migration that gave the target its model, a migration
 strands each such holder, and an event, a measure or a region a holder names
 before it is made by such an offset is refused at its creation; a tempo
 segment anchored to an event or a measure that is not live is refused
-\texttt{TargetMissing} (Section~\ref{sec:framework:anchor-offsets}). Accordingly
+\texttt{TargetMissing} (Section~\ref{sec:framework:anchor-offsets}). The
+undo semantics of \texttt{ChangeRegionTimeModel} are corrected to what
+reduction does: a migration is not undone
+(Section~\ref{sec:k0:change-region-time-model}). Accordingly
 \texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION} moves
 \texttt{4}~$\rightarrow$~\texttt{5}, one version for the phase.
 
@@ -1858,8 +1861,12 @@ with incompatible events produces a \texttt{TimeModelMigrationFailure} naming th
 region and the incompatible events. A causally-later migration is re-evaluated
 against the first migration's graph rather than conflicting.
 
-\textbf{Undo semantics.} Undo restores the region's prior time model under the
-active policy.
+\textbf{Undo semantics.} A migration writes no value an undo restores: it keeps
+no record of the model it replaced, nor of what a \texttt{Reassign} moved. An
+undo of a transaction holding a migration compensates nothing for it, so one
+holding only a migration is refused \texttt{TargetMissing} under either policy,
+and the region keeps its new time model. An undoable migration is on the
+roadmap's decide-list (roadmap D84 Q3).
 
 \textbf{Re-anchoring.} Not applicable.
 
