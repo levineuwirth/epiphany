@@ -4235,12 +4235,15 @@ testkit's generated histories carry.
 **The fuzz writes them.** Arm 67 writes every holder by an offset, a
 wall-clock one three times in four: in a region the view holds, given a model
 admitting wall-clock time one time in two, a marker, a user break, a time
-signature, a grid's meter change, a tempo segment, a measure, a staff instance
-carrying a clef, a key or its own grid, a migration to a model with its own
-meter, or a marker moved, at the region's start, a note or a measure of it; a
-spanner or a repeat created, or a spanner moved, at a note (one anchored to a
-region is the parked P13-D3); or a region carrying a meter, a break or a tempo
-segment at its own start. One time in two the holding region is then migrated
+signature, a grid's meter change, a measure, a staff instance carrying a clef,
+a key or its own grid, a migration to a model with its own meter, or a marker
+moved, at the region's start, a note or a measure of it; a tempo segment at
+the region's start; a spanner or a repeat created, or a spanner moved, at a
+note (one anchored to a region is the parked P13-D3); or a region carrying a
+meter, a break or a tempo segment at its own start. A tempo segment at a note
+is not written: the note's delete leaves it naming nothing
+(`CrossCuttingRefsResolve`, one author, older than X5b), which the fuzz found
+the first time it wrote one; that is the owner's to rule. One time in two the holding region is then migrated
 to a model of any kind. Arm 68 is arm 65's mirror for every holder an undo
 restores: written at a region's start by a wall-clock offset where the region
 admits one, changed in a transaction of its own, the region migrated, metric

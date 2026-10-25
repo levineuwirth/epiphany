@@ -97,10 +97,12 @@
 //! decoder reads it.
 //! Expression text is one of a marker's kinds. Every other holder of a time
 //! anchor is written by a wall-clock offset too (X5b.9): a marker, a user break,
-//! a time signature, a metric grid's meter change, a tempo segment, a measure,
-//! a staff instance's carried clef, key or grid, a region's own meter, break or
-//! tempo segment, a migration's own meter, and a spanner or a repeat at a note
-//! (one at a region is the parked P13-D3), each in a region the view holds,
+//! a time signature, a metric grid's meter change, a tempo segment (at a
+//! region's start: one at a note its delete removes names nothing, an older
+//! gap), a measure, a staff instance's carried clef, key or grid, a region's own
+//! meter, break or tempo segment, a migration's own meter, and a spanner or a
+//! repeat at a note (one at a region is the parked P13-D3), each in a region
+//! the view holds,
 //! given a model admitting wall-clock time one time in two, refused
 //! `WrongRegionTimeModel` where its target admits none, and its region then
 //! migrated to a model of any kind one time in two (arm 67); a marker, a
@@ -3796,8 +3798,9 @@ fn make(
             // grid's meter change, a tempo segment, a measure, a staff
             // instance carrying a clef, a key or its own grid, a migration to
             // a model with its own meter, or a marker moved, anchored at the
-            // region's start, a note or a measure of it, and a spanner or a
-            // repeat, created or (a spanner) moved, at a note of it, by a
+            // region's start, a note or a measure of it (a tempo segment at
+            // its start), and a spanner or a repeat, created or (a spanner)
+            // moved, at a note of it, by a
             // wall-clock offset three times in four (else of either kind),
             // refused `WrongRegionTimeModel` where the region does not admit
             // it; or a region placed as an editor places one carrying, at its
@@ -3805,7 +3808,9 @@ fn make(
             // segment; and one time in two the holding region then migrated
             // to a model of any kind, which strands the holder where it does
             // not admit the offset. A spanner or a repeat anchored to a region
-            // is the class the owner parked (P13-D3), so none is written.
+            // is the class the owner parked (P13-D3), so none is written; nor
+            // is a tempo segment at a note, which the note's delete leaves
+            // naming nothing (`CrossCuttingRefsResolve`, older than X5b).
             let (target, model, instances) = sim.rng.pick(&h.regions)?;
             let holds_music = instances
                 .iter()
@@ -4238,11 +4243,13 @@ fn held_by(
             }),
         }))],
         7 => {
+            // At the region's start: a segment at a note the note's delete
+            // removes names nothing, older than X5b and not written here.
             let mut segment = valuegen::tempo_segment(region, MusicalPosition::origin(), 90.0);
-            segment.start = anchor.clone();
+            segment.start = own_start.clone();
             vec![prim(OperationKind::SetTempoSegment(SetTempoSegmentOp {
                 region: sim.rng.chance(2).then_some(region),
-                start: anchor,
+                start: own_start,
                 segment: Some(segment),
             }))]
         }
