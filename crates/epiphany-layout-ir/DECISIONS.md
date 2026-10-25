@@ -1276,4 +1276,7 @@ column's spring the padding after it.
   where a head stands on a ledger line (a space under the staff or over it,
   or further) and no head draws an accidental, 0.3 past the ledger line's
   reach of 0.33, as MuseScore's chord layout sets its gap
-  (`arpeggioLedgerDistance`, `ledgerLineLength`).
+  (`arpeggioLedgerDistance`, `ledgerLineLength`). The gap is from its ink:
+  an arrow, which reaches past the turned wiggle's edge, ends at the
+  arpeggio's right edge too, as MuseScore sets the arpeggio's whole width
+  left of its gap.

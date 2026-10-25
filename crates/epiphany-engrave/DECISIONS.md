@@ -2445,3 +2445,14 @@ is set:
   it no longer meets the ledger line
   (`an_arpeggio_stands_clear_of_its_chords_ledger_lines`). The engraver
   itself is unchanged.
+
+## ENGRAVER_VERSION 72 → 73: an arpeggio's arrow stands left of its gap (X4c.10, 2026-10-25)
+
+- An arpeggio's ink ends at its right edge, an arrow's too, so its whole
+  width and its gap stand left of the chord, as MuseScore sets them
+  (`ChordLayout`, the arpeggio's width and gap). An arrow, wider than a
+  wiggle, had reached 0.32 past the edge toward the heads, so an arpeggio
+  with an arrow stood that much nearer its chord than its gap, and met a
+  ledger line its gap clears
+  (`an_arpeggio_stands_clear_of_its_chords_ledger_lines`). The engraver
+  itself is unchanged.

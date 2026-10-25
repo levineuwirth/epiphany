@@ -803,11 +803,12 @@ fn an_arpeggio_takes_room_and_other_marks_take_none() {
 /// where a head stands on a ledger line and none has an accidental, past
 /// the ledger line: 0.3 clear of its 0.33 reach past the head, as
 /// MuseScore's chord layout sets the gap (`arpeggioLedgerDistance`,
-/// `ledgerLineLength`).
+/// `ledgerLineLength`). The gap is from its ink, an arrow's too, which
+/// reaches past a wiggle's edge: MuseScore sets the arpeggio's whole width
+/// left of its gap.
 #[test]
 fn an_arpeggio_stands_clear_of_its_chords_ledger_lines() {
-    let arpeggio = "<arpeggiate/>";
-    let rolled = |pitches: [&str; 3]| {
+    let rolled = |arpeggio: &str, pitches: [&str; 3]| {
         [
             note(pitches[0], 2, "quarter", 1, 1, arpeggio),
             chord(pitches[1], 2, "quarter", 1, 1, arpeggio),
@@ -815,14 +816,25 @@ fn an_arpeggio_stands_clear_of_its_chords_ledger_lines() {
         ]
         .concat()
     };
-    let measure = [
-        rolled(["C4", "E4", "G4"]),
-        rolled(["E4", "G4", "B4"]),
-        rolled(["C4", "F#4", "A4"]),
+    let (plain, up, down) = (
+        "<arpeggiate/>",
+        "<arpeggiate direction=\"up\"/>",
+        "<arpeggiate direction=\"down\"/>",
+    );
+    let first = [
+        rolled(plain, ["C4", "E4", "G4"]),
+        rolled(plain, ["E4", "G4", "B4"]),
+        rolled(plain, ["C4", "F#4", "A4"]),
         note("rest", 2, "quarter", 1, 1, ""),
     ]
     .concat();
-    let loaded = part("arpeggio_ledgers.musicxml", 1, &[measure]);
+    let second = [
+        rolled(up, ["C4", "E4", "G4"]),
+        rolled(down, ["E4", "G4", "B4"]),
+        note("rest", 4, "half", 1, 1, ""),
+    ]
+    .concat();
+    let loaded = part("arpeggio_ledgers.musicxml", 1, &[first, second]);
     let layout = engrave(&loaded.reduced.score).layout;
     let e = events(&loaded);
     let gap = |event: EventId| {
@@ -845,6 +857,17 @@ fn an_arpeggio_stands_clear_of_its_chords_ledger_lines() {
     let sharp = named(&layout, "accidentalSharp");
     assert_eq!(sharp.len(), 1);
     near(sharp[0][0] - gap(e[2]).1, 0.4, "left of the accidental");
+    // An arrow's ink as a wiggle's.
+    for (k, arrow) in [(4, '\u{EAAD}'), (5, '\u{EAAE}')] {
+        let run = layout
+            .texts
+            .iter()
+            .find(|t| t.provenance.source == TypedObjectId::Event(e[k]))
+            .expect("an arpeggio");
+        assert!(run.text.contains(arrow), "{:?}", run.text);
+    }
+    near(gap(e[4]).0, 0.3 + 0.33, "an arrow past the ledger line");
+    near(gap(e[5]).0, 0.4, "an arrow in the staff");
 }
 
 /// A one-note tremolo's strokes stand on its stem between head and tip.

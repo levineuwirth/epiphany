@@ -3651,15 +3651,16 @@ pub fn try_to_constrained(
                                 emit.stroke(stroke);
                             }
                             if let Some(arpeggio) = &placed.arpeggio {
-                                runs.push((
-                                    symbol_run(
-                                        mark_provenance(NoteMarkPart::Arpeggio),
-                                        &marks::arpeggio_symbols(arpeggio),
-                                        Point::new(info.x + arpeggio.right, arpeggio.bottom),
-                                    ),
-                                    Room::Ink,
-                                    false,
-                                ));
+                                let mut run = symbol_run(
+                                    mark_provenance(NoteMarkPart::Arpeggio),
+                                    &marks::arpeggio_symbols(arpeggio),
+                                    Point::new(info.x + arpeggio.right, arpeggio.bottom),
+                                );
+                                // Its ink, an arrow's too, ends at its right
+                                // edge: MuseScore sets the arpeggio's whole
+                                // width and its gap left of the chord.
+                                run.origin.x.0 -= run.bounds.right.0;
+                                runs.push((run, Room::Ink, false));
                             }
                             for (run, room, at_stem_end) in runs {
                                 let id = run.id();
