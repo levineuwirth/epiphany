@@ -757,7 +757,8 @@ pub mod vectors;
 ///   holding no base, refuses it in both versions; only a canonical base,
 ///   which exists in tests alone (D4), reaches it.
 /// * `5` — **X5b** (2026-10-22), the format boundary and the region refusal
-///   (roadmap D80, and D81 for X5b.8), one version for the phase:
+///   (roadmap D80, D81 for X5b.8 and D84 for X5b.9), one version for the
+///   phase:
 ///   - **The region refusal** (X5b.3, a verdict and new ledger state): a
 ///     `CreateStaffInstance` whose region overlaps in time another live
 ///     region holding a live instance of its staff is refused
@@ -818,6 +819,43 @@ pub mod vectors;
 ///     fuzz found). Read from the indices both modes keep; a target that is
 ///     not live is not judged, as the invariant cannot find it. Locked by
 ///     `extent_offsets.rs` and the committed history `188`.
+///   - **Every holder of a time anchor and its target's time model**
+///     (X5b.9, D84, verdicts): the extent's reading holds every other
+///     holder version `4` left unread or read for a musical offset out of
+///     musical time alone. A marker's or a spanner's create or modify, a
+///     repeat structure, a measure, a present user break, a set meter
+///     change, a metric grid, a tempo segment, a `CreateStaffInstance`'s
+///     carried clef, key and grid, a `CreateRegion`'s own model, grid,
+///     breaks and tempo map, and a migration's own target model are refused
+///     `WrongRegionTimeModel` in both modes where an anchor's offset is one
+///     its target's model does not admit (a repeat by a musical offset in a
+///     proportional region among them, which version `4` never read). An
+///     undo's restoration of a marker, a spanner, a grid, a meter change, a
+///     tempo segment or a present break anchored so is superseded by the
+///     migration that gave the target its model, D80 Q17's musical half for
+///     a marker now read the same way. A migration conflicts
+///     `TimeModelMigrationFailure` naming every live holder anchored to its
+///     region, or an event or a measure in it, by an offset the target does
+///     not admit, in both directions: the holder's own object, or the region
+///     whose model, grid, breaks or tempo map hold it, or the region itself
+///     for a segment of the score's tempo map, beside what versions `3` and
+///     `4` name; what a migration out of musical time drops with the
+///     region's breaks and grids is not read. An `InsertEvent`, a
+///     `CreateMeasure` or a `CreateRegion` is refused `WrongRegionTimeModel`
+///     where a live holder (for the first two a region's extent among them,
+///     D84 Q1) already names the new object by an offset its model does not
+///     admit, read only for an object some holder named before it was made.
+///     And a tempo segment anchored to an event or a measure that is not
+///     live is refused `TargetMissing`, as one anchored to such a region is
+///     since version `3` (before it it applied naming nothing,
+///     `CrossCuttingRefsResolve`). Version `4` applied all of them and broke
+///     `AnchorOffsetModel` (one author each: D84's twenty routes, a note and
+///     a measure named before they are made, and the routes the same reading
+///     finds beside them). Read from the indices both modes keep, three of
+///     them new and none of them reduced state: each region's own model's
+///     meter anchors, the anchors of the clef and key changes a staff
+///     instance's create carried, and the objects named before they were
+///     made. Locked by `anchor_offsets.rs`.
 ///
 ///   With it, at the same epoch 16, a wire addition that changes no verdict:
 ///   `MarkerKind` appends `ExpressionText` (X5b.7, D79 Q9), reduced as any

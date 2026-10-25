@@ -4160,3 +4160,74 @@ metric region by a wall-clock offset is applied, as is a tempo segment so
 anchored, and a migration into metric time strands none of them, breaking
 `AnchorOffsetModel`; version 4's rule refuses and strands only their musical
 offsets out of musical time.
+
+## X5b.9 — every holder of a time anchor answers to its target's time model (2026-10-24)
+
+**One reading for every holder.** X5b.8 held a region's extent to its target's
+time model and left the other holders of a time anchor where version 4 left
+them: a marker's or a spanner's region anchor refused and stranded for a
+musical offset out of musical time, a break, a grid, a measure and a tempo
+segment refused there by version 3's musical slot, and nothing read for a
+wall-clock offset in a model admitting none. One author broke invariant 9 by
+twenty routes through ten kinds of holder (D84 Q2): a marker at a metric
+region's start, event or measure by a wall-clock offset, modified onto one,
+restored there by an undo after the region's migration to metric, or anchored
+in a proportional region then migrated to metric; a spanner and a system break
+written or migrated so; a page break at a metric event; a measure migrated so;
+a time signature; a tempo segment written or migrated so; a metric grid's
+meter change; a region's own meter change, content break and local tempo
+segment; and a repeat at a metric event. Probing them with the same reading
+found as many again of the same shape: a spanner modified or restored so; a
+break or a tempo segment restored so; a score tempo segment at a metric note;
+a holder of one region anchored to another that migrates (a grid's meter
+change, a time signature, a repeat, a region's own meter, break or tempo
+segment), in either direction; a repeat in a proportional region by a musical
+offset, which version 4 never read; a measure started in another region by a
+wall-clock offset; a staff instance created carrying a clef, a key or its own
+grid by one; a migration to a metric model whose own meter change its region
+will not admit; and a note's holder in a region where each event fixes its
+clock, which answers to the note's.
+
+Reduction version 5 reads each the way X5b.8 reads an extent
+(`CoordinateDiscipline::admits_offset`, through `extent_anchor_discipline`): a
+region's edge by that region's model, a region's own edge by the model it is
+being given, an event or a measure by its region's, and an event in a region
+where each event fixes its clock by the event's, musical for every event an
+operation places. Where written, modified or carried, a holder anchored by an
+offset its target does not admit is refused `WrongRegionTimeModel`. Where an
+undo would restore one so, the restoration is superseded by the migration that
+gave the target its model; this is Q17's supersession too, which read a
+marker's musical offset out of musical time alone and now reads any offset at
+any anchor. And a migration strands every live holder anchored to its region,
+or an event or a measure in it, by an offset its target does not admit, named
+in its `TimeModelMigrationFailure`: a marker, a spanner, a repeat or a measure
+by its own id, a staff instance for its own grid or a clef or key change its
+create carried, a region for its own model, grid, breaks or tempo map, and the
+migrated region itself for a segment of the score's tempo map, as version 3
+names it for a musical one. What a migration out of musical time drops with
+its region's breaks and grids is not read. The strand reads each holder from
+the indices both modes keep: the cross-cutting chains, the repeat and measure
+values, the grid chains as `effective_grid` interleaves them, the instance
+grids, the break and tempo chains, and three new indices (each region's own
+model's meter anchors, the anchors of the clef and key changes an instance's
+create carried, and the objects named before they were made). A grid or break
+value a migration out of musical time dropped from the graph still stands in
+its chain, as every other grid verdict reads it, so a later migration into a
+model admitting no wall-clock offset reads it too.
+
+**Named before it is made (D84 Q1).** An extent may name an event or a measure
+before it is made, and so may a time signature, a grid's meter change, and the
+anchors a region's or a staff instance's create carries; none judges a target
+that is not live, as the invariant cannot. Reduction notes each object named
+so, and an `InsertEvent`, a `CreateMeasure` or a `CreateRegion` of one is
+refused `WrongRegionTimeModel` where a live holder already names it by an
+offset its model does not admit (a region's extent for a region is X5b.8's own
+reading). A tempo segment's event or measure anchor named nothing until its
+target was made, `CrossCuttingRefsResolve` (older than X5b); it is refused
+`TargetMissing` now, as its region anchor is since version 3, so it names no
+note before it is made.
+
+No writer makes a holder with a wall-clock offset, and none migrates a region:
+the importer and the editor anchor in musical time and write no
+`ChangeRegionTimeModel`, which only hand-built histories, the fuzz and the
+testkit's generated histories carry.
