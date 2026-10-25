@@ -71,8 +71,9 @@
 //! line is a spanner's alone, never a slur's, a tie's, or a staff's,
 //! instrument's or staff instance's lines, though each stamps major 5; no
 //! verdict reads a line style. A marker is anchored to an event or to a
-//! region by a musical offset, never to a measure or a wall-clock time, so the
-//! measure strand guard never meets one. A dynamic is one of four (`p`, `mf`,
+//! region by a musical offset, and, by arm 67 (X5b.9), to a region, an event
+//! or a measure by an offset of either kind; never to a wall-clock time. A
+//! dynamic is one of four (`p`, `mf`,
 //! `sfz`, `niente`), never another nor `Other` with its text; a fermata takes
 //! two of its five shapes, a breath mark and a caesura one kind each, and a
 //! tempo mark always a quarter's metronome. An ornament stands alone on its
@@ -94,7 +95,22 @@
 //! then in another region (`TargetMissing`). A constant tempo segment now and
 //! then records its end tempo (`TempoMapMalformed`), built in memory since no
 //! decoder reads it.
-//! Expression text is one of a marker's kinds.
+//! Expression text is one of a marker's kinds. Every other holder of a time
+//! anchor is written by a wall-clock offset too (X5b.9): a marker, a user break,
+//! a time signature, a metric grid's meter change, a tempo segment, a measure,
+//! a staff instance's carried clef, key or grid, a region's own meter, break or
+//! tempo segment, a migration's own meter, and a spanner or a repeat at a note
+//! (one at a region is the parked P13-D3), each in a region the view holds,
+//! given a model admitting wall-clock time one time in two, refused
+//! `WrongRegionTimeModel` where its target admits none, and its region then
+//! migrated to a model of any kind one time in two (arm 67); a marker, a
+//! spanner, a break, a tempo segment, a time signature or a grid so written,
+//! changed in a transaction, its region migrated and the change undone, the
+//! migration superseding the restoration (arm 68); and a region placed with its
+//! start at a note or a measure its author makes next, which the note's insert
+//! or the measure's create then reads (arm 69). That extent names what its
+//! author's view does not yet hold, the one name [`valid`] does not hold to
+//! the view.
 //!
 //! Everything is seeded: [`generate`] is a function of its seed and length, so
 //! a finding reproduces from both. [`minimize`] shrinks a failing history to
@@ -608,7 +624,7 @@ impl Coverage {
 
 /// The payload shapes schema major 5 adds, and those reduction version 5
 /// reads (X5b), each counted beside its kind.
-const SHAPES: [&str; 22] = [
+const SHAPES: [&str; 33] = [
     "InsertEvent+marks",
     "InsertEvent+ornaments",
     "InsertEvent+grace",
@@ -631,6 +647,17 @@ const SHAPES: [&str; 22] = [
     "CreateRegion+anchored start",
     "CreateRegion+musical offset",
     "CreateRegion+wall-clock offset",
+    "CreateCrossCutting+wall-clock offset",
+    "ModifyCrossCutting+wall-clock offset",
+    "CreateRepeatStructure+wall-clock offset",
+    "CreateMeasure+wall-clock offset",
+    "SetUserSystemBreak+wall-clock offset",
+    "SetUserPageBreak+wall-clock offset",
+    "SetTimeSignature+wall-clock offset",
+    "SetMetricGrid+wall-clock offset",
+    "SetTempoSegment+wall-clock offset",
+    "CreateStaffInstance+carried wall-clock offset",
+    "CreateRegion+carried wall-clock offset",
 ];
 
 /// The shapes reduction version 5 refuses wherever they are written, each
@@ -641,8 +668,118 @@ const SHAPES: [&str; 22] = [
 /// from.
 pub const REFUSED: [&str; 1] = ["SetTempoSegment+constant with an end tempo"];
 
-/// Which of [`SHAPES`] a payload has.
+/// Which of [`SHAPES`] a payload has, with the holders' wall-clock offsets
+/// ([`wall_clock_shape`]).
 fn shape_names(payload: &OperationPayload) -> Vec<&'static str> {
+    let mut names = kind_shapes(payload);
+    names.extend(wall_clock_shape(payload));
+    names
+}
+
+/// The shape of a holder of a time anchor written by a wall-clock offset
+/// (X5b.9): a marker or a spanner created or modified, a repeat, a measure, a
+/// user break, a time signature, a grid, a tempo segment, the changes a staff
+/// instance's create carries, and the model, grid, breaks and tempo map a
+/// region's create carries.
+fn wall_clock_shape(payload: &OperationPayload) -> Option<&'static str> {
+    use epiphany_core::TimeAnchor;
+    let OperationPayload::Primitive(kind) = payload else {
+        return None;
+    };
+    let cross = |value: &CrossCuttingValue| -> Vec<TimeAnchor> {
+        match value {
+            CrossCuttingValue::Marker(m) => vec![m.anchor.clone()],
+            CrossCuttingValue::Spanner(s) => vec![s.start.clone(), s.end.clone()],
+            _ => Vec::new(),
+        }
+    };
+    let (anchors, name): (Vec<TimeAnchor>, &'static str) = match kind {
+        OperationKind::CreateCrossCutting(op) => {
+            (cross(&op.structure), "CreateCrossCutting+wall-clock offset")
+        }
+        OperationKind::ModifyCrossCutting(op) => {
+            (cross(&op.structure), "ModifyCrossCutting+wall-clock offset")
+        }
+        OperationKind::CreateRepeatStructure(op) => (
+            op.repeat.anchor_sites().into_iter().cloned().collect(),
+            "CreateRepeatStructure+wall-clock offset",
+        ),
+        OperationKind::CreateMeasure(op) => (
+            vec![op.measure.start.clone()],
+            "CreateMeasure+wall-clock offset",
+        ),
+        OperationKind::SetUserSystemBreak(op) => (
+            vec![op.anchor.clone()],
+            "SetUserSystemBreak+wall-clock offset",
+        ),
+        OperationKind::SetUserPageBreak(op) => (
+            vec![op.anchor.clone()],
+            "SetUserPageBreak+wall-clock offset",
+        ),
+        OperationKind::SetTimeSignature(op) => (
+            vec![op.anchor.clone()],
+            "SetTimeSignature+wall-clock offset",
+        ),
+        OperationKind::SetMetricGrid(op) => (
+            op.grid
+                .iter()
+                .flat_map(|g| g.meter_sequence.iter().map(|m| m.anchor.clone()))
+                .collect(),
+            "SetMetricGrid+wall-clock offset",
+        ),
+        OperationKind::SetTempoSegment(op) => (
+            op.segment
+                .iter()
+                .flat_map(|s| std::iter::once(s.start.clone()).chain(s.end.clone()))
+                .collect(),
+            "SetTempoSegment+wall-clock offset",
+        ),
+        OperationKind::CreateStaffInstance(op) => (
+            op.instance
+                .clef_sequence
+                .iter()
+                .map(|c| c.anchor.clone())
+                .chain(op.instance.key_sequence.iter().map(|k| k.anchor.clone()))
+                .chain(
+                    op.instance
+                        .local_metric_grid
+                        .iter()
+                        .flat_map(|g| g.meter_sequence.iter().map(|m| m.anchor.clone())),
+                )
+                .collect(),
+            "CreateStaffInstance+carried wall-clock offset",
+        ),
+        OperationKind::CreateRegion(op) => {
+            let region = &op.region;
+            let mut anchors = Vec::new();
+            if let RegionTimeModel::Metric(m) = &region.time_model {
+                anchors.extend(m.meters.iter().map(|m| m.anchor.clone()));
+            }
+            if let Some(c) = region.content.staff_based() {
+                anchors.extend(
+                    c.default_metric_grid
+                        .iter()
+                        .flat_map(|g| g.meter_sequence.iter().map(|m| m.anchor.clone())),
+                );
+                anchors.extend(c.user_system_breaks.iter().cloned());
+                anchors.extend(c.user_page_breaks.iter().cloned());
+            }
+            for segment in region.local_tempo_map.iter().flat_map(|m| &m.segments) {
+                anchors.push(segment.start.clone());
+                anchors.extend(segment.end.clone());
+            }
+            (anchors, "CreateRegion+carried wall-clock offset")
+        }
+        _ => return None,
+    };
+    anchors
+        .iter()
+        .any(|a| matches!(a.offset(), Some(epiphany_core::AnchorOffset::WallClock(_))))
+        .then_some(name)
+}
+
+/// Which of [`SHAPES`] a payload has, by its kind's own shapes.
+fn kind_shapes(payload: &OperationPayload) -> Vec<&'static str> {
     let OperationPayload::Primitive(kind) = payload else {
         return Vec::new();
     };
@@ -3631,6 +3768,268 @@ fn make(
                 )),
             ]
         }
+        67 => {
+            // A holder of a time anchor written by an offset, and the region
+            // holding it migrated (X5b.9): a region the view holds, one time in
+            // two first given a model admitting wall-clock time (freely mixed
+            // where it holds notes or measures, else proportional or freely
+            // mixed); then a marker, a user break, a time signature, a metric
+            // grid's meter change, a tempo segment, a measure, a staff
+            // instance carrying a clef, a key or its own grid, a migration to
+            // a model with its own meter, or a marker moved, anchored at the
+            // region's start, a note or a measure of it, and a spanner or a
+            // repeat, created or (a spanner) moved, at a note of it, by a
+            // wall-clock offset three times in four (else of either kind),
+            // refused `WrongRegionTimeModel` where the region does not admit
+            // it; or a region placed as an editor places one carrying, at its
+            // own start so, a meter of its own model, a break or a tempo
+            // segment; and one time in two the holding region then migrated
+            // to a model of any kind, which strands the holder where it does
+            // not admit the offset. A spanner or a repeat anchored to a region
+            // is the class the owner parked (P13-D3), so none is written.
+            let (target, model, instances) = sim.rng.pick(&h.regions)?;
+            let holds_music = instances
+                .iter()
+                .any(|i| !i.measures.is_empty() || !i.voices.is_empty());
+            let (target, model) = (*target, (*model).clone());
+            let mut out = Vec::new();
+            let admits_wall = model
+                .coordinate_discipline()
+                .admits_offset(epiphany_core::OffsetKind::WallClock);
+            if !admits_wall && sim.rng.chance(2) {
+                let to = if holds_music || sim.rng.chance(2) {
+                    aleatoric_model(AleatoricAnchoringDiscipline::FreelyMixed)
+                } else {
+                    valuegen::proportional_model()
+                };
+                out.push(migration(target, to));
+            }
+            let offset = holder_offset(&mut sim.rng);
+            let anchor = anchor_in(sim, h, target, offset.clone())?;
+            let (held, holding) = held_by(sim, r, h, target, anchor, offset)?;
+            out.extend(held);
+            if sim.rng.chance(2) {
+                out.push(migration(holding, random_migration_target(&mut sim.rng)));
+            }
+            out
+        }
+        68 => {
+            // A holder's change undone after its region's migration (X5b.9,
+            // arm 65's mirror for every holder an undo restores): a region the
+            // view holds, given a model admitting wall-clock time first where
+            // it admits none; a marker, a user break, a tempo segment, a time
+            // signature or a metric grid written at its start by a wall-clock
+            // offset, or a spanner at a note of it so (P13-D3); the holder
+            // moved off or taken away in a
+            // transaction of its own; the region migrated to a model of any
+            // kind, metric one time in two; and the transaction undone, whose
+            // restoration the migration supersedes where the region admits
+            // the offset no longer.
+            if sim.replicas[r].open.is_some() {
+                return None;
+            }
+            let (target, model, _) = sim.rng.pick(&h.regions)?;
+            let (target, model) = (*target, (*model).clone());
+            let gesture = sim.rng.below(6);
+            let mut out = Vec::new();
+            // A grid stands only where musical time is admitted too.
+            let wall = epiphany_core::OffsetKind::WallClock;
+            let discipline = model.coordinate_discipline();
+            if !discipline.admits_offset(wall)
+                || (gesture == 5 && !discipline.admits_musical_offsets())
+            {
+                out.push(migration(
+                    target,
+                    aleatoric_model(AleatoricAnchoringDiscipline::FreelyMixed),
+                ));
+            }
+            let at = epiphany_core::TimeAnchor::Region {
+                id: target,
+                edge: epiphany_core::RegionEdge::Start,
+                offset: epiphany_core::AnchorOffset::WallClock(WallClockDuration(
+                    250 * (1 + sim.rng.below(4) as i64),
+                )),
+            };
+            let zero = valuegen::region_start_anchor(target, MusicalPosition::origin());
+            let staff = sim.rng.pick(&h.score.staves)?.id;
+            let signature = sim.rng.pick(&h.score.time_signatures).map(|t| t.id);
+            let (set, change) = match gesture {
+                0 => {
+                    let marker = epiphany_core::Marker {
+                        id: sim.mint(r),
+                        anchor: at,
+                        kind: random_marker_kind(&mut sim.rng),
+                    };
+                    let moved = epiphany_core::Marker {
+                        anchor: zero,
+                        ..marker.clone()
+                    };
+                    (
+                        OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                            structure: CrossCuttingValue::Marker(marker),
+                        }),
+                        OperationKind::ModifyCrossCutting(ModifyCrossCuttingOp {
+                            structure: CrossCuttingValue::Marker(moved),
+                        }),
+                    )
+                }
+                1 => {
+                    let epiphany_core::TimeAnchor::Region { offset, .. } = &at else {
+                        return None;
+                    };
+                    let note = match anchor_in(sim, h, target, offset.clone())? {
+                        note @ epiphany_core::TimeAnchor::Event { .. } => note,
+                        _ => return None,
+                    };
+                    let epiphany_core::TimeAnchor::Event { id: event, .. } = note else {
+                        return None;
+                    };
+                    let (kind, style) = random_spanner_look(&mut sim.rng);
+                    let spanner = epiphany_core::Spanner {
+                        id: sim.mint(r),
+                        start: note,
+                        end: valuegen::event_anchor(event),
+                        staves: vec![staff],
+                        kind,
+                        style,
+                    };
+                    let moved = epiphany_core::Spanner {
+                        start: valuegen::event_anchor(event),
+                        ..spanner.clone()
+                    };
+                    (
+                        OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                            structure: CrossCuttingValue::Spanner(spanner),
+                        }),
+                        OperationKind::ModifyCrossCutting(ModifyCrossCuttingOp {
+                            structure: CrossCuttingValue::Spanner(moved),
+                        }),
+                    )
+                }
+                2 => {
+                    let user_break = |present| {
+                        OperationKind::SetUserSystemBreak(SetUserSystemBreakOp {
+                            region: target,
+                            anchor: at.clone(),
+                            present,
+                        })
+                    };
+                    (user_break(true), user_break(false))
+                }
+                3 => {
+                    let scope = sim.rng.chance(2).then_some(target);
+                    let segment = |present: bool| {
+                        let mut segment =
+                            valuegen::tempo_segment(target, MusicalPosition::origin(), 90.0);
+                        segment.start = at.clone();
+                        OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                            region: scope,
+                            start: at.clone(),
+                            segment: present.then_some(segment),
+                        })
+                    };
+                    (segment(true), segment(false))
+                }
+                4 => {
+                    let id: TimeSignatureId = sim.mint(r);
+                    let signature =
+                        valuegen::time_signature(id, [2u16, 3, 4][sim.rng.below(3) as usize]);
+                    let meter = |signature| {
+                        OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                            region: target,
+                            anchor: at.clone(),
+                            time_signature: signature,
+                        })
+                    };
+                    (meter(Some(signature)), meter(None))
+                }
+                _ => {
+                    let grid = epiphany_core::MetricGrid {
+                        meter_sequence: vec![epiphany_core::MeterChange {
+                            anchor: at,
+                            time_signature: signature?,
+                        }],
+                    };
+                    let set = |grid| {
+                        OperationKind::SetMetricGrid(SetMetricGridOp {
+                            region: target,
+                            grid,
+                        })
+                    };
+                    (set(Some(grid)), set(None))
+                }
+            };
+            let tx: TransactionId = sim.mint(r);
+            sim.replicas[r].queued.push((tx, 2));
+            let to = if sim.rng.chance(2) {
+                valuegen::metric_model()
+            } else {
+                random_migration_target(&mut sim.rng)
+            };
+            out.extend([
+                prim(set),
+                prim(OperationKind::DeclareTransaction(TransactionDescriptor {
+                    id: tx,
+                    label: String::from("change a holder"),
+                    category: None,
+                })),
+                prim(change),
+                migration(target, to),
+                OperationPayload::UndoTransaction(UndoTransactionPayload {
+                    target: tx,
+                    policy: random_policy(&mut sim.rng),
+                }),
+            ]);
+            out
+        }
+        69 => {
+            // A note or a measure named before it is made (X5b.9, D84 Q1): a
+            // region placed as an editor places one, its start at the id of a
+            // note or a measure its author makes next, by a wall-clock offset
+            // three times in four (else of either kind); then the note entered
+            // into a voice of a metric region, or the measure made the next bar
+            // of a metric instance, refused `WrongRegionTimeModel` where the
+            // name's offset is one its region does not admit.
+            let mut region = placed_region(sim, r, h);
+            let offset = holder_offset(&mut sim.rng);
+            let made = if sim.rng.chance(2) {
+                let &(voice, instance, _) = sim.rng.pick(&h.voices)?;
+                let bars = h.measures_of(instance).max(1) as u64;
+                let at = position(sim.rng.below(8 * bars) as i64, 8);
+                let id: EventId = sim.mint(r);
+                let mut quarter_tones = Vec::new();
+                let event = event_value(sim, r, id, voice, at, duration(1, 8), &mut quarter_tones);
+                region.time_extent.start = epiphany_core::TimeAnchor::Event { id, offset };
+                OperationKind::InsertEvent(InsertEventOp {
+                    staff_instance: instance,
+                    event,
+                })
+            } else {
+                let instances = h.metric_instances();
+                let (held_in, instance) = *sim.rng.pick(&instances)?;
+                let next = instance.measures.len() as i64;
+                let id: MeasureId = sim.mint(r);
+                region.time_extent.start = epiphany_core::TimeAnchor::Measure {
+                    id,
+                    position: epiphany_core::MeasurePosition::Start,
+                    offset,
+                };
+                OperationKind::CreateMeasure(CreateMeasureOp {
+                    instance: instance.id,
+                    measure: epiphany_core::Measure {
+                        id,
+                        start: valuegen::region_start_anchor(held_in, position(next, 1)),
+                        time_signature: None,
+                        explicit_number: Some(next as u32 + 1),
+                        number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+                    },
+                })
+            };
+            vec![
+                prim(OperationKind::CreateRegion(CreateRegionOp { region })),
+                prim(made),
+            ]
+        }
         _ => return None,
     })
 }
@@ -3643,6 +4042,341 @@ fn random_offset(rng: &mut Rng) -> epiphany_core::AnchorOffset {
     } else {
         epiphany_core::AnchorOffset::WallClock(WallClockDuration(250 * (1 + rng.below(4) as i64)))
     }
+}
+
+/// A holder's offset (X5b.9): wall-clock three times in four, of either kind
+/// otherwise.
+fn holder_offset(rng: &mut Rng) -> epiphany_core::AnchorOffset {
+    if rng.chance(4) {
+        random_offset(rng)
+    } else {
+        epiphany_core::AnchorOffset::WallClock(WallClockDuration(250 * (1 + rng.below(4) as i64)))
+    }
+}
+
+/// A migration of `region` to `model`, its events kept where they stand.
+fn migration(region: RegionId, model: RegionTimeModel) -> OperationPayload {
+    OperationPayload::Primitive(OperationKind::ChangeRegionTimeModel(
+        ChangeRegionTimeModelOp {
+            region,
+            new_time_model: model,
+            declared_incompatible: Vec::new(),
+            remapping: PositionRemapping::PreserveTime,
+        },
+    ))
+}
+
+/// A time anchor in `region` by `offset` (X5b.9): its start, or a note or a
+/// measure the view holds in it.
+fn anchor_in(
+    sim: &mut Simulation,
+    h: &Holdings<'_>,
+    region: RegionId,
+    offset: epiphany_core::AnchorOffset,
+) -> Option<epiphany_core::TimeAnchor> {
+    let instances = h
+        .regions
+        .iter()
+        .find(|(id, _, _)| *id == region)
+        .map(|(_, _, instances)| instances.clone())?;
+    let events: Vec<EventId> = h
+        .events
+        .iter()
+        .filter(|e| {
+            instances
+                .iter()
+                .any(|i| i.voices.iter().any(|v| v.id == e.voice()))
+        })
+        .map(|e| e.id())
+        .collect();
+    let measures: Vec<MeasureId> = instances
+        .iter()
+        .flat_map(|i| i.measures.iter().map(|m| m.id))
+        .collect();
+    Some(match sim.rng.below(3) {
+        0 if !events.is_empty() => epiphany_core::TimeAnchor::Event {
+            id: *sim.rng.pick(&events)?,
+            offset,
+        },
+        1 if !measures.is_empty() => epiphany_core::TimeAnchor::Measure {
+            id: *sim.rng.pick(&measures)?,
+            position: epiphany_core::MeasurePosition::Start,
+            offset,
+        },
+        _ => epiphany_core::TimeAnchor::Region {
+            id: region,
+            edge: epiphany_core::RegionEdge::Start,
+            offset,
+        },
+    })
+}
+
+/// A holder of a time anchor written at `anchor` in `region`, of any kind an
+/// operation writes (X5b.9): arm 67's draw, with the region holding the
+/// anchor, which the arm may then migrate.
+fn held_by(
+    sim: &mut Simulation,
+    r: usize,
+    h: &Holdings<'_>,
+    region: RegionId,
+    anchor: epiphany_core::TimeAnchor,
+    offset: epiphany_core::AnchorOffset,
+) -> Option<(Vec<OperationPayload>, RegionId)> {
+    let prim = |k: OperationKind| OperationPayload::Primitive(k);
+    // A spanner or a repeat stands at notes alone (P13-D3): the note `anchor`
+    // names, or one of the region's by its offset, and the note itself.
+    let note = match &anchor {
+        epiphany_core::TimeAnchor::Event { .. } => Some(anchor.clone()),
+        _ => match anchor_in(sim, h, region, offset.clone()) {
+            Some(at @ epiphany_core::TimeAnchor::Event { .. }) => Some(at),
+            _ => None,
+        },
+    };
+    let note = note.and_then(|at| match at {
+        epiphany_core::TimeAnchor::Event { id, .. } => Some((at, valuegen::event_anchor(id))),
+        _ => None,
+    });
+    let own_start = epiphany_core::TimeAnchor::Region {
+        id: region,
+        edge: epiphany_core::RegionEdge::Start,
+        offset: offset.clone(),
+    };
+    let signature = sim.rng.pick(&h.score.time_signatures).map(|t| t.id);
+    let meter = |anchor: epiphany_core::TimeAnchor, signature: TimeSignatureId| {
+        epiphany_core::MeterChange {
+            anchor,
+            time_signature: signature,
+        }
+    };
+    let held = match sim.rng.below(13) {
+        0 => vec![prim(OperationKind::CreateCrossCutting(
+            CreateCrossCuttingOp {
+                structure: CrossCuttingValue::Marker(epiphany_core::Marker {
+                    id: sim.mint(r),
+                    anchor,
+                    kind: random_marker_kind(&mut sim.rng),
+                }),
+            },
+        ))],
+        1 => {
+            let (start, end) = note?;
+            let (kind, style) = random_spanner_look(&mut sim.rng);
+            vec![prim(OperationKind::CreateCrossCutting(
+                CreateCrossCuttingOp {
+                    structure: CrossCuttingValue::Spanner(epiphany_core::Spanner {
+                        id: sim.mint(r),
+                        start,
+                        end,
+                        staves: vec![sim.rng.pick(&h.score.staves)?.id],
+                        kind,
+                        style,
+                    }),
+                },
+            ))]
+        }
+        2 => {
+            let (start, end) = note?;
+            let id: RepeatStructureId = sim.mint(r);
+            vec![prim(OperationKind::CreateRepeatStructure(
+                CreateRepeatStructureOp {
+                    repeat: epiphany_core::RepeatStructure {
+                        id,
+                        start,
+                        end,
+                        kind: epiphany_core::RepeatKind::migration_default(),
+                        voltas: Vec::new(),
+                    },
+                },
+            ))]
+        }
+        3 => vec![prim(OperationKind::SetUserSystemBreak(
+            SetUserSystemBreakOp {
+                region,
+                anchor,
+                present: true,
+            },
+        ))],
+        4 => vec![prim(OperationKind::SetUserPageBreak(SetUserPageBreakOp {
+            region,
+            anchor,
+            present: true,
+        }))],
+        5 => {
+            let id: TimeSignatureId = sim.mint(r);
+            vec![prim(OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                region,
+                anchor,
+                time_signature: Some(valuegen::time_signature(
+                    id,
+                    [2u16, 3, 4][sim.rng.below(3) as usize],
+                )),
+            }))]
+        }
+        6 => vec![prim(OperationKind::SetMetricGrid(SetMetricGridOp {
+            region,
+            grid: Some(epiphany_core::MetricGrid {
+                meter_sequence: vec![meter(anchor, signature?)],
+            }),
+        }))],
+        7 => {
+            let mut segment = valuegen::tempo_segment(region, MusicalPosition::origin(), 90.0);
+            segment.start = anchor.clone();
+            vec![prim(OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                region: sim.rng.chance(2).then_some(region),
+                start: anchor,
+                segment: Some(segment),
+            }))]
+        }
+        8 => {
+            // The first measure of an instance of the region: one it holds
+            // without a measure, or one made for it of a staff it lacks.
+            let instances = h
+                .regions
+                .iter()
+                .find(|(id, _, _)| *id == region)
+                .map(|(_, _, instances)| instances.clone())?;
+            let bare: Vec<StaffInstanceId> = instances
+                .iter()
+                .filter(|i| i.measures.is_empty())
+                .map(|i| i.id)
+                .collect();
+            let mut out = Vec::new();
+            let instance = match sim.rng.pick(&bare) {
+                Some(instance) => *instance,
+                None => {
+                    let staff = h
+                        .score
+                        .staves
+                        .iter()
+                        .map(|s| s.id)
+                        .find(|s| !instances.iter().any(|i| i.staff == *s))?;
+                    let id: StaffInstanceId = sim.mint(r);
+                    out.push(prim(OperationKind::CreateStaffInstance(
+                        CreateStaffInstanceOp {
+                            region,
+                            instance: valuegen::staff_instance(id, staff),
+                        },
+                    )));
+                    id
+                }
+            };
+            out.push(prim(OperationKind::CreateMeasure(CreateMeasureOp {
+                instance,
+                measure: epiphany_core::Measure {
+                    id: sim.mint(r),
+                    start: anchor,
+                    time_signature: None,
+                    explicit_number: None,
+                    number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+                },
+            })));
+            out
+        }
+        9 => {
+            let held = h
+                .regions
+                .iter()
+                .find(|(id, _, _)| *id == region)
+                .map(|(_, _, instances)| instances.clone())?;
+            let staff = h
+                .score
+                .staves
+                .iter()
+                .map(|s| s.id)
+                .find(|s| !held.iter().any(|i| i.staff == *s))?;
+            let id: StaffInstanceId = sim.mint(r);
+            let mut instance = valuegen::staff_instance(id, staff);
+            match sim.rng.below(3) {
+                0 => instance.clef_sequence.push(epiphany_core::ClefChange {
+                    anchor,
+                    clef: Clef::treble(),
+                }),
+                1 => instance
+                    .key_sequence
+                    .push(epiphany_core::KeySignatureChange {
+                        anchor,
+                        key: KeySignature::new(sim.rng.below(5) as i8 - 2)?,
+                    }),
+                _ => {
+                    instance.local_metric_grid = Some(epiphany_core::MetricGrid {
+                        meter_sequence: vec![meter(anchor, signature?)],
+                    })
+                }
+            }
+            vec![prim(OperationKind::CreateStaffInstance(
+                CreateStaffInstanceOp { region, instance },
+            ))]
+        }
+        10 => {
+            // A region carrying, at its own start, a meter of its own model,
+            // a break or a tempo segment: the region the arm migrates.
+            let mut carrier = placed_region(sim, r, h);
+            let at = epiphany_core::TimeAnchor::Region {
+                id: carrier.id,
+                edge: epiphany_core::RegionEdge::Start,
+                offset,
+            };
+            match sim.rng.below(3) {
+                0 => {
+                    carrier.time_model = RegionTimeModel::Metric(epiphany_core::MetricTimeModel {
+                        meters: vec![meter(at, signature?)],
+                        ..Default::default()
+                    })
+                }
+                1 => carrier
+                    .content
+                    .staff_based_mut()?
+                    .user_system_breaks
+                    .push(at),
+                _ => {
+                    let mut segment =
+                        valuegen::tempo_segment(carrier.id, MusicalPosition::origin(), 90.0);
+                    segment.start = at;
+                    carrier.local_tempo_map = Some(epiphany_core::TempoMap {
+                        initial: None,
+                        segments: vec![segment],
+                    });
+                }
+            }
+            let holding = carrier.id;
+            return Some((
+                vec![prim(OperationKind::CreateRegion(CreateRegionOp {
+                    region: carrier,
+                }))],
+                holding,
+            ));
+        }
+        11 => vec![migration(
+            region,
+            RegionTimeModel::Metric(epiphany_core::MetricTimeModel {
+                meters: vec![meter(own_start, signature?)],
+                ..Default::default()
+            }),
+        )],
+        _ => {
+            // A marker the view holds moved onto the anchor, or a spanner's
+            // start onto a note.
+            if sim.rng.chance(2) {
+                let mut marker = sim.rng.pick(&h.score.cross_cutting.markers)?.clone();
+                marker.anchor = anchor;
+                vec![prim(OperationKind::ModifyCrossCutting(
+                    ModifyCrossCuttingOp {
+                        structure: CrossCuttingValue::Marker(marker),
+                    },
+                ))]
+            } else {
+                let (start, _) = note?;
+                let mut spanner = sim.rng.pick(&h.score.cross_cutting.spanners)?.clone();
+                spanner.start = start;
+                vec![prim(OperationKind::ModifyCrossCutting(
+                    ModifyCrossCuttingOp {
+                        structure: CrossCuttingValue::Spanner(spanner),
+                    },
+                ))]
+            }
+        }
+    };
+    Some((held, region))
 }
 
 /// A migration's target model of any kind: proportional, aleatoric by any
@@ -3844,7 +4578,7 @@ fn tie_entry(
 /// Each arm of [`make`] and how often it is drawn: the editing of notes,
 /// pitches and their marks three times as often as the score's structure and
 /// settings, as an editor's history runs.
-const ARMS: [(u64, u64); 67] = [
+const ARMS: [(u64, u64); 70] = [
     (0, 4),
     (1, 3),
     (2, 3),
@@ -3912,6 +4646,9 @@ const ARMS: [(u64, u64); 67] = [
     (64, 1),
     (65, 1),
     (66, 1),
+    (67, 6),
+    (68, 2),
+    (69, 1),
 ];
 
 fn draw_arm(rng: &mut Rng) -> u64 {
@@ -4323,7 +5060,9 @@ fn modify_pitches(op: &ModifyEventOp) -> Vec<TypedObjectId> {
 /// promoted voice) is minted by a promotion, not a payload, and an author
 /// names one only from a view whose reduction made it, so it is not checked.
 /// A whole-event modify mints a pitch it carries that no other operation
-/// mints.
+/// mints. A region's extent may name a note or a measure before it is made
+/// (arm 69, D84 Q1): such a name needs only an operation of the history that
+/// mints it, so the minimizer keeps the note or the measure it names.
 pub fn valid(history: &[OperationEnvelope]) -> bool {
     let mut minted_by: BTreeMap<TypedObjectId, OperationId> = BTreeMap::new();
     for envelope in history {
@@ -4340,14 +5079,32 @@ pub fn valid(history: &[OperationEnvelope]) -> bool {
     }
     history.iter().all(|envelope| {
         let (mints, refs) = mints_and_refs(&envelope.payload);
+        let ahead = names_ahead(&envelope.payload);
         refs.iter().all(|object| {
             matches!(object, TypedObjectId::Voice(v) if v.replica() == ReplicaId::SYSTEM_DERIVED)
                 || mints.contains(object)
                 || minted_by
                     .get(object)
                     .is_some_and(|op| *op == envelope.id || envelope.causal_context.covers(*op))
+                || (ahead.contains(object) && minted_by.contains_key(object))
         })
     })
+}
+
+/// The events and measures a region's extent names, which it may name before
+/// they are made (X5b.9, D84 Q1).
+fn names_ahead(payload: &OperationPayload) -> Vec<TypedObjectId> {
+    let OperationPayload::Primitive(OperationKind::CreateRegion(op)) = payload else {
+        return Vec::new();
+    };
+    [&op.region.time_extent.start, &op.region.time_extent.end]
+        .into_iter()
+        .filter_map(|anchor| match anchor {
+            epiphany_core::TimeAnchor::Event { id, .. } => Some(TypedObjectId::Event(*id)),
+            epiphany_core::TimeAnchor::Measure { id, .. } => Some(TypedObjectId::Measure(*id)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Renumbers each replica's operations to run from `0` without a gap, in
@@ -4511,6 +5268,44 @@ mod tests {
         genesis(&mut unseen);
         unseen.author(0, anchored(EventId::new(ReplicaId(9), 9)));
         assert!(!valid(&unseen.history));
+        // Named before it is made (X5b.9): valid where the history makes it.
+        let mut ahead = Simulation::new(0x5B06);
+        genesis(&mut ahead);
+        let insert = seen
+            .history
+            .iter()
+            .find(|e| {
+                matches!(
+                    e.payload,
+                    OperationPayload::Primitive(OperationKind::InsertEvent(_))
+                )
+            })
+            .expect("a genesis insert")
+            .payload
+            .clone();
+        let OperationPayload::Primitive(OperationKind::InsertEvent(op)) = insert else {
+            unreachable!("an insert");
+        };
+        let later = EventId::new(ReplicaId(1), 8_999);
+        let made = super::InsertEventOp {
+            staff_instance: op.staff_instance,
+            event: valuegen::insert_event_value(
+                later,
+                op.event.voice(),
+                epiphany_core::MusicalPosition::origin(),
+                epiphany_core::MusicalDuration(
+                    epiphany_core::RationalTime::new(1, 8).expect("an eighth"),
+                ),
+                &[epiphany_core::PitchId::new(ReplicaId(1), 8_998)],
+            ),
+        };
+        ahead.author(0, anchored(later));
+        assert!(!valid(&ahead.history), "not yet made");
+        ahead.author(
+            0,
+            OperationPayload::Primitive(OperationKind::InsertEvent(made)),
+        );
+        assert!(valid(&ahead.history), "made after");
     }
 
     #[test]

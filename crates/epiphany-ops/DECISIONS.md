@@ -4231,3 +4231,25 @@ No writer makes a holder with a wall-clock offset, and none migrates a region:
 the importer and the editor anchor in musical time and write no
 `ChangeRegionTimeModel`, which only hand-built histories, the fuzz and the
 testkit's generated histories carry.
+
+**The fuzz writes them.** Arm 67 writes every holder by an offset, a
+wall-clock one three times in four: in a region the view holds, given a model
+admitting wall-clock time one time in two, a marker, a user break, a time
+signature, a grid's meter change, a tempo segment, a measure, a staff instance
+carrying a clef, a key or its own grid, a migration to a model with its own
+meter, or a marker moved, at the region's start, a note or a measure of it; a
+spanner or a repeat created, or a spanner moved, at a note (one anchored to a
+region is the parked P13-D3); or a region carrying a meter, a break or a tempo
+segment at its own start. One time in two the holding region is then migrated
+to a model of any kind. Arm 68 is arm 65's mirror for every holder an undo
+restores: written at a region's start by a wall-clock offset where the region
+admits one, changed in a transaction of its own, the region migrated, metric
+one time in two, and the change undone. Arm 69 places a region whose start
+names a note or a measure its author makes next, then makes it. That extent
+names what its author's view does not hold, so `valid` takes an extent's
+event and measure names as made where any operation of the history makes
+them, which keeps the minimizer from dropping the note or the measure. `SHAPES` gains each holder's wall-clock
+offset, held authored and applied by the CI budget, and
+`the_ci_budget_refuses_what_reduction_version_5_refuses` holds ten of them
+refused `WrongRegionTimeModel` (a measure so is never refused at the budget's
+seeds).

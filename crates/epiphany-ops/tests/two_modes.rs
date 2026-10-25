@@ -323,8 +323,9 @@ fn the_ci_budget_authors_and_applies_every_kind() {
 /// What reduction version 5 refuses is written and refused (X5b): a fill
 /// overlapping a region that holds its staff (`RegionsOverlap`), a region
 /// whose extent's offset its target's time model does not admit
-/// (`WrongRegionTimeModel`, X5b.8), and each of [`modes::REFUSED`], authored
-/// and never applied.
+/// (`WrongRegionTimeModel`, X5b.8), every other holder of a time anchor
+/// written by a wall-clock offset its target does not admit (X5b.9), and each
+/// of [`modes::REFUSED`], authored and never applied.
 #[test]
 fn the_ci_budget_refuses_what_reduction_version_5_refuses() {
     let sum = |count: &dyn Fn(&modes::Coverage) -> u64| {
@@ -353,6 +354,23 @@ fn the_ci_budget_refuses_what_reduction_version_5_refuses() {
         refused("InsertRegion", "WrongRegionTimeModel") > 0,
         "no region refused for its extent's offset"
     );
+    for holder in [
+        "CreateCrossCutting+wall-clock offset",
+        "ModifyCrossCutting+wall-clock offset",
+        "CreateRepeatStructure+wall-clock offset",
+        "SetUserSystemBreak+wall-clock offset",
+        "SetUserPageBreak+wall-clock offset",
+        "SetTimeSignature+wall-clock offset",
+        "SetMetricGrid+wall-clock offset",
+        "SetTempoSegment+wall-clock offset",
+        "CreateStaffInstance+carried wall-clock offset",
+        "CreateRegion+carried wall-clock offset",
+    ] {
+        assert!(
+            refused(holder, "WrongRegionTimeModel") > 0,
+            "{holder}: none refused for its offset"
+        );
+    }
     for shape in modes::REFUSED {
         let authored = sum(&|c| c.authored.get(shape).copied().unwrap_or(0));
         let applied = sum(&|c| c.applied.get(shape).copied().unwrap_or(0));
