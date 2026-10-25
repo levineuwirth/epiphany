@@ -1262,3 +1262,7 @@ column's spring the padding after it.
   line (`tupletAlign`), whether or not the bracket is drawn. The bracket's
   hooks keep their own length here (0.6); only the line's least distance is
   MuseScore's. A tuplet riding a beam across two staves is not moved.
+- Each ending's start is named for a solver (`ConstrainedLayoutIR::endings`,
+  `EndingStart`): the barline slot it opens at, its start hook, its numbers
+  and its line. The projection draws it at that barline as before; a solver
+  breaking a system there draws it on the next system instead.

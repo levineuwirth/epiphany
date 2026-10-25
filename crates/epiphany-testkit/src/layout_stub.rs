@@ -458,6 +458,7 @@ pub fn gen_constrained_layout_ir(rng: &mut Rng) -> ConstrainedLayoutIR {
         staff_groups: Vec::new(),
         cross_staff_beams: Vec::new(),
         family: Vec::new(),
+        endings: Vec::new(),
     };
     // Text runs ride the slots and band above, drawn last so the glyphs,
     // strokes and curves keep the values they took before runs existed.

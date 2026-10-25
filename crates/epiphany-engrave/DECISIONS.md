@@ -2410,3 +2410,19 @@ is set:
   line (`a_tuplet_on_one_staff_stands_out_of_it`). A tuplet riding a beam
   across two staves is placed as before. The rich fixture's tuplet moves
   out of its staff: its two golden files are re-blessed under D10.
+
+## ENGRAVER_VERSION 69 → 70: an ending opening a system is drawn on it (X4c.10, 2026-10-24)
+
+- An ending whose barline closes a system, its line going on into the
+  next, is drawn wholly on the next system, as MuseScore lays a spanner out
+  only on a system its start precedes the end of (`SystemLayout`,
+  `tick() >= etick`): its hook, numbers and line start there,
+  `BAR_NOTE_DISTANCE` (1.25) before the system's first note or rest, its
+  hook's half width further on (`Volta::linePos`), and the piece of its line
+  at the earlier system's end is dropped (`ConstrainedLayoutIR::endings`;
+  `an_ending_opening_a_system_is_drawn_wholly_on_it`). Its hook and numbers
+  had ridden the barline, so they stood at the end of the system before.
+  Its numbers take height on the system they move to and no room across,
+  where their place is not yet known; an ending opening mid-system is drawn
+  as before. The repeat fixture's first ending opens a system: its engraved
+  golden and snapshot are re-blessed under D10.

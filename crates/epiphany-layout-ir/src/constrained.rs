@@ -215,7 +215,30 @@ pub struct ConstrainedLayoutIR {
     /// room across, and, for those a solver places off their staff once the
     /// system is set, how.
     pub family: Vec<FamilyMark>,
+    /// Each ending's start: a solver that breaks a system at the barline an
+    /// ending opens after draws the whole ending on the next system.
+    pub endings: Vec<EndingStart>,
 }
+
+/// An ending's start (see [`ConstrainedLayoutIR::endings`]): the barline
+/// slot it opens at, its start's hook and its numbers, which ride that
+/// slot, and its line, which starts there. Where a solver breaks a system at that
+/// barline, and the line goes on into the next system, the ending is drawn
+/// wholly on the next: MuseScore lays a spanner out only on a system its
+/// start precedes the end of (`SystemLayout`, `tick() >= etick`), and starts
+/// an ending opening a system [`BAR_NOTE_DISTANCE`] before the system's first
+/// note or rest (`Volta::linePos`).
+#[derive(Clone, PartialEq, Debug)]
+pub struct EndingStart {
+    pub barline: SpringSlotId,
+    pub hook: GlyphObjectId,
+    pub numbers: Vec<GlyphObjectId>,
+    pub line: GlyphObjectId,
+}
+
+/// How far before a system's first note or rest an ending opening the
+/// system starts (MuseScore's `barNoteDistance`).
+pub const BAR_NOTE_DISTANCE: f32 = 1.25;
 
 /// One member of the expression family as a solver must treat it (see
 /// [`ConstrainedLayoutIR::family`]): a mark at a note, a dynamic, a hairpin,
@@ -1279,6 +1302,7 @@ pub fn try_to_constrained(
     let mut break_origins = Vec::new();
     let mut constrained_regions = Vec::new();
     let mut span_anchors: Vec<SpanAnchor> = Vec::new();
+    let mut endings: Vec<EndingStart> = Vec::new();
     let mut system_leads: Vec<SystemLead> = Vec::new();
     let mut staff_groups: Vec<GroupSpan> = Vec::new();
     let mut cross_staff_beams: Vec<CrossStaffBeam> = Vec::new();
@@ -3914,6 +3938,12 @@ pub fn try_to_constrained(
                             start: start.slot,
                             end: end.slot,
                         });
+                        let mut opening = EndingStart {
+                            barline: start.slot,
+                            hook: line.id(),
+                            numbers: Vec::new(),
+                            line: line.id(),
+                        };
                         emit.stroke(line);
                         for (element, column) in [(1u128, start), (2u128, end)] {
                             let hook = line_stroke(
@@ -3923,6 +3953,9 @@ pub fn try_to_constrained(
                                 VOLTA_LINE_THICKNESS,
                                 band_of(staff),
                             );
+                            if element == 1 {
+                                opening.hook = hook.id();
+                            }
                             span_anchors.push(SpanAnchor {
                                 primitive: hook.id(),
                                 start: column.slot,
@@ -3946,8 +3979,10 @@ pub fn try_to_constrained(
                                 } else {
                                     VOLTA_TEXT_DROP
                                 };
+                                let provenance = volta_provenance(element);
+                                opening.numbers.push(GlyphObjectId(provenance.stable_id.0));
                                 emit.glyph(
-                                    &volta_provenance(element),
+                                    &provenance,
                                     name,
                                     Point::new(cursor, y - drop),
                                     band_of(top_staff),
@@ -3959,6 +3994,7 @@ pub fn try_to_constrained(
                             }
                             cursor += VOLTA_ENDING_GAP;
                         }
+                        endings.push(opening);
                     }
                 }
                 TypedObjectId::StaffGroup(_) => {
@@ -5403,6 +5439,7 @@ pub fn try_to_constrained(
         staff_groups,
         cross_staff_beams,
         family,
+        endings,
     })
 }
 
