@@ -4303,6 +4303,15 @@ carried its own grid naming a time signature never declared (`193`), which a
 and an undo that would remove a time signature a live instance's own grid
 names is held, as one a region's grid or a measure names is.
 
+The bar on the next fresh seeds, at the build with those fixes, found the
+same gap one author's in a single envelope (`194`): a `CreateRegion` whose own
+metric model names a time signature never declared applied. A region's own
+model and grid, and a migration's target model, name live time signatures now,
+or the operation is refused `TargetMissing`, and an undo that would remove a
+signature a live region's own model names is held. The index of each region's
+own model's meter anchors that X5b.9 added holds the meter changes themselves,
+so the undo reads their signatures from it.
+
 **A third pin sharpened.** The holders' arms write a break at a measure or a
 note by an offset, which hid the loss of arms 5 and 23's own gesture, a break
 at a measure's start or a note with no offset, from

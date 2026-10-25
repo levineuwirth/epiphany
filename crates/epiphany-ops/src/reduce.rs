@@ -1131,17 +1131,21 @@ fn staff_instance_anchors(instance: &StaffInstance) -> Vec<&TimeAnchor> {
         .collect()
 }
 
-/// The anchors of a time model's own meter changes: a metric model's, and
-/// none for another kind.
-fn model_meter_anchors(model: &epiphany_core::RegionTimeModel) -> Vec<TimeAnchor> {
+/// A time model's own meter changes: a metric model's, and none for another
+/// kind.
+fn model_meters(model: &epiphany_core::RegionTimeModel) -> Vec<MeterChange> {
     match model {
-        epiphany_core::RegionTimeModel::Metric(metric) => metric
-            .meters
-            .iter()
-            .map(|meter| meter.anchor.clone())
-            .collect(),
+        epiphany_core::RegionTimeModel::Metric(metric) => metric.meters.clone(),
         _ => Vec::new(),
     }
+}
+
+/// The anchors of a time model's own meter changes.
+fn model_meter_anchors(model: &epiphany_core::RegionTimeModel) -> Vec<TimeAnchor> {
+    model_meters(model)
+        .into_iter()
+        .map(|meter| meter.anchor)
+        .collect()
 }
 
 /// The anchor `position` after `region`'s start, as the importer writes a
@@ -1388,11 +1392,12 @@ struct Reducer<'a> {
     // a region by an offset, held to its time model (X5b.8). A removed
     // region's extent stays, so a reader asks the region's liveness beside.
     region_extents: BTreeMap<RegionId, TimeExtent>,
-    // The anchors of each region's own metric model's meter changes, from its
-    // `CreateRegion` payload, an applied migration or a base (none for another
-    // kind of model): read, with every other holder of a time anchor, by a
-    // migration's strand and by an object's creation (X5b.9).
-    region_model_anchors: BTreeMap<RegionId, Vec<TimeAnchor>>,
+    // Each region's own metric model's meter changes, from its `CreateRegion`
+    // payload, an applied migration or a base (none for another kind of
+    // model): their anchors read, with every other holder of a time anchor,
+    // by a migration's strand and by an object's creation (X5b.9), and their
+    // time signatures by an undo that would remove one.
+    region_model_meters: BTreeMap<RegionId, Vec<MeterChange>>,
     // The anchors of the clef and key changes a staff instance's create or a
     // base carried, keyed as the clef and key chains key them (`true` for a
     // key change): a change some write has since put at the position is
@@ -1559,7 +1564,7 @@ struct WorkingSnapshot {
     staff_based_regions: BTreeSet<RegionId>,
     region_disciplines: BTreeMap<RegionId, CoordinateDiscipline>,
     region_extents: BTreeMap<RegionId, TimeExtent>,
-    region_model_anchors: BTreeMap<RegionId, Vec<TimeAnchor>>,
+    region_model_meters: BTreeMap<RegionId, Vec<MeterChange>>,
     instance_change_anchors: BTreeMap<(StaffInstanceId, bool, MusicalPosition), Vec<TimeAnchor>>,
     forward_names: BTreeSet<TypedObjectId>,
     migrated_regions: BTreeSet<RegionId>,
@@ -2266,7 +2271,7 @@ impl<'a> Reducer<'a> {
             staff_based_regions: BTreeSet::new(),
             region_disciplines: BTreeMap::new(),
             region_extents: BTreeMap::new(),
-            region_model_anchors: BTreeMap::new(),
+            region_model_meters: BTreeMap::new(),
             instance_change_anchors: BTreeMap::new(),
             forward_names: BTreeSet::new(),
             migrated_regions: BTreeSet::new(),
@@ -2444,8 +2449,8 @@ impl<'a> Reducer<'a> {
                 .insert(region.id, region.time_model.coordinate_discipline());
             self.region_extents
                 .insert(region.id, region.time_extent.clone());
-            self.region_model_anchors
-                .insert(region.id, model_meter_anchors(&region.time_model));
+            self.region_model_meters
+                .insert(region.id, model_meters(&region.time_model));
             if let Some(content) = region.content.staff_based() {
                 self.staff_based_regions.insert(region.id);
                 self.metric_grid_chain
@@ -4442,11 +4447,11 @@ impl<'a> Reducer<'a> {
                 hold(Some(sid), None, &measure.start);
             }
         }
-        for (region, anchors) in &self.region_model_anchors {
+        for (region, meters) in &self.region_model_meters {
             let sid = TypedObjectId::Region(*region);
             if live(sid) {
-                for anchor in anchors {
-                    hold(Some(sid), None, anchor);
+                for meter in meters {
+                    hold(Some(sid), None, &meter.anchor);
                 }
             }
         }
@@ -6017,6 +6022,25 @@ impl<'a> Reducer<'a> {
         if let Some(effect) = self.extent_offset_slot(&op.region) {
             return effect;
         }
+        // Its own model's meter changes and its grid's name time signatures,
+        // which must be live, as a `SetMetricGrid`'s must (reduction version
+        // 5: before it the region carried one never declared,
+        // `CrossCuttingRefsResolve`).
+        let carried_meters = model_meters(&op.region.time_model);
+        let grid_meters = op
+            .region
+            .content
+            .staff_based()
+            .and_then(|content| content.default_metric_grid.as_ref())
+            .map(|grid| grid.meter_sequence.as_slice())
+            .unwrap_or_default();
+        if self.names_undeclared_signature(carried_meters.iter().chain(grid_meters)) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            };
+        }
         // Its own model, grid, breaks and tempo map hold anchors as its
         // extent does, and nothing live but an extent names the region before
         // it is made by an offset its model does not admit (reduction version
@@ -6036,8 +6060,8 @@ impl<'a> Reducer<'a> {
             .insert(op.region_id(), op.region.time_model.coordinate_discipline());
         self.region_extents
             .insert(op.region_id(), op.region.time_extent.clone());
-        self.region_model_anchors
-            .insert(op.region_id(), model_meter_anchors(&op.region.time_model));
+        self.region_model_meters
+            .insert(op.region_id(), model_meters(&op.region.time_model));
         self.note_forward_names(
             payload
                 .iter()
@@ -6179,18 +6203,12 @@ impl<'a> Reducer<'a> {
         // live, as a `SetMetricGrid`'s must (reduction version 5: before it
         // the instance carried a grid naming one never declared,
         // `CrossCuttingRefsResolve`).
-        let undeclared = op
-            .instance
-            .local_metric_grid
-            .iter()
-            .flat_map(|grid| &grid.meter_sequence)
-            .any(|change| {
-                !matches!(
-                    self.objects
-                        .get(&TypedObjectId::TimeSignature(change.time_signature)),
-                    Some(ObjectState::Live)
-                )
-            });
+        let undeclared = self.names_undeclared_signature(
+            op.instance
+                .local_metric_grid
+                .iter()
+                .flat_map(|grid| &grid.meter_sequence),
+        );
         if undeclared {
             return OperationEffect::NoOp {
                 reason: NoOpReason::PreconditionFailedUnderReduction {
@@ -8739,6 +8757,16 @@ impl<'a> Reducer<'a> {
             }
         }
 
+        // The target model's own meter changes name live time signatures
+        // (reduction version 5: before it the migration gave the region a
+        // model naming one never declared, `CrossCuttingRefsResolve`).
+        if self.names_undeclared_signature(&model_meters(&op.new_time_model)) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            };
+        }
         // The target model's own meter changes answer to their targets' time
         // models, the region's own edge to the target (reduction version 5,
         // X5b.9: before it the migration applied, `AnchorOffsetModel`).
@@ -8880,8 +8908,8 @@ impl<'a> Reducer<'a> {
         if let Some(discipline) = self.region_disciplines.get_mut(&op.region) {
             *discipline = op.new_time_model.coordinate_discipline();
         }
-        self.region_model_anchors
-            .insert(op.region, target_meters.clone());
+        self.region_model_meters
+            .insert(op.region, model_meters(&op.new_time_model));
         self.note_forward_names(&target_meters);
         // A target that is not musical drops the region's system and page
         // breaks, advisory layout written in musical time (reduction version 3:
@@ -9614,6 +9642,19 @@ impl<'a> Reducer<'a> {
                                 && !targets.contains(&iobj)
                                 && matches!(self.objects.get(&iobj), Some(ObjectState::Live)))
                             .then_some((*target, iobj))
+                        })
+                    })
+                    // A live region whose own model names it, written by its
+                    // create or a migration, neither of which an undo
+                    // restores (reduction version 5: before it the undo left
+                    // the model naming nothing, `CrossCuttingRefsResolve`).
+                    .or_else(|| {
+                        self.region_model_meters.iter().find_map(|(region, meters)| {
+                            let robj = TypedObjectId::Region(*region);
+                            (meters.iter().any(|meter| meter.time_signature == *id)
+                                && !targets.contains(&robj)
+                                && matches!(self.objects.get(&robj), Some(ObjectState::Live)))
+                            .then_some((*target, robj))
                         })
                     })
             }
@@ -12615,6 +12656,20 @@ impl<'a> Reducer<'a> {
             .find_map(|(instance, voices)| voices.contains(&voice).then_some(*instance))
     }
 
+    /// Whether any of `meters` names a time signature that is not live.
+    fn names_undeclared_signature<'m>(
+        &self,
+        meters: impl IntoIterator<Item = &'m MeterChange>,
+    ) -> bool {
+        meters.into_iter().any(|meter| {
+            !matches!(
+                self.objects
+                    .get(&TypedObjectId::TimeSignature(meter.time_signature)),
+                Some(ObjectState::Live)
+            )
+        })
+    }
+
     /// A live measure of `instance` that `leaving` does not take with it,
     /// from the measure values both modes keep.
     fn instance_live_measure(
@@ -13596,7 +13651,7 @@ impl<'a> Reducer<'a> {
             staff_based_regions: self.staff_based_regions.clone(),
             region_disciplines: self.region_disciplines.clone(),
             region_extents: self.region_extents.clone(),
-            region_model_anchors: self.region_model_anchors.clone(),
+            region_model_meters: self.region_model_meters.clone(),
             instance_change_anchors: self.instance_change_anchors.clone(),
             forward_names: self.forward_names.clone(),
             migrated_regions: self.migrated_regions.clone(),
@@ -13653,7 +13708,7 @@ impl<'a> Reducer<'a> {
         self.staff_based_regions = s.staff_based_regions;
         self.region_disciplines = s.region_disciplines;
         self.region_extents = s.region_extents;
-        self.region_model_anchors = s.region_model_anchors;
+        self.region_model_meters = s.region_model_meters;
         self.instance_change_anchors = s.instance_change_anchors;
         self.forward_names = s.forward_names;
         self.migrated_regions = s.migrated_regions;

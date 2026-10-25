@@ -1844,7 +1844,9 @@ for its own model, grid, breaks or tempo map, and the migrated region itself
 for a segment of the score's tempo map; what a migration out of musical time
 drops with the region's breaks and grids is not read. A target model whose own
 meter changes its region would not admit is refused
-\texttt{WrongRegionTimeModel}. Graph-aware
+\texttt{WrongRegionTimeModel}, and one whose own meter changes name a time
+signature that is not live is a precondition no-op (\texttt{TargetMissing}),
+as a \texttt{SetMetricGrid} naming one is. Graph-aware
 reduction also judges, from the graph, the region's events the index does not
 hold (a base's events of another coordinate kind, which base-free reduction
 never has), against the target's discipline as invariant~4 does (an aleatoric
@@ -1951,7 +1953,8 @@ so before it is made. A \texttt{CreateStaffInstance}'s carried clef and key
 changes and its own grid's meter changes answer to their targets likewise
 (Section~\ref{sec:framework:anchor-offsets}), and its own grid's meter changes
 name live time signatures, or the create is a precondition no-op
-(\texttt{TargetMissing}), as a \texttt{SetMetricGrid}'s are.
+(\texttt{TargetMissing}), as a \texttt{SetMetricGrid}'s are; so do a
+\texttt{CreateRegion}'s own model's meter changes and its grid's.
 
 \textbf{Conflict cases.} None at reduction time: creation is set-union (a repeat
 create is idempotent), and the empty-only delete is a deterministic precondition
@@ -2562,8 +2565,10 @@ immutable value maps with no modify operation, so restoration-awareness does
 not apply to them. Also closes a pre-existing hole: a minted
 \texttt{TimeSignature} still named by a live \texttt{Measure.time\_signature}
 now blocks its own undo, exactly as a live meter-change reference already did.
-Since version~0.22.0 so does a live staff instance whose own grid names it: the
-grid is written once, by the instance's create, and never restored.
+Since version~0.22.0 so does a live staff instance whose own grid names it, or
+a live region whose own model names it: the grid is written once, by the
+instance's create, and the model by the region's create or a migration, and
+neither is restored.
 
 \textbf{Re-anchoring.} Not applicable (a measure mint references no
 tombstonable anchor of its own; there is no \texttt{DeleteMeasure} in this

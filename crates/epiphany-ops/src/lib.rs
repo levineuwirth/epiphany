@@ -866,14 +866,18 @@ pub mod vectors;
 ///     is refused `ContainerNotEmpty`, as the catalog makes the delete
 ///     empty-only, and a `CreateStaffInstance` whose own grid names a time
 ///     signature that is not live is refused `TargetMissing`, as a
-///     `SetMetricGrid` naming one is; an undo that would remove an instance
-///     holding a live measure, or a time signature a live instance's own grid
-///     names, is held as for a live voice or a region's grid. Version `4`
-///     applied each and left a reference naming nothing
-///     (`CrossCuttingRefsResolve`; two or three authors each, older than
-///     X5b.9). Read from the measure values and instance grids both modes
-///     keep. Locked by `anchor_offsets.rs` and the committed histories `190`
-///     to `193`.
+///     `SetMetricGrid` naming one is, and so is a `CreateRegion` whose own
+///     model or grid, or a `ChangeRegionTimeModel` whose target model, names
+///     one (one author, a single envelope); an undo that would remove an
+///     instance holding a live measure, or a time signature a live
+///     instance's own grid or a live region's own model names, is held as for
+///     a live voice or a region's grid. Version `4` applied each and left a
+///     reference naming nothing (`CrossCuttingRefsResolve`; older than
+///     X5b.9). Read from the measure values, instance grids and region models
+///     both modes keep, the last X5b.9's index of each region's own model's
+///     meters, which holds the meter changes now and not only their anchors.
+///     Locked by `anchor_offsets.rs` and the committed histories `190` to
+///     `194`.
 ///
 ///   With it, at the same epoch 16, a wire addition that changes no verdict:
 ///   `MarkerKind` appends `ExpressionText` (X5b.7, D79 Q9), reduced as any

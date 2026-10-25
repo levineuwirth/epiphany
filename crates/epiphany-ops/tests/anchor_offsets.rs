@@ -1953,3 +1953,125 @@ fn an_undo_of_a_signature_an_instance_s_grid_names_is_held() {
         }
     }
 }
+
+/// The ways a region comes to hold a meter change of the fixture's
+/// signature at its start: its create carrying it in its own model or its
+/// grid, or a migration to a model carrying it.
+#[derive(Clone, Copy, Debug)]
+enum Carried {
+    Model,
+    Grid,
+    Migration,
+}
+
+/// Region `13` made to hold the fixture's signature by `how`; the operation
+/// that names it.
+fn signature_named(h: &mut History, how: Carried) -> OperationId {
+    let region = RegionId::new(AUTHOR, 13);
+    let meter = MeterChange {
+        anchor: edge(region, AnchorOffset::Zero),
+        time_signature: SIGNATURE,
+    };
+    match how {
+        Carried::Model => h.shaped_region(13, own_meter(meter.anchor), |_| {}),
+        Carried::Grid => h.shaped_region(13, valuegen::metric_model(), |r| {
+            r.content
+                .staff_based_mut()
+                .expect("staff-based")
+                .default_metric_grid = Some(MetricGrid {
+                meter_sequence: vec![meter],
+            });
+        }),
+        Carried::Migration => {
+            h.shaped_region(13, valuegen::proportional_model(), |_| {});
+            h.migrate(region, own_meter(meter.anchor))
+        }
+    }
+}
+
+/// A region created carrying, in its own model or its grid, a meter change
+/// naming a time signature never declared, or migrated to a model carrying
+/// one, is refused `TargetMissing`, as a `SetMetricGrid` naming one is, where
+/// before it applied (`CrossCuttingRefsResolve`, one author). Declared first,
+/// each applies.
+#[test]
+fn a_region_s_own_model_or_grid_naming_an_undeclared_signature_is_refused() {
+    for how in [Carried::Model, Carried::Grid, Carried::Migration] {
+        for declared in [false, true] {
+            let mut h = History::new();
+            if declared {
+                h.time_signature(METRIC, edge(METRIC, AnchorOffset::Zero));
+            }
+            let naming = signature_named(&mut h, how);
+            let (free, _) = h.reduce();
+            if declared {
+                assert!(
+                    applied(&free, naming),
+                    "{how:?}: {:?}",
+                    effect(&free, naming)
+                );
+            } else {
+                assert_eq!(
+                    *effect(&free, naming),
+                    OperationEffect::NoOp {
+                        reason: NoOpReason::PreconditionFailedUnderReduction {
+                            reason: PreconditionFailureReason::TargetMissing,
+                        },
+                    },
+                    "{how:?}"
+                );
+            }
+        }
+    }
+}
+
+/// One step past: an undo of the transaction that declared the signature, a
+/// live region's own model naming it since by its create or a migration, is
+/// held, in both policies, where before it left the model naming nothing, as
+/// a grid naming it holds it; with nothing naming it the undo applies.
+#[test]
+fn an_undo_of_a_signature_a_region_s_own_model_names_is_held() {
+    for policy in [UndoPolicy::StrictInverse, UndoPolicy::BestEffort] {
+        for how in [
+            Some(Carried::Model),
+            Some(Carried::Migration),
+            Some(Carried::Grid),
+            None,
+        ] {
+            let mut h = History::new();
+            let transaction = h.transaction(30);
+            h.push_payload(
+                Some(transaction),
+                OperationPayload::Primitive(OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region: METRIC,
+                    anchor: edge(METRIC, AnchorOffset::Zero),
+                    time_signature: Some(valuegen::time_signature(SIGNATURE, 4)),
+                })),
+            );
+            if let Some(how) = how {
+                let naming = signature_named(&mut h, how);
+                let undo = h.undo(transaction, policy);
+                let (free, aware) = h.reduce();
+                assert!(applied(&free, naming), "{how:?}");
+                assert!(
+                    aware
+                        .score
+                        .time_signatures
+                        .iter()
+                        .any(|t| t.id == SIGNATURE),
+                    "{policy:?} {how:?}: {:?}",
+                    effect(&free, undo)
+                );
+            } else {
+                let undo = h.undo(transaction, policy);
+                let (free, aware) = h.reduce();
+                assert!(undone(&free, undo), "{policy:?}");
+                assert!(!aware
+                    .score
+                    .time_signatures
+                    .iter()
+                    .any(|t| t.id == SIGNATURE));
+            }
+        }
+    }
+}
