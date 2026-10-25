@@ -4903,14 +4903,6 @@ impl<'a> Reducer<'a> {
                 }
             }
         };
-        // Nothing live names the event before it is made by an offset its
-        // region does not admit (reduction version 5, X5b.9, D84 Q1).
-        let discipline = self
-            .instance_region_of(op.staff_instance)
-            .and_then(|region| self.region_disciplines.get(&region).copied());
-        if let Some(effect) = self.named_before_made_slot(ev_obj, discipline, true) {
-            return effect;
-        }
         // Pitch-id freshness in base-free reduction: a carried pitch id that
         // already exists in canonical state (live or tombstoned) is not fresh.
         // The graph-aware precondition above already enforces this (with the
@@ -4969,6 +4961,16 @@ impl<'a> Reducer<'a> {
             };
         }
 
+        // Nothing live names the event before it is made by an offset its
+        // region does not admit (reduction version 5, X5b.9, D84 Q1): read
+        // past every check both modes share, so a voice base-free reduction
+        // finds dead above is refused as the graph refuses it.
+        let discipline = self
+            .instance_region_of(op.staff_instance)
+            .and_then(|region| self.region_disciplines.get(&region).copied());
+        if let Some(effect) = self.named_before_made_slot(ev_obj, discipline, true) {
+            return effect;
+        }
         if let Err(reason) =
             self.materialize_graph_insert(env, op, graph_location, target_voice, promotion)
         {

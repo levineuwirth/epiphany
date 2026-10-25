@@ -4265,3 +4265,13 @@ end, never are. And the refusal pin reads a create refused for an offset from a
 region's edge, which only arm 15's draws of either kind and arm 66's one in
 four of either kind write: arm 66's note gesture, whose region creates are
 refused where its first migration does not apply, anchors no region edge.
+
+**Where an insert reads a name.** D50's bar at the first X5b.9 generator found
+the modes splitting on an insert's reason (history `189`): two authors, one
+creating a voice and deleting it, the other, not having seen the delete,
+naming a note by a region's extent before entering it into that voice.
+Graph-aware reduction refuses the insert `VoiceMissing` in its precondition;
+base-free reduction defers a dead voice to a check a few lines later, and
+read the name first. The name is now read past every check both modes share,
+just before the graph's own materialization, so each mode refuses a dead
+voice first.
