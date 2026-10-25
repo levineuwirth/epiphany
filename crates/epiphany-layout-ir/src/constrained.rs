@@ -1157,6 +1157,11 @@ const TUPLET_CLEARANCE: f32 = 0.5; // a tuplet's number or bracket stands this f
 const TUPLET_HOOK: f32 = 0.6; // the length of a bracket's end hooks, toward the notes
 const TUPLET_NUMBER_GAP: f32 = 0.25; // the gap each side of the number in its bracket
 const TUPLET_BRACKET_THICKNESS: f32 = 0.16; // SMuFL's tupletBracketThickness
+/// How far outside its staff a tuplet on one staff keeps its bracket's line,
+/// where its number is centred: MuseScore's `tupletOutOfStaff` sets the
+/// bracket's ends `tupletVStemDistance` (0.5) outside the staff and its line
+/// `tupletBracketHookHeight` (0.75) beyond them (`TupletLayout::layoutBracket`).
+const TUPLET_OUT_OF_STAFF: f32 = 1.25;
 const TIE_OFFSET: f32 = 0.4; // how far off its heads' centres a tie's ends sit
 const TIE_MIN_HEIGHT: f32 = 0.3; // a tie's apex height, at least…
 const TIE_MAX_HEIGHT: f32 = 0.8; // …and at most, in staff spaces
@@ -4003,6 +4008,7 @@ pub fn try_to_constrained(
                                 voices: &event_voices,
                                 beams: &beam_sets,
                                 staff: st,
+                                yo: y_origin(st),
                             },
                         )
                     };
@@ -7074,6 +7080,8 @@ struct TupletInk<'a> {
     voices: &'a BTreeMap<EventId, VoicePlace>,
     beams: &'a BTreeSet<Vec<EventId>>,
     staff: StaffId,
+    /// The staff's bottom line.
+    yo: f32,
 }
 
 /// A tuplet's marks: its number's digit glyphs and where they stand, the slot
@@ -7088,7 +7096,9 @@ struct TupletMarks {
 /// A tuplet's number and bracket, from its first member's column to its last
 /// member's, standing `TUPLET_CLEARANCE` clear of the ink of every column
 /// between: above for an upper voice, below for a lower, and alone on the
-/// side most of its stems point (above when none has a stem). The number
+/// side most of its stems point (above when none has a stem); and, its ends
+/// sharing its staff, its bracket's line, where the number is centred, at
+/// least `TUPLET_OUT_OF_STAFF` outside the staff, bracketed or not. The number
 /// shows the ratio's `actual` term, centered on the span; the bracket, with
 /// a gap for the number and its ends hooked toward the notes, is left out
 /// when the members are notes beamed together as one group. The tuplet's
@@ -7184,9 +7194,9 @@ fn tuplet_marks(tuplet: &crate::logical::TupletContent, at: &TupletInk) -> Optio
     let width: f32 = boxes.iter().map(|b| b.right.0 - b.left.0).sum();
     let height = boxes.iter().map(|b| b.top.0).fold(0.0, f32::max);
     let base = if above {
-        top + TUPLET_CLEARANCE
+        (top + TUPLET_CLEARANCE).max(at.yo + STAFF_HEIGHT + TUPLET_OUT_OF_STAFF - height / 2.0)
     } else {
-        bottom - TUPLET_CLEARANCE
+        (bottom - TUPLET_CLEARANCE).min(at.yo - TUPLET_OUT_OF_STAFF + height / 2.0)
     };
     let baseline = if above { base } else { base - height };
     let mut x = (x0 + x1) / 2.0 - width / 2.0;

@@ -657,6 +657,87 @@ fn a_visiting_chords_marks_follow_its_own_staffs_voices() {
     }
 }
 
+/// A tuplet whose ends share a staff stands out of it, as MuseScore's
+/// `tupletOutOfStaff` sets it: its bracket's line, where its number is
+/// centred, at least 1.25 outside the staff on its side (the bracket's ends
+/// 0.5 out and its hooks 0.75 long there), bracketed or not, though its
+/// notes' ink would let it stand inside: over low notes stemmed up and over
+/// rests, and under high notes stemmed down.
+#[test]
+fn a_tuplet_on_one_staff_stands_out_of_it() {
+    let triplet = |pitch: &str, kind: &str, beam: &str| {
+        let tuplet = match kind {
+            "start" | "stop" => format!("<notations><tuplet type=\"{kind}\"/></notations>"),
+            _ => String::new(),
+        };
+        let beam = if beam.is_empty() {
+            String::new()
+        } else {
+            format!("<beam number=\"1\">{beam}</beam>")
+        };
+        note(pitch, 4, "eighth", 1, 1, "").replacen(
+            "</staff>",
+            &format!(
+                "</staff>{beam}<time-modification><actual-notes>3</actual-notes>\
+                 <normal-notes>2</normal-notes></time-modification>{tuplet}"
+            ),
+            1,
+        )
+    };
+    let measure = [
+        triplet("C4", "start", "begin"),
+        triplet("D4", "", "continue"),
+        triplet("C4", "stop", "end"),
+        triplet("rest", "start", ""),
+        triplet("rest", "", ""),
+        triplet("rest", "stop", ""),
+        triplet("A5", "start", "begin"),
+        triplet("G5", "", "continue"),
+        triplet("F5", "stop", "end"),
+        note("C5", 12, "quarter", 1, 1, ""),
+    ]
+    .concat();
+    let loaded = part_in("tuplets_out_of_staff.musicxml", 1, 12, &[measure]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let (bottom, top) = staff_lines(&layout)[0];
+    let numbers = named(&layout, "tuplet3");
+    assert_eq!(numbers.len(), 3, "three numbers");
+    let centre = |ink: Ink| (ink[1] + ink[3]) * 0.5;
+    // A digit's ink dips 0.03 under its baseline, so its middle stands that
+    // much under the line it is centred on.
+    assert!(
+        centre(numbers[0]) >= top + 1.25 - 0.05,
+        "{numbers:?} over {top}"
+    );
+    assert!(
+        centre(numbers[1]) >= top + 1.25 - 0.05,
+        "{numbers:?} over {top}"
+    );
+    assert!(
+        centre(numbers[2]) <= bottom - 1.25 + 0.05,
+        "{numbers:?} under {bottom}"
+    );
+    // The one bracket, over the rests' triplet, on the number's line.
+    let line: Vec<f32> = layout
+        .strokes
+        .iter()
+        .filter(|s| {
+            matches!(s.provenance.source, TypedObjectId::Tuplet(_))
+                && s.from.y == s.to.y
+                && s.from.x != s.to.x
+        })
+        .map(|s| s.from.y.0)
+        .collect();
+    assert_eq!(line.len(), 2, "a bracket broken by its number");
+    for y in line {
+        assert!(y >= top + 1.25 - 0.01, "the bracket's line {y} over {top}");
+        assert!(
+            (y - centre(numbers[1])).abs() < 0.05,
+            "the number centred on its bracket's line: {y}, {numbers:?}"
+        );
+    }
+}
+
 /// An arpeggio is a run of turned wiggles left of its chord, 0.4 clear of
 /// its heads, reaching from its lowest head to its highest, and takes room
 /// as an accidental does; every other mark takes none, so the heads stand

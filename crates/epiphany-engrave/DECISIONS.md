@@ -2399,3 +2399,14 @@ is set:
   (`Measure::hasVoices`; `a_visiting_chords_marks_follow_its_own_staffs_voices`).
   Every visiting chord had taken its marks at its stem. The engraver itself
   is unchanged.
+
+## ENGRAVER_VERSION 68 → 69: a tuplet on one staff stands out of it (X4c.10, 2026-10-24)
+
+- A tuplet whose ends share a staff keeps its bracket's line, where its
+  number is centred, at least 1.25 outside the staff on its side,
+  bracketed or not, as MuseScore's default `tupletOutOfStaff` sets it
+  (`TupletLayout::layoutBracket`); it had cleared only its columns' ink, so
+  over low notes stemmed up it stood in the staff, its number on the top
+  line (`a_tuplet_on_one_staff_stands_out_of_it`). A tuplet riding a beam
+  across two staves is placed as before. The rich fixture's tuplet moves
+  out of its staff: its two golden files are re-blessed under D10.

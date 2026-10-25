@@ -1254,3 +1254,11 @@ column's spring the padding after it.
   stem still turns toward its home. Read against the exports this way, the
   rule gives MuseScore's side for every marked visiting note the importer
   writes, the visiting note itself being a staff's second voice included.
+- A tuplet whose ends share a staff (`tuplet_marks`) keeps its bracket's
+  line, where its number is centred, at least 1.25 outside the staff on its
+  side: MuseScore's default `tupletOutOfStaff` sets the bracket's ends
+  `tupletVStemDistance` (0.5) outside the staff and the line
+  `tupletBracketHookHeight` (0.75) beyond them, the number centred on the
+  line (`tupletAlign`), whether or not the bracket is drawn. The bracket's
+  hooks keep their own length here (0.6); only the line's least distance is
+  MuseScore's. A tuplet riding a beam across two staves is not moved.
