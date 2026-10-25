@@ -624,7 +624,7 @@ impl Coverage {
 
 /// The payload shapes schema major 5 adds, and those reduction version 5
 /// reads (X5b), each counted beside its kind.
-const SHAPES: [&str; 33] = [
+const SHAPES: [&str; 34] = [
     "InsertEvent+marks",
     "InsertEvent+ornaments",
     "InsertEvent+grace",
@@ -647,6 +647,7 @@ const SHAPES: [&str; 33] = [
     "CreateRegion+anchored start",
     "CreateRegion+musical offset",
     "CreateRegion+wall-clock offset",
+    "CreateRegion+anchored start, placed end",
     "CreateCrossCutting+wall-clock offset",
     "ModifyCrossCutting+wall-clock offset",
     "CreateRepeatStructure+wall-clock offset",
@@ -885,6 +886,24 @@ fn kind_shapes(payload: &OperationPayload) -> Vec<&'static str> {
             let mut out = Vec::new();
             if !matches!(extent.start, epiphany_core::TimeAnchor::WallClock { .. }) {
                 out.push("CreateRegion+anchored start");
+                // Arm 15's own gesture for the overlap refusal: a start with
+                // no offset at a region's end or a note, the end where an
+                // editor places one (D84 Q4).
+                if matches!(
+                    extent.start.offset(),
+                    Some(epiphany_core::AnchorOffset::Zero)
+                ) && matches!(extent.end, epiphany_core::TimeAnchor::WallClock { .. })
+                {
+                    out.push("CreateRegion+anchored start, placed end");
+                }
+            }
+            // An offset from a region's edge, which arms 15 and 66 draw of a
+            // kind its region may not admit (D84 Q4).
+            if [&extent.start, &extent.end].into_iter().any(|anchor| {
+                matches!(anchor, epiphany_core::TimeAnchor::Region { offset, .. }
+                    if !matches!(offset, epiphany_core::AnchorOffset::Zero))
+            }) {
+                out.push("CreateRegion+offset at a region's edge");
             }
             if offsets
                 .iter()

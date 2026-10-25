@@ -4253,3 +4253,12 @@ offset, held authored and applied by the CI budget, and
 `the_ci_budget_refuses_what_reduction_version_5_refuses` holds ten of them
 refused `WrongRegionTimeModel` (a measure so is never refused at the budget's
 seeds).
+
+**Two pins sharpened (D84 Q4).** X5b.8's arms blinded two pins. Arm 15's
+starts at a region's end or at a note with no offset are counted as
+`CreateRegion+anchored start, placed end`, a start with no offset and an end
+an editor places, which arm 66's starts, all by an offset or with an anchored
+end, never are. And the refusal pin reads a create refused for an offset from a
+region's edge, which only arm 15's draws of either kind and arm 66's one in
+four of either kind write: arm 66's note gesture, whose region creates are
+refused where its first migration does not apply, anchors no region edge.

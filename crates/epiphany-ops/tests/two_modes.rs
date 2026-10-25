@@ -323,9 +323,11 @@ fn the_ci_budget_authors_and_applies_every_kind() {
 /// What reduction version 5 refuses is written and refused (X5b): a fill
 /// overlapping a region that holds its staff (`RegionsOverlap`), a region
 /// whose extent's offset its target's time model does not admit
-/// (`WrongRegionTimeModel`, X5b.8), every other holder of a time anchor
-/// written by a wall-clock offset its target does not admit (X5b.9), and each
-/// of [`modes::REFUSED`], authored and never applied.
+/// (`WrongRegionTimeModel`, X5b.8), one so from a region's edge, which only
+/// the draws of a kind the named region may not admit write (D84 Q4), every
+/// other holder of a time anchor written by a wall-clock offset its target
+/// does not admit (X5b.9), and each of [`modes::REFUSED`], authored and never
+/// applied.
 #[test]
 fn the_ci_budget_refuses_what_reduction_version_5_refuses() {
     let sum = |count: &dyn Fn(&modes::Coverage) -> u64| {
@@ -353,6 +355,13 @@ fn the_ci_budget_refuses_what_reduction_version_5_refuses() {
     assert!(
         refused("InsertRegion", "WrongRegionTimeModel") > 0,
         "no region refused for its extent's offset"
+    );
+    assert!(
+        refused(
+            "CreateRegion+offset at a region's edge",
+            "WrongRegionTimeModel"
+        ) > 0,
+        "no region refused for its offset from a region's edge"
     );
     for holder in [
         "CreateCrossCutting+wall-clock offset",
