@@ -3841,14 +3841,14 @@ fn make(
             // A holder's change undone after its region's migration (X5b.9,
             // arm 65's mirror for every holder an undo restores): a region the
             // view holds, given a model admitting wall-clock time first where
-            // it admits none; a marker, a user break, a tempo segment, a time
-            // signature or a metric grid written at its start by a wall-clock
-            // offset, or a spanner at a note of it so (P13-D3); the holder
-            // moved off or taken away in a
-            // transaction of its own; the region migrated to a model of any
-            // kind, metric one time in two; and the transaction undone, whose
-            // restoration the migration supersedes where the region admits
-            // the offset no longer.
+            // it admits none; a marker, a system or a page break, a tempo
+            // segment, a time signature or a metric grid written at its start
+            // by a wall-clock offset, or a spanner at a note of it so
+            // (P13-D3); the holder moved off or taken away in a transaction of
+            // its own; the region migrated to a model of any kind, metric one
+            // time in two; and the transaction undone, whose restoration the
+            // migration supersedes where the region admits the offset no
+            // longer.
             if sim.replicas[r].open.is_some() {
                 return None;
             }
@@ -3931,12 +3931,22 @@ fn make(
                     )
                 }
                 2 => {
+                    // A system break or a page break.
+                    let page = sim.rng.chance(2);
                     let user_break = |present| {
-                        OperationKind::SetUserSystemBreak(SetUserSystemBreakOp {
-                            region: target,
-                            anchor: at.clone(),
-                            present,
-                        })
+                        if page {
+                            OperationKind::SetUserPageBreak(SetUserPageBreakOp {
+                                region: target,
+                                anchor: at.clone(),
+                                present,
+                            })
+                        } else {
+                            OperationKind::SetUserSystemBreak(SetUserSystemBreakOp {
+                                region: target,
+                                anchor: at.clone(),
+                                present,
+                            })
+                        }
                     };
                     (user_break(true), user_break(false))
                 }
