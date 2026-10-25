@@ -315,6 +315,74 @@ fn a_tuplet_member_is_read_at_its_written_value() {
     assert_eq!(heads, 6, "six quarter-note heads, none dotted or split");
 }
 
+/// A two-note tremolo's strokes are its two notes' beam, as MuseScore draws
+/// the pair: two quarters written with a 2:1 time modification and no tuplet,
+/// as MuseScore exports them, sound as eighths, and need no flag of their own
+/// while the strokes are drawn; with the strokes taken away, each is counted.
+/// The score names its beams (a beamed pair of eighths after the tremolo), so
+/// the tremolo's notes are beamed by none.
+#[test]
+fn a_two_note_tremolos_strokes_are_its_notes_beam() {
+    let member = |step: &str, kind: &str| {
+        format!(
+            "<note><pitch><step>{step}</step><octave>5</octave></pitch>\
+             <duration>2</duration><voice>1</voice><type>quarter</type>\
+             <time-modification><actual-notes>2</actual-notes>\
+             <normal-notes>1</normal-notes></time-modification><notations><ornaments>\
+             <tremolo type=\"{kind}\">3</tremolo></ornaments></notations></note>"
+        )
+    };
+    let eighth = |step: &str, beam: &str| {
+        format!(
+            "<note><pitch><step>{step}</step><octave>5</octave></pitch>\
+             <duration>2</duration><voice>1</voice><type>eighth</type>\
+             <beam number=\"1\">{beam}</beam></note>"
+        )
+    };
+    let rest = "<note><rest/><duration>8</duration><voice>1</voice><type>half</type></note>";
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\">\
+         <measure number=\"1\"><attributes><divisions>4</divisions><time><beats>4</beats>\
+         <beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef>\
+         </attributes>{}{}{}{}{rest}</measure></part></score-partwise>",
+        member("C", "start"),
+        member("E", "stop"),
+        eighth("G", "begin"),
+        eighth("A", "end"),
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("tremolo_pair.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let score = &loaded.reduced.score;
+    let first = score.canvas.regions[0].staff_instances()[0].voices[0].events[0];
+    let mut engraved = engrave(score);
+    let strokes = |engraved: &Engraved| {
+        engraved
+            .layout
+            .strokes
+            .iter()
+            .filter(|s| s.provenance.source == TypedObjectId::Event(first) && s.from.x != s.to.x)
+            .count()
+    };
+    assert_eq!(
+        strokes(&engraved),
+        3,
+        "three strokes between the two, no beam"
+    );
+    assert_eq!(count(&loaded, &engraved, "flag or beam"), 0);
+
+    // Each stroke made a zero-length anchor, which is no ink, rather than
+    // removed, so the systems' indices stay valid.
+    for s in &mut engraved.layout.strokes {
+        if s.provenance.source == TypedObjectId::Event(first) && s.from.x != s.to.x {
+            s.to = s.from;
+        }
+    }
+    assert_eq!(strokes(&engraved), 0);
+    assert_eq!(count(&loaded, &engraved, "flag or beam"), 2);
+}
+
 /// Every mark of a note and every fermata, breath mark and caesura the
 /// engraver draws is no omission; each whose ink is taken away is counted
 /// by its class; and a fermata anchored at its region's offset, on no

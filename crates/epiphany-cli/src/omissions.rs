@@ -14,7 +14,8 @@
 //!   bracket and no number;
 //! - a notehead or rest drawn at a value other than its duration's, a flag or
 //!   an augmentation dot the duration needs and the event lacks (an eighth or
-//!   shorter needs a flag or a beam), for every
+//!   shorter needs a flag or a beam, a drawn two-note tremolo's strokes being
+//!   its two notes' beam), for every
 //!   event whose duration is one notated value (a duration that needs a tie or
 //!   a tuplet to notate is counted as not checked);
 //! - a clef, and for a staff with a key, a key signature, missing where a
@@ -214,6 +215,45 @@ pub fn omissions(
         .map(Event::id)
         .collect();
 
+    // A two-note tremolo's strokes are its two notes' beam, as MuseScore
+    // draws the pair: once its first stroke is drawn, the note carrying it and
+    // the next of its voice, as the layout pairs them, need no flag.
+    let strokes_drawn: BTreeSet<epiphany_layout_ir::LayoutObjectId> = layout
+        .strokes
+        .iter()
+        .filter(|s| s.from != s.to)
+        .map(|s| s.provenance.stable_id)
+        .collect();
+    let mut voices: BTreeMap<epiphany_core::VoiceId, Vec<(RationalTime, epiphany_core::EventId)>> =
+        BTreeMap::new();
+    for event in score.events.iter().filter(|e| !graces.contains(&e.id())) {
+        if let EventPosition::Musical(start) = event.position() {
+            voices
+                .entry(event.voice())
+                .or_default()
+                .push((start.0.clone(), event.id()));
+        }
+    }
+    let mut tremolo_beamed: BTreeSet<epiphany_core::EventId> = BTreeSet::new();
+    for events in voices.values_mut() {
+        events.sort();
+        for pair in events.windows(2) {
+            let (first, next) = (pair[0].1, pair[1].1);
+            let marks = match score.events.get(first) {
+                Some(Event::Pitched(n)) => &n.marks,
+                Some(Event::Unpitched(u)) => &u.marks,
+                _ => continue,
+            };
+            if marks
+                .iter()
+                .any(|m| matches!(m, EventMark::TremoloWithNext { .. }))
+                && strokes_drawn.contains(&NoteMarkPart::TremoloStroke(0).id(first))
+            {
+                tremolo_beamed.extend([first, next]);
+            }
+        }
+    }
+
     let instances: Vec<&epiphany_core::StaffInstance> = score
         .canvas
         .regions
@@ -380,6 +420,7 @@ pub fn omissions(
                         if exp <= -3
                             && !own.iter().any(|g| g.starts_with("flag"))
                             && !beamed.contains(&TypedObjectId::Event(*id))
+                            && !tremolo_beamed.contains(id)
                         {
                             out.add("flag or beam");
                         }
