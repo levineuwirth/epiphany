@@ -391,6 +391,53 @@ fn a_part_on_two_staves_shares_one_instrument() {
 /// voices as it would without the visitor. A number sounding on two staves
 /// at once, as where a file numbers each staff's voices afresh, names a
 /// voice on each and stays first on both; voice 10 follows voice 9.
+/// A direction's `<words>` are joined as they are written: MuseScore writes
+/// each line of a text as its own piece, ending it with its line break, and
+/// pieces it splits by font keep their spaces, so only the whole text is
+/// trimmed (D81's Q2).
+#[test]
+fn a_texts_lines_and_spaces_are_kept_as_written() {
+    let direction = |pieces: &[&str]| {
+        let words: String = pieces
+            .iter()
+            .map(|piece| format!("<words>{piece}</words>"))
+            .collect();
+        format!("<direction><direction-type>{words}</direction-type><staff>1</staff></direction>")
+    };
+    let note = "<note><pitch><step>C</step><octave>5</octave></pitch><duration>1</duration>\
+                <voice>1</voice><type>quarter</type></note>";
+    let measure = [
+        direction(&["play softly\n", "and slowly"]),
+        note.to_owned(),
+        direction(&["poco ", "a poco"]),
+        note.to_owned(),
+        direction(&["  dolce\n"]),
+        note.to_owned(),
+        note.to_owned(),
+    ]
+    .concat();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
+         <attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time><clef><sign>G</sign><line>2</line></clef></attributes>{measure}</measure>\
+         </part></score-partwise>"
+    );
+    let import = import(&xml).expect("imports");
+    let reduced = reduce(&import);
+    let texts: Vec<String> = reduced
+        .score
+        .cross_cutting
+        .markers
+        .iter()
+        .filter_map(|m| match &m.kind {
+            epiphany_core::MarkerKind::Text(text) => Some(text.as_str().to_owned()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, ["play softly\nand slowly", "poco a poco", "dolce"]);
+}
+
 #[test]
 fn each_staff_ranks_its_own_voices_before_a_visiting_one() {
     let note = |step: &str, octave: u8, duration: u8, voice: &str, staff: u8| {

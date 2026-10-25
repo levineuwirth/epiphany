@@ -3872,11 +3872,13 @@ impl<'d, 'i> Reader<'d, 'i> {
         let kinds: Vec<Node> = children(direction, "direction-type")
             .flat_map(elements)
             .collect();
-        // A run of `<words>` is one text, as MuseScore splits a text by font.
+        // A run of `<words>` is one text, as MuseScore splits a text by font
+        // and writes each of its lines as a piece ending with its line break:
+        // the pieces are joined as written, and the whole trimmed (D81's Q2).
         let words: String = kinds
             .iter()
             .filter(|k| name(**k) == "words")
-            .map(|k| text(*k))
+            .map(|k| k.text().unwrap_or(""))
             .collect();
         let words = (!words.trim().is_empty()).then(|| Text::new(words.trim()));
         let metronome = match kinds.iter().find(|k| name(**k) == "metronome") {
