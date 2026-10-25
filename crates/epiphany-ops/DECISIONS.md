@@ -4275,3 +4275,37 @@ base-free reduction defers a dead voice to a check a few lines later, and
 read the name first. The name is now read past every check both modes share,
 just before the graph's own materialization, so each mode refuses a dead
 voice first.
+
+**What the bar found at the final generator.** D50's bar on fresh seeds at
+the final generator found three classes, each older than X5b.9 (X5b.6's build
+shows each) and each reached by two or three authors. A spanner's endpoint
+whose note an operation removes (a delete, or a best-effort undo of the
+note's insert) collapses onto the surviving endpoint, and the graph rewrote
+only its event, so the endpoint kept its own offset at the survivor's note:
+a wall-clock offset in a region admitting both clocks carried into a metric
+one (histories `190`, `191`). The rule table says the endpoint re-anchors to
+the surviving *anchor*; it now takes that anchor whole, its offset with it.
+The survivor was judged against its own region's model where written and is
+stranded by a migration that would contradict it, so the collapsed endpoint
+answers to the survivor's model as the survivor does. The ledger's
+`Reanchored` record names the same two objects as before, and base-free
+reduction keeps no graph, so no verdict changes. A repeat structure's dead
+site does the same, taking the first site naming the surviving note.
+
+A `DeleteStaffInstance` applied while the instance held a live measure,
+though the catalog makes the delete empty-only for voices and measures alike;
+the graph lost the measure and a marker anchored to it named nothing
+(`192`). The delete is refused `ContainerNotEmpty` now, and one step past
+it, an undo that would remove an instance holding a measure made outside the
+transaction is held, as one holding a voice is. And a `CreateStaffInstance`
+carried its own grid naming a time signature never declared (`193`), which a
+`SetMetricGrid` is refused `TargetMissing` for: the create is refused so now,
+and an undo that would remove a time signature a live instance's own grid
+names is held, as one a region's grid or a measure names is.
+
+**A third pin sharpened.** The holders' arms write a break at a measure or a
+note by an offset, which hid the loss of arms 5 and 23's own gesture, a break
+at a measure's start or a note with no offset, from
+`the_ci_budget_authors_and_applies_every_kind` (`b6c` survived from the first
+X5b.9 generator on). A break's measure and note shapes count only an anchor
+with no offset now, which the holders' arms never write.

@@ -934,15 +934,18 @@ fn kind_shapes(payload: &OperationPayload) -> Vec<&'static str> {
 }
 
 /// A user break's shape: its anchor's kind, and whether it names another
-/// region.
+/// region. A measure or a note counts only by no offset, arms 5 and 23's own
+/// gesture: the holders' arms write each by an offset (X5b.9), and counted
+/// so they would hide that gesture's loss.
 fn user_break(
     region: RegionId,
     anchor: &epiphany_core::TimeAnchor,
     names: [&'static str; 2],
 ) -> Vec<&'static str> {
+    use epiphany_core::AnchorOffset::Zero;
     match anchor {
-        epiphany_core::TimeAnchor::Measure { .. } => vec![names[0]],
-        epiphany_core::TimeAnchor::Event { .. } => vec![names[1]],
+        epiphany_core::TimeAnchor::Measure { offset: Zero, .. } => vec![names[0]],
+        epiphany_core::TimeAnchor::Event { offset: Zero, .. } => vec![names[1]],
         epiphany_core::TimeAnchor::Region { id, .. } if *id != region => {
             vec!["user break+another region's anchor"]
         }

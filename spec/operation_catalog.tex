@@ -1010,7 +1010,9 @@ model; the edge of a region an operation is creating or migrating by the model
 it is being given; an event or a measure by its region's model, but an event
 in an aleatoric region whose events each fix their clock by the event's, which
 is musical for every event an operation places. A target that is not live is
-not judged, as the invariant cannot find it.
+not judged, as the invariant cannot find it. A re-anchoring carries no offset
+to a target that was not judged for it: a spanner's or a repeat structure's
+dead endpoint takes the surviving anchor whole (Section~\ref{sec:k0:delete-event}).
 
 \begin{requirement}
   \label{req:catalog:anchor-offsets}
@@ -1171,7 +1173,10 @@ rule table over every cross-cutting structure that referenced it: a tie
 cascade-deletes; a comment or analytical annotation orphans (user content is
 never silently deleted); a beam truncates while $\geq 2$ members survive and
 otherwise cascade-deletes; a slur or spanner re-anchors to the nearest surviving
-endpoint while $\geq 1$ survives and otherwise cascade-deletes; a lyric
+endpoint while $\geq 1$ survives and otherwise cascade-deletes, the dead endpoint
+taking the surviving endpoint's anchor whole, its offset with it, so that it
+answers to the survivor's time model (since version~0.22.0, before which it kept
+its own offset at the survivor's event); a lyric
 cascade-deletes, and a marker re-anchors to the nearest live event of its
 staff instance or orphans to its region's start, in both modes (since
 version~0.21.0). A grace note before the event is not a referent: it stands
@@ -1902,7 +1907,9 @@ voices or measures; a voice: no events), since those carry distinct
 \texttt{TypedObjectId}s the reducer mints separately --- so contents are added by
 subsequent operations. A delete is a delete-wins tombstone, but a
 \emph{precondition no-op} (\texttt{ContainerNotEmpty}) unless the container has no
-live children --- the caller deletes contents first. A region is held so by a
+live children --- the caller deletes contents first (a staff instance's live
+measure holds it since version~0.22.0, before which the delete applied and took
+the measure from the graph). A region is held so by a
 live tempo segment of another map anchored to it and, since version~0.21.0, by
 a live marker or spanner anchored to it. Graph-aware reduction adds
 or removes the container and maintains the region's staff extent so
@@ -1942,7 +1949,9 @@ tempo map's segments, the region's own edge judged by its own model; and a
 \texttt{CreateRegion} is refused when any other live holder names the new region
 so before it is made. A \texttt{CreateStaffInstance}'s carried clef and key
 changes and its own grid's meter changes answer to their targets likewise
-(Section~\ref{sec:framework:anchor-offsets}).
+(Section~\ref{sec:framework:anchor-offsets}), and its own grid's meter changes
+name live time signatures, or the create is a precondition no-op
+(\texttt{TargetMissing}), as a \texttt{SetMetricGrid}'s are.
 
 \textbf{Conflict cases.} None at reduction time: creation is set-union (a repeat
 create is idempotent), and the empty-only delete is a deterministic precondition
@@ -1952,7 +1961,8 @@ gate, not a conflict.
 (Section~\ref{sec:k0:undo}); \texttt{StrictInverse} conflicts if it was
 concurrently mutated, with the policy treatment as for InsertEvent, and, since
 version~0.19.0, if a live child the undo leaves is in it (a region's staff
-instance, an instance's voice, a voice's event), which it would leave naming
+instance, an instance's voice or, since version~0.22.0, its measure, a voice's
+event), which it would leave naming
 nothing, or a live tempo segment of another map is anchored to a region it
 would remove, as a \texttt{DeleteRegion} is refused (the conflict naming the
 region, the segment having no identifier), or, since version~0.21.0, a live
@@ -2552,6 +2562,8 @@ immutable value maps with no modify operation, so restoration-awareness does
 not apply to them. Also closes a pre-existing hole: a minted
 \texttt{TimeSignature} still named by a live \texttt{Measure.time\_signature}
 now blocks its own undo, exactly as a live meter-change reference already did.
+Since version~0.22.0 so does a live staff instance whose own grid names it: the
+grid is written once, by the instance's create, and never restored.
 
 \textbf{Re-anchoring.} Not applicable (a measure mint references no
 tombstonable anchor of its own; there is no \texttt{DeleteMeasure} in this
@@ -2796,7 +2808,9 @@ minted-object undo does not re-introduce the tombstoned structure
 table when a referenced event is later tombstoned: re-anchor to the
 nearest surviving anchor, cascade-delete only when none survives --- as
 for spanners, spanning \emph{every} anchor site
-(\texttt{start}/\texttt{end}, jump targets, volta spans). Among multiple
+(\texttt{start}/\texttt{end}, jump targets, volta spans), each dead site
+taking the first site naming the survivor whole, its offset with it (since
+version~0.22.0). Among multiple
 surviving candidates --- a case slurs and spanners never present, since
 their sole other endpoint is the forced survivor --- ``nearest'' is
 currently realized as the deterministic identifier-order minimum (the

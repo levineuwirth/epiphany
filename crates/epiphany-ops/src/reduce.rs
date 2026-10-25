@@ -3659,31 +3659,30 @@ impl<'a> Reducer<'a> {
                 if !start_hit && !end_hit {
                     return Some(spanner);
                 }
-                // The survivor is the *other* anchor's event, if it is an event
-                // anchor on a live event; otherwise the spanner cascade-deletes.
+                // The survivor is the *other* anchor, if it is an event anchor
+                // on a live event; otherwise the spanner cascade-deletes. The
+                // dead endpoint takes it whole, its offset with it, so it
+                // answers to the survivor's time model as the survivor does
+                // (reduction version 5: before it the endpoint kept its own
+                // offset at the survivor's note, `AnchorOffsetModel`).
                 let other = if start_hit {
                     &spanner.end
                 } else {
                     &spanner.start
                 };
-                let survivor = match other {
+                let to = match other {
                     TimeAnchor::Event { id, .. }
                         if *id != op.event && score.events.contains(*id) =>
                     {
-                        Some(*id)
+                        Some(other.clone())
                     }
                     _ => None,
-                };
-                let to = survivor?;
+                }?;
                 if start_hit {
-                    if let TimeAnchor::Event { id, .. } = &mut spanner.start {
-                        *id = to;
-                    }
+                    spanner.start = to.clone();
                 }
                 if end_hit {
-                    if let TimeAnchor::Event { id, .. } = &mut spanner.end {
-                        *id = to;
-                    }
+                    spanner.end = to;
                 }
                 Some(spanner)
             })
@@ -3695,7 +3694,9 @@ impl<'a> Reducer<'a> {
         // re-anchors to the nearest surviving event anchor — the
         // lexicographically smallest, matching `nearest_survivor`, so the
         // graph and the ledger agree on both existence and target — and the
-        // structure cascade-deletes only when no event anchor survives.
+        // structure cascade-deletes only when no event anchor survives. A
+        // dead site takes the first site naming the survivor whole, its
+        // offset with it, as a spanner's endpoint does (reduction version 5).
         let repeats = std::mem::take(&mut score.cross_cutting.repeats);
         let kept_repeats: Vec<_> = repeats
             .into_iter()
@@ -3707,23 +3708,21 @@ impl<'a> Reducer<'a> {
                 if !hit {
                     return Some(repeat);
                 }
-                let survivor = repeat
+                let (_, survivor) = repeat
                     .anchor_sites()
                     .into_iter()
                     .filter_map(|a| match a {
                         TimeAnchor::Event { id, .. }
                             if *id != op.event && score.events.contains(*id) =>
                         {
-                            Some(*id)
+                            Some((*id, a.clone()))
                         }
                         _ => None,
                     })
-                    .min()?;
+                    .min_by_key(|(id, _)| *id)?;
                 for site in repeat.anchor_sites_mut() {
-                    if let TimeAnchor::Event { id, .. } = site {
-                        if *id == op.event {
-                            *id = survivor;
-                        }
+                    if matches!(site, TimeAnchor::Event { id, .. } if *id == op.event) {
+                        *site = survivor.clone();
                     }
                 }
                 Some(repeat)
@@ -6176,6 +6175,29 @@ impl<'a> Reducer<'a> {
                 return effect;
             }
         }
+        // Its own grid names a time signature per meter change, which must be
+        // live, as a `SetMetricGrid`'s must (reduction version 5: before it
+        // the instance carried a grid naming one never declared,
+        // `CrossCuttingRefsResolve`).
+        let undeclared = op
+            .instance
+            .local_metric_grid
+            .iter()
+            .flat_map(|grid| &grid.meter_sequence)
+            .any(|change| {
+                !matches!(
+                    self.objects
+                        .get(&TypedObjectId::TimeSignature(change.time_signature)),
+                    Some(ObjectState::Live)
+                )
+            });
+        if undeclared {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            };
+        }
         // They, and its own grid's meter changes, answer to their targets'
         // time models (reduction version 5, X5b.9).
         let carried = staff_instance_anchors(&op.instance);
@@ -8422,7 +8444,12 @@ impl<'a> Reducer<'a> {
             .instance_voices
             .get(&op.staff_instance)
             .is_some_and(|s| !s.is_empty());
-        let minted_by = match self.delete_precondition(iobj, env, has_voices) {
+        // A live measure is a child as a voice is (reduction version 5:
+        // before it the delete applied and took the measure from the graph,
+        // leaving whatever named it naming nothing).
+        let has_children =
+            has_voices || self.instance_live_measure(op.staff_instance, &[]).is_some();
+        let minted_by = match self.delete_precondition(iobj, env, has_children) {
             Ok(minter) => minter,
             Err(effect) => return effect,
         };
@@ -9444,8 +9471,10 @@ impl<'a> Reducer<'a> {
                     self.orphaned_to_region(*region, targets, restorations)
                         .map(|sid| (*target, sid))
                 }),
-            TypedObjectId::StaffInstance(instance) => {
-                self.instance_voices.get(instance).and_then(|voices| {
+            TypedObjectId::StaffInstance(instance) => self
+                .instance_voices
+                .get(instance)
+                .and_then(|voices| {
                     voices.iter().find_map(|voice| {
                         let vobj = TypedObjectId::Voice(*voice);
                         (!targets.contains(&vobj)
@@ -9453,7 +9482,13 @@ impl<'a> Reducer<'a> {
                         .then_some((*target, vobj))
                     })
                 })
-            }
+                // Or a live measure (reduction version 5: before it the undo
+                // took the measure from the graph, leaving whatever named it
+                // naming nothing).
+                .or_else(|| {
+                    self.instance_live_measure(*instance, targets)
+                        .map(|measure| (*target, measure))
+                }),
             TypedObjectId::Voice(voice) => self.voice_occupancy.get(voice).and_then(|events| {
                 events.iter().find_map(|(_, _, event)| {
                     let eobj = TypedObjectId::Event(*event);
@@ -9562,6 +9597,24 @@ impl<'a> Reducer<'a> {
                                     && matches!(self.objects.get(&mobj), Some(ObjectState::Live)))
                                 .then_some((*target, mobj))
                             })
+                    })
+                    // A live staff instance whose own grid names it: the
+                    // grid is written once, at the create, and never
+                    // restored (reduction version 5: before it the undo left
+                    // the grid naming nothing, `CrossCuttingRefsResolve`).
+                    .or_else(|| {
+                        self.instance_grid.iter().find_map(|(instance, grid)| {
+                            let iobj = TypedObjectId::StaffInstance(*instance);
+                            let names = grid.iter().any(|grid| {
+                                grid.meter_sequence
+                                    .iter()
+                                    .any(|change| change.time_signature == *id)
+                            });
+                            (names
+                                && !targets.contains(&iobj)
+                                && matches!(self.objects.get(&iobj), Some(ObjectState::Live)))
+                            .then_some((*target, iobj))
+                        })
                     })
             }
             // Genesis tranche G3a undo repair (pins A2-A6): these three
@@ -12560,6 +12613,24 @@ impl<'a> Reducer<'a> {
         self.instance_voices
             .iter()
             .find_map(|(instance, voices)| voices.contains(&voice).then_some(*instance))
+    }
+
+    /// A live measure of `instance` that `leaving` does not take with it,
+    /// from the measure values both modes keep.
+    fn instance_live_measure(
+        &self,
+        instance: StaffInstanceId,
+        leaving: &[TypedObjectId],
+    ) -> Option<TypedObjectId> {
+        self.measure_values
+            .iter()
+            .map(|(id, (holder, _))| (TypedObjectId::Measure(*id), holder))
+            .find(|(measure, holder)| {
+                **holder == instance
+                    && !leaving.contains(measure)
+                    && matches!(self.objects.get(measure), Some(ObjectState::Live))
+            })
+            .map(|(measure, _)| measure)
     }
 
     /// The region a staff instance lives in, from the base-free ledger index.

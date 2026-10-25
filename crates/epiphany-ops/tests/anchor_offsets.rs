@@ -1700,3 +1700,256 @@ fn a_migration_out_of_musical_time_strands_not_what_it_drops() {
     assert!(content.user_system_breaks.is_empty());
     assert!(content.default_metric_grid.is_none());
 }
+
+// --- What D50's bar found at the final generator -------------------------
+
+/// A region of `STAVES[0]` far from the fixture's, holding a note `959` in a
+/// voice of its own, made in musical time (inside `transaction` where one is
+/// given) and migrated to a model admitting both clocks.
+fn freely_mixed_note(h: &mut History, transaction: Option<TransactionId>) -> EventId {
+    let region = RegionId::new(AUTHOR, 13);
+    let instance = StaffInstanceId::new(AUTHOR, 924);
+    let voice = VoiceId::new(AUTHOR, 944);
+    let note = EventId::new(AUTHOR, 959);
+    h.shaped_region(13, valuegen::metric_model(), |_| {});
+    h.instance(region, instance, STAVES[0]);
+    h.push(OperationKind::CreateVoice(CreateVoiceOp {
+        staff_instance: instance,
+        voice: valuegen::voice(voice),
+    }));
+    h.push_payload(
+        transaction,
+        OperationPayload::Primitive(OperationKind::InsertEvent(InsertEventOp {
+            staff_instance: instance,
+            event: valuegen::insert_event_value(
+                note,
+                voice,
+                MusicalPosition::origin(),
+                quarter(),
+                &[PitchId::new(AUTHOR, 960)],
+            ),
+        })),
+    );
+    h.migrate(region, either());
+    note
+}
+
+/// `note` deleted, or (`undo` given) its transaction undone best-effort.
+fn remove_note(h: &mut History, note: EventId, undo: Option<TransactionId>) -> OperationId {
+    use epiphany_ops::{DeleteEventOp, TupletCompensation};
+    match undo {
+        Some(transaction) => h.undo(transaction, UndoPolicy::BestEffort),
+        None => h.push(OperationKind::DeleteEvent(DeleteEventOp {
+            event: note,
+            tuplet_compensation: TupletCompensation::NotInTuplet,
+        })),
+    }
+}
+
+/// A spanner from a note of a freely mixed region, by a wall-clock offset,
+/// to the metric region's note: the first note deleted, or its insert undone,
+/// the start collapses onto the end and takes the end's anchor whole, its
+/// offset with it, where before it kept its own wall-clock offset at the
+/// metric note (`AnchorOffsetModel`). The end's own offset comes along.
+#[test]
+fn a_spanner_s_endpoint_collapses_onto_the_survivor_s_anchor_whole() {
+    for by_undo in [false, true] {
+        for kept in [AnchorOffset::Zero, musical()] {
+            let mut h = History::new();
+            let transaction = by_undo.then(|| h.transaction(30));
+            let note = freely_mixed_note(&mut h, transaction);
+            let end = at_note(NOTE, kept.clone());
+            let set = h.spanner(41, at_note(note, wall_clock()), end.clone(), STAVES[0]);
+            let removed = remove_note(&mut h, note, transaction);
+            let (free, aware) = h.reduce();
+            assert!(applied(&free, set), "{:?}", effect(&free, set));
+            assert!(
+                undone(&free, removed),
+                "undo {by_undo}: {:?}",
+                effect(&free, removed)
+            );
+            let spanner = &aware.score.cross_cutting.spanners[0];
+            assert_eq!((&spanner.start, &spanner.end), (&end, &end), "{kept:?}");
+        }
+    }
+}
+
+/// A repeat from a note of a freely mixed region, by a wall-clock offset, to
+/// the metric region's note by a musical one: the first note deleted, the
+/// start takes the end's anchor whole, as a spanner's endpoint does.
+#[test]
+fn a_repeat_s_dead_site_takes_the_survivor_s_anchor_whole() {
+    for by_undo in [false, true] {
+        let mut h = History::new();
+        let transaction = by_undo.then(|| h.transaction(30));
+        let note = freely_mixed_note(&mut h, transaction);
+        let end = at_note(NOTE, musical());
+        let set = h.repeat(42, at_note(note, wall_clock()), end.clone());
+        let removed = remove_note(&mut h, note, transaction);
+        let (free, aware) = h.reduce();
+        assert!(applied(&free, set), "{:?}", effect(&free, set));
+        assert!(undone(&free, removed), "undo {by_undo}");
+        let repeat = &aware.score.cross_cutting.repeats[0];
+        assert_eq!((&repeat.start, &repeat.end), (&end, &end));
+    }
+}
+
+/// A metric region far from the fixture's, filled with an instance of
+/// `STAVES[2]` (inside `transaction` where one is given) and, unless
+/// `measured` is false, a measure at its start named by a marker.
+fn measured_instance(
+    h: &mut History,
+    transaction: Option<TransactionId>,
+    measured: bool,
+) -> StaffInstanceId {
+    let region = RegionId::new(AUTHOR, 13);
+    let instance = StaffInstanceId::new(AUTHOR, 924);
+    let measure = MeasureId::new(AUTHOR, 931);
+    h.shaped_region(13, valuegen::metric_model(), |_| {});
+    h.push_payload(
+        transaction,
+        OperationPayload::Primitive(OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+            region,
+            instance: valuegen::staff_instance(instance, STAVES[2]),
+        })),
+    );
+    if measured {
+        h.measure(instance, measure, edge(region, AnchorOffset::Zero));
+        h.marker(43, at_measure(measure, AnchorOffset::Zero));
+    }
+    instance
+}
+
+/// A staff instance holding a live measure is not empty: its delete is
+/// refused `ContainerNotEmpty`, where before it applied and took from the
+/// graph the measure a marker named (`CrossCuttingRefsResolve`). With no
+/// measure the delete applies.
+#[test]
+fn a_staff_instance_holding_a_measure_is_not_deleted() {
+    use epiphany_ops::DeleteStaffInstanceOp;
+    for measured in [true, false] {
+        let mut h = History::new();
+        let instance = measured_instance(&mut h, None, measured);
+        let delete = h.push(OperationKind::DeleteStaffInstance(DeleteStaffInstanceOp {
+            staff_instance: instance,
+        }));
+        let (free, _) = h.reduce();
+        let not_empty = OperationEffect::NoOp {
+            reason: NoOpReason::PreconditionFailedUnderReduction {
+                reason: PreconditionFailureReason::ContainerNotEmpty,
+            },
+        };
+        if measured {
+            assert_eq!(*effect(&free, delete), not_empty);
+        } else {
+            assert!(applied(&free, delete), "{:?}", effect(&free, delete));
+        }
+    }
+}
+
+/// One step past: an undo of the transaction that made the instance, the
+/// measure made since outside it, is held by the live measure as by a live
+/// voice, in both policies; the undo applies where the instance is empty.
+#[test]
+fn an_undo_of_a_staff_instance_holding_a_measure_is_held() {
+    for policy in [UndoPolicy::StrictInverse, UndoPolicy::BestEffort] {
+        for measured in [true, false] {
+            let mut h = History::new();
+            let transaction = h.transaction(30);
+            let instance = measured_instance(&mut h, Some(transaction), measured);
+            let undo = h.undo(transaction, policy);
+            let (free, aware) = h.reduce();
+            let kept = aware.score.staff_instances().any(|(_, i)| i.id == instance);
+            assert_eq!(kept, measured, "{policy:?}: {:?}", effect(&free, undo));
+            if !measured {
+                assert!(undone(&free, undo), "{policy:?}");
+            }
+        }
+    }
+}
+
+/// A staff instance whose own grid names a time signature never declared is
+/// refused `TargetMissing`, as a `SetMetricGrid` naming one is, where before
+/// it applied (`CrossCuttingRefsResolve`). Declared first, it applies.
+#[test]
+fn a_staff_instance_s_grid_naming_an_undeclared_signature_is_refused() {
+    let instance = StaffInstanceId::new(AUTHOR, 924);
+    for declared in [false, true] {
+        let mut h = History::new();
+        if declared {
+            h.time_signature(METRIC, edge(METRIC, AnchorOffset::Zero));
+        }
+        h.shaped_region(13, valuegen::metric_model(), |_| {});
+        let create = h.shaped_instance(RegionId::new(AUTHOR, 13), instance, STAVES[2], |i| {
+            i.local_metric_grid = Some(MetricGrid {
+                meter_sequence: vec![MeterChange {
+                    anchor: edge(RegionId::new(AUTHOR, 13), AnchorOffset::Zero),
+                    time_signature: SIGNATURE,
+                }],
+            });
+        });
+        let (free, _) = h.reduce();
+        if declared {
+            assert!(applied(&free, create), "{:?}", effect(&free, create));
+        } else {
+            assert_eq!(
+                *effect(&free, create),
+                OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::TargetMissing,
+                    },
+                }
+            );
+        }
+    }
+}
+
+/// One step past: an undo of the transaction that declared the signature, a
+/// live instance's own grid naming it since, is held, in both policies, where
+/// before it left the grid naming nothing; with no instance naming it the
+/// undo applies.
+#[test]
+fn an_undo_of_a_signature_an_instance_s_grid_names_is_held() {
+    let instance = StaffInstanceId::new(AUTHOR, 924);
+    let region = RegionId::new(AUTHOR, 13);
+    for policy in [UndoPolicy::StrictInverse, UndoPolicy::BestEffort] {
+        for named in [true, false] {
+            let mut h = History::new();
+            let transaction = h.transaction(30);
+            h.push_payload(
+                Some(transaction),
+                OperationPayload::Primitive(OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region: METRIC,
+                    anchor: edge(METRIC, AnchorOffset::Zero),
+                    time_signature: Some(valuegen::time_signature(SIGNATURE, 4)),
+                })),
+            );
+            h.shaped_region(13, valuegen::metric_model(), |_| {});
+            h.shaped_instance(region, instance, STAVES[2], |i| {
+                if named {
+                    i.local_metric_grid = Some(MetricGrid {
+                        meter_sequence: vec![MeterChange {
+                            anchor: edge(region, AnchorOffset::Zero),
+                            time_signature: SIGNATURE,
+                        }],
+                    });
+                }
+            });
+            let undo = h.undo(transaction, policy);
+            let (free, aware) = h.reduce();
+            assert_eq!(
+                aware
+                    .score
+                    .time_signatures
+                    .iter()
+                    .any(|t| t.id == SIGNATURE),
+                named,
+                "{policy:?}: {:?}",
+                effect(&free, undo)
+            );
+            if !named {
+                assert!(undone(&free, undo), "{policy:?}");
+            }
+        }
+    }
+}

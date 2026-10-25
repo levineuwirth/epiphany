@@ -855,7 +855,25 @@ pub mod vectors;
 ///     them new and none of them reduced state: each region's own model's
 ///     meter anchors, the anchors of the clef and key changes a staff
 ///     instance's create carried, and the objects named before they were
-///     made. Locked by `anchor_offsets.rs`.
+///     made. Locked by `anchor_offsets.rs` and the committed history `189`.
+///   - **What D50's bar found at X5b.9's final generator** (verdicts and the
+///     graph): a spanner's or a repeat structure's endpoint whose note an
+///     operation removes takes the surviving anchor whole, its offset with
+///     it, where version `4` rewrote only its event and kept its own offset
+///     at the survivor's note, breaking `AnchorOffsetModel` where the
+///     survivor's region admits no such offset; the ledger's records are
+///     unchanged. A `DeleteStaffInstance` whose instance holds a live measure
+///     is refused `ContainerNotEmpty`, as the catalog makes the delete
+///     empty-only, and a `CreateStaffInstance` whose own grid names a time
+///     signature that is not live is refused `TargetMissing`, as a
+///     `SetMetricGrid` naming one is; an undo that would remove an instance
+///     holding a live measure, or a time signature a live instance's own grid
+///     names, is held as for a live voice or a region's grid. Version `4`
+///     applied each and left a reference naming nothing
+///     (`CrossCuttingRefsResolve`; two or three authors each, older than
+///     X5b.9). Read from the measure values and instance grids both modes
+///     keep. Locked by `anchor_offsets.rs` and the committed histories `190`
+///     to `193`.
 ///
 ///   With it, at the same epoch 16, a wire addition that changes no verdict:
 ///   `MarkerKind` appends `ExpressionText` (X5b.7, D79 Q9), reduced as any
