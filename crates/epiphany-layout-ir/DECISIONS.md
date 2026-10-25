@@ -1272,3 +1272,8 @@ column's spring the padding after it.
   mark's lines so too, its metronome after its last line. An empty line
   takes its step and draws nothing. The shaped faces cover no U+000A, so a
   line break is never shaped.
+- An arpeggio stands 0.4 left of its chord's heads and accidentals, but,
+  where a head stands on a ledger line (a space under the staff or over it,
+  or further) and no head draws an accidental, 0.3 past the ledger line's
+  reach of 0.33, as MuseScore's chord layout sets its gap
+  (`arpeggioLedgerDistance`, `ledgerLineLength`).

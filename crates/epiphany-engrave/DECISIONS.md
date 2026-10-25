@@ -2436,3 +2436,12 @@ is set:
   move together, so the whole text clears the staff as one
   (`a_text_in_lines_is_drawn_in_lines`). The importer now keeps a text's
   line breaks (D81's Q2); a line break had been an uncovered codepoint.
+
+## ENGRAVER_VERSION 71 → 72: an arpeggio clears its chord's ledger lines (X4c.10, 2026-10-24)
+
+- An arpeggio before a chord with a head on a ledger line and no
+  accidental stands 0.63 left of the heads, MuseScore's padding from an
+  arpeggio to a ledger line (0.3) past the line's reach (0.33), not 0.4, so
+  it no longer meets the ledger line
+  (`an_arpeggio_stands_clear_of_its_chords_ledger_lines`). The engraver
+  itself is unchanged.

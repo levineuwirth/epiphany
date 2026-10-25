@@ -30,8 +30,13 @@ const ARTICULATION_MIN_DISTANCE: f32 = 0.4;
 const TREMOLO_OUTSIDE_PADDING: f32 = 0.5;
 const TREMOLO_NOTE_SIDE_PADDING: f32 = 1.25;
 /// The gap between an arpeggio and the heads or accidentals right of it
-/// (`arpeggioNoteDistance`).
+/// (`arpeggioNoteDistance`), and, where a head stands on a ledger line and
+/// none has an accidental, between it and the ledger line, which reaches
+/// `LEDGER_LINE_LENGTH` past its head (MuseScore's padding from an arpeggio
+/// to a ledger line, and `ledgerLineLength`; `ChordLayout`'s arpeggio gap).
 const ARPEGGIO_NOTE_DISTANCE: f32 = 0.4;
+const ARPEGGIO_LEDGER_DISTANCE: f32 = 0.3;
+const LEDGER_LINE_LENGTH: f32 = 0.33;
 /// The step from one arpeggio wiggle to the next, Bravura's
 /// `wiggleArpeggiatoUp` advance, in staff spaces.
 pub(super) const ARPEGGIO_WIGGLE_STEP: f32 = 1.02;
@@ -53,6 +58,8 @@ pub(super) struct Chord<'a> {
     pub yo: f32,
     /// The chord's first component is in a beam.
     pub beamed: bool,
+    /// A head of it draws an accidental.
+    pub accidentals: bool,
 }
 
 /// One placed mark glyph: which of the chord's marks it draws (its wire
@@ -641,12 +648,21 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
         });
     }
 
-    // An arpeggio left of the chord, from its lowest head to its highest.
+    // An arpeggio left of the chord, from its lowest head to its highest,
+    // and further left past the ledger line a head stands on, the first a
+    // space under the staff or over it.
+    let ledgered =
+        !chord.accidentals && (low <= chord.yo - 1.0 + 1e-3 || high >= chord.yo + 5.0 - 1e-3);
+    let gap = if ledgered {
+        ARPEGGIO_LEDGER_DISTANCE + LEDGER_LINE_LENGTH
+    } else {
+        ARPEGGIO_NOTE_DISTANCE
+    };
     for mark in marks {
         if let EventMark::Arpeggio { direction } = mark {
             placed.arpeggio = Some(Arpeggio {
                 direction: *direction,
-                right: chord.heads_left - ARPEGGIO_NOTE_DISTANCE,
+                right: chord.heads_left - gap,
                 bottom: low - 0.5,
                 top: high + 0.5,
             });

@@ -2740,6 +2740,7 @@ pub fn try_to_constrained(
                 },
                 yo: y_origin(staff),
                 beamed: seg.drawn && seg.flag.is_none() && seg.beams > 0,
+                accidentals: heads.iter().any(|h| !h.accidentals.is_empty()),
             };
             let ornaments: Vec<Ornament> = ornaments
                 .iter()

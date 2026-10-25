@@ -799,6 +799,54 @@ fn an_arpeggio_takes_room_and_other_marks_take_none() {
     );
 }
 
+/// An arpeggio stands 0.4 left of its chord's heads and accidentals, and,
+/// where a head stands on a ledger line and none has an accidental, past
+/// the ledger line: 0.3 clear of its 0.33 reach past the head, as
+/// MuseScore's chord layout sets the gap (`arpeggioLedgerDistance`,
+/// `ledgerLineLength`).
+#[test]
+fn an_arpeggio_stands_clear_of_its_chords_ledger_lines() {
+    let arpeggio = "<arpeggiate/>";
+    let rolled = |pitches: [&str; 3]| {
+        [
+            note(pitches[0], 2, "quarter", 1, 1, arpeggio),
+            chord(pitches[1], 2, "quarter", 1, 1, arpeggio),
+            chord(pitches[2], 2, "quarter", 1, 1, arpeggio),
+        ]
+        .concat()
+    };
+    let measure = [
+        rolled(["C4", "E4", "G4"]),
+        rolled(["E4", "G4", "B4"]),
+        rolled(["C4", "F#4", "A4"]),
+        note("rest", 2, "quarter", 1, 1, ""),
+    ]
+    .concat();
+    let loaded = part("arpeggio_ledgers.musicxml", 1, &[measure]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let gap = |event: EventId| {
+        let runs: Vec<Ink> = layout
+            .texts
+            .iter()
+            .filter(|t| t.provenance.source == TypedObjectId::Event(event))
+            .map(text_box)
+            .collect();
+        assert_eq!(runs.len(), 1, "one arpeggio");
+        let left = heads(&loaded, &layout, event)
+            .iter()
+            .map(|h| h[0])
+            .fold(f32::INFINITY, f32::min);
+        (left - runs[0][2], runs[0][2])
+    };
+    near(gap(e[0]).0, 0.3 + 0.33, "past the ledger line");
+    near(gap(e[1]).0, 0.4, "in the staff");
+    // With an accidental, 0.4 from the accidental's ink.
+    let sharp = named(&layout, "accidentalSharp");
+    assert_eq!(sharp.len(), 1);
+    near(sharp[0][0] - gap(e[2]).1, 0.4, "left of the accidental");
+}
+
 /// A one-note tremolo's strokes stand on its stem between head and tip.
 #[test]
 fn tremolo_strokes_stand_on_their_stems() {
