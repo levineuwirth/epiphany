@@ -190,6 +190,16 @@ fn refused(state: &MaterializedState, id: OperationId) -> bool {
         }
 }
 
+/// Whether an operation was refused for naming a target that is not live.
+fn missing(state: &MaterializedState, id: OperationId) -> bool {
+    *effect(state, id)
+        == OperationEffect::NoOp {
+            reason: NoOpReason::PreconditionFailedUnderReduction {
+                reason: PreconditionFailureReason::TargetMissing,
+            },
+        }
+}
+
 /// What a migration's `TimeModelMigrationFailure` names, `None` where it did
 /// not conflict so.
 fn stranded(state: &MaterializedState, id: OperationId) -> Option<Vec<TypedObjectId>> {
@@ -508,35 +518,33 @@ fn an_extent_at_an_event_or_a_measure_answers_to_its_region_s_time_model() {
     assert!(applied_per_event.iter().all(|id| applied(&free, *id)));
 }
 
-/// A region a live region's extent names before it is made, by an offset its
-/// own model does not admit, is refused that model: created proportional
-/// under a musical offset, it is refused, and created metric it applies. A
-/// region named with no offset takes any model.
+/// A region's extent naming a region before it is made is refused
+/// `TargetMissing`, by an offset of any kind, and the named region is then
+/// made under any model (D87 Q2: before it the namer applied naming nothing,
+/// and X5b.8 refused the named region a model its namer's offset
+/// contradicted).
 #[test]
-fn a_region_named_before_it_is_made_is_refused_a_model_its_namer_s_offset_contradicts() {
-    let made = |offset: AnchorOffset, model: RegionTimeModel| {
-        let mut h = History::new();
-        let named = RegionId::new(AUTHOR, 10);
-        let (_, namer) = h.region(
-            11,
-            valuegen::metric_model(),
-            edge(named, RegionEdge::Start, AnchorOffset::Zero),
-            edge(named, RegionEdge::Start, offset),
-        );
-        let (_, create) = h.region(10, model, wall(0), wall(1000));
-        let (free, _) = h.reduce();
-        assert!(applied(&free, namer));
-        (refused(&free, create), applied(&free, create))
-    };
-    assert_eq!(
-        made(musical(), valuegen::proportional_model()),
-        (true, false)
-    );
-    assert_eq!(made(musical(), valuegen::metric_model()), (false, true));
-    assert_eq!(
-        made(AnchorOffset::Zero, valuegen::proportional_model()),
-        (false, true)
-    );
+fn a_region_s_extent_naming_a_region_not_yet_made_is_refused() {
+    for offset in [musical(), AnchorOffset::Zero] {
+        for model in [valuegen::proportional_model(), valuegen::metric_model()] {
+            let mut h = History::new();
+            let named = RegionId::new(AUTHOR, 10);
+            let (_, namer) = h.region(
+                11,
+                valuegen::metric_model(),
+                edge(named, RegionEdge::Start, AnchorOffset::Zero),
+                edge(named, RegionEdge::Start, offset.clone()),
+            );
+            let (_, create) = h.region(10, model.clone(), wall(0), wall(1000));
+            let (free, _) = h.reduce();
+            assert!(
+                missing(&free, namer),
+                "{offset:?}: {:?}",
+                effect(&free, namer)
+            );
+            assert!(applied(&free, create), "{offset:?} {model:?}");
+        }
+    }
 }
 
 /// Only a live region's extent strands a migration: a region deleted since
@@ -560,11 +568,12 @@ fn a_removed_region_s_extent_strands_nothing() {
     assert!(applied(&free, migration));
 }
 
-/// Only a live target judges an extent anchored to it: a region an undo
-/// removed, whose discipline the ledger's index still holds, or a measure an
-/// undo removed, whose value it still holds, contradicts nothing, and an
-/// extent anchored to either by any offset applies, as the invariant, which
-/// no longer finds the target, does not judge it.
+/// A removed target is not judged for an extent anchored to it, and since
+/// D87 Q2 such an extent is not written: a region an undo removed, whose
+/// discipline the ledger's index still holds, or a measure an undo removed,
+/// whose value it still holds, contradicts nothing, and an extent anchored to
+/// either is refused `TargetMissing` (before it the extent applied naming
+/// nothing).
 #[test]
 fn a_removed_target_judges_no_extent_anchored_to_it() {
     let mut h = History::new();
@@ -636,9 +645,13 @@ fn a_removed_target_judges_no_extent_anchored_to_it() {
     for undo in [region_undo, measure_undo] {
         assert!(!matches!(effect(&free, undo), OperationEffect::NoOp { .. }));
     }
-    assert!(applied(&free, at_region));
-    assert!(applied(&free, at_measure));
-    assert_eq!(aware.score.canvas.regions.len(), 3);
+    assert!(missing(&free, at_region), "{:?}", effect(&free, at_region));
+    assert!(
+        missing(&free, at_measure),
+        "{:?}",
+        effect(&free, at_measure)
+    );
+    assert_eq!(aware.score.canvas.regions.len(), 1);
 }
 
 /// A migration strands a region whose extent anchors an event or a measure of

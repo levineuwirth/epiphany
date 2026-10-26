@@ -11,7 +11,8 @@
 //! every live holder its target model would contradict, out of musical time
 //! and into it alike. An event, a measure or a region made where a live
 //! holder already names it by an offset its model does not admit is refused
-//! (D84 Q1).
+//! (D84 Q1); since D87 Q2 no holder names one before it is made, its write
+//! refused `TargetMissing`.
 //!
 //! Each history is one author's, built by hand on a small score: a metric
 //! region holding a staff instance, a measure, a voice and a note, and a
@@ -1320,44 +1321,54 @@ fn a_note_s_holder_answers_to_the_clock_its_region_gives_it() {
     assert!(back(musical()).1, "a musical offset");
 }
 
-// --- D84 Q1: named before it is made ------------------------------------------
+// --- D84 Q1, narrowed by D87 Q2: nothing named before it is made -------------
 
-/// A region's extent naming a note before it is made by a wall-clock offset
-/// refuses the note's insert into a metric region; by a musical offset the
-/// insert applies, and an extent at a live note by a wall-clock offset is
-/// refused at the extent's create (X5b.8's own reading).
+fn missing(state: &MaterializedState, id: OperationId) -> bool {
+    *effect(state, id)
+        == OperationEffect::NoOp {
+            reason: NoOpReason::PreconditionFailedUnderReduction {
+                reason: PreconditionFailureReason::TargetMissing,
+            },
+        }
+}
+
+/// A region's extent naming a note before it is made is refused
+/// `TargetMissing` by an offset of any kind, and the note is then made
+/// (D87 Q2: before it the extent applied naming nothing, and X5b.9 refused
+/// the note's insert where the extent's offset contradicted its region, so
+/// the name stood for good).
 #[test]
-fn a_note_an_extent_names_before_it_is_made_by_a_wall_clock_offset_is_refused() {
-    let named = |offset: AnchorOffset| {
+fn a_note_an_extent_names_before_it_is_made_refuses_the_extent() {
+    for offset in [wall_clock(), musical(), AnchorOffset::Zero] {
         let mut h = History::new();
         let create = h.region(
             13,
             valuegen::metric_model(),
-            at_note(EventId::new(AUTHOR, 959), offset),
+            at_note(EventId::new(AUTHOR, 959), offset.clone()),
             wall(9_000_000_000),
         );
         let insert = h.note(959, 2);
         let (free, _) = h.reduce();
-        assert!(applied(&free, create));
-        (refused(&free, insert), applied(&free, insert))
-    };
-    assert!(named(wall_clock()).0);
-    assert!(named(musical()).1, "a musical offset");
-    assert!(named(AnchorOffset::Zero).1, "no offset");
+        assert!(
+            missing(&free, create),
+            "{offset:?}: {:?}",
+            effect(&free, create)
+        );
+        assert!(applied(&free, insert), "{offset:?}");
+    }
 }
 
-/// A region's extent naming a measure before it is made by a wall-clock
-/// offset refuses the measure's create in a metric region; by a musical
-/// offset the create applies.
+/// A region's extent naming a measure before it is made is refused so, and
+/// the measure is then made.
 #[test]
-fn a_measure_an_extent_names_before_it_is_made_by_a_wall_clock_offset_is_refused() {
-    let named = |offset: AnchorOffset| {
+fn a_measure_an_extent_names_before_it_is_made_refuses_the_extent() {
+    for offset in [wall_clock(), musical()] {
         let mut h = History::new();
         let measure = MeasureId::new(AUTHOR, 931);
-        h.region(
+        let region = h.region(
             13,
             valuegen::metric_model(),
-            at_measure(measure, offset),
+            at_measure(measure, offset.clone()),
             wall(9_000_000_000),
         );
         let create = h.measure(
@@ -1369,32 +1380,28 @@ fn a_measure_an_extent_names_before_it_is_made_by_a_wall_clock_offset_is_refused
             ),
         );
         let (free, _) = h.reduce();
-        (refused(&free, create), applied(&free, create))
-    };
-    assert!(named(wall_clock()).0);
-    assert!(named(musical()).1, "a musical offset");
+        assert!(
+            missing(&free, region),
+            "{offset:?}: {:?}",
+            effect(&free, region)
+        );
+        assert!(applied(&free, create), "{offset:?}");
+    }
 }
 
-/// Every other holder that may name an object before it is made does so as
-/// an extent does: a time signature, a grid's meter change, a region's
-/// carried break and a staff instance's carried clef naming a note by a
-/// wall-clock offset refuse its insert, and a time signature naming a region
-/// by one refuses its create as metric. By a musical offset each insert and
-/// create applies. A tempo segment names no note before it is made: it is
-/// refused, naming nothing yet.
+/// Every other holder that could name an object before it is made is refused
+/// so where written: a time signature, a grid's meter change, a region's
+/// carried break and a staff instance's carried clef naming a note not yet
+/// made, by an offset of either kind, and a time signature naming a region
+/// not yet made. Each object is then made (D87 Q2).
 #[test]
-fn an_object_another_holder_names_before_it_is_made_is_refused_a_model_that_contradicts_it() {
+fn every_holder_naming_an_object_not_yet_made_is_refused() {
     let unmade = EventId::new(AUTHOR, 959);
-    let namers: [&Carrier; 4] = [
-        &|h, anchor| {
-            h.time_signature(METRIC, anchor);
-        },
-        &|h, anchor| {
-            h.grid(anchor);
-        },
-        &|h, anchor| {
-            h.shaped_region(13, valuegen::metric_model(), |r| carry_break(r, anchor));
-        },
+    type Namer = dyn Fn(&mut History, TimeAnchor) -> OperationId;
+    let namers: [&Namer; 4] = [
+        &|h, anchor| h.time_signature(METRIC, anchor),
+        &|h, anchor| h.grid(anchor),
+        &|h, anchor| h.shaped_region(13, valuegen::metric_model(), |r| carry_break(r, anchor)),
         &|h, anchor| {
             h.shaped_region(13, valuegen::metric_model(), |_| {});
             h.shaped_instance(
@@ -1407,26 +1414,31 @@ fn an_object_another_holder_names_before_it_is_made_is_refused_a_model_that_cont
                         clef: Clef::treble(),
                     })
                 },
-            );
+            )
         },
     ];
     for (i, name) in namers.into_iter().enumerate() {
-        for (offset, refuses) in [(wall_clock(), true), (musical(), false)] {
+        for offset in [wall_clock(), musical()] {
             let mut h = History::new();
-            name(&mut h, at_note(unmade, offset.clone()));
+            let named = name(&mut h, at_note(unmade, offset.clone()));
             let insert = h.note(959, 2);
             let (free, _) = h.reduce();
-            assert_eq!(refused(&free, insert), refuses, "namer {i}, {offset:?}");
-            assert_eq!(applied(&free, insert), !refuses, "namer {i}, {offset:?}");
+            assert!(
+                missing(&free, named),
+                "namer {i}, {offset:?}: {:?}",
+                effect(&free, named)
+            );
+            assert!(applied(&free, insert), "namer {i}, {offset:?}");
         }
     }
-    for (offset, refuses) in [(wall_clock(), true), (musical(), false)] {
+    for offset in [wall_clock(), musical()] {
         let mut h = History::new();
         let unmade = RegionId::new(AUTHOR, 13);
-        h.time_signature(METRIC, edge(unmade, offset.clone()));
+        let named = h.time_signature(METRIC, edge(unmade, offset.clone()));
         let create = h.shaped_region(13, valuegen::metric_model(), |_| {});
         let (free, _) = h.reduce();
-        assert_eq!(refused(&free, create), refuses, "{offset:?}");
+        assert!(missing(&free, named), "{offset:?}");
+        assert!(applied(&free, create), "{offset:?}");
     }
 }
 

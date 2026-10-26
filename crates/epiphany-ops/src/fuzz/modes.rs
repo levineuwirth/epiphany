@@ -4972,6 +4972,11 @@ fn mints_and_refs(payload: &OperationPayload) -> (Vec<TypedObjectId>, Vec<TypedO
         }
         OperationKind::ChangeRegionTimeModel(op) => {
             refs.push(T::Region(op.region));
+            if let epiphany_core::RegionTimeModel::Metric(model) = &op.new_time_model {
+                for meter in &model.meters {
+                    anchor(&meter.anchor, &mut refs);
+                }
+            }
             refs.extend(op.declared_incompatible.iter().map(|e| T::Event(*e)));
             if let PositionRemapping::Reassign(pairs) = &op.remapping {
                 refs.extend(pairs.iter().map(|(e, _)| T::Event(*e)));
@@ -5005,12 +5010,58 @@ fn mints_and_refs(payload: &OperationPayload) -> (Vec<TypedObjectId>, Vec<TypedO
             mints.push(T::Region(op.region.id));
             anchor(&op.region.time_extent.start, &mut refs);
             anchor(&op.region.time_extent.end, &mut refs);
+            if let epiphany_core::RegionTimeModel::Metric(model) = &op.region.time_model {
+                for meter in &model.meters {
+                    anchor(&meter.anchor, &mut refs);
+                }
+            }
+            if let Some(content) = op.region.content.staff_based() {
+                for meter in content
+                    .default_metric_grid
+                    .iter()
+                    .flat_map(|grid| &grid.meter_sequence)
+                {
+                    anchor(&meter.anchor, &mut refs);
+                }
+                for at in content
+                    .user_system_breaks
+                    .iter()
+                    .chain(&content.user_page_breaks)
+                {
+                    anchor(at, &mut refs);
+                }
+            }
+            for segment in op
+                .region
+                .local_tempo_map
+                .iter()
+                .flat_map(|map| &map.segments)
+            {
+                anchor(&segment.start, &mut refs);
+                if let Some(end) = &segment.end {
+                    anchor(end, &mut refs);
+                }
+            }
         }
         OperationKind::DeleteRegion(op) => refs.push(T::Region(op.region)),
         OperationKind::CreateStaffInstance(op) => {
             refs.push(T::Region(op.region));
             refs.push(T::Staff(op.instance.staff));
             mints.push(T::StaffInstance(op.instance.id));
+            for change in &op.instance.clef_sequence {
+                anchor(&change.anchor, &mut refs);
+            }
+            for change in &op.instance.key_sequence {
+                anchor(&change.anchor, &mut refs);
+            }
+            for meter in op
+                .instance
+                .local_metric_grid
+                .iter()
+                .flat_map(|grid| &grid.meter_sequence)
+            {
+                anchor(&meter.anchor, &mut refs);
+            }
         }
         OperationKind::DeleteStaffInstance(op) => refs.push(T::StaffInstance(op.staff_instance)),
         OperationKind::CreateVoice(op) => {
@@ -5018,7 +5069,12 @@ fn mints_and_refs(payload: &OperationPayload) -> (Vec<TypedObjectId>, Vec<TypedO
             mints.push(T::Voice(op.voice.id));
         }
         OperationKind::DeleteVoice(op) => refs.push(T::Voice(op.voice)),
-        OperationKind::SetMetricGrid(op) => refs.push(T::Region(op.region)),
+        OperationKind::SetMetricGrid(op) => {
+            refs.push(T::Region(op.region));
+            for meter in op.grid.iter().flat_map(|grid| &grid.meter_sequence) {
+                anchor(&meter.anchor, &mut refs);
+            }
+        }
         OperationKind::CreateStaff(op) => {
             mints.push(T::Staff(op.staff.id));
             refs.push(T::Instrument(op.staff.instrument));
@@ -5032,6 +5088,9 @@ fn mints_and_refs(payload: &OperationPayload) -> (Vec<TypedObjectId>, Vec<TypedO
         OperationKind::SetTempoSegment(op) => {
             refs.extend(op.region.map(T::Region));
             anchor(&op.start, &mut refs);
+            if let Some(end) = op.segment.as_ref().and_then(|segment| segment.end.as_ref()) {
+                anchor(end, &mut refs);
+            }
         }
         OperationKind::SetStaffLayout(op) => {
             refs.push(T::StaffInstance(op.staff_instance));
@@ -5345,6 +5404,141 @@ mod tests {
             OperationPayload::Primitive(OperationKind::InsertEvent(made)),
         );
         assert!(valid(&ahead.history), "made after");
+    }
+
+    /// Every holder of a time anchor names what its author has seen, as an
+    /// extent does: a history naming an event no envelope mints in a grid's
+    /// meter change, a region's own model, carried grid, break or tempo map,
+    /// a staff instance's carried clef, key or grid, a migration's target
+    /// model or a tempo segment's end is invalid, so the minimizer keeps what
+    /// each names (X5b fix round 1: each such write is refused naming a
+    /// target that is not live, and base-free reduction takes an object no
+    /// envelope mints as live).
+    #[test]
+    fn every_holder_names_what_its_author_has_seen() {
+        use super::{
+            genesis, valid, valuegen, ChangeRegionTimeModelOp, CreateRegionOp,
+            CreateStaffInstanceOp, PositionRemapping, SetMetricGridOp, SetTempoSegmentOp,
+            Simulation,
+        };
+        use epiphany_core::{
+            AnchorOffset, Clef, ClefChange, EventId, KeySignature, KeySignatureChange, MeterChange,
+            MetricGrid, MetricTimeModel, MusicalPosition, RegionEdge, RegionId, RegionTimeModel,
+            ReplicaId, StaffInstanceId, TempoMap, TimeAnchor,
+        };
+        let mut sim = Simulation::new(0x5B06);
+        genesis(&mut sim);
+        let score = &sim.view(0).reduced.score;
+        let event = score
+            .events
+            .iter_canonical()
+            .next()
+            .expect("a genesis event")
+            .id();
+        let region = score.canvas.regions[0].id;
+        let staff = score.staves[0].id;
+        let signature = score.time_signatures[0].id;
+        let fresh = RegionId::new(ReplicaId(1), 9_000);
+        let instance = StaffInstanceId::new(ReplicaId(1), 9_001);
+        let holder = |n: usize, at: TimeAnchor| -> OperationKind {
+            let meter = MeterChange {
+                anchor: at.clone(),
+                time_signature: signature,
+            };
+            let model = RegionTimeModel::Metric(MetricTimeModel {
+                meters: vec![meter.clone()],
+                ..Default::default()
+            });
+            let grid = MetricGrid {
+                meter_sequence: vec![meter],
+            };
+            let mut r = valuegen::region(fresh);
+            let mut i = valuegen::staff_instance(instance, staff);
+            let mut segment = valuegen::tempo_segment(region, MusicalPosition::origin(), 90.0);
+            match n {
+                0 => {
+                    return OperationKind::SetMetricGrid(SetMetricGridOp {
+                        region,
+                        grid: Some(grid),
+                    })
+                }
+                1 => r.time_model = model,
+                2 => {
+                    r.content
+                        .staff_based_mut()
+                        .expect("staff-based")
+                        .default_metric_grid = Some(grid)
+                }
+                3 => r
+                    .content
+                    .staff_based_mut()
+                    .expect("staff-based")
+                    .user_system_breaks
+                    .push(at),
+                4 => {
+                    segment.start = at;
+                    r.local_tempo_map = Some(TempoMap {
+                        initial: None,
+                        segments: vec![segment],
+                    });
+                }
+                5 => i.clef_sequence.push(ClefChange {
+                    anchor: at,
+                    clef: Clef::treble(),
+                }),
+                6 => i.key_sequence.push(KeySignatureChange {
+                    anchor: at,
+                    key: KeySignature::new(0).expect("C"),
+                }),
+                7 => i.local_metric_grid = Some(grid),
+                8 => {
+                    return OperationKind::ChangeRegionTimeModel(ChangeRegionTimeModelOp {
+                        region,
+                        new_time_model: model,
+                        declared_incompatible: Vec::new(),
+                        remapping: PositionRemapping::PreserveTime,
+                    })
+                }
+                _ => {
+                    segment.end = Some(at);
+                    return OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                        region: None,
+                        start: TimeAnchor::Region {
+                            id: region,
+                            edge: RegionEdge::Start,
+                            offset: AnchorOffset::Zero,
+                        },
+                        segment: Some(segment),
+                    });
+                }
+            }
+            if n < 5 {
+                OperationKind::CreateRegion(CreateRegionOp { region: r })
+            } else {
+                OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                    region,
+                    instance: i,
+                })
+            }
+        };
+        let at = |id: EventId| TimeAnchor::Event {
+            id,
+            offset: AnchorOffset::Zero,
+        };
+        for n in 0..10 {
+            let mut seen = Simulation::new(0x5B06);
+            genesis(&mut seen);
+            seen.author(0, OperationPayload::Primitive(holder(n, at(event))));
+            assert!(valid(&seen.history), "holder {n}, a seen event");
+            let mut unseen = Simulation::new(0x5B06);
+            genesis(&mut unseen);
+            let unmade = at(EventId::new(ReplicaId(9), 9));
+            unseen.author(0, OperationPayload::Primitive(holder(n, unmade)));
+            assert!(
+                !valid(&unseen.history),
+                "holder {n}, an event no envelope mints"
+            );
+        }
     }
 
     #[test]

@@ -1,8 +1,9 @@
 # class: invariant Invariant(CrossCuttingRefsResolve: region RegionId default-grid meter change time signature TimeSignatureId is not declared
 # expect: agree
-# verdict: applied
+# verdict: refused TargetMissing
 # was: split: a time signature set in a transaction, a region's grid then set by a SetMetricGrid naming it, the transaction undone; the undo applied and left the grid naming a signature no longer declared (reduction version 5, D86 Q1)
 # found: seed 0xfbcb01b4, 128 authored, at D50's bar on 0xFB (the coordinator's verification of C5b's second addendum); minimized from 183 to 13 envelopes
+# note: since a region's extent naming a measure before it is made is refused (X5b fix round 1, D87 Q2), the region its transaction's signature is set in is never made, the transaction is refused whole and its undo finds nothing to undo; the seed no longer reaches the class, and histories 195 and 197 to 205 hold it
 (envelope #x00000000000000010000000000000000 #x00000000000000000000000000000001 (stamp 1 0 #x00000000000000010000000000000000) (causal () ()) () (primitive (create-staff-group (staff-group #x00000000000000010000000000000000 (some "staff-group-0") grand-staff ()))))
 (envelope #x00000000000000010000000000000001 #x00000000000000000000000000000001 (stamp 4 0 #x00000000000000010000000000000001) (causal ((#x0000000000000001 0)) ()) () (primitive (create-instrument (instrument #x00000000000000010000000000000003 "instrument-3" () () #x () (clef g 2 0) (staff-line-configuration 5 #x000000000000f03f solid ()) ()))))
 (envelope #x00000000000000010000000000000002 #x00000000000000000000000000000001 (stamp 6 0 #x00000000000000010000000000000002) (causal ((#x0000000000000001 1)) ()) () (primitive (create-staff (staff #x00000000000000010000000000000005 "staff-5" () #x00000000000000010000000000000003 (staff-line-configuration 5 #x000000000000f03f solid ()) (some #x00000000000000010000000000000000) (clef g 2 0)))))

@@ -13,15 +13,16 @@
 
 use epiphany_core::{
     check_invariants, AnchorOffset, EventId, IdentityContext, InstrumentId, MusicalDuration,
-    OperationId, RationalTime, RegionEdge, RegionId, ReplicaId, Score, StaffId, StaffInstanceId,
-    TimeAnchor, TimeExtent, TransactionId, WallClockDuration, WallClockTime,
+    MusicalPosition, OperationId, PitchId, RationalTime, RegionEdge, RegionId, ReplicaId, Score,
+    StaffId, StaffInstanceId, TimeAnchor, TimeExtent, TransactionId, VoiceId, WallClockDuration,
+    WallClockTime,
 };
 use epiphany_ops::{
     valuegen, AuthorId, CausalContext, CreateInstrumentOp, CreateRegionOp, CreateStaffInstanceOp,
-    CreateStaffOp, DeleteRegionOp, DeleteStaffInstanceOp, GraphMaterialization, HybridLogicalClock,
-    MaterializedState, NoOpReason, OperationEffect, OperationEnvelope, OperationKind,
-    OperationPayload, OperationSet, OperationStamp, PreconditionFailureReason,
-    TransactionDescriptor,
+    CreateStaffOp, CreateVoiceOp, DeleteRegionOp, DeleteStaffInstanceOp, GraphMaterialization,
+    HybridLogicalClock, InsertEventOp, MaterializedState, NoOpReason, OperationEffect,
+    OperationEnvelope, OperationKind, OperationPayload, OperationSet, OperationStamp,
+    PreconditionFailureReason, TransactionDescriptor,
 };
 
 const AUTHOR: ReplicaId = ReplicaId(5);
@@ -241,15 +242,39 @@ fn an_extent_anchored_to_a_region_s_edge_is_placed_through_the_index() {
 /// An extent the ledger cannot place counts as overlapping: a region anchored
 /// to an event, or by a musical offset, is refused a staff another live
 /// region holds, however far away it would stand once a tempo map placed it;
-/// with no other region holding the staff, it is filled.
+/// with no other region holding the staff, it is filled. The event is made
+/// first, as an extent names only a live target (D87 Q2).
 #[test]
 fn an_extent_the_ledger_cannot_place_counts_as_overlapping() {
     let mut h = History::new();
     let a = h.region(10, wall(0), wall(1000));
+    let first = h.fill(20, a, 0);
+    let voice = VoiceId::new(AUTHOR, 30);
+    let note = EventId::new(AUTHOR, 999);
+    h.push(
+        None,
+        OperationKind::CreateVoice(CreateVoiceOp {
+            staff_instance: StaffInstanceId::new(AUTHOR, 20),
+            voice: valuegen::voice(voice),
+        }),
+    );
+    h.push(
+        None,
+        OperationKind::InsertEvent(InsertEventOp {
+            staff_instance: StaffInstanceId::new(AUTHOR, 20),
+            event: valuegen::insert_event_value(
+                note,
+                voice,
+                MusicalPosition::origin(),
+                MusicalDuration(RationalTime::new(1, 4).expect("a quarter")),
+                &[PitchId::new(AUTHOR, 1000)],
+            ),
+        }),
+    );
     let by_event = h.region(
         11,
         TimeAnchor::Event {
-            id: EventId::new(AUTHOR, 999),
+            id: note,
             offset: AnchorOffset::Zero,
         },
         wall(9_000_000),
@@ -263,7 +288,6 @@ fn an_extent_the_ledger_cannot_place_counts_as_overlapping() {
         ),
         wall(9_000_000),
     );
-    let first = h.fill(20, a, 0);
     let unplaced = [h.fill(21, by_event, 0), h.fill(22, musical, 0)];
     let alone = h.fill(23, by_event, 1);
     let (free, _) = h.reduce();

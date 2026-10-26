@@ -4378,6 +4378,29 @@ impl<'a> Reducer<'a> {
             })
     }
 
+    /// `Some(NoOp)` when a write would leave a time anchor naming an event, a
+    /// measure or a region that is not live ([`Self::referent_dead`]), `own`
+    /// excepted, the region a create is making: refused `TargetMissing` in
+    /// both modes, as a tempo segment's, a measure's, a user break's and a
+    /// cross-cutting structure's write is (reduction version 5, D87 Q2: before
+    /// it the holder applied naming nothing, or named an object made after
+    /// it, whose creation X5b.9 then refused, leaving the name for good).
+    fn dead_anchor_slot<'b>(
+        &self,
+        anchors: impl IntoIterator<Item = &'b TimeAnchor>,
+        own: Option<RegionId>,
+    ) -> Option<OperationEffect> {
+        anchor_object_refs(anchors)
+            .into_iter()
+            .filter(|object| own.map(TypedObjectId::Region) != Some(*object))
+            .any(|object| self.referent_dead(object))
+            .then_some(OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            })
+    }
+
     /// The migration that gave the target region of one of `anchors` a model
     /// that does not admit its offset ([`Self::anchor_admitted`]): a value an
     /// undo would restore so is superseded by it, as its write would be
@@ -4751,8 +4774,16 @@ impl<'a> Reducer<'a> {
                 }
             }
         }
-        // Each meter change's anchor answers to its target's time model
-        // (reduction version 5, X5b.9).
+        // Each meter change's anchor names a live target (reduction version
+        // 5, D87 Q2) and answers to its target's time model (X5b.9).
+        if let Some(effect) = self.dead_anchor_slot(
+            op.grid
+                .iter()
+                .flat_map(|grid| grid.meter_sequence.iter().map(|change| &change.anchor)),
+            None,
+        ) {
+            return effect;
+        }
         if let Some(effect) = self.anchors_slot(
             op.grid
                 .iter()
@@ -6029,6 +6060,17 @@ impl<'a> Reducer<'a> {
         {
             return container_not_empty();
         }
+        // Its extent and the anchors its payload carries name live targets,
+        // its own edge excepted (reduction version 5, D87 Q2).
+        let payload = region_payload_anchors(&op.region);
+        if let Some(effect) = self.dead_anchor_slot(
+            [&op.region.time_extent.start, &op.region.time_extent.end]
+                .into_iter()
+                .chain(&payload),
+            Some(op.region_id()),
+        ) {
+            return effect;
+        }
         if let Some(effect) = self.extent_offset_slot(&op.region) {
             return effect;
         }
@@ -6056,7 +6098,6 @@ impl<'a> Reducer<'a> {
         // it is made by an offset its model does not admit (reduction version
         // 5, X5b.9).
         let own = (op.region_id(), op.region.time_model.coordinate_discipline());
-        let payload = region_payload_anchors(&op.region);
         if let Some(effect) = self.anchors_slot(&payload, Some(own)) {
             return effect;
         }
@@ -6229,6 +6270,9 @@ impl<'a> Reducer<'a> {
         // They, and its own grid's meter changes, answer to their targets'
         // time models (reduction version 5, X5b.9).
         let carried = staff_instance_anchors(&op.instance);
+        if let Some(effect) = self.dead_anchor_slot(carried.iter().copied(), None) {
+            return effect;
+        }
         if let Some(effect) = self.anchors_slot(carried.iter().copied(), None) {
             return effect;
         }
@@ -7826,8 +7870,16 @@ impl<'a> Reducer<'a> {
         if let Some(effect) = self.musical_slot(op.region, Some(&op.anchor)) {
             return effect;
         }
-        // A set meter change's anchor answers to its target's time model
-        // (reduction version 5, X5b.9).
+        // A set meter change's anchor names a live target (reduction version
+        // 5, D87 Q2) and answers to its target's time model (X5b.9).
+        if let Some(effect) = self.dead_anchor_slot(
+            [&op.anchor]
+                .into_iter()
+                .filter(|_| op.time_signature.is_some()),
+            None,
+        ) {
+            return effect;
+        }
         if let Some(effect) = self.anchors_slot(
             [&op.anchor]
                 .into_iter()
@@ -8781,6 +8833,9 @@ impl<'a> Reducer<'a> {
         // models, the region's own edge to the target (reduction version 5,
         // X5b.9: before it the migration applied, `AnchorOffsetModel`).
         let target_meters = model_meter_anchors(&op.new_time_model);
+        if let Some(effect) = self.dead_anchor_slot(&target_meters, None) {
+            return effect;
+        }
         if let Some(effect) = self.anchors_slot(&target_meters, Some((op.region, target))) {
             return effect;
         }

@@ -895,7 +895,10 @@ live region's grid naming a time signature it would remove, as by a meter
 change at a key (Section~\ref{sec:k0:undo}). A delete of an event a live
 tempo segment names is refused, \texttt{PreconditionFailureReason} appending
 \texttt{TargetAnchored} (discriminant~22, epoch~16), and an undo that would
-remove it is held (Section~\ref{sec:k0:delete-event}). Accordingly
+remove it is held (Section~\ref{sec:k0:delete-event}). A holder of a time
+anchor is refused \texttt{TargetMissing} where written naming an event, a
+measure or a region that is not live, so none names an object before it is
+made (Section~\ref{sec:framework:anchor-offsets}). Accordingly
 \texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION} moves
 \texttt{4}~$\rightarrow$~\texttt{5}, one version for the phase.
 
@@ -1015,7 +1018,8 @@ model; the edge of a region an operation is creating or migrating by the model
 it is being given; an event or a measure by its region's model, but an event
 in an aleatoric region whose events each fix their clock by the event's, which
 is musical for every event an operation places. A target that is not live is
-not judged, as the invariant cannot find it. A re-anchoring carries no offset
+not judged, as the invariant cannot find it, and no holder is written naming
+one (Requirement~\ref{req:catalog:anchor-targets}). A re-anchoring carries no offset
 to a target that was not judged for it: a spanner's or a repeat structure's
 dead endpoint takes the surviving anchor whole (Section~\ref{sec:k0:delete-event}).
 
@@ -1041,6 +1045,20 @@ dead endpoint takes the surviving anchor whole (Section~\ref{sec:k0:delete-event
   holder already names the new object by an offset its model does not admit.
 \end{requirement}
 
+\begin{requirement}
+  \label{req:catalog:anchor-targets}
+  Both reduction modes \MUST{} refuse \texttt{TargetMissing} a write that
+  would leave a time anchor naming an event, a measure or a region that is not
+  live, read as Requirement~\ref{req:catalog:base-free-referents} reads a
+  referent: a set meter change's anchor and a metric grid's meter changes; a
+  region's extent and the meter changes, grid, breaks and tempo map a
+  \texttt{CreateRegion} carries, the new region itself excepted; the clef and
+  key changes and grid a \texttt{CreateStaffInstance} carries; and the meter
+  changes of a \texttt{ChangeRegionTimeModel}'s own target model, as a
+  measure's start, a tempo segment's anchors, a user break's anchor and a
+  cross-cutting structure's anchors already are.
+\end{requirement}
+
 \begin{rationale}
   Before version~0.22.0 only a musical offset into a region admitting none was
   read, for some holders, and nothing judged a holder that named its target
@@ -1049,7 +1067,12 @@ dead endpoint takes the surviving anchor whole (Section~\ref{sec:k0:delete-event
   is not live names nothing (\texttt{CrossCuttingRefsResolve}), so it is refused
   \texttt{TargetMissing} as one anchored to such a region is
   (Section~\ref{sec:k0:meter-tempo}), and names no note or measure before it is
-  made.
+  made. Before version~0.22.0 every other holder of the second requirement was
+  written naming a target that was not live, and named nothing; and one
+  naming an object made later had the object's creation refused by the first,
+  so the name stood for good (C5b review 1). Refused at the write, no holder
+  names an object before it is made, and the first requirement's last clause
+  guards a route no history reaches.
 \end{rationale}
 
 % ===========================================================================
@@ -1965,7 +1988,13 @@ changes and its own grid's meter changes answer to their targets likewise
 (Section~\ref{sec:framework:anchor-offsets}), and its own grid's meter changes
 name live time signatures, or the create is a precondition no-op
 (\texttt{TargetMissing}), as a \texttt{SetMetricGrid}'s are; so do a
-\texttt{CreateRegion}'s own model's meter changes and its grid's.
+\texttt{CreateRegion}'s own model's meter changes and its grid's. A
+\texttt{CreateRegion} whose extent or carried payload, or a
+\texttt{CreateStaffInstance} whose carried changes or grid, name an event, a
+measure or a region that is not live (the new region itself excepted) is a
+precondition no-op, \texttt{TargetMissing}, in both modes
+(Requirement~\ref{req:catalog:anchor-targets}; since version~0.22.0, before
+which it applied naming nothing).
 
 \textbf{Conflict cases.} None at reduction time: creation is set-union (a repeat
 create is idempotent), and the empty-only delete is a deterministic precondition
@@ -2970,7 +2999,10 @@ modes (Requirement~\ref{req:catalog:base-free-referents}), and one anchored by
 a musical offset to a region admitting none with \texttt{WrongRegionTimeModel}
 (both since version~0.19.0, before which a score-level segment's anchors were
 not read). Since version~0.22.0 one whose anchor names an event or a measure
-that is not live is refused with \texttt{TargetMissing} likewise, and a meter
+that is not live is refused with \texttt{TargetMissing} likewise, and so is a
+set meter change or a metric grid whose meter changes' anchors name an event,
+a measure or a region that is not live
+(Requirement~\ref{req:catalog:anchor-targets}); and a meter
 change or a segment anchored by any offset its target's model does not admit
 with \texttt{WrongRegionTimeModel} (Section~\ref{sec:framework:anchor-offsets}).
 

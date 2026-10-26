@@ -6,7 +6,9 @@
 //! for a meter change at a key (D86 Q1): a strict or cascading undo
 //! conflicts, and a best-effort one keeps the signature. A note a live tempo
 //! segment of either map names is not deleted (`TargetAnchored`), and an undo
-//! that would remove it is held so (D86 Q2).
+//! that would remove it is held so (D86 Q2). A holder of a time anchor is not
+//! written naming an event, a measure or a region that is not live: its
+//! write is refused `TargetMissing` (D87 Q2).
 //!
 //! Each history is one author's, built by hand on a small score: a metric
 //! region holding a staff instance, a measure, a voice and a note, and a
@@ -23,12 +25,12 @@ use epiphany_core::{
     TypedObjectId, VoiceId, WallClockTime,
 };
 use epiphany_ops::{
-    valuegen, AuthorId, CausalContext, ConflictKind, CreateInstrumentOp, CreateMeasureOp,
-    CreateRegionOp, CreateStaffInstanceOp, CreateStaffOp, CreateVoiceOp, DeleteEventOp,
-    GraphMaterialization, HybridLogicalClock, InsertEventOp, MaterializedState, NoOpReason,
-    OperationEffect, OperationEnvelope, OperationKind, OperationPayload, OperationSet,
-    OperationStamp, PreconditionFailureReason, SetMetricGridOp, SetTempoSegmentOp,
-    SetTimeSignatureOp, TransactionDescriptor, TupletCompensation, UndoPolicy,
+    valuegen, AuthorId, CausalContext, ChangeRegionTimeModelOp, ConflictKind, CreateInstrumentOp,
+    CreateMeasureOp, CreateRegionOp, CreateStaffInstanceOp, CreateStaffOp, CreateVoiceOp,
+    DeleteEventOp, GraphMaterialization, HybridLogicalClock, InsertEventOp, MaterializedState,
+    NoOpReason, OperationEffect, OperationEnvelope, OperationKind, OperationPayload, OperationSet,
+    OperationStamp, PositionRemapping, PreconditionFailureReason, SetMetricGridOp,
+    SetTempoSegmentOp, SetTimeSignatureOp, TransactionDescriptor, TupletCompensation, UndoPolicy,
     UndoTransactionPayload,
 };
 
@@ -640,5 +642,175 @@ fn a_note_no_live_tempo_segment_names_is_removed() {
                 "{scope:?} {policy:?}"
             );
         }
+    }
+}
+
+/// A write of some holder at an anchor; returns the holder's write.
+type Holder = fn(&mut History, TimeAnchor) -> OperationId;
+
+/// The holders whose writes did not read their anchors' targets: a time
+/// signature, a grid's meter change, a region's extent, a staff instance's
+/// carried clef, key and grid, a region's own model, carried grid, break and
+/// tempo map, and a migration's target model. Each names the fixture's
+/// signature where it holds a meter change, declared first.
+fn holders() -> Vec<(&'static str, Holder)> {
+    fn region_with(h: &mut History, shape: impl FnOnce(&mut epiphany_core::Region)) -> OperationId {
+        let id = RegionId::new(AUTHOR, 13);
+        let mut region = valuegen::region(id);
+        region.time_extent = TimeExtent {
+            start: wall(3_000_000_000),
+            end: wall(3_000_001_000),
+        };
+        shape(&mut region);
+        h.push(OperationKind::CreateRegion(CreateRegionOp { region }))
+    }
+    fn instance_with(
+        h: &mut History,
+        shape: impl FnOnce(&mut epiphany_core::StaffInstance),
+    ) -> OperationId {
+        let mut instance = valuegen::staff_instance(StaffInstanceId::new(AUTHOR, 924), STAVES[2]);
+        shape(&mut instance);
+        h.push(OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+            region: METRIC,
+            instance,
+        }))
+    }
+    fn meter(anchor: TimeAnchor) -> MeterChange {
+        MeterChange {
+            anchor,
+            time_signature: SIGNATURE,
+        }
+    }
+    fn model(anchor: TimeAnchor) -> RegionTimeModel {
+        RegionTimeModel::Metric(epiphany_core::MetricTimeModel {
+            meters: vec![meter(anchor)],
+            ..Default::default()
+        })
+    }
+    vec![
+        ("time signature", |h, a| {
+            h.push(OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                region: METRIC,
+                anchor: a,
+                time_signature: Some(valuegen::time_signature(
+                    TimeSignatureId::new(AUTHOR, 971),
+                    3,
+                )),
+            }))
+        }),
+        ("grid meter", |h, a| {
+            h.signature(None);
+            h.grid(None, OTHER, a)
+        }),
+        ("region extent", |h, a| {
+            region_with(h, |r| {
+                r.time_extent = TimeExtent {
+                    start: a.clone(),
+                    end: a,
+                }
+            })
+        }),
+        ("carried clef", |h, a| {
+            instance_with(h, |i| {
+                i.clef_sequence.push(epiphany_core::ClefChange {
+                    anchor: a,
+                    clef: epiphany_core::Clef::treble(),
+                })
+            })
+        }),
+        ("carried key", |h, a| {
+            instance_with(h, |i| {
+                i.key_sequence.push(epiphany_core::KeySignatureChange {
+                    anchor: a,
+                    key: epiphany_core::KeySignature::new(0).expect("C"),
+                })
+            })
+        }),
+        ("instance grid", |h, a| {
+            h.signature(None);
+            instance_with(h, |i| {
+                i.local_metric_grid = Some(MetricGrid {
+                    meter_sequence: vec![meter(a)],
+                })
+            })
+        }),
+        ("region's own meter", |h, a| {
+            h.signature(None);
+            region_with(h, |r| r.time_model = model(a))
+        }),
+        ("region's carried grid", |h, a| {
+            h.signature(None);
+            region_with(h, |r| {
+                r.content
+                    .staff_based_mut()
+                    .expect("staff-based")
+                    .default_metric_grid = Some(MetricGrid {
+                    meter_sequence: vec![meter(a)],
+                })
+            })
+        }),
+        ("region's carried break", |h, a| {
+            region_with(h, |r| {
+                r.content
+                    .staff_based_mut()
+                    .expect("staff-based")
+                    .user_system_breaks
+                    .push(a)
+            })
+        }),
+        ("migration's target model", |h, a| {
+            h.signature(None);
+            h.push(OperationKind::ChangeRegionTimeModel(
+                ChangeRegionTimeModelOp {
+                    region: OTHER,
+                    new_time_model: model(a),
+                    declared_incompatible: Vec::new(),
+                    remapping: PositionRemapping::PreserveTime,
+                },
+            ))
+        }),
+    ]
+}
+
+/// D87 Q2: each holder written at a note deleted before it, or at a region
+/// deleted before it, is refused `TargetMissing` in both modes, as a tempo
+/// segment, a measure, a user break and a cross-cutting structure are, where
+/// before it applied naming nothing (C5b review 1's M4). Written at the live
+/// note, each applies.
+#[test]
+fn a_holder_written_naming_a_target_that_is_not_live_is_refused() {
+    let gone = RegionId::new(AUTHOR, 14);
+    for (name, write) in holders() {
+        let mut h = History::new();
+        h.delete(NOTE);
+        let dead = write(&mut h, at_note(NOTE));
+        let (free, _) = h.reduce();
+        assert!(
+            refused(&free, dead, PreconditionFailureReason::TargetMissing),
+            "{name} at a deleted note: {:?}",
+            effect(&free, dead)
+        );
+
+        let mut h = History::new();
+        h.region(None, gone, valuegen::metric_model(), 4_000_000_000);
+        h.push(OperationKind::DeleteRegion(epiphany_ops::DeleteRegionOp {
+            region: gone,
+        }));
+        let dead = write(&mut h, edge(gone, AnchorOffset::Zero));
+        let (free, _) = h.reduce();
+        assert!(
+            refused(&free, dead, PreconditionFailureReason::TargetMissing),
+            "{name} at a deleted region: {:?}",
+            effect(&free, dead)
+        );
+
+        let mut h = History::new();
+        let live = write(&mut h, at_note(NOTE));
+        let (free, _) = h.reduce();
+        assert!(
+            applied(&free, live),
+            "{name} at the live note: {:?}",
+            effect(&free, live)
+        );
     }
 }

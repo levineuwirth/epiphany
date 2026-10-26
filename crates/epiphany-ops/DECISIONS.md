@@ -4356,3 +4356,28 @@ leaves it, so one the undone transaction wrote at the note is restored away,
 and one of a map whose region the same undo removes holds nothing. A
 best-effort undo keeps the note. Read from the tempo chains both modes keep.
 Review 1's eight one-author probes are committed (`206` to `213`).
+
+**A holder written naming a target that is not live (D87 Q2).** A tempo
+segment, a measure, a user break and a cross-cutting structure were refused
+`TargetMissing` where written naming an event, a measure or a region that is
+not live; the other holders of a time anchor were not: a set meter change, a
+metric grid, a region's extent and the model, grid, breaks and tempo map its
+create carries, a staff instance's carried clef, key and grid, and a
+migration's target model. One author deleted a note and wrote any of them at
+it, and the holder named nothing. And since X5b.9 refused an object's creation
+where a live holder already named it by an offset its model would not admit,
+a holder naming an object before it was made could keep the name for good.
+Each such write is refused `TargetMissing` now, read with `referent_dead`, as
+the catalog's base-free referents rule reads a referent, the region a create
+makes excepted for its own payload. So no holder names an object before it is
+made, and X5b.9's refusal of the object's creation (and X5b.8's of a region
+named by an extent) guards a route no history reaches; it is kept, as the
+owner's ruling words it. Because base-free reduction takes an object no
+envelope mints as live where graph-aware reduction does not, the fuzz's
+validity check now reads every such anchor as it reads an extent's, so the
+minimizer keeps whatever a holder names. One committed history, `195`, kept a
+grid naming a note no operation made and is re-minimized under that check; in
+another, `196`, an extent named a measure before it was made, and with that
+refused its transaction has nothing left to undo, so it declares that verdict
+now. Review 1's seven one-author writes at a deleted note and its three
+minimized forward names are committed (`214` to `223`).

@@ -892,7 +892,19 @@ pub mod vectors;
 ///     would remove such an event is held likewise, read as the undo leaves
 ///     the segment, where version `4` removed the event and left the segment
 ///     naming nothing (D86 Q2 and its undo route). Locked by
-///     `reference_holds.rs` and the committed histories `206` to `213`.
+///     `reference_holds.rs` and the committed histories `206` to `213`. A
+///     set meter change, a metric grid, a `CreateRegion`'s extent and carried
+///     model, grid, breaks and tempo map (its own region excepted), a
+///     `CreateStaffInstance`'s carried clef, key and grid, and a migration's
+///     target model naming an event, a measure or a region that is not live
+///     are refused `TargetMissing` in both modes, read as base-free reduction
+///     reads a referent, as a tempo segment, a measure, a user break and a
+///     cross-cutting structure already are, where version `4` applied each
+///     naming nothing (D87 Q2). No holder then names an object before it is
+///     made, so the refusal of such an object's creation above guards
+///     nothing a history reaches. Locked by `reference_holds.rs`, the
+///     rewritten named-before-made tests of `anchor_offsets.rs` and
+///     `extent_offsets.rs`, and the committed histories `214` to `223`.
 ///
 ///   With it, at the same epoch 16, a wire addition that changes no verdict:
 ///   `MarkerKind` appends `ExpressionText` (X5b.7, D79 Q9), reduced as any
