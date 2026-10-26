@@ -211,6 +211,10 @@ pub enum PreconditionFailureReason {
     /// staff, an extent the ledger cannot place counting as overlapping
     /// (`RegionExtents`; reduction version 5, X5b).
     RegionsOverlap,
+    /// A `DeleteEvent` would remove an event a live holder's time anchor
+    /// names, which re-anchoring does not move: the anchor would name
+    /// nothing (`CrossCuttingRefsResolve`; reduction version 5, X5b).
+    TargetAnchored,
 }
 
 impl PreconditionFailureReason {
@@ -245,6 +249,7 @@ impl PreconditionFailureReason {
             PreconditionFailureReason::HomeIsOwnStaff => 20,
             // Additive (X5b); appended past 20.
             PreconditionFailureReason::RegionsOverlap => 21,
+            PreconditionFailureReason::TargetAnchored => 22,
         }
     }
 }
@@ -287,6 +292,7 @@ impl PreconditionFailureReason {
             PreconditionFailureReason::HomeIsOwnStaff => Some(15),
             // Minor 16 (X5b).
             PreconditionFailureReason::RegionsOverlap => Some(16),
+            PreconditionFailureReason::TargetAnchored => Some(16),
         }
     }
 }
@@ -613,7 +619,8 @@ mod tests {
         );
     }
 
-    /// X5b's appended reason: discriminant 21 at epoch 16, stated by hand.
+    /// X5b's appended reasons: discriminants 21 and 22 at epoch 16, stated
+    /// by hand.
     #[test]
     fn x5b_regions_overlap_is_21_at_epoch_16() {
         assert_eq!(
@@ -622,6 +629,14 @@ mod tests {
         );
         assert_eq!(
             PreconditionFailureReason::RegionsOverlap.introduced_minor(),
+            Some(16)
+        );
+        assert_eq!(
+            PreconditionFailureReason::TargetAnchored.to_canonical_bytes(),
+            vec![22]
+        );
+        assert_eq!(
+            PreconditionFailureReason::TargetAnchored.introduced_minor(),
             Some(16)
         );
     }

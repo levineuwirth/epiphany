@@ -415,7 +415,7 @@ pub fn conflict_registry(rng: &mut Rng) -> ConflictRegistry {
 
 /// A typed precondition failure (every core and registered variant).
 pub fn precondition_failure_reason(rng: &mut Rng) -> PreconditionFailureReason {
-    match rng.below(22) {
+    match rng.below(23) {
         0 => PreconditionFailureReason::TargetMissing,
         1 => PreconditionFailureReason::TargetTombstoned,
         2 => PreconditionFailureReason::WrongRegionTimeModel,
@@ -441,7 +441,8 @@ pub fn precondition_failure_reason(rng: &mut Rng) -> PreconditionFailureReason {
         18 => PreconditionFailureReason::HomeIsOwnStaff,
         // X5b.
         19 => PreconditionFailureReason::RegionsOverlap,
-        20 => PreconditionFailureReason::ExtensionPrecondition(ExtensionPreconditionId(
+        20 => PreconditionFailureReason::TargetAnchored,
+        21 => PreconditionFailureReason::ExtensionPrecondition(ExtensionPreconditionId(
             rng.next_u64() as u128,
         )),
         _ => PreconditionFailureReason::Registered(PreconditionFailureRegistryId(
@@ -2112,12 +2113,13 @@ mod tests {
                 PreconditionFailureReason::SlotOccupied => 17,
                 PreconditionFailureReason::HomeIsOwnStaff => 18,
                 PreconditionFailureReason::RegionsOverlap => 19,
-                PreconditionFailureReason::ExtensionPrecondition(_) => 20,
-                PreconditionFailureReason::Registered(_) => 21,
+                PreconditionFailureReason::TargetAnchored => 20,
+                PreconditionFailureReason::ExtensionPrecondition(_) => 21,
+                PreconditionFailureReason::Registered(_) => 22,
             };
             seen.insert(discriminant);
         }
-        let expected: std::collections::BTreeSet<u8> = (0..=21).collect();
+        let expected: std::collections::BTreeSet<u8> = (0..=22).collect();
         assert_eq!(
             seen, expected,
             "the bounded draw must reach every core and registered variant"

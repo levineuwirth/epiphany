@@ -1677,7 +1677,7 @@ trailing bytes are decode errors.
     \tablenums{16} MeasureMeterMismatch, \tablenums{17} MeasureOutOfOrder,
     \tablenums{18} MeasureOrderUnverifiable (genesis tranche G3b);
     \tablenums{19} SlotOccupied, \tablenums{20} HomeIsOwnStaff (both X4b);
-    \tablenums{21} RegionsOverlap (X5b). \\
+    \tablenums{21} RegionsOverlap, \tablenums{22} TargetAnchored (both X5b). \\
   \texttt{RepairRecord} &
     (struct) \texttt{kind} (\texttt{RepairKind}) \cat{} \texttt{target}
     (\texttt{TypedObjectId}). \\
@@ -4203,7 +4203,8 @@ at format major~\tablenums{0} is refused as a legacy container.
   derives. It refuses a legacy container by name. The decode corpus gains
   the \texttt{ops.operation\ub block} and \texttt{document.container}
   surfaces. \texttt{PreconditionFailureReason} appends \tablenums{21}
-  \texttt{RegionsOverlap} at epoch~16. \texttt{MaterializedState}'s break
+  \texttt{RegionsOverlap} and \tablenums{22} \texttt{TargetAnchored} at
+  epoch~16, each with an accept vector of a refused operation's effect. \texttt{MaterializedState}'s break
   and page-break sections key each break by its anchor,
   $\mathrm{lp}$(\texttt{TimeAnchor}) in place of a resolved position, with a
   decode vector of a non-empty section and its rejections. A

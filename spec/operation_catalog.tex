@@ -892,7 +892,10 @@ undo semantics of \texttt{ChangeRegionTimeModel} are corrected to what
 reduction does: a migration is not undone
 (Section~\ref{sec:k0:change-region-time-model}). An undo is held by a
 live region's grid naming a time signature it would remove, as by a meter
-change at a key (Section~\ref{sec:k0:undo}). Accordingly
+change at a key (Section~\ref{sec:k0:undo}). A delete of an event a live
+tempo segment names is refused, \texttt{PreconditionFailureReason} appending
+\texttt{TargetAnchored} (discriminant~22, epoch~16), and an undo that would
+remove it is held (Section~\ref{sec:k0:delete-event}). Accordingly
 \texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION} moves
 \texttt{4}~$\rightarrow$~\texttt{5}, one version for the phase.
 
@@ -1164,7 +1167,13 @@ holding the event; and, from the occupancy index, a \texttt{ReplaceWithRest}
 whose rest's duration differs from the event's, so the two modes reach one
 verdict on every compensation a conforming client declares. Whether the
 rest's identifier is fresh is a referential precondition, and like every
-referential precondition it is checked graph-aware only.
+referential precondition it is checked graph-aware only. Since
+version~0.22.0 a delete of an event a live tempo segment of any map starts or
+ends at is a precondition no-op, \texttt{TargetAnchored}
+(discriminant~22, epoch~16), in both modes, read from the tempo chains: no
+rule re-anchors a segment, which would otherwise name nothing (before it the
+delete applied and left the segment's anchor naming nothing); an undo that
+would remove such an event is held likewise (Section~\ref{sec:k0:undo}).
 
 \textbf{Undo semantics.} An insert-shaped compensation re-introduces the
 tombstoned content; for the prototype's minted-object model this is the inverse
@@ -2976,7 +2985,10 @@ restores the key's chain-predecessor value (or its absence).
 \textbf{Re-anchoring.} An event-anchored \texttt{anchor}/\texttt{start} whose
 event is later tombstoned degrades by the framework's anchor rules; the
 overwrite keys on the \emph{resolved} position, so the recorded change
-survives its anchor.
+survives its anchor. Since version~0.22.0 a live tempo segment whose start or
+end names an event holds that event: its delete is refused
+\texttt{TargetAnchored} and an undo that would remove it is held
+(Section~\ref{sec:k0:delete-event}).
 
 \begin{openquestion}
 \textbf{P12-C5.} A mid-region meter change authored by
@@ -3213,7 +3225,10 @@ signature is held by a live region's grid that names it as the grid's chains
 give it once the undo's restorations apply, the whole grid a
 \texttt{SetMetricGrid} wrote among them (since version~0.22.0, before which
 the undo removed a signature a later grid named and left the grid naming
-nothing).
+nothing). An event is held by a live tempo segment of any map whose start or
+end names it, read as the undo leaves the segment, a segment of a map whose
+region the undo removes holding nothing (since version~0.22.0, before which
+the undo removed the event and left the segment naming nothing).
 
 \emph{Idempotence asymmetry (ratified Pass~12, closing P12-K11).} An undo's
 value restorations enter the write chains as ordinary writes by the undo

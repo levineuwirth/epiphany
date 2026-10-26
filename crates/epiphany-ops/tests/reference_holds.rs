@@ -4,7 +4,9 @@
 //! An undo that would remove a time signature a live region's grid names, as
 //! the grid's chains give it once the undo's restorations apply, is held as
 //! for a meter change at a key (D86 Q1): a strict or cascading undo
-//! conflicts, and a best-effort one keeps the signature.
+//! conflicts, and a best-effort one keeps the signature. A note a live tempo
+//! segment of either map names is not deleted (`TargetAnchored`), and an undo
+//! that would remove it is held so (D86 Q2).
 //!
 //! Each history is one author's, built by hand on a small score: a metric
 //! region holding a staff instance, a measure, a voice and a note, and a
@@ -22,10 +24,12 @@ use epiphany_core::{
 };
 use epiphany_ops::{
     valuegen, AuthorId, CausalContext, ConflictKind, CreateInstrumentOp, CreateMeasureOp,
-    CreateRegionOp, CreateStaffInstanceOp, CreateStaffOp, CreateVoiceOp, GraphMaterialization,
-    HybridLogicalClock, InsertEventOp, MaterializedState, OperationEffect, OperationEnvelope,
-    OperationKind, OperationPayload, OperationSet, OperationStamp, SetMetricGridOp,
-    SetTimeSignatureOp, TransactionDescriptor, UndoPolicy, UndoTransactionPayload,
+    CreateRegionOp, CreateStaffInstanceOp, CreateStaffOp, CreateVoiceOp, DeleteEventOp,
+    GraphMaterialization, HybridLogicalClock, InsertEventOp, MaterializedState, NoOpReason,
+    OperationEffect, OperationEnvelope, OperationKind, OperationPayload, OperationSet,
+    OperationStamp, PreconditionFailureReason, SetMetricGridOp, SetTempoSegmentOp,
+    SetTimeSignatureOp, TransactionDescriptor, TupletCompensation, UndoPolicy,
+    UndoTransactionPayload,
 };
 
 const AUTHOR: ReplicaId = ReplicaId(5);
@@ -35,6 +39,7 @@ const INSTANCE: StaffInstanceId = StaffInstanceId::new(AUTHOR, 920);
 const MEASURE: MeasureId = MeasureId::new(AUTHOR, 930);
 const VOICE: VoiceId = VoiceId::new(AUTHOR, 940);
 const NOTE: EventId = EventId::new(AUTHOR, 950);
+const LATER_NOTE: EventId = EventId::new(AUTHOR, 960);
 const SIGNATURE: TimeSignatureId = TimeSignatureId::new(AUTHOR, 970);
 const STAVES: [StaffId; 3] = [
     StaffId::new(AUTHOR, 901),
@@ -91,17 +96,75 @@ impl History {
             staff_instance: INSTANCE,
             voice: valuegen::voice(VOICE),
         }));
-        h.push(OperationKind::InsertEvent(InsertEventOp {
-            staff_instance: INSTANCE,
-            event: valuegen::insert_event_value(
-                NOTE,
-                VOICE,
-                MusicalPosition::origin(),
-                quarter(),
-                &[PitchId::new(AUTHOR, NOTE.counter() + 1)],
-            ),
-        }));
+        h.note(None, NOTE, 0);
         h
+    }
+
+    /// A quarter note `id` in the fixture's voice at quarter `at`.
+    fn note(&mut self, transaction: Option<TransactionId>, id: EventId, at: i64) -> OperationId {
+        self.push_in(
+            transaction,
+            OperationKind::InsertEvent(InsertEventOp {
+                staff_instance: INSTANCE,
+                event: valuegen::insert_event_value(
+                    id,
+                    VOICE,
+                    MusicalPosition(RationalTime::new(at, 4).expect("a quarter")),
+                    quarter(),
+                    &[PitchId::new(AUTHOR, id.counter() + 1)],
+                ),
+            }),
+        )
+    }
+
+    fn delete(&mut self, event: EventId) -> OperationId {
+        self.push(OperationKind::DeleteEvent(DeleteEventOp {
+            event,
+            tuplet_compensation: TupletCompensation::NotInTuplet,
+        }))
+    }
+
+    /// A tempo segment of `scope`'s map (the score's for `None`) starting at
+    /// `start`, set or (with `present` false) removed.
+    fn tempo(
+        &mut self,
+        transaction: Option<TransactionId>,
+        scope: Option<RegionId>,
+        start: TimeAnchor,
+        present: bool,
+    ) -> OperationId {
+        let segment = present.then(|| {
+            let mut segment = valuegen::tempo_segment(METRIC, MusicalPosition::origin(), 90.0);
+            segment.start = start.clone();
+            segment
+        });
+        self.tempo_segment(transaction, scope, start, segment)
+    }
+
+    /// A tempo segment of `scope`'s map from the metric region's start to
+    /// `end`.
+    fn tempo_ending(&mut self, scope: Option<RegionId>, end: TimeAnchor) -> OperationId {
+        let start = edge(METRIC, AnchorOffset::Zero);
+        let mut segment = valuegen::tempo_segment(METRIC, MusicalPosition::origin(), 90.0);
+        segment.end = Some(end);
+        self.tempo_segment(None, scope, start, Some(segment))
+    }
+
+    fn tempo_segment(
+        &mut self,
+        transaction: Option<TransactionId>,
+        scope: Option<RegionId>,
+        start: TimeAnchor,
+        segment: Option<epiphany_core::TempoSegment>,
+    ) -> OperationId {
+        self.push_in(
+            transaction,
+            OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                region: scope,
+                start,
+                segment,
+            }),
+        )
     }
 
     fn push(&mut self, kind: OperationKind) -> OperationId {
@@ -242,6 +305,13 @@ fn edge(region: RegionId, offset: AnchorOffset) -> TimeAnchor {
         id: region,
         edge: RegionEdge::Start,
         offset,
+    }
+}
+
+fn at_note(id: EventId) -> TimeAnchor {
+    TimeAnchor::Event {
+        id,
+        offset: AnchorOffset::Zero,
     }
 }
 
@@ -403,4 +473,172 @@ fn an_undo_leaving_no_grid_naming_its_signature_applies() {
     let (free, aware) = h.reduce();
     assert!(applied(&free, grid) && applied(&free, clear));
     assert!(declares(&aware, SIGNATURE));
+}
+
+/// Each tempo map: the score's, and the metric region's own.
+const MAPS: [Option<RegionId>; 2] = [None, Some(METRIC)];
+
+fn refused(state: &MaterializedState, id: OperationId, reason: PreconditionFailureReason) -> bool {
+    *effect(state, id)
+        == OperationEffect::NoOp {
+            reason: NoOpReason::PreconditionFailedUnderReduction { reason },
+        }
+}
+
+/// D86 Q2: a note a live tempo segment of either map starts or ends at is
+/// not deleted, `TargetAnchored`, where before the delete applied and left
+/// the segment naming nothing (`CrossCuttingRefsResolve`).
+#[test]
+fn a_note_a_tempo_segment_names_is_not_deleted() {
+    for scope in MAPS {
+        for ending in [false, true] {
+            let mut h = History::new();
+            h.note(None, LATER_NOTE, 1);
+            let segment = if ending {
+                h.tempo_ending(scope, at_note(LATER_NOTE))
+            } else {
+                h.tempo(None, scope, at_note(LATER_NOTE), true)
+            };
+            let delete = h.delete(LATER_NOTE);
+            let (free, aware) = h.reduce();
+            assert!(
+                applied(&free, segment),
+                "{scope:?} ending {ending}: {:?}",
+                effect(&free, segment)
+            );
+            assert!(
+                refused(&free, delete, PreconditionFailureReason::TargetAnchored),
+                "{scope:?} ending {ending}: {:?}",
+                effect(&free, delete)
+            );
+            assert!(aware.score.events.contains(LATER_NOTE), "{scope:?}");
+        }
+    }
+}
+
+/// D86 Q2's undo route: a note entered in a transaction, a live tempo
+/// segment of either map starting at it since, and the transaction undone.
+/// A strict or cascading undo conflicts, naming the note (and the region
+/// whose map holds the segment), and a best-effort one keeps the note, where
+/// before each removed it and left the segment naming nothing.
+#[test]
+fn an_undo_removing_a_note_a_tempo_segment_names_is_held() {
+    for scope in MAPS {
+        for policy in POLICIES {
+            let mut h = History::new();
+            let transaction = h.transaction(500);
+            h.note(Some(transaction), LATER_NOTE, 1);
+            h.tempo(None, scope, at_note(LATER_NOTE), true);
+            let undo = h.undo(transaction, policy);
+            let (free, aware) = h.reduce();
+            assert!(
+                aware.score.events.contains(LATER_NOTE),
+                "{scope:?} {policy:?}"
+            );
+            match policy {
+                UndoPolicy::BestEffort => assert!(undone(&free, undo), "{scope:?}"),
+                _ => {
+                    let holder =
+                        scope.map_or(TypedObjectId::Event(LATER_NOTE), TypedObjectId::Region);
+                    for object in [TypedObjectId::Event(LATER_NOTE), holder] {
+                        assert!(
+                            held(&free, undo, object),
+                            "{scope:?} {policy:?} {object:?}: {:?}",
+                            effect(&free, undo)
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Controls: a note a tempo segment names no more, or never did, is removed.
+/// A segment at the region's start, or one removed before the delete, holds
+/// no note; one written in the undone transaction is restored away by its
+/// undo, which removes the note; and one of a region's map, the region and
+/// the note made in the undone transaction, goes with its region.
+#[test]
+fn a_note_no_live_tempo_segment_names_is_removed() {
+    let made = RegionId::new(AUTHOR, 13);
+    let made_note = EventId::new(AUTHOR, 990);
+    for policy in POLICIES {
+        let mut h = History::new();
+        let transaction = h.transaction(500);
+        h.region(
+            Some(transaction),
+            made,
+            valuegen::metric_model(),
+            3_000_000_000,
+        );
+        let instance = StaffInstanceId::new(AUTHOR, 924);
+        let voice = VoiceId::new(AUTHOR, 944);
+        h.push_in(
+            Some(transaction),
+            OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                region: made,
+                instance: valuegen::staff_instance(instance, STAVES[2]),
+            }),
+        );
+        h.push_in(
+            Some(transaction),
+            OperationKind::CreateVoice(CreateVoiceOp {
+                staff_instance: instance,
+                voice: valuegen::voice(voice),
+            }),
+        );
+        h.push_in(
+            Some(transaction),
+            OperationKind::InsertEvent(InsertEventOp {
+                staff_instance: instance,
+                event: valuegen::insert_event_value(
+                    made_note,
+                    voice,
+                    MusicalPosition::origin(),
+                    quarter(),
+                    &[PitchId::new(AUTHOR, 991)],
+                ),
+            }),
+        );
+        let segment = h.tempo(None, Some(made), at_note(made_note), true);
+        let undo = h.undo(transaction, policy);
+        let (free, aware) = h.reduce();
+        assert!(applied(&free, segment), "{policy:?}");
+        assert!(undone(&free, undo), "{policy:?}: {:?}", effect(&free, undo));
+        assert!(!aware.score.events.contains(made_note), "{policy:?}");
+    }
+    for scope in MAPS {
+        for start in [edge(METRIC, AnchorOffset::Zero), at_note(NOTE)] {
+            let mut h = History::new();
+            h.tempo(None, scope, start.clone(), true);
+            if matches!(start, TimeAnchor::Event { .. }) {
+                h.tempo(None, scope, start, false);
+            }
+            let delete = h.delete(NOTE);
+            let (free, aware) = h.reduce();
+            assert!(
+                applied(&free, delete),
+                "{scope:?}: {:?}",
+                effect(&free, delete)
+            );
+            assert!(!aware.score.events.contains(NOTE), "{scope:?}");
+        }
+        for policy in POLICIES {
+            let mut h = History::new();
+            let transaction = h.transaction(500);
+            h.note(Some(transaction), LATER_NOTE, 1);
+            h.tempo(Some(transaction), scope, at_note(LATER_NOTE), true);
+            let undo = h.undo(transaction, policy);
+            let (free, aware) = h.reduce();
+            assert!(
+                undone(&free, undo),
+                "{scope:?} {policy:?}: {:?}",
+                effect(&free, undo)
+            );
+            assert!(
+                !aware.score.events.contains(LATER_NOTE),
+                "{scope:?} {policy:?}"
+            );
+        }
+    }
 }

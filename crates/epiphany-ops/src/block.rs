@@ -260,9 +260,14 @@ mod tests {
             .iter()
             .filter_map(OperationKindTag::introduced_minor)
             .chain(
-                [R::SlotOccupied, R::HomeIsOwnStaff, R::RegionsOverlap]
-                    .iter()
-                    .filter_map(R::introduced_minor),
+                [
+                    R::SlotOccupied,
+                    R::HomeIsOwnStaff,
+                    R::RegionsOverlap,
+                    R::TargetAnchored,
+                ]
+                .iter()
+                .filter_map(R::introduced_minor),
             )
             .max();
         assert_eq!(newest, Some(HIGHEST_SCHEMA_MINOR));

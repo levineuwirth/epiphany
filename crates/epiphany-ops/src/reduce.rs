@@ -5073,6 +5073,16 @@ impl<'a> Reducer<'a> {
                 reason: NoOpReason::PreconditionFailedUnderReduction { reason },
             };
         }
+        // A live tempo segment naming the event holds it: no rule re-anchors
+        // the segment, which would name nothing (reduction version 5, D86 Q2:
+        // before it the delete applied, `CrossCuttingRefsResolve`).
+        if self.tempo_segment_naming(&ev_obj, &[], &[]).is_some() {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetAnchored,
+                },
+            };
+        }
 
         let deleted_placement = self.voice_occupancy.iter().find_map(|(voice, events)| {
             events
@@ -9417,6 +9427,52 @@ impl<'a> Reducer<'a> {
         !targets.contains(&owner) && matches!(self.objects.get(&owner), Some(ObjectState::Live))
     }
 
+    /// The holder of a live tempo segment whose start or end names `target`
+    /// as an undo leaves it (`targets` going with it, `restorations`
+    /// applied; neither for a delete): the region whose map holds it, or
+    /// `target` itself for a segment of the score's map, which has no
+    /// holder. Removing `target` would leave the segment naming nothing
+    /// (`CrossCuttingRefsResolve`) and no rule re-anchors it, so an event's
+    /// delete and undo are held (reduction version 5, D86 Q2), as a measure's
+    /// undo and a region's delete and undo are. Read from the tempo chains
+    /// both modes keep.
+    fn tempo_segment_naming(
+        &self,
+        target: &TypedObjectId,
+        targets: &[TypedObjectId],
+        restorations: &[ValueRestoration],
+    ) -> Option<TypedObjectId> {
+        self.tempo_segment_chain
+            .iter()
+            .find_map(|((scope, position), chain)| {
+                let names = prospective_references_target(
+                    restorations,
+                    |restoration| match restoration {
+                        ValueRestoration::TempoSegment {
+                            region: r,
+                            position: p,
+                            value,
+                        } if r == scope && p == position => Some(value.clone()),
+                        _ => None,
+                    },
+                    chain.current().cloned().flatten(),
+                    |segment: &TempoSegment| {
+                        anchor_object_refs(
+                            std::iter::once(&segment.start).chain(segment.end.as_ref()),
+                        )
+                        .contains(target)
+                    },
+                );
+                match scope {
+                    Some(region) => {
+                        let robj = TypedObjectId::Region(*region);
+                        (names && self.owner_licenses_block(robj, targets)).then_some(robj)
+                    }
+                    None => names.then_some(*target),
+                }
+            })
+    }
+
     /// `Some((blocked, referencer))` when tombstoning `target` under undo
     /// would strand a live reference: a minted `Staff` still manifested by a
     /// live staff instance (operation_catalog §CreateStaff), a minted
@@ -10010,6 +10066,13 @@ impl<'a> Reducer<'a> {
                 });
                 (stays && grace && !another).then_some((*target, eobj))
             }
+            // A live tempo segment naming the event, read as the undo leaves
+            // it (reduction version 5, D86 Q2: before it the undo removed the
+            // event and left the segment naming nothing,
+            // `CrossCuttingRefsResolve`).
+            TypedObjectId::Event(_) => self
+                .tempo_segment_naming(target, targets, restorations)
+                .map(|holder| (*target, holder)),
             _ => None,
         }
     }

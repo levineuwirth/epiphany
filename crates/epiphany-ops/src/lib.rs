@@ -886,7 +886,13 @@ pub mod vectors;
 ///     a best-effort one keeps the signature, in both modes, where version
 ///     `4` applied it and left a grid a `SetMetricGrid` wrote naming nothing
 ///     (`CrossCuttingRefsResolve`, D86 Q1). Locked by `reference_holds.rs`
-///     and the committed histories `195` to `205`.
+///     and the committed histories `195` to `205`. A `DeleteEvent` of an
+///     event a live tempo segment of any map starts or ends at is refused
+///     `TargetAnchored` (reason 22, epoch 16) in both modes, and an undo that
+///     would remove such an event is held likewise, read as the undo leaves
+///     the segment, where version `4` removed the event and left the segment
+///     naming nothing (D86 Q2 and its undo route). Locked by
+///     `reference_holds.rs` and the committed histories `206` to `213`.
 ///
 ///   With it, at the same epoch 16, a wire addition that changes no verdict:
 ///   `MarkerKind` appends `ExpressionText` (X5b.7, D79 Q9), reduced as any

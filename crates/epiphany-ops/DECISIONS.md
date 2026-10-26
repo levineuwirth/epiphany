@@ -4341,3 +4341,18 @@ undo naming one conflicts and a best-effort one keeps the signature. A region
 the same undo removes holds nothing. The coordinator's two minimized
 histories, review 1's three and the review's six one-author forms are
 committed (`195` to `205`), each declaring the verdict its undo now shows.
+
+**A tempo segment at a note (D86 Q2).** A region's delete was held by a tempo
+segment of another map anchored to it (version 3), and a measure's undo by
+one naming the measure, but a note's delete and an undo removing the note
+read no segment: either left a segment of the score's or the note's region's
+map starting at the note naming nothing. The catalog said such a segment
+degrades by the framework's anchor rules, but no rule re-anchors one; the
+owner ruled the note held, as a region is. A `DeleteEvent` whose event a live segment of any map starts or
+ends at is refused under a new reason, `TargetAnchored` (22, epoch 16): no
+existing reason fits, `ContainerNotEmpty` naming a container's children. An
+undo that would remove such a note is held, the segment read as the undo
+leaves it, so one the undone transaction wrote at the note is restored away,
+and one of a map whose region the same undo removes holds nothing. A
+best-effort undo keeps the note. Read from the tempo chains both modes keep.
+Review 1's eight one-author probes are committed (`206` to `213`).

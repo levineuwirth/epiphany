@@ -287,6 +287,28 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         "a_fill_refused_for_an_overlap",
         overlap.clone(),
     ));
+    // A delete refused for a holder's anchor (reduction version 5): the same
+    // effect with `TargetAnchored`, discriminant 22, the next reason.
+    let anchored = MaterializedState {
+        effects: vec![(
+            OperationId::new(ReplicaId(1), 3),
+            OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetAnchored,
+                },
+            },
+        )],
+        ..Default::default()
+    }
+    .canonical_bytes();
+    assert_eq!(anchored[reason_at], 22);
+    v.push(row(
+        MS,
+        "accept",
+        "-",
+        "a_delete_refused_for_an_anchor",
+        anchored,
+    ));
     let mut unknown_reason = overlap;
     unknown_reason[reason_at] = 0xFF;
     v.push(row(
