@@ -11,9 +11,12 @@
 //! here until it is flipped, so a fix cannot pass unrecorded, and one that
 //! shows a second failure beside its own fails too. A history a refusal fixed
 //! says so in a `# refused:` line naming the reason, and must show that
-//! refusal in both modes. No class is deferred: the region class the owner
-//! deferred (D48, D50 to D52) closed when reduction version 5 refused the
-//! fill that made it (X5b), and its histories agree.
+//! refusal in both modes. A history whose fix holds or refuses its last
+//! operation says so in a `# verdict:` line, `applied`, `conflicted` or
+//! `refused` and the reason, which that operation shows in both modes (C5b
+//! review 1's histories, each held by fix round 1). No class is deferred: the
+//! region class the owner deferred (D48, D50 to D52) closed when reduction
+//! version 5 refused the fill that made it (X5b), and its histories agree.
 //!
 //! The CI budget runs a small number of generated histories, in two chunks of
 //! different lengths, and requires that every failure it finds is a committed
@@ -62,6 +65,8 @@ struct Committed {
     expect: Expect,
     /// The reason a refusal that fixed it gives, from its `# refused:` line.
     refused: Option<String>,
+    /// Its last operation's effect, from its `# verdict:` line.
+    verdict: Option<String>,
     history: Vec<epiphany_ops::OperationEnvelope>,
 }
 
@@ -94,6 +99,10 @@ fn committed() -> Vec<Committed> {
                 .lines()
                 .find_map(|l| l.strip_prefix("# refused: "))
                 .map(|reason| reason.split(',').next().unwrap_or(reason).to_owned());
+            let verdict = text
+                .lines()
+                .find_map(|l| l.strip_prefix("# verdict: "))
+                .map(str::to_owned);
             let history = modes::parse(&text).unwrap_or_else(|e| panic!("{file}: {e:?}"));
             assert!(!history.is_empty(), "{file} holds no envelope");
             Committed {
@@ -101,6 +110,7 @@ fn committed() -> Vec<Committed> {
                 class,
                 expect,
                 refused,
+                verdict,
                 history,
             }
         })
@@ -197,6 +207,57 @@ fn every_history_declaring_a_refusal_shows_it_in_both_modes() {
         assert_eq!(
             in_free, in_aware,
             "{}: the modes refuse differently",
+            c.file
+        );
+    }
+}
+
+/// Every history declaring a verdict shows it in both modes: its last
+/// operation's effect is the one its `# verdict:` line names, `applied`
+/// (repairing or not), `conflicted`, or `refused` and the reason by name. C5b
+/// review 1's histories are such: each one author's removal a fix round 1
+/// hold conflicts, keeps or refuses, or a write naming a target that is not
+/// live, which it refuses.
+#[test]
+fn every_history_declaring_a_verdict_shows_it_in_both_modes() {
+    use epiphany_core::{IdentityContext, ReplicaId, Score};
+    use epiphany_ops::{MaterializedState, NoOpReason, OperationEffect, OperationSet};
+    let declaring: Vec<Committed> = committed()
+        .into_iter()
+        .filter(|c| c.verdict.is_some())
+        .collect();
+    assert!(!declaring.is_empty(), "no history declares a verdict");
+    for c in &declaring {
+        let verdict = c.verdict.as_deref().expect("declared");
+        let mut set = OperationSet::new();
+        for envelope in &c.history {
+            set.accept(envelope.clone());
+        }
+        let last = c.history.last().expect("a history").id;
+        let shown = |state: &MaterializedState| match state
+            .effects
+            .iter()
+            .find(|(id, _)| *id == last)
+            .map(|(_, e)| e)
+        {
+            Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. }) => {
+                String::from("applied")
+            }
+            Some(OperationEffect::Conflicted { .. }) => String::from("conflicted"),
+            Some(OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction { reason },
+            }) => format!("refused {reason:?}"),
+            other => format!("{other:?}"),
+        };
+        let free = shown(&set.reduce());
+        let aware = shown(
+            &set.reduce_onto(&Score::empty(IdentityContext::new(ReplicaId(0))))
+                .state,
+        );
+        assert_eq!(
+            [free.as_str(), aware.as_str()],
+            [verdict, verdict],
+            "{}: its last operation's effect, base-free and graph-aware",
             c.file
         );
     }

@@ -4318,3 +4318,26 @@ at a measure's start or a note with no offset, from
 `the_ci_budget_authors_and_applies_every_kind` (`b6c` survived from the first
 X5b.9 generator on). A break's measure and note shapes count only an anchor
 with no offset now, which the holders' arms never write.
+
+## X5b fix round 1 — C5b review 1's findings (2026-10-26)
+
+C5b review 1 found five ways one author leaves a reference naming nothing,
+all older than X5b and all reference integrity (D86, D87). Each is fixed
+under reduction version 5.
+
+**A grid naming a signature its undo removes (D86 Q1).** An undo that would
+remove a time signature was held for a meter change at a key naming it, a
+measure, an instance's own grid and a region's own model, but not for a
+region's grid a `SetMetricGrid` wrote: that operation writes the whole grid
+to its own chain, which the per-key arm never read. One author set a
+signature in a transaction, set another region's grid (or the signature's own
+region's, at another position) naming it, and undid the transaction; the
+undo applied under every policy and left the grid naming nothing. The undo
+now reads each live region's grid as its chains give it once the undo's own
+restorations apply (`default_grid`, the reading invariant 20's checks use),
+so a grid the undone transaction wrote is restored away and a meter the
+undo's restoration of a key takes away is not read; a strict or cascading
+undo naming one conflicts and a best-effort one keeps the signature. A region
+the same undo removes holds nothing. The coordinator's two minimized
+histories, review 1's three and the review's six one-author forms are
+committed (`195` to `205`), each declaring the verdict its undo now shows.

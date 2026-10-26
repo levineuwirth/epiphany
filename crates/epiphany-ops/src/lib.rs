@@ -878,6 +878,15 @@ pub mod vectors;
 ///     meters, which holds the meter changes now and not only their anchors.
 ///     Locked by `anchor_offsets.rs` and the committed histories `190` to
 ///     `194`.
+///   - **What C5b review 1 found** (X5b's fix round 1, D86 and D87,
+///     verdicts), each older than X5b and each one author's. An undo that
+///     would remove a time signature a live region's grid names, as the
+///     grid's chains give it once the undo's restorations apply, is held as
+///     for a meter change at a key: a strict or cascading undo conflicts and
+///     a best-effort one keeps the signature, in both modes, where version
+///     `4` applied it and left a grid a `SetMetricGrid` wrote naming nothing
+///     (`CrossCuttingRefsResolve`, D86 Q1). Locked by `reference_holds.rs`
+///     and the committed histories `195` to `205`.
 ///
 ///   With it, at the same epoch 16, a wire addition that changes no verdict:
 ///   `MarkerKind` appends `ExpressionText` (X5b.7, D79 Q9), reduced as any

@@ -9657,6 +9657,48 @@ impl<'a> Reducer<'a> {
                             .then_some((*target, robj))
                         })
                     })
+                    // A live region whose grid names it as its chains give
+                    // it once the undo's restorations apply
+                    // ([`Self::default_grid`]): a `SetMetricGrid` writes the
+                    // whole grid, which the per-key arm above does not read
+                    // (reduction version 5, D86 Q1: before it the undo left
+                    // the grid naming nothing, `CrossCuttingRefsResolve`).
+                    .or_else(|| {
+                        self.metric_grid_chain.keys().find_map(|region| {
+                            let robj = TypedObjectId::Region(*region);
+                            if !self.owner_licenses_block(robj, targets) {
+                                return None;
+                            }
+                            let whole = restorations.iter().find_map(|restoration| {
+                                match restoration {
+                                    ValueRestoration::MetricGrid { region: r, value }
+                                        if r == region =>
+                                    {
+                                        Some(value.clone())
+                                    }
+                                    _ => None,
+                                }
+                            });
+                            let per_key: BTreeMap<MusicalPosition, Option<MeterChange>> =
+                                restorations
+                                    .iter()
+                                    .filter_map(|restoration| match restoration {
+                                        ValueRestoration::MeterChange {
+                                            region: r,
+                                            position,
+                                            value,
+                                        } if r == region => {
+                                            Some((position.clone(), value.clone()))
+                                        }
+                                        _ => None,
+                                    })
+                                    .collect();
+                            self.default_grid(Some(*region), whole.as_ref(), &per_key)
+                                .iter()
+                                .any(|change| change.time_signature == *id)
+                                .then_some((*target, robj))
+                        })
+                    })
             }
             // Genesis tranche G3a undo repair (pins A2-A6): these three
             // guards read the carried-value maps, not `self.graph`, and are
