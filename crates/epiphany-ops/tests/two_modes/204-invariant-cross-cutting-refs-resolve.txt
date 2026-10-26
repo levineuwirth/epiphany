@@ -2,7 +2,7 @@
 # expect: agree
 # verdict: conflicted
 # was: split, one author's: a time signature set in a transaction, the signature's own region's grid at another position then set naming it, the transaction undone Cascade; the undo applied and left the grid naming a signature no longer declared (reduction version 5, D86 Q1)
-# found: C5b review 1's probe, one author's history; the coordinator's re-check of review 1 among its histories
+# found: C5b review 1's probe, one author's history, among those the verification of review 1 re-checked
 (envelope #x00000000000000050000000000000000 #x00000000000000000000000000000005 (stamp 1 0 #x00000000000000050000000000000000) (causal () ()) () (primitive (create-instrument (instrument #x00000000000000050000000000000384 "instrument-900" () () #x () (clef g 2 0) (staff-line-configuration 5 #x000000000000f03f solid ()) ()))))
 (envelope #x00000000000000050000000000000001 #x00000000000000000000000000000005 (stamp 2 0 #x00000000000000050000000000000001) (causal ((#x0000000000000005 0)) ()) () (primitive (create-staff (staff #x00000000000000050000000000000385 "staff-901" () #x00000000000000050000000000000384 (staff-line-configuration 5 #x000000000000f03f solid ()) () (clef g 2 0)))))
 (envelope #x00000000000000050000000000000002 #x00000000000000000000000000000005 (stamp 3 0 #x00000000000000050000000000000002) (causal ((#x0000000000000005 1)) ()) () (primitive (create-staff (staff #x00000000000000050000000000000386 "staff-902" () #x00000000000000050000000000000384 (staff-line-configuration 5 #x000000000000f03f solid ()) () (clef g 2 0)))))

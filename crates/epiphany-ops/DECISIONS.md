@@ -4338,9 +4338,10 @@ restorations apply (`default_grid`, the reading invariant 20's checks use),
 so a grid the undone transaction wrote is restored away and a meter the
 undo's restoration of a key takes away is not read; a strict or cascading
 undo naming one conflicts and a best-effort one keeps the signature. A region
-the same undo removes holds nothing. The coordinator's two minimized
-histories, review 1's three and the review's six one-author forms are
-committed (`195` to `205`), each declaring the verdict its undo now shows.
+the same undo removes holds nothing. The two minimized histories the
+verification of C5b's second addendum found, review 1's three and the
+review's six one-author forms are committed (`195` to `205`), each declaring
+the verdict its undo now shows.
 
 **A tempo segment at a note (D86 Q2).** A region's delete was held by a tempo
 segment of another map anchored to it (version 3), and a measure's undo by
