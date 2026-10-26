@@ -387,8 +387,14 @@ fn the_ci_budget_authors_and_applies_every_kind() {
 /// (`WrongRegionTimeModel`, X5b.8), one so from a region's edge, which only
 /// the draws of a kind the named region may not admit write (D84 Q4), every
 /// other holder of a time anchor written by a wall-clock offset its target
-/// does not admit (X5b.9), and each of [`modes::REFUSED`], authored and never
-/// applied.
+/// does not admit (X5b.9) but a measure and a staff instance's carried change,
+/// which the budget's seeds never refuse so (each held by `anchor_offsets.rs`,
+/// and counted by D50's bar), and each of [`modes::REFUSED`], authored and
+/// never applied. A grid's row also counts the refusal version 3's musical
+/// slot gives a grid in a region admitting no musical offset, so it holds the
+/// grid's anchor refusal no more than the slot's; that refusal is held by
+/// `a_metric_grid_s_meter_change_by_a_wall_clock_offset_is_refused` (C5b
+/// review 1's L3).
 #[test]
 fn the_ci_budget_refuses_what_reduction_version_5_refuses() {
     let sum = |count: &dyn Fn(&modes::Coverage) -> u64| {
@@ -433,7 +439,6 @@ fn the_ci_budget_refuses_what_reduction_version_5_refuses() {
         "SetTimeSignature+wall-clock offset",
         "SetMetricGrid+wall-clock offset",
         "SetTempoSegment+wall-clock offset",
-        "CreateStaffInstance+carried wall-clock offset",
         "CreateRegion+carried wall-clock offset",
     ] {
         assert!(

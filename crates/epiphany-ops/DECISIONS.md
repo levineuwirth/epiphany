@@ -4419,3 +4419,23 @@ in turn (`CascadeDeleted`), and the graph's `remove_tuplets` removes the same
 children. Carrying rather than refusing is the owner's ruling; refusing would
 have had a member's delete list tuplets that do not hold it. Review 1's four
 one-author probes are committed (`303` to `306`).
+
+**The fuzz writes what the round holds.** The generator had stopped writing
+the shapes these breaks came from, to stay clean. It writes them again: arm
+67's tempo segment stands at the region's start, a note or a measure (D86
+Q2); its spanner stands at a region's start one time in three, since a
+region's delete and undo hold a spanner anchored to it (version 4; review
+1's L2), a repeat there staying the parked P13-D3; arm 40 nests a tuplet in
+one the view holds one time in four, over two of its members (D87 Q3); and a
+new arm 70 sets a time signature in a transaction, sets a region's grid
+naming it outside the transaction, at the region's start or a later bar, and
+undoes the transaction by any policy (D86 Q1). With the widened checker, the
+holders arms 67 and 69 already wrote at notes, measures and regions show to
+the fuzz when their targets' removal is not held. `SHAPES` counts a tempo
+segment at an event, a spanner at a region and a nested tuplet, each held
+authored and applied by the CI budget; arm 70's reach rests on its plant.
+The budget's seeds no longer refuse a staff instance's carried offset for
+its target's model, as they never refused a measure's, so the refusal pin
+names neither (their tests hold them); and its doc says which test holds a
+grid's anchor refusal, which the grid row, also counting version 3's
+musical slot, does not (review 1's L3).

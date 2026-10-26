@@ -56,8 +56,12 @@
 //! objects, a trajectory endpoint naming another event's pitch). A pitch is
 //! entered into an event of any kind. A spanner's staves are rewritten, and a
 //! migration's aleatoric target takes every anchoring discipline. A spanner is
-//! anchored to events only: one anchored to a region a delete or undo removes
-//! is a class the owner has parked (P13-D3).
+//! anchored to events and, by arm 67, to a region's start, which holds the
+//! region against its delete and undo; a repeat structure is anchored to
+//! events only, one anchored to a region a delete or undo removes being the
+//! class the owner has parked (P13-D3; C5b review 1's L2). A tuplet is now and
+//! then nested in one the view holds (arm 40), so its parent's undo is held and
+//! a member's cascade carries it (X5b fix round 1, D87 Q3).
 //!
 //! Some shapes of those kinds are not written either, though none names
 //! another object: a trajectory is linear or exponential, never curved or
@@ -98,11 +102,11 @@
 //! Expression text is one of a marker's kinds. Every other holder of a time
 //! anchor is written by a wall-clock offset too (X5b.9): a marker, a user break,
 //! a time signature, a metric grid's meter change, a tempo segment (at a
-//! region's start: one at a note its delete removes names nothing, an older
-//! gap), a measure, a staff instance's carried clef, key or grid, a region's own
-//! meter, break or tempo segment, a migration's own meter, and a spanner or a
-//! repeat at a note (one at a region is the parked P13-D3), each in a region
-//! the view holds,
+//! region's start, a note or a measure, each held against its removal since
+//! X5b's fix round 1), a measure, a staff instance's carried clef, key or grid,
+//! a region's own meter, break or tempo segment, a migration's own meter, a
+//! spanner at a note or a region's start, and a repeat at a note (one at a
+//! region is the parked P13-D3), each in a region the view holds,
 //! given a model admitting wall-clock time one time in two, refused
 //! `WrongRegionTimeModel` where its target admits none, and its region then
 //! migrated to a model of any kind one time in two (arm 67); a marker, a
@@ -112,7 +116,11 @@
 //! start at a note or a measure its author makes next, which the note's insert
 //! or the measure's create then reads (arm 69). That extent names what its
 //! author's view does not yet hold, the one name [`valid`] does not hold to
-//! the view.
+//! the view; since X5b's fix round 1 the extent's write is refused
+//! `TargetMissing`, as every holder's naming a target that is not live is.
+//! And a time signature set in a transaction, a region's grid then set naming
+//! it outside the transaction, and the transaction undone (arm 70), which the
+//! grid holds (D86 Q1).
 //!
 //! Everything is seeded: [`generate`] is a function of its seed and length, so
 //! a finding reproduces from both. [`minimize`] shrinks a failing history to
@@ -626,7 +634,7 @@ impl Coverage {
 
 /// The payload shapes schema major 5 adds, and those reduction version 5
 /// reads (X5b), each counted beside its kind.
-const SHAPES: [&str; 34] = [
+const SHAPES: [&str; 37] = [
     "InsertEvent+marks",
     "InsertEvent+ornaments",
     "InsertEvent+grace",
@@ -661,6 +669,9 @@ const SHAPES: [&str; 34] = [
     "SetTempoSegment+wall-clock offset",
     "CreateStaffInstance+carried wall-clock offset",
     "CreateRegion+carried wall-clock offset",
+    "SetTempoSegment+event anchor",
+    "CreateCrossCutting+spanner at a region",
+    "CreateTuplet+parent",
 ];
 
 /// The shapes reduction version 5 refuses wherever they are written, each
@@ -826,6 +837,13 @@ fn kind_shapes(payload: &OperationPayload) -> Vec<&'static str> {
                 {
                     out.push("CreateCrossCutting+pedal bracket");
                 }
+                if [&s.start, &s.end]
+                    .into_iter()
+                    .any(|anchor| matches!(anchor, epiphany_core::TimeAnchor::Region { .. }))
+                    && marker.starts_with("Create")
+                {
+                    out.push("CreateCrossCutting+spanner at a region");
+                }
             }
             _ => {}
         }
@@ -921,14 +939,23 @@ fn kind_shapes(payload: &OperationPayload) -> Vec<&'static str> {
             }
             out
         }
-        OperationKind::SetTempoSegment(op) => op
-            .segment
-            .as_ref()
-            .filter(|s| matches!(s.shape, epiphany_core::TempoShape::Constant))
-            .filter(|s| s.end_tempo.is_some())
-            .map(|_| "SetTempoSegment+constant with an end tempo")
-            .into_iter()
-            .collect(),
+        OperationKind::SetTempoSegment(op) => {
+            let mut out: Vec<&'static str> = op
+                .segment
+                .as_ref()
+                .filter(|s| matches!(s.shape, epiphany_core::TempoShape::Constant))
+                .filter(|s| s.end_tempo.is_some())
+                .map(|_| "SetTempoSegment+constant with an end tempo")
+                .into_iter()
+                .collect();
+            if op.segment.is_some() && matches!(op.start, epiphany_core::TimeAnchor::Event { .. }) {
+                out.push("SetTempoSegment+event anchor");
+            }
+            out
+        }
+        OperationKind::CreateTuplet(op) if op.tuplet.parent.is_some() => {
+            vec!["CreateTuplet+parent"]
+        }
         _ => Vec::new(),
     }
 }
@@ -2715,7 +2742,41 @@ fn make(
         }
         40 => {
             // CreateTuplet over two or three consecutive events of a voice,
-            // their total required as they stand.
+            // their total required as they stand; one time in four over two
+            // consecutive members of a tuplet the view holds, nested in it
+            // (D87 Q3).
+            if sim.rng.chance(4) {
+                let parents: Vec<&Tuplet> = h
+                    .score
+                    .cross_cutting
+                    .tuplets
+                    .iter()
+                    .filter(|tuplet| tuplet.members.len() >= 2)
+                    .collect();
+                if let Some(parent) = sim.rng.pick(&parents) {
+                    let i = sim.rng.below(parent.members.len() as u64 - 1) as usize;
+                    let members = parent.members[i..i + 2].to_vec();
+                    let total = members
+                        .iter()
+                        .filter_map(|id| h.events.iter().find(|e| e.id() == *id))
+                        .filter_map(|e| match e.duration() {
+                            EventDuration::Musical(d) => Some(d.clone()),
+                            _ => None,
+                        })
+                        .fold(MusicalDuration::zero(), |a, b| a + b);
+                    let id: TupletId = sim.mint(r);
+                    return Some(vec![prim(OperationKind::CreateTuplet(CreateTupletOp {
+                        tuplet: Tuplet {
+                            id,
+                            ratio: TupletRatio::new(2, 3).expect("not degenerate"),
+                            members,
+                            parent: Some(parent.id),
+                            required_total: total,
+                            display: TupletDisplay::default(),
+                        },
+                    }))]);
+                }
+            }
             let &(voice, _, _) = sim.rng.pick(&h.voices)?;
             let mut own: Vec<&Event> = h
                 .events
@@ -3801,19 +3862,17 @@ fn make(
             // grid's meter change, a tempo segment, a measure, a staff
             // instance carrying a clef, a key or its own grid, a migration to
             // a model with its own meter, or a marker moved, anchored at the
-            // region's start, a note or a measure of it (a tempo segment at
-            // its start), and a spanner or a repeat, created or (a spanner)
-            // moved, at a note of it, by a
+            // region's start, a note or a measure of it, and a spanner or a
+            // repeat, created or (a spanner) moved, at a note of it (a spanner
+            // one time in three at its start instead), by a
             // wall-clock offset three times in four (else of either kind),
             // refused `WrongRegionTimeModel` where the region does not admit
             // it; or a region placed as an editor places one carrying, at its
             // own start so, a meter of its own model, a break or a tempo
             // segment; and one time in two the holding region then migrated
             // to a model of any kind, which strands the holder where it does
-            // not admit the offset. A spanner or a repeat anchored to a region
-            // is the class the owner parked (P13-D3), so none is written; nor
-            // is a tempo segment at a note, which the note's delete leaves
-            // naming nothing (`CrossCuttingRefsResolve`, older than X5b).
+            // not admit the offset. A repeat anchored to a region is the class
+            // the owner parked (P13-D3), so none is written.
             let (target, model, instances) = sim.rng.pick(&h.regions)?;
             let holds_music = instances
                 .iter()
@@ -4067,6 +4126,56 @@ fn make(
                 prim(made),
             ]
         }
+        70 => {
+            // A time signature set in a transaction, a region's grid then set
+            // by a `SetMetricGrid` naming it outside the transaction, at the
+            // region's start or a later bar, and the transaction undone by any
+            // policy (D86 Q1): a strict or cascading undo conflicts while the
+            // grid names the signature, and a best-effort one keeps it.
+            if sim.replicas[r].open.is_some() {
+                return None;
+            }
+            let metric: Vec<RegionId> = h
+                .regions
+                .iter()
+                .filter(|(_, model, _)| model.coordinate_discipline().admits_musical_offsets())
+                .map(|(id, _, _)| *id)
+                .collect();
+            let signed = *sim.rng.pick(&metric)?;
+            let gridded = *sim.rng.pick(&metric)?;
+            let tx: TransactionId = sim.mint(r);
+            sim.replicas[r].queued.push((tx, 2));
+            let signature: TimeSignatureId = sim.mint(r);
+            let bar = MusicalPosition(RationalTime::from_int(sim.rng.below(3) as i32));
+            vec![
+                prim(OperationKind::DeclareTransaction(TransactionDescriptor {
+                    id: tx,
+                    label: String::from("set a meter"),
+                    category: None,
+                })),
+                prim(OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region: signed,
+                    anchor: valuegen::region_start_anchor(signed, MusicalPosition::origin()),
+                    time_signature: Some(valuegen::time_signature(
+                        signature,
+                        [2u16, 3, 4][sim.rng.below(3) as usize],
+                    )),
+                })),
+                prim(OperationKind::SetMetricGrid(SetMetricGridOp {
+                    region: gridded,
+                    grid: Some(epiphany_core::MetricGrid {
+                        meter_sequence: vec![epiphany_core::MeterChange {
+                            anchor: valuegen::region_start_anchor(gridded, bar),
+                            time_signature: signature,
+                        }],
+                    }),
+                })),
+                OperationPayload::UndoTransaction(UndoTransactionPayload {
+                    target: tx,
+                    policy: random_policy(&mut sim.rng),
+                }),
+            ]
+        }
         _ => return None,
     })
 }
@@ -4160,8 +4269,10 @@ fn held_by(
     offset: epiphany_core::AnchorOffset,
 ) -> Option<(Vec<OperationPayload>, RegionId)> {
     let prim = |k: OperationKind| OperationPayload::Primitive(k);
-    // A spanner or a repeat stands at notes alone (P13-D3): the note `anchor`
-    // names, or one of the region's by its offset, and the note itself.
+    // A repeat stands at notes alone (P13-D3), and a spanner there too but
+    // one time in three, which stands at the region's start (C5b review 1's
+    // L2): the note `anchor` names, or one of the region's by its offset, and
+    // the note itself.
     let note = match &anchor {
         epiphany_core::TimeAnchor::Event { .. } => Some(anchor.clone()),
         _ => match anchor_in(sim, h, region, offset.clone()) {
@@ -4196,7 +4307,10 @@ fn held_by(
             },
         ))],
         1 => {
-            let (start, end) = note?;
+            let (start, end) = match note {
+                Some(at) if !sim.rng.chance(3) => at,
+                _ => (own_start.clone(), own_start.clone()),
+            };
             let (kind, style) = random_spanner_look(&mut sim.rng);
             vec![prim(OperationKind::CreateCrossCutting(
                 CreateCrossCuttingOp {
@@ -4256,13 +4370,13 @@ fn held_by(
             }),
         }))],
         7 => {
-            // At the region's start: a segment at a note the note's delete
-            // removes names nothing, older than X5b and not written here.
+            // At the region's start, a note or a measure of it: a note's or a
+            // measure's removal is held while a segment names it (D86 Q2).
             let mut segment = valuegen::tempo_segment(region, MusicalPosition::origin(), 90.0);
-            segment.start = own_start.clone();
+            segment.start = anchor.clone();
             vec![prim(OperationKind::SetTempoSegment(SetTempoSegmentOp {
                 region: sim.rng.chance(2).then_some(region),
-                start: own_start,
+                start: anchor,
                 segment: Some(segment),
             }))]
         }
@@ -4617,7 +4731,7 @@ fn tie_entry(
 /// Each arm of [`make`] and how often it is drawn: the editing of notes,
 /// pitches and their marks three times as often as the score's structure and
 /// settings, as an editor's history runs.
-const ARMS: [(u64, u64); 70] = [
+const ARMS: [(u64, u64); 71] = [
     (0, 4),
     (1, 3),
     (2, 3),
@@ -4688,6 +4802,7 @@ const ARMS: [(u64, u64); 70] = [
     (67, 6),
     (68, 2),
     (69, 1),
+    (70, 1),
 ];
 
 fn draw_arm(rng: &mut Rng) -> u64 {
