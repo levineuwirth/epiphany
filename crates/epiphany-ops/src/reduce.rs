@@ -5104,10 +5104,16 @@ impl<'a> Reducer<'a> {
                 reason: NoOpReason::PreconditionFailedUnderReduction { reason },
             };
         }
-        // A live tempo segment naming the event holds it: no rule re-anchors
-        // the segment, which would name nothing (reduction version 5, D86 Q2:
-        // before it the delete applied, `CrossCuttingRefsResolve`).
-        if self.tempo_segment_naming(&ev_obj, &[], &[]).is_some() {
+        // A live tempo segment naming the event holds it, and so does every
+        // other holder of a time anchor outside the cross-cutting structures:
+        // no rule re-anchors one, which would name nothing (reduction version
+        // 5, D86 Q2 and D87 Q1: before it the delete applied,
+        // `CrossCuttingRefsResolve`).
+        if self
+            .tempo_segment_naming(&ev_obj, &[], &[])
+            .or_else(|| self.holder_naming(&ev_obj, &[], &[]))
+            .is_some()
+        {
             return OperationEffect::NoOp {
                 reason: NoOpReason::PreconditionFailedUnderReduction {
                     reason: PreconditionFailureReason::TargetAnchored,
@@ -8495,11 +8501,17 @@ impl<'a> Reducer<'a> {
         let marked = !self
             .anchored_to_region(op.region, false, &[], &[])
             .is_empty();
-        let minted_by =
-            match self.delete_precondition(robj, env, has_instances || tempo_anchored || marked) {
-                Ok(minter) => minter,
-                Err(effect) => return effect,
-            };
+        // And so does every other live holder of a time anchor naming it
+        // (reduction version 5, D87 Q1).
+        let named = self.holder_naming(&robj, &[], &[]).is_some();
+        let minted_by = match self.delete_precondition(
+            robj,
+            env,
+            has_instances || tempo_anchored || marked || named,
+        ) {
+            Ok(minter) => minter,
+            Err(effect) => return effect,
+        };
         self.objects.insert(
             robj,
             ObjectState::Tombstoned {
@@ -9528,6 +9540,116 @@ impl<'a> Reducer<'a> {
             })
     }
 
+    /// The live holder of a time anchor outside the cross-cutting structures
+    /// whose anchor names `target`, an event, a measure or a region, as an
+    /// undo leaves it (`targets` going with it, `restorations` applied;
+    /// neither for a delete), a holder `target` is itself excepted: a
+    /// region's extent, a region's own model's meter changes, a region's grid
+    /// as its chains give it ([`Self::default_grid`]), a staff instance's own
+    /// grid and the clef and key changes its create carried while no write of
+    /// their own has replaced them, or a measure's start. Removing `target`
+    /// would leave the anchor naming nothing (graph invariant 10,
+    /// `CrossCuttingRefsResolve`) and no rule re-anchors it, so a note's, a
+    /// measure's or a region's delete and undo are held (reduction version 5,
+    /// D87 Q1). A marker, a spanner and a repeat structure re-anchor by the
+    /// rule table instead, a user break stays keyed and draws nothing (D80),
+    /// and a tempo segment is read by [`Self::tempo_segment_naming`]. Read
+    /// from the indices both modes keep.
+    fn holder_naming(
+        &self,
+        target: &TypedObjectId,
+        targets: &[TypedObjectId],
+        restorations: &[ValueRestoration],
+    ) -> Option<TypedObjectId> {
+        let names = |anchor: &TimeAnchor| anchor_object_refs([anchor]).contains(target);
+        let holds =
+            |holder: TypedObjectId| holder != *target && self.owner_licenses_block(holder, targets);
+        self.region_extents
+            .iter()
+            .find_map(|(id, extent)| {
+                let holder = TypedObjectId::Region(*id);
+                ((names(&extent.start) || names(&extent.end)) && holds(holder)).then_some(holder)
+            })
+            .or_else(|| {
+                self.region_model_meters.iter().find_map(|(id, meters)| {
+                    let holder = TypedObjectId::Region(*id);
+                    (meters.iter().any(|meter| names(&meter.anchor)) && holds(holder))
+                        .then_some(holder)
+                })
+            })
+            .or_else(|| {
+                self.metric_grid_chain.keys().find_map(|region| {
+                    let holder = TypedObjectId::Region(*region);
+                    if !holds(holder) {
+                        return None;
+                    }
+                    let whole = restorations
+                        .iter()
+                        .find_map(|restoration| match restoration {
+                            ValueRestoration::MetricGrid { region: r, value } if r == region => {
+                                Some(value.clone())
+                            }
+                            _ => None,
+                        });
+                    let per_key: BTreeMap<MusicalPosition, Option<MeterChange>> = restorations
+                        .iter()
+                        .filter_map(|restoration| match restoration {
+                            ValueRestoration::MeterChange {
+                                region: r,
+                                position,
+                                value,
+                            } if r == region => Some((position.clone(), value.clone())),
+                            _ => None,
+                        })
+                        .collect();
+                    self.default_grid(Some(*region), whole.as_ref(), &per_key)
+                        .iter()
+                        .any(|change| names(&change.anchor))
+                        .then_some(holder)
+                })
+            })
+            .or_else(|| {
+                self.instance_grid.iter().find_map(|(instance, grid)| {
+                    let holder = TypedObjectId::StaffInstance(*instance);
+                    (grid
+                        .iter()
+                        .flat_map(|grid| &grid.meter_sequence)
+                        .any(|change| names(&change.anchor))
+                        && holds(holder))
+                    .then_some(holder)
+                })
+            })
+            .or_else(|| {
+                self.instance_change_anchors.iter().find_map(
+                    |((instance, key, position), anchors)| {
+                        let holder = TypedObjectId::StaffInstance(*instance);
+                        let carried = if *key {
+                            self.key_chain
+                                .get(&(*instance, position.clone()))
+                                .is_some_and(|chain| {
+                                    chain.last_write().is_none()
+                                        && matches!(chain.current(), Some(Some(_)))
+                                })
+                        } else {
+                            self.clef_chain
+                                .get(&(*instance, position.clone()))
+                                .is_some_and(|chain| {
+                                    chain.last_write().is_none()
+                                        && matches!(chain.current(), Some(Some(_)))
+                                })
+                        };
+                        (carried && anchors.iter().any(&names) && holds(holder)).then_some(holder)
+                    },
+                )
+            })
+            .or_else(|| {
+                self.measure_values.iter().find_map(|(id, (_, measure))| {
+                    let holder = TypedObjectId::Measure(*id);
+                    (names(&measure.start) && holds(holder)).then_some(holder)
+                })
+            })
+    }
+
     /// `Some((blocked, referencer))` when tombstoning `target` under undo
     /// would strand a live reference: a minted `Staff` still manifested by a
     /// live staff instance (operation_catalog §CreateStaff), a minted
@@ -9609,6 +9731,14 @@ impl<'a> Reducer<'a> {
                 .or_else(|| {
                     self.orphaned_to_region(*region, targets, restorations)
                         .map(|sid| (*target, sid))
+                })
+                // A live holder outside the cross-cutting structures naming
+                // the region: another region's extent, own model or grid, a
+                // staff instance's own grid or carried clef or key, a
+                // measure's start (reduction version 5, D87 Q1).
+                .or_else(|| {
+                    self.holder_naming(target, targets, restorations)
+                        .map(|holder| (*target, holder))
                 }),
             TypedObjectId::StaffInstance(instance) => self
                 .instance_voices
@@ -10081,6 +10211,15 @@ impl<'a> Reducer<'a> {
                                 }
                             })
                     })
+                    // 8. Every other holder outside the cross-cutting
+                    // structures: a region's extent, own model or grid, a staff
+                    // instance's own grid or carried clef or key (reduction
+                    // version 5, D87 Q1: before it the undo removed the measure
+                    // and left the anchor naming nothing).
+                    .or_else(|| {
+                        self.holder_naming(target, targets, restorations)
+                            .map(|holder| (*target, holder))
+                    })
             }
             // A grace note keeps a pitch (schema major 5, reduction version
             // 4): an undo removing its last, the grace staying, is held. Read
@@ -10121,12 +10260,14 @@ impl<'a> Reducer<'a> {
                 });
                 (stays && grace && !another).then_some((*target, eobj))
             }
-            // A live tempo segment naming the event, read as the undo leaves
-            // it (reduction version 5, D86 Q2: before it the undo removed the
-            // event and left the segment naming nothing,
-            // `CrossCuttingRefsResolve`).
+            // A live tempo segment naming the event, or any other holder of a
+            // time anchor outside the cross-cutting structures, read as the
+            // undo leaves it (reduction version 5, D86 Q2 and D87 Q1: before
+            // it the undo removed the event and left the anchor naming
+            // nothing, `CrossCuttingRefsResolve`).
             TypedObjectId::Event(_) => self
                 .tempo_segment_naming(target, targets, restorations)
+                .or_else(|| self.holder_naming(target, targets, restorations))
                 .map(|holder| (*target, holder)),
             _ => None,
         }

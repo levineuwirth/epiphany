@@ -898,7 +898,13 @@ tempo segment names is refused, \texttt{PreconditionFailureReason} appending
 remove it is held (Section~\ref{sec:k0:delete-event}). A holder of a time
 anchor is refused \texttt{TargetMissing} where written naming an event, a
 measure or a region that is not live, so none names an object before it is
-made (Section~\ref{sec:framework:anchor-offsets}). Accordingly
+made (Section~\ref{sec:framework:anchor-offsets}). And a note, a measure or a
+region every other holder of a time anchor outside the cross-cutting
+structures names (a meter change, a measure's start, a region's extent, a
+carried clef or key change) is held against a delete and an undo, as graph
+invariant~10's surface, widened to every anchor invariant~9 reads but a user
+break's, requires (Sections~\ref{sec:k0:delete-event}
+and~\ref{sec:k0:undo}). Accordingly
 \texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION} moves
 \texttt{4}~$\rightarrow$~\texttt{5}, one version for the phase.
 
@@ -1196,7 +1202,13 @@ ends at is a precondition no-op, \texttt{TargetAnchored}
 (discriminant~22, epoch~16), in both modes, read from the tempo chains: no
 rule re-anchors a segment, which would otherwise name nothing (before it the
 delete applied and left the segment's anchor naming nothing); an undo that
-would remove such an event is held likewise (Section~\ref{sec:k0:undo}).
+would remove such an event is held likewise (Section~\ref{sec:k0:undo}). So
+is a delete of an event any other holder of a time anchor outside the
+cross-cutting structures names: a meter change of a region's own model, its
+grid or a staff instance's grid, a measure's start, a region's extent, or a
+clef or key change a staff instance's creation carried (the core
+specification's re-anchoring rule table, \emph{hold}); a user break is
+excepted, staying keyed by its anchor.
 
 \textbf{Undo semantics.} An insert-shaped compensation re-introduces the
 tombstoned content; for the prototype's minted-object model this is the inverse
@@ -1998,7 +2010,12 @@ which it applied naming nothing).
 
 \textbf{Conflict cases.} None at reduction time: creation is set-union (a repeat
 create is idempotent), and the empty-only delete is a deterministic precondition
-gate, not a conflict.
+gate, not a conflict. Since version~0.22.0 a region is not empty, to its
+delete, while a live holder of a time anchor outside the cross-cutting
+structures names it (another region's extent, own model or grid, a staff
+instance's grid or carried clef or key change, a measure's start): the delete
+is refused \texttt{ContainerNotEmpty}, as for a tempo segment of another map,
+a holder the region itself is excepted.
 
 \textbf{Undo semantics.} Undo of a \emph{create} tombstones the minted container
 (Section~\ref{sec:k0:undo}); \texttt{StrictInverse} conflicts if it was
@@ -2010,7 +2027,8 @@ nothing, or a live tempo segment of another map is anchored to a region it
 would remove, as a \texttt{DeleteRegion} is refused (the conflict naming the
 region, the segment having no identifier), or, since version~0.21.0, a live
 marker or spanner the undo leaves is anchored to it, read as the undo's
-restorations leave it (the conflict naming the structure). An undone region or staff instance leaves the graph-aware score, as a
+restorations leave it (the conflict naming the structure), or, since
+version~0.22.0, any other live holder the undo leaves names it, read so. An undone region or staff instance leaves the graph-aware score, as a
 deleted one does, and an undone staff instance or voice leaves its container's
 place in the reducer's indices, so a region or instance the undo emptied is
 empty to a later \texttt{DeleteRegion} or \texttt{DeleteStaffInstance}
@@ -2608,7 +2626,11 @@ now blocks its own undo, exactly as a live meter-change reference already did.
 Since version~0.22.0 so does a live staff instance whose own grid names it, or
 a live region whose own model names it: the grid is written once, by the
 instance's create, and the model by the region's create or a migration, and
-neither is restored.
+neither is restored. And since version~0.22.0 a measure's undo is held by an
+eighth class of surface, every other holder of a time anchor outside the
+cross-cutting structures that names the measure: a region's extent, own model
+or grid (read as the undo's restorations leave it), or a staff instance's
+grid or carried clef or key change.
 
 \textbf{Re-anchoring.} Not applicable (a measure mint references no
 tombstonable anchor of its own; there is no \texttt{DeleteMeasure} in this
@@ -3260,7 +3282,14 @@ the undo removed a signature a later grid named and left the grid naming
 nothing). An event is held by a live tempo segment of any map whose start or
 end names it, read as the undo leaves the segment, a segment of a map whose
 region the undo removes holding nothing (since version~0.22.0, before which
-the undo removed the event and left the segment naming nothing).
+the undo removed the event and left the segment naming nothing). An event, a
+measure or a region is held likewise by every other live holder of a time
+anchor outside the cross-cutting structures that names it, read as the undo
+leaves it: a meter change of a region's own model, its grid or a staff
+instance's grid, a measure's start, a region's extent, and a clef or key
+change an instance's creation carried; a migration is not undone, so a target
+model written in the undone transaction still holds what it names (since
+version~0.22.0).
 
 \emph{Idempotence asymmetry (ratified Pass~12, closing P12-K11).} An undo's
 value restorations enter the write chains as ordinary writes by the undo

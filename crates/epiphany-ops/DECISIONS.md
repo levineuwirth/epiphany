@@ -4381,3 +4381,27 @@ another, `196`, an extent named a measure before it was made, and with that
 refused its transaction has nothing left to undo, so it declares that verdict
 now. Review 1's seven one-author writes at a deleted note and its three
 minimized forward names are committed (`214` to `223`).
+
+**Every anchor's target, and its removal held (D87 Q1).** Graph invariant 10
+says every graph reference resolves, but its enumerated surface, all the
+checker read, held the cross-cutting structures' anchors and the tempo maps'
+alone. A meter change's anchor (in a region's own model, its grid or a staff
+instance's grid), a measure's start, a region's extent, a staff instance's
+clef and key changes and a spelling range's ends were read for their offsets
+(invariant 9) and never for their targets. One author deleted or undid a
+note, a measure or a region any of these named, under every policy, and the
+holder named nothing; layout then set it at its region's start, silently. The
+core specification's surface and the checker now read every anchor invariant 9
+reads but a user break's, which stays keyed and draws nothing (D80). And each
+removal is held as a tempo segment holds it (`holder_naming`): a note's
+delete is refused `TargetAnchored`, a region's `ContainerNotEmpty` (the reason
+a region's other holds already give), and an undo removing a note, a measure
+or a region conflicts under a strict or cascading policy and keeps it under
+best effort. Each holder is read as the undo leaves it: a region's grid by
+`default_grid` with the undo's restorations, a staff instance's clef and key
+changes only while they are the ones its create carried, a holder the referent
+is itself or the same undo removes holding nothing. A migration is not undone,
+so its target model, written in the undone transaction, still holds what it
+names. A marker, a spanner and a repeat structure keep their re-anchoring
+rules. Read from the indices both modes keep. Review 1's 79 one-author probes
+that broke are committed (`224` to `302`), each declaring its hold's verdict.

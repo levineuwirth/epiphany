@@ -108,10 +108,15 @@ pub enum GraphInvariant {
     ///   - StaffGroup.members — declared staff.
     ///   - PartDefinition.staves — declared staff.
     ///   - ViewDefinition.active_layers — declared analysis layer.
-    ///   - MetricTimeModel.meters — declared time signature.
-    ///   - StaffBasedContent.default_metric_grid — declared time signature.
+    ///   - MetricTimeModel.meters — anchor target, declared time signature.
+    ///   - StaffBasedContent.default_metric_grid — anchor target, declared time signature.
     ///   - Measure.time_signature — declared time signature.
-    ///   - StaffInstance.local_metric_grid — declared time signature.
+    ///   - Measure.start — anchor target.
+    ///   - StaffInstance.local_metric_grid — anchor target, declared time signature.
+    ///   - StaffInstance.clef_sequence — anchor target.
+    ///   - StaffInstance.key_sequence — anchor target.
+    ///   - Region.time_extent — anchor target.
+    ///   - SpellingAttachment.scope — anchor target.
     ///   - NotatedComponent.tuplet — extant tuplet.
     ///   - IndeterminacyHints.alternatives — live event.
     ///   - TrajectoryEvent.start — live pitch.
@@ -121,6 +126,13 @@ pub enum GraphInvariant {
     ///   - TempoSegment.start — anchor target.
     ///   - TempoSegment.end — anchor target.
     ///   - Score.voice_homes — declared staff, extant voice.
+    ///
+    ///     A user break's anchor is not in the surface (roadmap D80): a break
+    ///     whose event or measure a later delete removes stays keyed by its
+    ///     anchor and draws nothing. X5b's fix round 1 (D87 Q1) added the
+    ///     anchors of a region's extent, its own model's and its grid's meter
+    ///     changes, a staff instance's grid, measures, clef and key changes, and
+    ///     a spelling range, which invariant 9 already read for their offsets.
     ///
     ///     Beyond that surface, the checker reaches four rules that are NOT
     ///     part of the normative invariant 10 and **no longer report under this
@@ -1470,6 +1482,70 @@ impl<'a> GraphIndex<'a> {
                         );
                     }
                 }
+            }
+        }
+
+        // Every other time anchor invariant 9 reads names an object that
+        // exists (X5b fix round 1, D87 Q1): a region's extent, its own
+        // model's and its grid's meter changes, a staff instance's own grid's
+        // meter changes, its measures' starts and its clef and key changes,
+        // and a spelling range's ends. Before it the surface held the
+        // cross-cutting structures' and the tempo maps' anchors alone, so a
+        // removal leaving one of these naming nothing went unseen. A user
+        // break's anchor is excepted: a break whose event or measure a later
+        // delete removes stays keyed by its anchor and draws nothing (roadmap
+        // D80).
+        let mut anchored = |what: String, anchor: &TimeAnchor| {
+            flag(
+                self.anchor_target_exists(anchor),
+                format!("{what} anchor target {anchor:?} dangling"),
+            );
+        };
+        for r in &self.score.canvas.regions {
+            anchored(
+                format!("region {:?} extent start", r.id),
+                &r.time_extent.start,
+            );
+            anchored(format!("region {:?} extent end", r.id), &r.time_extent.end);
+            if let RegionTimeModel::Metric(m) = &r.time_model {
+                for mc in &m.meters {
+                    anchored(
+                        format!("region {:?} time-model meter change", r.id),
+                        &mc.anchor,
+                    );
+                }
+            }
+            if let Some(g) = r
+                .content
+                .staff_based()
+                .and_then(|c| c.default_metric_grid.as_ref())
+            {
+                for mc in &g.meter_sequence {
+                    anchored(
+                        format!("region {:?} default-grid meter change", r.id),
+                        &mc.anchor,
+                    );
+                }
+            }
+            for si in r.staff_instances() {
+                for mc in si.local_metric_grid.iter().flat_map(|g| &g.meter_sequence) {
+                    anchored(format!("instance {:?} meter change", si.id), &mc.anchor);
+                }
+                for m in &si.measures {
+                    anchored(format!("measure {:?} start", m.id), &m.start);
+                }
+                for c in &si.clef_sequence {
+                    anchored(format!("instance {:?} clef change", si.id), &c.anchor);
+                }
+                for k in &si.key_sequence {
+                    anchored(format!("instance {:?} key change", si.id), &k.anchor);
+                }
+            }
+        }
+        for a in &self.score.spelling_attachments {
+            if let SpellingScope::Range { start, end, .. } = &a.scope {
+                anchored(String::from("spelling range start"), start);
+                anchored(String::from("spelling range end"), end);
             }
         }
 
@@ -3739,6 +3815,135 @@ mod review_fix_tests {
                 },
             });
         assert!(fires(&s, GraphInvariant::VoiceOriginConsistent));
+    }
+
+    /// Invariant 10 reads every time anchor invariant 9 reads (X5b fix round
+    /// 1, D87 Q1): a region's extent, its own model's and its grid's meter
+    /// changes, a staff instance's own grid, measure starts, clef and key
+    /// changes, and a spelling range's ends, each naming an event no score
+    /// holds, fires; the same score with each anchored at its region's start
+    /// does not; and a user break naming that event is excepted (D80).
+    #[test]
+    fn inv10_flags_every_time_anchor_naming_nothing() {
+        use crate::graph::{
+            BeatGroup, ClefChange, KeySignature, KeySignatureChange, Measure,
+            MeasureNumberVisibility, MeterChange, MetricGrid, PowerOfTwo, RegionContent,
+            TimeSignature, TimeSignatureDisplay,
+        };
+        use crate::pitch::{SpellingAttachment, SpellingDirective, SpellingRule, SpellingScope};
+        let base = valid_score(60);
+        let r = base.identity.replica_id;
+        let region = base.canvas.regions[0].id;
+        let ghost = TimeAnchor::Event {
+            id: crate::ids::EventId::new(r, 9_200_001),
+            offset: AnchorOffset::Zero,
+        };
+        let start = TimeAnchor::Region {
+            id: region,
+            edge: RegionEdge::Start,
+            offset: AnchorOffset::Zero,
+        };
+        let signature = crate::ids::TimeSignatureId::new(r, 9_200_002);
+        let with = |anchor: &TimeAnchor, n: usize| {
+            let mut s = valid_score(60);
+            s.time_signatures.push(
+                TimeSignature::new(
+                    signature,
+                    TimeSignatureDisplay::Standard {
+                        numerator: 4,
+                        denominator: PowerOfTwo::new(4).unwrap(),
+                    },
+                    MusicalDuration::whole(),
+                    vec![BeatGroup {
+                        duration: MusicalDuration::whole(),
+                        subdivision: None,
+                        accent: 0,
+                    }],
+                )
+                .unwrap(),
+            );
+            let meter = MeterChange {
+                anchor: anchor.clone(),
+                time_signature: signature,
+            };
+            let reg = &mut s.canvas.regions[0];
+            match n {
+                0 => reg.time_extent.start = anchor.clone(),
+                1 => {
+                    if let RegionTimeModel::Metric(m) = &mut reg.time_model {
+                        m.meters.push(meter);
+                    }
+                }
+                2 => {
+                    if let RegionContent::StaffBased(c) = &mut reg.content {
+                        c.default_metric_grid = Some(MetricGrid {
+                            meter_sequence: vec![meter],
+                        });
+                    }
+                }
+                3 => {
+                    reg.content.staff_instances_mut().unwrap()[0].local_metric_grid =
+                        Some(MetricGrid {
+                            meter_sequence: vec![meter],
+                        })
+                }
+                4 => reg.content.staff_instances_mut().unwrap()[0]
+                    .measures
+                    .push(Measure {
+                        id: crate::ids::MeasureId::new(r, 9_200_003),
+                        start: anchor.clone(),
+                        time_signature: None,
+                        explicit_number: None,
+                        number_visibility: MeasureNumberVisibility::Auto,
+                    }),
+                5 => reg.content.staff_instances_mut().unwrap()[0]
+                    .clef_sequence
+                    .push(ClefChange {
+                        anchor: anchor.clone(),
+                        clef: crate::graph::Clef::treble(),
+                    }),
+                6 => reg.content.staff_instances_mut().unwrap()[0]
+                    .key_sequence
+                    .push(KeySignatureChange {
+                        anchor: anchor.clone(),
+                        key: KeySignature::new(0).unwrap(),
+                    }),
+                7 => s.spelling_attachments.push(SpellingAttachment {
+                    scope: SpellingScope::Range {
+                        start: anchor.clone(),
+                        end: anchor.clone(),
+                        voices: crate::pitch::VoiceSelector::All,
+                    },
+                    directive: SpellingDirective::Rule(SpellingRule {
+                        rule_set: crate::pitch::SpellingRuleSetId::new("rs"),
+                    }),
+                    source: crate::pitch::SpellingSource::UserChosen,
+                    priority: 0,
+                    layer: None,
+                }),
+                _ => {
+                    if let RegionContent::StaffBased(c) = &mut reg.content {
+                        c.user_system_breaks.push(anchor.clone());
+                    }
+                }
+            }
+            s
+        };
+        for n in 0..8 {
+            assert!(
+                fires(&with(&ghost, n), GraphInvariant::CrossCuttingRefsResolve),
+                "anchor class {n} naming an event no score holds"
+            );
+            assert!(
+                !fires(&with(&start, n), GraphInvariant::CrossCuttingRefsResolve),
+                "anchor class {n} at its region's start"
+            );
+        }
+        assert!(
+            !fires(&with(&ghost, 8), GraphInvariant::CrossCuttingRefsResolve),
+            "a user break naming nothing is excepted"
+        );
+        assert!(!fires(&base, GraphInvariant::CrossCuttingRefsResolve));
     }
 
     #[test]

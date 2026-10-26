@@ -8,7 +8,12 @@
 //! segment of either map names is not deleted (`TargetAnchored`), and an undo
 //! that would remove it is held so (D86 Q2). A holder of a time anchor is not
 //! written naming an event, a measure or a region that is not live: its
-//! write is refused `TargetMissing` (D87 Q2).
+//! write is refused `TargetMissing` (D87 Q2). And every holder outside the
+//! cross-cutting structures (a time signature, a grid's meter change, a
+//! measure's start, a region's extent, a staff instance's carried clef, key or
+//! grid, a region's own model) holds the note, measure or region it names
+//! against a delete and an undo under every policy, as a tempo segment does
+//! (D87 Q1); a user break is excepted (D80).
 //!
 //! Each history is one author's, built by hand on a small score: a metric
 //! region holding a staff instance, a measure, a voice and a note, and a
@@ -813,4 +818,322 @@ fn a_holder_written_naming_a_target_that_is_not_live_is_refused() {
             effect(&free, live)
         );
     }
+}
+
+/// The holders a removal is held for (D87 Q1): `holders()` but a user
+/// break, which stays keyed and draws nothing (D80), and a measure's start.
+fn held_holders() -> Vec<(&'static str, Holder)> {
+    let mut held: Vec<(&'static str, Holder)> = holders()
+        .into_iter()
+        .filter(|(name, _)| !name.contains("break"))
+        .collect();
+    held.push(("measure start", |h, a| {
+        let instance = StaffInstanceId::new(AUTHOR, 925);
+        h.push(OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+            region: METRIC,
+            instance: valuegen::staff_instance(instance, STAVES[1]),
+        }));
+        h.push(OperationKind::CreateMeasure(CreateMeasureOp {
+            instance,
+            measure: Measure {
+                id: MeasureId::new(AUTHOR, 935),
+                start: a,
+                time_signature: None,
+                explicit_number: None,
+                number_visibility: MeasureNumberVisibility::Auto,
+            },
+        }))
+    }));
+    held
+}
+
+const SPARE_MEASURE: MeasureId = MeasureId::new(AUTHOR, 931);
+const EMPTY: RegionId = RegionId::new(AUTHOR, 915);
+
+/// What a history removes, and how.
+#[derive(Clone, Copy, Debug)]
+enum Removal {
+    NoteDeleted,
+    NoteUndone(UndoPolicy),
+    MeasureUndone(UndoPolicy),
+    RegionDeleted,
+    RegionUndone(UndoPolicy),
+}
+
+fn removals() -> Vec<Removal> {
+    let mut all = vec![Removal::NoteDeleted, Removal::RegionDeleted];
+    for policy in POLICIES {
+        all.extend([
+            Removal::NoteUndone(policy),
+            Removal::MeasureUndone(policy),
+            Removal::RegionUndone(policy),
+        ]);
+    }
+    all
+}
+
+/// A history in which `write` names what `removal` then removes, written
+/// outside the removing transaction unless `inside`; the write's and the
+/// removal's ids and the removed object.
+fn removing(
+    write: Holder,
+    removal: Removal,
+    inside: bool,
+) -> (History, OperationId, OperationId, TypedObjectId) {
+    let mut h = History::new();
+    if inside {
+        // The signature a holder names, declared before the transaction, so
+        // the undo removes no signature; the holder's own declaration of it
+        // in the transaction finds it already there.
+        h.signature(None);
+    }
+    let transaction = match removal {
+        Removal::NoteDeleted | Removal::RegionDeleted => None,
+        _ => Some(h.transaction(500)),
+    };
+    let (anchor, object) = match removal {
+        Removal::NoteDeleted => (at_note(NOTE), TypedObjectId::Event(NOTE)),
+        Removal::NoteUndone(_) => {
+            h.note(transaction, LATER_NOTE, 1);
+            (at_note(LATER_NOTE), TypedObjectId::Event(LATER_NOTE))
+        }
+        Removal::MeasureUndone(_) => {
+            h.push_in(
+                transaction,
+                OperationKind::CreateMeasure(CreateMeasureOp {
+                    instance: INSTANCE,
+                    measure: Measure {
+                        id: SPARE_MEASURE,
+                        start: edge(METRIC, bars(1)),
+                        time_signature: None,
+                        explicit_number: None,
+                        number_visibility: MeasureNumberVisibility::Auto,
+                    },
+                }),
+            );
+            (
+                TimeAnchor::Measure {
+                    id: SPARE_MEASURE,
+                    position: epiphany_core::MeasurePosition::Start,
+                    offset: AnchorOffset::Zero,
+                },
+                TypedObjectId::Measure(SPARE_MEASURE),
+            )
+        }
+        Removal::RegionDeleted | Removal::RegionUndone(_) => {
+            h.region(transaction, EMPTY, valuegen::metric_model(), 5_000_000_000);
+            (
+                edge(EMPTY, AnchorOffset::Zero),
+                TypedObjectId::Region(EMPTY),
+            )
+        }
+    };
+    if inside {
+        // The holder's write in the removing transaction: its envelopes are
+        // the transaction's members.
+        let before = h.envelopes.len();
+        let written = write(&mut h, anchor);
+        for envelope in &mut h.envelopes[before..] {
+            envelope.transaction = transaction;
+        }
+        let removed = undo_or_delete(&mut h, removal, transaction);
+        return (h, written, removed, object);
+    }
+    let written = write(&mut h, anchor);
+    let removed = undo_or_delete(&mut h, removal, transaction);
+    (h, written, removed, object)
+}
+
+fn undo_or_delete(
+    h: &mut History,
+    removal: Removal,
+    transaction: Option<TransactionId>,
+) -> OperationId {
+    match removal {
+        Removal::NoteDeleted => h.delete(NOTE),
+        Removal::RegionDeleted => {
+            h.push(OperationKind::DeleteRegion(epiphany_ops::DeleteRegionOp {
+                region: EMPTY,
+            }))
+        }
+        Removal::NoteUndone(policy)
+        | Removal::MeasureUndone(policy)
+        | Removal::RegionUndone(policy) => h.undo(transaction.expect("a transaction"), policy),
+    }
+}
+
+fn live(aware: &GraphMaterialization, object: TypedObjectId) -> bool {
+    match object {
+        TypedObjectId::Event(id) => aware.score.events.contains(id),
+        TypedObjectId::Region(id) => aware.score.canvas.regions.iter().any(|r| r.id == id),
+        TypedObjectId::Measure(id) => aware
+            .score
+            .staff_instances()
+            .any(|(_, si)| si.measures.iter().any(|m| m.id == id)),
+        _ => unreachable!("a removed object"),
+    }
+}
+
+/// D87 Q1: every holder outside the cross-cutting structures holds the note,
+/// measure or region it names. A note's delete is refused `TargetAnchored`
+/// and a region's `ContainerNotEmpty`; a strict or cascading undo removing
+/// one conflicts, naming it, and a best-effort one keeps it; each object
+/// stays. Before it each removal applied and left the holder's anchor naming
+/// nothing, which the checker did not read. A time signature or a grid at a
+/// measure is not written (its write is refused), and holds nothing.
+#[test]
+fn every_holder_holds_what_it_names_against_a_delete_and_an_undo() {
+    for (name, write) in held_holders() {
+        for removal in removals() {
+            let (h, written, removed, object) = removing(write, removal, false);
+            let (free, aware) = h.reduce();
+            if !applied(&free, written) {
+                assert!(
+                    matches!(removal, Removal::MeasureUndone(_))
+                        && ["time signature", "grid meter"].contains(&name),
+                    "{name} {removal:?}: the write {:?}",
+                    effect(&free, written)
+                );
+                continue;
+            }
+            assert!(
+                live(&aware, object),
+                "{name} {removal:?}: {:?}",
+                effect(&free, removed)
+            );
+            match removal {
+                Removal::NoteDeleted => assert!(
+                    refused(&free, removed, PreconditionFailureReason::TargetAnchored),
+                    "{name}: {:?}",
+                    effect(&free, removed)
+                ),
+                Removal::RegionDeleted => assert!(
+                    refused(&free, removed, PreconditionFailureReason::ContainerNotEmpty),
+                    "{name}: {:?}",
+                    effect(&free, removed)
+                ),
+                Removal::NoteUndone(UndoPolicy::BestEffort)
+                | Removal::MeasureUndone(UndoPolicy::BestEffort)
+                | Removal::RegionUndone(UndoPolicy::BestEffort) => assert!(
+                    undone(&free, removed),
+                    "{name} {removal:?}: {:?}",
+                    effect(&free, removed)
+                ),
+                _ => assert!(
+                    held(&free, removed, object),
+                    "{name} {removal:?}: {:?}",
+                    effect(&free, removed)
+                ),
+            }
+        }
+    }
+}
+
+/// Controls: a holder written in the removing transaction goes with its
+/// undo, and the object is removed, but a migration's target model, which no
+/// undo restores (D84 Q3), still names it and holds it; one the removed
+/// region is itself (its own
+/// model's meter change at its own start) holds nothing; one rewritten off
+/// the note before the delete holds nothing; and a user break at the note is
+/// excepted (D80).
+#[test]
+fn a_holder_that_names_nothing_the_removal_takes_holds_nothing() {
+    for (name, write) in held_holders() {
+        for removal in removals() {
+            // A time signature or a grid at a measure is refused, and its
+            // transaction with it.
+            let refused_write = matches!(removal, Removal::MeasureUndone(_))
+                && ["time signature", "grid meter"].contains(&name);
+            if refused_write || matches!(removal, Removal::NoteDeleted | Removal::RegionDeleted) {
+                continue;
+            }
+            let (h, _, removed, object) = removing(write, removal, true);
+            let (free, aware) = h.reduce();
+            if name == "migration's target model" {
+                let kept = match removal {
+                    Removal::NoteUndone(UndoPolicy::BestEffort)
+                    | Removal::MeasureUndone(UndoPolicy::BestEffort)
+                    | Removal::RegionUndone(UndoPolicy::BestEffort) => undone(&free, removed),
+                    _ => held(&free, removed, object),
+                };
+                assert!(
+                    kept && live(&aware, object),
+                    "{name} {removal:?}: {:?}",
+                    effect(&free, removed)
+                );
+                continue;
+            }
+            assert!(
+                undone(&free, removed),
+                "{name} {removal:?} in the transaction: {:?}",
+                effect(&free, removed)
+            );
+            assert!(
+                !live(&aware, object),
+                "{name} {removal:?} in the transaction"
+            );
+        }
+    }
+    // Its own model's meter change at its own start.
+    let mut h = History::new();
+    h.signature(None);
+    let own = RegionId::new(AUTHOR, 13);
+    let mut region = valuegen::region(own);
+    region.time_model = RegionTimeModel::Metric(epiphany_core::MetricTimeModel {
+        meters: vec![MeterChange {
+            anchor: edge(own, AnchorOffset::Zero),
+            time_signature: SIGNATURE,
+        }],
+        ..Default::default()
+    });
+    region.time_extent = TimeExtent {
+        start: wall(3_000_000_000),
+        end: wall(3_000_001_000),
+    };
+    h.push(OperationKind::CreateRegion(CreateRegionOp { region }));
+    let delete = h.push(OperationKind::DeleteRegion(epiphany_ops::DeleteRegionOp {
+        region: own,
+    }));
+    let (free, _) = h.reduce();
+    assert!(applied(&free, delete), "{:?}", effect(&free, delete));
+    // A grid rewritten off the note, and a break at it.
+    let mut h = History::new();
+    h.signature(None);
+    h.grid(None, OTHER, at_note(NOTE));
+    h.push(OperationKind::SetMetricGrid(SetMetricGridOp {
+        region: OTHER,
+        grid: None,
+    }));
+    h.push(OperationKind::SetUserSystemBreak(
+        epiphany_ops::SetUserSystemBreakOp {
+            region: METRIC,
+            anchor: at_note(NOTE),
+            present: true,
+        },
+    ));
+    let delete = h.delete(NOTE);
+    let (free, _) = h.reduce();
+    assert!(applied(&free, delete), "{:?}", effect(&free, delete));
+    // A carried clef a `SetClef` has since replaced: the change it writes is
+    // anchored at its region's start, so it names the note no more.
+    let mut h = History::new();
+    let instance = StaffInstanceId::new(AUTHOR, 924);
+    let mut carrying = valuegen::staff_instance(instance, STAVES[2]);
+    carrying.clef_sequence.push(epiphany_core::ClefChange {
+        anchor: at_note(NOTE),
+        clef: epiphany_core::Clef::treble(),
+    });
+    h.push(OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+        region: METRIC,
+        instance: carrying,
+    }));
+    let replaced = h.push(OperationKind::SetClef(epiphany_ops::SetClefOp {
+        instance,
+        offset: RationalTime::new(0, 1).expect("the start"),
+        clef: Some(epiphany_core::Clef::bass()),
+    }));
+    let delete = h.delete(NOTE);
+    let (free, _) = h.reduce();
+    assert!(applied(&free, replaced), "{:?}", effect(&free, replaced));
+    assert!(applied(&free, delete), "{:?}", effect(&free, delete));
 }

@@ -2102,9 +2102,10 @@ The chosen anchor type determines what edits the anchor survives:
 \begin{requirement}
   \label{req:time:orphaned-anchor-handling}
   When an anchored object is deleted, anchors targeting it \MUST{} be
-  either re-anchored to a surviving object or marked as orphaned. The
-  semantic operations chapter (Chapter~\ref{ch:semops}) specifies
-  re-anchoring rules per operation.
+  either re-anchored to a surviving object or marked as orphaned, or, for
+  a holder the re-anchoring rule table holds, the deletion refused while
+  the holder names the object. The semantic operations chapter
+  (Chapter~\ref{ch:semops}) specifies re-anchoring rules per operation.
 \end{requirement}
 
 \section{Time Signatures and Meter}
@@ -6842,10 +6843,15 @@ The score graph maintains a set of structural invariants. Implementations
         \item \texttt{StaffGroup.members} --- declared staff.
         \item \texttt{PartDefinition.staves} --- declared staff.
         \item \texttt{ViewDefinition.active\_layers} --- declared analysis layer.
-        \item \texttt{MetricTimeModel.meters} --- declared time signature.
-        \item \texttt{StaffBasedContent.default\_metric\_grid} --- declared time signature.
+        \item \texttt{MetricTimeModel.meters} --- anchor target, declared time signature.
+        \item \texttt{StaffBasedContent.default\_metric\_grid} --- anchor target, declared time signature.
         \item \texttt{Measure.time\_signature} --- declared time signature.
-        \item \texttt{StaffInstance.local\_metric\_grid} --- declared time signature.
+        \item \texttt{Measure.start} --- anchor target.
+        \item \texttt{StaffInstance.local\_metric\_grid} --- anchor target, declared time signature.
+        \item \texttt{StaffInstance.clef\_sequence} --- anchor target.
+        \item \texttt{StaffInstance.key\_sequence} --- anchor target.
+        \item \texttt{Region.time\_extent} --- anchor target.
+        \item \texttt{SpellingAttachment.scope} --- anchor target.
         \item \texttt{NotatedComponent.tuplet} --- extant tuplet.
         \item \texttt{IndeterminacyHints.alternatives} --- live event.
         \item \texttt{TrajectoryEvent.start} --- live pitch.
@@ -6856,6 +6862,13 @@ The score graph maintains a set of structural invariants. Implementations
         \item \texttt{TempoSegment.end} --- anchor target.
         \item \texttt{Score.voice\_homes} --- declared staff, extant voice.
       \end{itemize}
+      The surface holds every time anchor invariant~9 reads but a user
+      break's: a break whose event or measure a later delete removes stays
+      keyed by its anchor and draws nothing (Operation Catalog,
+      \texttt{SetUserSystemBreak}), a transient dangling state the
+      re-anchoring rules permit. A meter change's anchor and a spelling
+      range's ends are anchor targets beside the time signature a meter change
+      names.
     \item Every identifier in the graph is unique within its kind.
       Identifiers reserved for system-derived objects (notably
       \texttt{VoiceId}s of system-promoted voices) \MUST{} be derived
@@ -8630,6 +8643,22 @@ table is normative.
   Lyric & Event &
   Cascade-delete &
   a syllable belongs to its event (schema major 5) \\
+
+  Tempo segment, meter change, measure start, region extent, clef or key
+  change & Anchor (event, measure or region) &
+  Hold: the referent is not removed while a live holder names it &
+  a delete is refused (\texttt{TargetAnchored} for an event,
+  \texttt{ContainerNotEmpty} for a region); an undo that would remove the
+  referent conflicts under \texttt{StrictInverse} and \texttt{Cascade} and
+  keeps it under \texttt{BestEffort}, the holder read as the undo leaves it.
+  A meter change of a region's own model, its grid or a staff instance's
+  grid; a clef or key change while it is the one its instance's creation
+  carried. A holder the referent owns, or the same undo removes, holds
+  nothing (reduction algorithm version~\texttt{5}) \\
+
+  User break & Anchor event or measure &
+  No action &
+  the break stays keyed by its anchor and draws nothing \\
 
   Comment & Anchor &
   Orphan &
@@ -17400,7 +17429,13 @@ layouts they own versus inherit:
   constant tempo segment's \texttt{end\_tempo} is absent, and
   \texttt{TempoShape}'s listing says so. \texttt{MarkerKind} appends
   \texttt{ExpressionText} (roadmap D79 Q9): expression text, which an import
-  writes for italic words, apart from staff text.
+  writes for italic words, apart from staff text. Graph invariant~10's
+  surface names every time anchor invariant~9 reads but a user break's:
+  a region's extent, its own model's and its grid's meter changes, a staff
+  instance's grid, measure starts, clef and key changes, and a spelling
+  range's ends. The re-anchoring rule table holds those holders and a tempo
+  segment: the anchored object is not removed while one names it
+  (\texttt{req:time:orphaned-anchor-handling} says so).
   \\
   \bottomrule
 \end{longtable}

@@ -905,6 +905,22 @@ pub mod vectors;
 ///     nothing a history reaches. Locked by `reference_holds.rs`, the
 ///     rewritten named-before-made tests of `anchor_offsets.rs` and
 ///     `extent_offsets.rs`, and the committed histories `214` to `223`.
+///     And a note, a measure or a region every other holder of a time anchor
+///     outside the cross-cutting structures names (a meter change of a
+///     region's own model, its grid or a staff instance's grid, a measure's
+///     start, a region's extent, a clef or key change a staff instance's
+///     create carried) is held as for a tempo segment: a `DeleteEvent` is
+///     refused `TargetAnchored` and a `DeleteRegion` `ContainerNotEmpty`, and
+///     an undo that would remove one conflicts under `StrictInverse` and
+///     `Cascade` and keeps it under `BestEffort`, each holder read as the
+///     undo leaves it, a holder the referent is itself or the same undo
+///     removes holding nothing, in both modes; version `4` removed the
+///     referent and left the holder naming nothing, which the checker, reading
+///     invariant 10's surface alone, did not see (D87 Q1; the checker and the
+///     surface now read every anchor invariant 9 reads but a user break's).
+///     Locked by `reference_holds.rs`, the checker's
+///     `inv10_flags_every_time_anchor_naming_nothing` and the committed
+///     histories `224` to `302`.
 ///
 ///   With it, at the same epoch 16, a wire addition that changes no verdict:
 ///   `MarkerKind` appends `ExpressionText` (X5b.7, D79 Q9), reduced as any
