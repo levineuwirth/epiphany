@@ -920,7 +920,14 @@ pub mod vectors;
 ///     surface now read every anchor invariant 9 reads but a user break's).
 ///     Locked by `reference_holds.rs`, the checker's
 ///     `inv10_flags_every_time_anchor_naming_nothing` and the committed
-///     histories `224` to `302`.
+///     histories `224` to `302`. An undo that would remove a tuplet a live
+///     nested tuplet it leaves names as its parent is held likewise, and a
+///     member's cascade, declared or by an undo removing a member, carries
+///     the tuplets nested in each tuplet it removes, and theirs, each
+///     `CascadeDeleted`, in both modes, read from a new index of each
+///     tuplet's parent (not reduced state); version `4` removed the parent and
+///     left the child naming nothing (D87 Q3). Locked by `reference_holds.rs`
+///     and the committed histories `303` to `306`.
 ///
 ///   With it, at the same epoch 16, a wire addition that changes no verdict:
 ///   `MarkerKind` appends `ExpressionText` (X5b.7, D79 Q9), reduced as any

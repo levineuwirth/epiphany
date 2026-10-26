@@ -1211,6 +1211,28 @@ fn remove_tuplets(score: &mut Score, removed: &BTreeSet<TupletId>) {
     if removed.is_empty() {
         return;
     }
+    // A removed tuplet's children go with it, and theirs (D87 Q3), as the
+    // ledger's `cascade_tuplet_children` takes them.
+    let mut removed = removed.clone();
+    loop {
+        let children: Vec<TupletId> = score
+            .cross_cutting
+            .tuplets
+            .iter()
+            .filter(|tuplet| {
+                !removed.contains(&tuplet.id)
+                    && tuplet
+                        .parent
+                        .is_some_and(|parent| removed.contains(&parent))
+            })
+            .map(|tuplet| tuplet.id)
+            .collect();
+        if children.is_empty() {
+            break;
+        }
+        removed.extend(children);
+    }
+    let removed = &removed;
     score
         .cross_cutting
         .tuplets
@@ -1357,6 +1379,11 @@ struct Reducer<'a> {
     // minted or base-seeded).
     instance_grid: BTreeMap<StaffInstanceId, Option<MetricGrid>>,
     structures: BTreeMap<TypedObjectId, Vec<TypedObjectId>>,
+    // Each nested tuplet's parent, from its create or a base (X5b fix round 1,
+    // D87 Q3): an undo removing a parent a live child names is held, and a
+    // member's cascade removing a parent carries its children. Not reduced
+    // state; a tuplet has no modify, so its parent never changes.
+    tuplet_parents: BTreeMap<TupletId, TupletId>,
     // Live child sets for the structural-container empty-only delete (Group 3):
     // a region's live staff instances, and a staff instance's live voices. (A
     // voice's live events are read from `voice_occupancy`.)
@@ -1558,6 +1585,7 @@ struct WorkingSnapshot {
     repeat_values: BTreeMap<RepeatStructureId, RepeatStructure>,
     instance_grid: BTreeMap<StaffInstanceId, Option<MetricGrid>>,
     structures: BTreeMap<TypedObjectId, Vec<TypedObjectId>>,
+    tuplet_parents: BTreeMap<TupletId, TupletId>,
     region_instances: BTreeMap<RegionId, BTreeSet<StaffInstanceId>>,
     instance_voices: BTreeMap<StaffInstanceId, BTreeSet<VoiceId>>,
     instance_staff: BTreeMap<StaffInstanceId, StaffId>,
@@ -2265,6 +2293,7 @@ impl<'a> Reducer<'a> {
             repeat_values: BTreeMap::new(),
             instance_grid: BTreeMap::new(),
             structures: BTreeMap::new(),
+            tuplet_parents: BTreeMap::new(),
             region_instances: BTreeMap::new(),
             instance_voices: BTreeMap::new(),
             instance_staff: BTreeMap::new(),
@@ -2671,6 +2700,9 @@ impl<'a> Reducer<'a> {
         for tuplet in &score.cross_cutting.tuplets {
             let id = TypedObjectId::Tuplet(tuplet.id);
             self.objects.insert(id, ObjectState::Live);
+            if let Some(parent) = tuplet.parent {
+                self.tuplet_parents.insert(tuplet.id, parent);
+            }
             self.structures.insert(
                 id,
                 tuplet
@@ -5252,6 +5284,8 @@ impl<'a> Reducer<'a> {
                         target: t_obj,
                     });
                 }
+                // The cascaded tuplets' children go with them (D87 Q3).
+                self.cascade_tuplet_children(env, &mut repairs);
             }
         }
 
@@ -5747,7 +5781,45 @@ impl<'a> Reducer<'a> {
         self.minted_by.insert(sid, env.id);
         self.note_minted(env, sid);
         self.structures.insert(sid, members);
+        if let Some(parent) = op.tuplet.parent {
+            self.tuplet_parents.insert(op.tuplet.id, parent);
+        }
         OperationEffect::Applied
+    }
+
+    /// Cascade-deletes every live tuplet whose parent is not live, until
+    /// none is: a member's cascade that removes a nested tuplet's parent
+    /// carries its children with it, as their `parent` would otherwise name
+    /// nothing (reduction version 5, D87 Q3: before it the child stayed,
+    /// `CrossCuttingRefsResolve`). Read from the parent index both modes
+    /// keep; the graph drops the same children (`remove_tuplets`).
+    fn cascade_tuplet_children(
+        &mut self,
+        env: &OperationEnvelope,
+        repairs: &mut Vec<RepairRecord>,
+    ) {
+        loop {
+            let orphaned: Vec<TypedObjectId> = self
+                .tuplet_parents
+                .iter()
+                .filter(|(child, parent)| {
+                    matches!(
+                        self.objects.get(&TypedObjectId::Tuplet(**child)),
+                        Some(ObjectState::Live)
+                    ) && !matches!(
+                        self.objects.get(&TypedObjectId::Tuplet(**parent)),
+                        Some(ObjectState::Live)
+                    )
+                })
+                .map(|(child, _)| TypedObjectId::Tuplet(*child))
+                .collect();
+            if orphaned.is_empty() {
+                break;
+            }
+            for child in orphaned {
+                self.cascade_structure(env, child, repairs);
+            }
+        }
     }
 
     /// The live tuplets whose members include `event`, from the referent
@@ -10260,6 +10332,17 @@ impl<'a> Reducer<'a> {
                 });
                 (stays && grace && !another).then_some((*target, eobj))
             }
+            // A live nested tuplet naming the tuplet as its parent the undo
+            // does not remove (reduction version 5, D87 Q3: before it the
+            // undo removed the parent and left the child naming nothing,
+            // `CrossCuttingRefsResolve`).
+            TypedObjectId::Tuplet(tuplet) => self.tuplet_parents.iter().find_map(|(child, parent)| {
+                let cobj = TypedObjectId::Tuplet(*child);
+                (parent == tuplet
+                    && !targets.contains(&cobj)
+                    && matches!(self.objects.get(&cobj), Some(ObjectState::Live)))
+                .then_some((*target, cobj))
+            }),
             // A live tempo segment naming the event, or any other holder of a
             // time anchor outside the cross-cutting structures, read as the
             // undo leaves it (reduction version 5, D86 Q2 and D87 Q1: before
@@ -12551,6 +12634,8 @@ impl<'a> Reducer<'a> {
                 // cascades, as `CascadeDeleteTuplets` would have.
                 TypedObjectId::Tuplet(_) => {
                     self.cascade_structure(env, sid, repairs);
+                    // Its children go with it (D87 Q3).
+                    self.cascade_tuplet_children(env, repairs);
                 }
                 // The graph-only referent kinds — cue events, comments,
                 // analytical annotations, graphic gestures — and markers are
@@ -13946,6 +14031,7 @@ impl<'a> Reducer<'a> {
             repeat_values: self.repeat_values.clone(),
             instance_grid: self.instance_grid.clone(),
             structures: self.structures.clone(),
+            tuplet_parents: self.tuplet_parents.clone(),
             region_instances: self.region_instances.clone(),
             instance_voices: self.instance_voices.clone(),
             instance_staff: self.instance_staff.clone(),
@@ -14003,6 +14089,7 @@ impl<'a> Reducer<'a> {
         self.repeat_values = s.repeat_values;
         self.instance_grid = s.instance_grid;
         self.structures = s.structures;
+        self.tuplet_parents = s.tuplet_parents;
         self.region_instances = s.region_instances;
         self.instance_voices = s.instance_voices;
         self.instance_staff = s.instance_staff;

@@ -13,7 +13,9 @@
 //! measure's start, a region's extent, a staff instance's carried clef, key or
 //! grid, a region's own model) holds the note, measure or region it names
 //! against a delete and an undo under every policy, as a tempo segment does
-//! (D87 Q1); a user break is excepted (D80).
+//! (D87 Q1); a user break is excepted (D80). An undo that would remove a
+//! tuplet a live nested tuplet names as its parent is held, and a member's
+//! cascade removing a parent carries its children (D87 Q3).
 //!
 //! Each history is one author's, built by hand on a small score: a metric
 //! region holding a staff instance, a measure, a voice and a note, and a
@@ -1136,4 +1138,182 @@ fn a_holder_that_names_nothing_the_removal_takes_holds_nothing() {
     let (free, _) = h.reduce();
     assert!(applied(&free, replaced), "{:?}", effect(&free, replaced));
     assert!(applied(&free, delete), "{:?}", effect(&free, delete));
+}
+
+fn tuplet(
+    n: u64,
+    members: Vec<EventId>,
+    parent: Option<u64>,
+    quarters: i64,
+) -> epiphany_core::Tuplet {
+    epiphany_core::Tuplet {
+        id: epiphany_core::TupletId::new(AUTHOR, n),
+        ratio: epiphany_core::TupletRatio::new(3, 2).expect("3:2"),
+        members,
+        parent: parent.map(|p| epiphany_core::TupletId::new(AUTHOR, p)),
+        required_total: MusicalDuration(RationalTime::new(quarters, 4).expect("quarters")),
+        display: epiphany_core::TupletDisplay::default(),
+    }
+}
+
+fn create_tuplet(
+    h: &mut History,
+    transaction: Option<TransactionId>,
+    value: epiphany_core::Tuplet,
+) -> OperationId {
+    h.push_in(
+        transaction,
+        OperationKind::CreateTuplet(epiphany_ops::CreateTupletOp { tuplet: value }),
+    )
+}
+
+fn tuplets(aware: &GraphMaterialization) -> Vec<u64> {
+    let mut ids: Vec<u64> = aware
+        .score
+        .cross_cutting
+        .tuplets
+        .iter()
+        .map(|t| t.id.counter())
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
+/// D87 Q3: a tuplet created in a transaction, a tuplet nested in it created
+/// after, and the transaction undone. A strict or cascading undo conflicts,
+/// naming the parent and the child, and a best-effort one keeps the parent,
+/// where before each removed it and left the child naming nothing
+/// (`CrossCuttingRefsResolve`). A child made in the same transaction goes
+/// with its parent.
+#[test]
+fn an_undo_of_a_tuplet_a_nested_tuplet_names_is_held() {
+    let parent = TypedObjectId::Tuplet(epiphany_core::TupletId::new(AUTHOR, 70));
+    let child = TypedObjectId::Tuplet(epiphany_core::TupletId::new(AUTHOR, 71));
+    for policy in POLICIES {
+        for inside in [false, true] {
+            let mut h = History::new();
+            let transaction = h.transaction(500);
+            create_tuplet(&mut h, Some(transaction), tuplet(70, vec![NOTE], None, 1));
+            let nested = create_tuplet(
+                &mut h,
+                inside.then_some(transaction),
+                tuplet(71, vec![NOTE], Some(70), 1),
+            );
+            let undo = h.undo(transaction, policy);
+            let (free, aware) = h.reduce();
+            if inside {
+                assert!(
+                    undone(&free, undo),
+                    "{policy:?} inside: {:?}",
+                    effect(&free, undo)
+                );
+                assert!(tuplets(&aware).is_empty(), "{policy:?} inside");
+                continue;
+            }
+            assert!(applied(&free, nested), "{policy:?}");
+            assert_eq!(
+                tuplets(&aware),
+                [70, 71],
+                "{policy:?}: {:?}",
+                effect(&free, undo)
+            );
+            match policy {
+                UndoPolicy::BestEffort => assert!(undone(&free, undo)),
+                _ => {
+                    for object in [parent, child] {
+                        assert!(
+                            held(&free, undo, object),
+                            "{policy:?} {object:?}: {:?}",
+                            effect(&free, undo)
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// D87 Q3: a member's cascade carries the children of the tuplets it
+/// removes, and theirs. A tuplet over two notes, one nested in it over the
+/// second, and one nested in that; the first note deleted with its tuplet
+/// cascaded removes all three, the two nested ones `CascadeDeleted`, where
+/// before the children stayed naming their removed parent. An undo removing
+/// the first note, which cascades its tuplet, carries them likewise. With no
+/// tuplet nested, the cascade removes the one it names alone.
+#[test]
+fn a_member_s_cascade_carries_the_children_of_the_tuplet_it_removes() {
+    use epiphany_ops::{RepairKind, TupletCompensation};
+    let cascade = |h: &mut History| {
+        h.push(OperationKind::DeleteEvent(DeleteEventOp {
+            event: NOTE,
+            tuplet_compensation: TupletCompensation::CascadeDeleteTuplets {
+                tuplets: vec![epiphany_core::TupletId::new(AUTHOR, 70)],
+            },
+        }))
+    };
+    for nested in [true, false] {
+        let mut h = History::new();
+        h.note(None, LATER_NOTE, 1);
+        create_tuplet(&mut h, None, tuplet(70, vec![NOTE, LATER_NOTE], None, 2));
+        if nested {
+            create_tuplet(&mut h, None, tuplet(71, vec![LATER_NOTE], Some(70), 1));
+            create_tuplet(&mut h, None, tuplet(72, vec![LATER_NOTE], Some(71), 1));
+        }
+        let delete = cascade(&mut h);
+        let (free, aware) = h.reduce();
+        let OperationEffect::AppliedWithRepair { repairs } = effect(&free, delete) else {
+            panic!("nested {nested}: {:?}", effect(&free, delete));
+        };
+        let carried: Vec<u64> = repairs
+            .iter()
+            .filter(|r| r.kind == RepairKind::CascadeDeleted)
+            .filter_map(|r| match r.target {
+                TypedObjectId::Tuplet(id) => Some(id.counter()),
+                _ => None,
+            })
+            .collect();
+        if nested {
+            assert_eq!(carried, [71, 72], "{repairs:?}");
+            for n in [71, 72] {
+                assert!(matches!(
+                    free.objects
+                        .get(&TypedObjectId::Tuplet(epiphany_core::TupletId::new(
+                            AUTHOR, n
+                        ))),
+                    Some(epiphany_ops::ObjectState::Tombstoned { .. })
+                ));
+            }
+        } else {
+            assert!(carried.is_empty(), "{repairs:?}");
+        }
+        assert!(tuplets(&aware).is_empty(), "nested {nested}");
+    }
+    for policy in POLICIES {
+        let mut h = History::new();
+        let transaction = h.transaction(500);
+        h.note(Some(transaction), LATER_NOTE, 1);
+        create_tuplet(&mut h, None, tuplet(70, vec![NOTE, LATER_NOTE], None, 2));
+        create_tuplet(&mut h, None, tuplet(71, vec![NOTE], Some(70), 1));
+        let undo = h.undo(transaction, policy);
+        let (free, aware) = h.reduce();
+        let OperationEffect::AppliedWithRepair { repairs } = effect(&free, undo) else {
+            panic!("{policy:?}: {:?}", effect(&free, undo));
+        };
+        // The ledger takes the child as the graph does, each mode alike.
+        let nested = TypedObjectId::Tuplet(epiphany_core::TupletId::new(AUTHOR, 71));
+        assert!(
+            repairs
+                .iter()
+                .any(|r| r.kind == RepairKind::CascadeDeleted && r.target == nested),
+            "{policy:?}: {repairs:?}"
+        );
+        assert!(
+            matches!(
+                free.objects.get(&nested),
+                Some(epiphany_ops::ObjectState::Tombstoned { .. })
+            ),
+            "{policy:?}"
+        );
+        assert!(tuplets(&aware).is_empty(), "{policy:?}");
+    }
 }

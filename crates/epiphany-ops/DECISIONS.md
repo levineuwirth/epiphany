@@ -4405,3 +4405,17 @@ so its target model, written in the undone transaction, still holds what it
 names. A marker, a spanner and a repeat structure keep their re-anchoring
 rules. Read from the indices both modes keep. Review 1's 79 one-author probes
 that broke are committed (`224` to `302`), each declaring its hold's verdict.
+
+**A nested tuplet's parent (D87 Q3).** `CreateTuplet` requires a carried
+parent live, and nothing read the parent afterwards: an undo of the parent's
+create removed it under every policy, and a member's cascade removed it while
+a child holding other members stayed, the child naming nothing. No producer
+nests a tuplet, but the model represents it. A new index of each tuplet's
+parent, kept from its create or a base in both modes, lets the undo's strand
+guard hold a tuplet a live child it leaves names, and lets a cascade carry
+the children: after a member's cascade, declared or by an undo removing the
+member, every live tuplet whose parent is no longer live is cascade-deleted
+in turn (`CascadeDeleted`), and the graph's `remove_tuplets` removes the same
+children. Carrying rather than refusing is the owner's ruling; refusing would
+have had a member's delete list tuplets that do not hold it. Review 1's four
+one-author probes are committed (`303` to `306`).

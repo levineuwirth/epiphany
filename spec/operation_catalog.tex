@@ -904,7 +904,9 @@ structures names (a meter change, a measure's start, a region's extent, a
 carried clef or key change) is held against a delete and an undo, as graph
 invariant~10's surface, widened to every anchor invariant~9 reads but a user
 break's, requires (Sections~\ref{sec:k0:delete-event}
-and~\ref{sec:k0:undo}). Accordingly
+and~\ref{sec:k0:undo}). A tuplet's undo is held by a live tuplet nested in it,
+and a member's cascade carries the tuplets nested in the ones it removes
+(Section~\ref{sec:k0:create-tuplet}). Accordingly
 \texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION} moves
 \texttt{4}~$\rightarrow$~\texttt{5}, one version for the phase.
 
@@ -2708,11 +2710,21 @@ restoration of an event's value would change the duration of a live tuplet's
 member, the tuplet not among the undo's own mints, is superseded by the
 tuplet's create, as a later write supersedes it: \texttt{StrictInverse}
 conflicts and \texttt{BestEffort} leaves the duration (since
-version~0.19.0, before which the restoration broke the tuplet's sum).
+version~0.19.0, before which the restoration broke the tuplet's sum). An
+undo that would remove a tuplet a live tuplet the undo leaves names as its
+\texttt{parent} is held: \texttt{StrictInverse} and \texttt{Cascade}
+conflict, and \texttt{BestEffort} keeps the parent (since version~0.22.0,
+before which the undo removed it and left the child naming nothing).
 
 \textbf{Re-anchoring.} The tuplet references its members; the rule table's
 ``Tuplet / Member event'' row governs a member's delete. Nesting is
-representable (\texttt{parent}) but no producer in this revision writes it.
+representable (\texttt{parent}), and no producer in this revision writes it.
+A member's cascade, declared (\texttt{CascadeDeleteTuplets}) or by an undo
+tombstoning a member with no compensation to declare, carries the live
+tuplets nested in each tuplet it removes, and theirs, each
+\texttt{CascadeDeleted}, in the index and the graph alike (since
+version~0.22.0, before which a child left in place named its removed
+parent).
 
 \section{SetClef and SetKeySignature}
 \label{sec:k0:set-clef}
@@ -3289,7 +3301,8 @@ leaves it: a meter change of a region's own model, its grid or a staff
 instance's grid, a measure's start, a region's extent, and a clef or key
 change an instance's creation carried; a migration is not undone, so a target
 model written in the undone transaction still holds what it names (since
-version~0.22.0).
+version~0.22.0). A tuplet is held by a live tuplet nested in it that the undo
+leaves (Section~\ref{sec:k0:create-tuplet}; since version~0.22.0).
 
 \emph{Idempotence asymmetry (ratified Pass~12, closing P12-K11).} An undo's
 value restorations enter the write chains as ordinary writes by the undo

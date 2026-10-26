@@ -8617,6 +8617,14 @@ table is normative.
   or a cascade) cascade-deletes the tuplet &
   --- \\
 
+  Tuplet & Parent tuplet &
+  Hold against an undo; a member's cascade carries the child &
+  an undo that would remove a tuplet a live nested tuplet names as its
+  parent conflicts under \texttt{StrictInverse} and \texttt{Cascade} and
+  keeps it under \texttt{BestEffort}; a cascade that removes a parent
+  cascade-deletes its children, and theirs (reduction algorithm
+  version~\texttt{5}) \\
+
   Spanner & Anchor &
   Re-anchor to the nearest surviving anchor; cascade-delete only
   when no anchor survives &
@@ -17435,7 +17443,8 @@ layouts they own versus inherit:
   instance's grid, measure starts, clef and key changes, and a spelling
   range's ends. The re-anchoring rule table holds those holders and a tempo
   segment: the anchored object is not removed while one names it
-  (\texttt{req:time:orphaned-anchor-handling} says so).
+  (\texttt{req:time:orphaned-anchor-handling} says so). A tuplet's parent is
+  held against an undo, and a member's cascade carries a tuplet's children.
   \\
   \bottomrule
 \end{longtable}
