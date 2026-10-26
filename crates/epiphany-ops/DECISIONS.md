@@ -4454,3 +4454,16 @@ instance's carried clef, key or grid, or a region's extent or own meter,
 nested in it; then the transaction undone by any policy or, one time in two
 for a note or a region, the object deleted. Its reach rests on the plants,
 each hold's delete and undo halves shown apart.
+
+**Two pins arm 71 blinded.** Arm 71's region holder starts with no offset at
+a note, a measure or a region's start and ends where an editor places one, so
+it writes `CreateRegion+anchored start, placed end`, the shape that held arm
+15's overlap gesture (D84 Q4), and with that gesture's anchored starts removed
+the CI budget still passed. Arm 15's start at a region's end is now counted
+apart, `CreateRegion+start at a region's end, placed end`: no other arm writes
+it, arm 71 anchoring no region's end and arm 66's starts there carrying an
+anchored end. And arm 71 nests a tuplet of one member in the one it made, so
+`CreateTuplet+parent` no longer held arm 40's nest; arm 40's, over two members
+of the tuplet it nests in, is counted apart, `CreateTuplet+parent, several
+members`. Only the classifier changes, so the generator draws the same
+histories.

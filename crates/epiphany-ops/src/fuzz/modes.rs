@@ -637,7 +637,7 @@ impl Coverage {
 
 /// The payload shapes schema major 5 adds, and those reduction version 5
 /// reads (X5b), each counted beside its kind.
-const SHAPES: [&str; 37] = [
+const SHAPES: [&str; 39] = [
     "InsertEvent+marks",
     "InsertEvent+ornaments",
     "InsertEvent+grace",
@@ -661,6 +661,7 @@ const SHAPES: [&str; 37] = [
     "CreateRegion+musical offset",
     "CreateRegion+wall-clock offset",
     "CreateRegion+anchored start, placed end",
+    "CreateRegion+start at a region's end, placed end",
     "CreateCrossCutting+wall-clock offset",
     "ModifyCrossCutting+wall-clock offset",
     "CreateRepeatStructure+wall-clock offset",
@@ -675,6 +676,7 @@ const SHAPES: [&str; 37] = [
     "SetTempoSegment+event anchor",
     "CreateCrossCutting+spanner at a region",
     "CreateTuplet+parent",
+    "CreateTuplet+parent, several members",
 ];
 
 /// The shapes reduction version 5 refuses wherever they are written, each
@@ -918,6 +920,19 @@ fn kind_shapes(payload: &OperationPayload) -> Vec<&'static str> {
                 ) && matches!(extent.end, epiphany_core::TimeAnchor::WallClock { .. })
                 {
                     out.push("CreateRegion+anchored start, placed end");
+                    // Arm 15's start at a region's end alone: arm 71's
+                    // holders start with no offset at a note, a measure or a
+                    // region's start, and arm 66's at a region's end carry an
+                    // anchored end (X5b fix round 1).
+                    if matches!(
+                        extent.start,
+                        epiphany_core::TimeAnchor::Region {
+                            edge: epiphany_core::RegionEdge::End,
+                            ..
+                        }
+                    ) {
+                        out.push("CreateRegion+start at a region's end, placed end");
+                    }
                 }
             }
             // An offset from a region's edge, which arms 15 and 66 draw of a
@@ -957,7 +972,13 @@ fn kind_shapes(payload: &OperationPayload) -> Vec<&'static str> {
             out
         }
         OperationKind::CreateTuplet(op) if op.tuplet.parent.is_some() => {
-            vec!["CreateTuplet+parent"]
+            let mut out = vec!["CreateTuplet+parent"];
+            // Arm 40's nest alone: arm 71's nested tuplet holds one member
+            // (X5b fix round 1).
+            if op.tuplet.members.len() > 1 {
+                out.push("CreateTuplet+parent, several members");
+            }
+            out
         }
         _ => Vec::new(),
     }
