@@ -4440,3 +4440,17 @@ its target's model, as they never refused a measure's, so the refusal pin
 names neither (their tests hold them); and its doc says which test holds a
 grid's anchor refusal, which the grid row, also counting version 3's
 musical slot, does not (review 1's L3).
+
+**An arm for the removals the holds read.** At the generator above, the
+plants of a tempo segment's undo, a region's delete and a measure's or a
+region's undo showed at no seed of 2,000 histories of 64, and others at a few:
+the generator seldom made an object, named it after, and then removed it.
+Arm 71 does that: a note, a measure at a metric instance's next bar, an
+empty region or a tuplet made in a transaction of its own; outside it a
+holder that holds what it names written at the object with no offset (a time
+signature, a grid's meter change, a tempo segment, a measure's start, a staff
+instance's carried clef, key or grid, or a region's extent or own meter,
+`held_by` taking the kind where the arm chooses it), or for a tuplet one
+nested in it; then the transaction undone by any policy or, one time in two
+for a note or a region, the object deleted. Its reach rests on the plants,
+each hold's delete and undo halves shown apart.

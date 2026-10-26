@@ -120,7 +120,10 @@
 //! `TargetMissing`, as every holder's naming a target that is not live is.
 //! And a time signature set in a transaction, a region's grid then set naming
 //! it outside the transaction, and the transaction undone (arm 70), which the
-//! grid holds (D86 Q1).
+//! grid holds (D86 Q1); and a note, a measure, an empty region or a tuplet made
+//! in a transaction, a holder or a nested tuplet then naming it, and the
+//! transaction undone or the note or region deleted (arm 71), which the holder
+//! holds (D86 Q2, D87 Q1 and Q3).
 //!
 //! Everything is seeded: [`generate`] is a function of its seed and length, so
 //! a finding reproduces from both. [`minimize`] shrinks a failing history to
@@ -3892,7 +3895,7 @@ fn make(
             }
             let offset = holder_offset(&mut sim.rng);
             let anchor = anchor_in(sim, h, target, offset.clone())?;
-            let (held, holding) = held_by(sim, r, h, target, anchor, offset)?;
+            let (held, holding) = held_by(sim, r, h, target, anchor, offset, None)?;
             out.extend(held);
             if sim.rng.chance(2) {
                 out.push(migration(holding, random_migration_target(&mut sim.rng)));
@@ -4176,6 +4179,179 @@ fn make(
                 }),
             ]
         }
+        71 => {
+            // A removal a holder of what it removes holds (X5b fix round 1,
+            // D86 Q2, D87 Q1 and Q3): a note entered into a voice of a metric
+            // region, the next bar of a metric instance made, an empty region
+            // placed as an editor places one, or a tuplet created over two
+            // consecutive events of a voice, in a transaction of its own; then,
+            // outside it, a holder that holds what it names written at what the
+            // gesture made with no offset (a time signature, a grid's meter
+            // change, a tempo segment, a measure's start, a staff instance's
+            // carried clef, key or grid, or a region's extent or own meter), or
+            // for a tuplet one nested in it; and the transaction undone by any
+            // policy or, one time in two for a note or a region, the object
+            // deleted.
+            if sim.replicas[r].open.is_some() {
+                return None;
+            }
+            let zero = epiphany_core::AnchorOffset::Zero;
+            let tx: TransactionId = sim.mint(r);
+            let declare = prim(OperationKind::DeclareTransaction(TransactionDescriptor {
+                id: tx,
+                label: String::from("make and name"),
+                category: None,
+            }));
+            let undo = OperationPayload::UndoTransaction(UndoTransactionPayload {
+                target: tx,
+                policy: random_policy(&mut sim.rng),
+            });
+            let delete = sim.rng.chance(2);
+            // One of the holders that hold what they name: a time signature,
+            // a grid's meter change, a tempo segment, a measure's start or a
+            // staff instance's carried clef, key or grid (`held_by`'s kinds 5
+            // to 9), or a region placed with its extent or its own model's
+            // meter at what the gesture made.
+            let holder = sim.rng.below(7);
+            let held_at = |sim: &mut Simulation,
+                           region: RegionId,
+                           anchor: epiphany_core::TimeAnchor|
+             -> Option<Vec<OperationPayload>> {
+                if holder < 5 {
+                    return held_by(sim, r, h, region, anchor, zero.clone(), Some(5 + holder))
+                        .map(|(held, _)| held);
+                }
+                let mut placed = placed_region(sim, r, h);
+                if holder == 5 {
+                    placed.time_extent.start = anchor;
+                } else {
+                    placed.time_model = RegionTimeModel::Metric(epiphany_core::MetricTimeModel {
+                        meters: vec![epiphany_core::MeterChange {
+                            anchor,
+                            time_signature: sim.rng.pick(&h.score.time_signatures)?.id,
+                        }],
+                        ..Default::default()
+                    });
+                }
+                Some(vec![prim(OperationKind::CreateRegion(CreateRegionOp {
+                    region: placed,
+                }))])
+            };
+            let mut out = vec![declare];
+            match sim.rng.below(4) {
+                0 => {
+                    let &(voice, instance, region) = sim.rng.pick(&h.voices)?;
+                    let bars = h.measures_of(instance).max(1) as u64;
+                    let at = position(sim.rng.below(8 * bars) as i64, 8);
+                    let id: EventId = sim.mint(r);
+                    let mut quarter_tones = Vec::new();
+                    let event =
+                        event_value(sim, r, id, voice, at, duration(1, 8), &mut quarter_tones);
+                    let anchor = epiphany_core::TimeAnchor::Event {
+                        id,
+                        offset: zero.clone(),
+                    };
+                    let held = held_at(sim, region, anchor)?;
+                    out.push(prim(OperationKind::InsertEvent(InsertEventOp {
+                        staff_instance: instance,
+                        event,
+                    })));
+                    out.extend(held);
+                    out.push(if delete {
+                        prim(OperationKind::DeleteEvent(DeleteEventOp {
+                            event: id,
+                            tuplet_compensation: TupletCompensation::NotInTuplet,
+                        }))
+                    } else {
+                        undo
+                    });
+                }
+                1 => {
+                    let instances = h.metric_instances();
+                    let (held_in, instance) = *sim.rng.pick(&instances)?;
+                    let next = instance.measures.len() as i64;
+                    let id: MeasureId = sim.mint(r);
+                    let anchor = epiphany_core::TimeAnchor::Measure {
+                        id,
+                        position: epiphany_core::MeasurePosition::Start,
+                        offset: zero.clone(),
+                    };
+                    let held = held_at(sim, held_in, anchor)?;
+                    out.push(prim(OperationKind::CreateMeasure(CreateMeasureOp {
+                        instance: instance.id,
+                        measure: epiphany_core::Measure {
+                            id,
+                            start: valuegen::region_start_anchor(held_in, position(next, 1)),
+                            time_signature: None,
+                            explicit_number: Some(next as u32 + 1),
+                            number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+                        },
+                    })));
+                    out.extend(held);
+                    out.push(undo);
+                }
+                2 => {
+                    let region = placed_region(sim, r, h);
+                    let id = region.id;
+                    let (other, _, _) = sim.rng.pick(&h.regions)?;
+                    let anchor = epiphany_core::TimeAnchor::Region {
+                        id,
+                        edge: epiphany_core::RegionEdge::Start,
+                        offset: zero.clone(),
+                    };
+                    let held = held_at(sim, *other, anchor)?;
+                    out.push(prim(OperationKind::CreateRegion(CreateRegionOp { region })));
+                    out.extend(held);
+                    out.push(if delete {
+                        prim(OperationKind::DeleteRegion(DeleteRegionOp { region: id }))
+                    } else {
+                        undo
+                    });
+                }
+                _ => {
+                    let &(voice, _, _) = sim.rng.pick(&h.voices)?;
+                    let mut own: Vec<&Event> = h
+                        .events
+                        .iter()
+                        .copied()
+                        .filter(|e| e.voice() == voice && span(e).is_some())
+                        .collect();
+                    own.sort_by(|a, b| span(a).map(|s| s.0).cmp(&span(b).map(|s| s.0)));
+                    if own.len() < 2 {
+                        return None;
+                    }
+                    let i = sim.rng.below(own.len() as u64 - 1) as usize;
+                    let length = |e: &Event| match e.duration() {
+                        EventDuration::Musical(d) => d.clone(),
+                        _ => MusicalDuration::zero(),
+                    };
+                    let parent: TupletId = sim.mint(r);
+                    let child: TupletId = sim.mint(r);
+                    let tuplet = |id, members: Vec<EventId>, parent, total| Tuplet {
+                        id,
+                        ratio: TupletRatio::new(3, 2).expect("not degenerate"),
+                        members,
+                        parent,
+                        required_total: total,
+                        display: TupletDisplay::default(),
+                    };
+                    out.push(prim(OperationKind::CreateTuplet(CreateTupletOp {
+                        tuplet: tuplet(
+                            parent,
+                            vec![own[i].id(), own[i + 1].id()],
+                            None,
+                            length(own[i]) + length(own[i + 1]),
+                        ),
+                    })));
+                    out.push(prim(OperationKind::CreateTuplet(CreateTupletOp {
+                        tuplet: tuplet(child, vec![own[i].id()], Some(parent), length(own[i])),
+                    })));
+                    out.push(undo);
+                }
+            }
+            sim.replicas[r].queued.push((tx, 2));
+            out
+        }
         _ => return None,
     })
 }
@@ -4259,7 +4435,9 @@ fn anchor_in(
 
 /// A holder of a time anchor written at `anchor` in `region`, of any kind an
 /// operation writes (X5b.9): arm 67's draw, with the region holding the
-/// anchor, which the arm may then migrate.
+/// anchor, which the arm may then migrate. `kind` chooses the holder, drawn
+/// here where it is `None` (arm 71 chooses among those that hold their
+/// target against its removal).
 fn held_by(
     sim: &mut Simulation,
     r: usize,
@@ -4267,6 +4445,7 @@ fn held_by(
     region: RegionId,
     anchor: epiphany_core::TimeAnchor,
     offset: epiphany_core::AnchorOffset,
+    kind: Option<u64>,
 ) -> Option<(Vec<OperationPayload>, RegionId)> {
     let prim = |k: OperationKind| OperationPayload::Primitive(k);
     // A repeat stands at notes alone (P13-D3), and a spanner there too but
@@ -4296,7 +4475,7 @@ fn held_by(
             time_signature: signature,
         }
     };
-    let held = match sim.rng.below(13) {
+    let held = match kind.unwrap_or_else(|| sim.rng.below(13)) {
         0 => vec![prim(OperationKind::CreateCrossCutting(
             CreateCrossCuttingOp {
                 structure: CrossCuttingValue::Marker(epiphany_core::Marker {
@@ -4731,7 +4910,7 @@ fn tie_entry(
 /// Each arm of [`make`] and how often it is drawn: the editing of notes,
 /// pitches and their marks three times as often as the score's structure and
 /// settings, as an editor's history runs.
-const ARMS: [(u64, u64); 71] = [
+const ARMS: [(u64, u64); 72] = [
     (0, 4),
     (1, 3),
     (2, 3),
@@ -4803,6 +4982,7 @@ const ARMS: [(u64, u64); 71] = [
     (68, 2),
     (69, 1),
     (70, 1),
+    (71, 4),
 ];
 
 fn draw_arm(rng: &mut Rng) -> u64 {
