@@ -2274,6 +2274,18 @@ pub struct Tempo {
   \texttt{None}), the tempo \MUST{} be the most recent applicable
   segment's terminating tempo, or the next applicable segment's
   \texttt{start\_tempo} if no earlier segment exists.
+
+  Reduction keys a segment by its map and its start's resolved
+  position, coarser than the musical position: a region anchor at a
+  musical offset resolves to that offset, and every other start to its
+  region's origin, so segments starting at a note, at a measure and at a
+  region's edge share a key though they stand apart. Reduction keeps at
+  most one segment per key in a map: a \texttt{SetTempoSegment} replaces
+  the segment at its key, and a region created carrying a map with two
+  segments on one key is refused \texttt{TempoMapMalformed} (Operation
+  Catalog, \sectionsc{Structural Containers}; reduction algorithm
+  version~\texttt{5}, before which the create applied and reduction held
+  the first segment at the key alone).
 \end{requirement}
 
 \begin{requirement}
@@ -17445,6 +17457,9 @@ layouts they own versus inherit:
   segment: the anchored object is not removed while one names it
   (\texttt{req:time:orphaned-anchor-handling} says so). A tuplet's parent is
   held against an undo, and a member's cascade carries a tuplet's children.
+  \texttt{req:time:tempo-segment-order} states the key reduction gives a
+  tempo segment, and that a map keeps one segment per key, a region created
+  carrying two refused.
   \\
   \bottomrule
 \end{longtable}

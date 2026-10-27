@@ -2464,6 +2464,11 @@ impl<'a> Reducer<'a> {
         let Some(score) = self.graph.as_ref() else {
             return;
         };
+        // A map seeds one segment per key, the first, as no history can make
+        // a map holding two (`SetTempoSegment` replaces, and a `CreateRegion`
+        // carrying two is refused). A base holding two is one the writer never
+        // writes, and every base is refused at reopen, before its root is decoded
+        // (`EditorDocument::open`, the text projection's `document_from_bundle`).
         for segment in &score.tempo_map.segments {
             self.tempo_segment_chain
                 .entry((None, resolved_anchor_position(&segment.start)))
@@ -6181,6 +6186,27 @@ impl<'a> Reducer<'a> {
         }
         if let Some(effect) = self.named_before_made_slot(robj, Some(own.1), false) {
             return effect;
+        }
+        // Its tempo map holds one segment per key, as `SetTempoSegment`'s
+        // writes leave a map: a key is the segment's scope and its start's
+        // resolved position, which a note, a measure and a region's edge
+        // share (reduction version 5, C5b review 2: before it the chain was
+        // seeded with the first segment at a key alone while the graph kept
+        // every one, so a later segment's note, measure or region could be
+        // removed from under it, `CrossCuttingRefsResolve`).
+        if let Some(local) = &op.region.local_tempo_map {
+            let mut keys = BTreeSet::new();
+            if !local
+                .segments
+                .iter()
+                .all(|segment| keys.insert(resolved_anchor_position(&segment.start)))
+            {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::TempoMapMalformed,
+                    },
+                };
+            }
         }
         self.graph_create_region(&op.region);
         self.mint_container(env, robj);

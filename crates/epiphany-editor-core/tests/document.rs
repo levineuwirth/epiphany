@@ -588,6 +588,107 @@ fn a_legacy_container_is_refused_by_name() {
     EditorDocument::open(MemStore::from_bytes(current)).expect("the current container opens");
 }
 
+/// A canonical base whose tempo map, a region's or the score's, holds two
+/// segments on one key (the region's start and a measure's, which resolve to
+/// one position): what no history makes, since `SetTempoSegment` replaces the
+/// segment at its key and a region created carrying such a map is refused
+/// (reduction version 5), and what reduction, seeding one segment per key,
+/// would hold by its first segment alone. The writer writes no base, and
+/// reopen refuses every base before its root is decoded, so such a base is
+/// refused by name: this one, the score's current layout, by its root's
+/// major. The same document without it reopens.
+#[test]
+fn a_base_holding_two_tempo_segments_on_one_key_is_refused_by_name() {
+    use epiphany_bundle::{FrontierBytes, SnapshotId, SnapshotRef};
+    use epiphany_core::{
+        AnchorOffset, MeasurePosition, RegionEdge, Tempo, TempoMap, TempoSegment, TempoShape,
+        TimeAnchor,
+    };
+    let operations = setup_operations(2);
+    let (_, score) = reduced(&operations);
+    let region = &score.canvas.regions[0];
+    let second = region
+        .staff_instances()
+        .iter()
+        .flat_map(|instance| &instance.measures)
+        .nth(1)
+        .expect("a second measure")
+        .id;
+    let constant_at = |start: TimeAnchor| TempoSegment {
+        start,
+        end: None,
+        start_tempo: Tempo::quarter(96.0).expect("a tempo"),
+        end_tempo: None,
+        shape: TempoShape::Constant,
+    };
+    let two_on_one_key = TempoMap {
+        initial: None,
+        segments: vec![
+            constant_at(TimeAnchor::Region {
+                id: region.id,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Zero,
+            }),
+            constant_at(TimeAnchor::Measure {
+                id: second,
+                position: MeasurePosition::Start,
+                offset: AnchorOffset::Zero,
+            }),
+        ],
+    };
+    let mut in_region = score.clone();
+    in_region.canvas.regions[0].local_tempo_map = Some(two_on_one_key.clone());
+    let mut in_score = score.clone();
+    in_score.tempo_map = two_on_one_key;
+    let control = EditorDocument::create(MemStore::new(), operations)
+        .expect("created")
+        .into_store()
+        .into_bytes();
+    for (map, base) in [("a region's", in_region), ("the score's", in_score)] {
+        let mut bundle = Bundle::open(MemStore::from_bytes(control.clone()), caps()).unwrap();
+        bundle
+            .commit(
+                &[StagedChunk {
+                    kind: ChunkKind::Snapshot,
+                    schema_version: SchemaVersion::for_major(5),
+                    payload: base.canonical_bytes(),
+                }],
+                |ctx| {
+                    let mut m = ctx.previous_manifest.clone();
+                    let root = ctx.new_chunks[0];
+                    m.canonical_base = Some(SnapshotRef {
+                        snapshot_id: SnapshotId([3; 16]),
+                        covers_causal_frontier: FrontierBytes::empty(),
+                        reduction_algorithm_version: ReductionAlgorithmVersion(
+                            CURRENT_REDUCTION_ALGORITHM_VERSION,
+                        ),
+                        profile_id: m.profile_declarations[0].profile_id,
+                        hash: root.hash,
+                        root,
+                    });
+                    m
+                },
+            )
+            .unwrap();
+        let based = bundle.into_store().into_bytes();
+        let reopened = EditorDocument::open(MemStore::from_bytes(based));
+        assert!(
+            matches!(
+                reopened,
+                Err(DocumentError::UnsupportedCanonicalMajor { schema_major: 5 })
+            ),
+            "{map}: {:?}",
+            reopened.err()
+        );
+    }
+    let reopened = EditorDocument::open(MemStore::from_bytes(control)).expect("the control opens");
+    assert!(
+        !reopened.is_read_only(),
+        "{:?}",
+        reopened.read_only_reasons()
+    );
+}
+
 fn caps() -> BundleCapabilities {
     BundleCapabilities {
         current_reduction_version: ReductionAlgorithmVersion(CURRENT_REDUCTION_ALGORITHM_VERSION),

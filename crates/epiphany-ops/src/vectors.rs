@@ -905,6 +905,48 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         doubled.to_canonical_bytes(),
     ));
 
+    // X5b (C5b review 2, D89): a region created carrying a tempo map whose two
+    // segments start at its own start and at a note, which give one key. It
+    // decodes; where the note is live, reduction refuses it
+    // `TempoMapMalformed`, as two `SetTempoSegment` writes at that key would
+    // leave one segment.
+    let region_id = epiphany_core::RegionId::new(ReplicaId(1), 17);
+    let constant_at = |start: epiphany_core::TimeAnchor| epiphany_core::TempoSegment {
+        start,
+        end: None,
+        start_tempo: epiphany_core::Tempo::quarter(96.0).expect("a tempo"),
+        end_tempo: None,
+        shape: epiphany_core::TempoShape::Constant,
+    };
+    let mut carrier = crate::valuegen::region(region_id);
+    carrier.local_tempo_map = Some(epiphany_core::TempoMap {
+        initial: None,
+        segments: vec![
+            constant_at(epiphany_core::TimeAnchor::Region {
+                id: region_id,
+                edge: epiphany_core::RegionEdge::Start,
+                offset: epiphany_core::AnchorOffset::Zero,
+            }),
+            constant_at(epiphany_core::TimeAnchor::Event {
+                id: EventId::new(ReplicaId(1), 18),
+                offset: epiphany_core::AnchorOffset::Zero,
+            }),
+        ],
+    });
+    let two_on_one_key = staff_change(
+        19,
+        crate::payload::OperationKind::CreateRegion(crate::payload::CreateRegionOp {
+            region: carrier,
+        }),
+    );
+    v.push(row(
+        OE,
+        "accept",
+        "-",
+        "create_region_carrying_two_tempo_segments_on_one_key",
+        two_on_one_key.to_canonical_bytes(),
+    ));
+
     // ---- ops.operation_block ------------------------------------------------
     // An operation block as a reader holds it to the supported-layout boundary
     // (Binary Format companion §"The Chunk-Level Gate"): the block's declared

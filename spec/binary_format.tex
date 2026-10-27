@@ -2467,6 +2467,11 @@ values need, so a file mixing majors is ordinary and reads.
       differs, in major or minor, from the version minimal stamping derives
       from them is refused as \emph{mis-stamped}.
   \end{enumerate}
+  A document reader \MUST{} likewise refuse by name, before decoding its
+  root, a container whose manifest carries a canonical base: no current
+  writer writes one, so whatever a base holds (a tempo map with two segments
+  on one key among it, which no history makes, Operation Catalog,
+  \sectionsc{Structural Containers}) never reaches reduction.
   The reference implementation's highest epoch is \tablenums{16}.
 \end{requirement}
 
@@ -4200,7 +4205,8 @@ at format major~\tablenums{0} is refused as a legacy container.
   (Requirement~\ref{req:binfmt:op-block-boundary}): a minor later than its
   highest epoch, read before any envelope; an envelope outside the live
   layouts, named by the block's version; a stamp other than minimal stamping
-  derives. It refuses a legacy container by name. The decode corpus gains
+  derives. It refuses a legacy container by name, and one carrying a
+  canonical base, which no current writer writes. The decode corpus gains
   the \texttt{ops.operation\ub block} and \texttt{document.container}
   surfaces. \texttt{PreconditionFailureReason} appends \tablenums{21}
   \texttt{RegionsOverlap} and \tablenums{22} \texttt{TargetAnchored} at
@@ -4210,7 +4216,9 @@ at format major~\tablenums{0} is refused as a legacy container.
   decode vector of a non-empty section and its rejections. A
   \texttt{TempoSegment} of a \texttt{Constant} shape recording an
   \texttt{end\_tempo} is rejected at decode (P13-S8), with an operation's and a
-  score's reject vectors. \texttt{MarkerKind} appends \tablenums{9}
+  score's reject vectors. A \texttt{CreateRegion} carrying a tempo map with
+  two segments on one key decodes, with an accept vector; reduction refuses
+  it. \texttt{MarkerKind} appends \tablenums{9}
   \texttt{ExpressionText} at epoch~16, which the minor of an operation
   carrying one takes, with vectors of the marker, of a block at its epoch and
   of one stamped below it. Semantics: Operation Catalog, 0.22.0. \\

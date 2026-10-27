@@ -15,7 +15,9 @@
 //! against a delete and an undo under every policy, as a tempo segment does
 //! (D87 Q1); a user break is excepted (D80). An undo that would remove a
 //! tuplet a live nested tuplet names as its parent is held, and a member's
-//! cascade removing a parent carries its children (D87 Q3).
+//! cascade removing a parent carries its children (D87 Q3). A region is not
+//! created carrying a tempo map with two segments on one key, which the
+//! holds, reading the tempo chains, would see one of (D89).
 //!
 //! Each history is one author's, built by hand on a small score: a metric
 //! region holding a staff instance, a measure, a voice and a note, and a
@@ -28,7 +30,7 @@ use epiphany_core::{
     check_invariants, AnchorOffset, EventId, IdentityContext, InstrumentId, Measure, MeasureId,
     MeasureNumberVisibility, MeterChange, MetricGrid, MusicalDuration, MusicalPosition,
     OperationId, PitchId, RationalTime, RegionEdge, RegionId, RegionTimeModel, ReplicaId, Score,
-    StaffId, StaffInstanceId, TimeAnchor, TimeExtent, TimeSignatureId, TransactionId,
+    StaffId, StaffInstanceId, TempoMap, TimeAnchor, TimeExtent, TimeSignatureId, TransactionId,
     TypedObjectId, VoiceId, WallClockTime,
 };
 use epiphany_ops::{
@@ -650,6 +652,168 @@ fn a_note_no_live_tempo_segment_names_is_removed() {
             );
         }
     }
+}
+
+const CARRIER: RegionId = RegionId::new(AUTHOR, 916);
+
+/// A metric region far away in time created carrying a local tempo map, one
+/// segment at each of `starts` in turn; returns the create.
+fn carrying(h: &mut History, starts: Vec<TimeAnchor>) -> OperationId {
+    let mut region = valuegen::region(CARRIER);
+    region.time_model = valuegen::metric_model();
+    region.time_extent = TimeExtent {
+        start: wall(7_000_000_000),
+        end: wall(7_000_001_000),
+    };
+    region.local_tempo_map = Some(TempoMap {
+        initial: None,
+        segments: starts
+            .into_iter()
+            .map(|start| {
+                let mut segment = valuegen::tempo_segment(CARRIER, MusicalPosition::origin(), 90.0);
+                segment.start = start;
+                segment
+            })
+            .collect(),
+    });
+    h.push(OperationKind::CreateRegion(CreateRegionOp { region }))
+}
+
+/// The carrier's own start, a key its other segment shares when that one
+/// starts at a note, a measure or a region's edge.
+fn carrier_start() -> TimeAnchor {
+    edge(CARRIER, AnchorOffset::Zero)
+}
+
+/// C5b review 2's M1: a `CreateRegion` whose carried tempo map holds two
+/// segments whose starts resolve to one position, the key `SetTempoSegment`
+/// writes by, is refused `TempoMapMalformed` in both modes, as two writes at
+/// that key would leave one segment. Before it the create applied, the tempo
+/// chain seeded with the first segment alone while the graph kept both, so
+/// the removal of what the second names applied and left it naming nothing
+/// (`CrossCuttingRefsResolve`), whichever hold the removal met. Every route:
+/// the note, the measure or the region the second segment names deleted or
+/// undone under each policy, the carrier's own start the other segment; and
+/// the order reversed, which before let the first segment hold its target,
+/// refused alike, since the rule reads the key, not the order.
+#[test]
+fn a_region_carrying_two_tempo_segments_on_one_key_is_refused() {
+    let own_start_first: Holder = |h, a| carrying(h, vec![carrier_start(), a]);
+    let own_start_last: Holder = |h, a| carrying(h, vec![a, carrier_start()]);
+    for (order, write) in [
+        ("own start first", own_start_first),
+        ("own start last", own_start_last),
+    ] {
+        for removal in removals() {
+            let (h, created, removed, object) = removing(write, removal, false);
+            let (free, aware) = h.reduce();
+            assert!(
+                refused(&free, created, PreconditionFailureReason::TempoMapMalformed),
+                "{order} {removal:?}: {:?}",
+                effect(&free, created)
+            );
+            assert!(
+                undone(&free, removed),
+                "{order} {removal:?}: {:?}",
+                effect(&free, removed)
+            );
+            assert!(!live(&aware, object), "{order} {removal:?}");
+        }
+    }
+}
+
+/// M1's two notes: a region carrying segments at two notes of the metric
+/// region, which key alike though the notes stand apart, is refused in both
+/// orders, and the later note's delete then applies.
+#[test]
+fn a_region_carrying_tempo_segments_at_two_notes_is_refused() {
+    for later_first in [false, true] {
+        let mut h = History::new();
+        h.note(None, LATER_NOTE, 1);
+        let mut starts = vec![at_note(NOTE), at_note(LATER_NOTE)];
+        if later_first {
+            starts.reverse();
+        }
+        let created = carrying(&mut h, starts);
+        let delete = h.delete(LATER_NOTE);
+        let (free, aware) = h.reduce();
+        assert!(
+            refused(&free, created, PreconditionFailureReason::TempoMapMalformed),
+            "later first {later_first}: {:?}",
+            effect(&free, created)
+        );
+        assert!(applied(&free, delete), "later first {later_first}");
+        assert!(!aware.score.events.contains(LATER_NOTE));
+    }
+}
+
+/// Controls: a carried map whose segments keep distinct keys applies, the
+/// carrier's own start and a bar into it, or a note and a bar into it; and
+/// each segment then holds what it names against every removal, as a
+/// segment `SetTempoSegment` writes does. Two `SetTempoSegment` writes at one
+/// key leave the second segment alone, so the first's note is then free.
+#[test]
+fn a_region_carrying_tempo_segments_on_distinct_keys_applies_and_holds() {
+    let mut h = History::new();
+    let created = carrying(&mut h, vec![carrier_start(), edge(CARRIER, bars(1))]);
+    let (free, aware) = h.reduce();
+    assert!(applied(&free, created), "{:?}", effect(&free, created));
+    let carried = aware
+        .score
+        .canvas
+        .regions
+        .iter()
+        .find(|region| region.id == CARRIER)
+        .and_then(|region| region.local_tempo_map.as_ref())
+        .map(|map| map.segments.len());
+    assert_eq!(carried, Some(2));
+    let a_bar_in: Holder = |h, a| carrying(h, vec![a, edge(CARRIER, bars(1))]);
+    for removal in removals() {
+        let (h, created, removed, object) = removing(a_bar_in, removal, false);
+        let (free, aware) = h.reduce();
+        assert!(
+            applied(&free, created),
+            "{removal:?}: {:?}",
+            effect(&free, created)
+        );
+        assert!(
+            live(&aware, object),
+            "{removal:?}: {:?}",
+            effect(&free, removed)
+        );
+        match removal {
+            Removal::NoteDeleted => assert!(
+                refused(&free, removed, PreconditionFailureReason::TargetAnchored),
+                "{:?}",
+                effect(&free, removed)
+            ),
+            Removal::RegionDeleted => assert!(
+                refused(&free, removed, PreconditionFailureReason::ContainerNotEmpty),
+                "{:?}",
+                effect(&free, removed)
+            ),
+            Removal::NoteUndone(UndoPolicy::BestEffort)
+            | Removal::MeasureUndone(UndoPolicy::BestEffort)
+            | Removal::RegionUndone(UndoPolicy::BestEffort) => assert!(
+                undone(&free, removed),
+                "{removal:?}: {:?}",
+                effect(&free, removed)
+            ),
+            _ => assert!(
+                held(&free, removed, object),
+                "{removal:?}: {:?}",
+                effect(&free, removed)
+            ),
+        }
+    }
+    let mut h = History::new();
+    let first = h.tempo(None, Some(METRIC), at_note(NOTE), true);
+    let second = h.tempo(None, Some(METRIC), edge(METRIC, AnchorOffset::Zero), true);
+    let delete = h.delete(NOTE);
+    let (free, aware) = h.reduce();
+    assert!(applied(&free, first) && applied(&free, second));
+    assert!(applied(&free, delete), "{:?}", effect(&free, delete));
+    assert!(!aware.score.events.contains(NOTE));
 }
 
 /// A write of some holder at an anchor; returns the holder's write.

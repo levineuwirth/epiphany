@@ -4467,3 +4467,38 @@ anchored end. And arm 71 nests a tuplet of one member in the one it made, so
 of the tuplet it nests in, is counted apart, `CreateTuplet+parent, several
 members`. Only the classifier changes, so the generator draws the same
 histories.
+
+## X5b fix round 2 — C5b review 2's finding (2026-10-28)
+
+C5b review 2 found one more way one author leaves a reference naming nothing,
+older than X5b and of review 1's tempo class (D89). It is fixed under
+reduction version 5.
+
+**A carried tempo map with two segments on one key.** A tempo segment's slot
+is keyed by its scope and its start's resolved position, and every start but
+a region anchor at a musical offset resolves to the region's origin, so a
+note, a measure and a region's edge share a key. `SetTempoSegment` replaces
+whatever stands at its key, so no sequence of writes makes a map holding two
+segments there; but a `CreateRegion` may carry such a map, and its create
+seeded the tempo chain with the first segment at the key alone while the
+graph kept both. Every tempo hold reads the chain: a note's delete and undo
+(fix round 1), a measure's undo and a region's delete and undo. So the note,
+measure or region the second segment named could be removed, and the segment
+named nothing, in both modes and under every policy; with the order reversed
+the first segment held its target, and the order alone decided. The owner
+ruled the create refused, as two writes at the key would leave one segment:
+a `CreateRegion` whose carried map holds two segments whose starts resolve to
+one position is refused `TempoMapMalformed`, read after its anchors' targets
+and offsets, in either order. Seeding every segment and reading them all
+would key a map by more than its writes do. Review 2's twelve one-author
+probes are committed (`307` to `318`), each declaring the create's refusal.
+
+A base holding such a map, a region's or the score's, is one the writer
+never writes, and every canonical base is refused at reopen before its root
+is decoded: by the editor's `EditorDocument::open` (`CanonicalBase`, or
+`UnsupportedCanonicalMajor` where the bundle flags the root's major first)
+and the text projection's `document_from_bundle` (`CanonicalBaseUnsupported`).
+So no base reaches the chain's seeding outside a test that builds one, and a
+base's maps still seed one segment per key. The coarse key itself stays, a
+decision for when an editor writes tempo at notes or a document holds two
+regions.

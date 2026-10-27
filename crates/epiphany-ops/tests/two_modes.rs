@@ -170,13 +170,15 @@ fn a_history_showing_a_second_class_fails_its_declaration() {
     assert!(!shows_only(&[], "one"));
 }
 
-/// Every history a refusal fixed shows that refusal in both modes: a fill its
-/// `# refused:` line names the reason of is refused in base-free and in
-/// graph-aware reduction alike, its own effect the refusal, or, in a
-/// transaction, the transaction conflicting with it among the members that
-/// failed. The nine region histories the owner deferred (D48, D50 to D52) are
-/// such: reduction version 5 refuses the fill that overlapped them
-/// (`RegionsOverlap`), and they agree.
+/// Every history a refusal fixed shows that refusal in both modes: a fill or
+/// a region's create its `# refused:` line names the reason of is refused in
+/// base-free and in graph-aware reduction alike, its own effect the refusal,
+/// or, in a transaction, the transaction conflicting with it among the
+/// members that failed. The nine region histories the owner deferred (D48,
+/// D50 to D52) are such: reduction version 5 refuses the fill that
+/// overlapped them (`RegionsOverlap`), and they agree. So are C5b review 2's
+/// twelve, whose region carried two tempo segments on one key
+/// (`TempoMapMalformed`, D89).
 #[test]
 fn every_history_declaring_a_refusal_shows_it_in_both_modes() {
     let declaring: Vec<Committed> = committed()
@@ -198,12 +200,34 @@ fn every_history_declaring_a_refusal_shows_it_in_both_modes() {
             "161-invariant-region-extents.txt",
             "162-invariant-region-extents.txt",
             "163-invariant-region-extents.txt",
+            "307-invariant-cross-cutting-refs-resolve.txt",
+            "308-invariant-cross-cutting-refs-resolve.txt",
+            "309-invariant-cross-cutting-refs-resolve.txt",
+            "310-invariant-cross-cutting-refs-resolve.txt",
+            "311-invariant-cross-cutting-refs-resolve.txt",
+            "312-invariant-cross-cutting-refs-resolve.txt",
+            "313-invariant-cross-cutting-refs-resolve.txt",
+            "314-invariant-cross-cutting-refs-resolve.txt",
+            "315-invariant-cross-cutting-refs-resolve.txt",
+            "316-invariant-cross-cutting-refs-resolve.txt",
+            "317-invariant-cross-cutting-refs-resolve.txt",
+            "318-invariant-cross-cutting-refs-resolve.txt",
         ]
     );
     for c in &declaring {
         let reason = c.refused.as_deref().expect("declared");
-        let [in_free, in_aware] = refused_fills(&c.history, reason);
-        assert!(!in_free.is_empty(), "{}: no fill refused {reason}", c.file);
+        let [in_free, in_aware] = refused_operations(&c.history, reason, |kind| {
+            matches!(
+                kind,
+                epiphany_ops::OperationKind::CreateStaffInstance(_)
+                    | epiphany_ops::OperationKind::CreateRegion(_)
+            )
+        });
+        assert!(
+            !in_free.is_empty(),
+            "{}: no fill or region refused {reason}",
+            c.file
+        );
         assert_eq!(
             in_free, in_aware,
             "{}: the modes refuse differently",
@@ -271,10 +295,22 @@ fn refused_fills(
     history: &[epiphany_ops::OperationEnvelope],
     reason: &str,
 ) -> [Vec<epiphany_core::OperationId>; 2] {
+    refused_operations(history, reason, |kind| {
+        matches!(kind, epiphany_ops::OperationKind::CreateStaffInstance(_))
+    })
+}
+
+/// The operations of `history` of a kind `of_kind` admits that each mode
+/// refuses for `reason`, read as [`refused_fills`] reads a fill.
+fn refused_operations(
+    history: &[epiphany_ops::OperationEnvelope],
+    reason: &str,
+    of_kind: fn(&epiphany_ops::OperationKind) -> bool,
+) -> [Vec<epiphany_core::OperationId>; 2] {
     use epiphany_core::{IdentityContext, ReplicaId, Score};
     use epiphany_ops::{
-        ConflictKind, MaterializedState, NoOpReason, OperationEffect, OperationKind,
-        OperationPayload, OperationSet,
+        ConflictKind, MaterializedState, NoOpReason, OperationEffect, OperationPayload,
+        OperationSet,
     };
     let mut set = OperationSet::new();
     for envelope in history {
@@ -294,12 +330,9 @@ fn refused_fills(
             .effects
             .iter()
             .filter(|(id, effect)| {
-                let fill = history.iter().any(|env| {
+                let of_the_kind = history.iter().any(|env| {
                     env.id == *id
-                        && matches!(
-                            env.payload,
-                            OperationPayload::Primitive(OperationKind::CreateStaffInstance(_))
-                        )
+                        && matches!(&env.payload, OperationPayload::Primitive(kind) if of_kind(kind))
                 });
                 let refused = match effect {
                     OperationEffect::NoOp {
@@ -310,7 +343,7 @@ fn refused_fills(
                     } => failed_in_transaction.contains(id),
                     _ => false,
                 };
-                fill && refused
+                of_the_kind && refused
             })
             .map(|(id, _)| *id)
             .collect()

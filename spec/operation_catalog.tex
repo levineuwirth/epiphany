@@ -906,7 +906,10 @@ invariant~10's surface, widened to every anchor invariant~9 reads but a user
 break's, requires (Sections~\ref{sec:k0:delete-event}
 and~\ref{sec:k0:undo}). A tuplet's undo is held by a live tuplet nested in it,
 and a member's cascade carries the tuplets nested in the ones it removes
-(Section~\ref{sec:k0:create-tuplet}). Accordingly
+(Section~\ref{sec:k0:create-tuplet}). A \texttt{CreateRegion} whose carried
+tempo map holds two segments on one key is refused \texttt{TempoMapMalformed},
+as two writes at the key would leave one
+(Section~\ref{sec:k0:structural-containers}). Accordingly
 \texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION} moves
 \texttt{4}~$\rightarrow$~\texttt{5}, one version for the phase.
 
@@ -2010,6 +2013,20 @@ precondition no-op, \texttt{TargetMissing}, in both modes
 (Requirement~\ref{req:catalog:anchor-targets}; since version~0.22.0, before
 which it applied naming nothing).
 
+A \texttt{CreateRegion} whose carried tempo map holds two segments whose
+starts resolve to one position, the key a \texttt{SetTempoSegment} writes by
+(Section~\ref{sec:k0:meter-tempo}), is a precondition no-op,
+\texttt{TempoMapMalformed}, in both modes, read after its anchors' targets and
+offsets and in either order of the two: two writes at that key would leave
+one segment. A segment at a note, one at a measure and one at a region's edge
+with no offset resolve alike to the region's origin, though they stand apart.
+Before version~0.22.0 such a create applied, and reduction's tempo chain held
+the first segment at the key alone while the graph kept both, so the note,
+measure or region the second named could be removed from under it. A canonical
+base holding such a map, a region's or the score's, is one no writer writes,
+refused at reopen with every base (Binary Format companion,
+\texttt{req:binfmt:op-block-boundary}).
+
 \textbf{Conflict cases.} None at reduction time: creation is set-union (a repeat
 create is idempotent), and the empty-only delete is a deterministic precondition
 gate, not a conflict. Since version~0.22.0 a region is not empty, to its
@@ -3007,7 +3024,12 @@ present) the length-framed \texttt{segment}.
 
 \textbf{Reduction rule.} Last-writer-wins structural overwrites keyed by
 \texttt{(region, resolved position)} (time signature) and \texttt{(scope,
-resolved start)} (tempo segment). A carried \texttt{TimeSignature} is minted
+resolved start)} (tempo segment). An anchor's resolved position is its offset
+for a region anchor at a musical offset, and the region's origin for every
+other anchor, so a segment at a note, one at a measure and one at a region's
+edge share a key though they stand apart. A map holds one segment per key: a
+write replaces the segment at its key, and a region created carrying two is
+refused (Section~\ref{sec:k0:structural-containers}). A carried \texttt{TimeSignature} is minted
 set-union under the same discipline as \texttt{CreateStaff}: fresh id mints;
 byte-identical re-carry is idempotent; a differing value under a live id is a
 precondition no-op (\texttt{RecreateContentMismatch},

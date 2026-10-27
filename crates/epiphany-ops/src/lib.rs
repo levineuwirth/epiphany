@@ -928,6 +928,18 @@ pub mod vectors;
 ///     tuplet's parent (not reduced state); version `4` removed the parent and
 ///     left the child naming nothing (D87 Q3). Locked by `reference_holds.rs`
 ///     and the committed histories `303` to `306`.
+///   - **What C5b review 2 found** (X5b's fix round 2, D89, a verdict), older
+///     than X5b and one author's. A `CreateRegion` whose carried tempo map
+///     holds two segments whose starts resolve to one position (a note, a
+///     measure and a region's edge all resolve to its origin) is refused
+///     `TempoMapMalformed` in both modes, read after its anchors, as two
+///     `SetTempoSegment` writes at that key would leave one segment. Version
+///     `4` applied it and seeded the tempo chain with the first segment at the
+///     key alone while the graph kept both, so every hold, reading the chain,
+///     let the note, measure or region the second named be removed, and the
+///     segment named nothing (`CrossCuttingRefsResolve`). A base holding such
+///     a map is not reduced: every canonical base is refused at reopen. Locked
+///     by `reference_holds.rs` and the committed histories `307` to `318`.
 ///
 ///   With it, at the same epoch 16, a wire addition that changes no verdict:
 ///   `MarkerKind` appends `ExpressionText` (X5b.7, D79 Q9), reduced as any
