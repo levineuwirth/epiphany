@@ -1366,6 +1366,65 @@ fn a_two_note_tremolos_notes_are_drawn_at_their_written_value() {
     }
 }
 
+/// A slur over a two-note tremolo's stemless notes stands on the side away
+/// from the way its pair turns, as MuseScore sets a slur opposite its first
+/// chord's direction whether its stem is drawn or not
+/// (`SlurTieLayout::computeUp`, the pair's direction from
+/// `TremoloLayout::calcIsUp`): under a low pair of written wholes, whose
+/// strokes stand above, and over a high one, whose strokes stand below.
+#[test]
+fn a_slur_over_a_stemless_tremolo_pair_stands_away_from_its_strokes() {
+    let start = "<ornaments><tremolo type=\"start\">3</tremolo></ornaments>";
+    let stop = "<ornaments><tremolo type=\"stop\">3</tremolo></ornaments>";
+    let slur = |kind: &str| format!("<slur type=\"{kind}\" number=\"1\"/>");
+    let pair = |low: &str, high: &str| {
+        [
+            tremolo_note(low, 4, "whole", &format!("{start}{}", slur("start"))),
+            tremolo_note(high, 4, "whole", &format!("{stop}{}", slur("stop"))),
+        ]
+        .concat()
+    };
+    let loaded = part(
+        "stemless_tremolo_slurs.musicxml",
+        1,
+        &[pair("F4", "A4"), pair("C6", "A5")],
+    );
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let mut slurs: Vec<_> = layout
+        .curves
+        .iter()
+        .filter(|c| matches!(c.provenance.source, TypedObjectId::Slur(_)))
+        .collect();
+    slurs.sort_by(|a, b| a.p0.x.0.total_cmp(&b.p0.x.0));
+    assert_eq!(slurs.len(), 2, "two slurs");
+    for (k, (first, second), up) in [(0, (e[0], e[1]), true), (1, (e[2], e[3]), false)] {
+        assert_eq!(stem_count(&layout, first) + stem_count(&layout, second), 0);
+        let strokes = tremolo_lines(&layout, first, up);
+        assert_eq!(strokes.len(), 3, "three strokes");
+        let (a, b) = (
+            head(&loaded, &layout, first),
+            head(&loaded, &layout, second),
+        );
+        let stroke_y = strokes[0].0 .1;
+        let cp = slurs[k].control_points();
+        let middle = (cp[1].y.0 + cp[2].y.0) * 0.5;
+        if up {
+            assert!(stroke_y > a[3], "the strokes above the heads");
+            assert!(
+                middle < a[1].min(b[1]),
+                "the slur under the heads: {middle} against {a:?} {b:?}"
+            );
+        } else {
+            assert!(stroke_y < a[1], "the strokes below the heads");
+            assert!(
+                middle > a[3].max(b[3]),
+                "the slur over the heads: {middle} against {a:?} {b:?}"
+            );
+        }
+    }
+}
+
 /// The noteheads a pitched note draws, by name.
 fn glyphs_of<'a>(loaded: &Loaded, layout: &'a ResolvedLayoutIR, event: EventId) -> Vec<&'a str> {
     let Some(Event::Pitched(n)) = loaded.reduced.score.events.get(event) else {

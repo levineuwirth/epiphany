@@ -2468,3 +2468,14 @@ is set:
   breve (`a_two_note_tremolos_notes_are_drawn_at_their_written_value`). A
   stemless note's strokes are inset from its head's edge, with no stem's
   width beside it (`chordBeamAnchorX`). The engraver itself is unchanged.
+
+## ENGRAVER_VERSION 74 → 75: a slur over a stemless tremolo pair on its pair's side (X4c.11, 2026-10-27)
+
+- A slur over a two-note tremolo's stemless notes stands away from the way
+  its pair turns, as MuseScore sets a slur opposite its first chord's
+  direction, its stem drawn or not (`SlurTieLayout::computeUp`). Drawn at
+  their written value, such notes had given their columns no stem, and a
+  slur over stemless notes goes above, so under a low pair it had flipped
+  over the heads and through the strokes
+  (`a_slur_over_a_stemless_tremolo_pair_stands_away_from_its_strokes`). The
+  engraver itself is unchanged.

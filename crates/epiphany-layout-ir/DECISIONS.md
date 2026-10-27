@@ -1304,3 +1304,9 @@ column's spring the padding after it.
   stem's width beside it, as MuseScore's `chordBeamAnchorX` gives a chord
   with no stem the stem's position alone; a stemmed member's are inset from
   its stem's outer edge, as before.
+- A stemless member gives its column the direction its pair turns it,
+  which a slur takes its side from, as MuseScore's slur reads a chord's
+  direction whether or not it draws a stem (`SlurTieLayout::computeUp`,
+  `TremoloLayout::calcIsUp`); its column draws no stem and takes no ink
+  for one. A slur over other stemless notes, whole notes outside a pair,
+  still goes above.

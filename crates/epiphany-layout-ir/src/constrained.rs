@@ -2590,11 +2590,16 @@ pub fn try_to_constrained(
                     seg.end = at;
                     seg.tip = at;
                     seg.flag = None;
-                    if !seg.drawn {
-                        continue;
-                    }
-                    let key = seg.key.clone();
+                    let (key, drawn) = (seg.key.clone(), seg.drawn);
                     if let Some(ink) = column_ink.get_mut(&(event_staff[e], key)) {
+                        // A stemless note keeps the way its pair turns it,
+                        // which a slur takes its side from, as MuseScore's
+                        // reads a chord's direction, its stem drawn or not
+                        // (`SlurTieLayout::computeUp`, `calcIsUp`).
+                        if !drawn {
+                            ink.stem_up.get_or_insert(up);
+                            continue;
+                        }
                         ink.stem_up = Some(up);
                         if up {
                             ink.top = ink.top.max(at);
@@ -5586,7 +5591,8 @@ struct ColumnInk {
     top: f32,
     bottom: f32,
     /// `Some(true)` when the column's stem is drawn and points up; `None` when
-    /// the column draws no stem (a whole note).
+    /// the column draws no stem (a whole note), but a two-note tremolo's
+    /// stemless note, which keeps the way its pair turns it.
     stem_up: Option<bool>,
     /// The notehead's horizontal centre, as an offset from the column's x.
     centre: f32,
