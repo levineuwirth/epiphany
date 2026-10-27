@@ -1425,6 +1425,73 @@ fn a_slur_over_a_stemless_tremolo_pair_stands_away_from_its_strokes() {
     }
 }
 
+/// A slur on the side of a two-note tremolo's stemless notes their strokes
+/// stand on passes over the strokes, as MuseScore's slur clears the
+/// tremolo's shape (`SlurTieLayout::getSegmentShape`): an upper voice's
+/// slur over its pair of written wholes, which stand above, as the pair's
+/// strokes do, beside a lower voice's whole note, stays clear of the
+/// strokes along their length.
+#[test]
+fn a_slur_on_a_stemless_tremolo_pairs_strokes_side_passes_over_them() {
+    let start = "<ornaments><tremolo type=\"start\">3</tremolo></ornaments>";
+    let stop = "<ornaments><tremolo type=\"stop\">3</tremolo></ornaments>";
+    let measure = [
+        tremolo_note(
+            "A4",
+            8,
+            "whole",
+            &format!("{start}<slur type=\"start\" number=\"1\"/>"),
+        ),
+        tremolo_note(
+            "C5",
+            8,
+            "whole",
+            &format!("{stop}<slur type=\"stop\" number=\"1\"/>"),
+        ),
+        String::from("<backup><duration>16</duration></backup>"),
+        note("D4", 16, "whole", 2, 1, ""),
+    ]
+    .concat();
+    let loaded = part_in("stemless_tremolo_slur_over.musicxml", 1, 4, &[measure]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let strokes = tremolo_lines(&layout, e[0], true);
+    assert_eq!(strokes.len(), 3, "three strokes");
+    let ((x0, y0), (x1, y1)) = strokes[0];
+    assert!(
+        y0 > head(&loaded, &layout, e[0])[3],
+        "the strokes above the pair"
+    );
+    let slur = layout
+        .curves
+        .iter()
+        .find(|c| matches!(c.provenance.source, TypedObjectId::Slur(_)))
+        .expect("the slur");
+    let cp = slur.control_points();
+    assert!(
+        cp[1].y.0 > cp[0].y.0 && cp[2].y.0 > cp[3].y.0,
+        "the upper voice's slur arcs above: {cp:?}"
+    );
+    let mut checked = 0;
+    for k in 0..=128 {
+        let t = k as f32 / 128.0;
+        let u = 1.0 - t;
+        let w = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+        let x: f32 = (0..4).map(|i| w[i] * cp[i].x.0).sum();
+        let y: f32 = (0..4).map(|i| w[i] * cp[i].y.0).sum();
+        if x >= x0 && x <= x1 {
+            // The outermost stroke's outer edge under this point.
+            let edge = y0 + (y1 - y0) * (x - x0) / (x1 - x0) + 0.25;
+            assert!(
+                y - slur.thickness.0 * 0.5 > edge,
+                "the slur over the strokes at {x}: {y} against {edge}"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "the slur spans the strokes");
+}
+
 /// The noteheads a pitched note draws, by name.
 fn glyphs_of<'a>(loaded: &Loaded, layout: &'a ResolvedLayoutIR, event: EventId) -> Vec<&'a str> {
     let Some(Event::Pitched(n)) = loaded.reduced.score.events.get(event) else {

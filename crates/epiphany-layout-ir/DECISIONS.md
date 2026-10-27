@@ -1307,6 +1307,8 @@ column's spring the padding after it.
 - A stemless member gives its column the direction its pair turns it,
   which a slur takes its side from, as MuseScore's slur reads a chord's
   direction whether or not it draws a stem (`SlurTieLayout::computeUp`,
-  `TremoloLayout::calcIsUp`); its column draws no stem and takes no ink
-  for one. A slur over other stemless notes, whole notes outside a pair,
+  `TremoloLayout::calcIsUp`), and its column reaches the strokes' outer
+  edge as a stem would, which a slur on that side clears, as MuseScore's
+  clears the tremolo's shape (`SlurTieLayout::getSegmentShape`); it draws
+  no stem. A slur over other stemless notes, whole notes outside a pair,
   still goes above.

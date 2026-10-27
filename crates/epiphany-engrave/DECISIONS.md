@@ -2479,3 +2479,13 @@ is set:
   over the heads and through the strokes
   (`a_slur_over_a_stemless_tremolo_pair_stands_away_from_its_strokes`). The
   engraver itself is unchanged.
+
+## ENGRAVER_VERSION 75 → 76: a slur clears a stemless tremolo pair's strokes (X4c.11, 2026-10-28)
+
+- A slur on the side a two-note tremolo's stemless notes turn to passes
+  over their strokes, as MuseScore's slur clears the tremolo's shape
+  (`SlurTieLayout::getSegmentShape`). A stemless note's column had reached
+  no further than its head, where a stemmed note's stem reaches the
+  strokes, so an upper voice's slur over such a pair ran through them
+  (`a_slur_on_a_stemless_tremolo_pairs_strokes_side_passes_over_them`).
+  The engraver itself is unchanged.

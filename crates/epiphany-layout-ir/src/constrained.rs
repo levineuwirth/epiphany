@@ -2595,12 +2595,15 @@ pub fn try_to_constrained(
                         // A stemless note keeps the way its pair turns it,
                         // which a slur takes its side from, as MuseScore's
                         // reads a chord's direction, its stem drawn or not
-                        // (`SlurTieLayout::computeUp`, `calcIsUp`).
-                        if !drawn {
+                        // (`SlurTieLayout::computeUp`, `calcIsUp`); and its
+                        // column reaches the strokes as a stem would, which
+                        // a slur clears, as MuseScore's clears the tremolo's
+                        // shape (`SlurTieLayout::getSegmentShape`).
+                        if drawn {
+                            ink.stem_up = Some(up);
+                        } else {
                             ink.stem_up.get_or_insert(up);
-                            continue;
                         }
-                        ink.stem_up = Some(up);
                         if up {
                             ink.top = ink.top.max(at);
                         } else {
@@ -5587,7 +5590,8 @@ struct StemSeg {
 /// it must clear, and which way its stem points.
 #[derive(Clone, Copy)]
 struct ColumnInk {
-    /// Highest and lowest ink, noteheads and stem alike, in staff spaces.
+    /// Highest and lowest ink, noteheads and stem alike, in staff spaces; a
+    /// two-note tremolo's stemless note reaches its strokes as a stem would.
     top: f32,
     bottom: f32,
     /// `Some(true)` when the column's stem is drawn and points up; `None` when
