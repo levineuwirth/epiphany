@@ -22,8 +22,8 @@ use epiphany_determinism::{DomainTag, Preimage};
 
 use crate::engrave_theory::{
     accidental_glyph, alteration_glyph, clef_glyph_for, flag_count, flag_glyph, has_stem,
-    key_alteration, key_signature, notehead_glyph, rest_glyph, stack_quarter_tones, staff_position,
-    StaffStep,
+    key_alteration, key_signature, longer_value, notehead_glyph, rest_glyph, stack_quarter_tones,
+    staff_position, StaffStep, BREVE_NOTEHEAD,
 };
 use crate::engraving::{EngravingDecision, OverrideKind, OverridePriority, OverrideTarget};
 use crate::glyph::{metrics, BravuraCatalog, GlyphCatalog, GlyphCatalogIdentity, GlyphReference};
@@ -1377,6 +1377,11 @@ pub fn try_to_constrained(
         // Accidentals in context: which accidental each pitch's first head shows.
         let shown_accidentals = context_accidentals(&region.objects);
 
+        // A two-note tremolo joins an event to the next of its voice; both are
+        // drawn at their written value ([`drawn_value`]).
+        let next_in_voice = next_in_voice(&region.objects);
+        let tremolo_members = tremolo_members(&region.objects, &next_in_voice);
+
         // Pass 1 — compute every glyph's notation, keyed for emission in pass 2,
         // and collect the distinct columns it occupies. A note/rest notated as a
         // multi-component (tied) decomposition yields one notehead/stem/rest per
@@ -1429,25 +1434,12 @@ pub fn try_to_constrained(
         // The staves whose region-closing barline is a final one (the rest
         // close on a single barline, their run continuing in a later region).
         let mut final_staves: BTreeSet<StaffId> = BTreeSet::new();
-        // Each note's and unpitched note's marks and ornaments, and each
-        // voice's events in order: a two-note tremolo joins an event to the
-        // next of its voice.
+        // Each note's and unpitched note's marks and ornaments.
         let mut mark_sources: BTreeMap<EventId, (Vec<EventMark>, Vec<Ornament>)> = BTreeMap::new();
-        let mut voice_events: BTreeMap<epiphany_core::VoiceId, Vec<EventId>> = BTreeMap::new();
-        let mut current_voice: Option<epiphany_core::VoiceId> = None;
 
         for object in &region.objects {
             let staff = object.staff();
             let yo = staff.map(&y_origin).unwrap_or(0.0);
-            match object.provenance().source {
-                TypedObjectId::Voice(voice) => current_voice = Some(voice),
-                TypedObjectId::Event(eid) => {
-                    if let Some(voice) = current_voice {
-                        voice_events.entry(voice).or_default().push(eid);
-                    }
-                }
-                _ => {}
-            }
             match (object.provenance().source, object.content()) {
                 (TypedObjectId::Event(eid), LayoutContent::Note(note)) => {
                     if !note.marks.is_empty() || !note.ornaments.is_empty() {
@@ -1468,7 +1460,10 @@ pub fn try_to_constrained(
                         let key = ColumnKey::Timed(time.clone(), ColumnRole::Note);
                         keys.insert(key.clone());
                         let clef = active_clef_or(clef_seq(staff), &time, clef_default(staff));
-                        let name = notehead_glyph(value);
+                        let (name, value) = drawn_value(
+                            value,
+                            written_longer(&tremolo_members, eid, &note.components, comp),
+                        );
                         let mut placed = Vec::with_capacity(note.pitches.len());
                         for pitch in &note.pitches {
                             let (step, missing) = spelling_step(&pitch.spelling, &clef);
@@ -1583,7 +1578,10 @@ pub fn try_to_constrained(
                         });
                         let key = ColumnKey::Timed(time, ColumnRole::Note);
                         keys.insert(key.clone());
-                        let name = notehead_glyph(value);
+                        let (name, value) = drawn_value(
+                            value,
+                            written_longer(&tremolo_members, eid, &unpitched.components, comp),
+                        );
                         let dot_y =
                             dot_positions(yo, &[step], unpitched.voice == VoicePlace::Lower)[0];
                         let heads = unpitched_heads.entry(eid).or_default();
@@ -2482,18 +2480,16 @@ pub fn try_to_constrained(
         // (`TremoloLayout::layoutTwoNotesTremolo`): as a beam of the two notes,
         // its strokes counted as beams, their stems turned as a beam group's
         // and lengthened to it (`BeamTremoloLayout::calculateAnchors`,
-        // `extendStem`); a stemless note's anchor stands where its stem would
-        // (`chordBeamAnchorX`). The strokes are that beam's levels, the first
-        // outermost and each further one `BEAM_STEP` nearer the heads, inset
-        // from each stem by `TREMOLO_STEM_GAP`, by less where they would run
-        // shorter than `TREMOLO_MIN_RUN`, but never under
-        // `TREMOLO_MIN_STEM_GAP` (`TremoloLayout::createBeamSegments`). A pair
-        // whose stems a beam already sets keeps them, its strokes the beam's
-        // further levels. Each stroke's ends ride the two notes' columns.
-        let next_in_voice: BTreeMap<EventId, EventId> = voice_events
-            .values()
-            .flat_map(|events| events.windows(2).map(|pair| (pair[0], pair[1])))
-            .collect();
+        // `extendStem`); a stemless note's anchor stands where its stem would,
+        // at its head's edge with no stem's width beside it
+        // (`chordBeamAnchorX`), and no stem is drawn to it. The strokes are
+        // that beam's levels, the first outermost and each further one
+        // `BEAM_STEP` nearer the heads, inset from each anchor by
+        // `TREMOLO_STEM_GAP`, by less where they would run shorter than
+        // `TREMOLO_MIN_RUN`, but never under `TREMOLO_MIN_STEM_GAP`
+        // (`TremoloLayout::createBeamSegments`). A pair whose stems a beam
+        // already sets keeps them, its strokes the beam's further levels. Each
+        // stroke's ends ride the two notes' columns.
         let mut tremolo_strokes: BTreeMap<EventId, TremoloStrokes> = BTreeMap::new();
         for (eid, (event_marks_of, _)) in &mark_sources {
             let Some(strokes) = event_marks_of.iter().find_map(|m| match m {
@@ -2550,6 +2546,9 @@ pub fn try_to_constrained(
             if xs[1] <= xs[0] {
                 continue;
             }
+            // A drawn stem's outer edge is half its width outside its anchor.
+            let stem_edge =
+                [segs[0], segs[1]].map(|s| if s.drawn { STEM_THICKNESS / 2.0 } else { 0.0 });
             // The outer edge of the outermost stroke, along the beam.
             let edge: Box<dyn Fn(f32) -> f32> = if segs.iter().any(|s| beamed(s)) {
                 let ends = [segs[0].end, segs[1].end];
@@ -2607,7 +2606,7 @@ pub fn try_to_constrained(
                 Box::new(move |x| edge_at(intercept, slope, x0, x))
             };
             // The strokes run between the stems' outer edges, inset.
-            let (from, to) = (xs[0] - STEM_THICKNESS / 2.0, xs[1] + STEM_THICKNESS / 2.0);
+            let (from, to) = (xs[0] - stem_edge[0], xs[1] + stem_edge[1]);
             let gap = tremolo_stem_gap(to - from);
             let (from, to) = (from + gap, to - gap);
             let lines = (0..strokes)
@@ -6524,6 +6523,96 @@ fn components_of(
     mapped
         .chain(fallback.filter(move |_| implicit))
         .take(if implicit { 1 } else { usize::MAX })
+}
+
+/// Each event's next in its voice: a region lists a voice's events after it,
+/// in order.
+fn next_in_voice(objects: &[crate::logical::LayoutObject]) -> BTreeMap<EventId, EventId> {
+    let mut voice_events: BTreeMap<epiphany_core::VoiceId, Vec<EventId>> = BTreeMap::new();
+    let mut current_voice: Option<epiphany_core::VoiceId> = None;
+    for object in objects {
+        match object.provenance().source {
+            TypedObjectId::Voice(voice) => current_voice = Some(voice),
+            TypedObjectId::Event(eid) => {
+                if let Some(voice) = current_voice {
+                    voice_events.entry(voice).or_default().push(eid);
+                }
+            }
+            _ => {}
+        }
+    }
+    voice_events
+        .values()
+        .flat_map(|events| events.windows(2).map(|pair| (pair[0], pair[1])))
+        .collect()
+}
+
+/// The members of every two-note tremolo: each note or unpitched note
+/// carrying one and the next of its voice, where that is a note too.
+fn tremolo_members(
+    objects: &[crate::logical::LayoutObject],
+    next_in_voice: &BTreeMap<EventId, EventId>,
+) -> BTreeSet<EventId> {
+    let notes: BTreeMap<EventId, &[EventMark]> = objects
+        .iter()
+        .filter_map(|object| {
+            let TypedObjectId::Event(eid) = object.provenance().source else {
+                return None;
+            };
+            match object.content() {
+                LayoutContent::Note(note) => Some((eid, note.marks.as_slice())),
+                LayoutContent::Unpitched(unpitched) => Some((eid, unpitched.marks.as_slice())),
+                _ => None,
+            }
+        })
+        .collect();
+    notes
+        .iter()
+        .filter(|(_, marks)| {
+            marks
+                .iter()
+                .any(|m| matches!(m, EventMark::TremoloWithNext { .. }))
+        })
+        .filter_map(|(eid, _)| {
+            let next = next_in_voice
+                .get(eid)
+                .filter(|next| notes.contains_key(next))?;
+            Some([*eid, *next])
+        })
+        .flatten()
+        .collect()
+}
+
+/// Whether component `comp` of `event` is drawn one value longer than it
+/// sounds: a two-note tremolo's member, decomposed and in no tuplet. A
+/// member in a tuplet is drawn as its tuplet gives it: the importer reads a
+/// tuplet's ratio from its first note's time modification, which for a
+/// pair holds the pair's 2:1 as well.
+fn written_longer(
+    members: &BTreeSet<EventId>,
+    event: EventId,
+    components: &[crate::logical::PlacedComponent],
+    comp: usize,
+) -> bool {
+    members.contains(&event)
+        && components
+            .get(comp)
+            .is_some_and(|c| c.component.tuplet.is_none())
+}
+
+/// The notehead a component is drawn with and the value its stem, flag and
+/// beams are cut by: its own, or, `longer`, its written value one longer, as
+/// MuseScore keeps a two-note tremolo's notes, its dots kept and its sounding
+/// duration unchanged (`Chord::setTremoloTwoChord`). A sounding whole is
+/// written a breve, which takes no stem or flag, as a whole takes none.
+fn drawn_value(value: NoteValue, longer: bool) -> (&'static str, NoteValue) {
+    if !longer {
+        return (notehead_glyph(value), value);
+    }
+    match longer_value(value) {
+        Some(written) => (notehead_glyph(written), written),
+        None => (BREVE_NOTEHEAD, NoteValue::Whole),
+    }
 }
 
 /// The stem direction a voice beside another gives: up for an upper voice,

@@ -1001,39 +1001,52 @@ fn tremolo_lines(layout: &ResolvedLayoutIR, event: EventId, up: bool) -> Vec<Leg
     found
 }
 
+/// A note of a two-note tremolo as MuseScore writes it: its written type, a
+/// 2:1 time modification and no tuplet, and its sounding duration (in the
+/// file's divisions), half its written value's.
+fn tremolo_note(pitch: &str, duration: u8, kind: &str, notations: &str) -> String {
+    note(pitch, duration, kind, 1, 1, notations).replacen(
+        "<staff>",
+        "<time-modification><actual-notes>2</actual-notes>\
+         <normal-notes>1</normal-notes></time-modification><staff>",
+        1,
+    )
+}
+
 /// A two-note tremolo is laid out as a beam of its two notes, as MuseScore
 /// lays it out: both stems turn the way a beam group's would and reach the
 /// outermost stroke, which runs along their ends from a space inside the
 /// first stem to a space inside the second, each further stroke 0.75 nearer
 /// the heads; the stems are as long as a beam of that many levels asks. Two
-/// whole notes' strokes stand where their stems would.
+/// whole notes' strokes stand where their stems would, at their heads'
+/// edges.
 #[test]
 fn a_two_note_tremolo_is_a_beam_inset_from_its_stems() {
     let start = "<ornaments><tremolo type=\"start\">3</tremolo></ornaments>";
     let stop = "<ornaments><tremolo type=\"stop\">3</tremolo></ornaments>";
+    let rest = note("rest", 4, "half", 1, 1, "");
     let halves = [
-        note("G4", 4, "half", 1, 1, start),
-        note("B4", 4, "half", 1, 1, stop),
+        tremolo_note("G4", 2, "half", start),
+        tremolo_note("B4", 2, "half", stop),
+        rest.clone(),
     ]
     .concat();
     let low = [
-        note("C6", 4, "half", 1, 1, start),
-        note("A5", 4, "half", 1, 1, stop),
+        tremolo_note("C6", 2, "half", start),
+        tremolo_note("A5", 2, "half", stop),
+        rest,
     ]
     .concat();
     let wholes = [
-        note("F4", 8, "whole", 1, 1, start),
-        note("A4", 8, "whole", 1, 1, stop),
-    ];
-    let loaded = part(
-        "two_note_tremolos.musicxml",
-        1,
-        &[halves, low, wholes[0].clone(), wholes[1].clone()],
-    );
+        tremolo_note("F4", 4, "whole", start),
+        tremolo_note("A4", 4, "whole", stop),
+    ]
+    .concat();
+    let loaded = part("two_note_tremolos.musicxml", 1, &[halves, low, wholes]);
     let layout = engrave(&loaded.reduced.score).layout;
     let e = events(&loaded);
 
-    for (pair, up) in [((e[0], e[1]), true), ((e[2], e[3]), false)] {
+    for (pair, up) in [((e[0], e[1]), true), ((e[3], e[4]), false)] {
         let lines = tremolo_lines(&layout, pair.0, up);
         assert_eq!(lines.len(), 3, "three strokes");
         let sign = if up { 1.0 } else { -1.0 };
@@ -1086,22 +1099,287 @@ fn a_two_note_tremolo_is_a_beam_inset_from_its_stems() {
     }
 
     // Two whole notes: no stems, the strokes standing where an up stem
-    // would end, a space inside where each would stand.
-    let lines = tremolo_lines(&layout, e[4], true);
+    // would end, a space inside where each would stand, at its head's right
+    // edge with no stem's width beside it (`chordBeamAnchorX`).
+    let lines = tremolo_lines(&layout, e[6], true);
     assert_eq!(lines.len(), 3, "three strokes");
-    let (first, second) = (head(&loaded, &layout, e[4]), head(&loaded, &layout, e[5]));
+    assert_eq!(stem_count(&layout, e[6]) + stem_count(&layout, e[7]), 0);
+    let (first, second) = (head(&loaded, &layout, e[6]), head(&loaded, &layout, e[7]));
     let ((x0, y0), (x1, y1)) = lines[0];
-    near(
-        x0,
-        first[2] - 0.06 + 1.0,
-        "a space inside the first head's right",
-    );
-    near(x1, second[2] + 0.06 - 1.0, "a space inside the second's");
+    near(x0, first[2] + 1.0, "a space inside the first head's right");
+    near(x1, second[2] - 1.0, "a space inside the second's");
     let first_y = (first[1] + first[3]) * 0.5;
     assert!(
         y0 + 0.25 >= first_y + 4.25 - 0.01 && y1 > y0 - 1.0,
         "{y0} over {first_y}"
     );
+}
+
+/// How many stems `event` draws.
+fn stem_count(layout: &ResolvedLayoutIR, event: EventId) -> usize {
+    layout
+        .strokes
+        .iter()
+        .filter(|s| {
+            s.provenance.source == TypedObjectId::Event(event)
+                && s.from.x == s.to.x
+                && s.from.y != s.to.y
+                && !is_beam_stroke(s)
+        })
+        .count()
+}
+
+/// Each note of a two-note tremolo is drawn at its written value, as
+/// MuseScore keeps it (`Chord::setTremoloTwoChord`): one value longer than
+/// it sounds, its dots kept, so a pair the file writes as halves at a 2:1
+/// time modification draws hollow heads on stems, as wholes stemless heads,
+/// as dotted halves dotted hollow heads, as quarters black heads with no
+/// beam to read a mark against, and as breves breves; its sounding
+/// duration, and the spacing by it, are unchanged, each head standing where
+/// the plain quarters the pair sounds as stand. A pair in a tuplet is drawn
+/// as its tuplet gives it, the importer having read the tuplet's ratio from
+/// a time modification holding the pair's 2:1 too; and a note marked to
+/// start a tremolo with no note after it in its voice keeps its value.
+#[test]
+fn a_two_note_tremolos_notes_are_drawn_at_their_written_value() {
+    let start = "<ornaments><tremolo type=\"start\">3</tremolo></ornaments>";
+    let stop = "<ornaments><tremolo type=\"stop\">3</tremolo></ornaments>";
+    // In 4/4, four divisions to the quarter.
+    let halves = |start: &str, stop: &str| {
+        [
+            tremolo_note("G4", 4, "half", start),
+            tremolo_note("B4", 4, "half", stop),
+            // A pair of quarters in a tuplet of two eighths in the time of
+            // three, as MuseScore writes it: 4:3, the tuplet's 2:3 and the
+            // pair's 2:1, each sounding three sixteenths.
+            note(
+                "D5",
+                3,
+                "quarter",
+                1,
+                1,
+                &format!("<tuplet type=\"start\"/>{start}"),
+            )
+            .replacen(
+                "<staff>",
+                "<time-modification><actual-notes>4</actual-notes>\
+                     <normal-notes>3</normal-notes></time-modification><staff>",
+                1,
+            ),
+            note(
+                "F5",
+                3,
+                "quarter",
+                1,
+                1,
+                &format!("<tuplet type=\"stop\"/>{stop}"),
+            )
+            .replacen(
+                "<staff>",
+                "<time-modification><actual-notes>4</actual-notes>\
+                     <normal-notes>3</normal-notes></time-modification><staff>",
+                1,
+            ),
+            note("rest", 2, "eighth", 1, 1, ""),
+        ]
+        .concat()
+    };
+    let rest = |duration: u8, kind: &str| note("rest", duration, kind, 1, 1, "");
+    let measures = |start: &str, stop: &str| {
+        vec![
+            halves(start, stop),
+            [
+                tremolo_note("F4", 8, "whole", start),
+                tremolo_note("A4", 8, "whole", stop),
+            ]
+            .concat(),
+            [
+                tremolo_note("A4", 6, "half", start).replacen("</type>", "</type><dot/>", 1),
+                tremolo_note("C5", 6, "half", stop).replacen("</type>", "</type><dot/>", 1),
+                rest(4, "quarter"),
+            ]
+            .concat(),
+            [
+                tremolo_note("D5", 4, "half", start),
+                rest(4, "quarter"),
+                rest(8, "half"),
+            ]
+            .concat(),
+            [
+                tremolo_note(
+                    "G4",
+                    2,
+                    "quarter",
+                    &format!("{start}<articulations><strong-accent/></articulations>"),
+                ),
+                tremolo_note("B4", 2, "quarter", stop),
+                rest(4, "quarter"),
+                rest(8, "half"),
+            ]
+            .concat(),
+        ]
+    };
+    let loaded = part_in(
+        "two_note_tremolo_values.musicxml",
+        1,
+        4,
+        &measures(start, stop),
+    );
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let drawn = |event: EventId| glyphs_of(&loaded, &layout, event);
+    let dots = |event: EventId| -> usize {
+        let Some(Event::Pitched(n)) = loaded.reduced.score.events.get(event) else {
+            panic!("a note");
+        };
+        layout
+            .glyphs
+            .iter()
+            .filter(|g| {
+                g.glyph.as_str() == "augmentationDot"
+                    && (g.provenance.source == TypedObjectId::Event(event)
+                        || matches!(&g.provenance.source, TypedObjectId::Pitch(p) if n.pitches.iter().any(|q| q.id == *p)))
+            })
+            .count()
+    };
+    // Written halves: hollow heads, each on a stem.
+    for event in [e[0], e[1]] {
+        assert_eq!(drawn(event), ["noteheadHalf"], "a written half");
+        assert_eq!(stem_count(&layout, event), 1, "on a stem");
+    }
+    // In a tuplet: the quarters the tuplet gives.
+    for event in [e[2], e[3]] {
+        assert_eq!(drawn(event), ["noteheadBlack"], "a tuplet's quarter");
+        assert_eq!(stem_count(&layout, event), 1, "on a stem");
+    }
+    // Written wholes: stemless whole heads.
+    for event in [e[5], e[6]] {
+        assert_eq!(drawn(event), ["noteheadWhole"], "a written whole");
+        assert_eq!(stem_count(&layout, event), 0, "no stem");
+    }
+    // Written dotted halves: dotted hollow heads.
+    for event in [e[7], e[8]] {
+        assert_eq!(drawn(event), ["noteheadHalf"], "a written dotted half");
+        assert_eq!(dots(event), 1, "its dot kept");
+    }
+    // No note after it in its voice: its own value, a quarter.
+    assert_eq!(drawn(e[10]), ["noteheadBlack"], "no pair, no written value");
+    assert_eq!(
+        tremolo_lines(&layout, e[10], true).len(),
+        0,
+        "and no strokes"
+    );
+    // Written quarters: black heads on stems, unflagged and unbeamed, so a
+    // marcato over the first stands 0.4 past its stem's end, as over any
+    // unbeamed stem, not past a beam's edge.
+    for event in [e[13], e[14]] {
+        assert_eq!(drawn(event), ["noteheadBlack"], "a written quarter");
+        assert_eq!(stem_count(&layout, event), 1, "on a stem");
+        assert!(glyphs(&layout, event, "flag8thUp").is_empty(), "no flag");
+    }
+    let marcato = the_glyph(&layout, e[13], "articMarcatoAbove");
+    near(
+        marcato[1],
+        stem(&layout, e[13]).2 + 0.4,
+        "the marcato's bottom",
+    );
+
+    // Spacing by the sounding duration: the written halves stand where the
+    // plain quarters the pair sounds as stand, their heads as wide.
+    let plain = part_in(
+        "two_note_tremolo_values_plain.musicxml",
+        1,
+        4,
+        &measures("", ""),
+    );
+    let plain_layout = engrave(&plain.reduced.score).layout;
+    let p = events(&plain);
+    for (event, plain_event) in [(e[0], p[0]), (e[1], p[1]), (e[4], p[4])] {
+        let at = |loaded: &Loaded, layout: &ResolvedLayoutIR, event: EventId| match loaded
+            .reduced
+            .score
+            .events
+            .get(event)
+        {
+            Some(Event::Pitched(_)) => head(loaded, layout, event)[0],
+            _ => layout
+                .glyphs
+                .iter()
+                .find(|g| g.provenance.source == TypedObjectId::Event(event))
+                .map(|g| glyph_box(g)[0])
+                .expect("a rest's glyph"),
+        };
+        near(
+            at(&loaded, &layout, event),
+            at(&plain, &plain_layout, plain_event),
+            "where the plain quarters stand",
+        );
+    }
+
+    // Sounding wholes in 4/2 are written breves; a percussion staff's pair
+    // of written halves draws hollow heads too.
+    let unpitched = |step: &str, notations: &str| {
+        format!(
+            "<note><unpitched><display-step>{step}</display-step>\
+             <display-octave>4</display-octave></unpitched><duration>4</duration>\
+             <voice>1</voice><type>half</type><time-modification><actual-notes>2</actual-notes>\
+             <normal-notes>1</normal-notes></time-modification><staff>1</staff>\
+             <notations>{notations}</notations></note>"
+        )
+    };
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part><score-part id=\"P2\"><part-name>B</part-name>\
+         </score-part></part-list>\
+         <part id=\"P1\"><measure number=\"1\"><attributes><divisions>4</divisions><time>\
+         <beats>4</beats><beat-type>2</beat-type></time><clef><sign>G</sign><line>2</line>\
+         </clef></attributes>{}{}</measure></part>\
+         <part id=\"P2\"><measure number=\"1\"><attributes><divisions>4</divisions><time>\
+         <beats>4</beats><beat-type>2</beat-type></time><clef><sign>percussion</sign></clef>\
+         </attributes>{}{}{}</measure></part></score-partwise>",
+        tremolo_note("G4", 16, "breve", start),
+        tremolo_note("B4", 16, "breve", stop),
+        unpitched("C", start),
+        unpitched("E", stop),
+        note("rest", 24, "whole", 1, 1, "").replacen("</type>", "</type><dot/>", 1),
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("two_note_tremolo_breves.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let breves = load(&path).expect("loads");
+    assert!(breves.fidelity.passed(), "{:#?}", breves.fidelity.failures);
+    let layout = engrave(&breves.reduced.score).layout;
+    for event in breves.import.ids.events[0].iter().copied() {
+        assert_eq!(
+            glyphs_of(&breves, &layout, event),
+            ["noteheadDoubleWhole"],
+            "a written breve"
+        );
+        assert_eq!(stem_count(&layout, event), 0, "no stem");
+    }
+    for event in breves.import.ids.events[1].iter().copied().take(2) {
+        assert_eq!(
+            glyphs(&layout, event, "noteheadHalf").len(),
+            1,
+            "an unpitched written half"
+        );
+        assert_eq!(stem_count(&layout, event), 1, "on a stem");
+    }
+}
+
+/// The noteheads a pitched note draws, by name.
+fn glyphs_of<'a>(loaded: &Loaded, layout: &'a ResolvedLayoutIR, event: EventId) -> Vec<&'a str> {
+    let Some(Event::Pitched(n)) = loaded.reduced.score.events.get(event) else {
+        panic!("a note");
+    };
+    layout
+        .glyphs
+        .iter()
+        .filter(|g| {
+            matches!(&g.provenance.source, TypedObjectId::Pitch(p) if n.pitches.iter().any(|q| q.id == *p))
+                && g.glyph.as_str().starts_with("notehead")
+        })
+        .map(|g| g.glyph.as_str())
+        .collect()
 }
 
 /// A mark past the end of a stem meeting a beam across two staves stands

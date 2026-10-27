@@ -1280,3 +1280,27 @@ column's spring the padding after it.
   an arrow, which reaches past the turned wiggle's edge, ends at the
   arpeggio's right edge too, as MuseScore sets the arpeggio's whole width
   left of its gap.
+
+## Two-note tremolo values (X4c.11, 2026-10-27)
+
+- A two-note tremolo's notes, the note carrying it and the next of its
+  voice where that is a note too, are drawn at their written value, as
+  MuseScore keeps them (`Chord::setTremoloTwoChord`: each chord's duration
+  type is the one its ticks give, one longer, its dots kept, its ticks
+  unchanged): the head, stem, flag and beams of the value one longer than
+  the pre-pass's component, the component and the spacing by it unchanged.
+  A sounding whole is written a breve, `noteheadDoubleWhole`, which takes no
+  stem or flag, as a whole takes none (`Chord::shouldHaveStem`). The model
+  holds no written value: MuseScore exports a pair at its written type with
+  a 2:1 time modification and no tuplet, and the importer keeps the sounding
+  duration.
+- A member in a tuplet is drawn as its tuplet gives it. The importer reads
+  a tuplet's ratio from its first note's time modification, which for a
+  pair holds the pair's 2:1 as well as the tuplet's own, so the pre-pass's
+  component is already the written value. A pair in a tuplet whose first
+  note is not the pair's would read the tuplet's own ratio and draw at its
+  sounding value.
+- A stemless member's strokes are inset from its head's edge, with no
+  stem's width beside it, as MuseScore's `chordBeamAnchorX` gives a chord
+  with no stem the stem's position alone; a stemmed member's are inset from
+  its stem's outer edge, as before.

@@ -2456,3 +2456,15 @@ is set:
   ledger line its gap clears
   (`an_arpeggio_stands_clear_of_its_chords_ledger_lines`). The engraver
   itself is unchanged.
+
+## ENGRAVER_VERSION 73 → 74: a two-note tremolo's notes at their written value (X4c.11, 2026-10-27)
+
+- Each note of a two-note tremolo is drawn at its written value, one value
+  longer than it sounds and its dots kept, as MuseScore keeps the pair
+  (`Chord::setTremoloTwoChord`): its head, stem, flag and beams by that
+  value, its sounding duration and the spacing by it unchanged. A pair
+  MuseScore writes as halves at a 2:1 time modification had drawn as
+  quarters, and as wholes as halves on stems; a sounding whole is written a
+  breve (`a_two_note_tremolos_notes_are_drawn_at_their_written_value`). A
+  stemless note's strokes are inset from its head's edge, with no stem's
+  width beside it (`chordBeamAnchorX`). The engraver itself is unchanged.
