@@ -1213,7 +1213,11 @@ cross-cutting structures names: a meter change of a region's own model, its
 grid or a staff instance's grid, a measure's start, a region's extent, or a
 clef or key change a staff instance's creation carried (the core
 specification's re-anchoring rule table, \emph{hold}); a user break is
-excepted, staying keyed by its anchor.
+excepted, staying keyed by its anchor. A region's grid is read as
+reduction's chains keep it, and a migration out of musical time drops the
+grid from the graph but not from the chains, so a note such a grid named
+stays held though nothing in the graph names it: the refusal is
+conservative.
 
 \textbf{Undo semantics.} An insert-shaped compensation re-introduces the
 tombstoned content; for the prototype's minted-object model this is the inverse

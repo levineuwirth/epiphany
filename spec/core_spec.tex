@@ -6875,10 +6875,12 @@ The score graph maintains a set of structural invariants. Implementations
         \item \texttt{Score.voice\_homes} --- declared staff, extant voice.
       \end{itemize}
       The surface holds every time anchor invariant~9 reads but a user
-      break's: a break whose event or measure a later delete removes stays
+      break's: a break whose event a later delete or undo removes stays
       keyed by its anchor and draws nothing (Operation Catalog,
       \texttt{SetUserSystemBreak}), a transient dangling state the
-      re-anchoring rules permit. A meter change's anchor and a spelling
+      re-anchoring rules permit. No operation deletes a measure, and an
+      undo that would remove one a present break names is held (Operation
+      Catalog, \texttt{CreateMeasure}). A meter change's anchor and a spelling
       range's ends are anchor targets beside the time signature a meter change
       names.
     \item Every identifier in the graph is unique within its kind.
@@ -8676,9 +8678,17 @@ table is normative.
   carried. A holder the referent owns, or the same undo removes, holds
   nothing (reduction algorithm version~\texttt{5}) \\
 
-  User break & Anchor event or measure &
+  User break & Anchor event &
   No action &
-  the break stays keyed by its anchor and draws nothing \\
+  the break stays keyed by its anchor and draws nothing when its event's
+  delete or an undo removes the event \\
+
+  User break & Anchor measure &
+  Hold against an undo &
+  no operation deletes a measure; an undo that would remove one a present
+  system or page break names conflicts under \texttt{StrictInverse} and
+  \texttt{Cascade} and keeps it under \texttt{BestEffort}, as the
+  Operation Catalog's \texttt{CreateMeasure} undo reads \\
 
   Comment & Anchor &
   Orphan &
@@ -17459,7 +17469,9 @@ layouts they own versus inherit:
   held against an undo, and a member's cascade carries a tuplet's children.
   \texttt{req:time:tempo-segment-order} states the key reduction gives a
   tempo segment, and that a map keeps one segment per key, a region created
-  carrying two refused.
+  carrying two refused. The rule table's user-break rows and invariant~10's
+  paragraph say what the catalog does: a break leaves its event's removal
+  alone, and a present break holds its measure against an undo.
   \\
   \bottomrule
 \end{longtable}
