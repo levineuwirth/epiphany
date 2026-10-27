@@ -217,7 +217,9 @@ pub fn omissions(
 
     // A two-note tremolo's strokes are its two notes' beam, as MuseScore
     // draws the pair: once its first stroke is drawn, the note carrying it and
-    // the next of its voice, as the layout pairs them, need no flag.
+    // the next of its voice, as the layout pairs them, need no flag. Drawn or
+    // not, the pair's notes, the next a note too, are written one value
+    // longer than they sound (below).
     let strokes_drawn: BTreeSet<epiphany_layout_ir::LayoutObjectId> = layout
         .strokes
         .iter()
@@ -235,6 +237,7 @@ pub fn omissions(
         }
     }
     let mut tremolo_beamed: BTreeSet<epiphany_core::EventId> = BTreeSet::new();
+    let mut tremolo_members: BTreeSet<epiphany_core::EventId> = BTreeSet::new();
     for events in voices.values_mut() {
         events.sort();
         for pair in events.windows(2) {
@@ -244,11 +247,19 @@ pub fn omissions(
                 Some(Event::Unpitched(u)) => &u.marks,
                 _ => continue,
             };
-            if marks
+            if !marks
                 .iter()
                 .any(|m| matches!(m, EventMark::TremoloWithNext { .. }))
-                && strokes_drawn.contains(&NoteMarkPart::TremoloStroke(0).id(first))
             {
+                continue;
+            }
+            if matches!(
+                score.events.get(next),
+                Some(Event::Pitched(_) | Event::Unpitched(_))
+            ) {
+                tremolo_members.extend([first, next]);
+            }
+            if strokes_drawn.contains(&NoteMarkPart::TremoloStroke(0).id(first)) {
                 tremolo_beamed.extend([first, next]);
             }
         }
@@ -302,6 +313,15 @@ pub fn omissions(
         for member in &tuplet.members {
             written_scale.insert(*member, scale.clone());
         }
+    }
+    // A two-note tremolo's notes are written one value longer than they
+    // sound, their dots kept (MuseScore's `Chord::setTremoloTwoChord`): at
+    // twice their span, but in a tuplet, whose ratio the importer reads from
+    // a time modification holding the pair's 2:1 already.
+    for member in tremolo_members {
+        written_scale
+            .entry(member)
+            .or_insert_with(|| RationalTime::from_int(2));
     }
 
     // Events, by what their durations and contents call for.

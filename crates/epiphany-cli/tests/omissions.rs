@@ -316,17 +316,17 @@ fn a_tuplet_member_is_read_at_its_written_value() {
 }
 
 /// A two-note tremolo's strokes are its two notes' beam, as MuseScore draws
-/// the pair: two quarters written with a 2:1 time modification and no tuplet,
-/// as MuseScore exports them, sound as eighths, and need no flag of their own
-/// while the strokes are drawn; with the strokes taken away, each is counted.
-/// The score names its beams (a beamed pair of eighths after the tremolo), so
-/// the tremolo's notes are beamed by none.
+/// the pair: two eighths written with a 2:1 time modification and no tuplet,
+/// as MuseScore exports them, sound as sixteenths, and need no flag of their
+/// own while the strokes are drawn; with the strokes taken away, each is
+/// counted. The score names its beams (a beamed pair of eighths after the
+/// tremolo), so the tremolo's notes are beamed by none.
 #[test]
 fn a_two_note_tremolos_strokes_are_its_notes_beam() {
     let member = |step: &str, kind: &str| {
         format!(
             "<note><pitch><step>{step}</step><octave>5</octave></pitch>\
-             <duration>2</duration><voice>1</voice><type>quarter</type>\
+             <duration>1</duration><voice>1</voice><type>eighth</type>\
              <time-modification><actual-notes>2</actual-notes>\
              <normal-notes>1</normal-notes></time-modification><notations><ornaments>\
              <tremolo type=\"{kind}\">3</tremolo></ornaments></notations></note>"
@@ -339,7 +339,8 @@ fn a_two_note_tremolos_strokes_are_its_notes_beam() {
              <beam number=\"1\">{beam}</beam></note>"
         )
     };
-    let rest = "<note><rest/><duration>8</duration><voice>1</voice><type>half</type></note>";
+    let rest = "<note><rest/><duration>2</duration><voice>1</voice><type>eighth</type></note>\
+                <note><rest/><duration>8</duration><voice>1</voice><type>half</type></note>";
     let xml = format!(
         "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
          </part-name></score-part></part-list><part id=\"P1\">\
@@ -381,6 +382,85 @@ fn a_two_note_tremolos_strokes_are_its_notes_beam() {
     }
     assert_eq!(strokes(&engraved), 0);
     assert_eq!(count(&loaded, &engraved, "flag or beam"), 2);
+}
+
+/// A two-note tremolo's notes are read at their written value, one longer
+/// than they sound, as MuseScore keeps them and the engraver draws them: a
+/// pair of halves and a pair of dotted halves, written with a 2:1 time
+/// modification and no tuplet, count no notehead of another value, nor a
+/// missing dot, while their hollow heads are drawn; drawn at their sounding
+/// value instead, black, each head is counted. A pair a tuplet holds is read
+/// at the tuplet's value, whose ratio holds the pair's 2:1 already; a note
+/// marked to start a tremolo with a rest after it in its voice, and the
+/// rest, at their own.
+#[test]
+fn a_two_note_tremolos_notes_are_read_at_their_written_value() {
+    let member = |step: &str, duration: u8, kind: &str, ratio: (u8, u8), notations: &str| {
+        format!(
+            "<note><pitch><step>{step}</step><octave>4</octave></pitch>\
+             <duration>{duration}</duration><voice>1</voice><type>{kind}</type>\
+             <time-modification><actual-notes>{}</actual-notes>\
+             <normal-notes>{}</normal-notes></time-modification><notations>{notations}\
+             </notations></note>",
+            ratio.0, ratio.1
+        )
+    };
+    let start = "<ornaments><tremolo type=\"start\">3</tremolo></ornaments>";
+    let stop = "<ornaments><tremolo type=\"stop\">3</tremolo></ornaments>";
+    let rest = |duration: u8, kind: &str| {
+        format!("<note><rest/><duration>{duration}</duration><voice>1</voice><type>{kind}</type></note>")
+    };
+    let dotted = |xml: String| xml.replacen("</type>", "</type><dot/>", 1);
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\">\
+         <measure number=\"1\"><attributes><divisions>4</divisions><time><beats>4</beats>\
+         <beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef>\
+         </attributes>{}{}{}{}{}</measure><measure number=\"2\">{}{}{}</measure>\
+         <measure number=\"3\">{}{}{}</measure></part></score-partwise>",
+        member("G", 4, "half", (2, 1), start),
+        member("B", 4, "half", (2, 1), stop),
+        member(
+            "D",
+            3,
+            "quarter",
+            (4, 3),
+            &format!("<tuplet type=\"start\"/>{start}")
+        ),
+        member(
+            "F",
+            3,
+            "quarter",
+            (4, 3),
+            &format!("<tuplet type=\"stop\"/>{stop}")
+        ),
+        rest(2, "eighth"),
+        dotted(member("A", 6, "half", (2, 1), start)),
+        dotted(member("C", 6, "half", (2, 1), stop)),
+        rest(4, "quarter"),
+        member("E", 4, "quarter", (1, 1), start),
+        rest(4, "quarter"),
+        rest(8, "half"),
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("tremolo_values.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let mut engraved = engrave(&loaded.reduced.score);
+    assert_eq!(count(&loaded, &engraved, "notehead of another value"), 0);
+    assert_eq!(count(&loaded, &engraved, "augmentation dot"), 0);
+    assert_eq!(count(&loaded, &engraved, "rest drawn at another value"), 0);
+
+    // Drawn at their sounding value: four black heads where hollow ones are
+    // written.
+    let mut blackened = 0;
+    for g in &mut engraved.layout.glyphs {
+        if g.glyph.as_str() == "noteheadHalf" {
+            g.glyph = GlyphReference::owned("noteheadBlack");
+            blackened += 1;
+        }
+    }
+    assert_eq!(blackened, 4);
+    assert_eq!(count(&loaded, &engraved, "notehead of another value"), 4);
 }
 
 /// Every mark of a note and every fermata, breath mark and caesura the
