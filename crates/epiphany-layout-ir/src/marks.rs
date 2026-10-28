@@ -42,6 +42,11 @@ const LEDGER_LINE_LENGTH: f32 = 0.33;
 pub(super) const ARPEGGIO_WIGGLE_STEP: f32 = 1.02;
 /// The gap between a jazz mark and the head it leaves or approaches.
 const JAZZ_GAP: f32 = 0.2;
+/// How much further from its head a close mark set from it stands where a
+/// tie leaves room: a staccato and a tenuto
+/// (`staccatoAdditionalTieDistance`, `tenutoAdditionalTieDistance`).
+const STACCATO_TIE_DISTANCE: f32 = 0.4;
+const TENUTO_TIE_DISTANCE: f32 = 0.6;
 
 /// What a chord holds that its marks are placed by: its first component's
 /// stem and heads, its voice's place, and its staff.
@@ -60,6 +65,11 @@ pub(super) struct Chord<'a> {
     pub beamed: bool,
     /// A head of it draws an accidental.
     pub accidentals: bool,
+    /// A tie leaves or reaches its highest head arcing above, or its lowest
+    /// arcing below: a close mark on that side leaves the tie room
+    /// (`ChordLayout::leaveSpaceForTie`).
+    pub tie_above: bool,
+    pub tie_below: bool,
 }
 
 /// One placed mark glyph: which of the chord's marks it draws (its wire
@@ -392,6 +402,19 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
         let h = b.top.0 - b.bottom.0;
         let head_side = m.above != seg.up || !seg.drawn;
         let x = centred(m.name, centre_x(chord, !head_side));
+        // A tie on the mark's side leaves room: in the staff a head in a
+        // space sets the mark a line further out; set from the head, it
+        // stands further off by its kind.
+        let tied = if m.above {
+            chord.tie_above
+        } else {
+            chord.tie_below
+        };
+        let tie_distance = match (tied, m.tag == EventMark::Staccato.tag()) {
+            (false, _) => 0.0,
+            (true, true) => STACCATO_TIE_DISTANCE,
+            (true, false) => TENUTO_TIE_DISTANCE,
+        };
         let y_bottom = if m.above {
             let previous = close_edge_above;
             let bottom = if head_side {
@@ -400,9 +423,12 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
                     line = line.min(1 + close_above * 2);
                 }
                 if line > 1 {
+                    if tied && line % 2 != 0 {
+                        line -= 1;
+                    }
                     at_index(chord, ((line + 1) & !1) - 3) - h * 0.5
                 } else {
-                    head_top + PROPERTY_DISTANCE
+                    head_top + PROPERTY_DISTANCE + tie_distance
                 }
             } else {
                 stem_side_above(chord, h)
@@ -422,9 +448,12 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
                     line = line.max(8 - (1 + close_below * 2));
                 }
                 if line < 7 {
+                    if tied && line % 2 != 0 {
+                        line += 1;
+                    }
                     at_index(chord, (line & !1) + 3) + h * 0.5
                 } else {
-                    head_bottom - PROPERTY_DISTANCE
+                    head_bottom - PROPERTY_DISTANCE - tie_distance
                 }
             } else {
                 stem_side_below(chord, h)

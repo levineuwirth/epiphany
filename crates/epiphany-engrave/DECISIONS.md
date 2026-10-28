@@ -2489,3 +2489,13 @@ is set:
   strokes, so an upper voice's slur over such a pair ran through them
   (`a_slur_on_a_stemless_tremolo_pairs_strokes_side_passes_over_them`).
   The engraver itself is unchanged.
+
+## ENGRAVER_VERSION 76 → 77: a close mark leaves its note's tie room (X4c fix round 1, 2026-10-28)
+
+- A staccato or tenuto on the side a tie leaves or reaches its note's outer
+  head stands clear of the tie, as MuseScore's `leaveSpaceForTie` sets it:
+  a line further out in the staff where its head stands in a space, and 0.4
+  further for a staccato and 0.6 for a tenuto where it is set from the
+  head. It had stood where it stands on an untied note
+  (`a_close_mark_leaves_its_notes_tie_room`). The engraver itself is
+  unchanged.

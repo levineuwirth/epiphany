@@ -1312,3 +1312,20 @@ column's spring the padding after it.
   clears the tremolo's shape (`SlurTieLayout::getSegmentShape`); it draws
   no stem. A slur over other stemless notes, whole notes outside a pair,
   still goes above.
+
+## Placement by MuseScore's rules, after review (X4c fix round 1, 2026-10-28)
+
+- A staccato or tenuto on the side a tie leaves or reaches its note leaves
+  the tie room, as `ChordLayout::layoutArticulations` does
+  (`leaveSpaceForTie`, `chordlayout.cpp` 3330 to 3349): set in the staff by
+  its head's line, a head in a space sets it a line further out (921, 983);
+  set from the head, it stands 0.4 further for a staccato and 0.6 for a
+  tenuto (`staccatoAdditionalTieDistance`, `tenutoAdditionalTieDistance`,
+  800 and 801). A tie counts where it leaves or reaches the chord's outer
+  head on the mark's side and arcs on that side, as the ties are drawn
+  (`tie_above`): a tie to the next event, one arriving from the event
+  before, and one the pre-pass's decomposition draws between the note's
+  own first two components. MuseScore's default tie placement, outside the
+  chord (`tiePlacementChord`, `tiePlacementSingleNote`), is assumed, so no
+  tie is an inside one. On the stem's side a close mark stands as before,
+  as MuseScore's does.

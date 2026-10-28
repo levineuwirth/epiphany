@@ -404,6 +404,202 @@ fn marks_stand_on_their_side_of_a_note_alone() {
     near(trill[1], stem(&layout, e[4]).2 + 0.4, "trill's bottom");
 }
 
+/// `note` starting or stopping a tie (`kind`), with `notations` beside its
+/// `<tied>`.
+fn tied_note(pitch: &str, kind: &str, notations: &str) -> String {
+    note(
+        pitch,
+        2,
+        "quarter",
+        1,
+        1,
+        &format!("<tied type=\"{kind}\"/>{notations}"),
+    )
+    .replacen(
+        "</duration>",
+        &format!("</duration><tie type=\"{kind}\"/>"),
+        1,
+    )
+}
+
+/// A staccato or tenuto on the side a tie leaves or reaches its note leaves
+/// the tie room, as `ChordLayout::layoutArticulations` does
+/// (`leaveSpaceForTie`): in the staff, over or under a head in a space, a
+/// line further out; set from a head in the staff's outer space, 0.4 further
+/// for a staccato and 0.6 for a tenuto. A head on a line keeps its mark's
+/// place, and so does a chord whose tie leaves an inner note.
+#[test]
+fn a_close_mark_leaves_its_notes_tie_room() {
+    let marks = |mark: &str| format!("<articulations><{mark}/></articulations>");
+    let marked = |pitch: &str, mark: &str| note(pitch, 2, "quarter", 1, 1, &marks(mark));
+    let four = |pitch: &str| {
+        [
+            tied_note(pitch, "start", &marks("staccato")),
+            tied_note(pitch, "stop", &marks("tenuto")),
+            marked(pitch, "staccato"),
+            marked(pitch, "tenuto"),
+        ]
+        .concat()
+    };
+    let controls = [
+        tied_note("B4", "start", &marks("tenuto")),
+        tied_note("B4", "stop", ""),
+        marked("B4", "tenuto"),
+        tied_note("C5", "start", ""),
+        chord("E5", 2, "quarter", 1, 1, &marks("tenuto")),
+    ]
+    .concat();
+    let last = [
+        tied_note("C5", "stop", ""),
+        chord("E5", 2, "quarter", 1, 1, ""),
+        note("C5", 2, "quarter", 1, 1, ""),
+        chord("E5", 2, "quarter", 1, 1, &marks("tenuto")),
+        note("rest", 4, "half", 1, 1, ""),
+    ]
+    .concat();
+    // A note five eighths long, which the engraver writes as a half tied to
+    // an eighth once it carries no written value of its own, as a note the
+    // editor enters may not.
+    let split = [
+        note("C5", 5, "half", 1, 1, &marks("staccato")).replacen("<type>half</type>", "", 1),
+        note("rest", 1, "eighth", 1, 1, ""),
+        note("rest", 2, "quarter", 1, 1, ""),
+    ]
+    .concat();
+    // A tie arriving from a beamed C5 whose stem the beam turns up, so the
+    // tie arcs below, at a C5 alone whose tenuto stands above.
+    let beam = |n: String, kind: &str| {
+        n.replacen(
+            "</type>",
+            &format!("</type><beam number=\"1\">{kind}</beam>"),
+            1,
+        )
+    };
+    let turned = [
+        beam(note("G4", 1, "eighth", 1, 1, ""), "begin"),
+        beam(
+            note("C5", 1, "eighth", 1, 1, "<tied type=\"start\"/>").replacen(
+                "</duration>",
+                "</duration><tie type=\"start\"/>",
+                1,
+            ),
+            "end",
+        ),
+        tied_note("C5", "stop", &marks("tenuto")),
+        note("rest", 4, "half", 1, 1, ""),
+    ]
+    .concat();
+    let loaded = part(
+        "marks_tied.musicxml",
+        1,
+        &[
+            four("C5"),
+            four("E5"),
+            four("A4"),
+            four("F4"),
+            controls,
+            last,
+            split,
+            turned,
+        ],
+    );
+    let e = events(&loaded);
+    let mut score = loaded.reduced.score.clone();
+    score
+        .decomposition_attachments
+        .retain(|att| att.target != e[23]);
+    let layout = engrave(&score).layout;
+    let centre = |ink: Ink| (ink[1] + ink[3]) * 0.5;
+
+    // C5, stem down, in the third space: untied, each mark centred in the top
+    // space, a space over the head; tied, in the space over the top line.
+    for (i, name) in [(0, "articStaccatoAbove"), (1, "articTenutoAbove")] {
+        let tied = the_glyph(&layout, e[i], name);
+        let plain = the_glyph(&layout, e[i + 2], name);
+        let c5 = centre(head(&loaded, &layout, e[i]));
+        near(centre(plain), c5 + 1.0, "an untied mark over C5");
+        near(centre(tied), c5 + 2.0, "a tied mark over C5");
+    }
+
+    // E5 in the top space: set from the head, 0.4 off it untied, and 0.4
+    // further for a staccato and 0.6 for a tenuto tied.
+    for (i, name, more) in [(4, "articStaccatoAbove", 0.4), (5, "articTenutoAbove", 0.6)] {
+        let tied = the_glyph(&layout, e[i], name);
+        let plain = the_glyph(&layout, e[i + 2], name);
+        let plain_top = head(&loaded, &layout, e[i + 2])[3];
+        near(plain[1], plain_top + 0.4, "an untied mark over E5");
+        let top = head(&loaded, &layout, e[i])[3];
+        near(tied[1], top + 0.4 + more, "a tied mark over E5");
+    }
+
+    // A4, stem up, in the second space: untied, centred in the bottom space,
+    // a space under the head; tied, in the space under the bottom line.
+    for (i, name) in [(8, "articStaccatoBelow"), (9, "articTenutoBelow")] {
+        let tied = the_glyph(&layout, e[i], name);
+        let plain = the_glyph(&layout, e[i + 2], name);
+        let a4 = centre(head(&loaded, &layout, e[i]));
+        near(centre(plain), a4 - 1.0, "an untied mark under A4");
+        near(centre(tied), a4 - 2.0, "a tied mark under A4");
+    }
+
+    // F4 in the bottom space: set from the head, further by the mark's kind.
+    for (i, name, more) in [
+        (12, "articStaccatoBelow", 0.4),
+        (13, "articTenutoBelow", 0.6),
+    ] {
+        let tied = the_glyph(&layout, e[i], name);
+        let plain = the_glyph(&layout, e[i + 2], name);
+        let plain_bottom = head(&loaded, &layout, e[i + 2])[1];
+        near(plain[3], plain_bottom - 0.4, "an untied mark under F4");
+        let bottom = head(&loaded, &layout, e[i])[1];
+        near(tied[3], bottom - 0.4 - more, "a tied mark under F4");
+    }
+
+    // B4 on the middle line keeps its tenuto in the top space, tied or not.
+    let tied = the_glyph(&layout, e[16], "articTenutoAbove");
+    let plain = the_glyph(&layout, e[18], "articTenutoAbove");
+    let middle = centre(head(&loaded, &layout, e[18]));
+    near(centre(plain), middle + 1.5, "an untied tenuto over B4");
+    near(centre(tied), centre(plain), "a tied tenuto over B4");
+
+    // A chord whose tie leaves its lower note, C5: its outer head above, E5,
+    // has none, so its tenuto stands as an untied chord's.
+    let tied = the_glyph(&layout, e[19], "articTenutoAbove");
+    let plain = the_glyph(&layout, e[21], "articTenutoAbove");
+    let top = |event: EventId| heads(&loaded, &layout, event)[1][3];
+    near(
+        tied[1] - top(e[19]),
+        plain[1] - top(e[21]),
+        "the tenuto over a chord tied within",
+    );
+
+    // The note written as a half tied to an eighth: its staccato, over the
+    // half, leaves the tie between them room, in the space over the top line.
+    let pieces = heads(&loaded, &layout, e[23]);
+    assert_eq!(pieces.len(), 2, "the note drawn as a half and an eighth");
+    let staccato = the_glyph(&layout, e[23], "articStaccatoAbove");
+    near(
+        centre(staccato),
+        centre(pieces[0]) + 2.0,
+        "a staccato over a split half",
+    );
+
+    // The tie from the beamed C5, its stem up, arcs below; the tenuto over
+    // the C5 it reaches stands as an untied one, in the top space.
+    let c5 = head(&loaded, &layout, e[27]);
+    assert!(
+        stem(&layout, e[27]).2 > c5[3] + 1.0,
+        "the beamed C5's stem up"
+    );
+    let tenuto = the_glyph(&layout, e[28], "articTenutoAbove");
+    let c5 = centre(head(&loaded, &layout, e[28]));
+    near(
+        centre(tenuto),
+        c5 + 1.0,
+        "a tenuto over a tie arriving below",
+    );
+}
+
 /// With another voice at the note, each voice's marks stand at its stem:
 /// the upper voice's above and the lower's below; an ornament stands above
 /// in the upper voice and below in the lower.

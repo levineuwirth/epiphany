@@ -30,7 +30,7 @@ use crate::glyph::{metrics, BravuraCatalog, GlyphCatalog, GlyphCatalogIdentity, 
 use crate::logical::{
     apply_offset, BarlineKind, LayoutContent, LogicalLayoutIR, MarkerContent, MarkerPlace,
     PlacedClef, PlacedKeySignature, RepeatContent, RepeatPlacement, ScoreVersion, SlurContent,
-    SlurDirection, SlurEndpoint, SpannerContent, StaffContent, VoicePlace,
+    SlurDirection, SlurEndpoint, SpannerContent, StaffContent, TieContent, VoicePlace,
 };
 use crate::provenance::{
     manifestation_layout_id, synthesized_layout_id, LayoutObjectId, Provenance,
@@ -2697,6 +2697,52 @@ pub fn try_to_constrained(
         {
             first_heads.entry(head.event).or_default().push(head);
         }
+        // Each first component's heads a tie leaves or reaches, with the
+        // side it arcs on, as the ties are drawn below: a tie to the next
+        // event from a note of one component, one its event's decomposition
+        // ties to its second, and one arriving from the event before.
+        let mut tied_heads: BTreeMap<EventId, Vec<(f32, bool)>> = BTreeMap::new();
+        for (_, staff, content) in &specs {
+            let Some(LayoutContent::Tie(tie)) = content else {
+                continue;
+            };
+            let yo = staff.map(&y_origin).unwrap_or(0.0);
+            let joins = tie_joins(
+                tie,
+                &pitch_heads,
+                &unpitched_heads,
+                &event_stems,
+                &event_voices,
+                yo,
+            );
+            for (a, b, above) in joins {
+                for head in [a, b].into_iter().filter(|head| head.comp == 0) {
+                    tied_heads
+                        .entry(head.event)
+                        .or_default()
+                        .push((head.y, above));
+                }
+            }
+        }
+        for (eid, heads) in &first_heads {
+            let (Some(seg), Some(&staff)) = (
+                event_stems
+                    .get(eid)
+                    .and_then(|segs| segs.iter().find(|seg| seg.comp == 0)),
+                event_staff.get(eid),
+            ) else {
+                continue;
+            };
+            let mut ys: Vec<f32> = heads.iter().map(|head| head.y).collect();
+            ys.sort_by(|a, b| b.total_cmp(a));
+            let stem_up = seg.drawn.then_some(seg.up);
+            let voice = event_voices.get(eid).copied();
+            for head in heads.iter().filter(|head| head.tied) {
+                let i = ys.iter().position(|&y| y == head.y).unwrap_or(0);
+                let above = tie_above(voice, i, ys.len(), stem_up, head.y, y_origin(staff));
+                tied_heads.entry(*eid).or_default().push((head.y, above));
+            }
+        }
         let mut event_marks: BTreeMap<EventId, marks::Placed> = BTreeMap::new();
         // A chord visiting another staff whose own staff shows no other
         // voice there stands as a chord alone (`StaffContent::visiting_alone`).
@@ -2735,6 +2781,13 @@ pub fn try_to_constrained(
                     }
                 }
             }
+            // A tie on a side at the chord's outer head there: a tie outside
+            // its chord, MuseScore's default placement (`isOuterTieOfChord`).
+            let ties = tied_heads.get(eid).map_or(&[][..], Vec::as_slice);
+            let outer_tie = |y: f32, above: bool| {
+                ties.iter()
+                    .any(|&(at, side)| side == above && (at - y).abs() < 1e-3)
+            };
             let chord = marks::Chord {
                 seg,
                 head,
@@ -2748,6 +2801,8 @@ pub fn try_to_constrained(
                 yo: y_origin(staff),
                 beamed: seg.drawn && seg.flag.is_none() && seg.beams > 0,
                 accidentals: heads.iter().any(|h| !h.accidentals.is_empty()),
+                tie_above: outer_tie(seg.hi, true),
+                tie_below: outer_tie(seg.lo, false),
             };
             let ornaments: Vec<Ornament> = ornaments
                 .iter()
@@ -4256,31 +4311,19 @@ pub fn try_to_constrained(
                     // below, a middle or lone tie away from its stem (by its
                     // staff position when it has none). The structure's exact provenance rides its first
                     // arc; a tie with no head to join keeps a traced anchor.
-                    let mut joins: Vec<(&Head, &Head)> = Vec::new();
-                    let mut start_event = None;
-                    if let Some(LayoutContent::Tie(tie)) = content {
-                        start_event = Some(tie.start);
-                        if tie.pairs.is_empty() {
-                            let a = unpitched_heads.get(&tie.start).and_then(|h| h.last());
-                            let b = unpitched_heads.get(&tie.end).and_then(|h| h.first());
-                            joins.extend(a.zip(b));
-                        }
-                        for (a, b) in &tie.pairs {
-                            let a = pitch_heads.get(a).and_then(|h| h.last());
-                            let b = pitch_heads.get(b).and_then(|h| h.first());
-                            joins.extend(a.zip(b));
-                        }
-                    }
-                    joins.sort_by(|x, y| y.0.y.total_cmp(&x.0.y));
-                    let stem_up = start_event
-                        .and_then(|e| event_stems.get(&e))
-                        .and_then(|segs| segs.last())
-                        .filter(|seg| seg.drawn)
-                        .map(|seg| seg.up);
-                    let voice = start_event.and_then(|e| event_voices.get(&e)).copied();
+                    let joins = match content {
+                        Some(LayoutContent::Tie(tie)) => tie_joins(
+                            tie,
+                            &pitch_heads,
+                            &unpitched_heads,
+                            &event_stems,
+                            &event_voices,
+                            yo,
+                        ),
+                        _ => Vec::new(),
+                    };
                     let n = joins.len();
-                    for (i, (a, b)) in joins.iter().enumerate() {
-                        let above = tie_above(voice, i, n, stem_up, a.y, yo);
+                    for (i, &(a, b, above)) in joins.iter().enumerate() {
                         let tie_provenance = if i == 0 {
                             provenance.clone()
                         } else {
@@ -7461,6 +7504,44 @@ fn tie_above(
         _ if n > 1 && 2 * i + 1 > n => false,
         _ => stem_up.map_or(y >= yo + STAFF_HEIGHT * 0.5, |up| !up),
     }
+}
+
+/// The heads a tie between two events joins, highest first: each pitch's
+/// last head to the head its next event starts with (an unpitched note's
+/// alike), with the side it arcs on (`tie_above`, by its start event's
+/// voice and last stem).
+fn tie_joins<'h>(
+    tie: &TieContent,
+    pitch_heads: &'h BTreeMap<PitchId, Vec<Head>>,
+    unpitched_heads: &'h BTreeMap<EventId, Vec<Head>>,
+    stems: &BTreeMap<EventId, Vec<StemSeg>>,
+    voices: &BTreeMap<EventId, VoicePlace>,
+    yo: f32,
+) -> Vec<(&'h Head, &'h Head, bool)> {
+    let mut joins: Vec<(&Head, &Head)> = Vec::new();
+    if tie.pairs.is_empty() {
+        let a = unpitched_heads.get(&tie.start).and_then(|h| h.last());
+        let b = unpitched_heads.get(&tie.end).and_then(|h| h.first());
+        joins.extend(a.zip(b));
+    }
+    for (a, b) in &tie.pairs {
+        let a = pitch_heads.get(a).and_then(|h| h.last());
+        let b = pitch_heads.get(b).and_then(|h| h.first());
+        joins.extend(a.zip(b));
+    }
+    joins.sort_by(|x, y| y.0.y.total_cmp(&x.0.y));
+    let stem_up = stems
+        .get(&tie.start)
+        .and_then(|segs| segs.last())
+        .filter(|seg| seg.drawn)
+        .map(|seg| seg.up);
+    let voice = voices.get(&tie.start).copied();
+    let n = joins.len();
+    joins
+        .into_iter()
+        .enumerate()
+        .map(|(i, (a, b))| (a, b, tie_above(voice, i, n, stem_up, a.y, yo)))
+        .collect()
 }
 
 /// What a tie between a note's components takes its side from: each event's
