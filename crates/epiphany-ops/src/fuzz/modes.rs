@@ -606,14 +606,19 @@ pub struct Coverage {
 impl Coverage {
     fn record(&mut self, authored: &[OperationEnvelope], state: &MaterializedState) {
         let effects: BTreeMap<_, _> = state.effects.iter().cloned().collect();
-        for envelope in authored {
+        let gestures = gesture_shapes(authored);
+        for (envelope, gesture) in authored.iter().zip(gestures) {
             let effect = effects.get(&envelope.id);
             let applied = matches!(
                 effect,
                 Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
             );
-            let names = std::iter::once(kind_name(&envelope.payload))
-                .chain(shape_names(&envelope.payload).into_iter().map(String::from));
+            let names = std::iter::once(kind_name(&envelope.payload)).chain(
+                shape_names(&envelope.payload)
+                    .into_iter()
+                    .chain(gesture)
+                    .map(String::from),
+            );
             for name in names {
                 *self.authored.entry(name.clone()).or_default() += 1;
                 if applied {
@@ -644,8 +649,9 @@ impl Coverage {
 }
 
 /// The payload shapes schema major 5 adds, and those reduction version 5
-/// reads (X5b), each counted beside its kind.
-const SHAPES: [&str; 39] = [
+/// reads (X5b), each counted beside its kind; and arm 70's gesture, read
+/// from the history ([`gesture_shapes`]).
+const SHAPES: [&str; 40] = [
     "InsertEvent+marks",
     "InsertEvent+ornaments",
     "InsertEvent+grace",
@@ -685,24 +691,81 @@ const SHAPES: [&str; 39] = [
     "CreateCrossCutting+spanner at a region",
     "CreateTuplet+parent",
     "CreateTuplet+parent, several members",
+    "UndoTransaction+a signature a later grid names",
 ];
 
 /// The shapes reduction version 5 refuses wherever they are written, each
 /// counted beside its kind: a constant tempo segment recording its end tempo,
 /// and a region created carrying a tempo map with two segments on one key, or
 /// one out of order, overlapping, ending before its start or without its end
-/// data (each `TempoMapMalformed`), which version 4 applied. A user break
+/// data (each `TempoMapMalformed`), which version 4 applied; and arm 69's
+/// region whose extent names what its author makes next, refused
+/// `TargetMissing` since X5b's fix round 1, read from the history
+/// (`gesture_shapes`). A user break
 /// naming another region is counted too ("user break+another region's
 /// anchor"), where its anchor shows it, but a view seldom holds two regions
 /// to choose from.
-pub const REFUSED: [&str; 6] = [
+pub const REFUSED: [&str; 7] = [
     "SetTempoSegment+constant with an end tempo",
     "CreateRegion+tempo map with two segments on one key",
     "CreateRegion+tempo map out of order",
     "CreateRegion+tempo map overlapping",
     "CreateRegion+tempo segment ending before its start",
     "CreateRegion+tempo segment without its end data",
+    "CreateRegion+extent at what its author makes next",
 ];
+
+/// The shapes of a gesture its payload alone does not show, read from the
+/// authored history around each envelope, so that the CI budget counts the
+/// arm's reach (D90 Q2): a region whose extent names a note or a measure an
+/// envelope after it makes (arm 69, refused `TargetMissing` since X5b's fix
+/// round 1), and an undo of a transaction that set a time signature a grid
+/// set outside it names (arm 70, held while the grid names it, D86 Q1).
+fn gesture_shapes(authored: &[OperationEnvelope]) -> Vec<Vec<&'static str>> {
+    let mut minted_at: BTreeMap<TypedObjectId, usize> = BTreeMap::new();
+    for (index, envelope) in authored.iter().enumerate() {
+        for object in mints_and_refs(&envelope.payload).0 {
+            minted_at.entry(object).or_insert(index);
+        }
+    }
+    authored
+        .iter()
+        .enumerate()
+        .map(|(index, envelope)| {
+            let mut out = Vec::new();
+            if names_ahead(&envelope.payload)
+                .iter()
+                .any(|object| minted_at.get(object).is_some_and(|at| *at > index))
+            {
+                out.push("CreateRegion+extent at what its author makes next");
+            }
+            if let OperationPayload::UndoTransaction(undo) = &envelope.payload {
+                let before = &authored[..index];
+                let signed: Vec<TimeSignatureId> = before
+                    .iter()
+                    .filter(|e| e.transaction == Some(undo.target))
+                    .filter_map(|e| match &e.payload {
+                        OperationPayload::Primitive(OperationKind::SetTimeSignature(op)) => {
+                            op.time_signature.as_ref().map(|signature| signature.id)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let gridded = before.iter().any(|e| {
+                    e.transaction != Some(undo.target)
+                        && matches!(&e.payload,
+                            OperationPayload::Primitive(OperationKind::SetMetricGrid(op))
+                                if op.grid.iter().flat_map(|grid| &grid.meter_sequence)
+                                    .any(|change| signed.contains(&change.time_signature)))
+                });
+                if gridded {
+                    out.push("UndoTransaction+a signature a later grid names");
+                }
+            }
+            out
+        })
+        .collect()
+}
 
 /// Which of [`SHAPES`] a payload has, with the holders' wall-clock offsets
 /// ([`wall_clock_shape`]).

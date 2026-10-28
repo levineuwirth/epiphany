@@ -431,7 +431,11 @@ fn the_ci_budget_authors_and_applies_every_kind() {
 /// slot gives a grid in a region admitting no musical offset, so it holds the
 /// grid's anchor refusal no more than the slot's; that refusal is held by
 /// `a_metric_grid_s_meter_change_by_a_wall_clock_offset_is_refused` (C5b
-/// review 1's L3).
+/// review 1's L3). Two arms' gestures are counted from the history, so the
+/// budget holds each arm's reach (D90 Q2): arm 69's region naming what its
+/// author makes next, refused `TargetMissing`, and arm 70's undo of a
+/// signature a later grid names, held by a strict or cascading undo's
+/// conflict.
 #[test]
 fn the_ci_budget_refuses_what_reduction_version_5_refuses() {
     let sum = |count: &dyn Fn(&modes::Coverage) -> u64| {
@@ -483,6 +487,23 @@ fn the_ci_budget_refuses_what_reduction_version_5_refuses() {
             "{holder}: none refused for its offset"
         );
     }
+    assert!(
+        refused(
+            "CreateRegion+extent at what its author makes next",
+            "TargetMissing"
+        ) > 0,
+        "no region naming what its author makes next refused"
+    );
+    let held = sum(&|c| {
+        c.other
+            .get(&(
+                String::from("UndoTransaction+a signature a later grid names"),
+                String::from("Conflicted"),
+            ))
+            .copied()
+            .unwrap_or(0)
+    });
+    assert!(held > 0, "no undo of a signature a later grid names held");
     for shape in modes::REFUSED {
         let authored = sum(&|c| c.authored.get(shape).copied().unwrap_or(0));
         let applied = sum(&|c| c.applied.get(shape).copied().unwrap_or(0));

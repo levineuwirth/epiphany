@@ -4566,3 +4566,15 @@ tried, arm 72 at 2 and arm 73 at 1 keep every row. The budget reads an
 effect by its operation's id, which an equivocating twin shares, so at other
 weights a refused shape was counted applied once, its twin's effect; no row
 does so at these.
+
+**Arms 69 and 70 pinned.** Neither arm's reach rested on a test: a refusal
+pin had caught each arm's removal by chance until fix round 2's arm moved the
+draws. Arm 69's plants show at none since fix round 1 refuses the extent's
+write, and arm 70's rested on its plant alone. Each gesture is one its
+payload does not show, so the budget now reads it from the authored history:
+a region whose extent names a note or a measure an envelope after it makes,
+counted among `REFUSED` and asserted refused `TargetMissing`, and an undo of a
+transaction that set a time signature a grid set outside it names, counted
+beside `UndoTransaction` and asserted held by a strict or cascading undo's
+conflict. So each arm's removal fails a test, and so does the grid's hold.
+The counting adds no draw, and the weights stand.
