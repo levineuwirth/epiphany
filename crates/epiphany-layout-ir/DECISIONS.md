@@ -1390,3 +1390,12 @@ column's spring the padding after it.
   617 to 638, which lists `articStressAbove` and `articStressBelow`): it
   had stood over its head there, as an unstress mark, which the list leaves
   out, still does.
+- A second close mark on a side stands where MuseScore sets it
+  (`chordlayout.cpp` 933 to 941 below, 995 to 1001 above), each from where
+  it would stand alone: in the staff (a head-side mark over a note under
+  the second line from the top, or under one over the second from the
+  bottom, or a stem-side mark whose place is inside the staff), a space
+  further, its centre a space past the first's; outside it, past the first
+  by the first's height and `articulationMinDistance`. Found while pinning
+  the step in a test (review 1's L5): it had stood a space past the first
+  mark's outer edge, further by half the two marks' heights.

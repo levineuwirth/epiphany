@@ -600,6 +600,67 @@ fn a_close_mark_leaves_its_notes_tie_room() {
     );
 }
 
+/// A second close mark on its side stands where MuseScore sets it
+/// (`ChordLayout::layoutArticulations`): in the staff a space further than
+/// it would stand alone, its centre a space past the first's, over C5,
+/// under A4 and at an upper voice's short stem; outside the staff past the
+/// first by `articulationMinDistance`, over E5.
+#[test]
+fn a_second_close_mark_steps_as_musescore_sets_it() {
+    let both = "<articulations><staccato/><tenuto/></articulations>";
+    let measure = [
+        note("C5", 2, "quarter", 1, 1, both),
+        note("A4", 2, "quarter", 1, 1, both),
+        note("E5", 2, "quarter", 1, 1, both),
+        note("rest", 2, "quarter", 1, 1, ""),
+    ]
+    .concat();
+    let voices = [
+        note("D4", 4, "half", 1, 1, both),
+        note("rest", 4, "half", 1, 1, ""),
+        backup(8),
+        note("B3", 8, "whole", 2, 1, ""),
+    ]
+    .concat();
+    let loaded = part("marks_two_close.musicxml", 1, &[measure, voices]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let centre = |ink: Ink| (ink[1] + ink[3]) * 0.5;
+
+    for (i, above) in [(0, true), (1, false)] {
+        let (staccato, tenuto) = if above {
+            ("articStaccatoAbove", "articTenutoAbove")
+        } else {
+            ("articStaccatoBelow", "articTenutoBelow")
+        };
+        let first = the_glyph(&layout, e[i], staccato);
+        let second = the_glyph(&layout, e[i], tenuto);
+        let step = if above { 1.0 } else { -1.0 };
+        near(
+            centre(second),
+            centre(first) + step,
+            "a space past the first",
+        );
+    }
+    let first = the_glyph(&layout, e[2], "articStaccatoAbove");
+    let second = the_glyph(&layout, e[2], "articTenutoAbove");
+    near(
+        second[1],
+        first[3] + 0.4,
+        "past the first, outside the staff",
+    );
+
+    let (_, top_line) = staff_lines(&layout)[0];
+    let first = the_glyph(&layout, e[4], "articStaccatoAbove");
+    let second = the_glyph(&layout, e[4], "articTenutoAbove");
+    assert!(first[1] < top_line, "at the stem, in the staff");
+    near(
+        centre(second),
+        centre(first) + 1.0,
+        "a space past it at the stem",
+    );
+}
+
 /// An accent set straight after a staccato on its side, the staccato
 /// standing outside the staff, stands 0.2 nearer it than the 0.4 between
 /// marks, as MuseScore kerns the two (`stacAccentKern`): under E4 and over

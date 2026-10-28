@@ -2555,3 +2555,12 @@ is set:
   it had stood centred on the head
   (`a_stress_mark_aligns_with_the_stem_as_an_accent_does`). The engraver
   itself is unchanged.
+
+## ENGRAVER_VERSION 83 → 84: a second close mark steps as MuseScore sets it (X4c fix round 1, 2026-10-28)
+
+- A second staccato or tenuto on a side stands a space past where it would
+  stand alone in the staff, its centre a space past the first's, and
+  outside the staff past the first by its height and 0.4, as MuseScore's
+  `layoutArticulations` sets it; in the staff it had stood a space past the
+  first mark's outer edge (`a_second_close_mark_steps_as_musescore_sets_it`).
+  The engraver itself is unchanged.

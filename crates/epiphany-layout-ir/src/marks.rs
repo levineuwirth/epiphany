@@ -400,10 +400,11 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
     let outside_below = list.iter().any(|m| m.kind != Kind::Close && !m.above);
 
     // The close marks, in the staff's spaces near the note.
-    // The edge the next close mark on each side stands beyond, and whether
-    // the last one stood inside the staff by its head.
+    // The outer edge and the height of the last close mark on each side.
     let mut close_edge_above: Option<f32> = None;
     let mut close_edge_below: Option<f32> = None;
+    let mut close_height_above: Option<f32> = None;
+    let mut close_height_below: Option<f32> = None;
     let mut staccato_outside = false;
     for m in list.iter().filter(|m| m.kind == Kind::Close) {
         let b = bbox(m.name);
@@ -424,7 +425,6 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
             (true, false) => TENUTO_TIE_DISTANCE,
         };
         let y_bottom = if m.above {
-            let previous = close_edge_above;
             let bottom = if head_side {
                 let mut line = index(chord, high).min(9);
                 if outside_above && close_above > 0 {
@@ -441,15 +441,22 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
             } else {
                 stem_side_above(chord, h)
             };
-            // A further mark: a space further while the note stands in the
-            // staff, else clear of the one before.
-            match previous {
-                Some(edge) if head_side && index(chord, high) > 2 => bottom.max(edge) + 1.0,
-                Some(edge) => edge + ARTICULATION_MIN_DISTANCE,
+            // A further mark on the side, each from where it would stand
+            // alone: a space further in the staff (by its note, or its stem
+            // side's place under the top line), else past the one before by
+            // its height and `articulationMinDistance`
+            // (`ChordLayout::layoutArticulations`).
+            let in_staff = if head_side {
+                index(chord, high) > 2
+            } else {
+                bottom < top_line - 1e-3
+            };
+            match close_height_above {
+                Some(_) if in_staff => bottom + 1.0,
+                Some(previous) => bottom + previous + ARTICULATION_MIN_DISTANCE,
                 None => bottom,
             }
         } else {
-            let previous = close_edge_below;
             let top = if head_side {
                 let mut line = index(chord, low).max(-1);
                 if outside_below && close_below > 0 {
@@ -466,9 +473,14 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
             } else {
                 stem_side_below(chord, h)
             };
-            let top = match previous {
-                Some(edge) if head_side && index(chord, low) < 6 => top.min(edge) - 1.0,
-                Some(edge) => edge - ARTICULATION_MIN_DISTANCE,
+            let in_staff = if head_side {
+                index(chord, low) < 6
+            } else {
+                top > bottom_line + 0.5 + 1e-3
+            };
+            let top = match close_height_below {
+                Some(_) if in_staff => top - 1.0,
+                Some(previous) => top - previous - ARTICULATION_MIN_DISTANCE,
                 None => top,
             };
             top - h
@@ -476,8 +488,10 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
         let y = y_bottom - b.bottom.0;
         if m.above {
             close_edge_above = Some(y_bottom + h);
+            close_height_above = Some(h);
         } else {
             close_edge_below = Some(y_bottom);
+            close_height_below = Some(h);
         }
         if m.tag == EventMark::Staccato.tag() {
             staccato_outside = if m.above {
