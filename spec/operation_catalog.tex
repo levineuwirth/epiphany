@@ -231,7 +231,7 @@
   {\Large\scshape\color{epiphanyslate}Operation Catalog}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.21.0 --- Expression and text}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.22.0 --- The region refusal}\\[4pt]
   {\small\color{epiphanyslate}Normative for the operation kinds it defines}
   \vfill
 \end{titlepage}
@@ -856,6 +856,69 @@ review, adds one more: an undo reads a marker on an event it removes as the
 repair will leave it, so a marker the undo would orphan holds its region
 (Sections~\ref{sec:k0:create-cross-cutting} and~\ref{sec:k0:undo}).
 
+\noindent\textbf{Version 0.22.0 (X5b, the format boundary and the region
+refusal).} A \texttt{CreateStaffInstance} whose region overlaps in time
+another live region holding a live instance of its staff is refused,
+\texttt{PreconditionFailureReason} appending \texttt{RegionsOverlap}
+(discriminant~21, epoch~16; Section~\ref{sec:k0:structural-containers}).
+A user break's slot is keyed by its anchor, and a break naming an event or a
+measure its region does not hold live is refused \texttt{TargetMissing}
+(Section~\ref{sec:k0:set-user-system-break}). A constant tempo segment
+recording an end tempo is refused \texttt{TempoMapMalformed}
+(Section~\ref{sec:k0:meter-tempo}), and an undo's restoration of a marker or
+a spanner anchored by a musical offset to a region a migration took out of
+musical time since is superseded by that migration
+(Section~\ref{sec:k0:undo}). A marker's kind may be expression text
+(\texttt{MarkerKind::ExpressionText}, appended at epoch~16): a
+\texttt{CreateCrossCutting} or \texttt{ModifyCrossCutting} carrying one
+requires that minor, and reduces as any marker does. A region's time extent
+answers to its target's time model: a \texttt{CreateRegion} whose extent
+anchors its target by an offset the target's model does not admit is refused
+\texttt{WrongRegionTimeModel}, and a migration strands a live region whose
+extent the target model would contradict
+(Sections~\ref{sec:k0:structural-containers}
+and~\ref{sec:k0:change-region-time-model}). So does every other holder of a
+time anchor: a marker, a spanner, a repeat structure, a measure, a user break,
+a meter change, a metric grid, a tempo segment, a staff instance's carried
+changes and grid, and a region's own model, grid, breaks and tempo map are
+refused \texttt{WrongRegionTimeModel} where written, modified or carried by an
+offset their target's model does not admit, an undo's restoration so is
+superseded by the migration that gave the target its model, a migration
+strands each such holder, and an event, a measure or a region a holder names
+before it is made by such an offset is refused at its creation; a tempo
+segment anchored to an event or a measure that is not live is refused
+\texttt{TargetMissing} (Section~\ref{sec:framework:anchor-offsets}). The
+undo semantics of \texttt{ChangeRegionTimeModel} are corrected to what
+reduction does: a migration is not undone
+(Section~\ref{sec:k0:change-region-time-model}). An undo is held by a
+live region's grid naming a time signature it would remove, as by a meter
+change at a key (Section~\ref{sec:k0:undo}). A delete of an event a live
+tempo segment names is refused, \texttt{PreconditionFailureReason} appending
+\texttt{TargetAnchored} (discriminant~22, epoch~16), and an undo that would
+remove it is held (Section~\ref{sec:k0:delete-event}). A holder of a time
+anchor is refused \texttt{TargetMissing} where written naming an event, a
+measure or a region that is not live, so none names an object before it is
+made (Section~\ref{sec:framework:anchor-offsets}). And a note, a measure or a
+region every other holder of a time anchor outside the cross-cutting
+structures names (a meter change, a measure's start, a region's extent, a
+carried clef or key change) is held against a delete and an undo, as graph
+invariant~10's surface, widened to every anchor invariant~9 reads but a user
+break's, requires (Sections~\ref{sec:k0:delete-event}
+and~\ref{sec:k0:undo}). A tuplet's undo is held by a live tuplet nested in it,
+and a member's cascade carries the tuplets nested in the ones it removes
+(Section~\ref{sec:k0:create-tuplet}). A \texttt{CreateRegion} whose carried
+tempo map holds two segments on one key is refused \texttt{TempoMapMalformed},
+as two writes at the key would leave one
+(Section~\ref{sec:k0:structural-containers}), and so is one whose carried map
+no sequence of \texttt{SetTempoSegment} writes could leave: out of order,
+overlapping, a segment ending before its start or a non-constant one without
+its end data (Section~\ref{sec:k0:structural-containers}). An undo removing a region reads
+a tempo map whose region the same undo removes, or which is not live, as
+holding nothing, as it reads one naming an event
+(Section~\ref{sec:k0:structural-containers}). Accordingly
+\texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION} moves
+\texttt{4}~$\rightarrow$~\texttt{5}, one version for the phase.
+
 % ===========================================================================
 \chapter{The Catalog Framework}
 \label{ch:framework}
@@ -960,6 +1023,75 @@ in object existence and in the canonical bytes (since version~0.19.0).
   an object no envelope mints is never refused for being unknown.
 \end{rationale}
 
+\section{Time Anchors and Their Targets' Time Models}
+\label{sec:framework:anchor-offsets}
+
+Graph invariant~9 (\texttt{AnchorOffsetModel}, core specification
+\sectionsc{Graph Invariants}) holds every stored time anchor's offset to its
+target's time model: a wall-clock offset to a model admitting wall-clock time,
+a musical one to a model admitting musical time. Reduction reads an anchor as
+the invariant does (since version~0.22.0): a region's edge by that region's
+model; the edge of a region an operation is creating or migrating by the model
+it is being given; an event or a measure by its region's model, but an event
+in an aleatoric region whose events each fix their clock by the event's, which
+is musical for every event an operation places. A target that is not live is
+not judged, as the invariant cannot find it, and no holder is written naming
+one (Requirement~\ref{req:catalog:anchor-targets}). A re-anchoring carries no offset
+to a target that was not judged for it: a spanner's or a repeat structure's
+dead endpoint takes the surviving anchor whole (Section~\ref{sec:k0:delete-event}).
+
+\begin{requirement}
+  \label{req:catalog:anchor-offsets}
+  Both reduction modes \MUST{} refuse \texttt{WrongRegionTimeModel} a write
+  that would leave a time anchor whose offset its target's time model does not
+  admit: a region's extent and the meter changes, grid, breaks and tempo map a
+  \texttt{CreateRegion} carries; a marker's or a spanner's anchors at create and
+  modify; a repeat structure's anchor sites; a measure's start; a present user
+  break; a set meter change and a metric grid's meter changes; a tempo
+  segment's anchors; the clef and key changes and grid a
+  \texttt{CreateStaffInstance} carries; and the meter changes of a
+  \texttt{ChangeRegionTimeModel}'s own target model. An undo's restoration of
+  a marker, a spanner, a metric grid, a meter change, a tempo segment or a
+  present user break anchored so is superseded by the migration that gave the
+  target its model (Section~\ref{sec:k0:undo}). A migration conflicts
+  \texttt{TimeModelMigrationFailure} naming every live holder anchored to its
+  region, or to an event or a measure in it, by an offset the target does not
+  admit, in either direction (Section~\ref{sec:k0:change-region-time-model}).
+  And an \texttt{InsertEvent}, a \texttt{CreateMeasure} or a
+  \texttt{CreateRegion} is refused \texttt{WrongRegionTimeModel} where a live
+  holder already names the new object by an offset its model does not admit.
+\end{requirement}
+
+\begin{requirement}
+  \label{req:catalog:anchor-targets}
+  Both reduction modes \MUST{} refuse \texttt{TargetMissing} a write that
+  would leave a time anchor naming an event, a measure or a region that is not
+  live, read as Requirement~\ref{req:catalog:base-free-referents} reads a
+  referent: a set meter change's anchor and a metric grid's meter changes; a
+  region's extent and the meter changes, grid, breaks and tempo map a
+  \texttt{CreateRegion} carries, the new region itself excepted; the clef and
+  key changes and grid a \texttt{CreateStaffInstance} carries; and the meter
+  changes of a \texttt{ChangeRegionTimeModel}'s own target model, as a
+  measure's start, a tempo segment's anchors, a user break's anchor and a
+  cross-cutting structure's anchors already are.
+\end{requirement}
+
+\begin{rationale}
+  Before version~0.22.0 only a musical offset into a region admitting none was
+  read, for some holders, and nothing judged a holder that named its target
+  before the target was made; one author broke the invariant by forty routes
+  (roadmap D81 and D84). A tempo segment anchored to an event or a measure that
+  is not live names nothing (\texttt{CrossCuttingRefsResolve}), so it is refused
+  \texttt{TargetMissing} as one anchored to such a region is
+  (Section~\ref{sec:k0:meter-tempo}), and names no note or measure before it is
+  made. Before version~0.22.0 every other holder of the second requirement was
+  written naming a target that was not live, and named nothing; and one
+  naming an object made later had the object's creation refused by the first,
+  so the name stood for good (C5b review 1). Refused at the write, no holder
+  names an object before it is made, and the first requirement's last clause
+  guards a route no history reaches.
+\end{rationale}
+
 % ===========================================================================
 \chapter{K0 --- Representative Primitives}
 \label{ch:k0}
@@ -993,6 +1125,9 @@ the event's staff instance is metric, read in graph-aware reduction from the
 graph and base-free from the reducer's index of each region's coordinate
 discipline, which \texttt{CreateRegion} sets and an applied
 \texttt{ChangeRegionTimeModel} moves, so the two modes agree after a migration;
+no live holder names the event before it is made by an offset that region's
+model does not admit (since version~0.22.0,
+Section~\ref{sec:framework:anchor-offsets}; \texttt{WrongRegionTimeModel});
 the target voice exists in that region (graph-aware, from the graph; base-free,
 as Requirement~\ref{req:catalog:base-free-referents} reads it) and the event's
 pitch ids are fresh. The event and its pitches are minted live; the voice is created on
@@ -1072,7 +1207,23 @@ holding the event; and, from the occupancy index, a \texttt{ReplaceWithRest}
 whose rest's duration differs from the event's, so the two modes reach one
 verdict on every compensation a conforming client declares. Whether the
 rest's identifier is fresh is a referential precondition, and like every
-referential precondition it is checked graph-aware only.
+referential precondition it is checked graph-aware only. Since
+version~0.22.0 a delete of an event a live tempo segment of any map starts or
+ends at is a precondition no-op, \texttt{TargetAnchored}
+(discriminant~22, epoch~16), in both modes, read from the tempo chains: no
+rule re-anchors a segment, which would otherwise name nothing (before it the
+delete applied and left the segment's anchor naming nothing); an undo that
+would remove such an event is held likewise (Section~\ref{sec:k0:undo}). So
+is a delete of an event any other holder of a time anchor outside the
+cross-cutting structures names: a meter change of a region's own model, its
+grid or a staff instance's grid, a measure's start, a region's extent, or a
+clef or key change a staff instance's creation carried (the core
+specification's re-anchoring rule table, \emph{hold}); a user break is
+excepted, staying keyed by its anchor. A region's grid is read as
+reduction's chains keep it, and a migration out of musical time drops the
+grid from the graph but not from the chains, so a note such a grid named
+stays held though nothing in the graph names it: the refusal is
+conservative.
 
 \textbf{Undo semantics.} An insert-shaped compensation re-introduces the
 tombstoned content; for the prototype's minted-object model this is the inverse
@@ -1083,7 +1234,10 @@ rule table over every cross-cutting structure that referenced it: a tie
 cascade-deletes; a comment or analytical annotation orphans (user content is
 never silently deleted); a beam truncates while $\geq 2$ members survive and
 otherwise cascade-deletes; a slur or spanner re-anchors to the nearest surviving
-endpoint while $\geq 1$ survives and otherwise cascade-deletes; a lyric
+endpoint while $\geq 1$ survives and otherwise cascade-deletes, the dead endpoint
+taking the surviving endpoint's anchor whole, its offset with it, so that it
+answers to the survivor's time model (since version~0.22.0, before which it kept
+its own offset at the survivor's event); a lyric
 cascade-deletes, and a marker re-anchors to the nearest live event of its
 staff instance or orphans to its region's start, in both modes (since
 version~0.21.0). A grace note before the event is not a referent: it stands
@@ -1562,6 +1716,10 @@ one in a region that admits no musical offset is refused
 \texttt{WrongRegionTimeModel}, and a live one strands its region's migration
 out of musical time, the conflict naming it (since version~0.21.0, before
 which the value applied there or stayed, breaking \texttt{AnchorOffsetModel}).
+Since version~0.22.0 every anchor of a marker or a spanner answers to its
+target's time model by any offset, at a region, an event or a measure, at
+create and modification, and a migration into a model admitting no wall-clock
+offset strands one so anchored too (Section~\ref{sec:framework:anchor-offsets}).
 
 \textbf{Conflict cases.} None (all-or-nothing creation; union is deterministic).
 
@@ -1730,7 +1888,26 @@ strands the region itself, named among them, the segment having no identifier,
 and a live staff instance of the region holding a clef or key change, which
 stands at a musical offset, strands that instance, named among them,
 and an applied such migration drops the region's system and page breaks and
-its default and local metric grids (since version~0.19.0). Graph-aware
+its default and local metric grids (since version~0.19.0). Since
+version~0.22.0, a target that does not admit an offset by which a live
+region's time extent anchors the region, or an event or a measure in it,
+strands that region, named among them, the migrated region itself where its
+own bound is so anchored: a musical offset out of musical time, and a
+wall-clock offset into a model admitting none (a metric target, or an
+aleatoric one anchored musically, or, for an event, one where each event
+fixes its clock). The target is read as \texttt{CreateRegion} reads one. So
+does every other live holder anchored to the region, or to an event or a
+measure in it, by an offset the target does not admit
+(Section~\ref{sec:framework:anchor-offsets}), named as its holder: a marker, a
+spanner, a repeat structure or a measure by its own identifier, a staff
+instance for its own grid or a clef or key change its create carried, a region
+for its own model, grid, breaks or tempo map, and the migrated region itself
+for a segment of the score's tempo map; what a migration out of musical time
+drops with the region's breaks and grids is not read. A target model whose own
+meter changes its region would not admit is refused
+\texttt{WrongRegionTimeModel}, and one whose own meter changes name a time
+signature that is not live is a precondition no-op (\texttt{TargetMissing}),
+as a \texttt{SetMetricGrid} naming one is. Graph-aware
 reduction also judges, from the graph, the region's events the index does not
 hold (a base's events of another coordinate kind, which base-free reduction
 never has), against the target's discipline as invariant~4 does (an aleatoric
@@ -1752,8 +1929,12 @@ with incompatible events produces a \texttt{TimeModelMigrationFailure} naming th
 region and the incompatible events. A causally-later migration is re-evaluated
 against the first migration's graph rather than conflicting.
 
-\textbf{Undo semantics.} Undo restores the region's prior time model under the
-active policy.
+\textbf{Undo semantics.} A migration writes no value an undo restores: it keeps
+no record of the model it replaced, nor of what a \texttt{Reassign} moved. An
+undo of a transaction holding a migration compensates nothing for it, so one
+holding only a migration is refused \texttt{TargetMissing} under either policy,
+and the region keeps its new time model. An undoable migration is on the
+roadmap's decide-list (roadmap D84 Q3).
 
 \textbf{Re-anchoring.} Not applicable.
 
@@ -1789,26 +1970,106 @@ voices or measures; a voice: no events), since those carry distinct
 \texttt{TypedObjectId}s the reducer mints separately --- so contents are added by
 subsequent operations. A delete is a delete-wins tombstone, but a
 \emph{precondition no-op} (\texttt{ContainerNotEmpty}) unless the container has no
-live children --- the caller deletes contents first. A region is held so by a
+live children --- the caller deletes contents first (a staff instance's live
+measure holds it since version~0.22.0, before which the delete applied and took
+the measure from the graph). A region is held so by a
 live tempo segment of another map anchored to it and, since version~0.21.0, by
 a live marker or spanner anchored to it. Graph-aware reduction adds
 or removes the container and maintains the region's staff extent so
 \texttt{RegionExtents} stays satisfied.
 
+Since version~0.22.0 a \texttt{CreateStaffInstance} is also a precondition
+no-op, \texttt{RegionsOverlap} (discriminant~21), when its region overlaps in
+time another live region holding a live instance of the same staff. A region
+is created empty and only this create adds a staff to it, so the refusal keeps
+\texttt{RegionExtents} for every history: the earlier create in canonical
+order stands. Both modes compare the two time extents on a ledger index of
+each region's extent, taken from its \texttt{CreateRegion} (or a base) and
+never rewritten: a wall-clock anchor is its time, and a region's edge with no
+offset or a wall-clock one is that region's edge plus the offset, to a depth
+of eight; extents overlap when each starts before the other ends. An extent
+anchored to an event or a measure, or by a musical offset, cannot be placed
+without the graph and a tempo map, which a later edit could move, so it counts
+as overlapping every region with which it shares a staff. In a transaction the
+refused create conflicts the transaction whole; nothing is repaired.
+
+Since version~0.22.0 a \texttt{CreateRegion} is a precondition no-op,
+\texttt{WrongRegionTimeModel}, when its time extent anchors its target by an
+offset the target's time model does not admit, as invariant~9
+(\texttt{AnchorOffsetModel}) reads it: a wall-clock offset needs a model
+admitting wall-clock time and a musical one a model admitting musical time. A
+region's edge answers to that region's model, the new region's own edge to its
+own; an event to its region's, but in an aleatoric region whose events each
+fix their clock, to the event's, musical for every event an operation places;
+and a measure to its region's. It is refused likewise when a live region's
+extent already anchors the new region by an offset the new region's model does
+not admit. A target that is not live is not judged, as the invariant cannot
+find it. Both modes read the verdict from the ledger's indices: the region
+extents and coordinate disciplines, object liveness, the occupancy index and
+the measure values. The same holds for the anchors the rest of the payload
+carries: its own model's meter changes, its grid's, its user breaks and its
+tempo map's segments, the region's own edge judged by its own model; and a
+\texttt{CreateRegion} is refused when any other live holder names the new region
+so before it is made. A \texttt{CreateStaffInstance}'s carried clef and key
+changes and its own grid's meter changes answer to their targets likewise
+(Section~\ref{sec:framework:anchor-offsets}), and its own grid's meter changes
+name live time signatures, or the create is a precondition no-op
+(\texttt{TargetMissing}), as a \texttt{SetMetricGrid}'s are; so do a
+\texttt{CreateRegion}'s own model's meter changes and its grid's. A
+\texttt{CreateRegion} whose extent or carried payload, or a
+\texttt{CreateStaffInstance} whose carried changes or grid, name an event, a
+measure or a region that is not live (the new region itself excepted) is a
+precondition no-op, \texttt{TargetMissing}, in both modes
+(Requirement~\ref{req:catalog:anchor-targets}; since version~0.22.0, before
+which it applied naming nothing).
+
+A \texttt{CreateRegion} whose carried tempo map holds two segments whose
+starts resolve to one position, the key a \texttt{SetTempoSegment} writes by
+(Section~\ref{sec:k0:meter-tempo}), is a precondition no-op,
+\texttt{TempoMapMalformed}, in both modes, read after its anchors' targets and
+offsets and in either order of the two: two writes at that key would leave
+one segment. A segment at a note, one at a measure and one at a region's edge
+with no offset resolve alike to the region's origin, though they stand apart.
+Before version~0.22.0 such a create applied, and reduction's tempo chain held
+the first segment at the key alone while the graph kept both, so the note,
+measure or region the second named could be removed from under it. A canonical
+base holding such a map, a region's or the score's, is one no writer writes,
+refused at reopen with every base (Binary Format companion,
+\texttt{req:binfmt:op-block-boundary}).
+
+So is a \texttt{CreateRegion} whose carried tempo map no sequence of
+\texttt{SetTempoSegment} writes could leave, read as such a write reads the
+map it leaves (Section~\ref{sec:k0:meter-tempo}): its segments not in order of
+their starts' resolved positions, a non-constant segment without its end
+tempo or its end, or a segment whose resolved end precedes its own start or
+passes the next segment's start (since version~0.22.0, before which such a
+create applied, a map out of order or overlapping against
+the core specification's \texttt{req:time:tempo-segment-order} and the
+rest unread).
+
 \textbf{Conflict cases.} None at reduction time: creation is set-union (a repeat
 create is idempotent), and the empty-only delete is a deterministic precondition
-gate, not a conflict.
+gate, not a conflict. Since version~0.22.0 a region is not empty, to its
+delete, while a live holder of a time anchor outside the cross-cutting
+structures names it (another region's extent, own model or grid, a staff
+instance's grid or carried clef or key change, a measure's start): the delete
+is refused \texttt{ContainerNotEmpty}, as for a tempo segment of another map,
+a holder the region itself is excepted.
 
 \textbf{Undo semantics.} Undo of a \emph{create} tombstones the minted container
 (Section~\ref{sec:k0:undo}); \texttt{StrictInverse} conflicts if it was
 concurrently mutated, with the policy treatment as for InsertEvent, and, since
 version~0.19.0, if a live child the undo leaves is in it (a region's staff
-instance, an instance's voice, a voice's event), which it would leave naming
+instance, an instance's voice or, since version~0.22.0, its measure, a voice's
+event), which it would leave naming
 nothing, or a live tempo segment of another map is anchored to a region it
 would remove, as a \texttt{DeleteRegion} is refused (the conflict naming the
-region, the segment having no identifier), or, since version~0.21.0, a live
+region, the segment having no identifier; since version~0.22.0 a map whose
+region is not live, or which the same undo removes, holds nothing, before
+which only the removed region's own map was excepted), or, since version~0.21.0, a live
 marker or spanner the undo leaves is anchored to it, read as the undo's
-restorations leave it (the conflict naming the structure). An undone region or staff instance leaves the graph-aware score, as a
+restorations leave it (the conflict naming the structure), or, since
+version~0.22.0, any other live holder the undo leaves names it, read so. An undone region or staff instance leaves the graph-aware score, as a
 deleted one does, and an undone staff instance or voice leaves its container's
 place in the reducer's indices, so a region or instance the undo emptied is
 empty to a later \texttt{DeleteRegion} or \texttt{DeleteStaffInstance}
@@ -2340,6 +2601,9 @@ A measure stands in musical time: one whose start is anchored in musical time
 into a region admitting no musical offset is refused with
 \texttt{WrongRegionTimeModel}, as a time signature is (since version~0.19.0,
 before which it applied after a concurrent migration out of musical time).
+Since version~0.22.0 so is one whose start's offset its target's model does
+not admit, or which a live holder names before it is made by an offset its
+region's model does not admit (Section~\ref{sec:framework:anchor-offsets}).
 
 \textbf{Ordering and boundary-distance preconditions (core specification
 \sectionsc{Graph Invariants}, invariant 20).} Graph-aware, against the current
@@ -2400,6 +2664,14 @@ immutable value maps with no modify operation, so restoration-awareness does
 not apply to them. Also closes a pre-existing hole: a minted
 \texttt{TimeSignature} still named by a live \texttt{Measure.time\_signature}
 now blocks its own undo, exactly as a live meter-change reference already did.
+Since version~0.22.0 so does a live staff instance whose own grid names it, or
+a live region whose own model names it: the grid is written once, by the
+instance's create, and the model by the region's create or a migration, and
+neither is restored. And since version~0.22.0 a measure's undo is held by an
+eighth class of surface, every other holder of a time anchor outside the
+cross-cutting structures that names the measure: a region's extent, own model
+or grid (read as the undo's restorations leave it), or a staff instance's
+grid or carried clef or key change.
 
 \textbf{Re-anchoring.} Not applicable (a measure mint references no
 tombstonable anchor of its own; there is no \texttt{DeleteMeasure} in this
@@ -2477,11 +2749,21 @@ restoration of an event's value would change the duration of a live tuplet's
 member, the tuplet not among the undo's own mints, is superseded by the
 tuplet's create, as a later write supersedes it: \texttt{StrictInverse}
 conflicts and \texttt{BestEffort} leaves the duration (since
-version~0.19.0, before which the restoration broke the tuplet's sum).
+version~0.19.0, before which the restoration broke the tuplet's sum). An
+undo that would remove a tuplet a live tuplet the undo leaves names as its
+\texttt{parent} is held: \texttt{StrictInverse} and \texttt{Cascade}
+conflict, and \texttt{BestEffort} keeps the parent (since version~0.22.0,
+before which the undo removed it and left the child naming nothing).
 
 \textbf{Re-anchoring.} The tuplet references its members; the rule table's
 ``Tuplet / Member event'' row governs a member's delete. Nesting is
-representable (\texttt{parent}) but no producer in this revision writes it.
+representable (\texttt{parent}), and no producer in this revision writes it.
+A member's cascade, declared (\texttt{CascadeDeleteTuplets}) or by an undo
+tombstoning a member with no compensation to declare, carries the live
+tuplets nested in each tuplet it removes, and theirs, each
+\texttt{CascadeDeleted}, in the index and the graph alike (since
+version~0.22.0, before which a child left in place named its removed
+parent).
 
 \section{SetClef and SetKeySignature}
 \label{sec:k0:set-clef}
@@ -2621,7 +2903,10 @@ live event --- \texttt{start}/\texttt{end}, the kind's jump targets
 \texttt{DalSegno.segno}/\texttt{end\_target}), and each volta's
 \texttt{start}/\texttt{end} --- since the mint must leave the graph
 satisfying the reference-resolution invariants; a dead anchor is a
-precondition no-op (\texttt{TargetMissing}). A repeat create of a live id
+precondition no-op (\texttt{TargetMissing}), and since version~0.22.0 an anchor
+site whose offset its target's model does not admit is one with
+\texttt{WrongRegionTimeModel} (Section~\ref{sec:framework:anchor-offsets}). A
+repeat create of a live id
 reads \texttt{AlreadyApplied} without value comparison (the cross-cutting
 discipline; the \texttt{RecreateContentMismatch} scope of
 Section~\ref{sec:k0:create-staff} is unchanged). A delete tombstones the
@@ -2641,7 +2926,9 @@ minted-object undo does not re-introduce the tombstoned structure
 table when a referenced event is later tombstoned: re-anchor to the
 nearest surviving anchor, cascade-delete only when none survives --- as
 for spanners, spanning \emph{every} anchor site
-(\texttt{start}/\texttt{end}, jump targets, volta spans). Among multiple
+(\texttt{start}/\texttt{end}, jump targets, volta spans), each dead site
+taking the first site naming the survivor whole, its offset with it (since
+version~0.22.0). Among multiple
 surviving candidates --- a case slurs and spanners never present, since
 their sole other endpoint is the forced survivor --- ``nearest'' is
 currently realized as the deterministic identifier-order minimum (the
@@ -2666,17 +2953,29 @@ anchor: TimeAnchor, present: bool \}} --- the full anchor value (v1).
 value, then the boolean.
 
 \textbf{Reduction rule.} A last-writer-wins advisory. The break preference is
-recorded for the region keyed by the anchor's \emph{resolved musical position};
-graph-aware reduction adds or removes the anchor from the region's user
-system-break list.
+recorded for the region keyed by its \emph{anchor} (since version~0.22.0,
+reduction algorithm version~5; before it by the anchor's resolved musical
+position, so two anchors to measures or events of one region, all resolving
+to its origin, shared one slot): distinct anchors are distinct breaks, and a
+break anchored to a measure or an event keeps its slot when its music moves.
+Graph-aware reduction adds or removes the anchor in the region's user
+system-break list. The anchor must name what the region holds: an event or a
+measure live in that region, or that region's own edge; a break naming a dead
+or foreign event or measure, or another region, is a precondition no-op,
+\texttt{TargetMissing}, in both modes, read from the ledger's indices. A
+break whose event a later delete removes stays keyed and places nothing. A
+present break whose anchor's offset its target's model does not admit is
+refused \texttt{WrongRegionTimeModel} (since version~0.22.0,
+Section~\ref{sec:framework:anchor-offsets}).
 
 \textbf{Conflict cases.} None (LWW advisory).
 
 \textbf{Undo semantics.} Undo restores the prior advisory value for the
-\texttt{(region, resolved-position)} key.
+\texttt{(region, anchor)} key; a restored break naming a target tombstoned
+since is superseded by that tombstoning.
 
-\textbf{Re-anchoring.} Not applicable in the prototype (the advisory is keyed by
-resolved position; a tombstoned anchor target degrades to the region origin).
+\textbf{Re-anchoring.} Not applicable (the advisory is keyed by its anchor; a
+tombstoned anchor target leaves the break keyed, placing nothing).
 
 \section{Score Settings}
 \label{sec:k0:score-settings}
@@ -2704,11 +3003,12 @@ meter sequence names a time signature that is not live (the Chapter~5 invariant
 forbids installing such a grid); a grid set in a region whose time model admits
 no musical offset is refused with \texttt{WrongRegionTimeModel} in both modes
 (since version~0.19.0; clearing it still applies). \emph{SetUserPageBreak} is a canonical LWW
-advisory keyed by the anchor's resolved musical position, with the same
-staff-based precondition. Graph-aware reduction overwrites the metadata singleton,
-sets the region's default metric grid, or adds/removes the page-break anchor
-under its resolved-position key (so two anchors resolving to one position occupy a
-single slot).
+advisory keyed by its anchor (since version~0.22.0; before it by the anchor's
+resolved musical position), with the same staff-based precondition and the
+same requirement that its anchor name what its region holds
+(Section~\ref{sec:k0:set-user-system-break}). Graph-aware reduction overwrites
+the metadata singleton, sets the region's default metric grid, or adds/removes
+the page-break anchor under its own key.
 
 \textbf{Conflict cases.} SetMetadata and SetUserPageBreak: none (advisory LWW).
 SetMetricGrid: two concurrent differing grids for one region produce a
@@ -2746,17 +3046,25 @@ present) the length-framed \texttt{segment}.
 
 \textbf{Reduction rule.} Last-writer-wins structural overwrites keyed by
 \texttt{(region, resolved position)} (time signature) and \texttt{(scope,
-resolved start)} (tempo segment). A carried \texttt{TimeSignature} is minted
+resolved start)} (tempo segment). An anchor's resolved position is its offset
+for a region anchor at a musical offset, and the region's origin for every
+other anchor, so a segment at a note, one at a measure and one at a region's
+edge share a key though they stand apart. A map holds one segment per key: a
+write replaces the segment at its key, and a region created carrying two is
+refused (Section~\ref{sec:k0:structural-containers}). A carried \texttt{TimeSignature} is minted
 set-union under the same discipline as \texttt{CreateStaff}: fresh id mints;
 byte-identical re-carry is idempotent; a differing value under a live id is a
 precondition no-op (\texttt{RecreateContentMismatch},
 Section~\ref{sec:k0:create-staff}). The time-signature value's beat-group sum is validated at
 construction and again at decode, so a malformed value never reaches
 reduction. A tempo-segment write preconditions that the \emph{resulting} map
-is well-formed (segments ordered and non-overlapping; a non-constant shape
-carries its end data; the carried segment's own start equals the operation's
-\texttt{start} key) --- a write that would malform the map is refused as a
-precondition no-op (\texttt{TempoMapMalformed}). A time signature written in a
+is well-formed (segments ordered and non-overlapping, none ending before its
+own start; a non-constant shape carries its end data, and a constant one records no end tempo, since
+version~0.22.0, before which one equal to its start was admitted; the carried
+segment's own start equals the operation's \texttt{start} key) --- a write
+that would malform the map is refused as a precondition no-op
+(\texttt{TempoMapMalformed}). A constant segment recording an end tempo fails
+its own decoder, so such a write reaches reduction only built in memory. A time signature written in a
 region whose time model admits no musical offset is refused with
 \texttt{WrongRegionTimeModel} in both modes (since version~0.19.0, before which
 it applied and left a meter in musical time). Graph-aware reduction applies
@@ -2768,7 +3076,13 @@ refused with \texttt{TargetMissing}, the region read as a referent in both
 modes (Requirement~\ref{req:catalog:base-free-referents}), and one anchored by
 a musical offset to a region admitting none with \texttt{WrongRegionTimeModel}
 (both since version~0.19.0, before which a score-level segment's anchors were
-not read).
+not read). Since version~0.22.0 one whose anchor names an event or a measure
+that is not live is refused with \texttt{TargetMissing} likewise, and so is a
+set meter change or a metric grid whose meter changes' anchors name an event,
+a measure or a region that is not live
+(Requirement~\ref{req:catalog:anchor-targets}); and a meter
+change or a segment anchored by any offset its target's model does not admit
+with \texttt{WrongRegionTimeModel} (Section~\ref{sec:framework:anchor-offsets}).
 
 \textbf{Conflict cases.} Two concurrent differing writes of one key produce a
 \texttt{StructuralFieldCollision} on the field \texttt{meter\_sequence} or
@@ -2781,7 +3095,10 @@ restores the key's chain-predecessor value (or its absence).
 \textbf{Re-anchoring.} An event-anchored \texttt{anchor}/\texttt{start} whose
 event is later tombstoned degrades by the framework's anchor rules; the
 overwrite keys on the \emph{resolved} position, so the recorded change
-survives its anchor.
+survives its anchor. Since version~0.22.0 a live tempo segment whose start or
+end names an event holds that event: its delete is refused
+\texttt{TargetAnchored} and an undo that would remove it is held
+(Section~\ref{sec:k0:delete-event}).
 
 \begin{openquestion}
 \textbf{P12-C5.} A mid-region meter change authored by
@@ -2974,9 +3291,14 @@ staff it spans) is superseded by that tombstoning (since version~0.19.0, before
 which the dangling value was restored); a value whose restoration would write in musical
 time into a region a migration has since taken out of it (a break anchored by
 a musical offset, a meter change, a metric grid, a tempo segment anchored in
-the region, a clef or key change of its staff instance) is superseded by that
-migration, as its setter is refused there (since version~0.19.0, before which
-it was restored at an offset the region no longer admits); and a value whose
+the region, a clef or key change of its staff instance and, since
+version~0.22.0, a marker or a spanner anchored to the region by a musical
+offset) is superseded by that migration, as its setter is refused there (since
+version~0.19.0, before which it was restored at an offset the region no longer
+admits); since version~0.22.0 likewise a marker, a spanner, a metric grid, a
+meter change, a tempo segment or a present break whose restoration would anchor
+it by any offset its target's model no longer admits, at any anchor
+(Section~\ref{sec:framework:anchor-offsets}); and a value whose
 restoration would name an object tombstoned since (a meter change's or metric
 grid's time signature or anchor, a tempo segment's anchors, an instrument
 override, a break's anchor) is superseded by the operation that tombstoned it,
@@ -3008,7 +3330,23 @@ removed and the meter change named nothing). A region is held by a live marker
 anchored to it, and by one on an event the undo removes that the repair would
 orphan to the region's start, read as the repair will leave it, each read as
 the whole undo leaves it, its restoration included
-(Section~\ref{sec:k0:create-cross-cutting}; since version~0.21.0).
+(Section~\ref{sec:k0:create-cross-cutting}; since version~0.21.0). A time
+signature is held by a live region's grid that names it as the grid's chains
+give it once the undo's restorations apply, the whole grid a
+\texttt{SetMetricGrid} wrote among them (since version~0.22.0, before which
+the undo removed a signature a later grid named and left the grid naming
+nothing). An event is held by a live tempo segment of any map whose start or
+end names it, read as the undo leaves the segment, a segment of a map whose
+region the undo removes holding nothing (since version~0.22.0, before which
+the undo removed the event and left the segment naming nothing). An event, a
+measure or a region is held likewise by every other live holder of a time
+anchor outside the cross-cutting structures that names it, read as the undo
+leaves it: a meter change of a region's own model, its grid or a staff
+instance's grid, a measure's start, a region's extent, and a clef or key
+change an instance's creation carried; a migration is not undone, so a target
+model written in the undone transaction still holds what it names (since
+version~0.22.0). A tuplet is held by a live tuplet nested in it that the undo
+leaves (Section~\ref{sec:k0:create-tuplet}; since version~0.22.0).
 
 \emph{Idempotence asymmetry (ratified Pass~12, closing P12-K11).} An undo's
 value restorations enter the write chains as ordinary writes by the undo

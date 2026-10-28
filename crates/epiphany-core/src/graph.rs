@@ -513,6 +513,29 @@ impl CoordinateDiscipline {
         )
     }
 
+    /// Whether an anchor offset of `kind` is valid against a region of this
+    /// discipline (graph invariant `AnchorOffsetModel`): no offset always, a
+    /// musical one as [`Self::admits_musical_offsets`] says, and a wall-clock
+    /// one in a proportional region, or an aleatoric region anchored in
+    /// wall-clock time, either way per event, or freely mixed. The
+    /// invariant's own reading, shared with reduction, so a region's time
+    /// extent is judged as the invariant will judge it.
+    pub fn admits_offset(&self, kind: crate::time::OffsetKind) -> bool {
+        use crate::time::OffsetKind;
+        use AleatoricAnchoringDiscipline as A;
+        match kind {
+            OffsetKind::Zero => true,
+            OffsetKind::Musical => self.admits_musical_offsets(),
+            OffsetKind::WallClock => matches!(
+                self,
+                CoordinateDiscipline::WallClock
+                    | CoordinateDiscipline::Aleatoric(
+                        A::WallClock | A::EitherPerEvent | A::FreelyMixed
+                    )
+            ),
+        }
+    }
+
     /// Whether an event placed at `position` for `duration` keeps invariant 4
     /// (`EventCoordinateModel`) in a region of this discipline: the
     /// invariant's own reading, shared with reduction, so a migration judges
@@ -1303,12 +1326,17 @@ pub enum MarkerKind {
     Fermata(Fermata),
     Breath(BreathMark),
     Caesura(CaesuraMark),
-    /// Staff or expression text, styled by the engraver.
+    /// Staff text, styled by the engraver.
     Text(crate::Text),
     Tempo(TempoMark),
     Rehearsal(crate::Text),
     Segno,
     Coda,
+    /// Expression text, which the engraver styles as expression (italic,
+    /// below the staff) where staff text stands upright above it (X5b.7,
+    /// roadmap D79 Q9). Appended at schema-minor epoch 16: an operation
+    /// whose value holds one requires that minor.
+    ExpressionText(crate::Text),
 }
 
 /// A point dynamic. Growth is by appended variant.

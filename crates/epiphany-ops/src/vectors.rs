@@ -23,8 +23,9 @@ use epiphany_core::{
 use epiphany_determinism::CanonicalEncode;
 
 use crate::{
-    IntegrityAnomaly, IntegrityAnomalyKind, MaterializedState, ObjectState, OperationEnvelope,
-    OperationKindRegistryId, OperationKindTag, PendingReason,
+    BlockStamp, BreakAnchor, IntegrityAnomaly, IntegrityAnomalyKind, MaterializedState, NoOpReason,
+    ObjectState, OperationEffect, OperationEnvelope, OperationKindRegistryId, OperationKindTag,
+    PendingReason, PreconditionFailureReason,
 };
 
 /// One vector: `(surface, verdict, class, name, bytes)`.
@@ -194,6 +195,128 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         "count-exceeds-remaining",
         "effects_count_u32_max",
         huge_count,
+    ));
+
+    // Breaks keyed by their anchors (reduction version 5): a measure's start
+    // and a musical offset from the region's start, in one region, a slot
+    // each. Every other section is empty, so the breaks section stands at
+    // byte 20 (its count) and the two sections after it take 8 bytes.
+    let region = epiphany_core::RegionId::new(ReplicaId(1), 7);
+    let mut keys = [
+        BreakAnchor::new(epiphany_core::TimeAnchor::Measure {
+            id: epiphany_core::MeasureId::new(ReplicaId(1), 8),
+            position: epiphany_core::MeasurePosition::Start,
+            offset: epiphany_core::AnchorOffset::Zero,
+        }),
+        BreakAnchor::new(crate::valuegen::region_start_anchor(
+            region,
+            epiphany_core::MusicalPosition(epiphany_core::RationalTime::from_int(4)),
+        )),
+    ];
+    keys.sort();
+    let with_breaks = |entries: &[(&BreakAnchor, bool)]| {
+        MaterializedState {
+            breaks: entries
+                .iter()
+                .map(|(key, present)| ((region, (*key).clone()), *present))
+                .collect(),
+            ..Default::default()
+        }
+        .canonical_bytes()
+    };
+    let entry = |key: &BreakAnchor, present: bool| {
+        let bytes = with_breaks(&[(key, present)]);
+        bytes[24..bytes.len() - 8].to_vec()
+    };
+    let breaks_section = |entries: &[Vec<u8>]| {
+        let mut out = empty[..20].to_vec();
+        out.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+        for e in entries {
+            out.extend_from_slice(e);
+        }
+        out.extend_from_slice(&empty[24..]);
+        out
+    };
+    let two_breaks = with_breaks(&[(&keys[0], true), (&keys[1], false)]);
+    assert_eq!(
+        two_breaks,
+        breaks_section(&[entry(&keys[0], true), entry(&keys[1], false)])
+    );
+    v.push(row(MS, "accept", "-", "two_breaks", two_breaks));
+    v.push(row(
+        MS,
+        "reject",
+        "non-canonical-map-order",
+        "breaks_out_of_order",
+        breaks_section(&[entry(&keys[1], false), entry(&keys[0], true)]),
+    ));
+    let mut unknown_anchor = region.canonical_bytes().to_vec();
+    unknown_anchor.extend_from_slice(&1u32.to_le_bytes());
+    unknown_anchor.push(0xFF);
+    unknown_anchor.push(1);
+    v.push(row(
+        MS,
+        "reject",
+        "unknown-discriminant",
+        "break_anchor_unknown_tag",
+        breaks_section(&[unknown_anchor]),
+    ));
+
+    // A fill refused for an overlap (reduction version 5): one effect whose
+    // reason is `RegionsOverlap`, discriminant 21. The reason is the effect's
+    // last byte, and every section after the effects is empty; a reason no
+    // build names is refused.
+    let overlap = MaterializedState {
+        effects: vec![(
+            OperationId::new(ReplicaId(1), 3),
+            OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::RegionsOverlap,
+                },
+            },
+        )],
+        ..Default::default()
+    }
+    .canonical_bytes();
+    let reason_at = overlap.len() - (empty.len() - 4) - 1;
+    assert_eq!(overlap[reason_at], 21);
+    v.push(row(
+        MS,
+        "accept",
+        "-",
+        "a_fill_refused_for_an_overlap",
+        overlap.clone(),
+    ));
+    // A delete refused for a holder's anchor (reduction version 5): the same
+    // effect with `TargetAnchored`, discriminant 22, the next reason.
+    let anchored = MaterializedState {
+        effects: vec![(
+            OperationId::new(ReplicaId(1), 3),
+            OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetAnchored,
+                },
+            },
+        )],
+        ..Default::default()
+    }
+    .canonical_bytes();
+    assert_eq!(anchored[reason_at], 22);
+    v.push(row(
+        MS,
+        "accept",
+        "-",
+        "a_delete_refused_for_an_anchor",
+        anchored,
+    ));
+    let mut unknown_reason = overlap;
+    unknown_reason[reason_at] = 0xFF;
+    v.push(row(
+        MS,
+        "reject",
+        "unknown-discriminant",
+        "precondition_reason_unknown",
+        unknown_reason,
     ));
 
     // --- OperationKindTag --------------------------------------------------
@@ -731,7 +854,318 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         v.push(row(OE, "accept", "-", name, envelope.to_canonical_bytes()));
     }
 
+    // X5b.7: a marker of the expression-text kind, appended at epoch 16.
+    let expression = staff_change(
+        14,
+        crate::payload::OperationKind::CreateCrossCutting(crate::payload::CreateCrossCuttingOp {
+            structure: crate::payload::CrossCuttingValue::Marker(epiphany_core::Marker {
+                id: epiphany_core::MarkerId::new(ReplicaId(1), 15),
+                anchor: epiphany_core::TimeAnchor::Event {
+                    id: EventId::new(ReplicaId(1), 16),
+                    offset: epiphany_core::AnchorOffset::Zero,
+                },
+                kind: epiphany_core::MarkerKind::ExpressionText(epiphany_core::Text::new("dolce")),
+            }),
+        }),
+    );
+    v.push(row(
+        OE,
+        "accept",
+        "-",
+        "create_expression_text_marker",
+        expression.to_canonical_bytes(),
+    ));
+
+    // X5b (P13-S8): a constant tempo segment recording an end tempo fails
+    // the segment's own decoder, as a second spelling of one tempo.
+    let tempo = epiphany_core::Tempo::quarter(96.0).expect("a tempo");
+    let doubled = staff_change(
+        13,
+        crate::payload::OperationKind::SetTempoSegment(crate::payload::SetTempoSegmentOp {
+            region: None,
+            start: epiphany_core::TimeAnchor::WallClock {
+                time: epiphany_core::WallClockTime(0),
+            },
+            segment: Some(epiphany_core::TempoSegment {
+                start: epiphany_core::TimeAnchor::WallClock {
+                    time: epiphany_core::WallClockTime(0),
+                },
+                end: None,
+                start_tempo: tempo.clone(),
+                end_tempo: Some(tempo),
+                shape: epiphany_core::TempoShape::Constant,
+            }),
+        }),
+    );
+    v.push(row(
+        OE,
+        "reject",
+        "constant-tempo-with-end-tempo",
+        "set_tempo_segment_constant_with_end_tempo",
+        doubled.to_canonical_bytes(),
+    ));
+
+    // X5b (C5b review 2, D89): a region created carrying a tempo map whose two
+    // segments start at its own start and at a note, which give one key. It
+    // decodes; where the note is live, reduction refuses it
+    // `TempoMapMalformed`, as two `SetTempoSegment` writes at that key would
+    // leave one segment.
+    let region_id = epiphany_core::RegionId::new(ReplicaId(1), 17);
+    let constant_at = |start: epiphany_core::TimeAnchor| epiphany_core::TempoSegment {
+        start,
+        end: None,
+        start_tempo: epiphany_core::Tempo::quarter(96.0).expect("a tempo"),
+        end_tempo: None,
+        shape: epiphany_core::TempoShape::Constant,
+    };
+    let mut carrier = crate::valuegen::region(region_id);
+    carrier.local_tempo_map = Some(epiphany_core::TempoMap {
+        initial: None,
+        segments: vec![
+            constant_at(epiphany_core::TimeAnchor::Region {
+                id: region_id,
+                edge: epiphany_core::RegionEdge::Start,
+                offset: epiphany_core::AnchorOffset::Zero,
+            }),
+            constant_at(epiphany_core::TimeAnchor::Event {
+                id: EventId::new(ReplicaId(1), 18),
+                offset: epiphany_core::AnchorOffset::Zero,
+            }),
+        ],
+    });
+    let two_on_one_key = staff_change(
+        19,
+        crate::payload::OperationKind::CreateRegion(crate::payload::CreateRegionOp {
+            region: carrier,
+        }),
+    );
+    v.push(row(
+        OE,
+        "accept",
+        "-",
+        "create_region_carrying_two_tempo_segments_on_one_key",
+        two_on_one_key.to_canonical_bytes(),
+    ));
+
+    // X5b (D90 Q3): a region created carrying a tempo map no sequence of
+    // `SetTempoSegment` writes could leave: its segments out of order, one
+    // ending past the next one's start, one ending before its own start, or
+    // a linear one without its end tempo. Each decodes; reduction refuses it
+    // `TempoMapMalformed`, as such a write is refused.
+    let bars_in = |bars: i32| epiphany_core::TimeAnchor::Region {
+        id: region_id,
+        edge: epiphany_core::RegionEdge::Start,
+        offset: epiphany_core::AnchorOffset::Musical(epiphany_core::MusicalDuration(
+            epiphany_core::RationalTime::from_int(bars),
+        )),
+    };
+    let from_to = |from: i32, to: Option<i32>| epiphany_core::TempoSegment {
+        end: to.map(bars_in),
+        ..constant_at(bars_in(from))
+    };
+    let mut linear = from_to(1, Some(2));
+    linear.shape = epiphany_core::TempoShape::Linear;
+    for (counter, name, segments) in [
+        (
+            20,
+            "create_region_carrying_tempo_segments_out_of_order",
+            vec![from_to(2, None), from_to(1, None)],
+        ),
+        (
+            21,
+            "create_region_carrying_overlapping_tempo_segments",
+            vec![from_to(1, Some(3)), from_to(2, None)],
+        ),
+        (
+            22,
+            "create_region_carrying_a_tempo_segment_ending_before_its_start",
+            vec![from_to(2, Some(1))],
+        ),
+        (
+            23,
+            "create_region_carrying_a_linear_tempo_segment_without_its_end_tempo",
+            vec![linear],
+        ),
+    ] {
+        let mut carrier = crate::valuegen::region(region_id);
+        carrier.local_tempo_map = Some(epiphany_core::TempoMap {
+            initial: None,
+            segments,
+        });
+        let create = staff_change(
+            counter,
+            crate::payload::OperationKind::CreateRegion(crate::payload::CreateRegionOp {
+                region: carrier,
+            }),
+        );
+        v.push(row(OE, "accept", "-", name, create.to_canonical_bytes()));
+    }
+
+    // ---- ops.operation_block ------------------------------------------------
+    // An operation block as a reader holds it to the supported-layout boundary
+    // (Binary Format companion §"The Chunk-Level Gate"): the block's declared
+    // schema version, major then minor as little-endian `u16`s, followed by
+    // the block payload in `bundle.block`'s framing. Accepted only when every
+    // envelope decodes under the live layouts, the version is what minimal
+    // stamping derives from them, and the minor is no later than this
+    // build's.
+    const OB: &str = "ops.operation_block";
+    let envelope = |name: &str| {
+        v.iter()
+            .find(|(s, verdict, _, n, _)| *s == OE && *n == name && *verdict == "accept")
+            .map(|row| row.4.clone())
+            .expect("the envelope vector exists")
+    };
+    let derive = |payloads: &[Vec<u8>]| {
+        let decoded: Vec<OperationEnvelope> = payloads
+            .iter()
+            .map(|bytes| crate::envdecode::decode_envelope(bytes).expect("an accept vector"))
+            .collect();
+        BlockStamp::derive(&decoded)
+    };
+    let clef = vec![envelope("set_clef")];
+    let mixed = vec![
+        envelope("create_instrument"),
+        envelope("set_clef"),
+        envelope("create_tuplet"),
+    ];
+    let (clef_stamp, mixed_stamp) = (derive(&clef), derive(&mixed));
+    let at = |major, minor| BlockStamp { major, minor };
+    let historical = v
+        .iter()
+        .find(|(s, _, _, n, _)| *s == OE && n == "create_tuplet_before_major_4")
+        .map(|row| row.4.clone())
+        .expect("the historical tuplet vector exists");
+    let mut truncated = envelope("set_clef");
+    truncated.pop();
+    let expression = vec![envelope("create_expression_text_marker")];
+    let expression_stamp = derive(&expression);
+    for (verdict, class, name, declared, payloads) in [
+        ("accept", "-", "one_major_0_operation", clef_stamp, &clef),
+        ("accept", "-", "mixed_majors", mixed_stamp, &mixed),
+        (
+            "reject",
+            "unsupported-schema-minor",
+            "later_minor",
+            at(clef_stamp.major, crate::block::HIGHEST_SCHEMA_MINOR + 1),
+            &clef,
+        ),
+        (
+            "reject",
+            "mis-stamped",
+            "major_above_derived",
+            at(clef_stamp.major + 1, clef_stamp.minor),
+            &clef,
+        ),
+        (
+            "reject",
+            "mis-stamped",
+            "major_below_derived",
+            at(mixed_stamp.major - 1, mixed_stamp.minor),
+            &mixed,
+        ),
+        (
+            "reject",
+            "mis-stamped",
+            "minor_below_derived",
+            at(clef_stamp.major, 1),
+            &clef,
+        ),
+        (
+            "reject",
+            "unsupported-layout",
+            "tuplet_before_major_4",
+            at(0, 13),
+            &vec![historical],
+        ),
+        (
+            "reject",
+            "unsupported-layout",
+            "undecodable_envelope",
+            clef_stamp,
+            &vec![truncated],
+        ),
+        (
+            "accept",
+            "-",
+            "expression_text_at_its_epoch",
+            expression_stamp,
+            &expression,
+        ),
+        (
+            "reject",
+            "mis-stamped",
+            "expression_text_below_its_epoch",
+            at(expression_stamp.major, expression_stamp.minor - 1),
+            &expression,
+        ),
+    ] {
+        v.push(row(
+            OB,
+            verdict,
+            class,
+            name,
+            block_vector(declared, payloads),
+        ));
+    }
+    let mut trailing = block_vector(clef_stamp, &clef);
+    trailing.push(0);
+    v.push(row(
+        OB,
+        "reject",
+        "trailing-bytes",
+        "trailing_byte",
+        trailing,
+    ));
+
     v
+}
+
+/// An `ops.operation_block` vector: `declared`'s major and minor, then
+/// `payloads` framed as an operation block is (a `u32` count, then each
+/// envelope as a `u32` length and its bytes, all little-endian).
+fn block_vector(declared: BlockStamp, payloads: &[Vec<u8>]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&declared.major.to_le_bytes());
+    out.extend_from_slice(&declared.minor.to_le_bytes());
+    out.extend_from_slice(&(payloads.len() as u32).to_le_bytes());
+    for payload in payloads {
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(payload);
+    }
+    out
+}
+
+/// The inverse of [`block_vector`]'s framing, or `None` where it is malformed.
+fn split_block_vector(bytes: &[u8]) -> Option<(BlockStamp, Vec<Vec<u8>>)> {
+    fn u32_at(bytes: &[u8], at: usize) -> Option<usize> {
+        let field = bytes.get(at..at + 4)?;
+        usize::try_from(u32::from_le_bytes(field.try_into().ok()?)).ok()
+    }
+    let major = u16::from_le_bytes(bytes.get(0..2)?.try_into().ok()?);
+    let minor = u16::from_le_bytes(bytes.get(2..4)?.try_into().ok()?);
+    let count = u32_at(bytes, 4)?;
+    let mut at = 8;
+    let mut payloads = Vec::new();
+    for _ in 0..count {
+        let len = u32_at(bytes, at)?;
+        at += 4;
+        payloads.push(bytes.get(at..at.checked_add(len)?)?.to_vec());
+        at += len;
+    }
+    (at == bytes.len()).then_some((BlockStamp { major, minor }, payloads))
+}
+
+fn check_block(bytes: &[u8]) -> Result<bool, String> {
+    let (declared, payloads) =
+        split_block_vector(bytes).ok_or_else(|| "malformed block framing".to_owned())?;
+    match crate::block::decode_operation_block(&payloads, declared) {
+        Ok(decoded) => {
+            let reencoded: Vec<Vec<u8>> = decoded.iter().map(|e| e.to_canonical_bytes()).collect();
+            Ok(block_vector(declared, &reencoded) == bytes)
+        }
+        Err(e) => Err(format!("{e:?}")),
+    }
 }
 
 /// Applies `surface`'s decoder to `bytes`.
@@ -757,6 +1191,7 @@ pub fn check(surface: &str, bytes: &[u8]) -> Option<Result<bool, String>> {
             Ok(env) => Ok(env.to_canonical_bytes() == bytes),
             Err(e) => Err(format!("{e:?}")),
         }),
+        "ops.operation_block" => Some(check_block(bytes)),
         _ => None,
     }
 }
@@ -829,6 +1264,7 @@ mod tests {
             "ops.materialized_state",
             "ops.operation_kind_tag",
             "ops.operation_envelope",
+            "ops.operation_block",
         ] {
             let rows: Vec<_> = decode_vectors()
                 .into_iter()
@@ -843,6 +1279,43 @@ mod tests {
                 "{surface} has no reject vector"
             );
         }
+    }
+
+    /// Each `ops.operation_block` rejection is refused by the name its class
+    /// gives, not by another of the boundary's refusals.
+    #[test]
+    fn each_block_rejection_is_refused_by_its_own_name() {
+        use crate::block::OperationBlockError as E;
+        let mut seen = std::collections::BTreeSet::new();
+        for (surface, verdict, class, name, bytes) in decode_vectors() {
+            if surface != "ops.operation_block" || verdict != "reject" {
+                continue;
+            }
+            let Some((declared, payloads)) = split_block_vector(&bytes) else {
+                assert_eq!(class, "trailing-bytes", "{name}");
+                continue;
+            };
+            let refusal = crate::block::decode_operation_block(&payloads, declared)
+                .expect_err("a reject vector");
+            match (class, &refusal) {
+                ("unsupported-schema-minor", E::UnsupportedSchemaMinor { .. })
+                | ("mis-stamped", E::MisStamped { .. }) => {}
+                ("unsupported-layout", E::UnsupportedLayout { value, .. }) => {
+                    let expected = (name == "tuplet_before_major_4").then_some("Tuplet");
+                    assert_eq!(*value, expected, "{name}");
+                }
+                _ => panic!("{name} ({class}): refused as {refusal:?}"),
+            }
+            seen.insert(class);
+        }
+        assert_eq!(
+            seen.into_iter().collect::<Vec<_>>(),
+            [
+                "mis-stamped",
+                "unsupported-layout",
+                "unsupported-schema-minor"
+            ]
+        );
     }
 
     /// The two rejection classes that need *different* machinery: a map order a

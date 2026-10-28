@@ -2717,15 +2717,26 @@ fn a_clef_or_key_in_a_region_out_of_musical_time_is_refused_in_both_modes() {
     let set_clef = m.op(A, 3, 4, &[migrated.id], clef(instance));
     let set_key = m.op(A, 4, 5, &[migrated.id], key(instance));
     // The carrying instance goes into a second region, the first already
-    // manifesting the staff.
+    // manifesting the staff, over other time than the first, which holds the
+    // staff there (reduction version 5 refuses a fill overlapping it,
+    // `RegionsOverlap`).
     let other = RegionId::new(A, 1103);
+    let mut other_region = valuegen::region(other);
+    other_region.time_extent = epiphany_core::TimeExtent {
+        start: TimeAnchor::WallClock {
+            time: WallClockTime(2_000_000_000),
+        },
+        end: TimeAnchor::WallClock {
+            time: WallClockTime(2_000_001_000),
+        },
+    };
     let create_other = m.op(
         A,
         5,
         6,
         &[set_key.id],
         primitive(OperationKind::CreateRegion(CreateRegionOp {
-            region: valuegen::region(other),
+            region: other_region,
         })),
     );
     let migrated_other = m.op(
@@ -4364,7 +4375,10 @@ fn a_pitch_inserted_into_an_unpitched_event_makes_it_a_note_in_both_modes() {
 /// region, a staff instance set to a new instrument, and a system and a page
 /// break at a new measure. Before reduction version 3 the redo restored the value naming
 /// the removed object (`CrossCuttingRefsResolve`, or an anchor naming
-/// nothing).
+/// nothing). Since reduction version 5 a break's slot is its anchor, so a break
+/// at the new measure is a slot the transaction opened: the undo's removal of
+/// it restores absence, which is no write, and the redo has nothing of it to
+/// restore; the slot stays empty and no break names the removed measure.
 #[test]
 fn a_redo_restores_nothing_naming_what_the_undo_removed_in_both_modes() {
     use epiphany_core::{
@@ -4472,8 +4486,9 @@ fn a_redo_restores_nothing_naming_what_the_undo_removed_in_both_modes() {
                 ),
             ),
             (
-                // A break at the region's start beforehand, so the undo's
-                // restoration of it is a write the redo then reverses.
+                // A break at the region's start beforehand: under reduction
+                // version 4 the measure's break shared its slot, so the
+                // undo's restoration of it was a write the redo reversed.
                 "a system break at a measure",
                 (
                     vec![primitive(OperationKind::SetUserSystemBreak(
@@ -4611,6 +4626,40 @@ fn a_redo_restores_nothing_naming_what_the_undo_removed_in_both_modes() {
                 effect(&state, undo.id)
             );
             assert!(tombstoned(&state, made), "{history}: removed by the undo");
+            if name.contains("break") {
+                let TypedObjectId::Measure(measure) = made else {
+                    panic!("{history}: a break's case makes a measure");
+                };
+                let names = |anchor: &TimeAnchor| matches!(anchor, TimeAnchor::Measure { id, .. } if *id == measure);
+                assert!(
+                    !state
+                        .breaks
+                        .iter()
+                        .chain(&state.page_breaks)
+                        .any(|((_, key), present)| *present && names(key.anchor())),
+                    "{history}: a break slot at the removed measure stands"
+                );
+                let mut set = OperationSet::new();
+                set.accept_all(m.import.envelopes.iter().chain(&authored).cloned());
+                let graph = set.reduce_onto(&Score::empty(IdentityContext::new(m.import.replica)));
+                let content = graph
+                    .score
+                    .canvas
+                    .regions
+                    .iter()
+                    .find(|r| r.id == m.region)
+                    .and_then(|r| r.content.staff_based())
+                    .expect("the measure's region");
+                assert!(
+                    !content
+                        .user_system_breaks
+                        .iter()
+                        .chain(&content.user_page_breaks)
+                        .any(names),
+                    "{history}: a break names the removed measure"
+                );
+                continue;
+            }
             match policy {
                 UndoPolicy::StrictInverse => {
                     let Some(OperationEffect::Conflicted { conflict }) = effect(&state, redo.id)

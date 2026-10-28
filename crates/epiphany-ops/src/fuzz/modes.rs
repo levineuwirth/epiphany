@@ -38,7 +38,12 @@
 //! note in it marked): the note entered after the transaction and deleted,
 //! orphaning its mark, then the voice, instance and region deleted in turn or
 //! the transaction undone; or one or two notes entered in the transaction,
-//! the first marked, and the transaction undone. A
+//! the first marked, and the transaction undone; or one or two notes entered
+//! in the transaction, which also moves an older mark onto the first of them
+//! or the region's start, and the transaction undone, the mark's restoration
+//! taking it back to where it stood; and a mark placed at a region's start
+//! by a musical offset, moved off it, the region taken out of musical time and
+//! the move undone, the migration superseding the mark's restoration. A
 //! whole-event modify moves, resizes or revalues an event, writes a chord
 //! without a pitch its author sees, writes an event as another kind in its
 //! place, or mints a pitch, a chord written with a new one or another kind
@@ -51,8 +56,12 @@
 //! objects, a trajectory endpoint naming another event's pitch). A pitch is
 //! entered into an event of any kind. A spanner's staves are rewritten, and a
 //! migration's aleatoric target takes every anchoring discipline. A spanner is
-//! anchored to events only: one anchored to a region a delete or undo removes
-//! is a class the owner has parked (P13-D3).
+//! anchored to events and, by arm 67, to a region's start, which holds the
+//! region against its delete and undo; a repeat structure is anchored to
+//! events only, one anchored to a region a delete or undo removes being the
+//! class the owner has parked (P13-D3; C5b review 1's L2). A tuplet is now and
+//! then nested in one the view holds (arm 40), so its parent's undo is held and
+//! a member's cascade carries it (X5b fix round 1, D87 Q3).
 //!
 //! Some shapes of those kinds are not written either, though none names
 //! another object: a trajectory is linear or exponential, never curved or
@@ -66,13 +75,63 @@
 //! line is a spanner's alone, never a slur's, a tie's, or a staff's,
 //! instrument's or staff instance's lines, though each stamps major 5; no
 //! verdict reads a line style. A marker is anchored to an event or to a
-//! region by a musical offset, never to a measure or a wall-clock time, so the
-//! measure strand guard never meets one. A dynamic is one of four (`p`, `mf`,
+//! region by a musical offset, and, by arm 67 (X5b.9), to a region, an event
+//! or a measure by an offset of either kind; never to a wall-clock time. A
+//! dynamic is one of four (`p`, `mf`,
 //! `sfz`, `niente`), never another nor `Other` with its text; a fermata takes
 //! two of its five shapes, a breath mark and a caesura one kind each, and a
 //! tempo mark always a quarter's metronome. An ornament stands alone on its
 //! note, with an accidental above and never below; a grace is an eighth, a
 //! sixteenth or a quarter, of at most one dot.
+//!
+//! Of reduction version 5's verdicts (X5b), each is written. A region is
+//! placed over another's span with an instance of a staff that region holds,
+//! or starts at a region's end or at an event, so that a fill overlapping a
+//! region holding its staff is refused (`RegionsOverlap`). A region's extent
+//! takes an offset of either kind from a region's end, from its own start, or
+//! from an event or a measure, refused `WrongRegionTimeModel` where its
+//! target's time model does not admit it, and a region so anchored has the
+//! region it names migrated to a model of any kind, which strands it where
+//! the target does not admit its offset; a region anchored at a note or a
+//! measure by a wall-clock offset, in a region first given a model admitting
+//! either clock, has that region migrated so too (X5b.8). A user break is anchored to a
+//! measure's start, an event or an offset from its region's start, now and
+//! then in another region (`TargetMissing`). A constant tempo segment now and
+//! then records its end tempo (`TempoMapMalformed`), built in memory since no
+//! decoder reads it.
+//! Expression text is one of a marker's kinds. Every other holder of a time
+//! anchor is written by a wall-clock offset too (X5b.9): a marker, a user break,
+//! a time signature, a metric grid's meter change, a tempo segment (at a
+//! region's start, a note or a measure, each held against its removal since
+//! X5b's fix round 1), a measure, a staff instance's carried clef, key or grid,
+//! a region's own meter, break or tempo segment, a migration's own meter, a
+//! spanner at a note or a region's start, and a repeat at a note (one at a
+//! region is the parked P13-D3), each in a region the view holds,
+//! given a model admitting wall-clock time one time in two, refused
+//! `WrongRegionTimeModel` where its target admits none, and its region then
+//! migrated to a model of any kind one time in two (arm 67); a marker, a
+//! spanner, a break, a tempo segment, a time signature or a grid so written,
+//! changed in a transaction, its region migrated and the change undone, the
+//! migration superseding the restoration (arm 68); and a region placed with its
+//! start at a note or a measure its author makes next, which the note's insert
+//! or the measure's create then reads (arm 69). That extent names what its
+//! author's view does not yet hold, the one name [`valid`] does not hold to
+//! the view; since X5b's fix round 1 the extent's write is refused
+//! `TargetMissing`, as every holder's naming a target that is not live is.
+//! And a time signature set in a transaction, a region's grid then set naming
+//! it outside the transaction, and the transaction undone (arm 70), which the
+//! grid holds (D86 Q1); and a note, a measure, an empty region or a tuplet made
+//! in a transaction, a holder or a nested tuplet then naming it, and the
+//! transaction undone or the note or region deleted (arm 71), which the holder
+//! holds (D86 Q2, D87 Q1 and Q3). And a region placed carrying a tempo map
+//! with two segments on one key, one at a note the view holds and the other
+//! at its own start, a measure's or another region's, in either order, and
+//! one time in two the note then deleted (arm 72): the create is refused
+//! `TempoMapMalformed` (D89). And a region placed in a metric model carrying a
+//! tempo map no sequence of `SetTempoSegment` writes could leave, its segments
+//! a bar or more into its start out of order, one ending past the next one's
+//! start, one ending before its own start, or a linear one without its end
+//! tempo (arm 73): the create is refused `TempoMapMalformed` (D90 Q3).
 //!
 //! Everything is seeded: [`generate`] is a function of its seed and length, so
 //! a finding reproduces from both. [`minimize`] shrinks a failing history to
@@ -118,9 +177,7 @@ use crate::stamp::{HybridLogicalClock, OperationStamp};
 use crate::support::AuthorId;
 use crate::undo::{UndoPolicy, UndoTransactionPayload};
 use crate::valuegen;
-use crate::{
-    GraphMaterialization, MaterializedState, ObjectState, OperationEffect, OperationKindRegistryId,
-};
+use crate::{GraphMaterialization, MaterializedState, OperationEffect, OperationKindRegistryId};
 
 /// The identity of the empty base both modes start from.
 const BASE: ReplicaId = ReplicaId(0);
@@ -299,8 +356,7 @@ struct View {
 pub struct Finding {
     /// What kind of failure, stable under shrinking: an effect split names the
     /// operation's kind and both effects' shapes; an invariant names the
-    /// invariant and its witness's shape ([`witness_shape`]), or the deferred
-    /// cause it is ([`deferred`]).
+    /// invariant and its witness's shape ([`witness_shape`]).
     pub class: String,
     /// The particulars.
     pub detail: String,
@@ -433,87 +489,26 @@ fn compare(
             }
         }
     }
-    out.extend(invariant_findings(
-        history,
-        &aware_effects,
-        &aware.score,
-        &aware.state.objects,
-    ));
+    out.extend(invariant_findings(&aware.score));
     out
 }
 
-/// The deferred class (D48, D50 to D52) is every `RegionExtents` overlap made
-/// by creating or filling regions, whatever its cause and however many
-/// authors: two regions whose time extents overlap, each holding an instance
-/// of a common staff that the graph holds and the ledger holds live
-/// (`overlap_made_by_regions`).
-/// Refusing a region's creation or fill where it would overlap one the merged
-/// history keeps needs region extents compared in both modes; X5 does so and
-/// closes the class. The causes the classifier knows are named apart
-/// ([`REGION_NEVER_SEEN`], [`REGION_SEEN_DELETED`], [`REGION_SEEN_UNDONE`]),
-/// the rest under one general name ([`REGION_OVERLAP`]). An overlap of
-/// another making (a region's staff extent naming a staff it holds no live
-/// instance of, or an instance the graph keeps that the ledger tombstoned)
-/// keeps the invariant's plain class, which nothing excepts.
-/// This constant is the prefix the three named causes share.
-pub const DEFERRED_REGIONS: &str = "invariant Invariant(RegionExtents: a region created at the place of one its author's view did not hold live";
-
-/// The deferred class's first cause (D48): two authors each created a region at
-/// one time extent, neither having seen the other's create.
-pub const REGION_NEVER_SEEN: &str = "invariant Invariant(RegionExtents: a region created at the place of one its author's view did not hold live, never seen";
-
-/// The deferred class's second cause (D50): an author saw a region and its
-/// own delete of it, which the merged history refuses (another author filled
-/// the region concurrently), and created a region in its place.
-pub const REGION_SEEN_DELETED: &str = "invariant Invariant(RegionExtents: a region created at the place of one its author's view did not hold live, seen deleted by a delete the merged history refuses";
-
-/// The deferred class's third cause (D51): an author saw a region and its own
-/// undo of the transaction that created it, which the merged history blocks
-/// (another author filled the region concurrently), and created a region in
-/// its place.
-pub const REGION_SEEN_UNDONE: &str = "invariant Invariant(RegionExtents: a region created at the place of one its author's view did not hold live, seen undone by an undo the merged history blocks";
-
-/// The deferred class's general name (D52): an overlap made by creating or
-/// filling regions of a cause the classifier does not name, one author's
-/// direct overlap among them.
-pub const REGION_OVERLAP: &str = "invariant Invariant(RegionExtents: two regions created or filled to overlap in time and staff, by a cause not named";
-
-/// Whether `class` is the deferred class, by one of its names; it is closed
-/// by X5 (D52).
-pub fn deferred(class: &str) -> bool {
-    class == REGION_NEVER_SEEN
-        || class == REGION_SEEN_DELETED
-        || class == REGION_SEEN_UNDONE
-        || class == REGION_OVERLAP
-}
-
-fn invariant_findings(
-    history: &[OperationEnvelope],
-    effects: &BTreeMap<OperationId, OperationEffect>,
-    score: &Score,
-    objects: &BTreeMap<TypedObjectId, ObjectState>,
-) -> Vec<Finding> {
+/// Every invariant the graph-aware score breaks, each class once: the
+/// invariant and its witness's shape. Nothing is excepted: the region class
+/// D48 and D50 to D52 deferred closed when reduction version 5 refused a fill
+/// whose region overlaps another holding its staff (X5b), and its machinery
+/// left the fuzz with it.
+fn invariant_findings(score: &Score) -> Vec<Finding> {
     let mut seen = BTreeSet::new();
     check_invariants(score)
         .into_iter()
         .filter_map(|violation| {
             let full = format!("{:?}", violation.kind);
-            let named = matches!(
-                violation.kind,
-                epiphany_core::ViolationKind::Invariant(
-                    epiphany_core::GraphInvariant::RegionExtents
-                )
-            )
-            .then(|| deferred_region_cause(history, effects, score, objects, &violation.witness))
-            .flatten();
-            let class = match named {
-                Some(cause) => String::from(cause),
-                None => format!(
-                    "invariant {}: {}",
-                    full.trim_end_matches(')'),
-                    witness_shape(&violation.witness)
-                ),
-            };
+            let class = format!(
+                "invariant {}: {}",
+                full.trim_end_matches(')'),
+                witness_shape(&violation.witness)
+            );
             seen.insert(class.clone()).then(|| Finding {
                 class,
                 detail: format!("{violation:?}"),
@@ -598,159 +593,6 @@ fn collapse_lists(chars: &[char], at: &mut usize, close: Option<char>) -> String
     items.join(", ")
 }
 
-/// The regions a `RegionExtents` witness names, in order.
-fn witness_regions(witness: &str) -> Vec<RegionId> {
-    witness
-        .match_indices("RegionId(")
-        .filter_map(|(at, tag)| {
-            let digits = witness.get(at + tag.len()..at + tag.len() + 33)?;
-            let (replica, counter) = digits.split_once(':')?;
-            Some(RegionId::new(
-                ReplicaId(u64::from_str_radix(replica, 16).ok()?),
-                u64::from_str_radix(counter, 16).ok()?,
-            ))
-        })
-        .collect()
-}
-
-/// Whether a `RegionExtents` witness is an overlap made by creating or
-/// filling regions (D52): it names two regions, both in `score`, whose time
-/// extents overlap (where both are wall-clock; the invariant has judged any
-/// other), each holding a staff instance of a common staff that the graph
-/// holds and the ledger (`objects`) holds live. A staff extent naming a staff
-/// of no live instance is another making, and so is an instance the graph
-/// keeps after the ledger tombstoned it, a removal the graph failed to make
-/// (X4a review 3's L1: read from the graph alone, such an overlap was
-/// deferred under a named cause).
-fn overlap_made_by_regions(
-    score: &Score,
-    objects: &BTreeMap<TypedObjectId, ObjectState>,
-    witness: &str,
-) -> bool {
-    let [a, b] = witness_regions(witness)[..] else {
-        return false;
-    };
-    let region = |id: RegionId| score.canvas.regions.iter().find(|r| r.id == id);
-    let (Some(a), Some(b)) = (region(a), region(b)) else {
-        return false;
-    };
-    let wall = |anchor: &epiphany_core::TimeAnchor| match anchor {
-        epiphany_core::TimeAnchor::WallClock { time } => Some(time.0),
-        _ => None,
-    };
-    let times = |r: &Region| Some((wall(&r.time_extent.start)?, wall(&r.time_extent.end)?));
-    if let (Some((a0, a1)), Some((b0, b1))) = (times(a), times(b)) {
-        if !(a0 < b1 && b0 < a1) {
-            return false;
-        }
-    }
-    let staves = |r: &Region| -> BTreeSet<StaffId> {
-        r.staff_instances()
-            .iter()
-            .filter(|i| {
-                matches!(
-                    objects.get(&TypedObjectId::StaffInstance(i.id)),
-                    Some(ObjectState::Live)
-                )
-            })
-            .map(|i| i.staff)
-            .collect()
-    };
-    !staves(a).is_disjoint(&staves(b))
-}
-
-/// The deferred class's name for a `RegionExtents` witness, if it is in the
-/// class (`overlap_made_by_regions`): the cause the classifier knows
-/// ([`region_cause`]), or the general name.
-fn deferred_region_cause(
-    history: &[OperationEnvelope],
-    effects: &BTreeMap<OperationId, OperationEffect>,
-    score: &Score,
-    objects: &BTreeMap<TypedObjectId, ObjectState>,
-    witness: &str,
-) -> Option<&'static str> {
-    overlap_made_by_regions(score, objects, witness)
-        .then(|| region_cause(history, effects, witness).unwrap_or(REGION_OVERLAP))
-}
-
-/// The named cause of a `RegionExtents` witness naming two regions, if it is
-/// one: both created by envelopes of `history` at one time extent, and either
-/// neither create in the other's causal past (never seen), or the later
-/// create's author having seen the earlier region and its delete, the delete
-/// refused in the merged history (`effects`) and the region not live in that
-/// author's view (seen deleted); or having seen an undo of the earlier
-/// region's transaction instead, the region again not live in its view (seen
-/// undone).
-fn region_cause(
-    history: &[OperationEnvelope],
-    effects: &BTreeMap<OperationId, OperationEffect>,
-    witness: &str,
-) -> Option<&'static str> {
-    let ids = witness_regions(witness);
-    let [a, b] = ids.as_slice() else {
-        return None;
-    };
-    let create = |id: RegionId| {
-        history.iter().find_map(|env| match &env.payload {
-            OperationPayload::Primitive(OperationKind::CreateRegion(op)) if op.region.id == id => {
-                Some((env, &op.region.time_extent))
-            }
-            _ => None,
-        })
-    };
-    let ((ea, xa), (eb, xb)) = (create(*a)?, create(*b)?);
-    if xa != xb {
-        return None;
-    }
-    let (later, earlier) = match (
-        ea.causal_context.covers(eb.id),
-        eb.causal_context.covers(ea.id),
-    ) {
-        (false, false) => return Some(REGION_NEVER_SEEN),
-        (true, false) => (ea, (eb, *b)),
-        (false, true) => (eb, (ea, *a)),
-        (true, true) => return None,
-    };
-    let (made, earlier) = earlier;
-    let refused_delete = history.iter().any(|env| {
-        later.causal_context.covers(env.id)
-            && matches!(&env.payload,
-                OperationPayload::Primitive(OperationKind::DeleteRegion(op)) if op.region == earlier)
-            && !matches!(
-                effects.get(&env.id),
-                Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
-            )
-    });
-    let undone = made.transaction.is_some_and(|tx| {
-        history.iter().any(|env| {
-            later.causal_context.covers(env.id)
-                && matches!(&env.payload, OperationPayload::UndoTransaction(undo) if undo.target == tx)
-        })
-    });
-    if !refused_delete && !undone {
-        return None;
-    }
-    let mut view = OperationSet::new();
-    view.accept_all(
-        history
-            .iter()
-            .filter(|env| later.causal_context.covers(env.id))
-            .cloned(),
-    );
-    let held = view
-        .reduce_onto(&empty_base())
-        .score
-        .canvas
-        .regions
-        .iter()
-        .any(|region| region.id == earlier);
-    (!held).then_some(if refused_delete {
-        REGION_SEEN_DELETED
-    } else {
-        REGION_SEEN_UNDONE
-    })
-}
-
 /// Counts per operation kind over a run: authored, and applied (with or
 /// without a repair) in the final base-free reduction.
 #[derive(Clone, Debug, Default)]
@@ -764,14 +606,19 @@ pub struct Coverage {
 impl Coverage {
     fn record(&mut self, authored: &[OperationEnvelope], state: &MaterializedState) {
         let effects: BTreeMap<_, _> = state.effects.iter().cloned().collect();
-        for envelope in authored {
+        let gestures = gesture_shapes(authored);
+        for (envelope, gesture) in authored.iter().zip(gestures) {
             let effect = effects.get(&envelope.id);
             let applied = matches!(
                 effect,
                 Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
             );
-            let names = std::iter::once(kind_name(&envelope.payload))
-                .chain(shape_names(&envelope.payload).into_iter().map(String::from));
+            let names = std::iter::once(kind_name(&envelope.payload)).chain(
+                shape_names(&envelope.payload)
+                    .into_iter()
+                    .chain(gesture)
+                    .map(String::from),
+            );
             for name in names {
                 *self.authored.entry(name.clone()).or_default() += 1;
                 if applied {
@@ -801,8 +648,10 @@ impl Coverage {
     }
 }
 
-/// The payload shapes schema major 5 adds, each counted beside its kind.
-const SHAPES: [&str; 14] = [
+/// The payload shapes schema major 5 adds, and those reduction version 5
+/// reads (X5b), each counted beside its kind; and arm 70's gesture, read
+/// from the history ([`gesture_shapes`]).
+const SHAPES: [&str; 40] = [
     "InsertEvent+marks",
     "InsertEvent+ornaments",
     "InsertEvent+grace",
@@ -817,10 +666,219 @@ const SHAPES: [&str; 14] = [
     "ModifyCrossCutting+Lyric",
     "DeleteCrossCutting+Marker",
     "DeleteCrossCutting+Lyric",
+    "CreateCrossCutting+expression text",
+    "SetUserSystemBreak+measure anchor",
+    "SetUserSystemBreak+event anchor",
+    "SetUserPageBreak+measure anchor",
+    "SetUserPageBreak+event anchor",
+    "CreateRegion+anchored start",
+    "CreateRegion+musical offset",
+    "CreateRegion+wall-clock offset",
+    "CreateRegion+anchored start, placed end",
+    "CreateRegion+start at a region's end, placed end",
+    "CreateCrossCutting+wall-clock offset",
+    "ModifyCrossCutting+wall-clock offset",
+    "CreateRepeatStructure+wall-clock offset",
+    "CreateMeasure+wall-clock offset",
+    "SetUserSystemBreak+wall-clock offset",
+    "SetUserPageBreak+wall-clock offset",
+    "SetTimeSignature+wall-clock offset",
+    "SetMetricGrid+wall-clock offset",
+    "SetTempoSegment+wall-clock offset",
+    "CreateStaffInstance+carried wall-clock offset",
+    "CreateRegion+carried wall-clock offset",
+    "SetTempoSegment+event anchor",
+    "CreateCrossCutting+spanner at a region",
+    "CreateTuplet+parent",
+    "CreateTuplet+parent, several members",
+    "UndoTransaction+a signature a later grid names",
 ];
 
-/// Which of [`SHAPES`] a payload has.
+/// The shapes reduction version 5 refuses wherever they are written, each
+/// counted beside its kind: a constant tempo segment recording its end tempo,
+/// and a region created carrying a tempo map with two segments on one key, or
+/// one out of order, overlapping, ending before its start or without its end
+/// data (each `TempoMapMalformed`), which version 4 applied; and arm 69's
+/// region whose extent names what its author makes next, refused
+/// `TargetMissing` since X5b's fix round 1, read from the history
+/// (`gesture_shapes`). A user break
+/// naming another region is counted too ("user break+another region's
+/// anchor"), where its anchor shows it, but a view seldom holds two regions
+/// to choose from.
+pub const REFUSED: [&str; 7] = [
+    "SetTempoSegment+constant with an end tempo",
+    "CreateRegion+tempo map with two segments on one key",
+    "CreateRegion+tempo map out of order",
+    "CreateRegion+tempo map overlapping",
+    "CreateRegion+tempo segment ending before its start",
+    "CreateRegion+tempo segment without its end data",
+    "CreateRegion+extent at what its author makes next",
+];
+
+/// The shapes of a gesture its payload alone does not show, read from the
+/// authored history around each envelope, so that the CI budget counts the
+/// arm's reach (D90 Q2): a region whose extent names a note or a measure an
+/// envelope after it makes (arm 69, refused `TargetMissing` since X5b's fix
+/// round 1), and an undo of a transaction that set a time signature a grid
+/// set outside it names (arm 70, held while the grid names it, D86 Q1).
+fn gesture_shapes(authored: &[OperationEnvelope]) -> Vec<Vec<&'static str>> {
+    let mut minted_at: BTreeMap<TypedObjectId, usize> = BTreeMap::new();
+    for (index, envelope) in authored.iter().enumerate() {
+        for object in mints_and_refs(&envelope.payload).0 {
+            minted_at.entry(object).or_insert(index);
+        }
+    }
+    authored
+        .iter()
+        .enumerate()
+        .map(|(index, envelope)| {
+            let mut out = Vec::new();
+            if names_ahead(&envelope.payload)
+                .iter()
+                .any(|object| minted_at.get(object).is_some_and(|at| *at > index))
+            {
+                out.push("CreateRegion+extent at what its author makes next");
+            }
+            if let OperationPayload::UndoTransaction(undo) = &envelope.payload {
+                let before = &authored[..index];
+                let signed: Vec<TimeSignatureId> = before
+                    .iter()
+                    .filter(|e| e.transaction == Some(undo.target))
+                    .filter_map(|e| match &e.payload {
+                        OperationPayload::Primitive(OperationKind::SetTimeSignature(op)) => {
+                            op.time_signature.as_ref().map(|signature| signature.id)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let gridded = before.iter().any(|e| {
+                    e.transaction != Some(undo.target)
+                        && matches!(&e.payload,
+                            OperationPayload::Primitive(OperationKind::SetMetricGrid(op))
+                                if op.grid.iter().flat_map(|grid| &grid.meter_sequence)
+                                    .any(|change| signed.contains(&change.time_signature)))
+                });
+                if gridded {
+                    out.push("UndoTransaction+a signature a later grid names");
+                }
+            }
+            out
+        })
+        .collect()
+}
+
+/// Which of [`SHAPES`] a payload has, with the holders' wall-clock offsets
+/// ([`wall_clock_shape`]).
 fn shape_names(payload: &OperationPayload) -> Vec<&'static str> {
+    let mut names = kind_shapes(payload);
+    names.extend(wall_clock_shape(payload));
+    names
+}
+
+/// The shape of a holder of a time anchor written by a wall-clock offset
+/// (X5b.9): a marker or a spanner created or modified, a repeat, a measure, a
+/// user break, a time signature, a grid, a tempo segment, the changes a staff
+/// instance's create carries, and the model, grid, breaks and tempo map a
+/// region's create carries.
+fn wall_clock_shape(payload: &OperationPayload) -> Option<&'static str> {
+    use epiphany_core::TimeAnchor;
+    let OperationPayload::Primitive(kind) = payload else {
+        return None;
+    };
+    let cross = |value: &CrossCuttingValue| -> Vec<TimeAnchor> {
+        match value {
+            CrossCuttingValue::Marker(m) => vec![m.anchor.clone()],
+            CrossCuttingValue::Spanner(s) => vec![s.start.clone(), s.end.clone()],
+            _ => Vec::new(),
+        }
+    };
+    let (anchors, name): (Vec<TimeAnchor>, &'static str) = match kind {
+        OperationKind::CreateCrossCutting(op) => {
+            (cross(&op.structure), "CreateCrossCutting+wall-clock offset")
+        }
+        OperationKind::ModifyCrossCutting(op) => {
+            (cross(&op.structure), "ModifyCrossCutting+wall-clock offset")
+        }
+        OperationKind::CreateRepeatStructure(op) => (
+            op.repeat.anchor_sites().into_iter().cloned().collect(),
+            "CreateRepeatStructure+wall-clock offset",
+        ),
+        OperationKind::CreateMeasure(op) => (
+            vec![op.measure.start.clone()],
+            "CreateMeasure+wall-clock offset",
+        ),
+        OperationKind::SetUserSystemBreak(op) => (
+            vec![op.anchor.clone()],
+            "SetUserSystemBreak+wall-clock offset",
+        ),
+        OperationKind::SetUserPageBreak(op) => (
+            vec![op.anchor.clone()],
+            "SetUserPageBreak+wall-clock offset",
+        ),
+        OperationKind::SetTimeSignature(op) => (
+            vec![op.anchor.clone()],
+            "SetTimeSignature+wall-clock offset",
+        ),
+        OperationKind::SetMetricGrid(op) => (
+            op.grid
+                .iter()
+                .flat_map(|g| g.meter_sequence.iter().map(|m| m.anchor.clone()))
+                .collect(),
+            "SetMetricGrid+wall-clock offset",
+        ),
+        OperationKind::SetTempoSegment(op) => (
+            op.segment
+                .iter()
+                .flat_map(|s| std::iter::once(s.start.clone()).chain(s.end.clone()))
+                .collect(),
+            "SetTempoSegment+wall-clock offset",
+        ),
+        OperationKind::CreateStaffInstance(op) => (
+            op.instance
+                .clef_sequence
+                .iter()
+                .map(|c| c.anchor.clone())
+                .chain(op.instance.key_sequence.iter().map(|k| k.anchor.clone()))
+                .chain(
+                    op.instance
+                        .local_metric_grid
+                        .iter()
+                        .flat_map(|g| g.meter_sequence.iter().map(|m| m.anchor.clone())),
+                )
+                .collect(),
+            "CreateStaffInstance+carried wall-clock offset",
+        ),
+        OperationKind::CreateRegion(op) => {
+            let region = &op.region;
+            let mut anchors = Vec::new();
+            if let RegionTimeModel::Metric(m) = &region.time_model {
+                anchors.extend(m.meters.iter().map(|m| m.anchor.clone()));
+            }
+            if let Some(c) = region.content.staff_based() {
+                anchors.extend(
+                    c.default_metric_grid
+                        .iter()
+                        .flat_map(|g| g.meter_sequence.iter().map(|m| m.anchor.clone())),
+                );
+                anchors.extend(c.user_system_breaks.iter().cloned());
+                anchors.extend(c.user_page_breaks.iter().cloned());
+            }
+            for segment in region.local_tempo_map.iter().flat_map(|m| &m.segments) {
+                anchors.push(segment.start.clone());
+                anchors.extend(segment.end.clone());
+            }
+            (anchors, "CreateRegion+carried wall-clock offset")
+        }
+        _ => return None,
+    };
+    anchors
+        .iter()
+        .any(|a| matches!(a.offset(), Some(epiphany_core::AnchorOffset::WallClock(_))))
+        .then_some(name)
+}
+
+/// Which of [`SHAPES`] a payload has, by its kind's own shapes.
+fn kind_shapes(payload: &OperationPayload) -> Vec<&'static str> {
     let OperationPayload::Primitive(kind) = payload else {
         return Vec::new();
     };
@@ -844,7 +902,14 @@ fn shape_names(payload: &OperationPayload) -> Vec<&'static str> {
     let structure = |value: &CrossCuttingValue, marker: &'static str, lyric: &'static str| {
         let mut out = Vec::new();
         match value {
-            CrossCuttingValue::Marker(_) => out.push(marker),
+            CrossCuttingValue::Marker(m) => {
+                out.push(marker);
+                if matches!(m.kind, epiphany_core::MarkerKind::ExpressionText(_))
+                    && marker.starts_with("Create")
+                {
+                    out.push("CreateCrossCutting+expression text");
+                }
+            }
             CrossCuttingValue::Lyric(_) => out.push(lyric),
             CrossCuttingValue::Spanner(s) => {
                 if matches!(s.style.line, epiphany_core::LineStyle::Wavy)
@@ -856,6 +921,13 @@ fn shape_names(payload: &OperationPayload) -> Vec<&'static str> {
                     && marker.starts_with("Create")
                 {
                     out.push("CreateCrossCutting+pedal bracket");
+                }
+                if [&s.start, &s.end]
+                    .into_iter()
+                    .any(|anchor| matches!(anchor, epiphany_core::TimeAnchor::Region { .. }))
+                    && marker.starts_with("Create")
+                {
+                    out.push("CreateCrossCutting+spanner at a region");
                 }
             }
             _ => {}
@@ -894,6 +966,165 @@ fn shape_names(payload: &OperationPayload) -> Vec<&'static str> {
             TypedObjectId::LyricLine(_) => vec!["DeleteCrossCutting+Lyric"],
             _ => Vec::new(),
         },
+        OperationKind::SetUserSystemBreak(op) => user_break(
+            op.region,
+            &op.anchor,
+            [
+                "SetUserSystemBreak+measure anchor",
+                "SetUserSystemBreak+event anchor",
+            ],
+        ),
+        OperationKind::SetUserPageBreak(op) => user_break(
+            op.region,
+            &op.anchor,
+            [
+                "SetUserPageBreak+measure anchor",
+                "SetUserPageBreak+event anchor",
+            ],
+        ),
+        OperationKind::CreateRegion(op) => {
+            let extent = &op.region.time_extent;
+            let offsets: Vec<_> = [&extent.start, &extent.end]
+                .into_iter()
+                .filter_map(|anchor| anchor.offset())
+                .collect();
+            let mut out = Vec::new();
+            let mut keys = std::collections::BTreeSet::new();
+            if !op
+                .region
+                .local_tempo_map
+                .iter()
+                .flat_map(|map| &map.segments)
+                .all(|segment| {
+                    keys.insert(crate::payload::resolved_anchor_position(&segment.start))
+                })
+            {
+                out.push("CreateRegion+tempo map with two segments on one key");
+            }
+            // Arm 73's shapes, each a map no `SetTempoSegment` writes leave
+            // (D90 Q3), read by its segments' resolved positions in order.
+            let keyed: Vec<_> = op
+                .region
+                .local_tempo_map
+                .iter()
+                .flat_map(|map| &map.segments)
+                .map(|segment| {
+                    let at = crate::payload::resolved_anchor_position;
+                    (at(&segment.start), segment.end.as_ref().map(at), segment)
+                })
+                .collect();
+            if keyed.windows(2).any(|pair| pair[0].0 > pair[1].0) {
+                out.push("CreateRegion+tempo map out of order");
+            }
+            if keyed
+                .windows(2)
+                .any(|pair| pair[0].1.as_ref().is_some_and(|end| *end > pair[1].0))
+            {
+                out.push("CreateRegion+tempo map overlapping");
+            }
+            if keyed
+                .iter()
+                .any(|(start, end, _)| end.as_ref().is_some_and(|end| end < start))
+            {
+                out.push("CreateRegion+tempo segment ending before its start");
+            }
+            if keyed.iter().any(|(_, _, segment)| {
+                !matches!(segment.shape, epiphany_core::TempoShape::Constant)
+                    && (segment.end_tempo.is_none() || segment.end.is_none())
+            }) {
+                out.push("CreateRegion+tempo segment without its end data");
+            }
+            if !matches!(extent.start, epiphany_core::TimeAnchor::WallClock { .. }) {
+                out.push("CreateRegion+anchored start");
+                // Arm 15's own gesture for the overlap refusal: a start with
+                // no offset at a region's end or a note, the end where an
+                // editor places one (D84 Q4).
+                if matches!(
+                    extent.start.offset(),
+                    Some(epiphany_core::AnchorOffset::Zero)
+                ) && matches!(extent.end, epiphany_core::TimeAnchor::WallClock { .. })
+                {
+                    out.push("CreateRegion+anchored start, placed end");
+                    // Arm 15's start at a region's end alone: arm 71's
+                    // holders start with no offset at a note, a measure or a
+                    // region's start, and arm 66's at a region's end carry an
+                    // anchored end (X5b fix round 1).
+                    if matches!(
+                        extent.start,
+                        epiphany_core::TimeAnchor::Region {
+                            edge: epiphany_core::RegionEdge::End,
+                            ..
+                        }
+                    ) {
+                        out.push("CreateRegion+start at a region's end, placed end");
+                    }
+                }
+            }
+            // An offset from a region's edge, which arms 15 and 66 draw of a
+            // kind its region may not admit (D84 Q4).
+            if [&extent.start, &extent.end].into_iter().any(|anchor| {
+                matches!(anchor, epiphany_core::TimeAnchor::Region { offset, .. }
+                    if !matches!(offset, epiphany_core::AnchorOffset::Zero))
+            }) {
+                out.push("CreateRegion+offset at a region's edge");
+            }
+            if offsets
+                .iter()
+                .any(|o| matches!(o, epiphany_core::AnchorOffset::Musical(_)))
+            {
+                out.push("CreateRegion+musical offset");
+            }
+            if offsets
+                .iter()
+                .any(|o| matches!(o, epiphany_core::AnchorOffset::WallClock(_)))
+            {
+                out.push("CreateRegion+wall-clock offset");
+            }
+            out
+        }
+        OperationKind::SetTempoSegment(op) => {
+            let mut out: Vec<&'static str> = op
+                .segment
+                .as_ref()
+                .filter(|s| matches!(s.shape, epiphany_core::TempoShape::Constant))
+                .filter(|s| s.end_tempo.is_some())
+                .map(|_| "SetTempoSegment+constant with an end tempo")
+                .into_iter()
+                .collect();
+            if op.segment.is_some() && matches!(op.start, epiphany_core::TimeAnchor::Event { .. }) {
+                out.push("SetTempoSegment+event anchor");
+            }
+            out
+        }
+        OperationKind::CreateTuplet(op) if op.tuplet.parent.is_some() => {
+            let mut out = vec!["CreateTuplet+parent"];
+            // Arm 40's nest alone: arm 71's nested tuplet holds one member
+            // (X5b fix round 1).
+            if op.tuplet.members.len() > 1 {
+                out.push("CreateTuplet+parent, several members");
+            }
+            out
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// A user break's shape: its anchor's kind, and whether it names another
+/// region. A measure or a note counts only by no offset, arms 5 and 23's own
+/// gesture: the holders' arms write each by an offset (X5b.9), and counted
+/// so they would hide that gesture's loss.
+fn user_break(
+    region: RegionId,
+    anchor: &epiphany_core::TimeAnchor,
+    names: [&'static str; 2],
+) -> Vec<&'static str> {
+    use epiphany_core::AnchorOffset::Zero;
+    match anchor {
+        epiphany_core::TimeAnchor::Measure { offset: Zero, .. } => vec![names[0]],
+        epiphany_core::TimeAnchor::Event { offset: Zero, .. } => vec![names[1]],
+        epiphany_core::TimeAnchor::Region { id, .. } if *id != region => {
+            vec!["user break+another region's anchor"]
+        }
         _ => Vec::new(),
     }
 }
@@ -1241,7 +1472,7 @@ fn random_marker_kind(rng: &mut Rng) -> epiphany_core::MarkerKind {
         BreathMark, CaesuraMark, Dynamic, Fermata, FermataShape, MarkerKind, Metronome, NoteValue,
         TempoMark,
     };
-    match rng.below(9) {
+    match rng.below(10) {
         0 => MarkerKind::Dynamic(
             [Dynamic::P, Dynamic::Mf, Dynamic::Sfz, Dynamic::Niente][rng.below(4) as usize].clone(),
         ),
@@ -1262,7 +1493,8 @@ fn random_marker_kind(rng: &mut Rng) -> epiphany_core::MarkerKind {
         }),
         6 => MarkerKind::Rehearsal(epiphany_core::Text::new("A")),
         7 => MarkerKind::Segno,
-        _ => MarkerKind::Coda,
+        8 => MarkerKind::Coda,
+        _ => MarkerKind::ExpressionText(random_text(rng)),
     }
 }
 
@@ -1715,6 +1947,37 @@ fn genesis(sim: &mut Simulation) {
 
 /// One authoring turn's payloads, drawn for `kind` from replica `r`'s view;
 /// `None` where the view holds nothing it applies to.
+/// A staff-based region as an editor adds one: placed after every region the
+/// view holds (two authors unaware of each other may still choose one place),
+/// proportional one time in three.
+fn placed_region(sim: &mut Simulation, r: usize, h: &Holdings<'_>) -> Region {
+    let id: RegionId = sim.mint(r);
+    let mut region: Region = valuegen::region(id);
+    let after = h
+        .score
+        .canvas
+        .regions
+        .iter()
+        .filter_map(|other| match other.time_extent.end {
+            epiphany_core::TimeAnchor::WallClock { time } => Some(time.0),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+    region.time_extent = epiphany_core::TimeExtent {
+        start: epiphany_core::TimeAnchor::WallClock {
+            time: WallClockTime(after),
+        },
+        end: epiphany_core::TimeAnchor::WallClock {
+            time: WallClockTime(after + 1000),
+        },
+    };
+    if sim.rng.chance(3) {
+        region.time_model = valuegen::proportional_model();
+    }
+    region
+}
+
 fn make(
     sim: &mut Simulation,
     r: usize,
@@ -1940,13 +2203,57 @@ fn make(
             ))]
         }
         5 | 23 => {
+            // A user break at a measure's start, as the importer and the
+            // editor write one, at an event, or at an offset from its
+            // region's start, as version 4's writers wrote one; one time in
+            // eight in another region the view holds, which the break's
+            // validity refuses `TargetMissing` (reduction version 5), or
+            // `WrongRegionTimeModel` where that region is out of musical time
+            // and the anchor in it.
             let metric = h.metric();
             let (region, _, instances) = sim.rng.pick(&metric)?;
             let bars = instances.first().map_or(1, |i| i.measures.len().max(1)) as i64;
-            let anchor = valuegen::region_start_anchor(
-                *region,
-                position(sim.rng.below(bars as u64) as i64, 1),
-            );
+            let at = position(sim.rng.below(bars as u64) as i64, 1);
+            let anchor = match sim.rng.below(3) {
+                0 => {
+                    let measures: Vec<MeasureId> = instances
+                        .iter()
+                        .flat_map(|i| i.measures.iter().map(|m| m.id))
+                        .collect();
+                    epiphany_core::TimeAnchor::Measure {
+                        id: *sim.rng.pick(&measures)?,
+                        position: epiphany_core::MeasurePosition::Start,
+                        offset: epiphany_core::AnchorOffset::Zero,
+                    }
+                }
+                1 => {
+                    let events: Vec<EventId> = h
+                        .events
+                        .iter()
+                        .filter(|e| {
+                            instances
+                                .iter()
+                                .any(|i| i.voices.iter().any(|v| v.id == e.voice()))
+                        })
+                        .map(|e| e.id())
+                        .collect();
+                    epiphany_core::TimeAnchor::Event {
+                        id: *sim.rng.pick(&events)?,
+                        offset: epiphany_core::AnchorOffset::Zero,
+                    }
+                }
+                _ => valuegen::region_start_anchor(*region, at),
+            };
+            let others: Vec<RegionId> = h
+                .regions
+                .iter()
+                .map(|(other, _, _)| *other)
+                .filter(|other| other != region)
+                .collect();
+            let region = match sim.rng.pick(&others) {
+                Some(other) if sim.rng.chance(8) => other,
+                _ => region,
+            };
             let present = !sim.rng.chance(3);
             if kind == 5 {
                 vec![prim(OperationKind::SetUserSystemBreak(
@@ -2194,34 +2501,99 @@ fn make(
             }
         }
         15 => {
-            // CreateRegion: another staff-based region, placed after every
-            // region the view holds, as an editor places one; two authors
-            // unaware of each other may still choose one place.
-            let id: RegionId = sim.mint(r);
-            let mut region: Region = valuegen::region(id);
-            let after = h
-                .score
-                .canvas
-                .regions
-                .iter()
-                .filter_map(|other| match other.time_extent.end {
-                    epiphany_core::TimeAnchor::WallClock { time } => Some(time.0),
-                    _ => None,
-                })
-                .max()
-                .unwrap_or(0);
-            region.time_extent = epiphany_core::TimeExtent {
-                start: epiphany_core::TimeAnchor::WallClock {
-                    time: WallClockTime(after),
-                },
-                end: epiphany_core::TimeAnchor::WallClock {
-                    time: WallClockTime(after + 1000),
-                },
-            };
-            if sim.rng.chance(3) {
-                region.time_model = valuegen::proportional_model();
+            // CreateRegion: one an editor places ([`placed_region`]), or one
+            // in two times one no editor writes (reduction version 5): over
+            // the span of a region the view holds, with an instance of a staff
+            // that region holds, the fill refused `RegionsOverlap`; or
+            // starting, with no offset, at a region's end, which the ledger
+            // places through its index of extents, or at an event, which it
+            // cannot place, so that a fill of a staff another live region
+            // holds is refused; or with an offset of either kind from a
+            // region's end, from its own start, or from an event or a
+            // measure, refused `WrongRegionTimeModel` where its target's time
+            // model does not admit the offset (X5b.8).
+            let mut region = placed_region(sim, r, h);
+            let mut fill = None;
+            match sim.rng.below(12) {
+                0 => {
+                    let (other, _, instances) = sim.rng.pick(&h.regions)?;
+                    region.time_extent = h
+                        .score
+                        .canvas
+                        .regions
+                        .iter()
+                        .find(|held| held.id == *other)?
+                        .time_extent
+                        .clone();
+                    fill = sim.rng.pick(instances).map(|instance| instance.staff);
+                }
+                1 => {
+                    let other = sim.rng.pick(&h.score.canvas.regions)?.id;
+                    region.time_extent.start = epiphany_core::TimeAnchor::Region {
+                        id: other,
+                        edge: epiphany_core::RegionEdge::End,
+                        offset: epiphany_core::AnchorOffset::Zero,
+                    };
+                }
+                2 => {
+                    let event = rng_event(sim)?.id();
+                    region.time_extent.start = epiphany_core::TimeAnchor::Event {
+                        id: event,
+                        offset: epiphany_core::AnchorOffset::Zero,
+                    };
+                }
+                3 => {
+                    let other = sim.rng.pick(&h.score.canvas.regions)?.id;
+                    let offset = random_offset(&mut sim.rng);
+                    let at = |offset| epiphany_core::TimeAnchor::Region {
+                        id: other,
+                        edge: epiphany_core::RegionEdge::End,
+                        offset,
+                    };
+                    region.time_extent.start = at(epiphany_core::AnchorOffset::Zero);
+                    region.time_extent.end = at(offset);
+                }
+                4 => {
+                    region.time_extent.end = epiphany_core::TimeAnchor::Region {
+                        id: region.id,
+                        edge: epiphany_core::RegionEdge::Start,
+                        offset: random_offset(&mut sim.rng),
+                    };
+                }
+                5 => {
+                    let offset = random_offset(&mut sim.rng);
+                    region.time_extent.start = if sim.rng.chance(2) {
+                        epiphany_core::TimeAnchor::Event {
+                            id: rng_event(sim)?.id(),
+                            offset,
+                        }
+                    } else {
+                        let measures: Vec<MeasureId> = h
+                            .instances()
+                            .iter()
+                            .flat_map(|(_, instance)| instance.measures.iter().map(|m| m.id))
+                            .collect();
+                        epiphany_core::TimeAnchor::Measure {
+                            id: *sim.rng.pick(&measures)?,
+                            position: epiphany_core::MeasurePosition::Start,
+                            offset,
+                        }
+                    };
+                }
+                _ => {}
             }
-            vec![prim(OperationKind::CreateRegion(CreateRegionOp { region }))]
+            let id = region.id;
+            let mut out = vec![prim(OperationKind::CreateRegion(CreateRegionOp { region }))];
+            if let Some(staff) = fill {
+                let instance: StaffInstanceId = sim.mint(r);
+                out.push(prim(OperationKind::CreateStaffInstance(
+                    CreateStaffInstanceOp {
+                        region: id,
+                        instance: valuegen::staff_instance(instance, staff),
+                    },
+                )));
+            }
+            out
         }
         16 => {
             let empty: Vec<RegionId> = h
@@ -2234,7 +2606,9 @@ fn make(
                 Some(r) if sim.rng.chance(2) => *r,
                 None if sim.rng.chance(2) => {
                     // A region added and taken away again.
-                    let mut out = make(sim, r, 15, h)?;
+                    let mut out = vec![prim(OperationKind::CreateRegion(CreateRegionOp {
+                        region: placed_region(sim, r, h),
+                    }))];
                     let Some(OperationPayload::Primitive(OperationKind::CreateRegion(op))) =
                         out.first()
                     else {
@@ -2377,16 +2751,26 @@ fn make(
             let metric = h.metric();
             let (region, _, _) = sim.rng.pick(&metric)?;
             let at = sim.rng.below(2) as i64;
+            let scoped = sim.rng.chance(2);
+            let mut segment = (!sim.rng.chance(4)).then(|| {
+                valuegen::tempo_segment(
+                    *region,
+                    position(at, 1),
+                    60.0 + 30.0 * sim.rng.below(3) as f64,
+                )
+            });
+            // One time in eight a constant segment records its end tempo, as
+            // version 4 applied one: no decoder reads it now (P13-S8), so only
+            // an operation built in memory carries it, refused
+            // `TempoMapMalformed` (reduction version 5). A history holding it
+            // renders but does not parse.
+            if let Some(segment) = segment.as_mut().filter(|_| sim.rng.chance(8)) {
+                segment.end_tempo = Some(segment.start_tempo.clone());
+            }
             vec![prim(OperationKind::SetTempoSegment(SetTempoSegmentOp {
-                region: sim.rng.chance(2).then_some(*region),
+                region: scoped.then_some(*region),
                 start: valuegen::region_start_anchor(*region, position(at, 1)),
-                segment: (!sim.rng.chance(4)).then(|| {
-                    valuegen::tempo_segment(
-                        *region,
-                        position(at, 1),
-                        60.0 + 30.0 * sim.rng.below(3) as f64,
-                    )
-                }),
+                segment,
             }))]
         }
         27 => {
@@ -2507,7 +2891,41 @@ fn make(
         }
         40 => {
             // CreateTuplet over two or three consecutive events of a voice,
-            // their total required as they stand.
+            // their total required as they stand; one time in four over two
+            // consecutive members of a tuplet the view holds, nested in it
+            // (D87 Q3).
+            if sim.rng.chance(4) {
+                let parents: Vec<&Tuplet> = h
+                    .score
+                    .cross_cutting
+                    .tuplets
+                    .iter()
+                    .filter(|tuplet| tuplet.members.len() >= 2)
+                    .collect();
+                if let Some(parent) = sim.rng.pick(&parents) {
+                    let i = sim.rng.below(parent.members.len() as u64 - 1) as usize;
+                    let members = parent.members[i..i + 2].to_vec();
+                    let total = members
+                        .iter()
+                        .filter_map(|id| h.events.iter().find(|e| e.id() == *id))
+                        .filter_map(|e| match e.duration() {
+                            EventDuration::Musical(d) => Some(d.clone()),
+                            _ => None,
+                        })
+                        .fold(MusicalDuration::zero(), |a, b| a + b);
+                    let id: TupletId = sim.mint(r);
+                    return Some(vec![prim(OperationKind::CreateTuplet(CreateTupletOp {
+                        tuplet: Tuplet {
+                            id,
+                            ratio: TupletRatio::new(2, 3).expect("not degenerate"),
+                            members,
+                            parent: Some(parent.id),
+                            required_total: total,
+                            display: TupletDisplay::default(),
+                        },
+                    }))]);
+                }
+            }
             let &(voice, _, _) = sim.rng.pick(&h.voices)?;
             let mut own: Vec<&Event> = h
                 .events
@@ -2970,7 +3388,9 @@ fn make(
             // every region the view holds, a staff in it with a voice and a
             // note or rest, and the region migrated to an aleatoric model of
             // any anchoring discipline, its notes kept where they stand.
-            let mut out = make(sim, r, 15, h)?;
+            let mut out = vec![prim(OperationKind::CreateRegion(CreateRegionOp {
+                region: placed_region(sim, r, h),
+            }))];
             let Some(OperationPayload::Primitive(OperationKind::CreateRegion(op))) =
                 out.first_mut()
             else {
@@ -3209,7 +3629,9 @@ fn make(
             if sim.replicas[r].open.is_some() {
                 return None;
             }
-            let mut out = make(sim, r, 15, h)?;
+            let mut out = vec![prim(OperationKind::CreateRegion(CreateRegionOp {
+                region: placed_region(sim, r, h),
+            }))];
             let Some(OperationPayload::Primitive(OperationKind::CreateRegion(op))) =
                 out.first_mut()
             else {
@@ -3298,7 +3720,1272 @@ fn make(
             }));
             out
         }
+        64 => {
+            // An older point mark moved into a passage an editor adds and then
+            // takes away: a metric region after every region the view holds,
+            // an instance of a staff the view holds in it, a voice and one or
+            // two notes, created in one transaction, which also moves a mark
+            // the view holds (one its author places on a note first, where it
+            // holds none) onto the passage's first note or its start; then the
+            // transaction undone, its restoration taking the mark back to
+            // where it stood, so the undo strands nothing in the region it
+            // removes.
+            if sim.replicas[r].open.is_some() {
+                return None;
+            }
+            let mut out = Vec::new();
+            let older = match sim.rng.pick(&h.score.cross_cutting.markers) {
+                Some(marker) => marker.clone(),
+                None => {
+                    let event = rng_event(sim)?.id();
+                    let marker = epiphany_core::Marker {
+                        id: sim.mint(r),
+                        anchor: valuegen::event_anchor(event),
+                        kind: random_marker_kind(&mut sim.rng),
+                    };
+                    out.push(prim(OperationKind::CreateCrossCutting(
+                        CreateCrossCuttingOp {
+                            structure: CrossCuttingValue::Marker(marker.clone()),
+                        },
+                    )));
+                    marker
+                }
+            };
+            let mut passage = vec![prim(OperationKind::CreateRegion(CreateRegionOp {
+                region: placed_region(sim, r, h),
+            }))];
+            let Some(OperationPayload::Primitive(OperationKind::CreateRegion(op))) =
+                passage.first_mut()
+            else {
+                return None;
+            };
+            op.region.time_model = valuegen::metric_model();
+            let region = op.region.id;
+            let staff = sim.rng.pick(&h.score.staves)?.id;
+            let instance: StaffInstanceId = sim.mint(r);
+            let voice: VoiceId = sim.mint(r);
+            let tx: TransactionId = sim.mint(r);
+            passage.insert(
+                0,
+                prim(OperationKind::DeclareTransaction(TransactionDescriptor {
+                    id: tx,
+                    label: String::from("add a passage"),
+                    category: None,
+                })),
+            );
+            passage.push(prim(OperationKind::CreateStaffInstance(
+                CreateStaffInstanceOp {
+                    region,
+                    instance: valuegen::staff_instance(instance, staff),
+                },
+            )));
+            passage.push(prim(OperationKind::CreateVoice(CreateVoiceOp {
+                staff_instance: instance,
+                voice: valuegen::voice(voice),
+            })));
+            let mut quarter_tones = Vec::new();
+            let mut at = MusicalPosition::origin();
+            let mut first = None;
+            for _ in 0..1 + sim.rng.below(2) {
+                let event: EventId = sim.mint(r);
+                let length = random_duration(&mut sim.rng);
+                let value = event_value(
+                    sim,
+                    r,
+                    event,
+                    voice,
+                    at.clone(),
+                    length.clone(),
+                    &mut quarter_tones,
+                );
+                at = MusicalPosition(at.0.add(&length.0));
+                first.get_or_insert(event);
+                passage.push(prim(OperationKind::InsertEvent(InsertEventOp {
+                    staff_instance: instance,
+                    event: value,
+                })));
+            }
+            let anchor = if sim.rng.chance(2) {
+                valuegen::region_start_anchor(region, MusicalPosition::origin())
+            } else {
+                valuegen::event_anchor(first?)
+            };
+            passage.push(prim(OperationKind::ModifyCrossCutting(
+                ModifyCrossCuttingOp {
+                    structure: CrossCuttingValue::Marker(epiphany_core::Marker { anchor, ..older }),
+                },
+            )));
+            let members = passage.len() as u64;
+            if out.is_empty() {
+                sim.replicas[r].open = Some((tx, members));
+            } else {
+                sim.replicas[r].queued.push((tx, members));
+            }
+            out.extend(passage);
+            out.push(OperationPayload::UndoTransaction(UndoTransactionPayload {
+                target: tx,
+                policy: random_policy(&mut sim.rng),
+            }));
+            out
+        }
+        65 => {
+            // A mark moved off a region's start and the region taken out of
+            // musical time, then the move undone: a metric region after every
+            // region the view holds, holding no staff, and a mark placed at
+            // its start by a musical offset; the mark moved in a transaction
+            // of its own onto an event the view holds; the region migrated to
+            // a proportional model or an aleatoric one anchored in wall-clock
+            // time; and the move undone, whose restoration would anchor the
+            // mark by an offset the region no longer admits, so the migration
+            // supersedes it (reduction version 5, P13-Q17).
+            if sim.replicas[r].open.is_some() {
+                return None;
+            }
+            let mut region = placed_region(sim, r, h);
+            region.time_model = valuegen::metric_model();
+            let id = region.id;
+            let marker = epiphany_core::Marker {
+                id: sim.mint(r),
+                anchor: valuegen::region_start_anchor(id, position(sim.rng.below(4) as i64, 4)),
+                kind: random_marker_kind(&mut sim.rng),
+            };
+            let event = rng_event(sim)?.id();
+            let model = if sim.rng.chance(2) {
+                valuegen::proportional_model()
+            } else {
+                RegionTimeModel::Aleatoric(AleatoricTimeModel {
+                    ordering: EventOrderingDAG::default(),
+                    anchoring: AleatoricAnchoringDiscipline::WallClock,
+                    bounds: BTreeMap::new(),
+                    duration_hint: WallClockDuration(1),
+                })
+            };
+            let tx: TransactionId = sim.mint(r);
+            sim.replicas[r].queued.push((tx, 2));
+            vec![
+                prim(OperationKind::CreateRegion(CreateRegionOp { region })),
+                prim(OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                    structure: CrossCuttingValue::Marker(marker.clone()),
+                })),
+                prim(OperationKind::DeclareTransaction(TransactionDescriptor {
+                    id: tx,
+                    label: String::from("move a mark"),
+                    category: None,
+                })),
+                prim(OperationKind::ModifyCrossCutting(ModifyCrossCuttingOp {
+                    structure: CrossCuttingValue::Marker(epiphany_core::Marker {
+                        anchor: valuegen::event_anchor(event),
+                        ..marker
+                    }),
+                })),
+                prim(OperationKind::ChangeRegionTimeModel(
+                    ChangeRegionTimeModelOp {
+                        region: id,
+                        new_time_model: model,
+                        declared_incompatible: Vec::new(),
+                        remapping: PositionRemapping::PreserveTime,
+                    },
+                )),
+                OperationPayload::UndoTransaction(UndoTransactionPayload {
+                    target: tx,
+                    policy: random_policy(&mut sim.rng),
+                }),
+            ]
+        }
+        66 => {
+            // A region anchored by an offset, and the region it names
+            // migrated (X5b.8): a region placed as an editor places one, its
+            // end at a region's end the view holds, or at its own start, by
+            // an offset of a kind the named region's model admits (of either
+            // kind one time in four, refused `WrongRegionTimeModel` where its
+            // model does not admit it); then the named region migrated to a
+            // model of any kind, which strands the anchored region where it
+            // does not admit the offset. Or, one time in three, its start at
+            // a note or a measure the view holds, whose region is first given
+            // a model admitting either clock, so that a wall-clock offset
+            // there applies, before that region is migrated to a model of any
+            // kind, which strands the anchored region where it does not admit
+            // the offset as it reads the note or the measure.
+            let mut region = placed_region(sim, r, h);
+            let gesture = sim.rng.below(3);
+            if gesture == 2 {
+                let offset = if sim.rng.chance(4) {
+                    random_offset(&mut sim.rng)
+                } else {
+                    epiphany_core::AnchorOffset::WallClock(WallClockDuration(
+                        250 * (1 + sim.rng.below(4) as i64),
+                    ))
+                };
+                let (held_in, anchoring, start) = if sim.rng.chance(2) {
+                    let event = rng_event(sim)?;
+                    let held_in = h.voices.iter().find(|(v, _, _)| *v == event.voice())?.2;
+                    let start = epiphany_core::TimeAnchor::Event {
+                        id: event.id(),
+                        offset,
+                    };
+                    (held_in, AleatoricAnchoringDiscipline::FreelyMixed, start)
+                } else {
+                    let measures: Vec<(RegionId, MeasureId)> = h
+                        .instances()
+                        .iter()
+                        .flat_map(|(held_in, instance)| {
+                            instance.measures.iter().map(move |m| (*held_in, m.id))
+                        })
+                        .collect();
+                    let &(held_in, measure) = sim.rng.pick(&measures)?;
+                    let anchoring = if sim.rng.chance(2) {
+                        AleatoricAnchoringDiscipline::FreelyMixed
+                    } else {
+                        AleatoricAnchoringDiscipline::EitherPerEvent
+                    };
+                    let start = epiphany_core::TimeAnchor::Measure {
+                        id: measure,
+                        position: epiphany_core::MeasurePosition::Start,
+                        offset,
+                    };
+                    (held_in, anchoring, start)
+                };
+                region.time_extent.start = start;
+                let migrate = |model| {
+                    prim(OperationKind::ChangeRegionTimeModel(
+                        ChangeRegionTimeModelOp {
+                            region: held_in,
+                            new_time_model: model,
+                            declared_incompatible: Vec::new(),
+                            remapping: PositionRemapping::PreserveTime,
+                        },
+                    ))
+                };
+                return Some(vec![
+                    migrate(aleatoric_model(anchoring)),
+                    prim(OperationKind::CreateRegion(CreateRegionOp { region })),
+                    migrate(random_migration_target(&mut sim.rng)),
+                ]);
+            }
+            let (named, edge, model) = if gesture == 0 {
+                let (other, model, _) = sim.rng.pick(&h.regions)?;
+                (*other, epiphany_core::RegionEdge::End, (*model).clone())
+            } else {
+                let own = region.time_model.clone();
+                (region.id, epiphany_core::RegionEdge::Start, own)
+            };
+            let offset = if sim.rng.chance(4) {
+                random_offset(&mut sim.rng)
+            } else if model.coordinate_discipline().admits_musical_offsets() {
+                epiphany_core::AnchorOffset::Musical(duration(1 + sim.rng.below(4) as i64, 4))
+            } else {
+                epiphany_core::AnchorOffset::WallClock(WallClockDuration(
+                    250 * (1 + sim.rng.below(4) as i64),
+                ))
+            };
+            region.time_extent.end = epiphany_core::TimeAnchor::Region {
+                id: named,
+                edge,
+                offset,
+            };
+            if named != region.id {
+                region.time_extent.start = epiphany_core::TimeAnchor::Region {
+                    id: named,
+                    edge,
+                    offset: epiphany_core::AnchorOffset::Zero,
+                };
+            }
+            vec![
+                prim(OperationKind::CreateRegion(CreateRegionOp { region })),
+                prim(OperationKind::ChangeRegionTimeModel(
+                    ChangeRegionTimeModelOp {
+                        region: named,
+                        new_time_model: random_migration_target(&mut sim.rng),
+                        declared_incompatible: Vec::new(),
+                        remapping: PositionRemapping::PreserveTime,
+                    },
+                )),
+            ]
+        }
+        67 => {
+            // A holder of a time anchor written by an offset, and the region
+            // holding it migrated (X5b.9): a region the view holds, one time in
+            // two first given a model admitting wall-clock time (freely mixed
+            // where it holds notes or measures, else proportional or freely
+            // mixed); then a marker, a user break, a time signature, a metric
+            // grid's meter change, a tempo segment, a measure, a staff
+            // instance carrying a clef, a key or its own grid, a migration to
+            // a model with its own meter, or a marker moved, anchored at the
+            // region's start, a note or a measure of it, and a spanner or a
+            // repeat, created or (a spanner) moved, at a note of it (a spanner
+            // one time in three at its start instead), by a
+            // wall-clock offset three times in four (else of either kind),
+            // refused `WrongRegionTimeModel` where the region does not admit
+            // it; or a region placed as an editor places one carrying, at its
+            // own start so, a meter of its own model, a break or a tempo
+            // segment; and one time in two the holding region then migrated
+            // to a model of any kind, which strands the holder where it does
+            // not admit the offset. A repeat anchored to a region is the class
+            // the owner parked (P13-D3), so none is written.
+            let (target, model, instances) = sim.rng.pick(&h.regions)?;
+            let holds_music = instances
+                .iter()
+                .any(|i| !i.measures.is_empty() || !i.voices.is_empty());
+            let (target, model) = (*target, (*model).clone());
+            let mut out = Vec::new();
+            let admits_wall = model
+                .coordinate_discipline()
+                .admits_offset(epiphany_core::OffsetKind::WallClock);
+            if !admits_wall && sim.rng.chance(2) {
+                let to = if holds_music || sim.rng.chance(2) {
+                    aleatoric_model(AleatoricAnchoringDiscipline::FreelyMixed)
+                } else {
+                    valuegen::proportional_model()
+                };
+                out.push(migration(target, to));
+            }
+            let offset = holder_offset(&mut sim.rng);
+            let anchor = anchor_in(sim, h, target, offset.clone())?;
+            let (held, holding) = held_by(sim, r, h, target, anchor, offset, None)?;
+            out.extend(held);
+            if sim.rng.chance(2) {
+                out.push(migration(holding, random_migration_target(&mut sim.rng)));
+            }
+            out
+        }
+        68 => {
+            // A holder's change undone after its region's migration (X5b.9,
+            // arm 65's mirror for every holder an undo restores): a region the
+            // view holds, given a model admitting wall-clock time first where
+            // it admits none; a marker, a system or a page break, a tempo
+            // segment, a time signature or a metric grid written at its start
+            // by a wall-clock offset, or a spanner at a note of it so
+            // (P13-D3); the holder moved off or taken away in a transaction of
+            // its own; the region migrated to a model of any kind, metric one
+            // time in two; and the transaction undone, whose restoration the
+            // migration supersedes where the region admits the offset no
+            // longer.
+            if sim.replicas[r].open.is_some() {
+                return None;
+            }
+            let (target, model, _) = sim.rng.pick(&h.regions)?;
+            let (target, model) = (*target, (*model).clone());
+            let gesture = sim.rng.below(6);
+            let mut out = Vec::new();
+            // A grid stands only where musical time is admitted too.
+            let wall = epiphany_core::OffsetKind::WallClock;
+            let discipline = model.coordinate_discipline();
+            if !discipline.admits_offset(wall)
+                || (gesture == 5 && !discipline.admits_musical_offsets())
+            {
+                out.push(migration(
+                    target,
+                    aleatoric_model(AleatoricAnchoringDiscipline::FreelyMixed),
+                ));
+            }
+            let at = epiphany_core::TimeAnchor::Region {
+                id: target,
+                edge: epiphany_core::RegionEdge::Start,
+                offset: epiphany_core::AnchorOffset::WallClock(WallClockDuration(
+                    250 * (1 + sim.rng.below(4) as i64),
+                )),
+            };
+            let zero = valuegen::region_start_anchor(target, MusicalPosition::origin());
+            let staff = sim.rng.pick(&h.score.staves)?.id;
+            let signature = sim.rng.pick(&h.score.time_signatures).map(|t| t.id);
+            let (set, change) = match gesture {
+                0 => {
+                    let marker = epiphany_core::Marker {
+                        id: sim.mint(r),
+                        anchor: at,
+                        kind: random_marker_kind(&mut sim.rng),
+                    };
+                    let moved = epiphany_core::Marker {
+                        anchor: zero,
+                        ..marker.clone()
+                    };
+                    (
+                        OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                            structure: CrossCuttingValue::Marker(marker),
+                        }),
+                        OperationKind::ModifyCrossCutting(ModifyCrossCuttingOp {
+                            structure: CrossCuttingValue::Marker(moved),
+                        }),
+                    )
+                }
+                1 => {
+                    let epiphany_core::TimeAnchor::Region { offset, .. } = &at else {
+                        return None;
+                    };
+                    let note = match anchor_in(sim, h, target, offset.clone())? {
+                        note @ epiphany_core::TimeAnchor::Event { .. } => note,
+                        _ => return None,
+                    };
+                    let epiphany_core::TimeAnchor::Event { id: event, .. } = note else {
+                        return None;
+                    };
+                    let (kind, style) = random_spanner_look(&mut sim.rng);
+                    let spanner = epiphany_core::Spanner {
+                        id: sim.mint(r),
+                        start: note,
+                        end: valuegen::event_anchor(event),
+                        staves: vec![staff],
+                        kind,
+                        style,
+                    };
+                    let moved = epiphany_core::Spanner {
+                        start: valuegen::event_anchor(event),
+                        ..spanner.clone()
+                    };
+                    (
+                        OperationKind::CreateCrossCutting(CreateCrossCuttingOp {
+                            structure: CrossCuttingValue::Spanner(spanner),
+                        }),
+                        OperationKind::ModifyCrossCutting(ModifyCrossCuttingOp {
+                            structure: CrossCuttingValue::Spanner(moved),
+                        }),
+                    )
+                }
+                2 => {
+                    // A system break or a page break.
+                    let page = sim.rng.chance(2);
+                    let user_break = |present| {
+                        if page {
+                            OperationKind::SetUserPageBreak(SetUserPageBreakOp {
+                                region: target,
+                                anchor: at.clone(),
+                                present,
+                            })
+                        } else {
+                            OperationKind::SetUserSystemBreak(SetUserSystemBreakOp {
+                                region: target,
+                                anchor: at.clone(),
+                                present,
+                            })
+                        }
+                    };
+                    (user_break(true), user_break(false))
+                }
+                3 => {
+                    let scope = sim.rng.chance(2).then_some(target);
+                    let segment = |present: bool| {
+                        let mut segment =
+                            valuegen::tempo_segment(target, MusicalPosition::origin(), 90.0);
+                        segment.start = at.clone();
+                        OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                            region: scope,
+                            start: at.clone(),
+                            segment: present.then_some(segment),
+                        })
+                    };
+                    (segment(true), segment(false))
+                }
+                4 => {
+                    let id: TimeSignatureId = sim.mint(r);
+                    let signature =
+                        valuegen::time_signature(id, [2u16, 3, 4][sim.rng.below(3) as usize]);
+                    let meter = |signature| {
+                        OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                            region: target,
+                            anchor: at.clone(),
+                            time_signature: signature,
+                        })
+                    };
+                    (meter(Some(signature)), meter(None))
+                }
+                _ => {
+                    let grid = epiphany_core::MetricGrid {
+                        meter_sequence: vec![epiphany_core::MeterChange {
+                            anchor: at,
+                            time_signature: signature?,
+                        }],
+                    };
+                    let set = |grid| {
+                        OperationKind::SetMetricGrid(SetMetricGridOp {
+                            region: target,
+                            grid,
+                        })
+                    };
+                    (set(Some(grid)), set(None))
+                }
+            };
+            let tx: TransactionId = sim.mint(r);
+            sim.replicas[r].queued.push((tx, 2));
+            let to = if sim.rng.chance(2) {
+                valuegen::metric_model()
+            } else {
+                random_migration_target(&mut sim.rng)
+            };
+            out.extend([
+                prim(set),
+                prim(OperationKind::DeclareTransaction(TransactionDescriptor {
+                    id: tx,
+                    label: String::from("change a holder"),
+                    category: None,
+                })),
+                prim(change),
+                migration(target, to),
+                OperationPayload::UndoTransaction(UndoTransactionPayload {
+                    target: tx,
+                    policy: random_policy(&mut sim.rng),
+                }),
+            ]);
+            out
+        }
+        69 => {
+            // A note or a measure named before it is made (X5b.9, D84 Q1): a
+            // region placed as an editor places one, its start at the id of a
+            // note or a measure its author makes next, by a wall-clock offset
+            // three times in four (else of either kind); then the note entered
+            // into a voice of a metric region, or the measure made the next bar
+            // of a metric instance, refused `WrongRegionTimeModel` where the
+            // name's offset is one its region does not admit.
+            let mut region = placed_region(sim, r, h);
+            let offset = holder_offset(&mut sim.rng);
+            let made = if sim.rng.chance(2) {
+                let &(voice, instance, _) = sim.rng.pick(&h.voices)?;
+                let bars = h.measures_of(instance).max(1) as u64;
+                let at = position(sim.rng.below(8 * bars) as i64, 8);
+                let id: EventId = sim.mint(r);
+                let mut quarter_tones = Vec::new();
+                let event = event_value(sim, r, id, voice, at, duration(1, 8), &mut quarter_tones);
+                region.time_extent.start = epiphany_core::TimeAnchor::Event { id, offset };
+                OperationKind::InsertEvent(InsertEventOp {
+                    staff_instance: instance,
+                    event,
+                })
+            } else {
+                let instances = h.metric_instances();
+                let (held_in, instance) = *sim.rng.pick(&instances)?;
+                let next = instance.measures.len() as i64;
+                let id: MeasureId = sim.mint(r);
+                region.time_extent.start = epiphany_core::TimeAnchor::Measure {
+                    id,
+                    position: epiphany_core::MeasurePosition::Start,
+                    offset,
+                };
+                OperationKind::CreateMeasure(CreateMeasureOp {
+                    instance: instance.id,
+                    measure: epiphany_core::Measure {
+                        id,
+                        start: valuegen::region_start_anchor(held_in, position(next, 1)),
+                        time_signature: None,
+                        explicit_number: Some(next as u32 + 1),
+                        number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+                    },
+                })
+            };
+            vec![
+                prim(OperationKind::CreateRegion(CreateRegionOp { region })),
+                prim(made),
+            ]
+        }
+        70 => {
+            // A time signature set in a transaction, a region's grid then set
+            // by a `SetMetricGrid` naming it outside the transaction, at the
+            // region's start or a later bar, and the transaction undone by any
+            // policy (D86 Q1): a strict or cascading undo conflicts while the
+            // grid names the signature, and a best-effort one keeps it.
+            if sim.replicas[r].open.is_some() {
+                return None;
+            }
+            let metric: Vec<RegionId> = h
+                .regions
+                .iter()
+                .filter(|(_, model, _)| model.coordinate_discipline().admits_musical_offsets())
+                .map(|(id, _, _)| *id)
+                .collect();
+            let signed = *sim.rng.pick(&metric)?;
+            let gridded = *sim.rng.pick(&metric)?;
+            let tx: TransactionId = sim.mint(r);
+            sim.replicas[r].queued.push((tx, 2));
+            let signature: TimeSignatureId = sim.mint(r);
+            let bar = MusicalPosition(RationalTime::from_int(sim.rng.below(3) as i32));
+            vec![
+                prim(OperationKind::DeclareTransaction(TransactionDescriptor {
+                    id: tx,
+                    label: String::from("set a meter"),
+                    category: None,
+                })),
+                prim(OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                    region: signed,
+                    anchor: valuegen::region_start_anchor(signed, MusicalPosition::origin()),
+                    time_signature: Some(valuegen::time_signature(
+                        signature,
+                        [2u16, 3, 4][sim.rng.below(3) as usize],
+                    )),
+                })),
+                prim(OperationKind::SetMetricGrid(SetMetricGridOp {
+                    region: gridded,
+                    grid: Some(epiphany_core::MetricGrid {
+                        meter_sequence: vec![epiphany_core::MeterChange {
+                            anchor: valuegen::region_start_anchor(gridded, bar),
+                            time_signature: signature,
+                        }],
+                    }),
+                })),
+                OperationPayload::UndoTransaction(UndoTransactionPayload {
+                    target: tx,
+                    policy: random_policy(&mut sim.rng),
+                }),
+            ]
+        }
+        71 => {
+            // A removal a holder of what it removes holds (X5b fix round 1,
+            // D86 Q2, D87 Q1 and Q3): a note entered into a voice of a metric
+            // region, the next bar of a metric instance made, an empty region
+            // placed as an editor places one, or a tuplet created over two
+            // consecutive events of a voice, in a transaction of its own; then,
+            // outside it, a holder that holds what it names written at what the
+            // gesture made with no offset (a time signature, a grid's meter
+            // change, a tempo segment, a measure's start, a staff instance's
+            // carried clef, key or grid, or a region's extent or own meter), or
+            // for a tuplet one nested in it; and the transaction undone by any
+            // policy or, one time in two for a note or a region, the object
+            // deleted.
+            if sim.replicas[r].open.is_some() {
+                return None;
+            }
+            let zero = epiphany_core::AnchorOffset::Zero;
+            let tx: TransactionId = sim.mint(r);
+            let declare = prim(OperationKind::DeclareTransaction(TransactionDescriptor {
+                id: tx,
+                label: String::from("make and name"),
+                category: None,
+            }));
+            let undo = OperationPayload::UndoTransaction(UndoTransactionPayload {
+                target: tx,
+                policy: random_policy(&mut sim.rng),
+            });
+            let delete = sim.rng.chance(2);
+            // One of the holders that hold what they name: a time signature,
+            // a grid's meter change, a tempo segment, a measure's start or a
+            // staff instance's carried clef, key or grid (`held_by`'s kinds 5
+            // to 9), or a region placed with its extent or its own model's
+            // meter at what the gesture made.
+            let holder = sim.rng.below(7);
+            let held_at = |sim: &mut Simulation,
+                           region: RegionId,
+                           anchor: epiphany_core::TimeAnchor|
+             -> Option<Vec<OperationPayload>> {
+                if holder < 5 {
+                    return held_by(sim, r, h, region, anchor, zero.clone(), Some(5 + holder))
+                        .map(|(held, _)| held);
+                }
+                let mut placed = placed_region(sim, r, h);
+                if holder == 5 {
+                    placed.time_extent.start = anchor;
+                } else {
+                    placed.time_model = RegionTimeModel::Metric(epiphany_core::MetricTimeModel {
+                        meters: vec![epiphany_core::MeterChange {
+                            anchor,
+                            time_signature: sim.rng.pick(&h.score.time_signatures)?.id,
+                        }],
+                        ..Default::default()
+                    });
+                }
+                Some(vec![prim(OperationKind::CreateRegion(CreateRegionOp {
+                    region: placed,
+                }))])
+            };
+            let mut out = vec![declare];
+            match sim.rng.below(4) {
+                0 => {
+                    let &(voice, instance, region) = sim.rng.pick(&h.voices)?;
+                    let bars = h.measures_of(instance).max(1) as u64;
+                    let at = position(sim.rng.below(8 * bars) as i64, 8);
+                    let id: EventId = sim.mint(r);
+                    let mut quarter_tones = Vec::new();
+                    let event =
+                        event_value(sim, r, id, voice, at, duration(1, 8), &mut quarter_tones);
+                    let anchor = epiphany_core::TimeAnchor::Event {
+                        id,
+                        offset: zero.clone(),
+                    };
+                    let held = held_at(sim, region, anchor)?;
+                    out.push(prim(OperationKind::InsertEvent(InsertEventOp {
+                        staff_instance: instance,
+                        event,
+                    })));
+                    out.extend(held);
+                    out.push(if delete {
+                        prim(OperationKind::DeleteEvent(DeleteEventOp {
+                            event: id,
+                            tuplet_compensation: TupletCompensation::NotInTuplet,
+                        }))
+                    } else {
+                        undo
+                    });
+                }
+                1 => {
+                    let instances = h.metric_instances();
+                    let (held_in, instance) = *sim.rng.pick(&instances)?;
+                    let next = instance.measures.len() as i64;
+                    let id: MeasureId = sim.mint(r);
+                    let anchor = epiphany_core::TimeAnchor::Measure {
+                        id,
+                        position: epiphany_core::MeasurePosition::Start,
+                        offset: zero.clone(),
+                    };
+                    let held = held_at(sim, held_in, anchor)?;
+                    out.push(prim(OperationKind::CreateMeasure(CreateMeasureOp {
+                        instance: instance.id,
+                        measure: epiphany_core::Measure {
+                            id,
+                            start: valuegen::region_start_anchor(held_in, position(next, 1)),
+                            time_signature: None,
+                            explicit_number: Some(next as u32 + 1),
+                            number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+                        },
+                    })));
+                    out.extend(held);
+                    out.push(undo);
+                }
+                2 => {
+                    let region = placed_region(sim, r, h);
+                    let id = region.id;
+                    let (other, _, _) = sim.rng.pick(&h.regions)?;
+                    let anchor = epiphany_core::TimeAnchor::Region {
+                        id,
+                        edge: epiphany_core::RegionEdge::Start,
+                        offset: zero.clone(),
+                    };
+                    let held = held_at(sim, *other, anchor)?;
+                    out.push(prim(OperationKind::CreateRegion(CreateRegionOp { region })));
+                    out.extend(held);
+                    out.push(if delete {
+                        prim(OperationKind::DeleteRegion(DeleteRegionOp { region: id }))
+                    } else {
+                        undo
+                    });
+                }
+                _ => {
+                    let &(voice, _, _) = sim.rng.pick(&h.voices)?;
+                    let mut own: Vec<&Event> = h
+                        .events
+                        .iter()
+                        .copied()
+                        .filter(|e| e.voice() == voice && span(e).is_some())
+                        .collect();
+                    own.sort_by(|a, b| span(a).map(|s| s.0).cmp(&span(b).map(|s| s.0)));
+                    if own.len() < 2 {
+                        return None;
+                    }
+                    let i = sim.rng.below(own.len() as u64 - 1) as usize;
+                    let length = |e: &Event| match e.duration() {
+                        EventDuration::Musical(d) => d.clone(),
+                        _ => MusicalDuration::zero(),
+                    };
+                    let parent: TupletId = sim.mint(r);
+                    let child: TupletId = sim.mint(r);
+                    let tuplet = |id, members: Vec<EventId>, parent, total| Tuplet {
+                        id,
+                        ratio: TupletRatio::new(3, 2).expect("not degenerate"),
+                        members,
+                        parent,
+                        required_total: total,
+                        display: TupletDisplay::default(),
+                    };
+                    out.push(prim(OperationKind::CreateTuplet(CreateTupletOp {
+                        tuplet: tuplet(
+                            parent,
+                            vec![own[i].id(), own[i + 1].id()],
+                            None,
+                            length(own[i]) + length(own[i + 1]),
+                        ),
+                    })));
+                    out.push(prim(OperationKind::CreateTuplet(CreateTupletOp {
+                        tuplet: tuplet(child, vec![own[i].id()], Some(parent), length(own[i])),
+                    })));
+                    out.push(undo);
+                }
+            }
+            sim.replicas[r].queued.push((tx, 2));
+            out
+        }
+        72 => {
+            // A region carrying a tempo map with two segments on one key, one
+            // at a note (X5b fix round 2, D89): placed as an editor places
+            // one, its map a segment at a note the view holds and one at its
+            // own start, a measure's start or another region's, all with no
+            // offset, in either order, refused `TempoMapMalformed`; one time
+            // in two the note then deleted, which, were the create applied
+            // with the other segment first, would leave the note's naming
+            // nothing.
+            let note = sim.rng.pick(&h.events)?.id();
+            let mut carrier = placed_region(sim, r, h);
+            let zero = epiphany_core::AnchorOffset::Zero;
+            let other = match sim.rng.below(3) {
+                0 => epiphany_core::TimeAnchor::Region {
+                    id: carrier.id,
+                    edge: epiphany_core::RegionEdge::Start,
+                    offset: zero.clone(),
+                },
+                1 => {
+                    let instances = h.metric_instances();
+                    let (_, instance) = *sim.rng.pick(&instances)?;
+                    epiphany_core::TimeAnchor::Measure {
+                        id: sim.rng.pick(&instance.measures)?.id,
+                        position: epiphany_core::MeasurePosition::Start,
+                        offset: zero.clone(),
+                    }
+                }
+                _ => epiphany_core::TimeAnchor::Region {
+                    id: sim.rng.pick(&h.regions)?.0,
+                    edge: epiphany_core::RegionEdge::Start,
+                    offset: zero.clone(),
+                },
+            };
+            let mut starts = vec![
+                other,
+                epiphany_core::TimeAnchor::Event {
+                    id: note,
+                    offset: zero,
+                },
+            ];
+            if sim.rng.chance(2) {
+                starts.reverse();
+            }
+            let id = carrier.id;
+            carrier.local_tempo_map = Some(epiphany_core::TempoMap {
+                initial: None,
+                segments: starts
+                    .into_iter()
+                    .map(|start| {
+                        let mut segment =
+                            valuegen::tempo_segment(id, MusicalPosition::origin(), 90.0);
+                        segment.start = start;
+                        segment
+                    })
+                    .collect(),
+            });
+            let mut out = vec![prim(OperationKind::CreateRegion(CreateRegionOp {
+                region: carrier,
+            }))];
+            if sim.rng.chance(2) {
+                out.push(prim(OperationKind::DeleteEvent(DeleteEventOp {
+                    event: note,
+                    tuplet_compensation: TupletCompensation::NotInTuplet,
+                })));
+            }
+            out
+        }
+        73 => {
+            // A region carrying a tempo map no sequence of `SetTempoSegment`
+            // writes could leave (X5b fix round 2's addendum, D90 Q3): placed
+            // as an editor places one, in a metric model, its segments a bar
+            // or more into its own start out of order, one ending past the
+            // next one's start, one ending before its own start, or a linear
+            // one without its end tempo; refused `TempoMapMalformed`.
+            let mut carrier = placed_region(sim, r, h);
+            carrier.time_model = valuegen::metric_model();
+            let id = carrier.id;
+            let at = |bars: i64| epiphany_core::TimeAnchor::Region {
+                id,
+                edge: epiphany_core::RegionEdge::Start,
+                offset: epiphany_core::AnchorOffset::Musical(duration(bars, 1)),
+            };
+            let segment = |from: i64, to: Option<i64>| {
+                let mut segment = valuegen::tempo_segment(id, MusicalPosition::origin(), 90.0);
+                segment.start = at(from);
+                segment.end = to.map(at);
+                segment
+            };
+            let b = 1 + sim.rng.below(3) as i64;
+            let segments = match sim.rng.below(4) {
+                0 => vec![segment(b + 1, None), segment(b, None)],
+                1 => vec![segment(b, Some(b + 2)), segment(b + 1, None)],
+                2 => vec![segment(b + 1, Some(b))],
+                _ => {
+                    let mut linear = segment(b, Some(b + 1));
+                    linear.shape = epiphany_core::TempoShape::Linear;
+                    vec![linear]
+                }
+            };
+            carrier.local_tempo_map = Some(epiphany_core::TempoMap {
+                initial: None,
+                segments,
+            });
+            vec![prim(OperationKind::CreateRegion(CreateRegionOp {
+                region: carrier,
+            }))]
+        }
         _ => return None,
+    })
+}
+
+/// An anchor offset of either kind, as an extent written by hand may take
+/// one: a musical one of a quarter to a whole, or a wall-clock one.
+fn random_offset(rng: &mut Rng) -> epiphany_core::AnchorOffset {
+    if rng.chance(2) {
+        epiphany_core::AnchorOffset::Musical(duration(1 + rng.below(4) as i64, 4))
+    } else {
+        epiphany_core::AnchorOffset::WallClock(WallClockDuration(250 * (1 + rng.below(4) as i64)))
+    }
+}
+
+/// A holder's offset (X5b.9): wall-clock three times in four, of either kind
+/// otherwise.
+fn holder_offset(rng: &mut Rng) -> epiphany_core::AnchorOffset {
+    if rng.chance(4) {
+        random_offset(rng)
+    } else {
+        epiphany_core::AnchorOffset::WallClock(WallClockDuration(250 * (1 + rng.below(4) as i64)))
+    }
+}
+
+/// A migration of `region` to `model`, its events kept where they stand.
+fn migration(region: RegionId, model: RegionTimeModel) -> OperationPayload {
+    OperationPayload::Primitive(OperationKind::ChangeRegionTimeModel(
+        ChangeRegionTimeModelOp {
+            region,
+            new_time_model: model,
+            declared_incompatible: Vec::new(),
+            remapping: PositionRemapping::PreserveTime,
+        },
+    ))
+}
+
+/// A time anchor in `region` by `offset` (X5b.9): its start, or a note or a
+/// measure the view holds in it.
+fn anchor_in(
+    sim: &mut Simulation,
+    h: &Holdings<'_>,
+    region: RegionId,
+    offset: epiphany_core::AnchorOffset,
+) -> Option<epiphany_core::TimeAnchor> {
+    let instances = h
+        .regions
+        .iter()
+        .find(|(id, _, _)| *id == region)
+        .map(|(_, _, instances)| instances.clone())?;
+    let events: Vec<EventId> = h
+        .events
+        .iter()
+        .filter(|e| {
+            instances
+                .iter()
+                .any(|i| i.voices.iter().any(|v| v.id == e.voice()))
+        })
+        .map(|e| e.id())
+        .collect();
+    let measures: Vec<MeasureId> = instances
+        .iter()
+        .flat_map(|i| i.measures.iter().map(|m| m.id))
+        .collect();
+    Some(match sim.rng.below(3) {
+        0 if !events.is_empty() => epiphany_core::TimeAnchor::Event {
+            id: *sim.rng.pick(&events)?,
+            offset,
+        },
+        1 if !measures.is_empty() => epiphany_core::TimeAnchor::Measure {
+            id: *sim.rng.pick(&measures)?,
+            position: epiphany_core::MeasurePosition::Start,
+            offset,
+        },
+        _ => epiphany_core::TimeAnchor::Region {
+            id: region,
+            edge: epiphany_core::RegionEdge::Start,
+            offset,
+        },
+    })
+}
+
+/// A holder of a time anchor written at `anchor` in `region`, of any kind an
+/// operation writes (X5b.9): arm 67's draw, with the region holding the
+/// anchor, which the arm may then migrate. `kind` chooses the holder, drawn
+/// here where it is `None` (arm 71 chooses among those that hold their
+/// target against its removal).
+fn held_by(
+    sim: &mut Simulation,
+    r: usize,
+    h: &Holdings<'_>,
+    region: RegionId,
+    anchor: epiphany_core::TimeAnchor,
+    offset: epiphany_core::AnchorOffset,
+    kind: Option<u64>,
+) -> Option<(Vec<OperationPayload>, RegionId)> {
+    let prim = |k: OperationKind| OperationPayload::Primitive(k);
+    // A repeat stands at notes alone (P13-D3), and a spanner there too but
+    // one time in three, which stands at the region's start (C5b review 1's
+    // L2): the note `anchor` names, or one of the region's by its offset, and
+    // the note itself.
+    let note = match &anchor {
+        epiphany_core::TimeAnchor::Event { .. } => Some(anchor.clone()),
+        _ => match anchor_in(sim, h, region, offset.clone()) {
+            Some(at @ epiphany_core::TimeAnchor::Event { .. }) => Some(at),
+            _ => None,
+        },
+    };
+    let note = note.and_then(|at| match at {
+        epiphany_core::TimeAnchor::Event { id, .. } => Some((at, valuegen::event_anchor(id))),
+        _ => None,
+    });
+    let own_start = epiphany_core::TimeAnchor::Region {
+        id: region,
+        edge: epiphany_core::RegionEdge::Start,
+        offset: offset.clone(),
+    };
+    let signature = sim.rng.pick(&h.score.time_signatures).map(|t| t.id);
+    let meter = |anchor: epiphany_core::TimeAnchor, signature: TimeSignatureId| {
+        epiphany_core::MeterChange {
+            anchor,
+            time_signature: signature,
+        }
+    };
+    let held = match kind.unwrap_or_else(|| sim.rng.below(13)) {
+        0 => vec![prim(OperationKind::CreateCrossCutting(
+            CreateCrossCuttingOp {
+                structure: CrossCuttingValue::Marker(epiphany_core::Marker {
+                    id: sim.mint(r),
+                    anchor,
+                    kind: random_marker_kind(&mut sim.rng),
+                }),
+            },
+        ))],
+        1 => {
+            let (start, end) = match note {
+                Some(at) if !sim.rng.chance(3) => at,
+                _ => (own_start.clone(), own_start.clone()),
+            };
+            let (kind, style) = random_spanner_look(&mut sim.rng);
+            vec![prim(OperationKind::CreateCrossCutting(
+                CreateCrossCuttingOp {
+                    structure: CrossCuttingValue::Spanner(epiphany_core::Spanner {
+                        id: sim.mint(r),
+                        start,
+                        end,
+                        staves: vec![sim.rng.pick(&h.score.staves)?.id],
+                        kind,
+                        style,
+                    }),
+                },
+            ))]
+        }
+        2 => {
+            let (start, end) = note?;
+            let id: RepeatStructureId = sim.mint(r);
+            vec![prim(OperationKind::CreateRepeatStructure(
+                CreateRepeatStructureOp {
+                    repeat: epiphany_core::RepeatStructure {
+                        id,
+                        start,
+                        end,
+                        kind: epiphany_core::RepeatKind::migration_default(),
+                        voltas: Vec::new(),
+                    },
+                },
+            ))]
+        }
+        3 => vec![prim(OperationKind::SetUserSystemBreak(
+            SetUserSystemBreakOp {
+                region,
+                anchor,
+                present: true,
+            },
+        ))],
+        4 => vec![prim(OperationKind::SetUserPageBreak(SetUserPageBreakOp {
+            region,
+            anchor,
+            present: true,
+        }))],
+        5 => {
+            let id: TimeSignatureId = sim.mint(r);
+            vec![prim(OperationKind::SetTimeSignature(SetTimeSignatureOp {
+                region,
+                anchor,
+                time_signature: Some(valuegen::time_signature(
+                    id,
+                    [2u16, 3, 4][sim.rng.below(3) as usize],
+                )),
+            }))]
+        }
+        6 => vec![prim(OperationKind::SetMetricGrid(SetMetricGridOp {
+            region,
+            grid: Some(epiphany_core::MetricGrid {
+                meter_sequence: vec![meter(anchor, signature?)],
+            }),
+        }))],
+        7 => {
+            // At the region's start, a note or a measure of it: a note's or a
+            // measure's removal is held while a segment names it (D86 Q2).
+            let mut segment = valuegen::tempo_segment(region, MusicalPosition::origin(), 90.0);
+            segment.start = anchor.clone();
+            vec![prim(OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                region: sim.rng.chance(2).then_some(region),
+                start: anchor,
+                segment: Some(segment),
+            }))]
+        }
+        8 => {
+            // The first measure of an instance of the region: one it holds
+            // without a measure, or one made for it of a staff it lacks.
+            let instances = h
+                .regions
+                .iter()
+                .find(|(id, _, _)| *id == region)
+                .map(|(_, _, instances)| instances.clone())?;
+            let bare: Vec<StaffInstanceId> = instances
+                .iter()
+                .filter(|i| i.measures.is_empty())
+                .map(|i| i.id)
+                .collect();
+            let mut out = Vec::new();
+            let instance = match sim.rng.pick(&bare) {
+                Some(instance) => *instance,
+                None => {
+                    let staff = h
+                        .score
+                        .staves
+                        .iter()
+                        .map(|s| s.id)
+                        .find(|s| !instances.iter().any(|i| i.staff == *s))?;
+                    let id: StaffInstanceId = sim.mint(r);
+                    out.push(prim(OperationKind::CreateStaffInstance(
+                        CreateStaffInstanceOp {
+                            region,
+                            instance: valuegen::staff_instance(id, staff),
+                        },
+                    )));
+                    id
+                }
+            };
+            out.push(prim(OperationKind::CreateMeasure(CreateMeasureOp {
+                instance,
+                measure: epiphany_core::Measure {
+                    id: sim.mint(r),
+                    start: anchor,
+                    time_signature: None,
+                    explicit_number: None,
+                    number_visibility: epiphany_core::MeasureNumberVisibility::Auto,
+                },
+            })));
+            out
+        }
+        9 => {
+            let held = h
+                .regions
+                .iter()
+                .find(|(id, _, _)| *id == region)
+                .map(|(_, _, instances)| instances.clone())?;
+            let staff = h
+                .score
+                .staves
+                .iter()
+                .map(|s| s.id)
+                .find(|s| !held.iter().any(|i| i.staff == *s))?;
+            let id: StaffInstanceId = sim.mint(r);
+            let mut instance = valuegen::staff_instance(id, staff);
+            match sim.rng.below(3) {
+                0 => instance.clef_sequence.push(epiphany_core::ClefChange {
+                    anchor,
+                    clef: Clef::treble(),
+                }),
+                1 => instance
+                    .key_sequence
+                    .push(epiphany_core::KeySignatureChange {
+                        anchor,
+                        key: KeySignature::new(sim.rng.below(5) as i8 - 2)?,
+                    }),
+                _ => {
+                    instance.local_metric_grid = Some(epiphany_core::MetricGrid {
+                        meter_sequence: vec![meter(anchor, signature?)],
+                    })
+                }
+            }
+            vec![prim(OperationKind::CreateStaffInstance(
+                CreateStaffInstanceOp { region, instance },
+            ))]
+        }
+        10 => {
+            // A region carrying, at its own start, a meter of its own model,
+            // a break or a tempo segment: the region the arm migrates.
+            let mut carrier = placed_region(sim, r, h);
+            let at = epiphany_core::TimeAnchor::Region {
+                id: carrier.id,
+                edge: epiphany_core::RegionEdge::Start,
+                offset,
+            };
+            match sim.rng.below(3) {
+                0 => {
+                    carrier.time_model = RegionTimeModel::Metric(epiphany_core::MetricTimeModel {
+                        meters: vec![meter(at, signature?)],
+                        ..Default::default()
+                    })
+                }
+                1 => carrier
+                    .content
+                    .staff_based_mut()?
+                    .user_system_breaks
+                    .push(at),
+                _ => {
+                    let mut segment =
+                        valuegen::tempo_segment(carrier.id, MusicalPosition::origin(), 90.0);
+                    segment.start = at;
+                    carrier.local_tempo_map = Some(epiphany_core::TempoMap {
+                        initial: None,
+                        segments: vec![segment],
+                    });
+                }
+            }
+            let holding = carrier.id;
+            return Some((
+                vec![prim(OperationKind::CreateRegion(CreateRegionOp {
+                    region: carrier,
+                }))],
+                holding,
+            ));
+        }
+        11 => vec![migration(
+            region,
+            RegionTimeModel::Metric(epiphany_core::MetricTimeModel {
+                meters: vec![meter(own_start, signature?)],
+                ..Default::default()
+            }),
+        )],
+        _ => {
+            // A marker the view holds moved onto the anchor, or a spanner's
+            // start onto a note.
+            if sim.rng.chance(2) {
+                let mut marker = sim.rng.pick(&h.score.cross_cutting.markers)?.clone();
+                marker.anchor = anchor;
+                vec![prim(OperationKind::ModifyCrossCutting(
+                    ModifyCrossCuttingOp {
+                        structure: CrossCuttingValue::Marker(marker),
+                    },
+                ))]
+            } else {
+                let (start, _) = note?;
+                let mut spanner = sim.rng.pick(&h.score.cross_cutting.spanners)?.clone();
+                spanner.start = start;
+                vec![prim(OperationKind::ModifyCrossCutting(
+                    ModifyCrossCuttingOp {
+                        structure: CrossCuttingValue::Spanner(spanner),
+                    },
+                ))]
+            }
+        }
+    };
+    Some((held, region))
+}
+
+/// A migration's target model of any kind: proportional, aleatoric by any
+/// anchoring discipline, or metric.
+fn random_migration_target(rng: &mut Rng) -> RegionTimeModel {
+    match rng.below(3) {
+        0 => valuegen::proportional_model(),
+        1 => aleatoric_model(match rng.below(4) {
+            0 => AleatoricAnchoringDiscipline::Musical,
+            1 => AleatoricAnchoringDiscipline::WallClock,
+            2 => AleatoricAnchoringDiscipline::EitherPerEvent,
+            _ => AleatoricAnchoringDiscipline::FreelyMixed,
+        }),
+        _ => valuegen::metric_model(),
+    }
+}
+
+/// An aleatoric model anchored by `anchoring`, with no ordering or bounds.
+fn aleatoric_model(anchoring: AleatoricAnchoringDiscipline) -> RegionTimeModel {
+    RegionTimeModel::Aleatoric(AleatoricTimeModel {
+        ordering: EventOrderingDAG::default(),
+        anchoring,
+        bounds: BTreeMap::new(),
+        duration_hint: WallClockDuration(1),
     })
 }
 
@@ -3476,7 +5163,7 @@ fn tie_entry(
 /// Each arm of [`make`] and how often it is drawn: the editing of notes,
 /// pitches and their marks three times as often as the score's structure and
 /// settings, as an editor's history runs.
-const ARMS: [(u64, u64); 64] = [
+const ARMS: [(u64, u64); 74] = [
     (0, 4),
     (1, 3),
     (2, 3),
@@ -3541,6 +5228,16 @@ const ARMS: [(u64, u64); 64] = [
     (61, 1),
     (62, 1),
     (63, 1),
+    (64, 1),
+    (65, 1),
+    (66, 1),
+    (67, 6),
+    (68, 2),
+    (69, 1),
+    (70, 1),
+    (71, 4),
+    (72, 2),
+    (73, 1),
 ];
 
 fn draw_arm(rng: &mut Rng) -> u64 {
@@ -3825,6 +5522,11 @@ fn mints_and_refs(payload: &OperationPayload) -> (Vec<TypedObjectId>, Vec<TypedO
         }
         OperationKind::ChangeRegionTimeModel(op) => {
             refs.push(T::Region(op.region));
+            if let epiphany_core::RegionTimeModel::Metric(model) = &op.new_time_model {
+                for meter in &model.meters {
+                    anchor(&meter.anchor, &mut refs);
+                }
+            }
             refs.extend(op.declared_incompatible.iter().map(|e| T::Event(*e)));
             if let PositionRemapping::Reassign(pairs) = &op.remapping {
                 refs.extend(pairs.iter().map(|(e, _)| T::Event(*e)));
@@ -3854,12 +5556,62 @@ fn mints_and_refs(payload: &OperationPayload) -> (Vec<TypedObjectId>, Vec<TypedO
         OperationKind::DeleteIdentifiedPitch(op) => refs.push(T::Pitch(op.pitch)),
         OperationKind::ModifyIdentifiedPitch(op) => refs.push(T::Pitch(op.pitch)),
         OperationKind::DeleteCrossCutting(op) => refs.push(op.structure),
-        OperationKind::CreateRegion(op) => mints.push(T::Region(op.region.id)),
+        OperationKind::CreateRegion(op) => {
+            mints.push(T::Region(op.region.id));
+            anchor(&op.region.time_extent.start, &mut refs);
+            anchor(&op.region.time_extent.end, &mut refs);
+            if let epiphany_core::RegionTimeModel::Metric(model) = &op.region.time_model {
+                for meter in &model.meters {
+                    anchor(&meter.anchor, &mut refs);
+                }
+            }
+            if let Some(content) = op.region.content.staff_based() {
+                for meter in content
+                    .default_metric_grid
+                    .iter()
+                    .flat_map(|grid| &grid.meter_sequence)
+                {
+                    anchor(&meter.anchor, &mut refs);
+                }
+                for at in content
+                    .user_system_breaks
+                    .iter()
+                    .chain(&content.user_page_breaks)
+                {
+                    anchor(at, &mut refs);
+                }
+            }
+            for segment in op
+                .region
+                .local_tempo_map
+                .iter()
+                .flat_map(|map| &map.segments)
+            {
+                anchor(&segment.start, &mut refs);
+                if let Some(end) = &segment.end {
+                    anchor(end, &mut refs);
+                }
+            }
+        }
         OperationKind::DeleteRegion(op) => refs.push(T::Region(op.region)),
         OperationKind::CreateStaffInstance(op) => {
             refs.push(T::Region(op.region));
             refs.push(T::Staff(op.instance.staff));
             mints.push(T::StaffInstance(op.instance.id));
+            for change in &op.instance.clef_sequence {
+                anchor(&change.anchor, &mut refs);
+            }
+            for change in &op.instance.key_sequence {
+                anchor(&change.anchor, &mut refs);
+            }
+            for meter in op
+                .instance
+                .local_metric_grid
+                .iter()
+                .flat_map(|grid| &grid.meter_sequence)
+            {
+                anchor(&meter.anchor, &mut refs);
+            }
         }
         OperationKind::DeleteStaffInstance(op) => refs.push(T::StaffInstance(op.staff_instance)),
         OperationKind::CreateVoice(op) => {
@@ -3867,7 +5619,12 @@ fn mints_and_refs(payload: &OperationPayload) -> (Vec<TypedObjectId>, Vec<TypedO
             mints.push(T::Voice(op.voice.id));
         }
         OperationKind::DeleteVoice(op) => refs.push(T::Voice(op.voice)),
-        OperationKind::SetMetricGrid(op) => refs.push(T::Region(op.region)),
+        OperationKind::SetMetricGrid(op) => {
+            refs.push(T::Region(op.region));
+            for meter in op.grid.iter().flat_map(|grid| &grid.meter_sequence) {
+                anchor(&meter.anchor, &mut refs);
+            }
+        }
         OperationKind::CreateStaff(op) => {
             mints.push(T::Staff(op.staff.id));
             refs.push(T::Instrument(op.staff.instrument));
@@ -3881,6 +5638,9 @@ fn mints_and_refs(payload: &OperationPayload) -> (Vec<TypedObjectId>, Vec<TypedO
         OperationKind::SetTempoSegment(op) => {
             refs.extend(op.region.map(T::Region));
             anchor(&op.start, &mut refs);
+            if let Some(end) = op.segment.as_ref().and_then(|segment| segment.end.as_ref()) {
+                anchor(end, &mut refs);
+            }
         }
         OperationKind::SetStaffLayout(op) => {
             refs.push(T::StaffInstance(op.staff_instance));
@@ -3948,7 +5708,9 @@ fn modify_pitches(op: &ModifyEventOp) -> Vec<TypedObjectId> {
 /// promoted voice) is minted by a promotion, not a payload, and an author
 /// names one only from a view whose reduction made it, so it is not checked.
 /// A whole-event modify mints a pitch it carries that no other operation
-/// mints.
+/// mints. A region's extent may name a note or a measure before it is made
+/// (arm 69, D84 Q1): such a name needs only an operation of the history that
+/// mints it, so the minimizer keeps the note or the measure it names.
 pub fn valid(history: &[OperationEnvelope]) -> bool {
     let mut minted_by: BTreeMap<TypedObjectId, OperationId> = BTreeMap::new();
     for envelope in history {
@@ -3965,14 +5727,32 @@ pub fn valid(history: &[OperationEnvelope]) -> bool {
     }
     history.iter().all(|envelope| {
         let (mints, refs) = mints_and_refs(&envelope.payload);
+        let ahead = names_ahead(&envelope.payload);
         refs.iter().all(|object| {
             matches!(object, TypedObjectId::Voice(v) if v.replica() == ReplicaId::SYSTEM_DERIVED)
                 || mints.contains(object)
                 || minted_by
                     .get(object)
                     .is_some_and(|op| *op == envelope.id || envelope.causal_context.covers(*op))
+                || (ahead.contains(object) && minted_by.contains_key(object))
         })
     })
+}
+
+/// The events and measures a region's extent names, which it may name before
+/// they are made (X5b.9, D84 Q1).
+fn names_ahead(payload: &OperationPayload) -> Vec<TypedObjectId> {
+    let OperationPayload::Primitive(OperationKind::CreateRegion(op)) = payload else {
+        return Vec::new();
+    };
+    [&op.region.time_extent.start, &op.region.time_extent.end]
+        .into_iter()
+        .filter_map(|anchor| match anchor {
+            epiphany_core::TimeAnchor::Event { id, .. } => Some(TypedObjectId::Event(*id)),
+            epiphany_core::TimeAnchor::Measure { id, .. } => Some(TypedObjectId::Measure(*id)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Renumbers each replica's operations to run from `0` without a gap, in
@@ -4096,6 +5876,220 @@ pub fn parse(text: &str) -> Result<Vec<OperationEnvelope>, epiphany_core::textva
 #[cfg(test)]
 mod tests {
     use super::witness_shape;
+    use super::{
+        BTreeMap, BTreeSet, DeleteEventOp, ModifyEventOp, OperationEffect, OperationEnvelope,
+        OperationKind, OperationPayload, TupletCompensation,
+    };
+
+    /// A region's extent names what it is anchored to, which its author
+    /// must have seen: a history whose extent names an event no envelope
+    /// mints is invalid, so the minimizer keeps whatever an extent names
+    /// (X5b).
+    #[test]
+    fn a_region_s_extent_names_what_its_author_has_seen() {
+        use super::{genesis, valid, valuegen, CreateRegionOp, Simulation};
+        use epiphany_core::{AnchorOffset, EventId, RegionId, ReplicaId, TimeAnchor};
+        let mut sim = Simulation::new(0x5B06);
+        genesis(&mut sim);
+        let event = sim
+            .view(0)
+            .reduced
+            .score
+            .events
+            .iter_canonical()
+            .next()
+            .expect("a genesis event")
+            .id();
+        let anchored = |id: EventId| {
+            let mut region = valuegen::region(RegionId::new(ReplicaId(1), 9_000));
+            region.time_extent.start = TimeAnchor::Event {
+                id,
+                offset: AnchorOffset::Zero,
+            };
+            OperationPayload::Primitive(OperationKind::CreateRegion(CreateRegionOp { region }))
+        };
+        let mut seen = Simulation::new(0x5B06);
+        genesis(&mut seen);
+        seen.author(0, anchored(event));
+        assert!(valid(&seen.history));
+        let mut unseen = Simulation::new(0x5B06);
+        genesis(&mut unseen);
+        unseen.author(0, anchored(EventId::new(ReplicaId(9), 9)));
+        assert!(!valid(&unseen.history));
+        // Named before it is made (X5b.9): valid where the history makes it.
+        let mut ahead = Simulation::new(0x5B06);
+        genesis(&mut ahead);
+        let insert = seen
+            .history
+            .iter()
+            .find(|e| {
+                matches!(
+                    e.payload,
+                    OperationPayload::Primitive(OperationKind::InsertEvent(_))
+                )
+            })
+            .expect("a genesis insert")
+            .payload
+            .clone();
+        let OperationPayload::Primitive(OperationKind::InsertEvent(op)) = insert else {
+            unreachable!("an insert");
+        };
+        let later = EventId::new(ReplicaId(1), 8_999);
+        let made = super::InsertEventOp {
+            staff_instance: op.staff_instance,
+            event: valuegen::insert_event_value(
+                later,
+                op.event.voice(),
+                epiphany_core::MusicalPosition::origin(),
+                epiphany_core::MusicalDuration(
+                    epiphany_core::RationalTime::new(1, 8).expect("an eighth"),
+                ),
+                &[epiphany_core::PitchId::new(ReplicaId(1), 8_998)],
+            ),
+        };
+        ahead.author(0, anchored(later));
+        assert!(!valid(&ahead.history), "not yet made");
+        ahead.author(
+            0,
+            OperationPayload::Primitive(OperationKind::InsertEvent(made)),
+        );
+        assert!(valid(&ahead.history), "made after");
+    }
+
+    /// Every holder of a time anchor names what its author has seen, as an
+    /// extent does: a history naming an event no envelope mints in a grid's
+    /// meter change, a region's own model, carried grid, break or tempo map,
+    /// a staff instance's carried clef, key or grid, a migration's target
+    /// model or a tempo segment's end is invalid, so the minimizer keeps what
+    /// each names (X5b fix round 1: each such write is refused naming a
+    /// target that is not live, and base-free reduction takes an object no
+    /// envelope mints as live).
+    #[test]
+    fn every_holder_names_what_its_author_has_seen() {
+        use super::{
+            genesis, valid, valuegen, ChangeRegionTimeModelOp, CreateRegionOp,
+            CreateStaffInstanceOp, PositionRemapping, SetMetricGridOp, SetTempoSegmentOp,
+            Simulation,
+        };
+        use epiphany_core::{
+            AnchorOffset, Clef, ClefChange, EventId, KeySignature, KeySignatureChange, MeterChange,
+            MetricGrid, MetricTimeModel, MusicalPosition, RegionEdge, RegionId, RegionTimeModel,
+            ReplicaId, StaffInstanceId, TempoMap, TimeAnchor,
+        };
+        let mut sim = Simulation::new(0x5B06);
+        genesis(&mut sim);
+        let score = &sim.view(0).reduced.score;
+        let event = score
+            .events
+            .iter_canonical()
+            .next()
+            .expect("a genesis event")
+            .id();
+        let region = score.canvas.regions[0].id;
+        let staff = score.staves[0].id;
+        let signature = score.time_signatures[0].id;
+        let fresh = RegionId::new(ReplicaId(1), 9_000);
+        let instance = StaffInstanceId::new(ReplicaId(1), 9_001);
+        let holder = |n: usize, at: TimeAnchor| -> OperationKind {
+            let meter = MeterChange {
+                anchor: at.clone(),
+                time_signature: signature,
+            };
+            let model = RegionTimeModel::Metric(MetricTimeModel {
+                meters: vec![meter.clone()],
+                ..Default::default()
+            });
+            let grid = MetricGrid {
+                meter_sequence: vec![meter],
+            };
+            let mut r = valuegen::region(fresh);
+            let mut i = valuegen::staff_instance(instance, staff);
+            let mut segment = valuegen::tempo_segment(region, MusicalPosition::origin(), 90.0);
+            match n {
+                0 => {
+                    return OperationKind::SetMetricGrid(SetMetricGridOp {
+                        region,
+                        grid: Some(grid),
+                    })
+                }
+                1 => r.time_model = model,
+                2 => {
+                    r.content
+                        .staff_based_mut()
+                        .expect("staff-based")
+                        .default_metric_grid = Some(grid)
+                }
+                3 => r
+                    .content
+                    .staff_based_mut()
+                    .expect("staff-based")
+                    .user_system_breaks
+                    .push(at),
+                4 => {
+                    segment.start = at;
+                    r.local_tempo_map = Some(TempoMap {
+                        initial: None,
+                        segments: vec![segment],
+                    });
+                }
+                5 => i.clef_sequence.push(ClefChange {
+                    anchor: at,
+                    clef: Clef::treble(),
+                }),
+                6 => i.key_sequence.push(KeySignatureChange {
+                    anchor: at,
+                    key: KeySignature::new(0).expect("C"),
+                }),
+                7 => i.local_metric_grid = Some(grid),
+                8 => {
+                    return OperationKind::ChangeRegionTimeModel(ChangeRegionTimeModelOp {
+                        region,
+                        new_time_model: model,
+                        declared_incompatible: Vec::new(),
+                        remapping: PositionRemapping::PreserveTime,
+                    })
+                }
+                _ => {
+                    segment.end = Some(at);
+                    return OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                        region: None,
+                        start: TimeAnchor::Region {
+                            id: region,
+                            edge: RegionEdge::Start,
+                            offset: AnchorOffset::Zero,
+                        },
+                        segment: Some(segment),
+                    });
+                }
+            }
+            if n < 5 {
+                OperationKind::CreateRegion(CreateRegionOp { region: r })
+            } else {
+                OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                    region,
+                    instance: i,
+                })
+            }
+        };
+        let at = |id: EventId| TimeAnchor::Event {
+            id,
+            offset: AnchorOffset::Zero,
+        };
+        for n in 0..10 {
+            let mut seen = Simulation::new(0x5B06);
+            genesis(&mut seen);
+            seen.author(0, OperationPayload::Primitive(holder(n, at(event))));
+            assert!(valid(&seen.history), "holder {n}, a seen event");
+            let mut unseen = Simulation::new(0x5B06);
+            genesis(&mut unseen);
+            let unmade = at(EventId::new(ReplicaId(9), 9));
+            unseen.author(0, OperationPayload::Primitive(holder(n, unmade)));
+            assert!(
+                !valid(&unseen.history),
+                "holder {n}, an event no envelope mints"
+            );
+        }
+    }
 
     #[test]
     fn a_witness_shape_names_its_cause_not_its_objects() {
@@ -4168,15 +6162,15 @@ mod tests {
         assert_eq!(now, compacted[twin - 1].envelope_hash());
     }
 
-    /// An overlap of another making stays out of the deferred class (D52): the
-    /// never-seen history's graph, its first region's staff instance taken
-    /// out while its staff extent still names the staff (as review 1's plant
-    /// B3 left one), overlaps the second region by a staff it holds no live
-    /// instance of, and every `RegionExtents` finding is the invariant's plain
-    /// class, which nothing excepts. The graph as reduced is the class.
+    /// A region overlap in a graph is the invariant's plain class, which
+    /// nothing excepts: the never-seen history (`110`) reduces whole, its
+    /// second fill refused, and its graph with that fill written in by hand,
+    /// as reduction version 4 applied it, breaks `RegionExtents` under the
+    /// invariant's own name.
     #[test]
-    fn an_overlap_of_another_making_is_not_the_deferred_class() {
-        use super::{deferred, empty_base, invariant_findings, OperationSet, RegionContent};
+    fn a_region_overlap_is_the_invariant_s_plain_class() {
+        use super::{empty_base, invariant_findings, OperationSet, RegionContent};
+        use crate::{NoOpReason, PreconditionFailureReason};
         let history = super::parse(include_str!(
             "../../tests/two_modes/110-invariant-region-extents.txt"
         ))
@@ -4184,137 +6178,164 @@ mod tests {
         let mut set = OperationSet::new();
         set.accept_all(history.iter().cloned());
         let aware = set.reduce_onto(&empty_base());
-        let effects = aware.state.effects.iter().cloned().collect();
-        let objects = &aware.state.objects;
-        let reduced: Vec<String> = invariant_findings(&history, &effects, &aware.score, objects)
-            .into_iter()
-            .map(|f| f.class)
-            .collect();
-        assert_eq!(reduced, vec![super::REGION_NEVER_SEEN]);
+        assert!(invariant_findings(&aware.score).is_empty());
+        let effects: BTreeMap<_, _> = aware.state.effects.iter().cloned().collect();
+        let refused = history
+            .iter()
+            .find_map(|env| match (&env.payload, effects.get(&env.id)) {
+                (
+                    OperationPayload::Primitive(OperationKind::CreateStaffInstance(op)),
+                    Some(OperationEffect::NoOp {
+                        reason:
+                            NoOpReason::PreconditionFailedUnderReduction {
+                                reason: PreconditionFailureReason::RegionsOverlap,
+                            },
+                    }),
+                ) => Some(op),
+                _ => None,
+            })
+            .expect("a fill refused for the overlap");
         let mut score = aware.score.clone();
-        let first = score
+        let region = score
             .canvas
             .regions
             .iter_mut()
-            .find(|region| !region.staff_instances().is_empty())
-            .expect("a filled region");
-        match &mut first.content {
-            RegionContent::StaffBased(content) => content.staff_instances.clear(),
+            .find(|region| region.id == refused.region)
+            .expect("the refused fill's region");
+        match &mut region.content {
+            RegionContent::StaffBased(content) => {
+                content.staff_instances.push(refused.instance.clone())
+            }
             other => panic!("a staff-based region, not {other:?}"),
         }
-        assert!(!first.staff_extent.staves.is_empty(), "the stale extent");
-        let classes: Vec<String> = invariant_findings(&history, &effects, &score, objects)
+        region.staff_extent.staves.push(refused.instance.staff);
+        let classes: Vec<String> = invariant_findings(&score)
             .into_iter()
             .map(|f| f.class)
             .collect();
+        assert!(!classes.is_empty());
         assert!(
             classes
                 .iter()
-                .any(|c| c.starts_with("invariant Invariant(RegionExtents: ")),
+                .all(|c| c.starts_with("invariant Invariant(RegionExtents: ")),
             "{classes:?}"
         );
-        assert!(classes.iter().all(|c| !deferred(c)), "{classes:?}");
     }
 
-    /// An overlap left by a removal the graph failed to make stays out of the
-    /// deferred class (X4a review 3's L1): the never-seen history's graph as
-    /// reduced, with one region's staff instance tombstoned in the ledger and
-    /// kept in the graph, as review 3's plant D2 (a delete leaving the
-    /// instance in the graph) leaves it, overlaps the other region by an
-    /// instance the ledger does not hold live, so the finding is the
-    /// invariant's plain class. Read from the graph alone, it was deferred as
-    /// never seen.
-    #[test]
-    fn an_overlap_by_an_instance_the_ledger_removed_is_not_the_deferred_class() {
-        use super::{
-            deferred, empty_base, invariant_findings, ObjectState, OperationSet, TypedObjectId,
-        };
-        let history = super::parse(include_str!(
-            "../../tests/two_modes/110-invariant-region-extents.txt"
-        ))
-        .expect("parses");
-        let mut set = OperationSet::new();
-        set.accept_all(history.iter().cloned());
-        let aware = set.reduce_onto(&empty_base());
-        let effects = aware.state.effects.iter().cloned().collect();
-        let instance = aware
-            .score
-            .canvas
-            .regions
-            .iter()
-            .find_map(|region| region.staff_instances().first().map(|i| i.id))
-            .expect("a filled region");
-        let mut objects = aware.state.objects.clone();
-        let deleted_by = history.last().expect("a history").id;
-        let minted_by = history.first().expect("a history").id;
-        let slot = objects
-            .get_mut(&TypedObjectId::StaffInstance(instance))
-            .expect("the ledger holds the instance");
-        assert_eq!(*slot, ObjectState::Live);
-        *slot = ObjectState::Tombstoned {
-            deleted_by,
-            minted_by,
-        };
-        let classes: Vec<String> = invariant_findings(&history, &effects, &aware.score, &objects)
-            .into_iter()
-            .map(|f| f.class)
-            .collect();
-        assert!(
-            classes
-                .iter()
-                .any(|c| c.starts_with("invariant Invariant(RegionExtents: ") && !deferred(c)),
-            "{classes:?}"
-        );
-        assert!(classes.iter().all(|c| !deferred(c)), "{classes:?}");
-    }
-
-    /// Every view is checked and every class it shows kept (review 1's L2):
-    /// three views of one simulation, each showing one deferred cause, all
-    /// reach the history's findings.
+    /// Every view is checked and every class it shows kept (review 1's L2).
+    /// The classes are references the owner parked (D54), which the fuzz
+    /// writes none of: a cue's source, an indeterminate event's alternative
+    /// and a trajectory endpoint naming another event's pitch, each left
+    /// dangling by a delete of what it names. Three views, each of one, all
+    /// reach the simulation's findings; one view of all three keeps them all.
     #[test]
     fn every_view_is_checked_and_every_class_kept() {
-        let never_seen = super::parse(include_str!(
-            "../../tests/two_modes/110-invariant-region-extents.txt"
-        ))
-        .expect("parses");
-        let seen_deleted = super::parse(include_str!(
-            "../../tests/two_modes/145-invariant-region-extents.txt"
-        ))
-        .expect("parses");
-        let seen_undone = super::parse(include_str!(
-            "../../tests/two_modes/150-invariant-region-extents.txt"
-        ))
-        .expect("parses");
-        let mut sim = super::Simulation::new(0);
-        for history in [never_seen.clone(), seen_deleted, seen_undone] {
+        use super::{genesis, render, Simulation};
+        use epiphany_core::{
+            CueEvent, CueRendering, Event, IndeterminacyHints, IndeterminacyKind,
+            IndeterminateEvent, TrajectoryDisplay, TrajectoryEndpoint, TrajectoryEvent,
+            TrajectoryShape,
+        };
+        // A genesis, its first note rewritten to name the voice's next note
+        // (as a cue, an indeterminate event or a trajectory, by `which`), and
+        // that next note deleted.
+        let dangling = |which: u8| -> Vec<OperationEnvelope> {
+            let mut sim = Simulation::new(0x5B03);
+            genesis(&mut sim);
+            let view = sim.view(0);
+            let score = &view.reduced.score;
+            let (a, b) = score
+                .voices()
+                .find_map(|(_, _, voice)| {
+                    let notes: Vec<_> = voice
+                        .events
+                        .iter()
+                        .filter_map(|id| match score.events.get(*id) {
+                            Some(Event::Pitched(note)) => Some(note.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    (notes.len() >= 2).then(|| (notes[0].clone(), notes[1].clone()))
+                })
+                .expect("a voice of two notes");
+            let (id, voice, position, duration) =
+                (a.id, a.voice, a.position.clone(), a.duration.clone());
+            let event = match which {
+                0 => Event::Cue(CueEvent {
+                    id,
+                    voice,
+                    position,
+                    duration,
+                    source: vec![b.id],
+                    rendering: CueRendering,
+                }),
+                1 => Event::Indeterminate(IndeterminateEvent {
+                    id,
+                    voice,
+                    position,
+                    duration,
+                    indeterminacy: IndeterminacyKind::Choice,
+                    hints: IndeterminacyHints {
+                        alternatives: vec![b.id],
+                        ..IndeterminacyHints::default()
+                    },
+                }),
+                _ => Event::Trajectory(TrajectoryEvent {
+                    id,
+                    voice,
+                    position,
+                    duration,
+                    start: TrajectoryEndpoint::ExplicitPitch(a.pitches[0].clone()),
+                    end: TrajectoryEndpoint::EventPitch(b.pitches[0].id),
+                    shape: TrajectoryShape::Linear,
+                    display: TrajectoryDisplay,
+                }),
+            };
+            for kind in [
+                OperationKind::ModifyEvent(ModifyEventOp { event }),
+                OperationKind::DeleteEvent(DeleteEventOp {
+                    event: b.id,
+                    tuplet_compensation: TupletCompensation::NotInTuplet,
+                }),
+            ] {
+                sim.author(0, OperationPayload::Primitive(kind));
+            }
+            sim.history
+        };
+        let histories = [dangling(0), dangling(1), dangling(2)];
+        let mut sim = Simulation::new(0);
+        let mut each = Vec::new();
+        for history in &histories {
+            let before: BTreeSet<String> = sim.view_findings.keys().cloned().collect();
             sim.replicas[0].seen = (0..history.len()).collect();
-            sim.history = history;
+            sim.history = history.clone();
             sim.view(0);
+            let now: BTreeSet<String> = sim.view_findings.keys().cloned().collect();
+            let new: Vec<String> = now.difference(&before).cloned().collect();
+            assert!(!new.is_empty(), "the view shows a class of its own");
+            each.extend(new);
         }
-        let classes: Vec<&String> = sim.view_findings.keys().collect();
-        let all = vec![
-            super::REGION_NEVER_SEEN,
-            super::REGION_SEEN_DELETED,
-            super::REGION_SEEN_UNDONE,
-        ];
-        assert_eq!(classes, all, "three views");
-        // One view showing all three: the later histories' replicas renamed
-        // apart.
-        let renamed = include_str!("../../tests/two_modes/145-invariant-region-extents.txt")
-            .replace("#x0000000000000001", "#x0000000000000004")
-            .replace("#x0000000000000003", "#x0000000000000006");
-        let renamed_undone = include_str!("../../tests/two_modes/150-invariant-region-extents.txt")
-            .replace("#x0000000000000001", "#x0000000000000007")
-            .replace("#x0000000000000002", "#x0000000000000008")
-            .replace("#x0000000000000003", "#x0000000000000009");
-        let mut one_view = never_seen;
-        one_view.extend(super::parse(&renamed).expect("parses"));
-        one_view.extend(super::parse(&renamed_undone).expect("parses"));
-        let mut sim = super::Simulation::new(0);
+        let all: Vec<&String> = sim.view_findings.keys().collect();
+        assert_eq!(all.len(), each.len(), "three views: {all:?}");
+        // One view of all three: the later histories' replicas renamed apart.
+        let renamed = |history: &[OperationEnvelope], to: [&str; 3]| {
+            let mut text = render(history, &[]);
+            for (from, to) in ["1", "2", "3"].iter().zip(to) {
+                text = text.replace(
+                    &format!("#x000000000000000{from}"),
+                    &format!("#x000000000000000{to}"),
+                );
+            }
+            super::parse(&text).expect("parses")
+        };
+        let mut one_view = histories[0].clone();
+        one_view.extend(renamed(&histories[1], ["4", "5", "6"]));
+        one_view.extend(renamed(&histories[2], ["7", "8", "9"]));
+        let mut sim = Simulation::new(0);
         sim.replicas[0].seen = (0..one_view.len()).collect();
         sim.history = one_view;
         sim.view(0);
-        let classes: Vec<&String> = sim.view_findings.keys().collect();
-        assert_eq!(classes, all, "one view");
+        let one: Vec<&String> = sim.view_findings.keys().collect();
+        assert_eq!(one.len(), all.len(), "one view: {one:?}, three: {all:?}");
     }
 }

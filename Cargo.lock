@@ -1202,6 +1202,7 @@ dependencies = [
  "epiphany-musicxml",
  "epiphany-ops",
  "epiphany-render-svg",
+ "epiphany-textproj",
 ]
 
 [[package]]

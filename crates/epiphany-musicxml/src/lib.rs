@@ -55,9 +55,10 @@
 //!   on the page its file is.
 //! - A line or page break the file makes (`<print new-system="yes">`,
 //!   `new-page="yes"`, in any part) is a user break of the region before that
-//!   measure, `SetUserSystemBreak` or `SetUserPageBreak`, anchored at the
-//!   measure's musical offset from the region's start, the key the reducer
-//!   gives a break; a page break wins where parts differ, and one before the
+//!   measure, `SetUserSystemBreak` or `SetUserPageBreak`, anchored to the
+//!   start of that measure in the region's first staff instance, which the
+//!   reducer keys the break by; a page break wins where parts differ, and one
+//!   before the
 //!   first measure breaks nothing. The engraver honors such a break and adds
 //!   one inside a system only if that system will not fit its width: a tie
 //!   continued across an imported line break gets its room by widening the
@@ -80,8 +81,9 @@
 //!   and coda are markers. One a direction places stands on the first note or
 //!   rest of its staff starting where it stands (the note, not a grace before
 //!   it), or where none starts, at the position in the region. A run of
-//!   `<words>` is one text; the words of a text line are its text, and those
-//!   of a tempo its mark's.
+//!   `<words>` is one text, expression text where its first words are italic,
+//!   as MuseScore writes expression, and staff text otherwise; the words of a
+//!   text line are its text, and those of a tempo its mark's.
 //! - A `<sound tempo>` sets a segment of the score's tempo map, in quarter
 //!   notes per minute, once at each place any part sets one; the mark its
 //!   direction shows is written in the same transaction, with no link

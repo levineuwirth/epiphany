@@ -132,21 +132,27 @@ impl OperationEnvelope {
     /// (`spec/PLAN_GMINOR_SCHEMA_MINOR.md` §4, pin 3): the maximum over its
     /// outer [`OperationPayload::introduced_minor`] and — when the payload is
     /// [`OperationPayload::Primitive`] — the nested
-    /// [`OperationKind::introduced_minor`]. `None` when neither imposes a
-    /// requirement (both are baseline). No other nested vocabulary an
-    /// envelope's encoder reaches (`OperationEnvelope::encode_canonical`)
-    /// carries a post-baseline append: the embedded graph values ride
-    /// `epiphany-core`'s codec, which the G-minor audit found clean
-    /// (`spec/AUDIT_GMINOR_VOCABULARIES.md` Part 2).
+    /// [`OperationKind::introduced_minor`] and the epoch of any appended
+    /// variant its value holds ([`OperationKind::value_introduced_minor`]).
+    /// `None` when none imposes a requirement (all are baseline). The embedded
+    /// graph values ride `epiphany-core`'s codec, which the G-minor audit found
+    /// clean (`spec/AUDIT_GMINOR_VOCABULARIES.md` Part 2) until X5b appended
+    /// `MarkerKind::ExpressionText` at epoch 16.
     pub fn introduced_minor(&self) -> Option<u16> {
         let payload_epoch = self.payload.introduced_minor();
-        let kind_epoch = match &self.payload {
-            OperationPayload::Primitive(kind) => kind.introduced_minor(),
+        let (kind_epoch, value_epoch) = match &self.payload {
+            OperationPayload::Primitive(kind) => {
+                (kind.introduced_minor(), kind.value_introduced_minor())
+            }
             OperationPayload::ResolveConflict(_)
             | OperationPayload::UndoTransaction(_)
-            | OperationPayload::ResolveEquivocation(_) => None,
+            | OperationPayload::ResolveEquivocation(_) => (None, None),
         };
-        payload_epoch.into_iter().chain(kind_epoch).max()
+        payload_epoch
+            .into_iter()
+            .chain(kind_epoch)
+            .chain(value_epoch)
+            .max()
     }
 }
 
@@ -578,6 +584,27 @@ impl OperationKind {
             OperationKind::SetClef(_) | OperationKind::SetKeySignature(_) => Some(14),
             // Minor 15 (X4b).
             OperationKind::SetVoiceHome(_) => Some(15),
+        }
+    }
+
+    /// The schema-minor epoch an appended variant in this operation's carried
+    /// value requires, or `None` where its value holds none: a marker of the
+    /// expression-text kind (`MarkerKind::ExpressionText`, epoch 16, X5b.7),
+    /// created or written by a cross-cutting operation. Separate from
+    /// [`Self::introduced_minor`], which is the kind's own discriminant's and
+    /// equals its tag's.
+    pub fn value_introduced_minor(&self) -> Option<u16> {
+        let structure = match self {
+            OperationKind::CreateCrossCutting(op) => &op.structure,
+            OperationKind::ModifyCrossCutting(op) => &op.structure,
+            _ => return None,
+        };
+        match structure {
+            CrossCuttingValue::Marker(marker) => match marker.kind {
+                epiphany_core::MarkerKind::ExpressionText(_) => Some(16),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
@@ -1285,8 +1312,7 @@ fn push_len_pairs(out: &mut Vec<u8>, entries: &[(EventId, MusicalPosition)]) {
 
 /// Set a user system-break preference (Chapter 6 §6.10 SetUserSystemBreak).
 /// Carries the full [`TimeAnchor`] value (v1, value-typed); the reduction's LWW
-/// bucketing key is the anchor's resolved [`MusicalPosition`]
-/// ([`SetUserSystemBreakOp::resolved_position`]).
+/// key is the anchor itself (`BreakAnchor`, reduction version 5).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SetUserSystemBreakOp {
     pub region: RegionId,
@@ -1294,12 +1320,11 @@ pub struct SetUserSystemBreakOp {
     pub present: bool,
 }
 
-/// The musical position a [`TimeAnchor`] resolves to for user-break LWW
-/// bucketing. A region-relative musical offset resolves to that offset; any
-/// other anchor shape resolves to the region origin (the break still applies to
-/// the region, the prototype LWW key is coarse — see `DECISIONS.md`). The graph
-/// reducer keys break anchors by this same position, so two anchors resolving
-/// here to one position occupy a single LWW slot.
+/// The musical position a [`TimeAnchor`] resolves to for the coarse LWW keys:
+/// a meter change's and a tempo segment's (a named follow-up keeps them so),
+/// and the v0 projection of a user break. A region-relative musical offset
+/// resolves to that offset; any other anchor shape resolves to the region
+/// origin. A user break's own key is its anchor since reduction version 5.
 pub(crate) fn resolved_anchor_position(anchor: &TimeAnchor) -> MusicalPosition {
     match anchor {
         TimeAnchor::Region {
@@ -1311,8 +1336,9 @@ pub(crate) fn resolved_anchor_position(anchor: &TimeAnchor) -> MusicalPosition {
 }
 
 impl SetUserSystemBreakOp {
-    /// The anchor's resolved musical position — the canonical LWW bucketing key
-    /// (see the private `resolved_anchor_position` helper).
+    /// The anchor's resolved musical position, as the v0 form records a break
+    /// (see the private `resolved_anchor_position` helper); not the LWW key,
+    /// which is the anchor since reduction version 5.
     pub fn resolved_position(&self) -> MusicalPosition {
         resolved_anchor_position(&self.anchor)
     }
@@ -1763,8 +1789,7 @@ impl CanonicalEncode for SetMetricGridOp {
 
 /// Set a user page-break preference (Chapter 6 §6.10 SetUserPageBreak) — the
 /// page-break sibling of [`SetUserSystemBreakOp`]. Carries the full
-/// [`TimeAnchor`] (v1); the LWW bucketing key is the anchor's resolved
-/// [`MusicalPosition`].
+/// [`TimeAnchor`] (v1); the LWW key is the anchor itself (reduction version 5).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SetUserPageBreakOp {
     pub region: RegionId,
@@ -1773,8 +1798,9 @@ pub struct SetUserPageBreakOp {
 }
 
 impl SetUserPageBreakOp {
-    /// The anchor's resolved musical position — the canonical LWW bucketing key
-    /// (see the private `resolved_anchor_position` helper).
+    /// The anchor's resolved musical position (see the private
+    /// `resolved_anchor_position` helper); not the LWW key, which is the anchor
+    /// since reduction version 5.
     pub fn resolved_position(&self) -> MusicalPosition {
         resolved_anchor_position(&self.anchor)
     }

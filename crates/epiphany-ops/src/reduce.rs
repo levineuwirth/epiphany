@@ -42,9 +42,9 @@ use epiphany_core::{
     SpellingAttachment, SpellingDirective, SpellingPrecedence, SpellingScope, SpellingSource,
     Staff, StaffGroup, StaffGroupId, StaffId, StaffInstance, StaffInstanceId,
     StaffLineConfiguration, TempoMap, TempoSegment, TempoShape, Tie, TieClass, TieId, TimeAnchor,
-    TimeSignature, TimeSignatureId, TransactionId, TransposeRefusal, TranspositionInterval,
-    TuningContextSettings, TupletId, TypedObjectId, ViewDefinition, ViewId, Voice, VoiceId,
-    VoiceOrigin, WallClockDuration,
+    TimeExtent, TimeSignature, TimeSignatureId, TransactionId, TransposeRefusal,
+    TranspositionInterval, TuningContextSettings, TupletId, TypedObjectId, ViewDefinition, ViewId,
+    Voice, VoiceId, VoiceOrigin, WallClockDuration,
 };
 use epiphany_determinism::CanonicalEncode;
 
@@ -519,11 +519,12 @@ pub struct MaterializedState {
     pub objects: BTreeMap<TypedObjectId, ObjectState>,
     /// Current resolved spelling per pitch (the `RespellPitch` field).
     pub spellings: BTreeMap<PitchId, PitchSpelling>,
-    /// User system-break preferences (LWW advisory), keyed by region+anchor.
-    pub breaks: BTreeMap<(RegionId, MusicalPosition), bool>,
+    /// User system-break preferences (LWW advisory), keyed by the region and
+    /// the break's anchor itself ([`BreakAnchor`], reduction version 5).
+    pub breaks: BTreeMap<(RegionId, BreakAnchor), bool>,
     /// User page-break preferences (LWW advisory), keyed by region+anchor (the
     /// page-break sibling of [`MaterializedState::breaks`], M2d).
-    pub page_breaks: BTreeMap<(RegionId, MusicalPosition), bool>,
+    pub page_breaks: BTreeMap<(RegionId, BreakAnchor), bool>,
     /// Operations held pending, ordered by `OperationId`.
     pub pending: Vec<(OperationId, PendingReason)>,
 }
@@ -580,14 +581,14 @@ impl MaterializedState {
         push_len(&mut out, self.breaks.len());
         for ((region, anchor), present) in &self.breaks {
             push_canon(&mut out, region);
-            push_canon(&mut out, anchor);
+            push_lp_bytes(&mut out, anchor.canonical_bytes());
             push_u8_bool(&mut out, *present);
         }
         // Page breaks (region+anchor order) — sibling of breaks (M2d).
         push_len(&mut out, self.page_breaks.len());
         for ((region, anchor), present) in &self.page_breaks {
             push_canon(&mut out, region);
-            push_canon(&mut out, anchor);
+            push_lp_bytes(&mut out, anchor.canonical_bytes());
             push_u8_bool(&mut out, *present);
         }
         // Pending (OperationId order).
@@ -981,31 +982,54 @@ enum ValueRestoration {
     },
     SystemBreak {
         region: RegionId,
-        position: MusicalPosition,
+        anchor: BreakAnchor,
         predecessor: Option<Predecessor<(TimeAnchor, bool)>>,
     },
     PageBreak {
         region: RegionId,
-        position: MusicalPosition,
+        anchor: BreakAnchor,
         predecessor: Option<Predecessor<(TimeAnchor, bool)>>,
     },
 }
 
 /// Whether a tempo segment's shape carries the end data it requires
 /// (operation_catalog §"Meter and Tempo Overwrites"): a non-constant shape
-/// needs both an explicit `end` and an `end_tempo`; a constant segment's
-/// `end_tempo`, when present, must equal its `start_tempo` (the same structural
-/// rules the graph-invariant checker applies to tempo maps).
+/// needs both an explicit `end` and an `end_tempo`; a constant segment records
+/// no `end_tempo` (reduction version 5, P13-S8: before it one equal to its
+/// `start_tempo` was admitted), the same structural rules the graph-invariant
+/// checker applies to tempo maps.
 fn tempo_segment_shape_well_formed(segment: &TempoSegment) -> bool {
     match segment.shape {
-        TempoShape::Constant => segment
-            .end_tempo
-            .as_ref()
-            .is_none_or(|end| end == &segment.start_tempo),
+        TempoShape::Constant => segment.end_tempo.is_none(),
         TempoShape::Linear | TempoShape::Exponential | TempoShape::Curve => {
             segment.end_tempo.is_some() && segment.end.is_some()
         }
     }
+}
+
+/// Whether a map's segments, each with its start's resolved position and in
+/// that order, are as a `SetTempoSegment` write must leave a map (operation
+/// catalog §"Meter and Tempo Overwrites"): every shape carries its end data,
+/// and no segment's resolved end precedes its own start or passes the next
+/// segment's start.
+fn tempo_segments_well_formed(segments: &[(MusicalPosition, &TempoSegment)]) -> bool {
+    for (index, (position, segment)) in segments.iter().enumerate() {
+        if !tempo_segment_shape_well_formed(segment) {
+            return false;
+        }
+        if let Some(end) = &segment.end {
+            let resolved_end = resolved_anchor_position(end);
+            if resolved_end < *position {
+                return false;
+            }
+            if let Some((next_position, _)) = segments.get(index + 1) {
+                if resolved_end > *next_position {
+                    return false;
+                }
+            }
+        }
+    }
+    true
 }
 
 /// Replaces (or removes, for `None`) the segment at `position` in `map`,
@@ -1068,6 +1092,87 @@ fn seed_staff_changes(clefs: &mut ClefChains, keys: &mut KeyChains, instance: &S
     }
 }
 
+/// Records the anchors of the clef and key changes `instance` carries, keyed
+/// as the chains [`seed_staff_changes`] seeds key them (`true` for a key
+/// change), for a migration's strand and an object's creation to read
+/// (reduction version 5, X5b.9).
+fn note_change_anchors(
+    anchors: &mut BTreeMap<(StaffInstanceId, bool, MusicalPosition), Vec<TimeAnchor>>,
+    instance: &StaffInstance,
+) {
+    let changes = instance
+        .clef_sequence
+        .iter()
+        .map(|change| (false, &change.anchor))
+        .chain(
+            instance
+                .key_sequence
+                .iter()
+                .map(|change| (true, &change.anchor)),
+        );
+    for (key, anchor) in changes {
+        anchors
+            .entry((instance.id, key, resolved_anchor_position(anchor)))
+            .or_default()
+            .push(anchor.clone());
+    }
+}
+
+/// The anchors a `CreateRegion`'s payload carries besides its extent: its own
+/// model's meter changes, its grid's, its user breaks and its tempo map's
+/// segments (reduction version 5, X5b.9).
+fn region_payload_anchors(region: &epiphany_core::Region) -> Vec<TimeAnchor> {
+    let mut anchors = model_meter_anchors(&region.time_model);
+    if let Some(content) = region.content.staff_based() {
+        anchors.extend(content.default_metric_grid.iter().flat_map(|grid| {
+            grid.meter_sequence
+                .iter()
+                .map(|change| change.anchor.clone())
+        }));
+        anchors.extend(content.user_system_breaks.iter().cloned());
+        anchors.extend(content.user_page_breaks.iter().cloned());
+    }
+    for segment in region.local_tempo_map.iter().flat_map(|map| &map.segments) {
+        anchors.push(segment.start.clone());
+        anchors.extend(segment.end.clone());
+    }
+    anchors
+}
+
+/// The anchors a staff instance's create carries: its clef and key changes'
+/// and its own grid's meter changes'.
+fn staff_instance_anchors(instance: &StaffInstance) -> Vec<&TimeAnchor> {
+    instance
+        .clef_sequence
+        .iter()
+        .map(|change| &change.anchor)
+        .chain(instance.key_sequence.iter().map(|change| &change.anchor))
+        .chain(
+            instance
+                .local_metric_grid
+                .iter()
+                .flat_map(|grid| grid.meter_sequence.iter().map(|change| &change.anchor)),
+        )
+        .collect()
+}
+
+/// A time model's own meter changes: a metric model's, and none for another
+/// kind.
+fn model_meters(model: &epiphany_core::RegionTimeModel) -> Vec<MeterChange> {
+    match model {
+        epiphany_core::RegionTimeModel::Metric(metric) => metric.meters.clone(),
+        _ => Vec::new(),
+    }
+}
+
+/// The anchors of a time model's own meter changes.
+fn model_meter_anchors(model: &epiphany_core::RegionTimeModel) -> Vec<TimeAnchor> {
+    model_meters(model)
+        .into_iter()
+        .map(|meter| meter.anchor)
+        .collect()
+}
+
 /// The anchor `position` after `region`'s start, as the importer writes a
 /// staff instance's changes.
 /// The objects meter changes name: each one's time signature and its anchor's
@@ -1095,6 +1200,25 @@ fn anchored_in_musical_time(anchor: &TimeAnchor) -> bool {
     )
 }
 
+/// The discipline an extent anchor's offset answers to in a region of
+/// `discipline` (invariant 9): the region's own, but for an event in a region
+/// where each event fixes its clock, which answers to the event's, musical for
+/// every event the occupancy index holds.
+fn extent_anchor_judged(
+    anchor: &TimeAnchor,
+    discipline: CoordinateDiscipline,
+) -> CoordinateDiscipline {
+    match (anchor, discipline) {
+        (
+            TimeAnchor::Event { .. },
+            CoordinateDiscipline::Aleatoric(
+                epiphany_core::AleatoricAnchoringDiscipline::EitherPerEvent,
+            ),
+        ) => CoordinateDiscipline::Musical,
+        _ => discipline,
+    }
+}
+
 fn region_position_anchor(region: RegionId, position: &MusicalPosition) -> TimeAnchor {
     TimeAnchor::Region {
         id: region,
@@ -1112,6 +1236,28 @@ fn remove_tuplets(score: &mut Score, removed: &BTreeSet<TupletId>) {
     if removed.is_empty() {
         return;
     }
+    // A removed tuplet's children go with it, and theirs (D87 Q3), as the
+    // ledger's `cascade_tuplet_children` takes them.
+    let mut removed = removed.clone();
+    loop {
+        let children: Vec<TupletId> = score
+            .cross_cutting
+            .tuplets
+            .iter()
+            .filter(|tuplet| {
+                !removed.contains(&tuplet.id)
+                    && tuplet
+                        .parent
+                        .is_some_and(|parent| removed.contains(&parent))
+            })
+            .map(|tuplet| tuplet.id)
+            .collect();
+        if children.is_empty() {
+            break;
+        }
+        removed.extend(children);
+    }
+    let removed = &removed;
     score
         .cross_cutting
         .tuplets
@@ -1129,8 +1275,8 @@ struct Reducer<'a> {
     // Canonical results.
     objects: BTreeMap<TypedObjectId, ObjectState>,
     spellings: BTreeMap<PitchId, PitchSpelling>,
-    breaks: BTreeMap<(RegionId, MusicalPosition), bool>,
-    page_breaks: BTreeMap<(RegionId, MusicalPosition), bool>,
+    breaks: BTreeMap<(RegionId, BreakAnchor), bool>,
+    page_breaks: BTreeMap<(RegionId, BreakAnchor), bool>,
     conflicts: ConflictRegistry,
     effects: Vec<(OperationId, OperationEffect)>,
     anomalies: BTreeMap<epiphany_core::IntegrityAnomalyId, IntegrityAnomaly>,
@@ -1189,8 +1335,8 @@ struct Reducer<'a> {
     // never participates in undo, because no operation ever writes it and
     // undo must leave it exactly as it found it.
     tuning_context_chain: WriteChain<TuningContextSettings>,
-    break_chain: BTreeMap<(RegionId, MusicalPosition), WriteChain<(TimeAnchor, bool)>>,
-    page_break_chain: BTreeMap<(RegionId, MusicalPosition), WriteChain<(TimeAnchor, bool)>>,
+    break_chain: BTreeMap<(RegionId, BreakAnchor), WriteChain<(TimeAnchor, bool)>>,
+    page_break_chain: BTreeMap<(RegionId, BreakAnchor), WriteChain<(TimeAnchor, bool)>>,
     // Meter/tempo overwrite chains (Phase-3 tranche): `Some` = a set/replace at
     // the key, `None` = an explicit removal. The meter value is the graph-level
     // `MeterChange` (anchor + signature id) so a restoration can re-install it.
@@ -1258,6 +1404,11 @@ struct Reducer<'a> {
     // minted or base-seeded).
     instance_grid: BTreeMap<StaffInstanceId, Option<MetricGrid>>,
     structures: BTreeMap<TypedObjectId, Vec<TypedObjectId>>,
+    // Each nested tuplet's parent, from its create or a base (X5b fix round 1,
+    // D87 Q3): an undo removing a parent a live child names is held, and a
+    // member's cascade removing a parent carries its children. Not reduced
+    // state; a tuplet has no modify, so its parent never changes.
+    tuplet_parents: BTreeMap<TupletId, TupletId>,
     // Live child sets for the structural-container empty-only delete (Group 3):
     // a region's live staff instances, and a staff instance's live voices. (A
     // voice's live events are read from `voice_occupancy`.)
@@ -1284,6 +1435,30 @@ struct Reducer<'a> {
     // precondition reads it base-free, as graph-aware reduction reads the
     // graph's region, so an insert after a migration reduces alike in both.
     region_disciplines: BTreeMap<RegionId, CoordinateDiscipline>,
+    // Each region's time extent, from its `CreateRegion` payload or a base,
+    // which no operation rewrites: a `CreateStaffInstance` is refused where
+    // its region overlaps in time another live region holding a live instance
+    // of its staff (`RegionsOverlap`, reduction version 5), the extents
+    // compared as this index places them, in both modes alike; and a
+    // `CreateRegion` or a migration reads here the live extents anchored to
+    // a region by an offset, held to its time model (X5b.8). A removed
+    // region's extent stays, so a reader asks the region's liveness beside.
+    region_extents: BTreeMap<RegionId, TimeExtent>,
+    // Each region's own metric model's meter changes, from its `CreateRegion`
+    // payload, an applied migration or a base (none for another kind of
+    // model): their anchors read, with every other holder of a time anchor,
+    // by a migration's strand and by an object's creation (X5b.9), and their
+    // time signatures by an undo that would remove one.
+    region_model_meters: BTreeMap<RegionId, Vec<MeterChange>>,
+    // The anchors of the clef and key changes a staff instance's create or a
+    // base carried, keyed as the clef and key chains key them (`true` for a
+    // key change): a change some write has since put at the position is
+    // anchored at the region's start by its musical position, so only a
+    // chain with no write of its own reads its anchor here (X5b.9).
+    instance_change_anchors: BTreeMap<(StaffInstanceId, bool, MusicalPosition), Vec<TimeAnchor>>,
+    // Each event, measure or region a holder of a time anchor named before it
+    // was made: its creation reads what names it (X5b.9).
+    forward_names: BTreeSet<TypedObjectId>,
     migrated_regions: BTreeSet<RegionId>,
     region_migrator: BTreeMap<RegionId, OperationId>,
     descriptors: BTreeMap<TransactionId, OperationId>,
@@ -1360,12 +1535,25 @@ impl ScoreSettings {
     }
 }
 
+/// A live holder's time anchor, as [`Reducer::held_anchors`] lists it
+/// (reduction version 5, X5b.9).
+struct HeldAnchor {
+    /// What a migration this anchor strands names: the holder's own object,
+    /// or the region whose model, grid, breaks or tempo map hold it; `None`
+    /// for the score's tempo map, which strands the migrated region itself.
+    holder: Option<TypedObjectId>,
+    /// The region whose migration out of musical time drops the anchor with
+    /// its breaks and grids, where one does.
+    dropped_with: Option<RegionId>,
+    anchor: TimeAnchor,
+}
+
 /// A snapshot of the working state, for atomic transaction rollback.
 struct WorkingSnapshot {
     objects: BTreeMap<TypedObjectId, ObjectState>,
     spellings: BTreeMap<PitchId, PitchSpelling>,
-    breaks: BTreeMap<(RegionId, MusicalPosition), bool>,
-    page_breaks: BTreeMap<(RegionId, MusicalPosition), bool>,
+    breaks: BTreeMap<(RegionId, BreakAnchor), bool>,
+    page_breaks: BTreeMap<(RegionId, BreakAnchor), bool>,
     conflicts: ConflictRegistry,
     minted_by: BTreeMap<TypedObjectId, OperationId>,
     event_pitches: BTreeMap<EventId, Vec<PitchId>>,
@@ -1400,8 +1588,8 @@ struct WorkingSnapshot {
     canvas_layout_defaults_chain: WriteChain<CanvasLayoutDefaults>,
     spelling_precedence_chain: WriteChain<SpellingPrecedence>,
     tuning_context_chain: WriteChain<TuningContextSettings>,
-    break_chain: BTreeMap<(RegionId, MusicalPosition), WriteChain<(TimeAnchor, bool)>>,
-    page_break_chain: BTreeMap<(RegionId, MusicalPosition), WriteChain<(TimeAnchor, bool)>>,
+    break_chain: BTreeMap<(RegionId, BreakAnchor), WriteChain<(TimeAnchor, bool)>>,
+    page_break_chain: BTreeMap<(RegionId, BreakAnchor), WriteChain<(TimeAnchor, bool)>>,
     meter_change_chain: BTreeMap<(RegionId, MusicalPosition), WriteChain<Option<MeterChange>>>,
     tempo_segment_chain:
         BTreeMap<(Option<RegionId>, MusicalPosition), WriteChain<Option<TempoSegment>>>,
@@ -1422,11 +1610,16 @@ struct WorkingSnapshot {
     repeat_values: BTreeMap<RepeatStructureId, RepeatStructure>,
     instance_grid: BTreeMap<StaffInstanceId, Option<MetricGrid>>,
     structures: BTreeMap<TypedObjectId, Vec<TypedObjectId>>,
+    tuplet_parents: BTreeMap<TupletId, TupletId>,
     region_instances: BTreeMap<RegionId, BTreeSet<StaffInstanceId>>,
     instance_voices: BTreeMap<StaffInstanceId, BTreeSet<VoiceId>>,
     instance_staff: BTreeMap<StaffInstanceId, StaffId>,
     staff_based_regions: BTreeSet<RegionId>,
     region_disciplines: BTreeMap<RegionId, CoordinateDiscipline>,
+    region_extents: BTreeMap<RegionId, TimeExtent>,
+    region_model_meters: BTreeMap<RegionId, Vec<MeterChange>>,
+    instance_change_anchors: BTreeMap<(StaffInstanceId, bool, MusicalPosition), Vec<TimeAnchor>>,
+    forward_names: BTreeSet<TypedObjectId>,
     migrated_regions: BTreeSet<RegionId>,
     region_migrator: BTreeMap<RegionId, OperationId>,
     descriptors: BTreeMap<TransactionId, OperationId>,
@@ -1445,16 +1638,60 @@ fn container_not_empty() -> OperationEffect {
     }
 }
 
-/// Apply a user break to a region's break list under the canonical LWW key — the
-/// anchor's resolved musical position. Any existing anchor resolving to that same
-/// position is dropped first, so two anchors at one position never both persist,
-/// then the new anchor is pushed iff the break is present. The graph break list
-/// then matches the resolved-position-keyed ledger map.
+/// Apply a user break to a region's break list under its LWW key, the anchor
+/// itself (reduction version 5): the anchor is dropped and, iff the break is
+/// present, pushed again, so the graph's list holds each anchor once and matches
+/// the anchor-keyed ledger map. Two anchors resolving to one place keep their
+/// own slots; before version 5 the key was the anchor's resolved musical
+/// position, and every anchor but a region-start offset shared the region's
+/// origin.
 fn apply_break_lww(breaks: &mut Vec<TimeAnchor>, anchor: &TimeAnchor, present: bool) {
-    let resolved = crate::payload::resolved_anchor_position(anchor);
-    breaks.retain(|existing| crate::payload::resolved_anchor_position(existing) != resolved);
+    breaks.retain(|existing| existing != anchor);
     if present {
         breaks.push(anchor.clone());
+    }
+}
+
+/// A user break's slot key (reduction version 5): the break's anchor itself, so
+/// two breaks anchored to different measures or events of one region keep
+/// their own slots, and a break anchored to a measure or an event keeps its
+/// slot when its music moves. Ordered by the anchor's canonical bytes, the
+/// order the materialized state's break sections are written in.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct BreakAnchor {
+    bytes: Vec<u8>,
+    anchor: TimeAnchor,
+}
+
+impl BreakAnchor {
+    /// The key of a break at `anchor`.
+    pub fn new(anchor: TimeAnchor) -> Self {
+        BreakAnchor {
+            bytes: anchor.canonical_bytes(),
+            anchor,
+        }
+    }
+
+    /// The anchor.
+    pub fn anchor(&self) -> &TimeAnchor {
+        &self.anchor
+    }
+
+    /// The anchor's canonical bytes, by which keys are ordered.
+    pub fn canonical_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl PartialOrd for BreakAnchor {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for BreakAnchor {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.bytes.cmp(&other.bytes)
     }
 }
 
@@ -2081,11 +2318,16 @@ impl<'a> Reducer<'a> {
             repeat_values: BTreeMap::new(),
             instance_grid: BTreeMap::new(),
             structures: BTreeMap::new(),
+            tuplet_parents: BTreeMap::new(),
             region_instances: BTreeMap::new(),
             instance_voices: BTreeMap::new(),
             instance_staff: BTreeMap::new(),
             staff_based_regions: BTreeSet::new(),
             region_disciplines: BTreeMap::new(),
+            region_extents: BTreeMap::new(),
+            region_model_meters: BTreeMap::new(),
+            instance_change_anchors: BTreeMap::new(),
+            forward_names: BTreeSet::new(),
             migrated_regions: BTreeSet::new(),
             region_migrator: BTreeMap::new(),
             descriptors: BTreeMap::new(),
@@ -2247,6 +2489,11 @@ impl<'a> Reducer<'a> {
         let Some(score) = self.graph.as_ref() else {
             return;
         };
+        // A map seeds one segment per key, the first, as no history can make
+        // a map holding two (`SetTempoSegment` replaces, and a `CreateRegion`
+        // carrying two is refused). A base holding two is one the writer never
+        // writes, and every base is refused at reopen, before its root is decoded
+        // (`EditorDocument::open`, the text projection's `document_from_bundle`).
         for segment in &score.tempo_map.segments {
             self.tempo_segment_chain
                 .entry((None, resolved_anchor_position(&segment.start)))
@@ -2259,6 +2506,10 @@ impl<'a> Reducer<'a> {
                 .insert(TypedObjectId::Region(region.id), ObjectState::Live);
             self.region_disciplines
                 .insert(region.id, region.time_model.coordinate_discipline());
+            self.region_extents
+                .insert(region.id, region.time_extent.clone());
+            self.region_model_meters
+                .insert(region.id, model_meters(&region.time_model));
             if let Some(content) = region.content.staff_based() {
                 self.staff_based_regions.insert(region.id);
                 self.metric_grid_chain
@@ -2275,13 +2526,13 @@ impl<'a> Reducer<'a> {
                 }
                 for anchor in &content.user_system_breaks {
                     self.break_chain
-                        .entry((region.id, resolved_anchor_position(anchor)))
+                        .entry((region.id, BreakAnchor::new(anchor.clone())))
                         .or_insert_with(WriteChain::new)
                         .seed((anchor.clone(), true));
                 }
                 for anchor in &content.user_page_breaks {
                     self.page_break_chain
-                        .entry((region.id, resolved_anchor_position(anchor)))
+                        .entry((region.id, BreakAnchor::new(anchor.clone())))
                         .or_insert_with(WriteChain::new)
                         .seed((anchor.clone(), true));
                 }
@@ -2311,6 +2562,7 @@ impl<'a> Reducer<'a> {
                         instance.visible,
                     ));
                 seed_staff_changes(&mut self.clef_chain, &mut self.key_chain, instance);
+                note_change_anchors(&mut self.instance_change_anchors, instance);
                 // Genesis tranche G3b (contract pin 6c, disposition A): record
                 // whether this instance authored a local grid override, so a
                 // later CreateMeasure can distinguish override from
@@ -2478,6 +2730,9 @@ impl<'a> Reducer<'a> {
         for tuplet in &score.cross_cutting.tuplets {
             let id = TypedObjectId::Tuplet(tuplet.id);
             self.objects.insert(id, ObjectState::Live);
+            if let Some(parent) = tuplet.parent {
+                self.tuplet_parents.insert(tuplet.id, parent);
+            }
             self.structures.insert(
                 id,
                 tuplet
@@ -3471,31 +3726,30 @@ impl<'a> Reducer<'a> {
                 if !start_hit && !end_hit {
                     return Some(spanner);
                 }
-                // The survivor is the *other* anchor's event, if it is an event
-                // anchor on a live event; otherwise the spanner cascade-deletes.
+                // The survivor is the *other* anchor, if it is an event anchor
+                // on a live event; otherwise the spanner cascade-deletes. The
+                // dead endpoint takes it whole, its offset with it, so it
+                // answers to the survivor's time model as the survivor does
+                // (reduction version 5: before it the endpoint kept its own
+                // offset at the survivor's note, `AnchorOffsetModel`).
                 let other = if start_hit {
                     &spanner.end
                 } else {
                     &spanner.start
                 };
-                let survivor = match other {
+                let to = match other {
                     TimeAnchor::Event { id, .. }
                         if *id != op.event && score.events.contains(*id) =>
                     {
-                        Some(*id)
+                        Some(other.clone())
                     }
                     _ => None,
-                };
-                let to = survivor?;
+                }?;
                 if start_hit {
-                    if let TimeAnchor::Event { id, .. } = &mut spanner.start {
-                        *id = to;
-                    }
+                    spanner.start = to.clone();
                 }
                 if end_hit {
-                    if let TimeAnchor::Event { id, .. } = &mut spanner.end {
-                        *id = to;
-                    }
+                    spanner.end = to;
                 }
                 Some(spanner)
             })
@@ -3507,7 +3761,9 @@ impl<'a> Reducer<'a> {
         // re-anchors to the nearest surviving event anchor — the
         // lexicographically smallest, matching `nearest_survivor`, so the
         // graph and the ledger agree on both existence and target — and the
-        // structure cascade-deletes only when no event anchor survives.
+        // structure cascade-deletes only when no event anchor survives. A
+        // dead site takes the first site naming the survivor whole, its
+        // offset with it, as a spanner's endpoint does (reduction version 5).
         let repeats = std::mem::take(&mut score.cross_cutting.repeats);
         let kept_repeats: Vec<_> = repeats
             .into_iter()
@@ -3519,23 +3775,21 @@ impl<'a> Reducer<'a> {
                 if !hit {
                     return Some(repeat);
                 }
-                let survivor = repeat
+                let (_, survivor) = repeat
                     .anchor_sites()
                     .into_iter()
                     .filter_map(|a| match a {
                         TimeAnchor::Event { id, .. }
                             if *id != op.event && score.events.contains(*id) =>
                         {
-                            Some(*id)
+                            Some((*id, a.clone()))
                         }
                         _ => None,
                     })
-                    .min()?;
+                    .min_by_key(|(id, _)| *id)?;
                 for site in repeat.anchor_sites_mut() {
-                    if let TimeAnchor::Event { id, .. } = site {
-                        if *id == op.event {
-                            *id = survivor;
-                        }
+                    if matches!(site, TimeAnchor::Event { id, .. } if *id == op.event) {
+                        *site = survivor.clone();
                     }
                 }
                 Some(repeat)
@@ -3877,6 +4131,15 @@ impl<'a> Reducer<'a> {
         if let Some(effect) = self.musical_slot(op.region, Some(&op.anchor)) {
             return effect;
         }
+        if let Some(effect) = self.break_target(op.region, &op.anchor) {
+            return effect;
+        }
+        // A present break's anchor answers to its target's time model (X5b.9).
+        if let Some(effect) =
+            self.anchors_slot([&op.anchor].into_iter().filter(|_| op.present), None)
+        {
+            return effect;
+        }
         if let Some(score) = self.graph.as_mut() {
             if let Some(region) = score.canvas.regions.iter_mut().find(|r| r.id == op.region) {
                 if let Some(content) = region.content.staff_based_mut() {
@@ -3885,8 +4148,8 @@ impl<'a> Reducer<'a> {
             }
         }
 
-        // The LWW bucketing key is the anchor's resolved musical position.
-        let key = (op.region, op.resolved_position());
+        // The LWW key is the anchor itself (reduction version 5).
+        let key = (op.region, BreakAnchor::new(op.anchor.clone()));
         self.breaks.insert(key.clone(), op.present);
         self.break_chain
             .entry(key)
@@ -3910,6 +4173,105 @@ impl<'a> Reducer<'a> {
     // FreeGraphic region has neither a metric grid nor a break list). That verdict
     // reads only the base-free indices, so reduce() and reduce_onto() agree on it.
 
+    /// Whether filling `region` with an instance of `staff` would overlap in
+    /// time another live region holding a live instance of that staff. The
+    /// extents are compared as the ledger places them ([`Self::ledger_extent`]),
+    /// and one it cannot place counts as overlapping: a later edit to a tempo
+    /// map or an event could move it, so a refusal decided at the fill could
+    /// not hold otherwise. Read from the indices both modes keep, as the
+    /// one-instance-per-region refusal reads them: `region_instances` holds
+    /// live instances alone (a delete or an undo takes one out), so a region
+    /// it lists one under is live, and the liveness read below is that
+    /// refusal's, kept for symmetry rather than needed.
+    fn fill_overlaps(&self, region: RegionId, staff: StaffId) -> bool {
+        let live = |object| matches!(self.objects.get(&object), Some(ObjectState::Live));
+        let mine = self.ledger_extent(region);
+        self.region_instances.iter().any(|(other, instances)| {
+            *other != region
+                && instances.iter().any(|instance| {
+                    self.instance_staff.get(instance) == Some(&staff)
+                        && live(TypedObjectId::StaffInstance(*instance))
+                })
+                && match (mine, self.ledger_extent(*other)) {
+                    (Some((a0, a1)), Some((b0, b1))) => a0 < b1 && b0 < a1,
+                    _ => true,
+                }
+        })
+    }
+
+    /// `Some(NoOp)` when a user break's anchor names what its region does not
+    /// hold live (reduction version 5): an event or a measure not live or not
+    /// in `region`, or a region other than `region`. Refused `TargetMissing`,
+    /// read from the indices both modes keep. A wall-clock anchor names
+    /// nothing.
+    fn break_target(&self, region: RegionId, anchor: &TimeAnchor) -> Option<OperationEffect> {
+        let live = |object| matches!(self.objects.get(&object), Some(ObjectState::Live));
+        let held = match anchor {
+            TimeAnchor::WallClock { .. } => true,
+            TimeAnchor::Region { id, .. } => *id == region,
+            TimeAnchor::Event { id, .. } => {
+                live(TypedObjectId::Event(*id))
+                    && self
+                        .event_voice(*id)
+                        .and_then(|voice| self.indexed_voice_region(voice))
+                        == Some(region)
+            }
+            TimeAnchor::Measure { id, .. } => {
+                live(TypedObjectId::Measure(*id))
+                    && self
+                        .measure_values
+                        .get(id)
+                        .and_then(|(instance, _)| self.instance_region_of(*instance))
+                        == Some(region)
+            }
+        };
+        (!held).then_some(OperationEffect::NoOp {
+            reason: NoOpReason::PreconditionFailedUnderReduction {
+                reason: PreconditionFailureReason::TargetMissing,
+            },
+        })
+    }
+
+    /// `region`'s time extent as a wall-clock interval, placed on the ledger's
+    /// own index of region extents: `None` where either end cannot be placed
+    /// ([`Self::ledger_time`]).
+    fn ledger_extent(&self, region: RegionId) -> Option<(i64, i64)> {
+        let extent = self.region_extents.get(&region)?;
+        Some((
+            self.ledger_time(&extent.start, 8)?,
+            self.ledger_time(&extent.end, 8)?,
+        ))
+    }
+
+    /// The wall-clock coordinate the ledger places `anchor` at: a wall-clock
+    /// anchor is its time, and a region's edge, with no offset or a wall-clock
+    /// one, is that region's edge on this index plus the offset, to the
+    /// invariant checker's depth. An event or a measure, or a musical offset,
+    /// needs the graph and a tempo map to place: `None`, as is an overflowing
+    /// sum or a depth run out.
+    fn ledger_time(&self, anchor: &TimeAnchor, depth: u8) -> Option<i64> {
+        if depth == 0 {
+            return None;
+        }
+        match anchor {
+            TimeAnchor::WallClock { time } => Some(time.0),
+            TimeAnchor::Region { id, edge, offset } => {
+                let extent = self.region_extents.get(id)?;
+                let edge = match edge {
+                    RegionEdge::Start => &extent.start,
+                    RegionEdge::End => &extent.end,
+                };
+                let base = self.ledger_time(edge, depth - 1)?;
+                match offset {
+                    AnchorOffset::Zero => Some(base),
+                    AnchorOffset::WallClock(d) => base.checked_add(d.0),
+                    AnchorOffset::Musical(_) => None,
+                }
+            }
+            TimeAnchor::Event { .. } | TimeAnchor::Measure { .. } => None,
+        }
+    }
+
     /// `Some(NoOp)` when `region` cannot carry a metric grid or user break — it is
     /// missing, tombstoned, or FreeGraphic; `None` when it has a staff-based slot.
     /// Whether `region` takes a musically-anchored layout write: its
@@ -3931,6 +4293,395 @@ impl<'a> Reducer<'a> {
                 reason: PreconditionFailureReason::WrongRegionTimeModel,
             },
         })
+    }
+
+    /// The region an extent anchor's target stands in, read from the indices
+    /// both modes keep: a region's edge that region, and a live event or
+    /// measure the region its index places it in. `None` for a wall-clock
+    /// anchor, and where an event or a measure is not live or not placed,
+    /// which the invariant cannot judge either.
+    fn extent_anchor_region(&self, anchor: &TimeAnchor) -> Option<RegionId> {
+        let live = |object| matches!(self.objects.get(&object), Some(ObjectState::Live));
+        match anchor {
+            TimeAnchor::WallClock { .. } => None,
+            TimeAnchor::Region { id, .. } => Some(*id),
+            TimeAnchor::Event { id, .. } => Some(*id)
+                .filter(|id| live(TypedObjectId::Event(*id)))
+                .and_then(|id| self.event_voice(id))
+                .and_then(|voice| self.indexed_voice_region(voice)),
+            TimeAnchor::Measure { id, .. } => Some(*id)
+                .filter(|id| live(TypedObjectId::Measure(*id)))
+                .and_then(|id| self.measure_values.get(&id))
+                .and_then(|(instance, _)| self.instance_region_of(*instance)),
+        }
+    }
+
+    /// The coordinate discipline a time anchor's offset answers to
+    /// (invariant 9), an extent's or any other holder's: its target's
+    /// region's ([`Self::extent_anchor_region`]), the region a create or a
+    /// migration is giving a model (`own`) answering by that model, as
+    /// [`extent_anchor_judged`] reads it. `None` where the target or its
+    /// region is not live, which the invariant cannot judge either.
+    fn extent_anchor_discipline(
+        &self,
+        anchor: &TimeAnchor,
+        own: Option<(RegionId, CoordinateDiscipline)>,
+    ) -> Option<CoordinateDiscipline> {
+        let region = self.extent_anchor_region(anchor)?;
+        let discipline = match own {
+            Some(own) if region == own.0 => own.1,
+            _ => {
+                if !matches!(
+                    self.objects.get(&TypedObjectId::Region(region)),
+                    Some(ObjectState::Live)
+                ) {
+                    return None;
+                }
+                *self.region_disciplines.get(&region)?
+            }
+        };
+        Some(extent_anchor_judged(anchor, discipline))
+    }
+
+    /// `Some(NoOp)` when a `CreateRegion` would leave a time extent whose
+    /// offset its target's time model does not admit: its own extent
+    /// anchoring a target so ([`Self::extent_anchor_discipline`]; its own
+    /// edge by its own model), or a live region's extent already anchoring
+    /// the new region's edge so, named before the region was made. Refused
+    /// `WrongRegionTimeModel` in both modes (reduction version 5, X5b.8:
+    /// before it the region applied, `AnchorOffsetModel`).
+    fn extent_offset_slot(&self, region: &epiphany_core::Region) -> Option<OperationEffect> {
+        let own = (region.id, region.time_model.coordinate_discipline());
+        let admitted = |anchor: &TimeAnchor| match (
+            anchor.offset(),
+            self.extent_anchor_discipline(anchor, Some(own)),
+        ) {
+            (Some(offset), Some(discipline)) => discipline.admits_offset(offset.kind()),
+            _ => true,
+        };
+        let disagrees = !admitted(&region.time_extent.start)
+            || !admitted(&region.time_extent.end)
+            || !self.extents_anchored_against(region.id, own.1).is_empty();
+        disagrees.then_some(OperationEffect::NoOp {
+            reason: NoOpReason::PreconditionFailedUnderReduction {
+                reason: PreconditionFailureReason::WrongRegionTimeModel,
+            },
+        })
+    }
+
+    /// The live regions whose time extent anchors `region`'s edge, or an
+    /// event or a measure in it, by an offset `discipline` does not admit as
+    /// [`extent_anchor_judged`] reads it, `region` among them where its own
+    /// bound is so anchored: a migration of `region` to `discipline` strands
+    /// each, as it strands a marker anchored there, and a create of `region`
+    /// under it is refused (reduction version 5, X5b.8). Read from the
+    /// extent index both modes keep, which keeps a removed region's extent,
+    /// so its liveness is read beside it.
+    fn extents_anchored_against(
+        &self,
+        region: RegionId,
+        discipline: CoordinateDiscipline,
+    ) -> Vec<RegionId> {
+        self.region_extents
+            .iter()
+            .filter(|(id, _)| {
+                matches!(
+                    self.objects.get(&TypedObjectId::Region(**id)),
+                    Some(ObjectState::Live)
+                )
+            })
+            .filter(|(_, extent)| {
+                [&extent.start, &extent.end].into_iter().any(|anchor| {
+                    self.extent_anchor_region(anchor) == Some(region)
+                        && anchor.offset().is_some_and(|offset| {
+                            !extent_anchor_judged(anchor, discipline).admits_offset(offset.kind())
+                        })
+                })
+            })
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    /// Whether `anchor`'s offset is one its target's time model admits, read
+    /// as a region's extent is ([`Self::extent_anchor_discipline`], invariant
+    /// 9's `CoordinateDiscipline::admits_offset`): no offset, or a target not
+    /// live, always is.
+    fn anchor_admitted(
+        &self,
+        anchor: &TimeAnchor,
+        own: Option<(RegionId, CoordinateDiscipline)>,
+    ) -> bool {
+        match (anchor.offset(), self.extent_anchor_discipline(anchor, own)) {
+            (Some(offset), Some(discipline)) => discipline.admits_offset(offset.kind()),
+            _ => true,
+        }
+    }
+
+    /// `Some(NoOp)` when a write would leave a time anchor whose offset its
+    /// target's time model does not admit ([`Self::anchor_admitted`]; `own`
+    /// the region a create or a migration is giving a model): refused
+    /// `WrongRegionTimeModel` in both modes, as a region's extent is since
+    /// X5b.8 (reduction version 5, X5b.9: before it a marker, a spanner, a
+    /// user break, a measure, a meter change, a tempo segment, a repeat
+    /// structure, a staff instance's clef, key or grid, and a region's own
+    /// model, content and tempo map applied so, `AnchorOffsetModel`).
+    fn anchors_slot<'b>(
+        &self,
+        anchors: impl IntoIterator<Item = &'b TimeAnchor>,
+        own: Option<(RegionId, CoordinateDiscipline)>,
+    ) -> Option<OperationEffect> {
+        anchors
+            .into_iter()
+            .any(|anchor| !self.anchor_admitted(anchor, own))
+            .then_some(OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::WrongRegionTimeModel,
+                },
+            })
+    }
+
+    /// `Some(NoOp)` when a write would leave a time anchor naming an event, a
+    /// measure or a region that is not live ([`Self::referent_dead`]), `own`
+    /// excepted, the region a create is making: refused `TargetMissing` in
+    /// both modes, as a tempo segment's, a measure's, a user break's and a
+    /// cross-cutting structure's write is (reduction version 5, D87 Q2: before
+    /// it the holder applied naming nothing, or named an object made after
+    /// it, whose creation X5b.9 then refused, leaving the name for good).
+    fn dead_anchor_slot<'b>(
+        &self,
+        anchors: impl IntoIterator<Item = &'b TimeAnchor>,
+        own: Option<RegionId>,
+    ) -> Option<OperationEffect> {
+        anchor_object_refs(anchors)
+            .into_iter()
+            .filter(|object| own.map(TypedObjectId::Region) != Some(*object))
+            .any(|object| self.referent_dead(object))
+            .then_some(OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            })
+    }
+
+    /// The migration that gave the target region of one of `anchors` a model
+    /// that does not admit its offset ([`Self::anchor_admitted`]): a value an
+    /// undo would restore so is superseded by it, as its write would be
+    /// refused there (reduction version 5, X5b.9; D80 Q17 its musical half
+    /// for a marker). Only an applied migration changes a region's model.
+    fn migrated_against<'b>(
+        &self,
+        anchors: impl IntoIterator<Item = &'b TimeAnchor>,
+    ) -> Option<OperationId> {
+        anchors
+            .into_iter()
+            .filter(|anchor| !self.anchor_admitted(anchor, None))
+            .find_map(|anchor| {
+                self.extent_anchor_region(anchor)
+                    .and_then(|region| self.region_migrator.get(&region).copied())
+            })
+    }
+
+    /// Notes each event, measure or region `anchors` name before it is made,
+    /// so that its creation reads what names it ([`Self::named_against`]).
+    fn note_forward_names<'b>(&mut self, anchors: impl IntoIterator<Item = &'b TimeAnchor>) {
+        for object in anchor_object_refs(anchors) {
+            if !self.objects.contains_key(&object) {
+                self.forward_names.insert(object);
+            }
+        }
+    }
+
+    /// Every live holder of a time anchor but a region's extent (X5b.8's
+    /// own), each anchor with what a migration it strands names, read from
+    /// the indices both modes keep: a marker's or a spanner's current value,
+    /// a repeat structure, a measure's start, a region's own model's meter
+    /// changes, the meter changes of a region's grid as its chains give it
+    /// ([`Self::region_grid`]), a staff instance's own grid and the clef and
+    /// key changes its create carried, a user break, and a tempo segment of
+    /// any map (reduction version 5, X5b.9).
+    fn held_anchors(&self) -> Vec<HeldAnchor> {
+        let live =
+            |object: TypedObjectId| matches!(self.objects.get(&object), Some(ObjectState::Live));
+        let mut held = Vec::new();
+        let mut hold =
+            |holder: Option<TypedObjectId>, dropped_with: Option<RegionId>, anchor: &TimeAnchor| {
+                held.push(HeldAnchor {
+                    holder,
+                    dropped_with,
+                    anchor: anchor.clone(),
+                })
+            };
+        for (sid, chain) in &self.cross_cutting_modify_chain {
+            if let Some(value) = chain.current().filter(|_| live(*sid)) {
+                for anchor in region_anchors(value) {
+                    hold(Some(*sid), None, anchor);
+                }
+            }
+        }
+        for (id, repeat) in &self.repeat_values {
+            let sid = TypedObjectId::RepeatStructure(*id);
+            if live(sid) {
+                for anchor in repeat.anchor_sites() {
+                    hold(Some(sid), None, anchor);
+                }
+            }
+        }
+        for (id, (_, measure)) in &self.measure_values {
+            let sid = TypedObjectId::Measure(*id);
+            if live(sid) {
+                hold(Some(sid), None, &measure.start);
+            }
+        }
+        for (region, meters) in &self.region_model_meters {
+            let sid = TypedObjectId::Region(*region);
+            if live(sid) {
+                for meter in meters {
+                    hold(Some(sid), None, &meter.anchor);
+                }
+            }
+        }
+        for region in &self.staff_based_regions {
+            let sid = TypedObjectId::Region(*region);
+            if live(sid) {
+                for change in self.region_grid(*region) {
+                    hold(Some(sid), Some(*region), &change.anchor);
+                }
+            }
+        }
+        for (instance, grid) in &self.instance_grid {
+            let sid = TypedObjectId::StaffInstance(*instance);
+            if let Some(grid) = grid.as_ref().filter(|_| live(sid)) {
+                for change in &grid.meter_sequence {
+                    hold(
+                        Some(sid),
+                        self.instance_region_of(*instance),
+                        &change.anchor,
+                    );
+                }
+            }
+        }
+        for ((instance, key, position), anchors) in &self.instance_change_anchors {
+            let sid = TypedObjectId::StaffInstance(*instance);
+            // A change still the create's: its chain holds a change there,
+            // and no write of its own.
+            let carried = if *key {
+                self.key_chain
+                    .get(&(*instance, position.clone()))
+                    .is_some_and(|chain| {
+                        chain.last_write().is_none() && matches!(chain.current(), Some(Some(_)))
+                    })
+            } else {
+                self.clef_chain
+                    .get(&(*instance, position.clone()))
+                    .is_some_and(|chain| {
+                        chain.last_write().is_none() && matches!(chain.current(), Some(Some(_)))
+                    })
+            };
+            if carried && live(sid) {
+                for anchor in anchors {
+                    hold(Some(sid), None, anchor);
+                }
+            }
+        }
+        for ((region, _), chain) in self.break_chain.iter().chain(&self.page_break_chain) {
+            let sid = TypedObjectId::Region(*region);
+            if let Some((anchor, true)) = chain.current().filter(|_| live(sid)) {
+                hold(Some(sid), Some(*region), anchor);
+            }
+        }
+        for ((scope, _), chain) in &self.tempo_segment_chain {
+            let holder = scope.map(TypedObjectId::Region);
+            if holder.is_some_and(|sid| !live(sid)) {
+                continue;
+            }
+            if let Some(Some(segment)) = chain.current() {
+                for anchor in std::iter::once(&segment.start).chain(segment.end.as_ref()) {
+                    hold(holder, None, anchor);
+                }
+            }
+        }
+        held
+    }
+
+    /// The live holders of a time anchor but regions' extents
+    /// ([`Self::held_anchors`]) whose anchor names `region`, or an event or a
+    /// measure in it, by an offset `discipline` does not admit, read as
+    /// [`extent_anchor_judged`] reads it: a migration of `region` to
+    /// `discipline` strands each, named as its holder, the region itself for
+    /// a segment of the score's tempo map (reduction version 5, X5b.9: before
+    /// it the migration applied, `AnchorOffsetModel`). What a migration out
+    /// of musical time drops with the region's breaks and grids is not read.
+    fn holders_anchored_against(
+        &self,
+        region: RegionId,
+        discipline: CoordinateDiscipline,
+    ) -> Vec<TypedObjectId> {
+        let drops = !discipline.admits_musical_offsets();
+        self.held_anchors()
+            .into_iter()
+            .filter(|held| !(drops && held.dropped_with == Some(region)))
+            .filter(|held| {
+                self.extent_anchor_region(&held.anchor) == Some(region)
+                    && held.anchor.offset().is_some_and(|offset| {
+                        !extent_anchor_judged(&held.anchor, discipline).admits_offset(offset.kind())
+                    })
+            })
+            .map(|held| held.holder.unwrap_or(TypedObjectId::Region(region)))
+            .collect()
+    }
+
+    /// Whether a live holder of a time anchor names `target`, an event, a
+    /// measure or a region being made under `discipline`, by an offset that
+    /// discipline does not admit ([`extent_anchor_judged`]); a region's extent
+    /// among them where `extents` (a region's is X5b.8's own reading). Its
+    /// creation is refused so (reduction version 5, X5b.9, D84 Q1: before it
+    /// the object was made, `AnchorOffsetModel`). Read only for an object a
+    /// holder named before it was made ([`Self::note_forward_names`]).
+    fn named_against(
+        &self,
+        target: TypedObjectId,
+        discipline: CoordinateDiscipline,
+        extents: bool,
+    ) -> bool {
+        if !self.forward_names.contains(&target) {
+            return false;
+        }
+        let live =
+            |object: TypedObjectId| matches!(self.objects.get(&object), Some(ObjectState::Live));
+        let extent_anchors = self
+            .region_extents
+            .iter()
+            .filter(|(id, _)| extents && live(TypedObjectId::Region(**id)))
+            .flat_map(|(_, extent)| [extent.start.clone(), extent.end.clone()]);
+        self.held_anchors()
+            .into_iter()
+            .map(|held| held.anchor)
+            .chain(extent_anchors)
+            .any(|anchor| {
+                anchor_object_refs([&anchor]) == [target]
+                    && anchor.offset().is_some_and(|offset| {
+                        !extent_anchor_judged(&anchor, discipline).admits_offset(offset.kind())
+                    })
+            })
+    }
+
+    /// `Some(NoOp)` when an event, a measure or a region is made where a
+    /// live holder already names it by an offset its time model does not
+    /// admit ([`Self::named_against`]): refused `WrongRegionTimeModel` in both
+    /// modes (reduction version 5, X5b.9, D84 Q1).
+    fn named_before_made_slot(
+        &self,
+        target: TypedObjectId,
+        discipline: Option<CoordinateDiscipline>,
+        extents: bool,
+    ) -> Option<OperationEffect> {
+        discipline
+            .is_some_and(|discipline| self.named_against(target, discipline, extents))
+            .then_some(OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::WrongRegionTimeModel,
+                },
+            })
     }
 
     /// The migration that took `region` out of musical time, where it now
@@ -4085,6 +4836,24 @@ impl<'a> Reducer<'a> {
                 }
             }
         }
+        // Each meter change's anchor names a live target (reduction version
+        // 5, D87 Q2) and answers to its target's time model (X5b.9).
+        if let Some(effect) = self.dead_anchor_slot(
+            op.grid
+                .iter()
+                .flat_map(|grid| grid.meter_sequence.iter().map(|change| &change.anchor)),
+            None,
+        ) {
+            return effect;
+        }
+        if let Some(effect) = self.anchors_slot(
+            op.grid
+                .iter()
+                .flat_map(|grid| grid.meter_sequence.iter().map(|change| &change.anchor)),
+            None,
+        ) {
+            return effect;
+        }
         // Contract pin 9c.1: the RESULTING grid must not break invariant
         // 20's agreement or boundary clause for any live measure the change
         // reaches. Checked before any write (there is no mint in this
@@ -4127,6 +4896,11 @@ impl<'a> Reducer<'a> {
             .or_insert_with(WriteChain::new)
             .record(env.id, env.transaction, op.grid.clone());
         self.graph_set_metric_grid(op.region, &op.grid);
+        self.note_forward_names(
+            op.grid
+                .iter()
+                .flat_map(|grid| grid.meter_sequence.iter().map(|change| &change.anchor)),
+        );
         effect
     }
 
@@ -4152,6 +4926,15 @@ impl<'a> Reducer<'a> {
         if let Some(effect) = self.musical_slot(op.region, Some(&op.anchor)) {
             return effect;
         }
+        if let Some(effect) = self.break_target(op.region, &op.anchor) {
+            return effect;
+        }
+        // As a system break's (X5b.9).
+        if let Some(effect) =
+            self.anchors_slot([&op.anchor].into_iter().filter(|_| op.present), None)
+        {
+            return effect;
+        }
         if let Some(score) = self.graph.as_mut() {
             if let Some(region) = score.canvas.regions.iter_mut().find(|r| r.id == op.region) {
                 if let Some(content) = region.content.staff_based_mut() {
@@ -4159,7 +4942,7 @@ impl<'a> Reducer<'a> {
                 }
             }
         }
-        let key = (op.region, op.resolved_position());
+        let key = (op.region, BreakAnchor::new(op.anchor.clone()));
         self.page_breaks.insert(key.clone(), op.present);
         self.page_break_chain
             .entry(key)
@@ -4275,6 +5058,16 @@ impl<'a> Reducer<'a> {
             };
         }
 
+        // Nothing live names the event before it is made by an offset its
+        // region does not admit (reduction version 5, X5b.9, D84 Q1): read
+        // past every check both modes share, so a voice base-free reduction
+        // finds dead above is refused as the graph refuses it.
+        let discipline = self
+            .instance_region_of(op.staff_instance)
+            .and_then(|region| self.region_disciplines.get(&region).copied());
+        if let Some(effect) = self.named_before_made_slot(ev_obj, discipline, true) {
+            return effect;
+        }
         if let Err(reason) =
             self.materialize_graph_insert(env, op, graph_location, target_voice, promotion)
         {
@@ -4371,6 +5164,22 @@ impl<'a> Reducer<'a> {
         if let Err(reason) = self.graph_delete_precondition(op) {
             return OperationEffect::NoOp {
                 reason: NoOpReason::PreconditionFailedUnderReduction { reason },
+            };
+        }
+        // A live tempo segment naming the event holds it, and so does every
+        // other holder of a time anchor outside the cross-cutting structures:
+        // no rule re-anchors one, which would name nothing (reduction version
+        // 5, D86 Q2 and D87 Q1: before it the delete applied,
+        // `CrossCuttingRefsResolve`).
+        if self
+            .tempo_segment_naming(&ev_obj, &[], &[])
+            .or_else(|| self.holder_naming(&ev_obj, &[], &[]))
+            .is_some()
+        {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetAnchored,
+                },
             };
         }
 
@@ -4505,6 +5314,8 @@ impl<'a> Reducer<'a> {
                         target: t_obj,
                     });
                 }
+                // The cascaded tuplets' children go with them (D87 Q3).
+                self.cascade_tuplet_children(env, &mut repairs);
             }
         }
 
@@ -4687,6 +5498,10 @@ impl<'a> Reducer<'a> {
             .spanner_staves_slot(&op.structure)
             .or_else(|| self.region_anchor_slot(&op.structure))
         {
+            return effect;
+        }
+        // Its anchors answer to their targets' time models (X5b.9).
+        if let Some(effect) = self.anchors_slot(region_anchors(&op.structure), None) {
             return effect;
         }
         if let Some(effect) = self.lyric_slot_taken(&op.structure) {
@@ -4894,6 +5709,11 @@ impl<'a> Reducer<'a> {
                 };
             }
         }
+        // And each answers to its target's time model (reduction version 5,
+        // X5b.9: before it a repeat applied by any offset, `AnchorOffsetModel`).
+        if let Some(effect) = self.anchors_slot(op.repeat.anchor_sites(), None) {
+            return effect;
+        }
         if let Some(score) = self.graph.as_mut() {
             score.cross_cutting.repeats.push(op.repeat.clone());
         }
@@ -4991,7 +5811,45 @@ impl<'a> Reducer<'a> {
         self.minted_by.insert(sid, env.id);
         self.note_minted(env, sid);
         self.structures.insert(sid, members);
+        if let Some(parent) = op.tuplet.parent {
+            self.tuplet_parents.insert(op.tuplet.id, parent);
+        }
         OperationEffect::Applied
+    }
+
+    /// Cascade-deletes every live tuplet whose parent is not live, until
+    /// none is: a member's cascade that removes a nested tuplet's parent
+    /// carries its children with it, as their `parent` would otherwise name
+    /// nothing (reduction version 5, D87 Q3: before it the child stayed,
+    /// `CrossCuttingRefsResolve`). Read from the parent index both modes
+    /// keep; the graph drops the same children (`remove_tuplets`).
+    fn cascade_tuplet_children(
+        &mut self,
+        env: &OperationEnvelope,
+        repairs: &mut Vec<RepairRecord>,
+    ) {
+        loop {
+            let orphaned: Vec<TypedObjectId> = self
+                .tuplet_parents
+                .iter()
+                .filter(|(child, parent)| {
+                    matches!(
+                        self.objects.get(&TypedObjectId::Tuplet(**child)),
+                        Some(ObjectState::Live)
+                    ) && !matches!(
+                        self.objects.get(&TypedObjectId::Tuplet(**parent)),
+                        Some(ObjectState::Live)
+                    )
+                })
+                .map(|(child, _)| TypedObjectId::Tuplet(*child))
+                .collect();
+            if orphaned.is_empty() {
+                break;
+            }
+            for child in orphaned {
+                self.cascade_structure(env, child, repairs);
+            }
+        }
     }
 
     /// The live tuplets whose members include `event`, from the referent
@@ -5129,6 +5987,11 @@ impl<'a> Reducer<'a> {
             .spanner_staves_slot(&op.structure)
             .or_else(|| self.region_anchor_slot(&op.structure))
         {
+            return effect;
+        }
+        // The new value's anchors answer to their targets' time models
+        // (X5b.9).
+        if let Some(effect) = self.anchors_slot(region_anchors(&op.structure), None) {
             return effect;
         }
         if let Some(effect) = self.lyric_slot_taken(&op.structure) {
@@ -5305,11 +6168,108 @@ impl<'a> Reducer<'a> {
         {
             return container_not_empty();
         }
+        // Its extent and the anchors its payload carries name live targets,
+        // its own edge excepted (reduction version 5, D87 Q2).
+        let payload = region_payload_anchors(&op.region);
+        if let Some(effect) = self.dead_anchor_slot(
+            [&op.region.time_extent.start, &op.region.time_extent.end]
+                .into_iter()
+                .chain(&payload),
+            Some(op.region_id()),
+        ) {
+            return effect;
+        }
+        if let Some(effect) = self.extent_offset_slot(&op.region) {
+            return effect;
+        }
+        // Its own model's meter changes and its grid's name time signatures,
+        // which must be live, as a `SetMetricGrid`'s must (reduction version
+        // 5: before it the region carried one never declared,
+        // `CrossCuttingRefsResolve`).
+        let carried_meters = model_meters(&op.region.time_model);
+        let grid_meters = op
+            .region
+            .content
+            .staff_based()
+            .and_then(|content| content.default_metric_grid.as_ref())
+            .map(|grid| grid.meter_sequence.as_slice())
+            .unwrap_or_default();
+        if self.names_undeclared_signature(carried_meters.iter().chain(grid_meters)) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            };
+        }
+        // Its own model, grid, breaks and tempo map hold anchors as its
+        // extent does, and nothing live but an extent names the region before
+        // it is made by an offset its model does not admit (reduction version
+        // 5, X5b.9).
+        let own = (op.region_id(), op.region.time_model.coordinate_discipline());
+        if let Some(effect) = self.anchors_slot(&payload, Some(own)) {
+            return effect;
+        }
+        if let Some(effect) = self.named_before_made_slot(robj, Some(own.1), false) {
+            return effect;
+        }
+        // Its tempo map holds one segment per key, as `SetTempoSegment`'s
+        // writes leave a map: a key is the segment's scope and its start's
+        // resolved position, which a note, a measure and a region's edge
+        // share (reduction version 5, C5b review 2: before it the chain was
+        // seeded with the first segment at a key alone while the graph kept
+        // every one, so a later segment's note, measure or region could be
+        // removed from under it, `CrossCuttingRefsResolve`).
+        if let Some(local) = &op.region.local_tempo_map {
+            let mut keys = BTreeSet::new();
+            if !local
+                .segments
+                .iter()
+                .all(|segment| keys.insert(resolved_anchor_position(&segment.start)))
+            {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::TempoMapMalformed,
+                    },
+                };
+            }
+        }
+        // And it is a map `SetTempoSegment`'s writes could leave, read as a
+        // write reads the map it leaves: its segments in order of their
+        // starts' resolved positions, each shape carrying its end data, and
+        // no segment's resolved end before its own start or past the next
+        // segment's start (reduction version 5, D90 Q3: before it a map out
+        // of order or overlapping applied against
+        // `req:time:tempo-segment-order`, and the rest applied unseen).
+        if let Some(local) = &op.region.local_tempo_map {
+            let keyed: Vec<(MusicalPosition, &TempoSegment)> = local
+                .segments
+                .iter()
+                .map(|segment| (resolved_anchor_position(&segment.start), segment))
+                .collect();
+            if !keyed.windows(2).all(|pair| pair[0].0 <= pair[1].0)
+                || !tempo_segments_well_formed(&keyed)
+            {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::TempoMapMalformed,
+                    },
+                };
+            }
+        }
         self.graph_create_region(&op.region);
         self.mint_container(env, robj);
         self.region_instances.entry(op.region_id()).or_default();
         self.region_disciplines
             .insert(op.region_id(), op.region.time_model.coordinate_discipline());
+        self.region_extents
+            .insert(op.region_id(), op.region.time_extent.clone());
+        self.region_model_meters
+            .insert(op.region_id(), model_meters(&op.region.time_model));
+        self.note_forward_names(
+            payload
+                .iter()
+                .chain([&op.region.time_extent.start, &op.region.time_extent.end]),
+        );
         if let Some(content) = op.region.content.staff_based() {
             self.staff_based_regions.insert(op.region_id());
             // Seed the region's layout/metric write chains from the carried
@@ -5330,13 +6290,13 @@ impl<'a> Reducer<'a> {
             }
             for anchor in &content.user_system_breaks {
                 self.break_chain
-                    .entry((op.region_id(), resolved_anchor_position(anchor)))
+                    .entry((op.region_id(), BreakAnchor::new(anchor.clone())))
                     .or_insert_with(WriteChain::new)
                     .seed((anchor.clone(), true));
             }
             for anchor in &content.user_page_breaks {
                 self.page_break_chain
-                    .entry((op.region_id(), resolved_anchor_position(anchor)))
+                    .entry((op.region_id(), BreakAnchor::new(anchor.clone())))
                     .or_insert_with(WriteChain::new)
                     .seed((anchor.clone(), true));
             }
@@ -5411,6 +6371,18 @@ impl<'a> Reducer<'a> {
         if taken {
             return container_not_empty();
         }
+        // A region's staves grow only by this fill, so refusing a fill whose
+        // region overlaps in time another live region holding a live instance
+        // of the staff keeps `RegionExtents` for every history; the earlier
+        // fill in canonical order stands (reduction version 5: before it the
+        // fill applied and the two regions overlapped).
+        if self.fill_overlaps(op.region, op.instance.staff) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::RegionsOverlap,
+                },
+            };
+        }
         // Its clef and key changes are anchors like any other: one anchored by
         // a musical offset into a region admitting none is refused (reduction
         // version 3: before it the instance carried it there,
@@ -5430,6 +6402,33 @@ impl<'a> Reducer<'a> {
                 return effect;
             }
         }
+        // Its own grid names a time signature per meter change, which must be
+        // live, as a `SetMetricGrid`'s must (reduction version 5: before it
+        // the instance carried a grid naming one never declared,
+        // `CrossCuttingRefsResolve`).
+        let undeclared = self.names_undeclared_signature(
+            op.instance
+                .local_metric_grid
+                .iter()
+                .flat_map(|grid| &grid.meter_sequence),
+        );
+        if undeclared {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            };
+        }
+        // They, and its own grid's meter changes, answer to their targets'
+        // time models (reduction version 5, X5b.9).
+        let carried = staff_instance_anchors(&op.instance);
+        if let Some(effect) = self.dead_anchor_slot(carried.iter().copied(), None) {
+            return effect;
+        }
+        if let Some(effect) = self.anchors_slot(carried.iter().copied(), None) {
+            return effect;
+        }
+        self.note_forward_names(carried);
         self.graph_create_staff_instance(op.region, &op.instance);
         self.mint_container(env, iobj);
         self.region_instances
@@ -5456,6 +6455,7 @@ impl<'a> Reducer<'a> {
                 op.instance.visible,
             ));
         seed_staff_changes(&mut self.clef_chain, &mut self.key_chain, &op.instance);
+        note_change_anchors(&mut self.instance_change_anchors, &op.instance);
         OperationEffect::Applied
     }
 
@@ -6237,7 +7237,23 @@ impl<'a> Reducer<'a> {
         if let Some(Some(local)) = self.instance_grid.get(&instance) {
             return local.meter_sequence.clone();
         }
+        self.default_grid(region, grid_override, meter_change_overrides)
+    }
 
+    /// `region`'s own grid as its chains give it, whatever an instance's
+    /// own grid overrides: [`Self::effective_grid`] past an instance's.
+    fn region_grid(&self, region: RegionId) -> Vec<MeterChange> {
+        self.default_grid(Some(region), None, &BTreeMap::new())
+    }
+
+    /// [`Self::effective_grid`] for a region's default grid, the whole-grid
+    /// and per-key chains interleaved by recency.
+    fn default_grid(
+        &self,
+        region: Option<RegionId>,
+        grid_override: Option<&Option<MetricGrid>>,
+        meter_change_overrides: &BTreeMap<MusicalPosition, Option<MeterChange>>,
+    ) -> Vec<MeterChange> {
         let whole_chain = region.and_then(|region| self.metric_grid_chain.get(&region));
         let whole_recency = self.chain_recency(whole_chain, grid_override.is_some());
         let whole_value: Option<MetricGrid> = match grid_override {
@@ -6826,6 +7842,22 @@ impl<'a> Reducer<'a> {
             {
                 return effect;
             }
+            // Its start answers to its target's time model, and nothing
+            // live names the measure before it is made by an offset its
+            // region does not admit (reduction version 5, X5b.9).
+            if let Some(effect) = self.anchors_slot([&op.measure.start], None) {
+                return effect;
+            }
+            let discipline = self
+                .instance_region_of(op.instance)
+                .and_then(|region| self.region_disciplines.get(&region).copied());
+            if let Some(effect) = self.named_before_made_slot(
+                TypedObjectId::Measure(op.measure_id()),
+                discipline,
+                true,
+            ) {
+                return effect;
+            }
         }
 
         let region = self.region_of_instance(op.instance);
@@ -6990,6 +8022,24 @@ impl<'a> Reducer<'a> {
         if let Some(effect) = self.musical_slot(op.region, Some(&op.anchor)) {
             return effect;
         }
+        // A set meter change's anchor names a live target (reduction version
+        // 5, D87 Q2) and answers to its target's time model (X5b.9).
+        if let Some(effect) = self.dead_anchor_slot(
+            [&op.anchor]
+                .into_iter()
+                .filter(|_| op.time_signature.is_some()),
+            None,
+        ) {
+            return effect;
+        }
+        if let Some(effect) = self.anchors_slot(
+            [&op.anchor]
+                .into_iter()
+                .filter(|_| op.time_signature.is_some()),
+            None,
+        ) {
+            return effect;
+        }
         // Contract pin 9c.2/M45: EVERY invariant check must precede any
         // mint. `written`'s signature id is a field read off `op` itself —
         // no mint needed to know it — so the prospective invariant-20
@@ -7050,6 +8100,7 @@ impl<'a> Reducer<'a> {
             .or_insert_with(WriteChain::new)
             .record(env.id, env.transaction, written.clone());
         self.graph_apply_meter_change(op.region, &key.1, &written);
+        self.note_forward_names(written.iter().map(|change| &change.anchor));
         effect
     }
 
@@ -7131,23 +8182,7 @@ impl<'a> Reducer<'a> {
         }
         segments.push((key.1.clone(), written));
         segments.sort_by(|(a, _), (b, _)| a.cmp(b));
-        for (index, (position, segment)) in segments.iter().enumerate() {
-            if !tempo_segment_shape_well_formed(segment) {
-                return false;
-            }
-            if let Some(end) = &segment.end {
-                let resolved_end = resolved_anchor_position(end);
-                if resolved_end < *position {
-                    return false;
-                }
-                if let Some((next_position, _)) = segments.get(index + 1) {
-                    if resolved_end > *next_position {
-                        return false;
-                    }
-                }
-            }
-        }
-        true
+        tempo_segments_well_formed(&segments)
     }
 
     /// Sets, replaces, or removes the single tempo segment starting at the
@@ -7193,6 +8228,34 @@ impl<'a> Reducer<'a> {
                     }
                 }
             }
+        }
+        // So does one anchored to an event or a measure that is not live
+        // (reduction version 5, X5b.9: before it the segment applied naming
+        // nothing, `CrossCuttingRefsResolve`, and a note or measure it named
+        // before it was made could then be made under it).
+        let dangling = op.segment.iter().any(|segment| {
+            std::iter::once(&segment.start)
+                .chain(segment.end.as_ref())
+                .filter(|anchor| !matches!(anchor, TimeAnchor::Region { .. }))
+                .flat_map(|anchor| anchor_object_refs([anchor]))
+                .any(|referent| self.referent_dead(referent))
+        });
+        if dangling {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            };
+        }
+        // Its anchors answer to their targets' time models (reduction
+        // version 5, X5b.9).
+        if let Some(effect) = self.anchors_slot(
+            op.segment
+                .iter()
+                .flat_map(|segment| std::iter::once(&segment.start).chain(segment.end.as_ref())),
+            None,
+        ) {
+            return effect;
         }
         let key = (op.region, op.resolved_start());
         if let Some(segment) = &op.segment {
@@ -7240,6 +8303,11 @@ impl<'a> Reducer<'a> {
             .or_insert_with(WriteChain::new)
             .record(env.id, env.transaction, op.segment.clone());
         self.graph_apply_tempo_segment(op.region, &key.1, &op.segment);
+        self.note_forward_names(
+            op.segment
+                .iter()
+                .flat_map(|segment| std::iter::once(&segment.start).chain(segment.end.as_ref())),
+        );
         effect
     }
 
@@ -7563,11 +8631,17 @@ impl<'a> Reducer<'a> {
         let marked = !self
             .anchored_to_region(op.region, false, &[], &[])
             .is_empty();
-        let minted_by =
-            match self.delete_precondition(robj, env, has_instances || tempo_anchored || marked) {
-                Ok(minter) => minter,
-                Err(effect) => return effect,
-            };
+        // And so does every other live holder of a time anchor naming it
+        // (reduction version 5, D87 Q1).
+        let named = self.holder_naming(&robj, &[], &[]).is_some();
+        let minted_by = match self.delete_precondition(
+            robj,
+            env,
+            has_instances || tempo_anchored || marked || named,
+        ) {
+            Ok(minter) => minter,
+            Err(effect) => return effect,
+        };
         self.objects.insert(
             robj,
             ObjectState::Tombstoned {
@@ -7592,7 +8666,12 @@ impl<'a> Reducer<'a> {
             .instance_voices
             .get(&op.staff_instance)
             .is_some_and(|s| !s.is_empty());
-        let minted_by = match self.delete_precondition(iobj, env, has_voices) {
+        // A live measure is a child as a voice is (reduction version 5:
+        // before it the delete applied and took the measure from the graph,
+        // leaving whatever named it naming nothing).
+        let has_children =
+            has_voices || self.instance_live_measure(op.staff_instance, &[]).is_some();
+        let minted_by = match self.delete_precondition(iobj, env, has_children) {
             Ok(minter) => minter,
             Err(effect) => return effect,
         };
@@ -7882,6 +8961,26 @@ impl<'a> Reducer<'a> {
             }
         }
 
+        // The target model's own meter changes name live time signatures
+        // (reduction version 5: before it the migration gave the region a
+        // model naming one never declared, `CrossCuttingRefsResolve`).
+        if self.names_undeclared_signature(&model_meters(&op.new_time_model)) {
+            return OperationEffect::NoOp {
+                reason: NoOpReason::PreconditionFailedUnderReduction {
+                    reason: PreconditionFailureReason::TargetMissing,
+                },
+            };
+        }
+        // The target model's own meter changes answer to their targets' time
+        // models, the region's own edge to the target (reduction version 5,
+        // X5b.9: before it the migration applied, `AnchorOffsetModel`).
+        let target_meters = model_meter_anchors(&op.new_time_model);
+        if let Some(effect) = self.dead_anchor_slot(&target_meters, None) {
+            return effect;
+        }
+        if let Some(effect) = self.anchors_slot(&target_meters, Some((op.region, target))) {
+            return effect;
+        }
         // A target that admits no musical offset strands every measure of the
         // region,
         // anchored in musical time: each is incompatible, named beside the
@@ -7940,16 +9039,44 @@ impl<'a> Reducer<'a> {
                 .chain(anchored)
                 .collect()
         };
-        if !incompatible_events.is_empty() || !stranded_measures.is_empty() {
+        // A live region whose time extent anchors this region's edge, or an
+        // event or a measure in it, by an offset the target does not admit
+        // strands that region, named among them, this region too where its
+        // own bound is so anchored: out of musical time a musical offset, and
+        // into a model admitting no wall-clock offset a wall-clock one
+        // (reduction version 5, X5b.8: before it the migration applied,
+        // `AnchorOffsetModel`).
+        let stranded_extents: Vec<TypedObjectId> = self
+            .extents_anchored_against(op.region, target)
+            .into_iter()
+            .map(TypedObjectId::Region)
+            .collect();
+        // So does every other live holder of a time anchor so anchored, named
+        // as its holder: a marker, a spanner, a repeat structure, a measure, a
+        // region whose own model, grid, breaks or tempo map hold the anchor,
+        // a staff instance whose grid or carried clef or key does, and this
+        // region for a segment of the score's tempo map; what the migration
+        // drops with its breaks and grids aside (reduction version 5, X5b.9:
+        // before it the migration applied, `AnchorOffsetModel`).
+        let stranded_holders = self.holders_anchored_against(op.region, target);
+        if !incompatible_events.is_empty()
+            || !stranded_measures.is_empty()
+            || !stranded_extents.is_empty()
+            || !stranded_holders.is_empty()
+        {
             // In canonical order, as the conflict encodes it: the region a
-            // tempo segment strands does not sort after the events.
-            let incompatible: Vec<TypedObjectId> = epiphany_determinism::sorted_canonical(
+            // tempo segment strands does not sort after the events. A region
+            // a tempo segment and its own bound both strand is named once.
+            let mut incompatible: Vec<TypedObjectId> = epiphany_determinism::sorted_canonical(
                 incompatible_events
                     .into_iter()
                     .map(TypedObjectId::Event)
                     .chain(stranded_measures)
+                    .chain(stranded_extents)
+                    .chain(stranded_holders)
                     .collect(),
             );
+            incompatible.dedup();
             // The region once, though a tempo segment names it incompatible.
             let mut affected = vec![TypedObjectId::Region(op.region)];
             affected.extend(
@@ -7988,6 +9115,9 @@ impl<'a> Reducer<'a> {
         if let Some(discipline) = self.region_disciplines.get_mut(&op.region) {
             *discipline = op.new_time_model.coordinate_discipline();
         }
+        self.region_model_meters
+            .insert(op.region, model_meters(&op.new_time_model));
+        self.note_forward_names(&target_meters);
         // A target that is not musical drops the region's system and page
         // breaks, advisory layout written in musical time (reduction version 3:
         // before it they stayed, anchored by musical offsets the region no
@@ -8494,6 +9624,162 @@ impl<'a> Reducer<'a> {
         !targets.contains(&owner) && matches!(self.objects.get(&owner), Some(ObjectState::Live))
     }
 
+    /// The holder of a live tempo segment whose start or end names `target`
+    /// as an undo leaves it (`targets` going with it, `restorations`
+    /// applied; neither for a delete): the region whose map holds it, or
+    /// `target` itself for a segment of the score's map, which has no
+    /// holder. Removing `target` would leave the segment naming nothing
+    /// (`CrossCuttingRefsResolve`) and no rule re-anchors it, so an event's
+    /// delete and undo are held (reduction version 5, D86 Q2), as a measure's
+    /// undo and a region's delete and undo are. Read from the tempo chains
+    /// both modes keep.
+    fn tempo_segment_naming(
+        &self,
+        target: &TypedObjectId,
+        targets: &[TypedObjectId],
+        restorations: &[ValueRestoration],
+    ) -> Option<TypedObjectId> {
+        self.tempo_segment_chain
+            .iter()
+            .find_map(|((scope, position), chain)| {
+                let names = prospective_references_target(
+                    restorations,
+                    |restoration| match restoration {
+                        ValueRestoration::TempoSegment {
+                            region: r,
+                            position: p,
+                            value,
+                        } if r == scope && p == position => Some(value.clone()),
+                        _ => None,
+                    },
+                    chain.current().cloned().flatten(),
+                    |segment: &TempoSegment| {
+                        anchor_object_refs(
+                            std::iter::once(&segment.start).chain(segment.end.as_ref()),
+                        )
+                        .contains(target)
+                    },
+                );
+                match scope {
+                    Some(region) => {
+                        let robj = TypedObjectId::Region(*region);
+                        (names && self.owner_licenses_block(robj, targets)).then_some(robj)
+                    }
+                    None => names.then_some(*target),
+                }
+            })
+    }
+
+    /// The live holder of a time anchor outside the cross-cutting structures
+    /// whose anchor names `target`, an event, a measure or a region, as an
+    /// undo leaves it (`targets` going with it, `restorations` applied;
+    /// neither for a delete), a holder `target` is itself excepted: a
+    /// region's extent, a region's own model's meter changes, a region's grid
+    /// as its chains give it ([`Self::default_grid`]), a staff instance's own
+    /// grid and the clef and key changes its create carried while no write of
+    /// their own has replaced them, or a measure's start. Removing `target`
+    /// would leave the anchor naming nothing (graph invariant 10,
+    /// `CrossCuttingRefsResolve`) and no rule re-anchors it, so a note's, a
+    /// measure's or a region's delete and undo are held (reduction version 5,
+    /// D87 Q1). A marker, a spanner and a repeat structure re-anchor by the
+    /// rule table instead, a user break stays keyed and draws nothing (D80),
+    /// and a tempo segment is read by [`Self::tempo_segment_naming`]. Read
+    /// from the indices both modes keep.
+    fn holder_naming(
+        &self,
+        target: &TypedObjectId,
+        targets: &[TypedObjectId],
+        restorations: &[ValueRestoration],
+    ) -> Option<TypedObjectId> {
+        let names = |anchor: &TimeAnchor| anchor_object_refs([anchor]).contains(target);
+        let holds =
+            |holder: TypedObjectId| holder != *target && self.owner_licenses_block(holder, targets);
+        self.region_extents
+            .iter()
+            .find_map(|(id, extent)| {
+                let holder = TypedObjectId::Region(*id);
+                ((names(&extent.start) || names(&extent.end)) && holds(holder)).then_some(holder)
+            })
+            .or_else(|| {
+                self.region_model_meters.iter().find_map(|(id, meters)| {
+                    let holder = TypedObjectId::Region(*id);
+                    (meters.iter().any(|meter| names(&meter.anchor)) && holds(holder))
+                        .then_some(holder)
+                })
+            })
+            .or_else(|| {
+                self.metric_grid_chain.keys().find_map(|region| {
+                    let holder = TypedObjectId::Region(*region);
+                    if !holds(holder) {
+                        return None;
+                    }
+                    let whole = restorations
+                        .iter()
+                        .find_map(|restoration| match restoration {
+                            ValueRestoration::MetricGrid { region: r, value } if r == region => {
+                                Some(value.clone())
+                            }
+                            _ => None,
+                        });
+                    let per_key: BTreeMap<MusicalPosition, Option<MeterChange>> = restorations
+                        .iter()
+                        .filter_map(|restoration| match restoration {
+                            ValueRestoration::MeterChange {
+                                region: r,
+                                position,
+                                value,
+                            } if r == region => Some((position.clone(), value.clone())),
+                            _ => None,
+                        })
+                        .collect();
+                    self.default_grid(Some(*region), whole.as_ref(), &per_key)
+                        .iter()
+                        .any(|change| names(&change.anchor))
+                        .then_some(holder)
+                })
+            })
+            .or_else(|| {
+                self.instance_grid.iter().find_map(|(instance, grid)| {
+                    let holder = TypedObjectId::StaffInstance(*instance);
+                    (grid
+                        .iter()
+                        .flat_map(|grid| &grid.meter_sequence)
+                        .any(|change| names(&change.anchor))
+                        && holds(holder))
+                    .then_some(holder)
+                })
+            })
+            .or_else(|| {
+                self.instance_change_anchors.iter().find_map(
+                    |((instance, key, position), anchors)| {
+                        let holder = TypedObjectId::StaffInstance(*instance);
+                        let carried = if *key {
+                            self.key_chain
+                                .get(&(*instance, position.clone()))
+                                .is_some_and(|chain| {
+                                    chain.last_write().is_none()
+                                        && matches!(chain.current(), Some(Some(_)))
+                                })
+                        } else {
+                            self.clef_chain
+                                .get(&(*instance, position.clone()))
+                                .is_some_and(|chain| {
+                                    chain.last_write().is_none()
+                                        && matches!(chain.current(), Some(Some(_)))
+                                })
+                        };
+                        (carried && anchors.iter().any(&names) && holds(holder)).then_some(holder)
+                    },
+                )
+            })
+            .or_else(|| {
+                self.measure_values.iter().find_map(|(id, (_, measure))| {
+                    let holder = TypedObjectId::Measure(*id);
+                    (names(&measure.start) && holds(holder)).then_some(holder)
+                })
+            })
+    }
+
     /// `Some((blocked, referencer))` when tombstoning `target` under undo
     /// would strand a live reference: a minted `Staff` still manifested by a
     /// live staff instance (operation_catalog §CreateStaff), a minted
@@ -8532,14 +9818,22 @@ impl<'a> Reducer<'a> {
                 // id, so the region names itself (reduction version 3: before
                 // it the undo left the anchor naming nothing,
                 // `CrossCuttingRefsResolve`). Read as the undo leaves it: a
-                // segment the undone transaction wrote is restored away.
+                // segment the undone transaction wrote is restored away, and
+                // a map whose region the same undo removes, or which is not
+                // live, holds nothing, as for an event's hold (reduction
+                // version 5, D90 Q1: before it such a map held the region,
+                // the removed region's own map alone excepted).
                 .or_else(|| {
                     let here = |anchor: &TimeAnchor| {
                         matches!(anchor, TimeAnchor::Region { id, .. } if id == region)
                     };
                     self.tempo_segment_chain
                         .iter()
-                        .filter(|((map, _), _)| *map != Some(*region))
+                        .filter(|((map, _), _)| {
+                            map.is_none_or(|owner| {
+                                self.owner_licenses_block(TypedObjectId::Region(owner), targets)
+                            })
+                        })
                         .any(|((map, position), chain)| {
                             let prospective: Option<TempoSegment> = restorations
                                 .iter()
@@ -8575,9 +9869,19 @@ impl<'a> Reducer<'a> {
                 .or_else(|| {
                     self.orphaned_to_region(*region, targets, restorations)
                         .map(|sid| (*target, sid))
+                })
+                // A live holder outside the cross-cutting structures naming
+                // the region: another region's extent, own model or grid, a
+                // staff instance's own grid or carried clef or key, a
+                // measure's start (reduction version 5, D87 Q1).
+                .or_else(|| {
+                    self.holder_naming(target, targets, restorations)
+                        .map(|holder| (*target, holder))
                 }),
-            TypedObjectId::StaffInstance(instance) => {
-                self.instance_voices.get(instance).and_then(|voices| {
+            TypedObjectId::StaffInstance(instance) => self
+                .instance_voices
+                .get(instance)
+                .and_then(|voices| {
                     voices.iter().find_map(|voice| {
                         let vobj = TypedObjectId::Voice(*voice);
                         (!targets.contains(&vobj)
@@ -8585,7 +9889,13 @@ impl<'a> Reducer<'a> {
                         .then_some((*target, vobj))
                     })
                 })
-            }
+                // Or a live measure (reduction version 5: before it the undo
+                // took the measure from the graph, leaving whatever named it
+                // naming nothing).
+                .or_else(|| {
+                    self.instance_live_measure(*instance, targets)
+                        .map(|measure| (*target, measure))
+                }),
             TypedObjectId::Voice(voice) => self.voice_occupancy.get(voice).and_then(|events| {
                 events.iter().find_map(|(_, _, event)| {
                     let eobj = TypedObjectId::Event(*event);
@@ -8694,6 +10004,79 @@ impl<'a> Reducer<'a> {
                                     && matches!(self.objects.get(&mobj), Some(ObjectState::Live)))
                                 .then_some((*target, mobj))
                             })
+                    })
+                    // A live staff instance whose own grid names it: the
+                    // grid is written once, at the create, and never
+                    // restored (reduction version 5: before it the undo left
+                    // the grid naming nothing, `CrossCuttingRefsResolve`).
+                    .or_else(|| {
+                        self.instance_grid.iter().find_map(|(instance, grid)| {
+                            let iobj = TypedObjectId::StaffInstance(*instance);
+                            let names = grid.iter().any(|grid| {
+                                grid.meter_sequence
+                                    .iter()
+                                    .any(|change| change.time_signature == *id)
+                            });
+                            (names
+                                && !targets.contains(&iobj)
+                                && matches!(self.objects.get(&iobj), Some(ObjectState::Live)))
+                            .then_some((*target, iobj))
+                        })
+                    })
+                    // A live region whose own model names it, written by its
+                    // create or a migration, neither of which an undo
+                    // restores (reduction version 5: before it the undo left
+                    // the model naming nothing, `CrossCuttingRefsResolve`).
+                    .or_else(|| {
+                        self.region_model_meters.iter().find_map(|(region, meters)| {
+                            let robj = TypedObjectId::Region(*region);
+                            (meters.iter().any(|meter| meter.time_signature == *id)
+                                && !targets.contains(&robj)
+                                && matches!(self.objects.get(&robj), Some(ObjectState::Live)))
+                            .then_some((*target, robj))
+                        })
+                    })
+                    // A live region whose grid names it as its chains give
+                    // it once the undo's restorations apply
+                    // ([`Self::default_grid`]): a `SetMetricGrid` writes the
+                    // whole grid, which the per-key arm above does not read
+                    // (reduction version 5, D86 Q1: before it the undo left
+                    // the grid naming nothing, `CrossCuttingRefsResolve`).
+                    .or_else(|| {
+                        self.metric_grid_chain.keys().find_map(|region| {
+                            let robj = TypedObjectId::Region(*region);
+                            if !self.owner_licenses_block(robj, targets) {
+                                return None;
+                            }
+                            let whole = restorations.iter().find_map(|restoration| {
+                                match restoration {
+                                    ValueRestoration::MetricGrid { region: r, value }
+                                        if r == region =>
+                                    {
+                                        Some(value.clone())
+                                    }
+                                    _ => None,
+                                }
+                            });
+                            let per_key: BTreeMap<MusicalPosition, Option<MeterChange>> =
+                                restorations
+                                    .iter()
+                                    .filter_map(|restoration| match restoration {
+                                        ValueRestoration::MeterChange {
+                                            region: r,
+                                            position,
+                                            value,
+                                        } if r == region => {
+                                            Some((position.clone(), value.clone()))
+                                        }
+                                        _ => None,
+                                    })
+                                    .collect();
+                            self.default_grid(Some(*region), whole.as_ref(), &per_key)
+                                .iter()
+                                .any(|change| change.time_signature == *id)
+                                .then_some((*target, robj))
+                        })
                     })
             }
             // Genesis tranche G3a undo repair (pins A2-A6): these three
@@ -8871,15 +10254,15 @@ impl<'a> Reducer<'a> {
                     .or_else(|| {
                         self.break_chain
                             .iter()
-                            .find_map(|((region, position), chain)| {
+                            .find_map(|((region, key), chain)| {
                                 let names = prospective_references_target(
                                     restorations,
                                     |restoration| match restoration {
                                         ValueRestoration::SystemBreak {
                                             region: r,
-                                            position: p,
+                                            anchor: k,
                                             predecessor,
-                                        } if r == region && p == position => {
+                                        } if r == region && k == key => {
                                             Some(predecessor.clone().map(Predecessor::into_value))
                                         }
                                         _ => None,
@@ -8898,15 +10281,15 @@ impl<'a> Reducer<'a> {
                     .or_else(|| {
                         self.page_break_chain
                             .iter()
-                            .find_map(|((region, position), chain)| {
+                            .find_map(|((region, key), chain)| {
                                 let names = prospective_references_target(
                                     restorations,
                                     |restoration| match restoration {
                                         ValueRestoration::PageBreak {
                                             region: r,
-                                            position: p,
+                                            anchor: k,
                                             predecessor,
-                                        } if r == region && p == position => {
+                                        } if r == region && k == key => {
                                             Some(predecessor.clone().map(Predecessor::into_value))
                                         }
                                         _ => None,
@@ -8966,6 +10349,15 @@ impl<'a> Reducer<'a> {
                                 }
                             })
                     })
+                    // 8. Every other holder outside the cross-cutting
+                    // structures: a region's extent, own model or grid, a staff
+                    // instance's own grid or carried clef or key (reduction
+                    // version 5, D87 Q1: before it the undo removed the measure
+                    // and left the anchor naming nothing).
+                    .or_else(|| {
+                        self.holder_naming(target, targets, restorations)
+                            .map(|holder| (*target, holder))
+                    })
             }
             // A grace note keeps a pitch (schema major 5, reduction version
             // 4): an undo removing its last, the grace staying, is held. Read
@@ -9006,6 +10398,26 @@ impl<'a> Reducer<'a> {
                 });
                 (stays && grace && !another).then_some((*target, eobj))
             }
+            // A live nested tuplet naming the tuplet as its parent the undo
+            // does not remove (reduction version 5, D87 Q3: before it the
+            // undo removed the parent and left the child naming nothing,
+            // `CrossCuttingRefsResolve`).
+            TypedObjectId::Tuplet(tuplet) => self.tuplet_parents.iter().find_map(|(child, parent)| {
+                let cobj = TypedObjectId::Tuplet(*child);
+                (parent == tuplet
+                    && !targets.contains(&cobj)
+                    && matches!(self.objects.get(&cobj), Some(ObjectState::Live)))
+                .then_some((*target, cobj))
+            }),
+            // A live tempo segment naming the event, or any other holder of a
+            // time anchor outside the cross-cutting structures, read as the
+            // undo leaves it (reduction version 5, D86 Q2 and D87 Q1: before
+            // it the undo removed the event and left the anchor naming
+            // nothing, `CrossCuttingRefsResolve`).
+            TypedObjectId::Event(_) => self
+                .tempo_segment_naming(target, targets, restorations)
+                .or_else(|| self.holder_naming(target, targets, restorations))
+                .map(|holder| (*target, holder)),
             _ => None,
         }
     }
@@ -9192,10 +10604,17 @@ impl<'a> Reducer<'a> {
                     // spanner's staff) is superseded by its tombstoning:
                     // restoring it would reinstate a dangling reference
                     // (`CrossCuttingRefsResolve`; reduction version 3, before
-                    // which it was restored).
-                    let deleted = value
-                        .as_ref()
-                        .and_then(|value| self.tombstoned_since(cross_cutting_referents(value)));
+                    // which it was restored). One anchored by an offset its
+                    // target's model no longer admits is superseded by the
+                    // migration that gave it that model, as the seven
+                    // restorations of reduction version 3 are: restoring it
+                    // would break `AnchorOffsetModel` (reduction version 5,
+                    // before which it was restored; D80 Q17 a musical offset
+                    // out of musical time, X5b.9 any offset, at any anchor).
+                    let deleted = value.as_ref().and_then(|value| {
+                        self.tombstoned_since(cross_cutting_referents(value))
+                            .or_else(|| self.migrated_against(region_anchors(value)))
+                    });
                     match deleted {
                         Some(by) => superseded.push(by),
                         None => {
@@ -9269,6 +10688,13 @@ impl<'a> Reducer<'a> {
                                 value.iter().flat_map(|grid| &grid.meter_sequence),
                             ))
                         })
+                        .or_else(|| {
+                            // And its anchors answer to their targets' time
+                            // models (X5b.9).
+                            self.migrated_against(value.iter().flat_map(|grid| {
+                                grid.meter_sequence.iter().map(|change| &change.anchor)
+                            }))
+                        })
                     {
                         superseded.push(by);
                         continue;
@@ -9298,6 +10724,10 @@ impl<'a> Reducer<'a> {
                         .as_ref()
                         .and_then(|_| self.out_of_musical_time(*region))
                         .or_else(|| self.tombstoned_since(meter_referents(value.as_slice())))
+                        .or_else(|| {
+                            // As a grid's (X5b.9).
+                            self.migrated_against(value.iter().map(|change| &change.anchor))
+                        })
                     {
                         superseded.push(by);
                         continue;
@@ -9338,12 +10768,18 @@ impl<'a> Reducer<'a> {
                                 _ => None,
                             })
                     });
-                    // And its anchors name their targets.
+                    // And its anchors name their targets, by offsets their
+                    // time models admit (X5b.9).
                     let stranded = stranded.or_else(|| {
                         self.tombstoned_since(value.iter().flat_map(|segment| {
                             anchor_object_refs(
                                 std::iter::once(&segment.start).chain(segment.end.as_ref()),
                             )
+                        }))
+                    });
+                    let stranded = stranded.or_else(|| {
+                        self.migrated_against(value.iter().flat_map(|segment| {
+                            std::iter::once(&segment.start).chain(segment.end.as_ref())
                         }))
                     });
                     if let Some(by) = stranded {
@@ -9456,7 +10892,7 @@ impl<'a> Reducer<'a> {
                 }
             }
         }
-        for ((region, position), chain) in &self.break_chain {
+        for ((region, key), chain) in &self.break_chain {
             if !slot_live(TypedObjectId::Region(*region)) {
                 continue;
             }
@@ -9479,6 +10915,15 @@ impl<'a> Reducer<'a> {
                                     .filter(|(_, present)| *present)
                                     .into_iter()
                                     .flat_map(|(anchor, _)| anchor_object_refs([anchor])),
+                            )
+                        })
+                        .or_else(|| {
+                            // A present break's anchor answers to its
+                            // target's time model (X5b.9).
+                            self.migrated_against(
+                                anchor
+                                    .filter(|(_, present)| *present)
+                                    .map(|(anchor, _)| anchor),
                             )
                         })
                     {
@@ -9487,13 +10932,13 @@ impl<'a> Reducer<'a> {
                     }
                     restorations.push(ValueRestoration::SystemBreak {
                         region: *region,
-                        position: position.clone(),
+                        anchor: key.clone(),
                         predecessor,
                     })
                 }
             }
         }
-        for ((region, position), chain) in &self.page_break_chain {
+        for ((region, key), chain) in &self.page_break_chain {
             if !slot_live(TypedObjectId::Region(*region)) {
                 continue;
             }
@@ -9518,13 +10963,21 @@ impl<'a> Reducer<'a> {
                                     .flat_map(|(anchor, _)| anchor_object_refs([anchor])),
                             )
                         })
+                        .or_else(|| {
+                            // As a system break's (X5b.9).
+                            self.migrated_against(
+                                anchor
+                                    .filter(|(_, present)| *present)
+                                    .map(|(anchor, _)| anchor),
+                            )
+                        })
                     {
                         superseded.push(by);
                         continue;
                     }
                     restorations.push(ValueRestoration::PageBreak {
                         region: *region,
-                        position: position.clone(),
+                        anchor: key.clone(),
                         predecessor,
                     })
                 }
@@ -9823,14 +11276,14 @@ impl<'a> Reducer<'a> {
                 }
                 ValueRestoration::SystemBreak {
                     region,
-                    position,
+                    anchor,
                     predecessor,
-                } => self.restore_break(env, region, position, predecessor, false),
+                } => self.restore_break(env, region, anchor, predecessor, false),
                 ValueRestoration::PageBreak {
                     region,
-                    position,
+                    anchor,
                     predecessor,
-                } => self.restore_break(env, region, position, predecessor, true),
+                } => self.restore_break(env, region, anchor, predecessor, true),
             }
         }
     }
@@ -9843,11 +11296,11 @@ impl<'a> Reducer<'a> {
         &mut self,
         env: &OperationEnvelope,
         region: RegionId,
-        position: MusicalPosition,
+        slot: BreakAnchor,
         predecessor: Option<Predecessor<(TimeAnchor, bool)>>,
         page: bool,
     ) {
-        let key = (region, position.clone());
+        let key = (region, slot.clone());
         match predecessor {
             Some(Predecessor::Write((anchor, present))) => {
                 if page {
@@ -9887,7 +11340,7 @@ impl<'a> Reducer<'a> {
                 } else {
                     self.breaks.remove(&key);
                 }
-                self.graph_clear_break(region, &position, page);
+                self.graph_clear_break(region, slot.anchor(), page);
             }
         }
     }
@@ -9914,7 +11367,7 @@ impl<'a> Reducer<'a> {
         }
     }
 
-    fn graph_clear_break(&mut self, region: RegionId, position: &MusicalPosition, page: bool) {
+    fn graph_clear_break(&mut self, region: RegionId, anchor: &TimeAnchor, page: bool) {
         let Some(score) = self.graph.as_mut() else {
             return;
         };
@@ -9925,7 +11378,7 @@ impl<'a> Reducer<'a> {
                 } else {
                     &mut content.user_system_breaks
                 };
-                list.retain(|existing| resolved_anchor_position(existing) != *position);
+                list.retain(|existing| existing != anchor);
             }
         }
     }
@@ -11247,6 +12700,8 @@ impl<'a> Reducer<'a> {
                 // cascades, as `CascadeDeleteTuplets` would have.
                 TypedObjectId::Tuplet(_) => {
                     self.cascade_structure(env, sid, repairs);
+                    // Its children go with it (D87 Q3).
+                    self.cascade_tuplet_children(env, repairs);
                 }
                 // The graph-only referent kinds — cue events, comments,
                 // analytical annotations, graphic gestures — and markers are
@@ -11651,6 +13106,38 @@ impl<'a> Reducer<'a> {
         self.instance_voices
             .iter()
             .find_map(|(instance, voices)| voices.contains(&voice).then_some(*instance))
+    }
+
+    /// Whether any of `meters` names a time signature that is not live.
+    fn names_undeclared_signature<'m>(
+        &self,
+        meters: impl IntoIterator<Item = &'m MeterChange>,
+    ) -> bool {
+        meters.into_iter().any(|meter| {
+            !matches!(
+                self.objects
+                    .get(&TypedObjectId::TimeSignature(meter.time_signature)),
+                Some(ObjectState::Live)
+            )
+        })
+    }
+
+    /// A live measure of `instance` that `leaving` does not take with it,
+    /// from the measure values both modes keep.
+    fn instance_live_measure(
+        &self,
+        instance: StaffInstanceId,
+        leaving: &[TypedObjectId],
+    ) -> Option<TypedObjectId> {
+        self.measure_values
+            .iter()
+            .map(|(id, (holder, _))| (TypedObjectId::Measure(*id), holder))
+            .find(|(measure, holder)| {
+                **holder == instance
+                    && !leaving.contains(measure)
+                    && matches!(self.objects.get(measure), Some(ObjectState::Live))
+            })
+            .map(|(measure, _)| measure)
     }
 
     /// The region a staff instance lives in, from the base-free ledger index.
@@ -12610,11 +14097,16 @@ impl<'a> Reducer<'a> {
             repeat_values: self.repeat_values.clone(),
             instance_grid: self.instance_grid.clone(),
             structures: self.structures.clone(),
+            tuplet_parents: self.tuplet_parents.clone(),
             region_instances: self.region_instances.clone(),
             instance_voices: self.instance_voices.clone(),
             instance_staff: self.instance_staff.clone(),
             staff_based_regions: self.staff_based_regions.clone(),
             region_disciplines: self.region_disciplines.clone(),
+            region_extents: self.region_extents.clone(),
+            region_model_meters: self.region_model_meters.clone(),
+            instance_change_anchors: self.instance_change_anchors.clone(),
+            forward_names: self.forward_names.clone(),
             migrated_regions: self.migrated_regions.clone(),
             region_migrator: self.region_migrator.clone(),
             descriptors: self.descriptors.clone(),
@@ -12663,11 +14155,16 @@ impl<'a> Reducer<'a> {
         self.repeat_values = s.repeat_values;
         self.instance_grid = s.instance_grid;
         self.structures = s.structures;
+        self.tuplet_parents = s.tuplet_parents;
         self.region_instances = s.region_instances;
         self.instance_voices = s.instance_voices;
         self.instance_staff = s.instance_staff;
         self.staff_based_regions = s.staff_based_regions;
         self.region_disciplines = s.region_disciplines;
+        self.region_extents = s.region_extents;
+        self.region_model_meters = s.region_model_meters;
+        self.instance_change_anchors = s.instance_change_anchors;
+        self.forward_names = s.forward_names;
         self.migrated_regions = s.migrated_regions;
         self.region_migrator = s.region_migrator;
         self.descriptors = s.descriptors;
@@ -16267,6 +17764,14 @@ mod tests {
         // came to mint the pitches it carries that nothing minted: this
         // stream's modifies carry such pitches, now live (the mint disabled,
         // the previous digest returns).
+        //
+        // Re-pinned at X5b.4, reduction version 5: the break sections key
+        // each break by its anchor and write the anchor's canonical bytes
+        // where they wrote a resolved position, so this stream's breaks,
+        // anchored to regions by offsets and to events and measures, are
+        // written apart and in another form. The new refusal of a break
+        // naming what its region does not hold moves nothing here: with it
+        // disabled the digest is the same. No value enters the base.
         let mut rng = epiphany_determinism::fuzz::SplitMix64::new(0xBA5E);
         let envelopes = crate::fuzz::gen_envelope_set(&mut rng, 200);
         let mut set = OperationSet::new();
@@ -16276,7 +17781,7 @@ mod tests {
         let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
             hex,
-            "ad881d02f3aeaecaedebd6277a3bc0b1af80373c8659962f3b0412da4fa47841"
+            "5f0f5ec77de787a497f0768373bec890509bef3de6a4c19510e6ddddc253eb74"
         );
     }
 
@@ -23230,10 +24735,20 @@ mod tests {
             c,
         );
         envs.push(env);
+        // The second region spans other time than the first, as it must to
+        // hold the same staff (reduction version 5 refuses the fill of a
+        // region over the first's span, `RegionsOverlap`).
+        let mut second = crate::valuegen::region(region2);
+        second.time_extent = TimeExtent {
+            start: TimeAnchor::WallClock {
+                time: epiphany_core::WallClockTime(2_000_000_000),
+            },
+            end: TimeAnchor::WallClock {
+                time: epiphany_core::WallClockTime(2_000_001_000),
+            },
+        };
         let (env, c) = next(
-            OperationKind::CreateRegion(CreateRegionOp {
-                region: crate::valuegen::region(region2),
-            }),
+            OperationKind::CreateRegion(CreateRegionOp { region: second }),
             c,
         );
         envs.push(env);
@@ -25212,6 +26727,60 @@ mod tests {
             }
         }
 
+        /// Opens `tx` minting a passage of its own: a second region, over
+        /// other time than the fixture's, an instance of the fixture's staff
+        /// in it, and a measure of that instance; returns the region and the
+        /// measure. An undo of `tx` tears the passage down whole.
+        fn open_tx_minting_a_passage(f: &mut G3bUndoFixture) -> (RegionId, MeasureId) {
+            let region2 = RegionId::new(ReplicaId(1), 6);
+            let instance2 = StaffInstanceId::new(ReplicaId(1), 7);
+            let measure2 = MeasureId::new(ReplicaId(1), 101);
+            let staff = StaffId::new(ReplicaId(1), 3);
+            let tx = f.tx;
+            f.push_tx(
+                "DeclareTransaction",
+                OperationKind::DeclareTransaction(crate::payload::TransactionDescriptor {
+                    id: tx,
+                    label: String::from("g3b undo surface, a passage"),
+                    category: None,
+                }),
+            );
+            let mut region = crate::valuegen::region(region2);
+            region.time_extent = TimeExtent {
+                start: TimeAnchor::WallClock {
+                    time: epiphany_core::WallClockTime(2_000_000_000),
+                },
+                end: TimeAnchor::WallClock {
+                    time: epiphany_core::WallClockTime(2_000_001_000),
+                },
+            };
+            f.push_tx(
+                "CreateRegion 2 (same tx)",
+                OperationKind::CreateRegion(CreateRegionOp { region }),
+            );
+            f.push_tx(
+                "CreateStaffInstance 2 (same tx)",
+                OperationKind::CreateStaffInstance(CreateStaffInstanceOp {
+                    region: region2,
+                    instance: crate::valuegen::staff_instance(instance2, staff),
+                }),
+            );
+            f.push_tx(
+                "CreateMeasure 2 (same tx)",
+                OperationKind::CreateMeasure(CreateMeasureOp {
+                    instance: instance2,
+                    measure: Measure {
+                        id: measure2,
+                        start: g3b_region_anchor(region2, 0),
+                        time_signature: None,
+                        explicit_number: None,
+                        number_visibility: Default::default(),
+                    },
+                }),
+            );
+            (region2, measure2)
+        }
+
         fn assert_blocks(out: &GraphMaterialization, env: &OperationEnvelope, why: &str) {
             assert!(
                 matches!(
@@ -25419,21 +26988,17 @@ mod tests {
         }
 
         /// (M56) A live user system-break whose anchor names the measure
-        /// under test blocks its undo (`break_chain`).
+        /// under test blocks its undo (`break_chain`). The break stands in the
+        /// measure's own region, where reduction version 5 admits one naming
+        /// it.
         #[test]
         fn m56_system_break_surface_blocks_measure_undo() {
             let mut f = g3b_undo_fixture();
-            let region2 = RegionId::new(ReplicaId(1), 6);
+            let region = f.region;
             f.push(
-                "CreateRegion 2 (empty)",
-                OperationKind::CreateRegion(CreateRegionOp {
-                    region: crate::valuegen::region(region2),
-                }),
-            );
-            f.push(
-                "SetUserSystemBreak region2 -> measure",
+                "SetUserSystemBreak region -> measure",
                 OperationKind::SetUserSystemBreak(crate::payload::SetUserSystemBreakOp {
-                    region: region2,
+                    region,
                     anchor: measure_anchor(f.measure, MeasurePosition::Start),
                     present: true,
                 }),
@@ -25443,22 +27008,18 @@ mod tests {
             assert_blocks(&out, &undo, "a live system break anchored to the measure");
         }
 
-        /// (M57) A live user page-break whose anchor names the measure under
-        /// test blocks its undo (`page_break_chain`).
+        /// (M57) A live user page-break whose anchor names the measure
+        /// under test blocks its undo (`page_break_chain`). The break stands in the
+        /// measure's own region, where reduction version 5 admits one naming
+        /// it.
         #[test]
         fn m57_page_break_surface_blocks_measure_undo() {
             let mut f = g3b_undo_fixture();
-            let region2 = RegionId::new(ReplicaId(1), 6);
+            let region = f.region;
             f.push(
-                "CreateRegion 2 (empty)",
-                OperationKind::CreateRegion(CreateRegionOp {
-                    region: crate::valuegen::region(region2),
-                }),
-            );
-            f.push(
-                "SetUserPageBreak region2 -> measure",
+                "SetUserPageBreak region -> measure",
                 OperationKind::SetUserPageBreak(SetUserPageBreakOp {
-                    region: region2,
+                    region,
                     anchor: measure_anchor(f.measure, MeasurePosition::Start),
                     present: true,
                 }),
@@ -25698,22 +27259,19 @@ mod tests {
         }
 
         /// (M61, row 5/7: system break) The owning region is minted in the
-        /// same tx.
+        /// same tx, with the instance and the measure the break names: a
+        /// break stands in its measure's own region (reduction version 5
+        /// refuses one naming another region's measure), and the undo tears
+        /// that region down with the measure.
         #[test]
         fn m61_same_transaction_teardown_exempts_system_break() {
-            let mut f = g3b_undo_fixture();
-            let region2 = RegionId::new(ReplicaId(1), 6);
-            f.push_tx(
-                "CreateRegion 2 (same tx)",
-                OperationKind::CreateRegion(CreateRegionOp {
-                    region: crate::valuegen::region(region2),
-                }),
-            );
+            let mut f = g3b_undo_fixture_prereqs_only();
+            let (region2, measure2) = open_tx_minting_a_passage(&mut f);
             f.push(
-                "SetUserSystemBreak region2 -> measure",
+                "SetUserSystemBreak region2 -> its measure",
                 OperationKind::SetUserSystemBreak(crate::payload::SetUserSystemBreakOp {
                     region: region2,
-                    anchor: measure_anchor(f.measure, MeasurePosition::Start),
+                    anchor: measure_anchor(measure2, MeasurePosition::Start),
                     present: true,
                 }),
             );
@@ -25723,22 +27281,19 @@ mod tests {
         }
 
         /// (M61, row 6/7: page break) The owning region is minted in the
-        /// same tx.
+        /// same tx, with the instance and the measure the break names: a
+        /// break stands in its measure's own region (reduction version 5
+        /// refuses one naming another region's measure), and the undo tears
+        /// that region down with the measure.
         #[test]
         fn m61_same_transaction_teardown_exempts_page_break() {
-            let mut f = g3b_undo_fixture();
-            let region2 = RegionId::new(ReplicaId(1), 6);
-            f.push_tx(
-                "CreateRegion 2 (same tx)",
-                OperationKind::CreateRegion(CreateRegionOp {
-                    region: crate::valuegen::region(region2),
-                }),
-            );
+            let mut f = g3b_undo_fixture_prereqs_only();
+            let (region2, measure2) = open_tx_minting_a_passage(&mut f);
             f.push(
-                "SetUserPageBreak region2 -> measure",
+                "SetUserPageBreak region2 -> its measure",
                 OperationKind::SetUserPageBreak(SetUserPageBreakOp {
                     region: region2,
-                    anchor: measure_anchor(f.measure, MeasurePosition::Start),
+                    anchor: measure_anchor(measure2, MeasurePosition::Start),
                     present: true,
                 }),
             );
@@ -26010,9 +27565,14 @@ mod tests {
             );
         }
 
-        /// (M62, row 5/7: system break) Delete the owning region.
+        /// (M62, row 5/7: system break) Before reduction version 5 a break
+        /// in a second region could name the measure, and deleting that
+        /// region left nothing to block. Version 5 refuses the break itself
+        /// (`TargetMissing`): one naming a measure stands only in the
+        /// measure's own region, which cannot be deleted while it holds the
+        /// measure. Nothing stands, and the undo applies.
         #[test]
-        fn m62_tombstoned_system_break_owner_does_not_block() {
+        fn m62_system_break_naming_another_regions_measure_is_refused() {
             let mut f = g3b_undo_fixture();
             let region2 = RegionId::new(ReplicaId(1), 6);
             f.push(
@@ -26021,30 +27581,35 @@ mod tests {
                     region: crate::valuegen::region(region2),
                 }),
             );
-            f.push(
-                "SetUserSystemBreak region2 -> measure",
+            let set = f.push(
+                "SetUserSystemBreak region2 -> measure (refused)",
                 OperationKind::SetUserSystemBreak(crate::payload::SetUserSystemBreakOp {
                     region: region2,
                     anchor: measure_anchor(f.measure, MeasurePosition::Start),
                     present: true,
                 }),
             );
-            f.push(
-                "DeleteRegion 2 (empty, so deletable)",
-                OperationKind::DeleteRegion(crate::payload::DeleteRegionOp { region: region2 }),
-            );
             let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
-            let out = f.run_allowing_tail_conflict(1);
-            assert_undo_applied(
-                &out,
-                &undo,
-                "a tombstoned owning region must not strand-block via system break",
+            let out = f.run_allowing_tail_conflict(2);
+            assert_eq!(
+                g3b_effect_of(&out.state, set.id),
+                Some(OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::TargetMissing,
+                    },
+                })
             );
+            assert_undo_applied(&out, &undo, "a refused break blocks nothing");
         }
 
-        /// (M62, row 6/7: page break) Delete the owning region.
+        /// (M62, row 6/7: page break) Before reduction version 5 a break
+        /// in a second region could name the measure, and deleting that
+        /// region left nothing to block. Version 5 refuses the break itself
+        /// (`TargetMissing`): one naming a measure stands only in the
+        /// measure's own region, which cannot be deleted while it holds the
+        /// measure. Nothing stands, and the undo applies.
         #[test]
-        fn m62_tombstoned_page_break_owner_does_not_block() {
+        fn m62_page_break_naming_another_regions_measure_is_refused() {
             let mut f = g3b_undo_fixture();
             let region2 = RegionId::new(ReplicaId(1), 6);
             f.push(
@@ -26053,25 +27618,25 @@ mod tests {
                     region: crate::valuegen::region(region2),
                 }),
             );
-            f.push(
-                "SetUserPageBreak region2 -> measure",
+            let set = f.push(
+                "SetUserPageBreak region2 -> measure (refused)",
                 OperationKind::SetUserPageBreak(SetUserPageBreakOp {
                     region: region2,
                     anchor: measure_anchor(f.measure, MeasurePosition::Start),
                     present: true,
                 }),
             );
-            f.push(
-                "DeleteRegion 2 (empty, so deletable)",
-                OperationKind::DeleteRegion(crate::payload::DeleteRegionOp { region: region2 }),
-            );
             let undo = f.push_undo("undo target tx", UndoPolicy::StrictInverse);
-            let out = f.run_allowing_tail_conflict(1);
-            assert_undo_applied(
-                &out,
-                &undo,
-                "a tombstoned owning region must not strand-block via page break",
+            let out = f.run_allowing_tail_conflict(2);
+            assert_eq!(
+                g3b_effect_of(&out.state, set.id),
+                Some(OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::TargetMissing,
+                    },
+                })
             );
+            assert_undo_applied(&out, &undo, "a refused break blocks nothing");
         }
 
         /// (M62, row 7/7: region-scoped tempo) Delete the owning region.
@@ -26198,33 +27763,27 @@ mod tests {
             );
         }
 
-        /// (M60, 3/6: system break) A benign break pre-exists at the SAME
-        /// key; a same-tx `SetUserSystemBreak` overwrites it to reference the
+        /// (M60, 3/6: system break) A benign break pre-exists in the
+        /// measure's region at its start; a same-tx `SetUserSystemBreak` overwrites it to reference the
         /// fresh measure.
         #[test]
         fn m60_added_direction_system_break_does_not_block() {
             let mut f = g3b_undo_fixture_prereqs_only();
-            let region2 = RegionId::new(ReplicaId(1), 6);
+            let home = f.region;
             f.push(
-                "CreateRegion 2 (empty)",
-                OperationKind::CreateRegion(CreateRegionOp {
-                    region: crate::valuegen::region(region2),
-                }),
-            );
-            f.push(
-                "SetUserSystemBreak region2 (benign, pre-tx)",
+                "SetUserSystemBreak home (benign, pre-tx)",
                 OperationKind::SetUserSystemBreak(crate::payload::SetUserSystemBreakOp {
-                    region: region2,
-                    anchor: g3b_region_anchor(region2, 0),
+                    region: home,
+                    anchor: g3b_region_anchor(home, 0),
                     present: true,
                 }),
             );
             let measure = f.measure;
             f.open_target_tx();
             f.push_tx(
-                "SetUserSystemBreak region2 -> measure (same tx, adds the reference)",
+                "SetUserSystemBreak home -> measure (same tx, adds the reference)",
                 OperationKind::SetUserSystemBreak(crate::payload::SetUserSystemBreakOp {
-                    region: region2,
+                    region: home,
                     anchor: measure_anchor(measure, MeasurePosition::Start),
                     present: true,
                 }),
@@ -26242,27 +27801,21 @@ mod tests {
         #[test]
         fn m60_added_direction_page_break_does_not_block() {
             let mut f = g3b_undo_fixture_prereqs_only();
-            let region2 = RegionId::new(ReplicaId(1), 6);
+            let home = f.region;
             f.push(
-                "CreateRegion 2 (empty)",
-                OperationKind::CreateRegion(CreateRegionOp {
-                    region: crate::valuegen::region(region2),
-                }),
-            );
-            f.push(
-                "SetUserPageBreak region2 (benign, pre-tx)",
+                "SetUserPageBreak home (benign, pre-tx)",
                 OperationKind::SetUserPageBreak(SetUserPageBreakOp {
-                    region: region2,
-                    anchor: g3b_region_anchor(region2, 0),
+                    region: home,
+                    anchor: g3b_region_anchor(home, 0),
                     present: true,
                 }),
             );
             let measure = f.measure;
             f.open_target_tx();
             f.push_tx(
-                "SetUserPageBreak region2 -> measure (same tx, adds the reference)",
+                "SetUserPageBreak home -> measure (same tx, adds the reference)",
                 OperationKind::SetUserPageBreak(SetUserPageBreakOp {
-                    region: region2,
+                    region: home,
                     anchor: measure_anchor(measure, MeasurePosition::Start),
                     present: true,
                 }),
@@ -26481,27 +28034,21 @@ mod tests {
             );
         }
 
-        /// (M59, 3/6: system break) The base graph's region2 already carries
+        /// (M59, 3/6: system break) The base graph's region, the measure's own, already carries
         /// a user system-break anchored to the fixture's own (not-yet-
         /// minted) measure.
         #[test]
         fn m59_reinstated_direction_system_break_blocks() {
-            let mut prereqs = g3b_undo_fixture_prereqs_only();
-            let region2 = RegionId::new(ReplicaId(1), 6);
-            prereqs.push(
-                "CreateRegion 2 (empty)",
-                OperationKind::CreateRegion(CreateRegionOp {
-                    region: crate::valuegen::region(region2),
-                }),
-            );
+            let prereqs = g3b_undo_fixture_prereqs_only();
+            let home = prereqs.region;
             let mut base = prereqs.run_allowing_tail_conflict(0).score;
             {
                 let region = base
                     .canvas
                     .regions
                     .iter_mut()
-                    .find(|r| r.id == region2)
-                    .expect("region2 present");
+                    .find(|r| r.id == home)
+                    .expect("the fixture's region present");
                 let content = region.content.staff_based_mut().expect("staff-based");
                 content
                     .user_system_breaks
@@ -26511,9 +28058,9 @@ mod tests {
             let mut f = g3b_fixture_onto(&prereqs);
             f.open_target_tx();
             f.push_tx(
-                "SetUserSystemBreak region2 (same tx, removes the reference)",
+                "SetUserSystemBreak home (same tx, removes the reference)",
                 OperationKind::SetUserSystemBreak(crate::payload::SetUserSystemBreakOp {
-                    region: region2,
+                    region: home,
                     anchor: measure_anchor(prereqs.measure, MeasurePosition::Start),
                     present: false,
                 }),
@@ -26531,22 +28078,16 @@ mod tests {
         /// `SetUserPageBreak`.
         #[test]
         fn m59_reinstated_direction_page_break_blocks() {
-            let mut prereqs = g3b_undo_fixture_prereqs_only();
-            let region2 = RegionId::new(ReplicaId(1), 6);
-            prereqs.push(
-                "CreateRegion 2 (empty)",
-                OperationKind::CreateRegion(CreateRegionOp {
-                    region: crate::valuegen::region(region2),
-                }),
-            );
+            let prereqs = g3b_undo_fixture_prereqs_only();
+            let home = prereqs.region;
             let mut base = prereqs.run_allowing_tail_conflict(0).score;
             {
                 let region = base
                     .canvas
                     .regions
                     .iter_mut()
-                    .find(|r| r.id == region2)
-                    .expect("region2 present");
+                    .find(|r| r.id == home)
+                    .expect("the fixture's region present");
                 let content = region.content.staff_based_mut().expect("staff-based");
                 content
                     .user_page_breaks
@@ -26556,9 +28097,9 @@ mod tests {
             let mut f = g3b_fixture_onto(&prereqs);
             f.open_target_tx();
             f.push_tx(
-                "SetUserPageBreak region2 (same tx, removes the reference)",
+                "SetUserPageBreak home (same tx, removes the reference)",
                 OperationKind::SetUserPageBreak(SetUserPageBreakOp {
-                    region: region2,
+                    region: home,
                     anchor: measure_anchor(prereqs.measure, MeasurePosition::Start),
                     present: false,
                 }),

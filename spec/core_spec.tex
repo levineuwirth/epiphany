@@ -2102,9 +2102,10 @@ The chosen anchor type determines what edits the anchor survives:
 \begin{requirement}
   \label{req:time:orphaned-anchor-handling}
   When an anchored object is deleted, anchors targeting it \MUST{} be
-  either re-anchored to a surviving object or marked as orphaned. The
-  semantic operations chapter (Chapter~\ref{ch:semops}) specifies
-  re-anchoring rules per operation.
+  either re-anchored to a surviving object or marked as orphaned, or, for
+  a holder the re-anchoring rule table holds, the deletion refused while
+  the holder names the object. The semantic operations chapter
+  (Chapter~\ref{ch:semops}) specifies re-anchoring rules per operation.
 \end{requirement}
 
 \section{Time Signatures and Meter}
@@ -2217,9 +2218,8 @@ pub struct TempoSegment {
     pub start_tempo: Tempo,
 
     /// Tempo at the end of this segment.
-    /// Required if shape != Constant; ignored (and SHOULD be None)
-    /// if shape == Constant. A Constant segment holds start_tempo
-    /// throughout.
+    /// Required if shape != Constant; MUST be None if shape ==
+    /// Constant. A Constant segment holds start_tempo throughout.
     pub end_tempo: Option<Tempo>,
 
     /// Shape of the tempo change over this segment.
@@ -2227,8 +2227,7 @@ pub struct TempoSegment {
 }
 
 pub enum TempoShape {
-    /// Constant tempo throughout: end_tempo MUST be None or equal to
-    /// start_tempo.
+    /// Constant tempo throughout: end_tempo MUST be absent.
     Constant,
 
     /// Linear interpolation from start_tempo to end_tempo.
@@ -2259,7 +2258,8 @@ pub struct Tempo {
   \label{req:time:tempo-segment-order}
   The tempo map's segments \MUST{} be non-overlapping when resolved
   to absolute musical positions, and \MUST{} appear in
-  monotonically-increasing start order. Two adjacent segments where
+  monotonically-increasing start order; a segment's resolved end, where
+  it has one, \MUSTNOT{} precede its own resolved start. Two adjacent segments where
   the earlier segment's resolved end equals the later segment's
   resolved start form a continuous tempo curve; the later segment's
   \texttt{start\_tempo} \SHOULD{} equal the earlier segment's resolved
@@ -2275,18 +2275,38 @@ pub struct Tempo {
   \texttt{None}), the tempo \MUST{} be the most recent applicable
   segment's terminating tempo, or the next applicable segment's
   \texttt{start\_tempo} if no earlier segment exists.
+
+  Reduction keys a segment by its map and its start's resolved
+  position, coarser than the musical position: a region anchor at a
+  musical offset resolves to that offset, and every other start to its
+  region's origin, so segments starting at a note, at a measure and at a
+  region's edge share a key though they stand apart. Reduction keeps at
+  most one segment per key in a map: a \texttt{SetTempoSegment} replaces
+  the segment at its key, and a region created carrying a map with two
+  segments on one key is refused \texttt{TempoMapMalformed} (Operation
+  Catalog, \sectionsc{Structural Containers}; reduction algorithm
+  version~\texttt{5}, before which the create applied and reduction held
+  the first segment at the key alone). So is a region created carrying a
+  map no sequence of \texttt{SetTempoSegment} writes could leave: out of
+  order, overlapping, a segment ending before its start, or a non-constant
+  one without its end data (reduction algorithm version~\texttt{5}, before
+  which the create applied).
 \end{requirement}
 
 \begin{requirement}
   \label{req:time:tempo-segment-shape}
   A tempo segment's \texttt{shape} and its \texttt{end\_tempo} \MUST{} be
-  compatible. If \texttt{shape} is \texttt{Constant} and \texttt{end\_tempo}
-  is present, it \MUST{} equal \texttt{start\_tempo}. If \texttt{shape} is
-  \texttt{Linear}, \texttt{Exponential} or \texttt{Curve}, \texttt{end\_tempo}
-  \MUST{} be present.
+  compatible. If \texttt{shape} is \texttt{Constant}, \texttt{end\_tempo}
+  \MUST{} be absent. If \texttt{shape} is \texttt{Linear},
+  \texttt{Exponential} or \texttt{Curve}, \texttt{end\_tempo} \MUST{} be
+  present.
 
-  This requirement states the compatibility that is enforced. It does not
-  determine whether a constant segment records an \texttt{end\_tempo} at all.
+  A constant segment that recorded an \texttt{end\_tempo} equal to its
+  \texttt{start\_tempo} would be a second spelling of one tempo, with a hash of
+  its own. A decoder rejects one rather than normalizing it (Binary Format
+  companion, \sectionsc{Graph Value Layouts}), and reduction refuses a value
+  built in memory (reduction algorithm version~\texttt{5}; until then an equal
+  end tempo was admitted).
 \end{requirement}
 
 \subsection{Conversion}
@@ -5432,6 +5452,14 @@ pub struct StaffExtent {
   two regions claim the same content, which is ambiguous.
 \end{rationale}
 
+Under concurrent reduction the constraint is kept where a region's staves
+grow, which is only a staff instance's creation: a \texttt{CreateStaffInstance}
+whose region overlaps in time another live region holding a live instance of
+the same staff is refused, the earlier in canonical order standing, and an
+extent the reduction cannot place on a common clock counts as overlapping
+(Operation Catalog, \sectionsc{Structural Containers}; reduction algorithm
+version~\texttt{5}).
+
 \subsection{Staff-Based Content}
 
 A staff-based region carries one or more staff \emph{instances}, each
@@ -6295,6 +6323,10 @@ pub enum MarkerKind {
     Rehearsal(Text),
     Segno,
     Coda,
+    /// Expression text: the engraver styles it as expression (italic,
+    /// below the staff), where staff text stands upright above.
+    /// Appended at schema-minor epoch 16 (X5b).
+    ExpressionText(Text),
 }
 
 pub enum Dynamic {
@@ -6828,10 +6860,15 @@ The score graph maintains a set of structural invariants. Implementations
         \item \texttt{StaffGroup.members} --- declared staff.
         \item \texttt{PartDefinition.staves} --- declared staff.
         \item \texttt{ViewDefinition.active\_layers} --- declared analysis layer.
-        \item \texttt{MetricTimeModel.meters} --- declared time signature.
-        \item \texttt{StaffBasedContent.default\_metric\_grid} --- declared time signature.
+        \item \texttt{MetricTimeModel.meters} --- anchor target, declared time signature.
+        \item \texttt{StaffBasedContent.default\_metric\_grid} --- anchor target, declared time signature.
         \item \texttt{Measure.time\_signature} --- declared time signature.
-        \item \texttt{StaffInstance.local\_metric\_grid} --- declared time signature.
+        \item \texttt{Measure.start} --- anchor target.
+        \item \texttt{StaffInstance.local\_metric\_grid} --- anchor target, declared time signature.
+        \item \texttt{StaffInstance.clef\_sequence} --- anchor target.
+        \item \texttt{StaffInstance.key\_sequence} --- anchor target.
+        \item \texttt{Region.time\_extent} --- anchor target.
+        \item \texttt{SpellingAttachment.scope} --- anchor target.
         \item \texttt{NotatedComponent.tuplet} --- extant tuplet.
         \item \texttt{IndeterminacyHints.alternatives} --- live event.
         \item \texttt{TrajectoryEvent.start} --- live pitch.
@@ -6842,6 +6879,15 @@ The score graph maintains a set of structural invariants. Implementations
         \item \texttt{TempoSegment.end} --- anchor target.
         \item \texttt{Score.voice\_homes} --- declared staff, extant voice.
       \end{itemize}
+      The surface holds every time anchor invariant~9 reads but a user
+      break's: a break whose event a later delete or undo removes stays
+      keyed by its anchor and draws nothing (Operation Catalog,
+      \texttt{SetUserSystemBreak}), a transient dangling state the
+      re-anchoring rules permit. No operation deletes a measure, and an
+      undo that would remove one a present break names is held (Operation
+      Catalog, \texttt{CreateMeasure}). A meter change's anchor and a spelling
+      range's ends are anchor targets beside the time signature a meter change
+      names.
     \item Every identifier in the graph is unique within its kind.
       Identifiers reserved for system-derived objects (notably
       \texttt{VoiceId}s of system-promoted voices) \MUST{} be derived
@@ -8590,6 +8636,14 @@ table is normative.
   or a cascade) cascade-deletes the tuplet &
   --- \\
 
+  Tuplet & Parent tuplet &
+  Hold against an undo; a member's cascade carries the child &
+  an undo that would remove a tuplet a live nested tuplet names as its
+  parent conflicts under \texttt{StrictInverse} and \texttt{Cascade} and
+  keeps it under \texttt{BestEffort}; a cascade that removes a parent
+  cascade-deletes its children, and theirs (reduction algorithm
+  version~\texttt{5}) \\
+
   Spanner & Anchor &
   Re-anchor to the nearest surviving anchor; cascade-delete only
   when no anchor survives &
@@ -8616,6 +8670,30 @@ table is normative.
   Lyric & Event &
   Cascade-delete &
   a syllable belongs to its event (schema major 5) \\
+
+  Tempo segment, meter change, measure start, region extent, clef or key
+  change & Anchor (event, measure or region) &
+  Hold: the referent is not removed while a live holder names it &
+  a delete is refused (\texttt{TargetAnchored} for an event,
+  \texttt{ContainerNotEmpty} for a region); an undo that would remove the
+  referent conflicts under \texttt{StrictInverse} and \texttt{Cascade} and
+  keeps it under \texttt{BestEffort}, the holder read as the undo leaves it.
+  A meter change of a region's own model, its grid or a staff instance's
+  grid; a clef or key change while it is the one its instance's creation
+  carried. A holder the referent owns, or the same undo removes, holds
+  nothing (reduction algorithm version~\texttt{5}) \\
+
+  User break & Anchor event &
+  No action &
+  the break stays keyed by its anchor and draws nothing when its event's
+  delete or an undo removes the event \\
+
+  User break & Anchor measure &
+  Hold against an undo &
+  no operation deletes a measure; an undo that would remove one a present
+  system or page break names conflicts under \texttt{StrictInverse} and
+  \texttt{Cascade} and keeps it under \texttt{BestEffort}, as the
+  Operation Catalog's \texttt{CreateMeasure} undo reads \\
 
   Comment & Anchor &
   Orphan &
@@ -9382,11 +9460,15 @@ pub struct SetUserSystemBreakOp {
 \textbf{Invariant preconditions:}
 \begin{itemize}
   \item The region exists and is staff-based.
-  \item The anchor resolves within the region.
+  \item The anchor resolves within the region: an event or a measure it
+    names is live in that region, and a region edge it names is that
+    region's (reduction algorithm version~\texttt{5}).
 \end{itemize}
 
 \textbf{Effect:} The region's \texttt{user\_system\_breaks} list is
-updated to include or exclude the anchor. Layout caches that depend
+updated to include or exclude the anchor, which is the break's own
+last-writer slot: two breaks at distinct anchors are two breaks, though
+they resolve to one musical position. Layout caches that depend
 on system breaks are invalidated.
 
 \textbf{Postconditions:}
@@ -11214,6 +11296,11 @@ guarantee, and no sequence of commits can promote one into the other.
   \begin{itemize}
     \item \emph{Legacy, no canonical base} --- the bundle \MAY{} be
       opened. Nothing whose validity cannot be established is exposed.
+      A document reader, which decodes the container's operations into a
+      score or a text, refuses it by name all the same: no current writer
+      makes one, so it is outside the supported boundary (Binary Format
+      companion, \sectionsc{The Fixed Header} and
+      \sectionsc{The Chunk-Level Gate}).
     \item \emph{Legacy, canonical base present} --- the bundle
       \MUST{} be refused. A base predating any reduction authority is
       not safe materialized state, and \MUSTNOT{} be served in a
@@ -17362,6 +17449,37 @@ layouts they own versus inherit:
   the wire from schema major~5 (Binary Format companion
   \sectionsc{Schema Major 5}); the reduction algorithm version is
   \texttt{4}, which X4b opened.
+  \\
+  \today & \sectionsc{The Container Epoch} &
+  \textbf{X5b: the supported-layout boundary} (roadmap D4). A document
+  reader refuses a legacy container by name, though the bundle layer still
+  decodes it, and holds every operation block to the boundary the Binary
+  Format companion defines (\texttt{req:binfmt:op-block-boundary}).
+  \sectionsc{Region Overlap and Concurrency} states where concurrent
+  reduction keeps the overlap constraint: a staff instance's creation that
+  would overlap a region holding its staff is refused (reduction algorithm
+  version~\texttt{5}, which X5b opens). \texttt{SetUserSystemBreak}'s
+  preconditions and effect state a break's key: its anchor, naming what its
+  region holds. \texttt{req:time:tempo-segment-shape} settles P13-S8: a
+  constant tempo segment's \texttt{end\_tempo} is absent, and
+  \texttt{TempoShape}'s listing says so. \texttt{MarkerKind} appends
+  \texttt{ExpressionText} (roadmap D79 Q9): expression text, which an import
+  writes for italic words, apart from staff text. Graph invariant~10's
+  surface names every time anchor invariant~9 reads but a user break's:
+  a region's extent, its own model's and its grid's meter changes, a staff
+  instance's grid, measure starts, clef and key changes, and a spelling
+  range's ends. The re-anchoring rule table holds those holders and a tempo
+  segment: the anchored object is not removed while one names it
+  (\texttt{req:time:orphaned-anchor-handling} says so). A tuplet's parent is
+  held against an undo, and a member's cascade carries a tuplet's children.
+  \texttt{req:time:tempo-segment-order} states the key reduction gives a
+  tempo segment, and that a map keeps one segment per key, a region created
+  carrying two refused. The rule table's user-break rows and invariant~10's
+  paragraph say what the catalog does: a break leaves its event's removal
+  alone, and a present break holds its measure against an undo.
+  \texttt{req:time:tempo-segment-order} says a segment's end does not
+  precede its start, and that a region created carrying a map no
+  \texttt{SetTempoSegment} writes could leave is refused.
   \\
   \bottomrule
 \end{longtable}

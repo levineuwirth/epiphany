@@ -777,10 +777,21 @@ pub fn expression_census(part: Node) -> (BTreeMap<String, usize>, BTreeSet<(usiz
                     let dashes = types
                         .iter()
                         .any(|t| name(*t) == "dashes" && t.attribute("type") == Some("start"));
+                    // Expression text is MuseScore's italic words: the first
+                    // `<words>` of the direction carries its style.
+                    let italic = types
+                        .iter()
+                        .find(|t| name(**t) == "words")
+                        .and_then(|t| t.attribute("font-style"))
+                        == Some("italic");
                     if metronome || (sound && words && !dashes) {
                         add("marker tempo");
                     } else if words && !dashes && !metronome {
-                        add("marker text");
+                        add(if italic {
+                            "marker expression text"
+                        } else {
+                            "marker text"
+                        });
                     }
                     for t in &types {
                         let number = t.attribute("number").unwrap_or("1").to_owned();
@@ -3879,6 +3890,12 @@ impl<'d, 'i> Reader<'d, 'i> {
             .map(|k| text(*k))
             .collect();
         let words = (!words.trim().is_empty()).then(|| Text::new(words.trim()));
+        // MuseScore writes its expression text as italic words, and staff text
+        // upright: the run's first `<words>` carries the text's style.
+        let expression = kinds
+            .iter()
+            .find(|k| name(**k) == "words")
+            .is_some_and(|k| k.attribute("font-style") == Some("italic"));
         let metronome = match kinds.iter().find(|k| name(**k) == "metronome") {
             Some(node) => match metronome(*node) {
                 Some(m) => Some(m),
@@ -4047,7 +4064,11 @@ impl<'d, 'i> Reader<'d, 'i> {
         if let (Some(words), false) = (words, words_taken) {
             part.markers.push(SourceMarker {
                 at,
-                kind: MarkerKind::Text(words),
+                kind: if expression {
+                    MarkerKind::ExpressionText(words)
+                } else {
+                    MarkerKind::Text(words)
+                },
             });
         }
         for item in elements(direction) {

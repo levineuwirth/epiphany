@@ -542,7 +542,8 @@ impl TextValue for SpannerKind {
     }
 }
 
-/// The `MarkerKind` variants, in `fn enc` tag order 0..=8 (schema major 5).
+/// The `MarkerKind` variants, in `fn enc` tag order 0..=9 (schema major 5;
+/// 9, `ExpressionText`, appended at epoch 16).
 impl TextValue for MarkerKind {
     fn project(&self) -> Sexp {
         match self {
@@ -555,6 +556,7 @@ impl TextValue for MarkerKind {
             MarkerKind::Rehearsal(t) => variant("Rehearsal", vec![t.project()]),
             MarkerKind::Segno => variant("Segno", vec![]),
             MarkerKind::Coda => variant("Coda", vec![]),
+            MarkerKind::ExpressionText(t) => variant("ExpressionText", vec![t.project()]),
         }
     }
     fn parse(s: &Sexp) -> Result<Self, TextError> {
@@ -580,6 +582,8 @@ impl TextValue for MarkerKind {
         } else if ctor == kebab("Coda") {
             no_fields(fields)?;
             Ok(MarkerKind::Coda)
+        } else if ctor == kebab("ExpressionText") {
+            Ok(MarkerKind::ExpressionText(TextValue::parse(one(fields)?)?))
         } else {
             Err(TextError::UnknownConstructor {
                 type_name: "MarkerKind",
