@@ -600,6 +600,101 @@ fn a_close_mark_leaves_its_notes_tie_room() {
     );
 }
 
+/// A mark outside the staff stands clear of its chord's own accidentals
+/// where it meets them across, `articulationMinDistance` off them, as
+/// MuseScore's autoplace lifts it (`Autoplace::autoplaceSegmentElement`):
+/// an inverted mordent over F♯5 above its sharp, a lower voice's mordent
+/// under G♯4 below its sharp. An accent over F♯5, which its sharp does not
+/// meet across, stands as it would without one.
+#[test]
+fn an_outside_mark_clears_its_chords_accidentals() {
+    let marked = |pitch: &str, kind: &str, voice: u8, notations: &str| {
+        note(pitch, 8, kind, voice, 1, notations)
+    };
+    let half_rest = || note("rest", 8, "half", 1, 1, "");
+    let mordent = [
+        marked(
+            "F#5",
+            "half",
+            1,
+            "<ornaments><inverted-mordent/></ornaments>",
+        ),
+        half_rest(),
+    ]
+    .concat();
+    let accent = [
+        marked("F#5", "half", 1, "<articulations><accent/></articulations>"),
+        half_rest(),
+    ]
+    .concat();
+    let lower = [
+        note("D5", 16, "whole", 1, 1, ""),
+        backup(16),
+        note(
+            "G#4",
+            16,
+            "whole",
+            2,
+            1,
+            "<ornaments><mordent/></ornaments>",
+        ),
+    ]
+    .concat();
+    let plain = [
+        marked("F5", "half", 1, "<articulations><accent/></articulations>"),
+        half_rest(),
+    ]
+    .concat();
+    let loaded = part_in(
+        "marks_accidentals.musicxml",
+        1,
+        4,
+        &[mordent, accent, lower, plain],
+    );
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let sharps = named(&layout, "accidentalSharp");
+    assert_eq!(sharps.len(), 3, "three sharps");
+
+    // Over F♯5: its sharp reaches above the mordent's place by its head, so
+    // the mordent stands 0.4 over the sharp.
+    let mordent = the_glyph(&layout, e[0], "ornamentShortTrill");
+    let sharp = sharps[0];
+    assert!(sharp[3] + 0.4 > head(&loaded, &layout, e[0])[3] + 0.4 + 0.1);
+    near(
+        mordent[1],
+        sharp[3] + 0.4,
+        "the inverted mordent over its sharp",
+    );
+
+    // The accent over F♯5 stands as over F5, 0.4 over its head.
+    let accent = the_glyph(&layout, e[2], "articAccentAbove");
+    assert!(
+        sharps[1][3] > accent[1],
+        "the sharp reaches past the accent's foot"
+    );
+    near(
+        accent[1],
+        head(&loaded, &layout, e[2])[3] + 0.4,
+        "the accent over F♯5",
+    );
+    let plain_accent = the_glyph(&layout, e[6], "articAccentAbove");
+    near(
+        plain_accent[1] - head(&loaded, &layout, e[6])[3],
+        accent[1] - head(&loaded, &layout, e[2])[3],
+        "as over F5",
+    );
+
+    // Under G♯4 in the lower voice: 0.4 under its sharp.
+    let mordent = the_glyph(&layout, e[5], "ornamentMordent");
+    assert!(sharps[2][1] - 0.4 < head(&loaded, &layout, e[5])[1] - 0.4 - 0.1);
+    near(
+        mordent[3],
+        sharps[2][1] - 0.4,
+        "the mordent under its sharp",
+    );
+}
+
 /// With another voice at the note, each voice's marks stand at its stem:
 /// the upper voice's above and the lower's below; an ornament stands above
 /// in the upper voice and below in the lower.

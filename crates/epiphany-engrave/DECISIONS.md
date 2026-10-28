@@ -2531,3 +2531,11 @@ is set:
   opens draws halves where it drew the quarters it sounds
   (`a_tremolo_pairs_tuplet_is_numbered_as_its_own`). The engraver itself
   is unchanged; the importer and the layout IR's drawn value change.
+
+## ENGRAVER_VERSION 80 → 81: an outside mark clears its chord's accidentals (X4c fix round 1, 2026-10-28)
+
+- A mark outside the staff that meets its chord's own accidental across
+  stands 0.4 clear of it, as MuseScore's autoplace lifts it: a trill mark or
+  mordent over a note with an accidental had stood on the accidental's top
+  (`an_outside_mark_clears_its_chords_accidentals`). The engraver itself is
+  unchanged.

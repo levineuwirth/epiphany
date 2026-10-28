@@ -1370,3 +1370,11 @@ column's spring the padding after it.
   the corpus report reads it at twice its span in a tuplet too. A tuplet in
   a tuplet keeps the product its first note's time modification gives, its
   outer number with it (the decide-list's nested tuplets).
+- A mark outside the staff stands clear of its chord's own accidentals
+  where it meets them across, `articulationMinDistance` (0.4) off them, as
+  MuseScore's autoplace lifts an articulation, an ornament among them, off
+  what stands under it with no clearance across
+  (`Autoplace::autoplaceSegmentElement`, `chordlayout.cpp` 1167 to 1170;
+  `autoplace.cpp` 49 to 117). A trill mark or a mordent centred over a
+  head reaches over its accidental and had stood on its top. Other ink
+  under the mark, another voice's above all, is X4d.3's autoplace (D85).

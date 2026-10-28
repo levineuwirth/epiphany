@@ -2787,12 +2787,19 @@ pub fn try_to_constrained(
                 head_box.map_or((0.0, NOTEHEAD_STEM_X), |b| (b.left.0, b.right.0));
             let mut left = f32::INFINITY;
             let mut right = f32::NEG_INFINITY;
+            let mut accidental_ink = Vec::new();
             for h in heads {
                 left = left.min(h.dx + head_left);
                 right = right.max(h.dx + head_right);
                 for (name, x) in h.accidentals.iter().zip(&h.accidental_x) {
                     if let Some(b) = metrics(name).map(|m| m.bounding_box()) {
                         left = left.min(x + b.left.0);
+                        accidental_ink.push([
+                            x + b.left.0,
+                            h.y + b.bottom.0,
+                            x + b.right.0,
+                            h.y + b.top.0,
+                        ]);
                     }
                 }
             }
@@ -2816,6 +2823,7 @@ pub fn try_to_constrained(
                 yo: y_origin(staff),
                 beamed: seg.drawn && seg.flag.is_none() && seg.beams > 0,
                 accidentals: heads.iter().any(|h| !h.accidentals.is_empty()),
+                accidental_ink,
                 tie_above: outer_tie(seg.hi, true),
                 tie_below: outer_tie(seg.lo, false),
             };

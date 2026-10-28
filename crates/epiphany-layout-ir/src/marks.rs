@@ -65,6 +65,9 @@ pub(super) struct Chord<'a> {
     pub beamed: bool,
     /// A head of it draws an accidental.
     pub accidentals: bool,
+    /// Its heads' accidentals' ink, each `[left, bottom, right, top]`, `x`
+    /// from the column.
+    pub accidental_ink: Vec<[f32; 4]>,
     /// A tie leaves or reaches its highest head arcing above, or its lowest
     /// arcing below: a close mark on that side leaves the tie room
     /// (`ChordLayout::leaveSpaceForTie`).
@@ -511,11 +514,20 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
         let stem_side = m.basic && (m.above == seg.up) && seg.drawn;
         let at_stem_end = m.above == seg.up && stem.is_some();
         let x = centred(m.name, centre_x(chord, stem_side));
+        // MuseScore's autoplace then lifts the mark clear of what stands
+        // under it across its width, its chord's own accidentals among them,
+        // by `articulationMinDistance` (`Autoplace::autoplaceSegmentElement`).
+        let across = chord
+            .accidental_ink
+            .iter()
+            .filter(|a| a[0] < x + b.right.0 && a[2] > x + b.left.0);
         // An ornament's accidentals, at 0.6 of their size, centred over and
         // under it with 0.35 between.
         let small = |name: &'static str| bbox(name);
         if m.above {
-            let mut bottom = base_above;
+            let mut bottom = across
+                .map(|a| a[3] + ARTICULATION_MIN_DISTANCE)
+                .fold(base_above, f32::max);
             if let Some((_, Some(below))) = m.accidental {
                 let a = small(below);
                 let y = bottom - 0.6 * a.bottom.0;
@@ -554,7 +566,9 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
             }
             base_above = top + ARTICULATION_MIN_DISTANCE;
         } else {
-            let mut top = base_below;
+            let mut top = across
+                .map(|a| a[1] - ARTICULATION_MIN_DISTANCE)
+                .fold(base_below, f32::min);
             if let Some((Some(above_name), _)) = m.accidental {
                 let a = small(above_name);
                 let y = top - 0.6 * a.top.0;
