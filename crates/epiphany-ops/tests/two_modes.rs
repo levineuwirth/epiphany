@@ -178,7 +178,8 @@ fn a_history_showing_a_second_class_fails_its_declaration() {
 /// D50 to D52) are such: reduction version 5 refuses the fill that
 /// overlapped them (`RegionsOverlap`), and they agree. So are C5b review 2's
 /// twelve, whose region carried two tempo segments on one key
-/// (`TempoMapMalformed`, D89).
+/// (`TempoMapMalformed`, D89), and the three whose region carried a map out
+/// of order, overlapping or ending before its start (D90 Q3).
 #[test]
 fn every_history_declaring_a_refusal_shows_it_in_both_modes() {
     let declaring: Vec<Committed> = committed()
@@ -212,6 +213,9 @@ fn every_history_declaring_a_refusal_shows_it_in_both_modes() {
             "316-invariant-cross-cutting-refs-resolve.txt",
             "317-invariant-cross-cutting-refs-resolve.txt",
             "318-invariant-cross-cutting-refs-resolve.txt",
+            "319-requirement-tempo-segment-order.txt",
+            "320-requirement-tempo-segment-order.txt",
+            "321-requirement-tempo-segment-order.txt",
         ]
     );
     for c in &declaring {

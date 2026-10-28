@@ -1007,6 +1007,31 @@ fn tempo_segment_shape_well_formed(segment: &TempoSegment) -> bool {
     }
 }
 
+/// Whether a map's segments, each with its start's resolved position and in
+/// that order, are as a `SetTempoSegment` write must leave a map (operation
+/// catalog §"Meter and Tempo Overwrites"): every shape carries its end data,
+/// and no segment's resolved end precedes its own start or passes the next
+/// segment's start.
+fn tempo_segments_well_formed(segments: &[(MusicalPosition, &TempoSegment)]) -> bool {
+    for (index, (position, segment)) in segments.iter().enumerate() {
+        if !tempo_segment_shape_well_formed(segment) {
+            return false;
+        }
+        if let Some(end) = &segment.end {
+            let resolved_end = resolved_anchor_position(end);
+            if resolved_end < *position {
+                return false;
+            }
+            if let Some((next_position, _)) = segments.get(index + 1) {
+                if resolved_end > *next_position {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
 /// Replaces (or removes, for `None`) the segment at `position` in `map`,
 /// keeping the segment list ordered by resolved start position — the same
 /// coarse anchor resolution the LWW key uses, so one resolved position holds
@@ -6208,6 +6233,29 @@ impl<'a> Reducer<'a> {
                 };
             }
         }
+        // And it is a map `SetTempoSegment`'s writes could leave, read as a
+        // write reads the map it leaves: its segments in order of their
+        // starts' resolved positions, each shape carrying its end data, and
+        // no segment's resolved end before its own start or past the next
+        // segment's start (reduction version 5, D90 Q3: before it a map out
+        // of order or overlapping applied against
+        // `req:time:tempo-segment-order`, and the rest applied unseen).
+        if let Some(local) = &op.region.local_tempo_map {
+            let keyed: Vec<(MusicalPosition, &TempoSegment)> = local
+                .segments
+                .iter()
+                .map(|segment| (resolved_anchor_position(&segment.start), segment))
+                .collect();
+            if !keyed.windows(2).all(|pair| pair[0].0 <= pair[1].0)
+                || !tempo_segments_well_formed(&keyed)
+            {
+                return OperationEffect::NoOp {
+                    reason: NoOpReason::PreconditionFailedUnderReduction {
+                        reason: PreconditionFailureReason::TempoMapMalformed,
+                    },
+                };
+            }
+        }
         self.graph_create_region(&op.region);
         self.mint_container(env, robj);
         self.region_instances.entry(op.region_id()).or_default();
@@ -8134,23 +8182,7 @@ impl<'a> Reducer<'a> {
         }
         segments.push((key.1.clone(), written));
         segments.sort_by(|(a, _), (b, _)| a.cmp(b));
-        for (index, (position, segment)) in segments.iter().enumerate() {
-            if !tempo_segment_shape_well_formed(segment) {
-                return false;
-            }
-            if let Some(end) = &segment.end {
-                let resolved_end = resolved_anchor_position(end);
-                if resolved_end < *position {
-                    return false;
-                }
-                if let Some((next_position, _)) = segments.get(index + 1) {
-                    if resolved_end > *next_position {
-                        return false;
-                    }
-                }
-            }
-        }
-        true
+        tempo_segments_well_formed(&segments)
     }
 
     /// Sets, replaces, or removes the single tempo segment starting at the

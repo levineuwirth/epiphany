@@ -139,7 +139,8 @@ pub enum GraphInvariant {
     ///     tag**. Since P13-S29 each carries its own `req:` label in the
     ///     `Requirement` arm of [`ViolationKind`]: tempo segment shape
     ///     (Chapter 3, `req:time:tempo-segment-shape`); tempo segment ordering
-    ///     and non-overlap (Chapter 3, `req:time:tempo-segment-order`);
+    ///     and non-overlap, a segment's end not before its own start among
+    ///     them (Chapter 3, `req:time:tempo-segment-order`);
     ///     aleatoric ordering and bounds region locality (Chapter 3,
     ///     `req:time:aleatoric-reference-locality`); and accidental
     ///     modification expressibility (Chapter 4,
@@ -1696,8 +1697,18 @@ impl<'a> GraphIndex<'a> {
                         "non-constant tempo segment is missing its end_tempo".to_string(),
                     ),
                 }
-                // Ordering and non-overlap, where resolvable.
+                // Ordering and non-overlap, where resolvable: a segment's end
+                // not before its own start (reduction version 5, D90 Q3:
+                // before it a segment ending before its start passed), nor
+                // past the next segment's start.
                 let start = seg_pos(&seg.start);
+                if let (Some(s), Some(e)) = (&start, seg.end.as_ref().and_then(seg_pos)) {
+                    flag(
+                        ViolationKind::Requirement("req:time:tempo-segment-order"),
+                        e >= *s,
+                        "tempo segment ends before it starts".to_string(),
+                    );
+                }
                 if let (Some(ps), Some(s)) = (&prev_start, &start) {
                     flag(
                         ViolationKind::Requirement("req:time:tempo-segment-order"),
@@ -7396,6 +7407,25 @@ mod s29_violation_kind_tests {
     fn tempo_overlap_reports_order() {
         let s = two_segments(406, (2, 3), (1, 2));
         assert_requirement_condition(&s, ORDER, "tempo segments overlap in musical time");
+    }
+
+    /// A segment whose end comes before its own start is reported (D90 Q3):
+    /// the checker read an end only against the next segment's start, so a
+    /// region created carrying such a segment passed. One ending where it
+    /// starts is not reported.
+    #[test]
+    fn tempo_segment_ending_before_its_start_reports_order() {
+        let ending = |at: i32| {
+            one_segment(408, move |rid| TempoSegment {
+                start: anchor(rid, 2),
+                end: Some(anchor(rid, at)),
+                start_tempo: tempo(60.0),
+                end_tempo: None,
+                shape: TempoShape::Constant,
+            })
+        };
+        assert_requirement_condition(&ending(1), ORDER, "tempo segment ends before it starts");
+        assert!(check_requirement(&ending(2), ORDER).is_empty());
     }
     // ---- C8-C10 need their fixtures from the existing corpus ----------------
 

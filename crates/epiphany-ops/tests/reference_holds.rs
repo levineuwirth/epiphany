@@ -19,7 +19,8 @@
 //! created carrying a tempo map with two segments on one key, which the
 //! holds, reading the tempo chains, would see one of (D89). A tempo map whose
 //! region the same undo removes, or which is not live, holds nothing against
-//! an undo removing a region (D90 Q1).
+//! an undo removing a region (D90 Q1), and a region is not created carrying a
+//! tempo map no sequence of `SetTempoSegment` writes could leave (D90 Q3).
 //!
 //! Each history is one author's, built by hand on a small score: a metric
 //! region holding a staff instance, a measure, a voice and a note, and a
@@ -32,8 +33,8 @@ use epiphany_core::{
     check_invariants, AnchorOffset, EventId, IdentityContext, InstrumentId, Measure, MeasureId,
     MeasureNumberVisibility, MeterChange, MetricGrid, MusicalDuration, MusicalPosition,
     OperationId, PitchId, RationalTime, RegionEdge, RegionId, RegionTimeModel, ReplicaId, Score,
-    StaffId, StaffInstanceId, TempoMap, TimeAnchor, TimeExtent, TimeSignatureId, TransactionId,
-    TypedObjectId, VoiceId, WallClockTime,
+    StaffId, StaffInstanceId, Tempo, TempoMap, TempoSegment, TempoShape, TimeAnchor, TimeExtent,
+    TimeSignatureId, TransactionId, TypedObjectId, VoiceId, WallClockTime,
 };
 use epiphany_ops::{
     valuegen, AuthorId, CausalContext, ChangeRegionTimeModelOp, ConflictKind, CreateInstrumentOp,
@@ -661,6 +662,22 @@ const CARRIER: RegionId = RegionId::new(AUTHOR, 916);
 /// A metric region far away in time created carrying a local tempo map, one
 /// segment at each of `starts` in turn; returns the create.
 fn carrying(h: &mut History, starts: Vec<TimeAnchor>) -> OperationId {
+    carrying_map(
+        h,
+        starts
+            .into_iter()
+            .map(|start| {
+                let mut segment = valuegen::tempo_segment(CARRIER, MusicalPosition::origin(), 90.0);
+                segment.start = start;
+                segment
+            })
+            .collect(),
+    )
+}
+
+/// The carrier created carrying a local tempo map of `segments` in turn;
+/// returns the create.
+fn carrying_map(h: &mut History, segments: Vec<TempoSegment>) -> OperationId {
     let mut region = valuegen::region(CARRIER);
     region.time_model = valuegen::metric_model();
     region.time_extent = TimeExtent {
@@ -669,16 +686,27 @@ fn carrying(h: &mut History, starts: Vec<TimeAnchor>) -> OperationId {
     };
     region.local_tempo_map = Some(TempoMap {
         initial: None,
-        segments: starts
-            .into_iter()
-            .map(|start| {
-                let mut segment = valuegen::tempo_segment(CARRIER, MusicalPosition::origin(), 90.0);
-                segment.start = start;
-                segment
-            })
-            .collect(),
+        segments,
     });
     h.push(OperationKind::CreateRegion(CreateRegionOp { region }))
+}
+
+/// A constant segment of the carrier's map `from` bars into it, ending `to`
+/// bars into it where given.
+fn bars_segment(from: i64, to: Option<i64>) -> TempoSegment {
+    let mut segment = valuegen::tempo_segment(CARRIER, MusicalPosition::origin(), 90.0);
+    segment.start = edge(CARRIER, bars(from));
+    segment.end = to.map(|to| edge(CARRIER, bars(to)));
+    segment
+}
+
+/// A linear segment of the carrier's map from a bar into it to two, with
+/// its end tempo and its end each where asked.
+fn linear_segment(end_tempo: bool, end: bool) -> TempoSegment {
+    let mut segment = bars_segment(1, end.then_some(2));
+    segment.shape = TempoShape::Linear;
+    segment.end_tempo = end_tempo.then(|| Tempo::quarter(60.0).expect("a tempo"));
+    segment
 }
 
 /// The carrier's own start, a key its other segment shares when that one
@@ -816,6 +844,89 @@ fn a_region_carrying_tempo_segments_on_distinct_keys_applies_and_holds() {
     assert!(applied(&free, first) && applied(&free, second));
     assert!(applied(&free, delete), "{:?}", effect(&free, delete));
     assert!(!aware.score.events.contains(NOTE));
+}
+
+/// D90 Q3, one step past D89's refusal: a `CreateRegion` whose carried tempo
+/// map no sequence of `SetTempoSegment` writes could leave is refused
+/// `TempoMapMalformed` in both modes, read as such a write reads the map it
+/// leaves. Before it each of these applied: a map out of order or
+/// overlapping against `req:time:tempo-segment-order`, the rest unseen.
+/// `control`, the same map as a write could leave it, applies and the graph
+/// holds it as carried.
+fn refused_beside(case: &str, malformed: Vec<TempoSegment>, control: Vec<TempoSegment>) {
+    let mut h = History::new();
+    let created = carrying_map(&mut h, malformed);
+    let (free, aware) = h.reduce();
+    assert!(
+        refused(&free, created, PreconditionFailureReason::TempoMapMalformed),
+        "{case}: {:?}",
+        effect(&free, created)
+    );
+    assert!(!live(&aware, TypedObjectId::Region(CARRIER)), "{case}");
+    let mut h = History::new();
+    let created = carrying_map(&mut h, control.clone());
+    let (free, aware) = h.reduce();
+    assert!(
+        applied(&free, created),
+        "{case}'s control: {:?}",
+        effect(&free, created)
+    );
+    let carried = aware
+        .score
+        .canvas
+        .regions
+        .iter()
+        .find(|region| region.id == CARRIER)
+        .and_then(|region| region.local_tempo_map.as_ref())
+        .map(|map| map.segments.clone());
+    assert_eq!(carried, Some(control), "{case}'s control");
+}
+
+/// Two segments whose starts' resolved positions run backwards; the control
+/// carries them in order.
+#[test]
+fn a_region_carrying_tempo_segments_out_of_order_is_refused() {
+    refused_beside(
+        "out of order",
+        vec![bars_segment(2, None), bars_segment(1, None)],
+        vec![bars_segment(1, None), bars_segment(2, None)],
+    );
+}
+
+/// A segment ending past the next one's start; the control ends at it.
+#[test]
+fn a_region_carrying_overlapping_tempo_segments_is_refused() {
+    refused_beside(
+        "overlapping",
+        vec![bars_segment(1, Some(3)), bars_segment(2, None)],
+        vec![bars_segment(1, Some(2)), bars_segment(2, None)],
+    );
+}
+
+/// A segment ending before its own start; the control ends where it starts.
+#[test]
+fn a_region_carrying_a_tempo_segment_ending_before_its_start_is_refused() {
+    refused_beside(
+        "ending before its start",
+        vec![bars_segment(2, Some(1))],
+        vec![bars_segment(2, Some(2))],
+    );
+}
+
+/// A linear segment without its end tempo, or without its end; the control
+/// carries both.
+#[test]
+fn a_region_carrying_a_tempo_segment_without_its_end_data_is_refused() {
+    refused_beside(
+        "without its end tempo",
+        vec![linear_segment(false, true)],
+        vec![linear_segment(true, true)],
+    );
+    refused_beside(
+        "without its end",
+        vec![linear_segment(true, false)],
+        vec![linear_segment(true, true)],
+    );
 }
 
 /// A write of some holder at an anchor; returns the holder's write.

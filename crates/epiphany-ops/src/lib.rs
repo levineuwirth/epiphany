@@ -949,6 +949,13 @@ pub mod vectors;
 ///     `StrictInverse` and `Cascade` and kept the first under `BestEffort`,
 ///     and a deleted region's map, which its chains keep, held a region it
 ///     named against that region's undo. Locked by `reference_holds.rs`.
+///     And a `CreateRegion` whose carried tempo map no sequence of
+///     `SetTempoSegment` writes could leave is refused `TempoMapMalformed` in
+///     both modes, read as such a write reads the map it leaves: its
+///     segments out of order by their starts' resolved positions, one ending
+///     past the next one's start or before its own, or a non-constant one
+///     without its end tempo or its end; version `4` applied it. Locked by
+///     `reference_holds.rs` and the committed histories `319` to `322`.
 ///
 ///   With it, at the same epoch 16, a wire addition that changes no verdict:
 ///   `MarkerKind` appends `ExpressionText` (X5b.7, D79 Q9), reduced as any

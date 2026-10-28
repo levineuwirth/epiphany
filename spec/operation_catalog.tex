@@ -909,7 +909,10 @@ and a member's cascade carries the tuplets nested in the ones it removes
 (Section~\ref{sec:k0:create-tuplet}). A \texttt{CreateRegion} whose carried
 tempo map holds two segments on one key is refused \texttt{TempoMapMalformed},
 as two writes at the key would leave one
-(Section~\ref{sec:k0:structural-containers}). An undo removing a region reads
+(Section~\ref{sec:k0:structural-containers}), and so is one whose carried map
+no sequence of \texttt{SetTempoSegment} writes could leave: out of order,
+overlapping, a segment ending before its start or a non-constant one without
+its end data (Section~\ref{sec:k0:structural-containers}). An undo removing a region reads
 a tempo map whose region the same undo removes, or which is not live, as
 holding nothing, as it reads one naming an event
 (Section~\ref{sec:k0:structural-containers}). Accordingly
@@ -2034,6 +2037,16 @@ base holding such a map, a region's or the score's, is one no writer writes,
 refused at reopen with every base (Binary Format companion,
 \texttt{req:binfmt:op-block-boundary}).
 
+So is a \texttt{CreateRegion} whose carried tempo map no sequence of
+\texttt{SetTempoSegment} writes could leave, read as such a write reads the
+map it leaves (Section~\ref{sec:k0:meter-tempo}): its segments not in order of
+their starts' resolved positions, a non-constant segment without its end
+tempo or its end, or a segment whose resolved end precedes its own start or
+passes the next segment's start (since version~0.22.0, before which such a
+create applied, a map out of order or overlapping against
+the core specification's \texttt{req:time:tempo-segment-order} and the
+rest unread).
+
 \textbf{Conflict cases.} None at reduction time: creation is set-union (a repeat
 create is idempotent), and the empty-only delete is a deterministic precondition
 gate, not a conflict. Since version~0.22.0 a region is not empty, to its
@@ -3045,8 +3058,8 @@ precondition no-op (\texttt{RecreateContentMismatch},
 Section~\ref{sec:k0:create-staff}). The time-signature value's beat-group sum is validated at
 construction and again at decode, so a malformed value never reaches
 reduction. A tempo-segment write preconditions that the \emph{resulting} map
-is well-formed (segments ordered and non-overlapping; a non-constant shape
-carries its end data, and a constant one records no end tempo, since
+is well-formed (segments ordered and non-overlapping, none ending before its
+own start; a non-constant shape carries its end data, and a constant one records no end tempo, since
 version~0.22.0, before which one equal to its start was admitted; the carried
 segment's own start equals the operation's \texttt{start} key) --- a write
 that would malform the map is refused as a precondition no-op

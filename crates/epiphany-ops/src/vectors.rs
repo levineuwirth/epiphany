@@ -947,6 +947,60 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         two_on_one_key.to_canonical_bytes(),
     ));
 
+    // X5b (D90 Q3): a region created carrying a tempo map no sequence of
+    // `SetTempoSegment` writes could leave: its segments out of order, one
+    // ending past the next one's start, one ending before its own start, or
+    // a linear one without its end tempo. Each decodes; reduction refuses it
+    // `TempoMapMalformed`, as such a write is refused.
+    let bars_in = |bars: i32| epiphany_core::TimeAnchor::Region {
+        id: region_id,
+        edge: epiphany_core::RegionEdge::Start,
+        offset: epiphany_core::AnchorOffset::Musical(epiphany_core::MusicalDuration(
+            epiphany_core::RationalTime::from_int(bars),
+        )),
+    };
+    let from_to = |from: i32, to: Option<i32>| epiphany_core::TempoSegment {
+        end: to.map(bars_in),
+        ..constant_at(bars_in(from))
+    };
+    let mut linear = from_to(1, Some(2));
+    linear.shape = epiphany_core::TempoShape::Linear;
+    for (counter, name, segments) in [
+        (
+            20,
+            "create_region_carrying_tempo_segments_out_of_order",
+            vec![from_to(2, None), from_to(1, None)],
+        ),
+        (
+            21,
+            "create_region_carrying_overlapping_tempo_segments",
+            vec![from_to(1, Some(3)), from_to(2, None)],
+        ),
+        (
+            22,
+            "create_region_carrying_a_tempo_segment_ending_before_its_start",
+            vec![from_to(2, Some(1))],
+        ),
+        (
+            23,
+            "create_region_carrying_a_linear_tempo_segment_without_its_end_tempo",
+            vec![linear],
+        ),
+    ] {
+        let mut carrier = crate::valuegen::region(region_id);
+        carrier.local_tempo_map = Some(epiphany_core::TempoMap {
+            initial: None,
+            segments,
+        });
+        let create = staff_change(
+            counter,
+            crate::payload::OperationKind::CreateRegion(crate::payload::CreateRegionOp {
+                region: carrier,
+            }),
+        );
+        v.push(row(OE, "accept", "-", name, create.to_canonical_bytes()));
+    }
+
     // ---- ops.operation_block ------------------------------------------------
     // An operation block as a reader holds it to the supported-layout boundary
     // (Binary Format companion §"The Chunk-Level Gate"): the block's declared

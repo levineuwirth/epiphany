@@ -2258,7 +2258,8 @@ pub struct Tempo {
   \label{req:time:tempo-segment-order}
   The tempo map's segments \MUST{} be non-overlapping when resolved
   to absolute musical positions, and \MUST{} appear in
-  monotonically-increasing start order. Two adjacent segments where
+  monotonically-increasing start order; a segment's resolved end, where
+  it has one, \MUSTNOT{} precede its own resolved start. Two adjacent segments where
   the earlier segment's resolved end equals the later segment's
   resolved start form a continuous tempo curve; the later segment's
   \texttt{start\_tempo} \SHOULD{} equal the earlier segment's resolved
@@ -2285,7 +2286,11 @@ pub struct Tempo {
   segments on one key is refused \texttt{TempoMapMalformed} (Operation
   Catalog, \sectionsc{Structural Containers}; reduction algorithm
   version~\texttt{5}, before which the create applied and reduction held
-  the first segment at the key alone).
+  the first segment at the key alone). So is a region created carrying a
+  map no sequence of \texttt{SetTempoSegment} writes could leave: out of
+  order, overlapping, a segment ending before its start, or a non-constant
+  one without its end data (reduction algorithm version~\texttt{5}, before
+  which the create applied).
 \end{requirement}
 
 \begin{requirement}
@@ -17472,6 +17477,9 @@ layouts they own versus inherit:
   carrying two refused. The rule table's user-break rows and invariant~10's
   paragraph say what the catalog does: a break leaves its event's removal
   alone, and a present break holds its measure against an undo.
+  \texttt{req:time:tempo-segment-order} says a segment's end does not
+  precede its start, and that a region created carrying a map no
+  \texttt{SetTempoSegment} writes could leave is refused.
   \\
   \bottomrule
 \end{longtable}

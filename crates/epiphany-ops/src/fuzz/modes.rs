@@ -127,7 +127,11 @@
 //! with two segments on one key, one at a note the view holds and the other
 //! at its own start, a measure's or another region's, in either order, and
 //! one time in two the note then deleted (arm 72): the create is refused
-//! `TempoMapMalformed` (D89).
+//! `TempoMapMalformed` (D89). And a region placed in a metric model carrying a
+//! tempo map no sequence of `SetTempoSegment` writes could leave, its segments
+//! a bar or more into its start out of order, one ending past the next one's
+//! start, one ending before its own start, or a linear one without its end
+//! tempo (arm 73): the create is refused `TempoMapMalformed` (D90 Q3).
 //!
 //! Everything is seeded: [`generate`] is a function of its seed and length, so
 //! a finding reproduces from both. [`minimize`] shrinks a failing history to
@@ -685,14 +689,19 @@ const SHAPES: [&str; 39] = [
 
 /// The shapes reduction version 5 refuses wherever they are written, each
 /// counted beside its kind: a constant tempo segment recording its end tempo,
-/// and a region created carrying a tempo map with two segments on one key
-/// (each `TempoMapMalformed`), which version 4 applied. A user break naming
-/// another region is counted too ("user break+another region's anchor"),
-/// where its anchor shows it, but a view seldom holds two regions to choose
-/// from.
-pub const REFUSED: [&str; 2] = [
+/// and a region created carrying a tempo map with two segments on one key, or
+/// one out of order, overlapping, ending before its start or without its end
+/// data (each `TempoMapMalformed`), which version 4 applied. A user break
+/// naming another region is counted too ("user break+another region's
+/// anchor"), where its anchor shows it, but a view seldom holds two regions
+/// to choose from.
+pub const REFUSED: [&str; 6] = [
     "SetTempoSegment+constant with an end tempo",
     "CreateRegion+tempo map with two segments on one key",
+    "CreateRegion+tempo map out of order",
+    "CreateRegion+tempo map overlapping",
+    "CreateRegion+tempo segment ending before its start",
+    "CreateRegion+tempo segment without its end data",
 ];
 
 /// Which of [`SHAPES`] a payload has, with the holders' wall-clock offsets
@@ -928,6 +937,39 @@ fn kind_shapes(payload: &OperationPayload) -> Vec<&'static str> {
                 })
             {
                 out.push("CreateRegion+tempo map with two segments on one key");
+            }
+            // Arm 73's shapes, each a map no `SetTempoSegment` writes leave
+            // (D90 Q3), read by its segments' resolved positions in order.
+            let keyed: Vec<_> = op
+                .region
+                .local_tempo_map
+                .iter()
+                .flat_map(|map| &map.segments)
+                .map(|segment| {
+                    let at = crate::payload::resolved_anchor_position;
+                    (at(&segment.start), segment.end.as_ref().map(at), segment)
+                })
+                .collect();
+            if keyed.windows(2).any(|pair| pair[0].0 > pair[1].0) {
+                out.push("CreateRegion+tempo map out of order");
+            }
+            if keyed
+                .windows(2)
+                .any(|pair| pair[0].1.as_ref().is_some_and(|end| *end > pair[1].0))
+            {
+                out.push("CreateRegion+tempo map overlapping");
+            }
+            if keyed
+                .iter()
+                .any(|(start, end, _)| end.as_ref().is_some_and(|end| end < start))
+            {
+                out.push("CreateRegion+tempo segment ending before its start");
+            }
+            if keyed.iter().any(|(_, _, segment)| {
+                !matches!(segment.shape, epiphany_core::TempoShape::Constant)
+                    && (segment.end_tempo.is_none() || segment.end.is_none())
+            }) {
+                out.push("CreateRegion+tempo segment without its end data");
             }
             if !matches!(extent.start, epiphany_core::TimeAnchor::WallClock { .. }) {
                 out.push("CreateRegion+anchored start");
@@ -4460,6 +4502,46 @@ fn make(
             }
             out
         }
+        73 => {
+            // A region carrying a tempo map no sequence of `SetTempoSegment`
+            // writes could leave (X5b fix round 2's addendum, D90 Q3): placed
+            // as an editor places one, in a metric model, its segments a bar
+            // or more into its own start out of order, one ending past the
+            // next one's start, one ending before its own start, or a linear
+            // one without its end tempo; refused `TempoMapMalformed`.
+            let mut carrier = placed_region(sim, r, h);
+            carrier.time_model = valuegen::metric_model();
+            let id = carrier.id;
+            let at = |bars: i64| epiphany_core::TimeAnchor::Region {
+                id,
+                edge: epiphany_core::RegionEdge::Start,
+                offset: epiphany_core::AnchorOffset::Musical(duration(bars, 1)),
+            };
+            let segment = |from: i64, to: Option<i64>| {
+                let mut segment = valuegen::tempo_segment(id, MusicalPosition::origin(), 90.0);
+                segment.start = at(from);
+                segment.end = to.map(at);
+                segment
+            };
+            let b = 1 + sim.rng.below(3) as i64;
+            let segments = match sim.rng.below(4) {
+                0 => vec![segment(b + 1, None), segment(b, None)],
+                1 => vec![segment(b, Some(b + 2)), segment(b + 1, None)],
+                2 => vec![segment(b + 1, Some(b))],
+                _ => {
+                    let mut linear = segment(b, Some(b + 1));
+                    linear.shape = epiphany_core::TempoShape::Linear;
+                    vec![linear]
+                }
+            };
+            carrier.local_tempo_map = Some(epiphany_core::TempoMap {
+                initial: None,
+                segments,
+            });
+            vec![prim(OperationKind::CreateRegion(CreateRegionOp {
+                region: carrier,
+            }))]
+        }
         _ => return None,
     })
 }
@@ -5018,7 +5100,7 @@ fn tie_entry(
 /// Each arm of [`make`] and how often it is drawn: the editing of notes,
 /// pitches and their marks three times as often as the score's structure and
 /// settings, as an editor's history runs.
-const ARMS: [(u64, u64); 73] = [
+const ARMS: [(u64, u64); 74] = [
     (0, 4),
     (1, 3),
     (2, 3),
@@ -5091,7 +5173,8 @@ const ARMS: [(u64, u64); 73] = [
     (69, 1),
     (70, 1),
     (71, 4),
-    (72, 1),
+    (72, 2),
+    (73, 1),
 ];
 
 fn draw_arm(rng: &mut Rng) -> u64 {

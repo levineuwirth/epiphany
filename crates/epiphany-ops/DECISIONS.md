@@ -4542,3 +4542,27 @@ The liveness half changes one more verdict: a region's chains outlive it, so
 a deleted region's map held a region it named against that region's undo,
 and no longer does. A region's delete still reads such a map and is refused
 `ContainerNotEmpty`, conservatively and since version 3; the test pins it.
+
+**A carried tempo map no writes could leave.** Fix round 2 refused a carried
+map with two segments on one key; one step past it, a map out of order or
+overlapping applied against `req:time:tempo-segment-order`, and one whose
+segment ends before its start applied unseen, the checker reading an end only
+against the next segment's start. The owner ruled every carried map
+`SetTempoSegment`'s writes could not leave refused. A `CreateRegion`'s map is
+now read as a write reads the map it leaves (one function serves both): its
+segments in order of their starts' resolved positions, each shape carrying its
+end data, and no resolved end before its own start or past the next start;
+anything else is refused `TempoMapMalformed`, after the one-key check, which
+keeps equal keys its own. A non-constant segment without its end data is in
+the ruling's "any map" though the probes held none: a write refuses it, and
+the decoder refuses only a constant segment recording an end tempo. The
+checker now reads a segment's end against its own start, under the order
+requirement, which says so. The probes are committed (`319` to `322`).
+
+Arm 73 places such a region, one of the four shapes, and `REFUSED` counts
+each. Its draws moved the budget: at weight 1 beside arm 72's 1 a measure by
+a wall-clock offset was authored twice and never applied. Of the weights
+tried, arm 72 at 2 and arm 73 at 1 keep every row. The budget reads an
+effect by its operation's id, which an equivocating twin shares, so at other
+weights a refused shape was counted applied once, its twin's effect; no row
+does so at these.
