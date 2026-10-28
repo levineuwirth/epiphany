@@ -600,6 +600,100 @@ fn a_close_mark_leaves_its_notes_tie_room() {
     );
 }
 
+/// An ornament's accidentals stand 0.35 off it, above and below, at 0.6 of
+/// their size (`TLayout::layoutOrnament`), over a note and under a lower
+/// voice's; and a one-note tremolo over a
+/// note that draws no stem stands with its foot 1.25 off the head's centre
+/// less the 0.5 padding (`tremoloNoteSidePadding`, `tremoloOutSidePadding`).
+#[test]
+fn an_ornaments_accidentals_and_a_stemless_tremolo_stand_their_distances_off() {
+    let measure = [
+        note(
+            "C5",
+            4,
+            "half",
+            1,
+            1,
+            "<ornaments><inverted-mordent/><accidental-mark placement=\"above\">sharp\
+             </accidental-mark><accidental-mark placement=\"below\">flat</accidental-mark>\
+             </ornaments>",
+        ),
+        note("rest", 4, "half", 1, 1, ""),
+    ]
+    .concat();
+    let whole = note(
+        "G4",
+        8,
+        "whole",
+        1,
+        1,
+        "<ornaments><tremolo type=\"single\">3</tremolo></ornaments>",
+    );
+    // A lower voice's ornament, below its whole note, its accidentals too.
+    let lower = [
+        note("C5", 8, "whole", 1, 1, ""),
+        backup(8),
+        note(
+            "E4",
+            8,
+            "whole",
+            2,
+            1,
+            "<ornaments><mordent/><accidental-mark placement=\"above\">natural\
+             </accidental-mark><accidental-mark placement=\"below\">sharp</accidental-mark>\
+             </ornaments>",
+        ),
+    ]
+    .concat();
+    let loaded = part("ornament_distances.musicxml", 1, &[measure, whole, lower]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+
+    let mordent = the_glyph(&layout, e[0], "ornamentShortTrill");
+    let mut runs: Vec<Ink> = layout
+        .texts
+        .iter()
+        .filter(|t| t.provenance.source == TypedObjectId::Event(e[0]))
+        .map(text_box)
+        .collect();
+    runs.sort_by(|a, b| a[1].total_cmp(&b[1]));
+    assert_eq!(runs.len(), 2, "two accidentals");
+    near(
+        runs[1][1],
+        mordent[3] + 0.35,
+        "the sharp 0.35 over the mordent",
+    );
+    near(runs[0][3], mordent[1] - 0.35, "the flat 0.35 under it");
+
+    let mordent = the_glyph(&layout, e[4], "ornamentMordent");
+    let mut runs: Vec<Ink> = layout
+        .texts
+        .iter()
+        .filter(|t| t.provenance.source == TypedObjectId::Event(e[4]))
+        .map(text_box)
+        .collect();
+    runs.sort_by(|a, b| a[1].total_cmp(&b[1]));
+    assert_eq!(runs.len(), 2, "two accidentals under the staff");
+    assert!(
+        mordent[3] < head(&loaded, &layout, e[4])[1],
+        "the mordent below"
+    );
+    near(
+        runs[1][1],
+        mordent[3] + 0.35,
+        "the natural 0.35 over the mordent",
+    );
+    near(runs[0][3], mordent[1] - 0.35, "the sharp 0.35 under it");
+
+    let strokes = the_glyph(&layout, e[2], "tremolo3");
+    let head = head(&loaded, &layout, e[2]);
+    near(
+        strokes[1],
+        (head[1] + head[3]) * 0.5 + 1.25 - 0.5,
+        "the strokes over a whole note",
+    );
+}
+
 /// A second close mark on its side stands where MuseScore sets it
 /// (`ChordLayout::layoutArticulations`): in the staff a space further than
 /// it would stand alone, its centre a space past the first's, over C5,
@@ -2791,6 +2885,40 @@ fn a_voices_staff_takes_its_dynamics_above() {
                 piano.position.y.0
             );
             assert!(axis <= bottom_line - 1.75 + 0.01, "{axis}");
+        }
+    }
+}
+
+/// A dynamic over a voice's staff, with no hairpin to align with and no
+/// ink within its distance, stands 1.0 over the staff (`dynamicsPosAbove`),
+/// as one under another staff stands 2.0 under it (`dynamicsPosBelow`): a
+/// niente, whose ink stands clear of the top line there. (A piano's
+/// descender reaches within 0.5 of the line and is lifted clear of it, as
+/// MuseScore's skyline holds the staff lines.)
+#[test]
+fn a_dynamic_stands_its_distance_off_the_staff() {
+    // Stems turned away from the dynamic's side: down under C5, up over A4.
+    let measure = |pitch: &str, sung_notes: usize| {
+        let mut notes = vec![dynamic("n", 1)];
+        for k in 0..4 {
+            let n = note(pitch, 2, "quarter", 1, 1, "");
+            notes.push(if k < sung_notes { sung(n) } else { n });
+        }
+        notes.concat()
+    };
+    for (pitch, sung_notes, above) in [("C5", 4, true), ("A4", 0, false)] {
+        let loaded = part(
+            &format!("dynamic_distance_{sung_notes}.musicxml"),
+            1,
+            &[measure(pitch, sung_notes)],
+        );
+        let layout = engrave(&loaded.reduced.score).layout;
+        let (bottom_line, top_line) = staff_lines(&layout)[0];
+        let niente = only(&layout, "dynamicNiente").position.y.0;
+        if above {
+            near(niente, top_line + 1.0, "a dynamic 1.0 over a voice's staff");
+        } else {
+            near(niente, bottom_line - 2.0, "a dynamic 2.0 under the staff");
         }
     }
 }
