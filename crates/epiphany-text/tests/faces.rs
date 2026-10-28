@@ -225,9 +225,10 @@ fn shaping_digest() -> String {
 
 /// Shaping is a function of the string, the faces and the shaper: the same
 /// words set in the same faces give the same glyphs on every run, and on
-/// every toolchain the suite runs under (CI's pinned stable and its MSRV
-/// floor run this test alike). A change to the faces, the shaper or how it
-/// is driven moves the digest, and is then a deliberate change.
+/// every toolchain the suite runs under (CI runs this test on its MSRV
+/// floor, `scripts/gate` on the pinned stable). A change to the faces, the
+/// shaper or how it is driven moves the digest, and is then a deliberate
+/// change.
 #[test]
 fn shaping_gives_the_same_glyphs_on_every_run() {
     let first = shaping_digest();
