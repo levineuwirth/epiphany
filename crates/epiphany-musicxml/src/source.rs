@@ -306,7 +306,8 @@ impl Eq for SourceTempo {}
 /// A tuplet of a part's events, by index into [`SourcePart::events`]: the
 /// notes and rests of one voice from a `<tuplet type="start">` to the stop of
 /// the same number, at the ratio its first note's `<time-modification>`
-/// gives (`actual` notes in the time of `normal`), shown as its start mark
+/// gives (`actual` notes in the time of `normal`), a two-note tremolo's 2:1
+/// divided out (`tuplet_ratio`), shown as its start mark
 /// says: hidden where the mark's `<notations>` is not printed, without a
 /// number where it asks `show-number="none"`.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -477,8 +478,8 @@ pub struct Census {
     pub tempo_places: BTreeSet<(usize, Time)>,
     /// Tuplets the file begins and stops in one voice, outside any other, by
     /// the ratio (`actual`, `normal`) their first note's
-    /// `<time-modification>` gives, paired by number by a walk of the notes
-    /// not joining a chord.
+    /// `<time-modification>` gives, as the reader takes it (`tuplet_ratio`),
+    /// paired by number by a walk of the notes not joining a chord.
     pub tuplets: BTreeMap<(u32, u32), usize>,
     /// Tuplets the file begins and the reader cannot make: one begun inside
     /// another, one whose first note gives no usable ratio, or one never
@@ -603,11 +604,7 @@ fn note_census(part: Node) -> Census {
                 .iter()
                 .filter(|t| t.attribute("type") == Some("start"))
             {
-                let ratio = child(note, "time-modification").and_then(|m| {
-                    let actual = child_text(m, "actual-notes")?.trim().parse::<u32>().ok()?;
-                    let normal = child_text(m, "normal-notes")?.trim().parse::<u32>().ok()?;
-                    (actual != 0 && normal != 0 && actual != normal).then_some((actual, normal))
-                });
+                let ratio = tuplet_ratio(note);
                 let made = ratio.filter(|_| stack.is_empty());
                 stack.push((mark.attribute("number").unwrap_or("1"), made));
             }
@@ -1190,14 +1187,7 @@ fn timed_census(part: Node, census: &mut Census) {
                             .iter()
                             .filter(|t| t.attribute("type") == Some("start"))
                         {
-                            let ratio = child(item, "time-modification").and_then(|m| {
-                                let actual =
-                                    child_text(m, "actual-notes")?.trim().parse::<u32>().ok()?;
-                                let normal =
-                                    child_text(m, "normal-notes")?.trim().parse::<u32>().ok()?;
-                                (actual != 0 && normal != 0 && actual != normal)
-                                    .then_some((actual, normal))
-                            });
+                            let ratio = tuplet_ratio(item);
                             let made = ratio.filter(|_| stack.is_empty());
                             let first = staff.parse::<usize>().map_or(0, |s| s.saturating_sub(1));
                             let number = mark.attribute("number").unwrap_or("1");
@@ -1814,6 +1804,28 @@ fn child_text<'a>(node: Node<'a, '_>, name: &str) -> Option<&'a str> {
 
 fn name<'a>(node: Node<'a, '_>) -> &'a str {
     node.tag_name().name()
+}
+
+/// The ratio of a tuplet a note begins, `actual` notes in the time of
+/// `normal`, from the note's `<time-modification>`. A two-note tremolo's note
+/// carries the pair's 2:1 there as well as its tuplet's own, as MuseScore
+/// writes a pair (`Chord::setTremoloTwoChord`), so the 2:1 is divided out:
+/// the number MuseScore prints, its `<tuplet-actual>`. `None` where the
+/// ratio is unusable or one to one.
+fn tuplet_ratio(note: Node) -> Option<(u32, u32)> {
+    let m = child(note, "time-modification")?;
+    let actual = child_text(m, "actual-notes")?.trim().parse::<u32>().ok()?;
+    let normal = child_text(m, "normal-notes")?.trim().parse::<u32>().ok()?;
+    let pair = children(note, "notations")
+        .flat_map(|n| children(n, "ornaments"))
+        .flat_map(|o| children(o, "tremolo"))
+        .any(|t| matches!(t.attribute("type"), Some("start" | "stop")));
+    let actual = if pair && actual % 2 == 0 {
+        actual / 2
+    } else {
+        actual
+    };
+    (actual != 0 && normal != 0 && actual != normal).then_some((actual, normal))
 }
 
 fn nominal_of(step: &str) -> Option<CmnNominal> {
@@ -3305,11 +3317,7 @@ impl<'d, 'i> Reader<'d, 'i> {
                 .flat_map(|n| children(n, "tuplet").map(move |t| (n, t)))
                 .collect();
             let marks: Vec<Node> = held.iter().map(|(_, mark)| *mark).collect();
-            let ratio = child(note, "time-modification").and_then(|m| {
-                let actual = child_text(m, "actual-notes")?.trim().parse::<u32>().ok()?;
-                let normal = child_text(m, "normal-notes")?.trim().parse::<u32>().ok()?;
-                (actual != 0 && normal != 0 && actual != normal).then_some((actual, normal))
-            });
+            let ratio = tuplet_ratio(note);
             let stack = state.open_tuplets.entry(voice).or_default();
             for (notations, mark) in held
                 .iter()

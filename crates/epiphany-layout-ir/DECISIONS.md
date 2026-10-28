@@ -1294,12 +1294,13 @@ column's spring the padding after it.
   holds no written value: MuseScore exports a pair at its written type with
   a 2:1 time modification and no tuplet, and the importer keeps the sounding
   duration.
-- A member in a tuplet is drawn as its tuplet gives it. The importer reads
+- A member in a tuplet was drawn as its tuplet gave it. The importer read
   a tuplet's ratio from its first note's time modification, which for a
   pair holds the pair's 2:1 as well as the tuplet's own, so the pre-pass's
-  component is already the written value. A pair in a tuplet whose first
-  note is not the pair's would read the tuplet's own ratio and draw at its
-  sounding value.
+  component was already the written value; a pair in a tuplet whose first
+  note is not the pair's read the tuplet's own ratio and drew at its
+  sounding value. The fix round below divides the 2:1 out and draws every
+  member one value longer.
 - A stemless member's strokes are inset from its head's edge, with no
   stem's width beside it, as MuseScore's `chordBeamAnchorX` gives a chord
   with no stem the stem's position alone; a stemmed member's are inset from
@@ -1358,3 +1359,14 @@ column's spring the padding after it.
   note of a staff's own voice, a rest, still goes opposite the stems in its
   span. The side had come from the first note's voice place, else from
   every stem in the span, a stemless one counting neither way.
+- A tuplet a two-note tremolo's note opens takes its own ratio: the
+  importer divides the pair's 2:1 out of the time modification it reads
+  the ratio from (`tuplet_ratio`, in the reader and the two censuses the
+  fidelity check compares it with), which gives the number MuseScore
+  prints, the export's `<tuplet-actual>`: a pair of quarters in a tuplet of
+  two eighths in the time of nine, 4:9 in the file, is a tuplet 2:9,
+  printing 2 where it printed 4. Every member of a pair, in a tuplet or
+  not, is then drawn one value longer than the pre-pass's component, and
+  the corpus report reads it at twice its span in a tuplet too. A tuplet in
+  a tuplet keeps the product its first note's time modification gives, its
+  outer number with it (the decide-list's nested tuplets).

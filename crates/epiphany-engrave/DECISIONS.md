@@ -2521,3 +2521,13 @@ is set:
   direction, and a later voice entering after the first note had not set
   the side (`a_slur_takes_its_side_as_musescore_computes_it`). The engraver
   itself is unchanged.
+
+## ENGRAVER_VERSION 79 → 80: a tremolo pair's tuplet at its own ratio (X4c fix round 1, 2026-10-28)
+
+- A tuplet a two-note tremolo's note opens is read at its own ratio, the
+  pair's 2:1 divided out of the time modification, and numbered as
+  MuseScore numbers it, 2 where it was 4; every pair member, in a tuplet or
+  not, is drawn at its written value, so a pair in a triplet another note
+  opens draws halves where it drew the quarters it sounds
+  (`a_tremolo_pairs_tuplet_is_numbered_as_its_own`). The engraver itself
+  is unchanged; the importer and the layout IR's drawn value change.

@@ -390,9 +390,10 @@ fn a_two_note_tremolos_strokes_are_its_notes_beam() {
 /// modification and no tuplet, count no notehead of another value, nor a
 /// missing dot, while their hollow heads are drawn; drawn at their sounding
 /// value instead, black, each head is counted. A pair a tuplet holds is read
-/// at the tuplet's value, whose ratio holds the pair's 2:1 already; a note
-/// marked to start a tremolo with a rest after it in its voice, and the
-/// rest, at their own.
+/// at its written value too, the importer reading the tuplet's ratio with
+/// the pair's 2:1 divided out: quarters in a tuplet the pair opens, halves
+/// in a triplet another note opens; a note marked to start a tremolo with a
+/// rest after it in its voice, and the rest, at their own.
 #[test]
 fn a_two_note_tremolos_notes_are_read_at_their_written_value() {
     let member = |step: &str, duration: u8, kind: &str, ratio: (u8, u8), notations: &str| {
@@ -417,7 +418,8 @@ fn a_two_note_tremolos_notes_are_read_at_their_written_value() {
          <measure number=\"1\"><attributes><divisions>4</divisions><time><beats>4</beats>\
          <beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef>\
          </attributes>{}{}{}{}{}</measure><measure number=\"2\">{}{}{}</measure>\
-         <measure number=\"3\">{}{}{}</measure></part></score-partwise>",
+         <measure number=\"3\">{}{}{}</measure><measure number=\"4\">{}{}{}{}\
+         </measure></part></score-partwise>",
         member("G", 4, "half", (2, 1), start),
         member("B", 4, "half", (2, 1), stop),
         member(
@@ -441,6 +443,21 @@ fn a_two_note_tremolos_notes_are_read_at_their_written_value() {
         member("E", 4, "quarter", (1, 1), start),
         rest(4, "quarter"),
         rest(8, "half"),
+        // At twelve divisions to the quarter, a triplet of quarters whose last
+        // two are a pair of written halves, 6:2, the triplet's 3:2 and the
+        // pair's 2:1.
+        String::from("<attributes><divisions>12</divisions></attributes>")
+            + &member("G", 8, "quarter", (3, 2), "<tuplet type=\"start\"/>"),
+        member("B", 8, "half", (6, 2), start),
+        member(
+            "D",
+            8,
+            "half",
+            (6, 2),
+            &format!("<tuplet type=\"stop\"/>{stop}")
+        )
+        .replacen("<octave>4</octave>", "<octave>5</octave>", 1),
+        rest(24, "half"),
     );
     let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("tremolo_values.musicxml");
     std::fs::write(&path, xml).expect("written");
@@ -459,8 +476,8 @@ fn a_two_note_tremolos_notes_are_read_at_their_written_value() {
             blackened += 1;
         }
     }
-    assert_eq!(blackened, 4);
-    assert_eq!(count(&loaded, &engraved, "notehead of another value"), 4);
+    assert_eq!(blackened, 6);
+    assert_eq!(count(&loaded, &engraved, "notehead of another value"), 6);
 }
 
 /// Every mark of a note and every fermata, breath mark and caesura the

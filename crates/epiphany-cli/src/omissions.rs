@@ -316,12 +316,13 @@ pub fn omissions(
     }
     // A two-note tremolo's notes are written one value longer than they
     // sound, their dots kept (MuseScore's `Chord::setTremoloTwoChord`): at
-    // twice their span, but in a tuplet, whose ratio the importer reads from
-    // a time modification holding the pair's 2:1 already.
+    // twice their span, in a tuplet too, whose ratio the importer reads with
+    // the pair's 2:1 divided out.
     for member in tremolo_members {
-        written_scale
+        let scale = written_scale
             .entry(member)
-            .or_insert_with(|| RationalTime::from_int(2));
+            .or_insert_with(|| RationalTime::from_int(1));
+        *scale = scale.mul(&RationalTime::from_int(2));
     }
 
     // Events, by what their durations and contents call for.

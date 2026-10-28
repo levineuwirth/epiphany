@@ -6675,20 +6675,16 @@ fn tremolo_members(
 }
 
 /// Whether component `comp` of `event` is drawn one value longer than it
-/// sounds: a two-note tremolo's member, decomposed and in no tuplet. A
-/// member in a tuplet is drawn as its tuplet gives it: the importer reads a
-/// tuplet's ratio from its first note's time modification, which for a
-/// pair holds the pair's 2:1 as well.
+/// sounds: a two-note tremolo's member, decomposed, in a tuplet or not. A
+/// tuplet's ratio is its own, the importer dividing a pair's 2:1 out of the
+/// time modification it reads it from.
 fn written_longer(
     members: &BTreeSet<EventId>,
     event: EventId,
     components: &[crate::logical::PlacedComponent],
     comp: usize,
 ) -> bool {
-    members.contains(&event)
-        && components
-            .get(comp)
-            .is_some_and(|c| c.component.tuplet.is_none())
+    members.contains(&event) && comp < components.len()
 }
 
 /// The notehead a component is drawn with and the value its stem, flag and

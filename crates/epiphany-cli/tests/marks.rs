@@ -1333,9 +1333,9 @@ fn stem_count(layout: &ResolvedLayoutIR, event: EventId) -> usize {
 /// beam to read a mark against, and as breves breves; its sounding
 /// duration, and the spacing by it, are unchanged, each head standing where
 /// the plain quarters the pair sounds as stand. A pair in a tuplet is drawn
-/// as its tuplet gives it, the importer having read the tuplet's ratio from
-/// a time modification holding the pair's 2:1 too; and a note marked to
-/// start a tremolo with no note after it in its voice keeps its value.
+/// at its written value too, the importer reading the tuplet's ratio with
+/// the pair's 2:1 divided out; and a note marked to start a tremolo with no
+/// note after it in its voice keeps its value.
 #[test]
 fn a_two_note_tremolos_notes_are_drawn_at_their_written_value() {
     let start = "<ornaments><tremolo type=\"start\">3</tremolo></ornaments>";
@@ -1560,6 +1560,133 @@ fn a_two_note_tremolos_notes_are_drawn_at_their_written_value() {
         );
         assert_eq!(stem_count(&layout, event), 1, "on a stem");
     }
+}
+
+/// A tuplet a two-note tremolo's note opens takes its own ratio, the pair's
+/// 2:1 divided out of the time modification it is read from, so it is
+/// numbered as MuseScore numbers it (its `<tuplet-actual>`): a pair of
+/// written halves in a tuplet of two quarters in the time of three, 4:3 in
+/// the file, prints 2. Its members, and a pair's in a triplet another note
+/// opens, 6:2 in the file, are drawn at their written value, halves. A
+/// tuplet the pair's second note opens takes its own ratio too.
+#[test]
+fn a_tremolo_pairs_tuplet_is_numbered_as_its_own() {
+    let start = "<ornaments><tremolo type=\"start\">3</tremolo></ornaments>";
+    let stop = "<ornaments><tremolo type=\"stop\">3</tremolo></ornaments>";
+    let timed = |n: String, actual: u8, normal: u8| {
+        n.replacen(
+            "<staff>",
+            &format!(
+                "<time-modification><actual-notes>{actual}</actual-notes>\
+                 <normal-notes>{normal}</normal-notes></time-modification><staff>"
+            ),
+            1,
+        )
+    };
+    // Twelve divisions to the quarter.
+    let opened = [
+        timed(
+            note(
+                "G4",
+                18,
+                "half",
+                1,
+                1,
+                &format!("<tuplet type=\"start\"/>{start}"),
+            ),
+            4,
+            3,
+        ),
+        timed(
+            note(
+                "B4",
+                18,
+                "half",
+                1,
+                1,
+                &format!("<tuplet type=\"stop\"/>{stop}"),
+            ),
+            4,
+            3,
+        ),
+        note("rest", 12, "quarter", 1, 1, ""),
+    ]
+    .concat();
+    let held = [
+        timed(
+            note("G4", 8, "quarter", 1, 1, "<tuplet type=\"start\"/>"),
+            3,
+            2,
+        ),
+        timed(note("B4", 8, "half", 1, 1, start), 6, 2),
+        timed(
+            note(
+                "D5",
+                8,
+                "half",
+                1,
+                1,
+                &format!("<tuplet type=\"stop\"/>{stop}"),
+            ),
+            6,
+            2,
+        ),
+        note("rest", 24, "half", 1, 1, ""),
+    ]
+    .concat();
+    // A tuplet the pair's second note opens, which carries the 2:1 too.
+    let second = [
+        timed(note("G4", 12, "half", 1, 1, start), 2, 1),
+        timed(
+            note(
+                "B4",
+                18,
+                "half",
+                1,
+                1,
+                &format!("<tuplet type=\"start\"/>{stop}"),
+            ),
+            4,
+            3,
+        ),
+        timed(
+            note("D5", 18, "quarter", 1, 1, "<tuplet type=\"stop\"/>"),
+            2,
+            3,
+        ),
+    ]
+    .concat();
+    let loaded = part_in("tremolo_tuplets.musicxml", 1, 12, &[opened, held, second]);
+    let ratios: Vec<(u32, u32)> = loaded
+        .reduced
+        .score
+        .cross_cutting
+        .tuplets
+        .iter()
+        .map(|t| (t.ratio.actual(), t.ratio.notated()))
+        .collect();
+    assert_eq!(
+        ratios,
+        [(2, 3), (3, 2), (2, 3)],
+        "each tuplet at its own ratio"
+    );
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    assert_eq!(
+        named(&layout, "tuplet2").len(),
+        2,
+        "the pair's tuplet prints 2"
+    );
+    assert_eq!(named(&layout, "tuplet4").len(), 0, "and no 4");
+    assert_eq!(named(&layout, "tuplet3").len(), 1, "the triplet prints 3");
+    for event in [e[0], e[1], e[4], e[5]] {
+        assert_eq!(
+            glyphs_of(&loaded, &layout, event),
+            ["noteheadHalf"],
+            "a written half"
+        );
+    }
+    assert_eq!(glyphs_of(&loaded, &layout, e[3]), ["noteheadBlack"]);
 }
 
 /// Two voices share a head at a unison only where both draw a stem, the same
