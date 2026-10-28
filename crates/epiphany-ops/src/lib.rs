@@ -940,6 +940,15 @@ pub mod vectors;
 ///     segment named nothing (`CrossCuttingRefsResolve`). A base holding such
 ///     a map is not reduced: every canonical base is refused at reopen. Locked
 ///     by `reference_holds.rs` and the committed histories `307` to `318`.
+///   - **What the owner ruled at fix round 2** (its addendum, D90, verdicts),
+///     older than X5b. An undo removing a region reads a tempo map whose
+///     region the same undo removes, or which is not live, as holding
+///     nothing, as it reads one naming an event; version `4` excepted the
+///     removed region's own map alone, so an undo of a transaction making a
+///     region and a second whose carried map names it conflicted under
+///     `StrictInverse` and `Cascade` and kept the first under `BestEffort`,
+///     and a deleted region's map, which its chains keep, held a region it
+///     named against that region's undo. Locked by `reference_holds.rs`.
 ///
 ///   With it, at the same epoch 16, a wire addition that changes no verdict:
 ///   `MarkerKind` appends `ExpressionText` (X5b.7, D79 Q9), reduced as any

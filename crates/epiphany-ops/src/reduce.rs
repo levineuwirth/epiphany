@@ -9786,14 +9786,22 @@ impl<'a> Reducer<'a> {
                 // id, so the region names itself (reduction version 3: before
                 // it the undo left the anchor naming nothing,
                 // `CrossCuttingRefsResolve`). Read as the undo leaves it: a
-                // segment the undone transaction wrote is restored away.
+                // segment the undone transaction wrote is restored away, and
+                // a map whose region the same undo removes, or which is not
+                // live, holds nothing, as for an event's hold (reduction
+                // version 5, D90 Q1: before it such a map held the region,
+                // the removed region's own map alone excepted).
                 .or_else(|| {
                     let here = |anchor: &TimeAnchor| {
                         matches!(anchor, TimeAnchor::Region { id, .. } if id == region)
                     };
                     self.tempo_segment_chain
                         .iter()
-                        .filter(|((map, _), _)| *map != Some(*region))
+                        .filter(|((map, _), _)| {
+                            map.is_none_or(|owner| {
+                                self.owner_licenses_block(TypedObjectId::Region(owner), targets)
+                            })
+                        })
                         .any(|((map, position), chain)| {
                             let prospective: Option<TempoSegment> = restorations
                                 .iter()

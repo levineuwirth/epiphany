@@ -17,7 +17,9 @@
 //! tuplet a live nested tuplet names as its parent is held, and a member's
 //! cascade removing a parent carries its children (D87 Q3). A region is not
 //! created carrying a tempo map with two segments on one key, which the
-//! holds, reading the tempo chains, would see one of (D89).
+//! holds, reading the tempo chains, would see one of (D89). A tempo map whose
+//! region the same undo removes, or which is not live, holds nothing against
+//! an undo removing a region (D90 Q1).
 //!
 //! Each history is one author's, built by hand on a small score: a metric
 //! region holding a staff instance, a measure, a voice and a note, and a
@@ -1211,7 +1213,10 @@ fn every_holder_holds_what_it_names_against_a_delete_and_an_undo() {
 }
 
 /// Controls: a holder written in the removing transaction goes with its
-/// undo, and the object is removed, but a migration's target model, which no
+/// undo, and the object is removed, a region's carried tempo map among them
+/// (D90 Q1: before it a map whose region the same undo removes held a region
+/// it named, so a strict or cascading undo conflicted and a best-effort one
+/// kept the region), but a migration's target model, which no
 /// undo restores (D84 Q3), still names it and holds it; one the removed
 /// region is itself (its own
 /// model's meter change at its own start) holds nothing; one rewritten off
@@ -1230,21 +1235,6 @@ fn a_holder_that_names_nothing_the_removal_takes_holds_nothing() {
             }
             let (h, _, removed, object) = removing(write, removal, true);
             let (free, aware) = h.reduce();
-            // A region's carried tempo map naming a region the same undo
-            // removes still holds it: a strict or cascading undo conflicts
-            // and a best-effort one keeps the region. The undo's region arm
-            // reads a tempo segment as a region's delete does (reduction
-            // version 3), excepting the removed region's own map but not a
-            // map whose region the undo removes too. Conservative, nothing
-            // left naming nothing, and older than X5b.
-            if name == "region's carried tempo" && matches!(removal, Removal::RegionUndone(_)) {
-                assert!(
-                    live(&aware, object),
-                    "{name} {removal:?}: {:?}",
-                    effect(&free, removed)
-                );
-                continue;
-            }
             if name == "migration's target model" {
                 let kept = match removal {
                     Removal::NoteUndone(UndoPolicy::BestEffort)
@@ -1332,6 +1322,54 @@ fn a_holder_that_names_nothing_the_removal_takes_holds_nothing() {
     let (free, _) = h.reduce();
     assert!(applied(&free, replaced), "{:?}", effect(&free, replaced));
     assert!(applied(&free, delete), "{:?}", effect(&free, delete));
+}
+
+/// D90 Q1: a map whose region is not live holds nothing against an undo. An
+/// empty region made in a transaction, a region then created carrying a
+/// segment at its start and deleted, and the transaction undone under each
+/// policy: the undo applies and removes the empty region, where before the
+/// deleted carrier's map, which its tempo chain keeps, held it.
+#[test]
+fn a_deleted_region_s_tempo_map_holds_nothing_against_an_undo() {
+    for policy in POLICIES {
+        let mut h = History::new();
+        let transaction = h.transaction(500);
+        h.region(
+            Some(transaction),
+            EMPTY,
+            valuegen::metric_model(),
+            5_000_000_000,
+        );
+        let created = carrying(&mut h, vec![edge(EMPTY, AnchorOffset::Zero)]);
+        let deleted = h.push(OperationKind::DeleteRegion(epiphany_ops::DeleteRegionOp {
+            region: CARRIER,
+        }));
+        let undo = h.undo(transaction, policy);
+        let (free, aware) = h.reduce();
+        assert!(applied(&free, created), "{policy:?}");
+        assert!(applied(&free, deleted), "{policy:?}");
+        assert!(undone(&free, undo), "{policy:?}: {:?}", effect(&free, undo));
+        assert!(!live(&aware, TypedObjectId::Region(EMPTY)), "{policy:?}");
+    }
+    // A region's delete still reads a deleted carrier's map, which its tempo
+    // chain keeps: the delete is refused `ContainerNotEmpty`, where the rule
+    // table holds a referent for a live holder. Conservative, nothing left
+    // naming nothing, and older than X5b (reduction version 3).
+    let mut h = History::new();
+    h.region(None, EMPTY, valuegen::metric_model(), 5_000_000_000);
+    carrying(&mut h, vec![edge(EMPTY, AnchorOffset::Zero)]);
+    h.push(OperationKind::DeleteRegion(epiphany_ops::DeleteRegionOp {
+        region: CARRIER,
+    }));
+    let delete = h.push(OperationKind::DeleteRegion(epiphany_ops::DeleteRegionOp {
+        region: EMPTY,
+    }));
+    let (free, _) = h.reduce();
+    assert!(
+        refused(&free, delete, PreconditionFailureReason::ContainerNotEmpty),
+        "{:?}",
+        effect(&free, delete)
+    );
 }
 
 fn tuplet(

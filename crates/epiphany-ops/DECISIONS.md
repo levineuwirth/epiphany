@@ -4523,3 +4523,22 @@ its shape, which the CI budget holds authored and never applied. The arm
 takes weight 1: at 2 the moved draws left the CI budget writing a measure by
 a wall-clock offset once and applying it never, a shape D50's bar applies in
 every chunk.
+
+## X5b fix round 2's addendum — D90 (2026-10-28)
+
+The owner ruled the round's Low, its probe one step past the fix and two fuzz
+arms resting on nothing a test reads (D90), under reduction version 5.
+
+**An undo's region arm reads a tempo map as an event's does.** The rule table
+says a holder the same undo removes holds nothing. An undo removing a region
+read a tempo segment as a region's delete does (version 3), excepting the
+removed region's own map alone, so a transaction making an empty region and a
+second region whose carried map names it could not be undone: a strict or
+cascading undo conflicted and a best-effort one kept the empty region. The
+arm now asks of a map's region what the note's hold asks
+(`owner_licenses_block`): that it is live and not removed by the same undo.
+The test fix round 2 pinned to the old verdict now holds the general rule.
+The liveness half changes one more verdict: a region's chains outlive it, so
+a deleted region's map held a region it named against that region's undo,
+and no longer does. A region's delete still reads such a map and is refused
+`ContainerNotEmpty`, conservatively and since version 3; the test pins it.

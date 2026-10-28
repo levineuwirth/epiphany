@@ -909,6 +909,9 @@ and a member's cascade carries the tuplets nested in the ones it removes
 (Section~\ref{sec:k0:create-tuplet}). A \texttt{CreateRegion} whose carried
 tempo map holds two segments on one key is refused \texttt{TempoMapMalformed},
 as two writes at the key would leave one
+(Section~\ref{sec:k0:structural-containers}). An undo removing a region reads
+a tempo map whose region the same undo removes, or which is not live, as
+holding nothing, as it reads one naming an event
 (Section~\ref{sec:k0:structural-containers}). Accordingly
 \texttt{epiphany\_ops::CURRENT\_REDUCTION\_ALGORITHM\_VERSION} moves
 \texttt{4}~$\rightarrow$~\texttt{5}, one version for the phase.
@@ -2048,7 +2051,9 @@ instance, an instance's voice or, since version~0.22.0, its measure, a voice's
 event), which it would leave naming
 nothing, or a live tempo segment of another map is anchored to a region it
 would remove, as a \texttt{DeleteRegion} is refused (the conflict naming the
-region, the segment having no identifier), or, since version~0.21.0, a live
+region, the segment having no identifier; since version~0.22.0 a map whose
+region is not live, or which the same undo removes, holds nothing, before
+which only the removed region's own map was excepted), or, since version~0.21.0, a live
 marker or spanner the undo leaves is anchored to it, read as the undo's
 restorations leave it (the conflict naming the structure), or, since
 version~0.22.0, any other live holder the undo leaves names it, read so. An undone region or staff instance leaves the graph-aware score, as a
