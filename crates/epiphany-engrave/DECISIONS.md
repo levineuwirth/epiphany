@@ -2539,3 +2539,11 @@ is set:
   mordent over a note with an accidental had stood on the accidental's top
   (`an_outside_mark_clears_its_chords_accidentals`). The engraver itself is
   unchanged.
+
+## ENGRAVER_VERSION 81 → 82: an accent kerns toward a staccato outside the staff (X4c fix round 1, 2026-10-28)
+
+- An accent set straight after a staccato on its side stands 0.2 nearer it
+  where the staccato stands outside the staff, as MuseScore kerns the two
+  (`stacAccentKern`); it had stood the full 0.4 off
+  (`an_accent_kerns_toward_a_staccato_outside_the_staff`). The engraver
+  itself is unchanged.

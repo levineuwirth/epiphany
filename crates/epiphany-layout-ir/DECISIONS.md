@@ -1378,3 +1378,10 @@ column's spring the padding after it.
   `autoplace.cpp` 49 to 117). A trill mark or a mordent centred over a
   head reaches over its accidental and had stood on its top. Other ink
   under the mark, another voice's above all, is X4d.3's autoplace (D85).
+- An accent set straight after a staccato on its side, the staccato
+  standing outside the staff, stands 0.2 nearer it than the 0.4 between
+  stacked marks, as MuseScore kerns the two (`stacAccentKern`,
+  `chordlayout.cpp` 1050, 1127 to 1150). MuseScore keeps a staccato first
+  and other close marks after it (`Chord::add`), and any mark between the
+  two parts them: here a staccato that is the chord's only close mark and
+  an accent that is the first outside mark, both on one side.

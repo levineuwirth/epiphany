@@ -24,6 +24,9 @@ const PROPERTY_DISTANCE: f32 = 0.4;
 /// The distance between two marks stacked on one side
 /// (`articulationMinDistance`).
 const ARTICULATION_MIN_DISTANCE: f32 = 0.4;
+/// How much nearer a staccato standing outside the staff an accent set
+/// straight after it on its side stands (`stacAccentKern`).
+const STACCATO_ACCENT_KERN: f32 = 0.2;
 /// How far in from its stem's tip a one-note tremolo's strokes start
 /// (`tremoloOutSidePadding`), and how far a stemless note's stand off its
 /// head (`tremoloNoteSidePadding`).
@@ -400,6 +403,7 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
     // the last one stood inside the staff by its head.
     let mut close_edge_above: Option<f32> = None;
     let mut close_edge_below: Option<f32> = None;
+    let mut staccato_outside = false;
     for m in list.iter().filter(|m| m.kind == Kind::Close) {
         let b = bbox(m.name);
         let h = b.top.0 - b.bottom.0;
@@ -474,6 +478,13 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
         } else {
             close_edge_below = Some(y_bottom);
         }
+        if m.tag == EventMark::Staccato.tag() {
+            staccato_outside = if m.above {
+                y_bottom >= top_line - 1e-3
+            } else {
+                y_bottom + h <= bottom_line + 1e-3
+            };
+        }
         placed.glyphs.push(MarkGlyph {
             tag: m.tag,
             name: m.name,
@@ -483,6 +494,26 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
             room: false,
         });
     }
+
+    // An accent the stack sets straight after a staccato on its side, the
+    // staccato standing outside the staff, stands `STACCATO_ACCENT_KERN`
+    // nearer it, as MuseScore kerns the two; a tenuto or another mark
+    // between them parts them (`ChordLayout::layoutArticulations2`).
+    let close: Vec<&Mark> = list.iter().filter(|m| m.kind == Kind::Close).collect();
+    let kerned = match (
+        close.as_slice(),
+        list.iter().find(|m| m.kind != Kind::Close),
+    ) {
+        ([staccato], Some(accent))
+            if staccato.tag == EventMark::Staccato.tag()
+                && accent.tag == EventMark::Accent.tag()
+                && accent.above == staccato.above
+                && staccato_outside =>
+        {
+            Some(accent.tag)
+        }
+        _ => None,
+    };
 
     // The outside marks, stacked outward from the staff or the chord,
     // whichever stands further out, and clear of the close marks.
@@ -524,10 +555,15 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
         // An ornament's accidentals, at 0.6 of their size, centred over and
         // under it with 0.35 between.
         let small = |name: &'static str| bbox(name);
+        let kern = if kerned == Some(m.tag) {
+            STACCATO_ACCENT_KERN
+        } else {
+            0.0
+        };
         if m.above {
             let mut bottom = across
                 .map(|a| a[3] + ARTICULATION_MIN_DISTANCE)
-                .fold(base_above, f32::max);
+                .fold(base_above - kern, f32::max);
             if let Some((_, Some(below))) = m.accidental {
                 let a = small(below);
                 let y = bottom - 0.6 * a.bottom.0;
@@ -568,7 +604,7 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
         } else {
             let mut top = across
                 .map(|a| a[1] - ARTICULATION_MIN_DISTANCE)
-                .fold(base_below, f32::min);
+                .fold(base_below + kern, f32::min);
             if let Some((Some(above_name), _)) = m.accidental {
                 let a = small(above_name);
                 let y = top - 0.6 * a.top.0;

@@ -600,6 +600,53 @@ fn a_close_mark_leaves_its_notes_tie_room() {
     );
 }
 
+/// An accent set straight after a staccato on its side, the staccato
+/// standing outside the staff, stands 0.2 nearer it than the 0.4 between
+/// marks, as MuseScore kerns the two (`stacAccentKern`): under E4 and over
+/// G5. Over C5, whose staccato stands in the staff, and with a tenuto
+/// between, it stands as any mark after another.
+#[test]
+fn an_accent_kerns_toward_a_staccato_outside_the_staff() {
+    let marks = |inner: &str| format!("<articulations>{inner}</articulations>");
+    let measure = [
+        note("E4", 2, "quarter", 1, 1, &marks("<staccato/><accent/>")),
+        note("G5", 2, "quarter", 1, 1, &marks("<staccato/><accent/>")),
+        note("C5", 2, "quarter", 1, 1, &marks("<staccato/><accent/>")),
+        note(
+            "E4",
+            2,
+            "quarter",
+            1,
+            1,
+            &marks("<staccato/><tenuto/><accent/>"),
+        ),
+    ]
+    .concat();
+    let loaded = part("marks_kern.musicxml", 1, &[measure]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let (bottom_line, top_line) = staff_lines(&layout)[0];
+
+    let staccato = the_glyph(&layout, e[0], "articStaccatoBelow");
+    let accent = the_glyph(&layout, e[0], "articAccentBelow");
+    assert!(staccato[3] < bottom_line, "under the staff");
+    near(accent[3], staccato[1] - 0.2, "an accent kerned under E4");
+
+    let staccato = the_glyph(&layout, e[1], "articStaccatoAbove");
+    let accent = the_glyph(&layout, e[1], "articAccentAbove");
+    assert!(staccato[1] > top_line, "over the staff");
+    near(accent[1], staccato[3] + 0.2, "an accent kerned over G5");
+
+    let staccato = the_glyph(&layout, e[2], "articStaccatoAbove");
+    let accent = the_glyph(&layout, e[2], "articAccentAbove");
+    assert!(staccato[1] < top_line, "in the staff");
+    near(accent[1], top_line + 0.4, "an accent over C5's staccato");
+
+    let tenuto = the_glyph(&layout, e[3], "articTenutoBelow");
+    let accent = the_glyph(&layout, e[3], "articAccentBelow");
+    near(accent[3], tenuto[1] - 0.4, "a tenuto parts them");
+}
+
 /// A mark outside the staff stands clear of its chord's own accidentals
 /// where it meets them across, `articulationMinDistance` off them, as
 /// MuseScore's autoplace lifts it (`Autoplace::autoplaceSegmentElement`):
