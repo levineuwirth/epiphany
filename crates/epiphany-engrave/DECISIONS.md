@@ -2547,3 +2547,11 @@ is set:
   (`stacAccentKern`); it had stood the full 0.4 off
   (`an_accent_kerns_toward_a_staccato_outside_the_staff`). The engraver
   itself is unchanged.
+
+## ENGRAVER_VERSION 82 → 83: a stress mark aligns with the stem (X4c fix round 1, 2026-10-28)
+
+- A stress mark on its note's stem side stands centred between the head and
+  the stem, as an accent does, MuseScore counting it a basic articulation;
+  it had stood centred on the head
+  (`a_stress_mark_aligns_with_the_stem_as_an_accent_does`). The engraver
+  itself is unchanged.

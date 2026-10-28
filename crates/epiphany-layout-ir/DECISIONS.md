@@ -1385,3 +1385,8 @@ column's spring the padding after it.
   and other close marks after it (`Chord::add`), and any mark between the
   two parts them: here a staccato that is the chord's only close mark and
   an accent that is the first outside mark, both on one side.
+- A stress mark is one of the basic marks MuseScore aligns with the stem on
+  the stem's side (`Articulation::isBasicArticulation`, `articulation.cpp`
+  617 to 638, which lists `articStressAbove` and `articStressBelow`): it
+  had stood over its head there, as an unstress mark, which the list leaves
+  out, still does.

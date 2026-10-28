@@ -185,7 +185,8 @@ enum Kind {
 }
 
 /// A mark's glyph by side, its kind, and whether it is one of the basic
-/// articulations MuseScore aligns with the stem on the stem's side.
+/// articulations MuseScore aligns with the stem on the stem's side
+/// (`Articulation::isBasicArticulation`, a stress mark among them).
 fn articulation(mark: &EventMark) -> Option<(&'static str, &'static str, Kind, bool)> {
     use EventMark::*;
     Some(match mark {
@@ -221,7 +222,7 @@ fn articulation(mark: &EventMark) -> Option<(&'static str, &'static str, Kind, b
             Kind::Marcato,
             true,
         ),
-        Stress => ("articStressAbove", "articStressBelow", Kind::Outside, false),
+        Stress => ("articStressAbove", "articStressBelow", Kind::Outside, true),
         Unstress => (
             "articUnstressAbove",
             "articUnstressBelow",

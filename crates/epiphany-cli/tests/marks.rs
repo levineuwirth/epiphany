@@ -742,6 +742,52 @@ fn an_outside_mark_clears_its_chords_accidentals() {
     );
 }
 
+/// A stress mark is one of the basic marks MuseScore aligns with the stem on
+/// the stem's side (`Articulation::isBasicArticulation`): beside another
+/// voice, an upper voice's stress stands centred where its accent does,
+/// between its head and its stem, and an unstress mark, not basic, over its
+/// head.
+#[test]
+fn a_stress_mark_aligns_with_the_stem_as_an_accent_does() {
+    let marked = |mark: &str| {
+        note(
+            "A4",
+            2,
+            "quarter",
+            1,
+            1,
+            &format!("<articulations><{mark}/></articulations>"),
+        )
+    };
+    let measure = [
+        marked("accent"),
+        marked("stress"),
+        marked("unstress"),
+        note("rest", 2, "quarter", 1, 1, ""),
+        backup(8),
+        note("D4", 8, "whole", 2, 1, ""),
+    ]
+    .concat();
+    let loaded = part("marks_stress.musicxml", 1, &[measure]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let from_head = |event: EventId, name: &str| {
+        centre_x(the_glyph(&layout, event, name)) - centre_x(head(&loaded, &layout, event))
+    };
+    let accent = from_head(e[0], "articAccentAbove");
+    assert!(accent > 0.1, "the accent toward the stem: {accent}");
+    near(
+        from_head(e[1], "articStressAbove"),
+        accent,
+        "the stress as the accent",
+    );
+    near(
+        from_head(e[2], "articUnstressAbove"),
+        0.0,
+        "the unstress over its head",
+    );
+}
+
 /// With another voice at the note, each voice's marks stand at its stem:
 /// the upper voice's above and the lower's below; an ornament stands above
 /// in the upper voice and below in the lower.
