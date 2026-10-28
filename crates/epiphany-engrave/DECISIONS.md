@@ -2499,3 +2499,14 @@ is set:
   head. It had stood where it stands on an untied note
   (`a_close_mark_leaves_its_notes_tie_room`). The engraver itself is
   unchanged.
+
+## ENGRAVER_VERSION 77 → 78: a unison two voices do not share stands apart (X4c fix round 1, 2026-10-28)
+
+- Two voices' heads at a unison are one head only where both draw a stem,
+  as MuseScore shares them (`calculateChordOffsets`); two whole notes, a
+  two-note tremolo's written whole among them, had shared one. A unison not
+  shared stands apart as MuseScore sets it, the lower voice 0.15 right of
+  the upper's head, or an upper voice with dots 0.1 right of a lower one
+  without, where it had stood 0.02 right
+  (`a_unison_two_voices_do_not_share_stands_apart`). The engraver itself
+  is unchanged.

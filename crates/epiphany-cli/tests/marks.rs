@@ -1562,6 +1562,122 @@ fn a_two_note_tremolos_notes_are_drawn_at_their_written_value() {
     }
 }
 
+/// Two voices share a head at a unison only where both draw a stem, the same
+/// head and dots, as MuseScore's `ChordLayout::calculateChordOffsets` shares
+/// one: two whole notes, a two-note tremolo's written whole among them, and
+/// a quarter beside a half stand apart, the lower voice 0.15 right of the
+/// upper's head, a lower voice with dots too, and both with dots; an upper
+/// voice with dots beside a lower one without stands 0.1 right of it; two
+/// quarters share.
+#[test]
+fn a_unison_two_voices_do_not_share_stands_apart() {
+    let start = "<ornaments><tremolo type=\"start\">3</tremolo></ornaments>";
+    let stop = "<ornaments><tremolo type=\"stop\">3</tremolo></ornaments>";
+    let backup = String::from("<backup><duration>16</duration></backup>");
+    let rests = |voice: u8| {
+        [
+            note("rest", 4, "quarter", voice, 1, ""),
+            note("rest", 8, "half", voice, 1, ""),
+        ]
+        .concat()
+    };
+    let wholes = [
+        note("B4", 16, "whole", 1, 1, ""),
+        backup.clone(),
+        note("B4", 16, "whole", 2, 1, ""),
+    ]
+    .concat();
+    let quarter_half = [
+        note("G4", 4, "quarter", 1, 1, ""),
+        rests(1),
+        backup.clone(),
+        note("G4", 8, "half", 2, 1, ""),
+        note("rest", 8, "half", 2, 1, ""),
+    ]
+    .concat();
+    let quarters = [
+        note("G4", 4, "quarter", 1, 1, ""),
+        rests(1),
+        backup.clone(),
+        note("G4", 4, "quarter", 2, 1, ""),
+        rests(2),
+    ]
+    .concat();
+    let dotted = [
+        note("G4", 12, "half", 1, 1, "").replacen("</type>", "</type><dot/>", 1),
+        note("rest", 4, "quarter", 1, 1, ""),
+        backup.clone(),
+        note("G4", 8, "half", 2, 1, ""),
+        note("rest", 8, "half", 2, 1, ""),
+    ]
+    .concat();
+    let pair = [
+        tremolo_note("C5", 8, "whole", start),
+        tremolo_note("A4", 8, "whole", stop),
+        backup.clone(),
+        note("C5", 16, "whole", 2, 1, ""),
+    ]
+    .concat();
+    let dotted_lower = [
+        note("G4", 8, "half", 1, 1, ""),
+        note("rest", 8, "half", 1, 1, ""),
+        backup.clone(),
+        note("G4", 12, "half", 2, 1, "").replacen("</type>", "</type><dot/>", 1),
+        note("rest", 4, "quarter", 2, 1, ""),
+    ]
+    .concat();
+    let both_dotted = [
+        note("G4", 12, "half", 1, 1, "").replacen("</type>", "</type><dot/>", 1),
+        note("rest", 4, "quarter", 1, 1, ""),
+        backup,
+        note("G4", 6, "quarter", 2, 1, "").replacen("</type>", "</type><dot/>", 1),
+        note("rest", 2, "eighth", 2, 1, ""),
+        note("rest", 8, "half", 2, 1, ""),
+    ]
+    .concat();
+    let loaded = part_in(
+        "unisons.musicxml",
+        1,
+        4,
+        &[
+            wholes,
+            quarter_half,
+            quarters,
+            dotted,
+            pair,
+            dotted_lower,
+            both_dotted,
+        ],
+    );
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let at = |event: usize| head(&loaded, &layout, e[event]);
+
+    near(at(1)[0], at(0)[2] + 0.15, "two wholes, the lower right");
+    near(at(5)[0], at(2)[2] + 0.15, "a half right of a quarter");
+    near(at(10)[0], at(7)[0], "two quarters share a head");
+    near(
+        at(13)[0],
+        at(15)[2] + 0.1,
+        "a dotted upper half right of a half",
+    );
+    near(
+        at(19)[0],
+        at(17)[2] + 0.15,
+        "a whole right of a tremolo's whole",
+    );
+    near(
+        at(22)[0],
+        at(20)[2] + 0.15,
+        "a dotted lower half right of a half",
+    );
+    near(
+        at(26)[0],
+        at(24)[2] + 0.15,
+        "dotted voices, the lower right",
+    );
+}
+
 /// A slur over a two-note tremolo's stemless notes stands on the side away
 /// from the way its pair turns, as MuseScore sets a slur opposite its first
 /// chord's direction whether its stem is drawn or not

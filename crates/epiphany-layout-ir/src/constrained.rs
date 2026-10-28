@@ -1054,6 +1054,12 @@ const NOTEHEAD_STEM_X: f32 = 1.15;
 const ACCIDENTAL_GAP: f32 = 0.2; // an accidental's ink stands this far clear of a head or ledger line
 const ACCIDENTAL_STACK_GAP: f32 = 0.15; // …and this far clear of another accidental
 const SECOND_CLEARANCE: f32 = 0.02; // heads set beside each other stand this far apart
+/// The gap between two voices' heads at a unison they do not share, the
+/// later set right of the other, and an upper voice with dots set right of a
+/// lower one without (`ChordLayout::calculateChordOffsets`: 0.15 and 0.1 of
+/// a space past the other's head).
+const UNISON_CLEARANCE: f32 = 0.15;
+const DOTTED_UNISON_CLEARANCE: f32 = 0.1;
 const KEY_GAP: f32 = 0.6; // the gap between a clef's ink and the key signature after it
 const LEAD_GAP: f32 = 0.8; // the gap between a lead's ink and the first column after it
 const KEY_ACC_X: f32 = 0.9; // x advance per key-signature accidental
@@ -1883,7 +1889,16 @@ pub fn try_to_constrained(
                         .unwrap_or(VoicePlace::Alone)
                 })
                 .collect();
-            let (dxs, shifts, dot_x) = place_heads(&heads, &ups, &places);
+            let stemmed: Vec<bool> = heads
+                .iter()
+                .map(|head| {
+                    event_stems
+                        .get(&head.event)
+                        .and_then(|segs| segs.iter().find(|seg| seg.comp == head.comp))
+                        .is_some_and(|seg| seg.drawn)
+                })
+                .collect();
+            let (dxs, shifts, dot_x) = place_heads(&heads, &ups, &stemmed, &places);
             for (r, dx) in refs.iter().zip(dxs) {
                 let head = r.get_mut(&mut pitch_heads, &mut unpitched_heads);
                 head.dx = dx;
@@ -7718,12 +7733,18 @@ fn component_ties(
 /// before it that its heads would touch, its stem with it, so a lower voice a
 /// second under an upper one stands to its right with their stems in one
 /// line. A unison two voices share (one glyph, one alteration, one count of
-/// dots) is one head drawn twice. The dots of every head stand right of all
-/// of the column's heads. `ups` and `places` are each head's stem direction
-/// and voice place.
+/// dots, both drawing a stem) is one head drawn twice. A unison they do not
+/// share stands apart as MuseScore's `calculateChordOffsets` sets it: the
+/// later voice `UNISON_CLEARANCE` right of the other's head, but an upper
+/// voice with dots beside a lower one without, which goes after it and
+/// stands `DOTTED_UNISON_CLEARANCE` right of it. The dots of every head
+/// stand right of all of the column's heads. `ups`, `stemmed` and `places`
+/// are each head's stem direction, whether its stem is drawn, and its voice
+/// place.
 fn place_heads(
     heads: &[&Head],
     ups: &[bool],
+    stemmed: &[bool],
     places: &[VoicePlace],
 ) -> (Vec<f32>, Vec<(EventId, usize, f32)>, f32) {
     let ink = |head: &Head| {
@@ -7769,6 +7790,28 @@ fn place_heads(
         VoicePlace::Lower => 2,
     };
     events.sort_by_key(|event| (rank(places[of(*event)[0]]), *event));
+    // An upper voice with dots meeting a lower one without at a unison goes
+    // after it, as MuseScore moves the up voice then (`upOffset`).
+    let dotted = |event: EventId| of(event).iter().any(|&i| heads[i].dots > 0);
+    let unison = |a: EventId, b: EventId| {
+        of(a)
+            .iter()
+            .any(|&i| of(b).iter().any(|&j| heads[i].step == heads[j].step))
+    };
+    let after: Vec<EventId> = events
+        .iter()
+        .copied()
+        .filter(|&upper| {
+            dotted(upper)
+                && events.iter().any(|&lower| {
+                    rank(places[of(lower)[0]]) > rank(places[of(upper)[0]])
+                        && !dotted(lower)
+                        && unison(upper, lower)
+                })
+        })
+        .collect();
+    events.retain(|event| !after.contains(event));
+    events.extend(after);
     let mut shifts = Vec::new();
     let mut standing: Vec<usize> = Vec::new();
     for &event in &events {
@@ -7786,13 +7829,24 @@ fn place_heads(
                     let b = ink(heads[j]);
                     let (bl, br) = (dx[j] + b[0], dx[j] + b[2]);
                     let (bb, bt) = (heads[j].y + b[1], heads[j].y + b[3]);
-                    let shared = heads[i].step == heads[j].step
+                    let unison = heads[i].step == heads[j].step;
+                    let shared = unison
                         && heads[i].name == heads[j].name
                         && heads[i].dots == heads[j].dots
                         && heads[i].alteration == heads[j].alteration
+                        && stemmed[i]
+                        && stemmed[j]
                         && shift + dx[i] == dx[j];
                     if !shared && al < br && bl < ar && ab < bt && bb < at {
-                        reach = reach.max(br);
+                        let dotted_upper = heads[i].dots > 0
+                            && heads[j].dots == 0
+                            && rank(places[i]) < rank(places[j]);
+                        let gap = match (unison, dotted_upper) {
+                            (false, _) => SECOND_CLEARANCE,
+                            (true, true) => DOTTED_UNISON_CLEARANCE,
+                            (true, false) => UNISON_CLEARANCE,
+                        };
+                        reach = reach.max(br + gap);
                     }
                 }
             }
@@ -7803,7 +7857,7 @@ fn place_heads(
                 .iter()
                 .map(|&i| dx[i] + ink(heads[i])[0])
                 .fold(f32::INFINITY, f32::min);
-            shift = reach - left + SECOND_CLEARANCE;
+            shift = reach - left;
         }
         if shift != 0.0 {
             for &i in &mine {

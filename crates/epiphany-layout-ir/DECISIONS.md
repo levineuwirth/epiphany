@@ -1329,3 +1329,16 @@ column's spring the padding after it.
   chord (`tiePlacementChord`, `tiePlacementSingleNote`), is assumed, so no
   tie is an inside one. On the stem's side a close mark stands as before,
   as MuseScore's does.
+- Two voices share a head at a unison only where both draw a stem, the
+  same head and the same dots, as MuseScore's
+  `ChordLayout::calculateChordOffsets` shares one (`chordlayout.cpp` 1997:
+  "both chords have same number of dots, both have stems, and both
+  noteheads are same type"); a two-note tremolo's note counts by its
+  written value, so a written whole shares with nothing. A unison not
+  shared stands apart as MuseScore sets it (2112 to 2117): the lower voice
+  0.15 right of the upper's head, but an upper voice with dots beside a
+  lower one without, which stands 0.1 right of the lower's head instead.
+  Measured on MuseScore's own pages, an unshared unison of two whole notes,
+  and of a quarter's head beside a half's, stands 0.149 of a space past the
+  first head. Heads that touch otherwise, a second between voices among
+  them, keep `SECOND_CLEARANCE`.
