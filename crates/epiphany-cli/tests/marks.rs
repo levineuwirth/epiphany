@@ -1678,6 +1678,104 @@ fn a_unison_two_voices_do_not_share_stands_apart() {
     );
 }
 
+/// A slur takes its side as MuseScore's `SlurTieLayout::computeUp` sets it:
+/// opposite its first note's direction, a whole note's as its stem would
+/// turn, so under low whole notes; above where its voice's notes turn both
+/// ways between its ends, a whole note among them by its stem's turn; and,
+/// where its staff shows a voice past the first anywhere in its span, a rest
+/// of it alone, above in the first voice and below where either end is in
+/// any other.
+#[test]
+fn a_slur_takes_its_side_as_musescore_computes_it() {
+    let open = "<slur type=\"start\" number=\"1\"/>";
+    let close = "<slur type=\"stop\" number=\"1\"/>";
+    let backup = |d: u8| format!("<backup><duration>{d}</duration></backup>");
+    let measures = [
+        // Low whole notes, their stems' turn up: below.
+        note("E4", 16, "whole", 1, 1, open),
+        note("F4", 16, "whole", 1, 1, close),
+        // Up stems, then a whole note whose stem would turn down: above.
+        [
+            note("A4", 8, "half", 1, 1, open),
+            note("A4", 8, "half", 1, 1, ""),
+        ]
+        .concat(),
+        note("E5", 16, "whole", 1, 1, close),
+        // The first voice with only a rest of the second in its span: above.
+        [
+            note("G4", 4, "quarter", 1, 1, open),
+            note("A4", 4, "quarter", 1, 1, ""),
+            note("A4", 8, "half", 1, 1, close),
+            backup(16),
+            String::from("<forward><duration>8</duration></forward>"),
+            note("rest", 8, "half", 2, 1, ""),
+        ]
+        .concat(),
+        // A third voice's slur: below, its stems up.
+        [
+            note("C5", 16, "whole", 1, 1, ""),
+            backup(16),
+            note("A4", 16, "whole", 2, 1, ""),
+            backup(16),
+            note("E4", 4, "quarter", 3, 1, open),
+            note("E4", 4, "quarter", 3, 1, close),
+            note("rest", 8, "half", 3, 1, ""),
+        ]
+        .concat(),
+        // From the first voice to the second: below.
+        [
+            note("C5", 8, "half", 1, 1, open),
+            note("rest", 8, "half", 1, 1, ""),
+            backup(16),
+            note("rest", 8, "half", 2, 1, ""),
+            note("G4", 8, "half", 2, 1, close),
+        ]
+        .concat(),
+        // Down stems, above; up stems, below.
+        [
+            note("C5", 4, "quarter", 1, 1, open),
+            note("D5", 4, "quarter", 1, 1, close),
+            note("E4", 4, "quarter", 1, 1, open),
+            note("F4", 4, "quarter", 1, 1, close),
+        ]
+        .concat(),
+    ];
+    let loaded = part_in("slur_sides.musicxml", 1, 4, &measures);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let above = |first: usize| {
+        let slur = loaded
+            .reduced
+            .score
+            .cross_cutting
+            .slurs
+            .iter()
+            .find(|s| s.start_event == e[first])
+            .expect("a slur from that note");
+        let curve = layout
+            .curves
+            .iter()
+            .find(|c| c.provenance.source == TypedObjectId::Slur(slur.id))
+            .expect("its curve");
+        let cp = curve.control_points();
+        cp[1].y.0 > cp[0].y.0
+    };
+
+    // Counted from the end: the third voice's measure, the first voice's
+    // half and rest, the second's rest and half, then four quarters.
+    let n = e.len();
+    assert!(!above(0), "under low whole notes");
+    assert!(above(2), "over up stems to a whole note turned down");
+    assert!(
+        above(5),
+        "the first voice's, with a later voice's rest in its span"
+    );
+    assert!(!above(n - 11), "a third voice's");
+    assert!(!above(n - 8), "from the first voice to the second");
+    assert!(above(n - 4), "over down stems");
+    assert!(!above(n - 2), "under up stems");
+}
+
 /// A slur over a two-note tremolo's stemless notes stands on the side away
 /// from the way its pair turns, as MuseScore sets a slur opposite its first
 /// chord's direction whether its stem is drawn or not

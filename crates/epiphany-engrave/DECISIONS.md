@@ -2510,3 +2510,14 @@ is set:
   without, where it had stood 0.02 right
   (`a_unison_two_voices_do_not_share_stands_apart`). The engraver itself
   is unchanged.
+
+## ENGRAVER_VERSION 78 → 79: a slur takes its side as MuseScore computes it (X4c fix round 1, 2026-10-28)
+
+- A slur goes opposite its first note's direction, a whole note's as its
+  stem would turn; above where its voice's notes turn both ways between its
+  ends; and by voice where its staff shows another voice anywhere in its
+  span, as MuseScore's `SlurTieLayout::computeUp` sets it. Slurs over whole
+  notes had gone above, a whole note turned the other way had counted no
+  direction, and a later voice entering after the first note had not set
+  the side (`a_slur_takes_its_side_as_musescore_computes_it`). The engraver
+  itself is unchanged.

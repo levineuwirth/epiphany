@@ -5032,6 +5032,7 @@ pub fn try_to_constrained(
                             staff
                                 .and_then(|st| staff_notes.get(&st))
                                 .unwrap_or(&no_notes),
+                            &event_stems,
                         ),
                         _ => None,
                     };
@@ -6252,6 +6253,7 @@ fn slur_curve(
     columns: &BTreeMap<ColumnKey, ColumnInfo>,
     band: VerticalBandId,
     notes: &BTreeMap<ColumnKey, ColumnInk>,
+    stems: &BTreeMap<EventId, Vec<StemSeg>>,
 ) -> Option<Curve> {
     let start_key = slur_endpoint_key(&slur.start)?;
     let end_key = slur_endpoint_key(&slur.end)?;
@@ -6279,10 +6281,31 @@ fn slur_curve(
         return None;
     }
 
-    // Side: an authored direction wins; `Auto` goes opposite the stems.
+    // Side: an authored direction, or one its voices give, wins. `Auto` goes
+    // as MuseScore's `SlurTieLayout::computeUp` sets it: above where its
+    // voice's notes turn both ways between its ends (`isDirectionMixture`),
+    // else opposite its first note's direction, a stemless note's as its stem
+    // would turn. A slur starting on no note of a staff's own voice goes
+    // opposite the stems in its span.
+    let turns: Vec<bool> = slur
+        .chords
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| stems.get(e).map(|segs| (i, segs)))
+        .flat_map(|(i, segs)| {
+            let last = i + 1 == slur.chords.len() && i > 0;
+            segs.iter()
+                .filter(move |seg| !last || seg.comp == 0)
+                .map(|seg| seg.up)
+        })
+        .collect();
     let above = match slur.direction {
         SlurDirection::Below => false,
         SlurDirection::Above => true,
+        SlurDirection::Auto if !turns.is_empty() => {
+            let first = turns[0];
+            turns.iter().any(|&up| up != first) || !first
+        }
         SlurDirection::Auto => {
             let ups = spanned
                 .iter()

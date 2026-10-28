@@ -1311,7 +1311,8 @@ column's spring the padding after it.
   edge as a stem would, which a slur on that side clears, as MuseScore's
   clears the tremolo's shape (`SlurTieLayout::getSegmentShape`); it draws
   no stem. A slur over other stemless notes, whole notes outside a pair,
-  still goes above.
+  still went above, until the fix round below set every slur by
+  `computeUp`.
 
 ## Placement by MuseScore's rules, after review (X4c fix round 1, 2026-10-28)
 
@@ -1342,3 +1343,18 @@ column's spring the padding after it.
   and of a quarter's head beside a half's, stands 0.149 of a space past the
   first head. Heads that touch otherwise, a second between voices among
   them, keep `SECOND_CLEARANCE`.
+- A slur no one directed takes its side as MuseScore's
+  `SlurTieLayout::computeUp` sets it (`slurtielayout.cpp` 2566 to 2636).
+  Where its staff shows a voice past the first anywhere from its first note
+  to its last note's end (`Measure::hasVoices`, a note, unpitched note or
+  visible rest of voices 2 to 4), it goes by voice: above where both its
+  ends are the first voice's, below where either is another's. Otherwise
+  above where its voice's notes between its ends turn both ways
+  (`isDirectionMixture`, 2902), else opposite its first note's direction; a
+  note that draws no stem, a whole note or a two-note tremolo's written
+  whole, counts the way its stem would turn, a tremolo's member its pair's.
+  The voices are a staff's own: a voice visiting from its home on another
+  staff keeps its home's side, as before (D46), and a slur starting on no
+  note of a staff's own voice, a rest, still goes opposite the stems in its
+  span. The side had come from the first note's voice place, else from
+  every stem in the span, a stemless one counting neither way.

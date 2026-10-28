@@ -420,6 +420,10 @@ pub struct SlurContent {
     /// rides the emitted `Curve`, so a non-`Solid` slur draws dashed or dotted
     /// (`stroke-dasharray`) rather than silently solid.
     pub line: LineStyle,
+    /// The notes an `Auto` slur takes its side from, in time order: its first
+    /// note, then the notes of its voice up to its last where both ends are
+    /// that voice's. Empty where it starts on no note of a staff's own voice.
+    pub chords: Vec<EventId>,
 }
 
 /// A slur endpoint on the region's spacing axis.
@@ -716,8 +720,10 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
         }
     }
 
-    // Every event's place among its staff's voices, for the slurs below.
+    // Every event's place among its staff's voices, and its rank among them,
+    // for the slurs below.
     let mut all_places: BTreeMap<EventId, VoicePlace> = BTreeMap::new();
+    let mut slur_voices = SlurVoices::default();
     for (region_index, region) in score.canvas.regions.iter().enumerate() {
         let region_id = region.id;
         let mut objects = Vec::new();
@@ -781,6 +787,7 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
             let spans = measure_spans(score, si, grid);
             let places = voice_places(score, si);
             all_places.extend(&places);
+            slur_voices.add(score, si);
             for voice in &si.voices {
                 let v_src = TypedObjectId::Voice(voice.id);
                 push(v_src, vec![si_src], staff, LayoutContent::Structural);
@@ -969,7 +976,7 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
                 .slurs
                 .iter()
                 .find(|slur| slur.id == id)
-                .map(|slur| slur_content(score, slur, &all_places))
+                .map(|slur| slur_content(score, slur, &all_places, &slur_voices))
                 .unwrap_or_default(),
             TypedObjectId::Tie(id) => score
                 .cross_cutting
@@ -2047,15 +2054,29 @@ fn slur_content(
     score: &Score,
     slur: &epiphany_core::Slur,
     places: &BTreeMap<EventId, VoicePlace>,
+    voices: &SlurVoices,
 ) -> LayoutContent {
     use epiphany_core::CurveDirection;
+    let (first, last) = (slur.start_event, slur.end_event);
     let direction = match slur.curvature_override.as_ref().and_then(|o| o.direction) {
         Some(CurveDirection::Above) => SlurDirection::Above,
         Some(CurveDirection::Below) => SlurDirection::Below,
-        None => match places.get(&slur.start_event) {
-            Some(VoicePlace::Upper) => SlurDirection::Above,
-            Some(VoicePlace::Lower) => SlurDirection::Below,
-            _ => SlurDirection::Auto,
+        None => match voices.rank.get(&first) {
+            // A voice visiting from another staff keeps its home's side.
+            None => match places.get(&first) {
+                Some(VoicePlace::Upper) => SlurDirection::Above,
+                Some(VoicePlace::Lower) => SlurDirection::Below,
+                _ => SlurDirection::Auto,
+            },
+            Some(&(_, k, si)) if voices.shows_another(score, si, first, last) => {
+                let later = k > 0 || voices.rank.get(&last).is_some_and(|&(_, k, _)| k > 0);
+                if later {
+                    SlurDirection::Below
+                } else {
+                    SlurDirection::Above
+                }
+            }
+            Some(_) => SlurDirection::Auto,
         },
     };
     LayoutContent::Slur(SlurContent {
@@ -2066,7 +2087,108 @@ fn slur_content(
         thickness: slur.style.thickness,
         kind: slur.kind,
         line: slur.style.line,
+        chords: voices.chords(score, first, last),
     })
+}
+
+/// What an `Auto` slur's side is read from, as MuseScore's
+/// `SlurTieLayout::computeUp` reads it: each event of a staff's own voices
+/// (not those visiting it, D46) with its voice and that voice's rank, the
+/// first (the primary, else the first listed) `0`; each such voice's notes
+/// in time order; and each staff instance's inked spans of its voices past
+/// the first, whose showing in a slur's span sets it by voice
+/// (`Measure::hasVoices`: a note, unpitched note or visible rest of voices 2
+/// to 4).
+#[derive(Default)]
+struct SlurVoices {
+    rank: BTreeMap<
+        EventId,
+        (
+            epiphany_core::VoiceId,
+            usize,
+            epiphany_core::StaffInstanceId,
+        ),
+    >,
+    notes: BTreeMap<epiphany_core::VoiceId, Vec<(MusicalPosition, EventId)>>,
+    later: BTreeMap<epiphany_core::StaffInstanceId, Vec<(MusicalPosition, MusicalPosition)>>,
+}
+
+impl SlurVoices {
+    fn add(&mut self, score: &Score, si: &epiphany_core::StaffInstance) {
+        let homes = home_sides(score, si);
+        let mut voices: Vec<&epiphany_core::Voice> = si
+            .voices
+            .iter()
+            .filter(|v| !homes.contains_key(&v.id))
+            .collect();
+        voices.sort_by_key(|v| !v.is_primary);
+        for (k, voice) in voices.iter().enumerate() {
+            let mut notes = Vec::new();
+            for eid in &voice.events {
+                self.rank.insert(*eid, (voice.id, k, si.id));
+                if k > 0 {
+                    if let Some(span) = inked_span(score, eid) {
+                        self.later.entry(si.id).or_default().push(span);
+                    }
+                }
+                let note = matches!(
+                    score.events.get(*eid),
+                    Some(Event::Pitched(_) | Event::Unpitched(_))
+                );
+                if let (true, Some((start, _))) = (note, inked_span(score, eid)) {
+                    notes.push((start, *eid));
+                }
+            }
+            notes.sort();
+            self.notes.insert(voice.id, notes);
+        }
+    }
+
+    /// The staff shows a voice past its first anywhere from the slur's first
+    /// note to its last note's end.
+    fn shows_another(
+        &self,
+        score: &Score,
+        si: epiphany_core::StaffInstanceId,
+        first: EventId,
+        last: EventId,
+    ) -> bool {
+        let (Some((start, _)), Some((_, end))) =
+            (inked_span(score, &first), inked_span(score, &last))
+        else {
+            return false;
+        };
+        self.later
+            .get(&si)
+            .is_some_and(|spans| spans.iter().any(|(s, e)| *s < end && *e > start))
+    }
+
+    /// The slur's first note, then the notes of its voice up to its last
+    /// where both ends are that voice's (`isDirectionMixture` reads one
+    /// track); empty where it starts on no note of a staff's own voice.
+    fn chords(&self, score: &Score, first: EventId, last: EventId) -> Vec<EventId> {
+        let Some((voice, _, _)) = self.rank.get(&first) else {
+            return Vec::new();
+        };
+        let Some(notes) = self.notes.get(voice) else {
+            return Vec::new();
+        };
+        let Some((start, _)) = notes.iter().find(|(_, e)| *e == first) else {
+            return Vec::new();
+        };
+        let end = match self.rank.get(&last) {
+            Some((v, _, _)) if v == voice => inked_span(score, &last).map(|(s, _)| s),
+            _ => None,
+        };
+        match end {
+            Some(end) => notes
+                .iter()
+                .filter(|(s, _)| s >= start && *s <= end)
+                .map(|(_, e)| *e)
+                .collect(),
+            None => vec![first],
+        }
+    }
 }
 
 /// A tie's content (see [`TieContent`]).
