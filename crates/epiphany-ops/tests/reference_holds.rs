@@ -820,10 +820,12 @@ fn a_region_carrying_tempo_segments_on_distinct_keys_applies_and_holds() {
 type Holder = fn(&mut History, TimeAnchor) -> OperationId;
 
 /// The holders whose writes did not read their anchors' targets: a time
-/// signature, a grid's meter change, a region's extent, a staff instance's
-/// carried clef, key and grid, a region's own model, carried grid, break and
-/// tempo map, and a migration's target model. Each names the fixture's
-/// signature where it holds a meter change, declared first.
+/// signature, a grid's meter change, a region's extent (whole, or its end
+/// alone, its start elsewhere), a staff instance's carried clef, key and
+/// grid, a region's own model, carried grid, break and tempo map, and a
+/// migration's target model. Each names the fixture's signature where it
+/// holds a meter change, declared first. The extent's end and the carried
+/// tempo map are C5b review 2's L3: no test held either.
 fn holders() -> Vec<(&'static str, Holder)> {
     fn region_with(h: &mut History, shape: impl FnOnce(&mut epiphany_core::Region)) -> OperationId {
         let id = RegionId::new(AUTHOR, 13);
@@ -881,6 +883,9 @@ fn holders() -> Vec<(&'static str, Holder)> {
                 }
             })
         }),
+        ("region extent's end", |h, a| {
+            region_with(h, |r| r.time_extent.end = a)
+        }),
         ("carried clef", |h, a| {
             instance_with(h, |i| {
                 i.clef_sequence.push(epiphany_core::ClefChange {
@@ -927,6 +932,16 @@ fn holders() -> Vec<(&'static str, Holder)> {
                     .expect("staff-based")
                     .user_system_breaks
                     .push(a)
+            })
+        }),
+        ("region's carried tempo", |h, a| {
+            region_with(h, |r| {
+                let mut segment = valuegen::tempo_segment(r.id, MusicalPosition::origin(), 90.0);
+                segment.start = a;
+                r.local_tempo_map = Some(TempoMap {
+                    initial: None,
+                    segments: vec![segment],
+                });
             })
         }),
         ("migration's target model", |h, a| {
@@ -1215,6 +1230,21 @@ fn a_holder_that_names_nothing_the_removal_takes_holds_nothing() {
             }
             let (h, _, removed, object) = removing(write, removal, true);
             let (free, aware) = h.reduce();
+            // A region's carried tempo map naming a region the same undo
+            // removes still holds it: a strict or cascading undo conflicts
+            // and a best-effort one keeps the region. The undo's region arm
+            // reads a tempo segment as a region's delete does (reduction
+            // version 3), excepting the removed region's own map but not a
+            // map whose region the undo removes too. Conservative, nothing
+            // left naming nothing, and older than X5b.
+            if name == "region's carried tempo" && matches!(removal, Removal::RegionUndone(_)) {
+                assert!(
+                    live(&aware, object),
+                    "{name} {removal:?}: {:?}",
+                    effect(&free, removed)
+                );
+                continue;
+            }
             if name == "migration's target model" {
                 let kept = match removal {
                     Removal::NoteUndone(UndoPolicy::BestEffort)
