@@ -4502,3 +4502,24 @@ So no base reaches the chain's seeding outside a test that builds one, and a
 base's maps still seed one segment per key. The coarse key itself stays, a
 decision for when an editor writes tempo at notes or a document holds two
 regions.
+
+**Two halves no test held, and one conservative verdict.** A hold reading a
+region extent's end apart from its start, and a region's dead-target refusal
+reading its carried tempo map, were each right and held by no test. The
+holders' tests gain an extent whose end alone names its target and a region
+carrying a tempo segment. The second shows one verdict older than X5b: an
+undo removing a region and, in the same transaction, a region whose tempo map
+names it is held, a strict or cascading undo conflicting and a best-effort
+one keeping the first region. The undo's region arm reads a tempo segment as
+a region's delete does (version 3), excepting the removed region's own map
+but not a map whose region the same undo removes, as the note's hold does.
+Nothing is left naming nothing, and the test pins the verdict as it stands.
+
+**The fuzz writes the create.** Arm 72 places a region carrying a tempo map
+with two segments on one key, one at a note the view holds and the other at
+its own start, a measure's or another region's, in either order, and one
+time in two deletes the note; the create is refused, and `REFUSED` counts
+its shape, which the CI budget holds authored and never applied. The arm
+takes weight 1: at 2 the moved draws left the CI budget writing a measure by
+a wall-clock offset once and applying it never, a shape D50's bar applies in
+every chunk.

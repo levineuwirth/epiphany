@@ -123,7 +123,11 @@
 //! grid holds (D86 Q1); and a note, a measure, an empty region or a tuplet made
 //! in a transaction, a holder or a nested tuplet then naming it, and the
 //! transaction undone or the note or region deleted (arm 71), which the holder
-//! holds (D86 Q2, D87 Q1 and Q3).
+//! holds (D86 Q2, D87 Q1 and Q3). And a region placed carrying a tempo map
+//! with two segments on one key, one at a note the view holds and the other
+//! at its own start, a measure's or another region's, in either order, and
+//! one time in two the note then deleted (arm 72): the create is refused
+//! `TempoMapMalformed` (D89).
 //!
 //! Everything is seeded: [`generate`] is a function of its seed and length, so
 //! a finding reproduces from both. [`minimize`] shrinks a failing history to
@@ -680,12 +684,16 @@ const SHAPES: [&str; 39] = [
 ];
 
 /// The shapes reduction version 5 refuses wherever they are written, each
-/// counted beside its kind: a constant tempo segment recording its end tempo
-/// (`TempoMapMalformed`), which version 4 applied. A user break naming
+/// counted beside its kind: a constant tempo segment recording its end tempo,
+/// and a region created carrying a tempo map with two segments on one key
+/// (each `TempoMapMalformed`), which version 4 applied. A user break naming
 /// another region is counted too ("user break+another region's anchor"),
 /// where its anchor shows it, but a view seldom holds two regions to choose
 /// from.
-pub const REFUSED: [&str; 1] = ["SetTempoSegment+constant with an end tempo"];
+pub const REFUSED: [&str; 2] = [
+    "SetTempoSegment+constant with an end tempo",
+    "CreateRegion+tempo map with two segments on one key",
+];
 
 /// Which of [`SHAPES`] a payload has, with the holders' wall-clock offsets
 /// ([`wall_clock_shape`]).
@@ -909,6 +917,18 @@ fn kind_shapes(payload: &OperationPayload) -> Vec<&'static str> {
                 .filter_map(|anchor| anchor.offset())
                 .collect();
             let mut out = Vec::new();
+            let mut keys = std::collections::BTreeSet::new();
+            if !op
+                .region
+                .local_tempo_map
+                .iter()
+                .flat_map(|map| &map.segments)
+                .all(|segment| {
+                    keys.insert(crate::payload::resolved_anchor_position(&segment.start))
+                })
+            {
+                out.push("CreateRegion+tempo map with two segments on one key");
+            }
             if !matches!(extent.start, epiphany_core::TimeAnchor::WallClock { .. }) {
                 out.push("CreateRegion+anchored start");
                 // Arm 15's own gesture for the overlap refusal: a start with
@@ -4373,6 +4393,73 @@ fn make(
             sim.replicas[r].queued.push((tx, 2));
             out
         }
+        72 => {
+            // A region carrying a tempo map with two segments on one key, one
+            // at a note (X5b fix round 2, D89): placed as an editor places
+            // one, its map a segment at a note the view holds and one at its
+            // own start, a measure's start or another region's, all with no
+            // offset, in either order, refused `TempoMapMalformed`; one time
+            // in two the note then deleted, which, were the create applied
+            // with the other segment first, would leave the note's naming
+            // nothing.
+            let note = sim.rng.pick(&h.events)?.id();
+            let mut carrier = placed_region(sim, r, h);
+            let zero = epiphany_core::AnchorOffset::Zero;
+            let other = match sim.rng.below(3) {
+                0 => epiphany_core::TimeAnchor::Region {
+                    id: carrier.id,
+                    edge: epiphany_core::RegionEdge::Start,
+                    offset: zero.clone(),
+                },
+                1 => {
+                    let instances = h.metric_instances();
+                    let (_, instance) = *sim.rng.pick(&instances)?;
+                    epiphany_core::TimeAnchor::Measure {
+                        id: sim.rng.pick(&instance.measures)?.id,
+                        position: epiphany_core::MeasurePosition::Start,
+                        offset: zero.clone(),
+                    }
+                }
+                _ => epiphany_core::TimeAnchor::Region {
+                    id: sim.rng.pick(&h.regions)?.0,
+                    edge: epiphany_core::RegionEdge::Start,
+                    offset: zero.clone(),
+                },
+            };
+            let mut starts = vec![
+                other,
+                epiphany_core::TimeAnchor::Event {
+                    id: note,
+                    offset: zero,
+                },
+            ];
+            if sim.rng.chance(2) {
+                starts.reverse();
+            }
+            let id = carrier.id;
+            carrier.local_tempo_map = Some(epiphany_core::TempoMap {
+                initial: None,
+                segments: starts
+                    .into_iter()
+                    .map(|start| {
+                        let mut segment =
+                            valuegen::tempo_segment(id, MusicalPosition::origin(), 90.0);
+                        segment.start = start;
+                        segment
+                    })
+                    .collect(),
+            });
+            let mut out = vec![prim(OperationKind::CreateRegion(CreateRegionOp {
+                region: carrier,
+            }))];
+            if sim.rng.chance(2) {
+                out.push(prim(OperationKind::DeleteEvent(DeleteEventOp {
+                    event: note,
+                    tuplet_compensation: TupletCompensation::NotInTuplet,
+                })));
+            }
+            out
+        }
         _ => return None,
     })
 }
@@ -4931,7 +5018,7 @@ fn tie_entry(
 /// Each arm of [`make`] and how often it is drawn: the editing of notes,
 /// pitches and their marks three times as often as the score's structure and
 /// settings, as an editor's history runs.
-const ARMS: [(u64, u64); 72] = [
+const ARMS: [(u64, u64); 73] = [
     (0, 4),
     (1, 3),
     (2, 3),
@@ -5004,6 +5091,7 @@ const ARMS: [(u64, u64); 72] = [
     (69, 1),
     (70, 1),
     (71, 4),
+    (72, 1),
 ];
 
 fn draw_arm(rng: &mut Rng) -> u64 {
