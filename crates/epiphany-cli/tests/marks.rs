@@ -2398,6 +2398,42 @@ fn a_slur_over_a_stemless_tremolo_pair_stands_away_from_its_strokes() {
     }
 }
 
+/// A slur starting on a rest reads its side from the stems in its span, and
+/// a two-note tremolo's stemless notes count there as their pair turns: a
+/// slur from a rest to a low pair of written wholes, turned up, stands
+/// under them, as it does over stemmed notes turned up.
+#[test]
+fn a_slur_from_a_rest_counts_a_stemless_tremolo_pairs_turn() {
+    let start = "<ornaments><tremolo type=\"start\">3</tremolo></ornaments>";
+    let stop = "<ornaments><tremolo type=\"stop\">3</tremolo></ornaments>";
+    let slur = |kind: &str| format!("<slur type=\"{kind}\" number=\"1\"/>");
+    let rests = [
+        note("rest", 4, "half", 1, 1, &slur("start")),
+        note("rest", 4, "half", 1, 1, ""),
+    ]
+    .concat();
+    let pair = [
+        tremolo_note("F4", 4, "whole", start),
+        tremolo_note("A4", 4, "whole", &format!("{stop}{}", slur("stop"))),
+    ]
+    .concat();
+    let loaded = part("stemless_tremolo_rest_slur.musicxml", 1, &[rests, pair]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    assert_eq!(stem_count(&layout, e[2]) + stem_count(&layout, e[3]), 0);
+    let slur = layout
+        .curves
+        .iter()
+        .find(|c| matches!(c.provenance.source, TypedObjectId::Slur(_)))
+        .expect("the slur");
+    let cp = slur.control_points();
+    let (a, b) = (head(&loaded, &layout, e[2]), head(&loaded, &layout, e[3]));
+    assert!(
+        cp[1].y.0 < cp[0].y.0 && cp[2].y.0 < cp[3].y.0,
+        "the slur arcs below: {cp:?} against {a:?} {b:?}"
+    );
+}
+
 /// A slur on the side of a two-note tremolo's stemless notes their strokes
 /// stand on passes over the strokes, as MuseScore's slur clears the
 /// tremolo's shape (`SlurTieLayout::getSegmentShape`): an upper voice's
