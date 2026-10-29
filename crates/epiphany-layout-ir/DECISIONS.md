@@ -1410,3 +1410,15 @@ column's spring the padding after it.
   a second voice's slur ending on a rest the export hides had read no span,
   so it went opposite its stemless first note, which its voice turns down,
   and arced over the staff.
+- Where a lower voice crosses an upper one at a unison, its highest head
+  above the upper's lowest (`separation < 0`, `chordlayout.cpp` 1900 and
+  1924), MuseScore shares heads only where the heads they meet at, the
+  upper's up to a step over the lower's highest and the lower's down to a
+  step under the upper's lowest, pair off as unisons it would share, with no
+  second and no head left unpaired among them (`shareHeads`, 1948 to 2035);
+  else it moves the up voice right, `maxDownWidth + 0.15` of a space (2116
+  to 2117). So the upper voice goes after the lower and stands 0.15 right of
+  the lower's head. Found reading the round's unisons beside MuseScore's
+  pages: two voices' wholes crossing in a chord with seconds had set the
+  lower voice's head right of the upper's displaced second, where MuseScore
+  sets it left of the upper's chord.

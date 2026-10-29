@@ -7764,7 +7764,10 @@ fn component_ties(
 /// share stands apart as MuseScore's `calculateChordOffsets` sets it: the
 /// later voice `UNISON_CLEARANCE` right of the other's head, but an upper
 /// voice with dots beside a lower one without, which goes after it and
-/// stands `DOTTED_UNISON_CLEARANCE` right of it. The dots of every head
+/// stands `DOTTED_UNISON_CLEARANCE` right of it, and an upper voice the lower
+/// crosses at a unison, reaching above its lowest head, which goes after it
+/// too and shares no head with it unless their heads where they meet pair
+/// off as unisons they could share. The dots of every head
 /// stand right of all of the column's heads. `ups`, `stemmed` and `places`
 /// are each head's stem direction, whether its stem is drawn, and its voice
 /// place.
@@ -7817,24 +7820,86 @@ fn place_heads(
         VoicePlace::Lower => 2,
     };
     events.sort_by_key(|event| (rank(places[of(*event)[0]]), *event));
-    // An upper voice with dots meeting a lower one without at a unison goes
-    // after it, as MuseScore moves the up voice then (`upOffset`).
+    let shareable = |i: usize, j: usize| {
+        heads[i].step == heads[j].step
+            && heads[i].name == heads[j].name
+            && heads[i].dots == heads[j].dots
+            && heads[i].alteration == heads[j].alteration
+            && stemmed[i]
+            && stemmed[j]
+    };
     let dotted = |event: EventId| of(event).iter().any(|&i| heads[i].dots > 0);
     let unison = |a: EventId, b: EventId| {
         of(a)
             .iter()
             .any(|&i| of(b).iter().any(|&j| heads[i].step == heads[j].step))
     };
+    // Where two voices cross at a unison, the lower reaching above the
+    // upper's lowest head, MuseScore reads the heads they meet at, skipping
+    // any across its stem, and moves the upper voice where it finds a unison
+    // there, unless every head pairs off as a unison it would share and none
+    // stands across its stem (`shareHeads`). A second between the voices'
+    // heads, which parts them as well, parts them here by a head it leaves
+    // unpaired or one set across: a voice holding both its heads sets one
+    // across.
+    let parted = |upper: EventId, lower: EventId| {
+        let (high, low) = (of(upper), of(lower));
+        let top = low.iter().map(|&j| heads[j].step).max();
+        let bottom = high.iter().map(|&i| heads[i].step).min();
+        let (Some(top), Some(bottom)) = (top, bottom) else {
+            return false;
+        };
+        if top <= bottom {
+            return false;
+        }
+        let mut meet: Vec<usize> = high
+            .iter()
+            .copied()
+            .filter(|&i| heads[i].step <= top + 1)
+            .chain(low.iter().copied().filter(|&j| heads[j].step >= bottom - 1))
+            .collect();
+        meet.sort_by_key(|&i| heads[i].step);
+        let (mut found, mut shared, mut pending) = (false, true, false);
+        let mut last: Option<usize> = None;
+        for &n in &meet {
+            if dx[n] != 0.0 {
+                shared = false;
+                continue;
+            }
+            match last {
+                Some(p) if heads[p].step == heads[n].step => {
+                    found = true;
+                    shared &= shareable(p, n);
+                    pending = false;
+                }
+                _ => {
+                    shared &= !pending;
+                    pending = true;
+                }
+            }
+            last = Some(n);
+        }
+        found && (pending || !shared)
+    };
+    let crossed: Vec<(EventId, EventId)> = events
+        .iter()
+        .flat_map(|&upper| events.iter().map(move |&lower| (upper, lower)))
+        .filter(|&(upper, lower)| {
+            rank(places[of(lower)[0]]) > rank(places[of(upper)[0]]) && parted(upper, lower)
+        })
+        .collect();
+    // An upper voice goes after a lower one, as MuseScore moves the up voice
+    // then (`upOffset`), where it meets the lower at a unison with dots the
+    // lower lacks, or crosses it at a unison they do not share.
     let after: Vec<EventId> = events
         .iter()
         .copied()
         .filter(|&upper| {
-            dotted(upper)
-                && events.iter().any(|&lower| {
-                    rank(places[of(lower)[0]]) > rank(places[of(upper)[0]])
-                        && !dotted(lower)
-                        && unison(upper, lower)
-                })
+            events.iter().any(|&lower| {
+                rank(places[of(lower)[0]]) > rank(places[of(upper)[0]])
+                    && ((dotted(upper) && !dotted(lower) && unison(upper, lower))
+                        || crossed.contains(&(upper, lower)))
+            })
         })
         .collect();
     events.retain(|event| !after.contains(event));
@@ -7857,12 +7922,8 @@ fn place_heads(
                     let (bl, br) = (dx[j] + b[0], dx[j] + b[2]);
                     let (bb, bt) = (heads[j].y + b[1], heads[j].y + b[3]);
                     let unison = heads[i].step == heads[j].step;
-                    let shared = unison
-                        && heads[i].name == heads[j].name
-                        && heads[i].dots == heads[j].dots
-                        && heads[i].alteration == heads[j].alteration
-                        && stemmed[i]
-                        && stemmed[j]
+                    let shared = shareable(i, j)
+                        && !crossed.contains(&(heads[i].event, heads[j].event))
                         && shift + dx[i] == dx[j];
                     if !shared && al < br && bl < ar && ab < bt && bb < at {
                         let dotted_upper = heads[i].dots > 0

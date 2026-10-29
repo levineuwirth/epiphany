@@ -2574,3 +2574,14 @@ is set:
   `computeUp` reads them. A second voice's slur ending on a hidden rest had
   arced over its staff (`a_slur_reads_its_span_to_a_hidden_rest_and_a_beam_across_staves`).
   The engraver itself is unchanged.
+
+## ENGRAVER_VERSION 85 → 86: a unison where the lower voice crosses moves the upper voice (X4c fix round 1, 2026-10-29)
+
+- Where a lower voice crosses an upper one at a unison, reaching above its
+  lowest head, the upper voice stands 0.15 right of the lower's head, as
+  MuseScore's `calculateChordOffsets` moves the up voice there, and the two
+  share no head unless their heads where they meet pair off as unisons they
+  could share. The lower voice had stood right of the upper's heads, past
+  any second of its chord
+  (`a_unison_where_the_lower_voice_crosses_moves_the_upper_voice`). The
+  engraver itself is unchanged.

@@ -2148,6 +2148,144 @@ fn a_unison_two_voices_do_not_share_stands_apart() {
     );
 }
 
+/// Where a lower voice crosses an upper one at a unison, reaching above its
+/// lowest head, MuseScore's `ChordLayout::calculateChordOffsets` moves the
+/// upper voice right of the lower, 0.15 past its head, unless the heads where
+/// they meet pair off as unisons they could share, none across its stem: so
+/// two voices' wholes, quarters where the upper holds a head the lower does
+/// not or the lower one the upper does not, like chords with a second, and a
+/// quarter's heads over a half's, the upper right; quarters pairing off
+/// share; and a lower voice meeting the upper only at its lowest head, or
+/// crossing it at no unison, still stands right of it.
+#[test]
+fn a_unison_where_the_lower_voice_crosses_moves_the_upper_voice() {
+    let backup = String::from("<backup><duration>16</duration></backup>");
+    let rests = |voice: u8| {
+        [
+            note("rest", 4, "quarter", voice, 1, ""),
+            note("rest", 8, "half", voice, 1, ""),
+        ]
+        .concat()
+    };
+    let wholes = [
+        note("D5", 16, "whole", 1, 1, ""),
+        chord("G5", 16, "whole", 1, 1, ""),
+        backup.clone(),
+        note("G5", 16, "whole", 2, 1, ""),
+    ]
+    .concat();
+    let meeting = [
+        note("G5", 16, "whole", 1, 1, ""),
+        backup.clone(),
+        note("D5", 16, "whole", 2, 1, ""),
+        chord("G5", 16, "whole", 2, 1, ""),
+    ]
+    .concat();
+    let quarters = |upper: &[&str], lower: &[&str]| {
+        let voice = |pitches: &[&str], v: u8| {
+            let mut out = note(pitches[0], 4, "quarter", v, 1, "");
+            for p in &pitches[1..] {
+                out += &chord(p, 4, "quarter", v, 1, "");
+            }
+            out + &rests(v)
+        };
+        [voice(upper, 1), backup.clone(), voice(lower, 2)].concat()
+    };
+    let over_half = [
+        note("D5", 4, "quarter", 1, 1, ""),
+        chord("G5", 4, "quarter", 1, 1, ""),
+        rests(1),
+        backup.clone(),
+        note("D5", 8, "half", 2, 1, ""),
+        chord("G5", 8, "half", 2, 1, ""),
+        note("rest", 8, "half", 2, 1, ""),
+    ]
+    .concat();
+    let no_unison = [
+        note("C5", 4, "quarter", 1, 1, ""),
+        chord("F5", 4, "quarter", 1, 1, ""),
+        rests(1),
+        backup.clone(),
+        note("D5", 6, "quarter", 2, 1, "").replacen("</type>", "</type><dot/>", 1),
+        note("rest", 2, "eighth", 2, 1, ""),
+        note("rest", 8, "half", 2, 1, ""),
+    ]
+    .concat();
+    let loaded = part_in(
+        "crossing.musicxml",
+        1,
+        4,
+        &[
+            wholes,
+            meeting,
+            quarters(&["D5", "G5"], &["G5"]),
+            quarters(&["D5", "G5"], &["D5", "G5"]),
+            quarters(&["D5", "G5"], &["D5", "G5", "C6"]),
+            quarters(&["D5", "E5", "G5"], &["D5", "E5", "G5"]),
+            over_half,
+            no_unison,
+        ],
+    );
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let lefts = |event: usize| -> Vec<f32> {
+        heads(&loaded, &layout, e[event])
+            .iter()
+            .map(|h| h[0])
+            .collect()
+    };
+    let right = |event: usize| {
+        heads(&loaded, &layout, e[event])
+            .iter()
+            .map(|h| h[2])
+            .fold(f32::NEG_INFINITY, f32::max)
+    };
+    for x in lefts(0) {
+        near(x, right(1) + 0.15, "crossing wholes, the upper right");
+    }
+    for x in lefts(3) {
+        near(x, right(2) + 0.15, "meeting wholes, the lower right");
+    }
+    for x in lefts(4) {
+        near(
+            x,
+            right(7) + 0.15,
+            "crossing quarters, the upper holding a head the lower does not",
+        );
+    }
+    assert_eq!(lefts(10), lefts(13), "crossing quarters pairing off share");
+    for x in lefts(16) {
+        near(
+            x,
+            right(19) + 0.15,
+            "crossing quarters, the lower holding a head the upper does not",
+        );
+    }
+    // The lower chord's second sets its lowest head across its stem, left of
+    // the others, and the upper's sets its middle head right.
+    let column = |event: usize| {
+        let found = heads(&loaded, &layout, e[event]);
+        [found[0][0], found[2][0], found[2][2]]
+    };
+    near(
+        column(22)[0],
+        column(25)[2] + 0.15,
+        "crossing chords with a second, the upper right",
+    );
+    near(column(22)[1], column(22)[0], "the upper's column");
+    for x in lefts(28) {
+        near(
+            x,
+            right(31) + 0.15,
+            "crossing quarter over half, the upper right",
+        );
+    }
+    assert!(
+        lefts(36)[0] > lefts(33)[0],
+        "crossing at no unison, the lower right"
+    );
+}
+
 /// A slur takes its side as MuseScore's `SlurTieLayout::computeUp` sets it:
 /// opposite its first note's direction, a whole note's as its stem would
 /// turn, so under low whole notes; above where its voice's notes turn both
