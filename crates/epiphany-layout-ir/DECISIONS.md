@@ -1422,3 +1422,18 @@ column's spring the padding after it.
   pages: two voices' wholes crossing in a chord with seconds had set the
   lower voice's head right of the upper's displaced second, where MuseScore
   sets it left of the upper's chord.
+- An arpeggio stands left of every chord of its staff's column, of its own
+  voice or a later one, that its height meets, its gap from the furthest
+  reach of their heads and accidentals. MuseScore sets an arpeggio by the
+  chords its span covers, its own track and those after it
+  (`Arpeggio::findAndAttachToChords`, `arpeggio.cpp` 80 to 105), leaving out
+  a chord wholly above or below it (`chordlayout.cpp` 201 to 205), left of
+  the leftmost of them (`minChordX`, 235) by the furthest any reaches left
+  with its notes and accidentals, plus its width and gap (`maxChordPad`,
+  238; 254). The model holds an arpeggio per chord and no span, so it takes
+  the widest span a later track can give; a later voice's own arpeggio
+  stands by its own chord, as MuseScore's export places it beside an earlier
+  voice's sharp. Found reading the crossing unison's page beside
+  MuseScore's: setting the upper voice right of the lower had set its
+  arpeggio among the lower voice's heads, where MuseScore's export places it
+  left of the lower voice's head.

@@ -1409,6 +1409,123 @@ fn an_arpeggio_stands_clear_of_its_chords_ledger_lines() {
     near(gap(e[5]).0, 0.4, "an arrow in the staff");
 }
 
+/// An arpeggio stands 0.4 left of every chord of its staff's column that its
+/// height meets, of its own voice or a later one, its heads and
+/// accidentals, as MuseScore sets an arpeggio left of the leftmost chord its
+/// span covers, its own track and those after it: an upper voice's chord
+/// moved right of the lower voice that crosses it at a unison, its arpeggio
+/// left of the lower voice's head; a lower voice's sharp within an upper
+/// voice's height, the upper's arpeggio left of it; a lower voice's
+/// arpeggio within an upper voice's chord with a sharp, left of its own head
+/// and not of the upper's sharp; a lower voice's head set left of its stem
+/// within an arpeggio's height, reached; and one below its height, not.
+#[test]
+fn an_arpeggio_stands_left_of_a_later_voices_chord_in_its_column() {
+    let backup = String::from("<backup><duration>16</duration></backup>");
+    let crossing = [
+        note("D5", 16, "whole", 1, 1, "<arpeggiate/>"),
+        chord("G5", 16, "whole", 1, 1, "<arpeggiate/>"),
+        backup.clone(),
+        note("G5", 16, "whole", 2, 1, ""),
+    ]
+    .concat();
+    let sharp = [
+        note("C5", 16, "whole", 1, 1, "<arpeggiate/>"),
+        chord("G5", 16, "whole", 1, 1, "<arpeggiate/>"),
+        backup.clone(),
+        note("F#5", 16, "whole", 2, 1, ""),
+    ]
+    .concat();
+    let inner = [
+        note("G4", 16, "whole", 1, 1, "<arpeggiate number=\"1\"/>"),
+        chord("D5", 16, "whole", 1, 1, "<arpeggiate number=\"1\"/>"),
+        chord("F#5", 16, "whole", 1, 1, "<arpeggiate number=\"1\"/>"),
+        backup.clone(),
+        note("B4", 16, "whole", 2, 1, "<arpeggiate number=\"2\"/>"),
+    ]
+    .concat();
+    let below = [
+        note("C5", 16, "whole", 1, 1, "<arpeggiate/>"),
+        backup.clone(),
+        note("F4", 16, "whole", 2, 1, ""),
+        chord("G4", 16, "whole", 2, 1, ""),
+    ]
+    .concat();
+    let across = [
+        note("C5", 16, "whole", 1, 1, "<arpeggiate/>"),
+        chord("G5", 16, "whole", 1, 1, "<arpeggiate/>"),
+        backup,
+        note("D5", 16, "whole", 2, 1, ""),
+        chord("E5", 16, "whole", 2, 1, ""),
+    ]
+    .concat();
+    let loaded = part_in(
+        "arpeggio_voices.musicxml",
+        1,
+        4,
+        &[crossing, sharp, inner, below, across],
+    );
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let run = |event: EventId| {
+        let runs: Vec<Ink> = layout
+            .texts
+            .iter()
+            .filter(|t| t.provenance.source == TypedObjectId::Event(event))
+            .map(text_box)
+            .collect();
+        assert_eq!(runs.len(), 1, "one arpeggio");
+        runs[0]
+    };
+    let left = |event: EventId| {
+        heads(&loaded, &layout, event)
+            .iter()
+            .map(|h| h[0])
+            .fold(f32::INFINITY, f32::min)
+    };
+    assert!(left(e[0]) > left(e[1]) + 1.0, "the upper voice right");
+    near(
+        run(e[0])[2],
+        left(e[1]) - 0.4,
+        "left of the lower voice's head",
+    );
+    let sharps = named(&layout, "accidentalSharp");
+    assert_eq!(sharps.len(), 2, "two sharps");
+    assert!(
+        sharps[0][0] < left(e[2]) - 0.4,
+        "the sharp left of the heads"
+    );
+    near(
+        run(e[2])[2],
+        sharps[0][0] - 0.4,
+        "left of the lower voice's sharp",
+    );
+    near(
+        run(e[4])[2],
+        sharps[1][0] - 0.4,
+        "the upper voice's own sharp",
+    );
+    near(
+        run(e[5])[2],
+        left(e[5]) - 0.4,
+        "a lower voice's left of its own head",
+    );
+    assert!(
+        left(e[7]) < left(e[6]) - 1.0,
+        "the lower voice's F4 set left"
+    );
+    near(run(e[6])[2], left(e[6]) - 0.4, "a chord below its height");
+    assert!(
+        left(e[9]) < left(e[8]) - 1.0,
+        "the lower voice's D5 set left"
+    );
+    near(
+        run(e[8])[2],
+        left(e[9]) - 0.4,
+        "left of a later voice's head set left of its stem",
+    );
+}
+
 /// A one-note tremolo's strokes stand on its stem between head and tip.
 #[test]
 fn tremolo_strokes_stand_on_their_stems() {

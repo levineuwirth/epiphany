@@ -2585,3 +2585,14 @@ is set:
   any second of its chord
   (`a_unison_where_the_lower_voice_crosses_moves_the_upper_voice`). The
   engraver itself is unchanged.
+
+## ENGRAVER_VERSION 86 → 87: an arpeggio clears a later voice's chord in its column (X4c fix round 1, 2026-10-29)
+
+- An arpeggio stands left of every chord of its staff's column, of its own
+  voice or a later one, that its height meets, by its gap from the furthest
+  of their heads and accidentals, as MuseScore sets an arpeggio left of the
+  chords its span covers. It had stood by its own chord alone, so an upper
+  voice moved right of a lower one at a unison set its arpeggio among the
+  lower voice's heads, and a later voice's accidental further out met it
+  (`an_arpeggio_stands_left_of_a_later_voices_chord_in_its_column`). The
+  engraver itself is unchanged.

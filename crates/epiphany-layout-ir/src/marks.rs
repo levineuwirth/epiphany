@@ -61,6 +61,10 @@ pub(super) struct Chord<'a> {
     /// leftmost ink of its heads and accidentals, from the column.
     pub heads_left: f32,
     pub heads_right: f32,
+    /// The leftmost ink of the heads and accidentals of every chord of its
+    /// staff's column, of its own voice or a later one, that its height
+    /// meets, from the column.
+    pub column_left: f32,
     pub voice: VoicePlace,
     /// The staff's bottom line.
     pub yo: f32,
@@ -744,7 +748,10 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
 
     // An arpeggio left of the chord, from its lowest head to its highest,
     // and further left past the ledger line a head stands on, the first a
-    // space under the staff or over it.
+    // space under the staff or over it; and left of any later voice's chord
+    // in its staff's column that its height meets and that reaches further
+    // left, as MuseScore sets an arpeggio left of the leftmost chord its span,
+    // its own track and those after it, covers (`minChordX`, `maxChordPad`).
     let ledgered =
         !chord.accidentals && (low <= chord.yo - 1.0 + 1e-3 || high >= chord.yo + 5.0 - 1e-3);
     let gap = if ledgered {
@@ -756,7 +763,7 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
         if let EventMark::Arpeggio { direction } = mark {
             placed.arpeggio = Some(Arpeggio {
                 direction: *direction,
-                right: chord.heads_left - gap,
+                right: chord.heads_left.min(chord.column_left) - gap,
                 bottom: low - 0.5,
                 top: high + 0.5,
             });

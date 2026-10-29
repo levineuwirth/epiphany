@@ -2771,6 +2771,34 @@ pub fn try_to_constrained(
             .flatten()
             .copied()
             .collect();
+        // Each staff column's chords, whatever their voice: each one's lowest
+        // and highest head and the leftmost ink of its heads and accidentals.
+        // An arpeggio stands left of every one of its own voice or a later
+        // one that its height meets, as MuseScore's arpeggio spans its own
+        // track and those after it.
+        let mut column_chords: BTreeMap<(Option<StaffId>, ColumnKey), BTreeMap<EventId, [f32; 3]>> =
+            BTreeMap::new();
+        for (at, refs) in &column_heads {
+            let chords = column_chords.entry(at.clone()).or_default();
+            for r in refs {
+                let head = r.get(&pitch_heads, &unpitched_heads);
+                let mut left =
+                    head.dx + metrics(head.name).map_or(0.0, |m| m.bounding_box().left.0);
+                for (name, x) in head.accidentals.iter().zip(&head.accidental_x) {
+                    if let Some(b) = metrics(name).map(|m| m.bounding_box()) {
+                        left = left.min(x + b.left.0);
+                    }
+                }
+                let reach = chords.entry(head.event).or_insert([
+                    f32::INFINITY,
+                    f32::NEG_INFINITY,
+                    f32::INFINITY,
+                ]);
+                reach[0] = reach[0].min(head.y);
+                reach[1] = reach[1].max(head.y);
+                reach[2] = reach[2].min(left);
+            }
+        }
         for (eid, (event_marks_of, ornaments)) in &mark_sources {
             let (Some(seg), Some(&staff), Some(heads)) = (
                 event_stems
@@ -2815,6 +2843,30 @@ pub fn try_to_constrained(
                 head,
                 heads_left: left,
                 heads_right: right,
+                column_left: {
+                    let (lo, hi) = heads
+                        .iter()
+                        .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), h| {
+                            (lo.min(h.y), hi.max(h.y))
+                        });
+                    heads
+                        .first()
+                        .and_then(|h| column_chords.get(&(Some(staff), h.key.clone())))
+                        .map_or(left, |chords| {
+                            let rank = |event: &EventId| match event_voices.get(event) {
+                                Some(VoicePlace::Upper) => 0,
+                                Some(VoicePlace::Lower) => 2,
+                                _ => 1,
+                            };
+                            chords
+                                .iter()
+                                .filter(|(other, c)| {
+                                    rank(other) >= rank(eid) && c[1] >= lo && c[0] <= hi
+                                })
+                                .map(|(_, c)| c[2])
+                                .fold(left, f32::min)
+                        })
+                },
                 voice: if visiting_alone.contains(eid) {
                     VoicePlace::Alone
                 } else {
