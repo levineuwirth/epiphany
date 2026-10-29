@@ -2246,6 +2246,99 @@ fn a_slur_takes_its_side_as_musescore_computes_it() {
     assert!(!above(n - 2), "under up stems");
 }
 
+/// A slur's ends are read as MuseScore's `computeUp` reads them: a later
+/// voice's slur ending on a rest the file hides goes below by voice, the
+/// span the other voices are read in running to that rest's end; a slur
+/// ending on a rest takes no mixture of its voice's directions, so it goes
+/// opposite its first note's; one whose first chord is in a beam across
+/// two staves goes above, before anything else is read; and one starting
+/// on a rest reads no voices, keeping the side the stems in its span give.
+#[test]
+fn a_slur_reads_its_span_to_a_hidden_rest_and_a_beam_across_staves() {
+    let open = "<slur type=\"start\" number=\"1\"/>";
+    let close = "<slur type=\"stop\" number=\"1\"/>";
+    let backup = |d: u8| format!("<backup><duration>{d}</duration></backup>");
+    let beam = |n: String, kind: &str| {
+        n.replacen(
+            "</type>",
+            &format!("</type><beam number=\"1\">{kind}</beam>"),
+            1,
+        )
+    };
+    let hidden = |n: String| n.replacen("<note>", "<note print-object=\"no\">", 1);
+    let measures = [
+        // A second voice's half slurred to a hidden rest: below, by voice.
+        [
+            note("C5", 8, "whole", 1, 1, ""),
+            backup(8),
+            note("E4", 4, "half", 2, 1, open),
+            hidden(note("rest", 4, "half", 2, 1, close)),
+            backup(8),
+            note("rest", 8, "whole", 3, 2, ""),
+        ]
+        .concat(),
+        // One voice, up stem then down, slurred to a rest: under its first.
+        [
+            note("A4", 2, "quarter", 1, 1, open),
+            note("E5", 2, "quarter", 1, 1, ""),
+            note("rest", 2, "quarter", 1, 1, close),
+            note("rest", 2, "quarter", 1, 1, ""),
+            backup(8),
+            note("rest", 8, "whole", 3, 2, ""),
+        ]
+        .concat(),
+        // A second voice's slur from a chord in a beam across the staves:
+        // above, though its voice would set it below.
+        [
+            note("G5", 8, "whole", 1, 1, ""),
+            backup(8),
+            beam(note("C5", 1, "eighth", 2, 1, open), "begin"),
+            beam(note("C3", 1, "eighth", 2, 2, ""), "continue"),
+            beam(note("A4", 1, "eighth", 2, 1, close), "end"),
+            note("rest", 1, "eighth", 2, 1, ""),
+            note("rest", 4, "half", 2, 1, ""),
+            backup(8),
+            note("rest", 8, "whole", 3, 2, ""),
+        ]
+        .concat(),
+    ];
+    // A second voice's slur from a rest: no voices are read, as MuseScore
+    // reads them only from a chord, and the stems in its span, both ways,
+    // set it above.
+    let from_rest = [
+        note("C5", 8, "whole", 1, 1, ""),
+        backup(8),
+        note("rest", 4, "half", 2, 1, open),
+        note("G4", 4, "half", 2, 1, close),
+        backup(8),
+        note("rest", 8, "whole", 3, 2, ""),
+    ]
+    .concat();
+    let measures = [
+        measures[0].clone(),
+        measures[1].clone(),
+        measures[2].clone(),
+        from_rest,
+    ];
+    let loaded = part("slur_ends.musicxml", 2, &measures);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let slurs: Vec<_> = loaded.reduced.score.cross_cutting.slurs.iter().collect();
+    assert_eq!(slurs.len(), 4, "four slurs");
+    let above = |k: usize| {
+        let curve = layout
+            .curves
+            .iter()
+            .find(|c| c.provenance.source == TypedObjectId::Slur(slurs[k].id))
+            .expect("its curve");
+        let cp = curve.control_points();
+        cp[1].y.0 > cp[0].y.0
+    };
+    assert!(!above(0), "a second voice's slur to a hidden rest");
+    assert!(!above(1), "a slur to a rest, under its first note");
+    assert!(above(2), "a slur from a beam across the staves");
+    assert!(above(3), "a second voice's slur from a rest");
+}
+
 /// A slur over a two-note tremolo's stemless notes stands on the side away
 /// from the way its pair turns, as MuseScore sets a slur opposite its first
 /// chord's direction whether its stem is drawn or not

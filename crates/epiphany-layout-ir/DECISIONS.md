@@ -1399,3 +1399,14 @@ column's spring the padding after it.
   by the first's height and `articulationMinDistance`. Found while pinning
   the step in a test (review 1's L5): it had stood a space past the first
   mark's outer edge, further by half the two marks' heights.
+- A slur's ends are read as `computeUp` reads them. A slur whose first
+  chord is in a beam across two staves goes above, before anything else is
+  read (`slurtielayout.cpp` 2600 to 2604, `Beam::cross`). The span the
+  other voices are read in runs to the end of the slur's last note or rest,
+  drawn or not (`slur->ticks() + chordRest2->ticks()`); voices are read only
+  from a slur starting on a chord, and its voice's directions only where it
+  ends on one (`chord1`, `chord2`). A slur starting on a rest keeps the side
+  the stems in its span give, as before. Found by the round's page account:
+  a second voice's slur ending on a rest the export hides had read no span,
+  so it went opposite its stemless first note, which its voice turns down,
+  and arced over the staff.

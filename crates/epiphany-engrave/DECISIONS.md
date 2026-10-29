@@ -2564,3 +2564,13 @@ is set:
   `layoutArticulations` sets it; in the staff it had stood a space past the
   first mark's outer edge (`a_second_close_mark_steps_as_musescore_sets_it`).
   The engraver itself is unchanged.
+
+## ENGRAVER_VERSION 84 → 85: a slur's ends read as MuseScore reads them (X4c fix round 1, 2026-10-29)
+
+- A slur from a chord in a beam across two staves goes above; the voices a
+  slur's side is read from are read to the end of its last note or rest,
+  drawn or not; a slur ending on a rest reads no mixture of its voice's
+  directions, and one starting on a rest reads no voices, as MuseScore's
+  `computeUp` reads them. A second voice's slur ending on a hidden rest had
+  arced over its staff (`a_slur_reads_its_span_to_a_hidden_rest_and_a_beam_across_staves`).
+  The engraver itself is unchanged.

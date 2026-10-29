@@ -787,7 +787,7 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
             let spans = measure_spans(score, si, grid);
             let places = voice_places(score, si);
             all_places.extend(&places);
-            slur_voices.add(score, si);
+            slur_voices.add(score, si, &region_events, &annotations);
             for voice in &si.voices {
                 let v_src = TypedObjectId::Voice(voice.id);
                 push(v_src, vec![si_src], staff, LayoutContent::Structural);
@@ -2061,6 +2061,9 @@ fn slur_content(
     let direction = match slur.curvature_override.as_ref().and_then(|o| o.direction) {
         Some(CurveDirection::Above) => SlurDirection::Above,
         Some(CurveDirection::Below) => SlurDirection::Below,
+        // A first chord in a beam across two staves sets it above, before
+        // anything else is read.
+        None if voices.cross.contains(&first) => SlurDirection::Above,
         None => match voices.rank.get(&first) {
             // A voice visiting from another staff keeps its home's side.
             None => match places.get(&first) {
@@ -2068,7 +2071,9 @@ fn slur_content(
                 Some(VoicePlace::Lower) => SlurDirection::Below,
                 _ => SlurDirection::Auto,
             },
-            Some(&(_, k, si)) if voices.shows_another(score, si, first, last) => {
+            Some(&(_, k, si))
+                if is_note(score, first) && voices.shows_another(score, si, first, last) =>
+            {
                 let later = k > 0 || voices.rank.get(&last).is_some_and(|&(_, k, _)| k > 0);
                 if later {
                     SlurDirection::Below
@@ -2087,7 +2092,7 @@ fn slur_content(
         thickness: slur.style.thickness,
         kind: slur.kind,
         line: slur.style.line,
-        chords: voices.chords(score, first, last),
+        chords: voices.chords(first, last),
     })
 }
 
@@ -2095,10 +2100,10 @@ fn slur_content(
 /// `SlurTieLayout::computeUp` reads it: each event of a staff's own voices
 /// (not those visiting it, D46) with its voice and that voice's rank, the
 /// first (the primary, else the first listed) `0`; each such voice's notes
-/// in time order; and each staff instance's inked spans of its voices past
+/// in time order; each staff instance's inked spans of its voices past
 /// the first, whose showing in a slur's span sets it by voice
 /// (`Measure::hasVoices`: a note, unpitched note or visible rest of voices 2
-/// to 4).
+/// to 4); and the events of every beam across two staves (`Beam::cross`).
 #[derive(Default)]
 struct SlurVoices {
     rank: BTreeMap<
@@ -2111,10 +2116,20 @@ struct SlurVoices {
     >,
     notes: BTreeMap<epiphany_core::VoiceId, Vec<(MusicalPosition, EventId)>>,
     later: BTreeMap<epiphany_core::StaffInstanceId, Vec<(MusicalPosition, MusicalPosition)>>,
+    cross: BTreeSet<EventId>,
 }
 
 impl SlurVoices {
-    fn add(&mut self, score: &Score, si: &epiphany_core::StaffInstance) {
+    fn add(
+        &mut self,
+        score: &Score,
+        si: &epiphany_core::StaffInstance,
+        region_events: &BTreeSet<EventId>,
+        annotations: &DerivedAnnotations,
+    ) {
+        for group in cross_beam_groups(score, si, region_events, annotations) {
+            self.cross.extend(group.events);
+        }
         let homes = home_sides(score, si);
         let mut voices: Vec<&epiphany_core::Voice> = si
             .voices
@@ -2145,7 +2160,7 @@ impl SlurVoices {
     }
 
     /// The staff shows a voice past its first anywhere from the slur's first
-    /// note to its last note's end.
+    /// note to the end of its last note or rest, drawn or not.
     fn shows_another(
         &self,
         score: &Score,
@@ -2154,7 +2169,7 @@ impl SlurVoices {
         last: EventId,
     ) -> bool {
         let (Some((start, _)), Some((_, end))) =
-            (inked_span(score, &first), inked_span(score, &last))
+            (musical_span(score, &first), musical_span(score, &last))
         else {
             return false;
         };
@@ -2164,9 +2179,10 @@ impl SlurVoices {
     }
 
     /// The slur's first note, then the notes of its voice up to its last
-    /// where both ends are that voice's (`isDirectionMixture` reads one
-    /// track); empty where it starts on no note of a staff's own voice.
-    fn chords(&self, score: &Score, first: EventId, last: EventId) -> Vec<EventId> {
+    /// where both ends are that voice's notes (`isDirectionMixture` reads one
+    /// track, and only where the slur ends on a chord); empty where it starts
+    /// on no note of a staff's own voice.
+    fn chords(&self, first: EventId, last: EventId) -> Vec<EventId> {
         let Some((voice, _, _)) = self.rank.get(&first) else {
             return Vec::new();
         };
@@ -2177,7 +2193,10 @@ impl SlurVoices {
             return Vec::new();
         };
         let end = match self.rank.get(&last) {
-            Some((v, _, _)) if v == voice => inked_span(score, &last).map(|(s, _)| s),
+            Some((v, _, _)) if v == voice => notes
+                .iter()
+                .find(|(_, e)| *e == last)
+                .map(|(s, _)| s.clone()),
             _ => None,
         };
         match end {
@@ -2188,6 +2207,27 @@ impl SlurVoices {
                 .collect(),
             None => vec![first],
         }
+    }
+}
+
+/// Whether an event is a note or an unpitched note: a chord, as MuseScore
+/// reads a slur's ends.
+fn is_note(score: &Score, eid: EventId) -> bool {
+    matches!(
+        score.events.get(eid),
+        Some(Event::Pitched(_) | Event::Unpitched(_))
+    )
+}
+
+/// An event's span at a musical position with a musical duration, drawn or
+/// not.
+fn musical_span(score: &Score, eid: &EventId) -> Option<(MusicalPosition, MusicalPosition)> {
+    let event = score.events.get(*eid)?;
+    match (event.position(), event.duration()) {
+        (EventPosition::Musical(start), EventDuration::Musical(length)) => {
+            Some((start.clone(), start.clone() + length.clone()))
+        }
+        _ => None,
     }
 }
 
