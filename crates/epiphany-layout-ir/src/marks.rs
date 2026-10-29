@@ -11,6 +11,7 @@
 //! bottom line at `yo` and its top line at `yo + 4`.
 
 use epiphany_core::{ArpeggioDirection, EventMark, Ornament, OrnamentKind};
+use epiphany_text::Face;
 
 use super::{ColumnInk, StemSeg, STEM_THICKNESS};
 use crate::glyph::metrics;
@@ -61,10 +62,10 @@ pub(super) struct Chord<'a> {
     /// leftmost ink of its heads and accidentals, from the column.
     pub heads_left: f32,
     pub heads_right: f32,
-    /// The leftmost ink of the heads and accidentals of every chord of its
-    /// staff's column, of its own voice or a later one, that its height
-    /// meets, from the column.
-    pub column_left: f32,
+    /// The accidentals and ledger lines of the other chords of its staff's
+    /// column, `x` from the column: its arpeggio stands clear of those it
+    /// meets.
+    pub others: Vec<OtherInk>,
     pub voice: VoicePlace,
     /// The staff's bottom line.
     pub yo: f32,
@@ -80,6 +81,35 @@ pub(super) struct Chord<'a> {
     /// (`ChordLayout::leaveSpaceForTie`).
     pub tie_above: bool,
     pub tie_below: bool,
+}
+
+/// Another chord's ink in a chord's column that its arpeggio stands clear of:
+/// an accidental's box, `[left, bottom, right, top]`, or a ledger line at `y`
+/// through or under a head whose ink spans `left` to `right`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(super) enum OtherInk {
+    Accidental([f32; 4]),
+    Ledger { left: f32, right: f32, y: f32 },
+}
+
+impl OtherInk {
+    /// Its box widened by the gap an arpeggio keeps from it, as MuseScore
+    /// pads each accidental and ledger line of another chord before meeting
+    /// it with an arpeggio (`ArpeggioLayout::clearAccidentals`): an
+    /// accidental by the gap an arpeggio keeps from its own chord's, a ledger
+    /// line, reaching `LEDGER_LINE_LENGTH` past its head, by
+    /// `ARPEGGIO_LEDGER_DISTANCE`.
+    fn padded(self) -> [f32; 4] {
+        match self {
+            OtherInk::Accidental([l, b, r, t]) => {
+                [l - ARPEGGIO_NOTE_DISTANCE, b, r + ARPEGGIO_NOTE_DISTANCE, t]
+            }
+            OtherInk::Ledger { left, right, y } => {
+                let reach = LEDGER_LINE_LENGTH + ARPEGGIO_LEDGER_DISTANCE;
+                [left - reach, y, right + reach, y]
+            }
+        }
+    }
 }
 
 /// One placed mark glyph: which of the chord's marks it draws (its wire
@@ -748,10 +778,13 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
 
     // An arpeggio left of the chord, from its lowest head to its highest,
     // and further left past the ledger line a head stands on, the first a
-    // space under the staff or over it; and left of any later voice's chord
-    // in its staff's column that its height meets and that reaches further
-    // left, as MuseScore sets an arpeggio left of the leftmost chord its span,
-    // its own track and those after it, covers (`minChordX`, `maxChordPad`).
+    // space under the staff or over it. Where its chord stands right of
+    // another voice's, it stands left of the column's origin, as MuseScore
+    // clamps the chord's `x` to the segment's origin (`arpChordX`,
+    // `minChordX`) and spans its own track alone by default
+    // (`Arpeggio::m_span`). Then, once, it moves clear of every accidental
+    // and ledger line of the column's other chords that it meets, its height
+    // its heads' and its width its ink's (`ArpeggioLayout::clearAccidentals`).
     let ledgered =
         !chord.accidentals && (low <= chord.yo - 1.0 + 1e-3 || high >= chord.yo + 5.0 - 1e-3);
     let gap = if ledgered {
@@ -759,17 +792,47 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
     } else {
         ARPEGGIO_NOTE_DISTANCE
     };
+    let origin = metrics(chord.head).map_or(0.0, |m| m.bounding_box().left.0);
     for mark in marks {
         if let EventMark::Arpeggio { direction } = mark {
-            placed.arpeggio = Some(Arpeggio {
+            let mut arpeggio = Arpeggio {
                 direction: *direction,
-                right: chord.heads_left.min(chord.column_left) - gap,
+                right: chord.heads_left.min(origin) - gap,
                 bottom: low - 0.5,
                 top: high + 0.5,
-            });
+            };
+            let (right, left) = (arpeggio.right, arpeggio.right - arpeggio_width(&arpeggio));
+            arpeggio.right = chord
+                .others
+                .iter()
+                .map(|other| other.padded())
+                .filter(|&[l, b, r, t]| {
+                    l < right && r > left && b < arpeggio.top && t > arpeggio.bottom
+                })
+                .fold(right, |x, [l, ..]| x.min(l));
+            placed.arpeggio = Some(arpeggio);
         }
     }
     placed
+}
+
+/// An arpeggio's width: the ink across of its symbols turned upright, as the
+/// run drawing them at five spaces to the em bounds it (`symbol_run`).
+fn arpeggio_width(arpeggio: &Arpeggio) -> f32 {
+    let face = Face::BravuraText;
+    let unit = 5.0 / f32::from(face.units_per_em());
+    let (lo, hi) = arpeggio_symbols(arpeggio)
+        .iter()
+        .filter_map(|s| face.glyph(s.codepoint).and_then(|g| face.glyph_bounds(g)))
+        .fold(
+            (f32::INFINITY, f32::NEG_INFINITY),
+            |(lo, hi), [_, b, _, t]| (lo.min(-t * unit), hi.max(-b * unit)),
+        );
+    if lo.is_finite() {
+        hi - lo
+    } else {
+        0.0
+    }
 }
 
 /// A close mark on the stem's side above an up stem: in the staff's space

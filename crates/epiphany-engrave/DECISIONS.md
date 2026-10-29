@@ -2596,3 +2596,17 @@ is set:
   lower voice's heads, and a later voice's accidental further out met it
   (`an_arpeggio_stands_left_of_a_later_voices_chord_in_its_column`). The
   engraver itself is unchanged.
+
+## ENGRAVER_VERSION 87 → 88: an arpeggio stands left of its column's origin and clear of other voices' accidentals (X4c fix round 1's addendum, 2026-10-29)
+
+- An arpeggio stands left of its own chord and, where that chord stands
+  right of another voice's, left of its column's origin, as MuseScore
+  clamps the chord's `x` to its segment's origin; then once clear of every
+  accidental and ledger line of the column's other chords that its box
+  meets, whatever their voice, as MuseScore's `clearAccidentals` moves it.
+  Version 87 read its own and later voices' chords as a span, which
+  MuseScore's default span of one voice does not cover, so a lower voice
+  moved right of an upper one at a unison or a second set its arpeggio over
+  the upper voice's head, and an earlier voice's accidental went unread
+  (`an_arpeggio_stands_by_its_own_chord_and_clear_of_other_voices_accidentals`).
+  The engraver itself is unchanged.

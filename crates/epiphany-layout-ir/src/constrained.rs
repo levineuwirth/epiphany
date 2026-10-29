@@ -2771,32 +2771,42 @@ pub fn try_to_constrained(
             .flatten()
             .copied()
             .collect();
-        // Each staff column's chords, whatever their voice: each one's lowest
-        // and highest head and the leftmost ink of its heads and accidentals.
-        // An arpeggio stands left of every one of its own voice or a later
-        // one that its height meets, as MuseScore's arpeggio spans its own
-        // track and those after it.
-        let mut column_chords: BTreeMap<(Option<StaffId>, ColumnKey), BTreeMap<EventId, [f32; 3]>> =
-            BTreeMap::new();
+        // Each staff column's accidentals and ledger lines, with the event
+        // whose head draws them: an arpeggio stands clear of another chord's,
+        // whatever its voice, as MuseScore's `clearAccidentals` reads every
+        // chord of the staff its span does not cover.
+        let mut column_others: ColumnOthers = BTreeMap::new();
         for (at, refs) in &column_heads {
-            let chords = column_chords.entry(at.clone()).or_default();
+            let others = column_others.entry(at.clone()).or_default();
             for r in refs {
                 let head = r.get(&pitch_heads, &unpitched_heads);
-                let mut left =
-                    head.dx + metrics(head.name).map_or(0.0, |m| m.bounding_box().left.0);
                 for (name, x) in head.accidentals.iter().zip(&head.accidental_x) {
                     if let Some(b) = metrics(name).map(|m| m.bounding_box()) {
-                        left = left.min(x + b.left.0);
+                        others.push((
+                            head.event,
+                            marks::OtherInk::Accidental([
+                                x + b.left.0,
+                                head.y + b.bottom.0,
+                                x + b.right.0,
+                                head.y + b.top.0,
+                            ]),
+                        ));
                     }
                 }
-                let reach = chords.entry(head.event).or_insert([
-                    f32::INFINITY,
-                    f32::NEG_INFINITY,
-                    f32::INFINITY,
-                ]);
-                reach[0] = reach[0].min(head.y);
-                reach[1] = reach[1].max(head.y);
-                reach[2] = reach[2].min(left);
+                let (left, right) = metrics(head.name).map_or((0.0, NOTEHEAD_STEM_X), |m| {
+                    let b = m.bounding_box();
+                    (b.left.0, b.right.0)
+                });
+                for step in ledger_steps(head.step) {
+                    others.push((
+                        head.event,
+                        marks::OtherInk::Ledger {
+                            left: head.dx + left,
+                            right: head.dx + right,
+                            y: head.y + (step - head.step) as f32 * 0.5,
+                        },
+                    ));
+                }
             }
         }
         for (eid, (event_marks_of, ornaments)) in &mark_sources {
@@ -2843,30 +2853,16 @@ pub fn try_to_constrained(
                 head,
                 heads_left: left,
                 heads_right: right,
-                column_left: {
-                    let (lo, hi) = heads
-                        .iter()
-                        .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), h| {
-                            (lo.min(h.y), hi.max(h.y))
-                        });
-                    heads
-                        .first()
-                        .and_then(|h| column_chords.get(&(Some(staff), h.key.clone())))
-                        .map_or(left, |chords| {
-                            let rank = |event: &EventId| match event_voices.get(event) {
-                                Some(VoicePlace::Upper) => 0,
-                                Some(VoicePlace::Lower) => 2,
-                                _ => 1,
-                            };
-                            chords
-                                .iter()
-                                .filter(|(other, c)| {
-                                    rank(other) >= rank(eid) && c[1] >= lo && c[0] <= hi
-                                })
-                                .map(|(_, c)| c[2])
-                                .fold(left, f32::min)
-                        })
-                },
+                others: heads
+                    .first()
+                    .and_then(|h| column_others.get(&(Some(staff), h.key.clone())))
+                    .map_or_else(Vec::new, |others| {
+                        others
+                            .iter()
+                            .filter(|(event, _)| event != eid)
+                            .map(|(_, ink)| *ink)
+                            .collect()
+                    }),
                 voice: if visiting_alone.contains(eid) {
                     VoicePlace::Alone
                 } else {
@@ -5797,6 +5793,10 @@ fn clear_rests(rests: &mut BTreeMap<EventId, Vec<RestSeg>>, sounding: &[Sounding
 /// Each staff column's ink of the voices visiting its staff, each box with
 /// the stem direction of the component it belongs to.
 type VisitorInk = BTreeMap<(Option<StaffId>, ColumnKey), Vec<(InkBox, bool)>>;
+
+/// Each staff column's accidentals and ledger lines, each with the event
+/// whose head draws it, which another chord's arpeggio stands clear of.
+type ColumnOthers = BTreeMap<(Option<StaffId>, ColumnKey), Vec<(EventId, marks::OtherInk)>>;
 
 /// Moves each drawn rest of a staff's own voices whose ink (its glyph and
 /// dots) meets the ink of a voice visiting the staff from its home on another

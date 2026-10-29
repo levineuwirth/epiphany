@@ -1422,18 +1422,33 @@ column's spring the padding after it.
   pages: two voices' wholes crossing in a chord with seconds had set the
   lower voice's head right of the upper's displaced second, where MuseScore
   sets it left of the upper's chord.
-- An arpeggio stands left of every chord of its staff's column, of its own
-  voice or a later one, that its height meets, its gap from the furthest
-  reach of their heads and accidentals. MuseScore sets an arpeggio by the
-  chords its span covers, its own track and those after it
-  (`Arpeggio::findAndAttachToChords`, `arpeggio.cpp` 80 to 105), leaving out
-  a chord wholly above or below it (`chordlayout.cpp` 201 to 205), left of
-  the leftmost of them (`minChordX`, 235) by the furthest any reaches left
-  with its notes and accidentals, plus its width and gap (`maxChordPad`,
-  238; 254). The model holds an arpeggio per chord and no span, so it takes
-  the widest span a later track can give; a later voice's own arpeggio
-  stands by its own chord, as MuseScore's export places it beside an earlier
-  voice's sharp. Found reading the crossing unison's page beside
-  MuseScore's: setting the upper voice right of the lower had set its
-  arpeggio among the lower voice's heads, where MuseScore's export places it
-  left of the lower voice's head.
+- An arpeggio stands its gap left of its own chord's heads and accidentals
+  and, where its chord stands right of another voice's, left of its
+  column's origin by the same gap, as MuseScore's `ChordLayout::layoutPitched`
+  sets it (`chordlayout.cpp` 223, 235, 252 to 254): the chord's `x` clamped
+  to the segment's origin (`arpChordX = min(chordX, 0)`), less the furthest
+  its own notes and accidentals reach left of that origin (`lll`, 130 to
+  160). Its span is its own voice alone, MuseScore's default
+  (`dom/arpeggio.h` 132, `m_span = 1`); the model holds no span. Then it
+  moves once clear of every accidental and ledger line of the column's
+  other chords, an earlier voice's or a later one's, whose box meets its
+  own, as `ArpeggioLayout::clearAccidentals` moves it (`arpeggiolayout.cpp`
+  115 to 212, from `measurelayout.cpp` 1235): its height from half a space
+  under its lowest head to half a space over its highest, as
+  `computeHeight` takes it (310 to 322), and its width its ink's; an
+  accidental's box widened by the gap it keeps from its own chord's
+  accidentals and a ledger line, reaching 0.33 past its head, by 0.3; it
+  then stands left of the furthest it met. Another voice's head is not
+  read, as MuseScore reads none: an arpeggio meets a lower voice's head set
+  left of its stem within its height. Read beside MuseScore's own pages,
+  each arpeggio among two voices stands so: in one case both voices'
+  arpeggios stand at one place, left of the lower voice's sharp; in
+  another a lower voice's arpeggio stays by its own head under the upper
+  voice's sharp a fifth above, which its height does not reach. MuseScore
+  keeps 0.3 from an accidental, its own chord's or another's
+  (`arpeggioAccidentalDistance`), where X4c.3 set 0.4; found here and not
+  changed. Fix round 1 had read the chords of its own voice and the later
+  ones as one span, which MuseScore spans only where a score sets it:
+  that kept an upper voice moved right clear, but not a lower voice moved
+  right of an upper one at a unison or a second, whose arpeggio stood over
+  the upper voice's head, and it read no earlier voice's accidental.

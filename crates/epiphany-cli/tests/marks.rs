@@ -1409,61 +1409,101 @@ fn an_arpeggio_stands_clear_of_its_chords_ledger_lines() {
     near(gap(e[5]).0, 0.4, "an arrow in the staff");
 }
 
-/// An arpeggio stands 0.4 left of every chord of its staff's column that its
-/// height meets, of its own voice or a later one, its heads and
-/// accidentals, as MuseScore sets an arpeggio left of the leftmost chord its
-/// span covers, its own track and those after it: an upper voice's chord
-/// moved right of the lower voice that crosses it at a unison, its arpeggio
-/// left of the lower voice's head; a lower voice's sharp within an upper
-/// voice's height, the upper's arpeggio left of it; a lower voice's
-/// arpeggio within an upper voice's chord with a sharp, left of its own head
-/// and not of the upper's sharp; a lower voice's head set left of its stem
-/// within an arpeggio's height, reached; and one below its height, not.
+/// An arpeggio stands left of its own chord and, where that chord stands
+/// right of another voice's, left of its column's origin, as MuseScore
+/// clamps the chord's `x` to its segment's origin, its span its own voice
+/// alone; then clear of another chord's accidental or ledger line that its
+/// height meets, of an earlier voice or a later one, as MuseScore's
+/// `clearAccidentals` sets it, and of no other voice's head. An upper
+/// voice's chord moved right of the lower voice that crosses it at a
+/// unison, its arpeggio left of the lower voice's head; a lower voice moved
+/// right of an upper one at a unison it does not share, and at a second, its
+/// arpeggio left of the upper voice's head; a later voice's sharp within an
+/// upper voice's height, and an earlier voice's within a lower voice's, each
+/// arpeggio left of it; an upper voice's sharp a fifth above a lower voice's
+/// head, outside its arpeggio's height, not; a lower voice's head set left
+/// of its stem within an upper voice's arpeggio's height, not; and a lower
+/// voice's ledger line under a head set left of its stem, within the height
+/// of an upper voice's arpeggio standing past its own ledger line, reached;
+/// and an upper voice's sharp stacked two columns out, within a lower
+/// voice's arpeggio's height but wholly left of it, not, as MuseScore meets
+/// the arpeggio's box with each accidental's.
 #[test]
-fn an_arpeggio_stands_left_of_a_later_voices_chord_in_its_column() {
-    let backup = String::from("<backup><duration>16</duration></backup>");
+fn an_arpeggio_stands_by_its_own_chord_and_clear_of_other_voices_accidentals() {
     let crossing = [
         note("D5", 16, "whole", 1, 1, "<arpeggiate/>"),
         chord("G5", 16, "whole", 1, 1, "<arpeggiate/>"),
-        backup.clone(),
+        backup(16),
         note("G5", 16, "whole", 2, 1, ""),
     ]
     .concat();
-    let sharp = [
+    let unison = [
+        note("C5", 16, "whole", 1, 1, ""),
+        backup(16),
+        note("A4", 16, "whole", 2, 1, "<arpeggiate/>"),
+        chord("C5", 16, "whole", 2, 1, "<arpeggiate/>"),
+    ]
+    .concat();
+    let second = [
+        note("C5", 8, "half", 1, 1, ""),
+        note("C5", 8, "half", 1, 1, ""),
+        backup(16),
+        note("A4", 8, "half", 2, 1, "<arpeggiate/>"),
+        chord("B4", 8, "half", 2, 1, "<arpeggiate/>"),
+        note("A4", 8, "half", 2, 1, ""),
+        chord("B4", 8, "half", 2, 1, ""),
+    ]
+    .concat();
+    let later = [
         note("C5", 16, "whole", 1, 1, "<arpeggiate/>"),
         chord("G5", 16, "whole", 1, 1, "<arpeggiate/>"),
-        backup.clone(),
+        backup(16),
         note("F#5", 16, "whole", 2, 1, ""),
     ]
     .concat();
-    let inner = [
-        note("G4", 16, "whole", 1, 1, "<arpeggiate number=\"1\"/>"),
-        chord("D5", 16, "whole", 1, 1, "<arpeggiate number=\"1\"/>"),
-        chord("F#5", 16, "whole", 1, 1, "<arpeggiate number=\"1\"/>"),
-        backup.clone(),
-        note("B4", 16, "whole", 2, 1, "<arpeggiate number=\"2\"/>"),
+    let earlier = [
+        note("C#5", 16, "whole", 1, 1, ""),
+        backup(16),
+        note("A4", 16, "whole", 2, 1, "<arpeggiate/>"),
     ]
     .concat();
-    let below = [
-        note("C5", 16, "whole", 1, 1, "<arpeggiate/>"),
-        backup.clone(),
-        note("F4", 16, "whole", 2, 1, ""),
-        chord("G4", 16, "whole", 2, 1, ""),
+    let outside = [
+        note("D#5", 16, "whole", 1, 1, ""),
+        backup(16),
+        note("G4", 16, "whole", 2, 1, "<arpeggiate/>"),
     ]
     .concat();
     let across = [
         note("C5", 16, "whole", 1, 1, "<arpeggiate/>"),
         chord("G5", 16, "whole", 1, 1, "<arpeggiate/>"),
-        backup,
+        backup(16),
         note("D5", 16, "whole", 2, 1, ""),
         chord("E5", 16, "whole", 2, 1, ""),
+    ]
+    .concat();
+    let ledger = [
+        note("A3", 16, "whole", 1, 1, "<arpeggiate/>"),
+        chord("E4", 16, "whole", 1, 1, "<arpeggiate/>"),
+        backup(16),
+        note("B3", 16, "whole", 2, 1, ""),
+        chord("C4", 16, "whole", 2, 1, ""),
+    ]
+    .concat();
+    let beyond = [
+        note("A#4", 16, "whole", 1, 1, ""),
+        chord("D#5", 16, "whole", 1, 1, ""),
+        chord("F#5", 16, "whole", 1, 1, ""),
+        backup(16),
+        note("E4", 16, "whole", 2, 1, "<arpeggiate/>"),
     ]
     .concat();
     let loaded = part_in(
         "arpeggio_voices.musicxml",
         1,
         4,
-        &[crossing, sharp, inner, below, across],
+        &[
+            crossing, unison, second, later, earlier, outside, across, ledger, beyond,
+        ],
     );
     let layout = engrave(&loaded.reduced.score).layout;
     let e = events(&loaded);
@@ -1489,40 +1529,105 @@ fn an_arpeggio_stands_left_of_a_later_voices_chord_in_its_column() {
         left(e[1]) - 0.4,
         "left of the lower voice's head",
     );
-    let sharps = named(&layout, "accidentalSharp");
-    assert_eq!(sharps.len(), 2, "two sharps");
+    assert!(left(e[3]) > left(e[2]) + 1.0, "the lower voice right");
+    near(
+        run(e[3])[2],
+        left(e[2]) - 0.4,
+        "left of the upper voice's head at a unison",
+    );
+    assert!(left(e[6]) > left(e[4]) + 1.0, "the lower voice right");
+    near(
+        run(e[6])[2],
+        left(e[4]) - 0.4,
+        "left of the upper voice's head at a second",
+    );
+    let sharp = |event: EventId| {
+        let Some(Event::Pitched(n)) = loaded.reduced.score.events.get(event) else {
+            panic!("a note");
+        };
+        let found: Vec<Ink> = layout
+            .glyphs
+            .iter()
+            .filter(|g| {
+                matches!(&g.provenance.source, TypedObjectId::Pitch(p) if n.pitches.iter().any(|q| q.id == *p))
+                    && g.glyph.as_str() == "accidentalSharp"
+            })
+            .map(glyph_box)
+            .collect();
+        assert_eq!(found.len(), 1, "one sharp");
+        found[0]
+    };
     assert!(
-        sharps[0][0] < left(e[2]) - 0.4,
+        sharp(e[9])[0] < left(e[8]) - 0.4,
         "the sharp left of the heads"
     );
     near(
-        run(e[2])[2],
-        sharps[0][0] - 0.4,
-        "left of the lower voice's sharp",
-    );
-    near(
-        run(e[4])[2],
-        sharps[1][0] - 0.4,
-        "the upper voice's own sharp",
-    );
-    near(
-        run(e[5])[2],
-        left(e[5]) - 0.4,
-        "a lower voice's left of its own head",
+        run(e[8])[2],
+        sharp(e[9])[0] - 0.4,
+        "left of a later voice's sharp",
     );
     assert!(
-        left(e[7]) < left(e[6]) - 1.0,
-        "the lower voice's F4 set left"
+        sharp(e[10])[0] < left(e[11]) - 0.4,
+        "the sharp left of the heads"
     );
-    near(run(e[6])[2], left(e[6]) - 0.4, "a chord below its height");
+    near(
+        run(e[11])[2],
+        sharp(e[10])[0] - 0.4,
+        "left of an earlier voice's sharp",
+    );
     assert!(
-        left(e[9]) < left(e[8]) - 1.0,
+        sharp(e[12])[0] < left(e[13]) - 0.4,
+        "the sharp left of the heads"
+    );
+    near(
+        run(e[13])[2],
+        left(e[13]) - 0.4,
+        "a sharp outside its height",
+    );
+    assert!(
+        left(e[15]) < left(e[14]) - 1.0,
         "the lower voice's D5 set left"
     );
     near(
-        run(e[8])[2],
-        left(e[9]) - 0.4,
-        "left of a later voice's head set left of its stem",
+        run(e[14])[2],
+        left(e[14]) - 0.4,
+        "another voice's head not reached",
+    );
+    assert!(
+        left(e[17]) < left(e[16]) - 1.0,
+        "the lower voice's B3 set left"
+    );
+    near(
+        run(e[16])[2],
+        left(e[17]) - 0.33 - 0.3,
+        "another voice's ledger line",
+    );
+    let Some(Event::Pitched(n)) = loaded.reduced.score.events.get(e[18]) else {
+        panic!("a note");
+    };
+    let stacked = layout
+        .glyphs
+        .iter()
+        .filter(|g| {
+            matches!(&g.provenance.source, TypedObjectId::Pitch(p) if n.pitches.iter().any(|q| q.id == *p))
+                && g.glyph.as_str() == "accidentalSharp"
+        })
+        .map(glyph_box)
+        .min_by(|a, b| a[1].total_cmp(&b[1]))
+        .expect("the lowest sharp");
+    let arpeggio = run(e[19]);
+    assert!(
+        stacked[1] < arpeggio[3] && stacked[3] > arpeggio[1],
+        "the lowest sharp within the arpeggio's height"
+    );
+    assert!(
+        stacked[2] + 0.4 < arpeggio[0],
+        "the lowest sharp wholly left of the arpeggio"
+    );
+    near(
+        arpeggio[2],
+        left(e[19]) - 0.4,
+        "a sharp wholly left of it not met",
     );
 }
 
