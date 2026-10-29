@@ -1660,6 +1660,80 @@ fn tremolo_strokes_stand_on_their_stems() {
     );
 }
 
+/// A one-note tremolo on a note that draws no stem stands on the side its
+/// stem would leave from, as MuseScore's `TremoloLayout::layout` sets it:
+/// over a whole note under the middle line, its foot 0.75 over the head, and
+/// under one over it, its top 0.75 under the head; a high note's strokes kept
+/// at the top line and a low note's at the bottom line
+/// (`layoutOneNoteTremolo`); centred on the head, or on the stem's line where
+/// a head of the chord stands across it, over the highest head of a chord
+/// whose stem would turn up and under the lowest of one turned down.
+#[test]
+fn a_stemless_notes_tremolo_stands_on_its_stems_side() {
+    let trem = "<ornaments><tremolo type=\"single\">3</tremolo></ornaments>";
+    let whole = |pitch: &str| note(pitch, 16, "whole", 1, 1, trem);
+    let measures = [
+        whole("G4"),
+        whole("D5"),
+        whole("A5"),
+        whole("A3"),
+        [whole("D5"), chord("E5", 16, "whole", 1, 1, "")].concat(),
+        [whole("F4"), chord("G4", 16, "whole", 1, 1, "")].concat(),
+    ];
+    let loaded = part_in("stemless_tremolos.musicxml", 1, 4, &measures);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let strokes = |m: usize| the_glyph(&layout, e[m], "tremolo3");
+    let heads_of = |m: usize| heads(&loaded, &layout, e[m]);
+    let centre_y = |h: Ink| (h[1] + h[3]) * 0.5;
+    let g4 = heads_of(0)[0];
+    near(strokes(0)[1], centre_y(g4) + 0.75, "over a head turned up");
+    near(centre_x(strokes(0)), centre_x(g4), "centred on it");
+    let d5 = heads_of(1)[0];
+    near(
+        strokes(1)[3],
+        centre_y(d5) - 0.75,
+        "under a head turned down",
+    );
+    near(centre_x(strokes(1)), centre_x(d5), "centred on it");
+    let a5 = heads_of(2)[0];
+    near(
+        strokes(2)[3],
+        centre_y(a5) - 1.0,
+        "a high note's at the top line",
+    );
+    let a3 = heads_of(3)[0];
+    near(
+        strokes(3)[1],
+        centre_y(a3) + 2.0,
+        "a low note's at the bottom line",
+    );
+    let down = heads_of(4);
+    assert!(down[0][0] < down[1][0] - 1.0, "the D5 across its stem");
+    near(
+        centre_x(strokes(4)),
+        down[1][0],
+        "on the stem's line, a chord turned down",
+    );
+    near(
+        strokes(4)[3],
+        centre_y(down[0]) - 0.75,
+        "under its lowest head",
+    );
+    let up = heads_of(5);
+    assert!(up[1][0] > up[0][0] + 1.0, "the G4 across its stem");
+    near(
+        centre_x(strokes(5)),
+        up[0][2],
+        "on the stem's line, a chord turned up",
+    );
+    near(
+        strokes(5)[1],
+        centre_y(up[1]) + 0.75,
+        "over its highest head",
+    );
+}
+
 /// A stem carrying a one-note tremolo is as long as it must be to hold it,
 /// as MuseScore's `StemLayout::calcMinStemLength` counts it in quarter
 /// spaces from the head nearest its end: the strokes' height, half a space

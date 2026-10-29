@@ -62,6 +62,8 @@ pub(super) struct Chord<'a> {
     /// leftmost ink of its heads and accidentals, from the column.
     pub heads_left: f32,
     pub heads_right: f32,
+    /// A head of it stands across its stem, beside a second.
+    pub across: bool,
     /// The accidentals and ledger lines of the other chords of its staff's
     /// column, `x` from the column: its arpeggio stands clear of those it
     /// meets.
@@ -696,7 +698,12 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
 
     // A one-note tremolo: its strokes on the stem, 0.5 in from its tip and
     // further in past a flag or beams, kept off the staff's outer line on
-    // the head's side; over a stemless note's head, 1.25 off it.
+    // the head's side. On a note that draws no stem, on the side its stem
+    // would leave from, beyond the head it would leave, 1.25 off it less
+    // 0.5, centred on that head or, where a head stands across the stem, on
+    // the stem's line, and kept off the staff's outer line on the head's
+    // side, as MuseScore sets it (`TremoloLayout::layout`,
+    // `layoutOneNoteTremolo`).
     for mark in marks {
         let EventMark::Tremolo { strokes } = mark else {
             continue;
@@ -725,9 +732,17 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
                 centre_y = (bottom + h * 0.5).min(top_line - h * 0.5);
             }
         } else {
-            x = seg.dx + (head.left.0 + head.right.0) * 0.5;
-            let bottom = high + TREMOLO_NOTE_SIDE_PADDING - TREMOLO_OUTSIDE_PADDING;
-            centre_y = bottom + h * 0.5;
+            x = if chord.across {
+                seg.dx + seg.x_off
+            } else {
+                seg.dx + (head.left.0 + head.right.0) * 0.5
+            };
+            let off = TREMOLO_NOTE_SIDE_PADDING - TREMOLO_OUTSIDE_PADDING;
+            centre_y = if seg.up {
+                (high + off + h * 0.5).max(bottom_line + h * 0.5)
+            } else {
+                (low - off - h * 0.5).min(top_line - h * 0.5)
+            };
         }
         placed.glyphs.push(MarkGlyph {
             tag: mark.tag(),

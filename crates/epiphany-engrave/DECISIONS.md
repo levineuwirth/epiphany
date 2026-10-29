@@ -2621,3 +2621,13 @@ is set:
   had taken the branch at a unison alone
   (`a_dotted_upper_voice_a_second_above_an_undotted_lower_goes_right`). The
   engraver itself is unchanged.
+
+## ENGRAVER_VERSION 89 → 90: a stemless note's tremolo stands on its stem's side (X4c fix round 1's addendum, 2026-10-29)
+
+- A one-note tremolo on a note that draws no stem stands beyond the head
+  its stem would leave, on that stem's side, centred on the head or on the
+  stem's line where a head stands across it, and kept off the staff's outer
+  line on the head's side, as MuseScore's `TremoloLayout::layout` sets it.
+  It had stood over the chord whichever way its stem would turn
+  (`a_stemless_notes_tremolo_stands_on_its_stems_side`, D96). The engraver
+  itself is unchanged.

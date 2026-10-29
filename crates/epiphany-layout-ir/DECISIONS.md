@@ -1435,6 +1435,20 @@ column's spring the padding after it.
   MuseScore's other branches for voices crossing at a second, without those
   dots (2114 to 2190), are not taken: the lower voice stands right of the
   heads it meets, as before.
+- A one-note tremolo on a note that draws no stem, a whole note among them,
+  stands on the side its stem would leave from, as MuseScore's
+  `TremoloLayout::layout` sets it (`tremololayout.cpp` 66 to 101; its
+  comment says "above", but `layoutOneNoteTremolo` takes the side from the
+  chord's direction, 109 to 155): beyond the head the stem would leave, the
+  highest of a chord turned up and the lowest of one turned down, 1.25 off
+  it less the 0.5 at its far end (`tremoloNoteSidePadding`,
+  `tremoloOutSidePadding`), centred on that head or, where a head of the
+  chord stands across the stem, on the stem's line (`stemPosX`); and kept
+  off the staff's outer line on the head's side, a note turned up never
+  setting its strokes under the bottom line nor one turned down over the
+  top line (148 to 154), as a stemmed note's strokes are kept. It had stood
+  over the highest head, centred on the head, whichever way the stem would
+  turn (D96).
 - An arpeggio stands its gap left of its own chord's heads and accidentals
   and, where its chord stands right of another voice's, left of its
   column's origin by the same gap, as MuseScore's `ChordLayout::layoutPitched`

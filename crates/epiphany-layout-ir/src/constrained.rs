@@ -2853,6 +2853,7 @@ pub fn try_to_constrained(
                 head,
                 heads_left: left,
                 heads_right: right,
+                across: heads.iter().any(|h| (h.dx - seg.dx).abs() > 1e-3),
                 others: heads
                     .first()
                     .and_then(|h| column_others.get(&(Some(staff), h.key.clone())))
