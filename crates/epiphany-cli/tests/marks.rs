@@ -2508,6 +2508,106 @@ fn a_unison_where_the_lower_voice_crosses_moves_the_upper_voice() {
     );
 }
 
+/// An upper voice with dots a second above a lower one without goes right of
+/// it, 0.1 past its head, as MuseScore's `ChordLayout::calculateChordOffsets`
+/// moves the up voice there (`maxDownWidth` and 0.1 of a space), and so where
+/// the lower crosses it with a second where they meet, its dots after its own
+/// head; where both have dots, or only the lower, or neither, the lower stands
+/// right of it, as before.
+#[test]
+fn a_dotted_upper_voice_a_second_above_an_undotted_lower_goes_right() {
+    let dotted = |pitch: &str, voice: u8| {
+        note(pitch, 12, "half", voice, 1, "").replacen("</type>", "</type><dot/>", 1)
+    };
+    let measures = [
+        [
+            dotted("C5", 1),
+            note("C5", 4, "quarter", 1, 1, ""),
+            backup(16),
+            note("B4", 8, "half", 2, 1, ""),
+            note("B4", 8, "half", 2, 1, ""),
+        ]
+        .concat(),
+        [
+            dotted("C5", 1),
+            note("C5", 4, "quarter", 1, 1, ""),
+            backup(16),
+            dotted("B4", 2),
+            note("B4", 4, "quarter", 2, 1, ""),
+        ]
+        .concat(),
+        [
+            note("C5", 8, "half", 1, 1, ""),
+            note("C5", 8, "half", 1, 1, ""),
+            backup(16),
+            dotted("B4", 2),
+            note("B4", 4, "quarter", 2, 1, ""),
+        ]
+        .concat(),
+        [
+            dotted("C5", 1),
+            chord("E5", 12, "half", 1, 1, "").replacen("</type>", "</type><dot/>", 1),
+            note("C5", 4, "quarter", 1, 1, ""),
+            backup(16),
+            note("D5", 8, "half", 2, 1, ""),
+            note("D5", 8, "half", 2, 1, ""),
+        ]
+        .concat(),
+        [
+            note("C5", 8, "half", 1, 1, ""),
+            note("C5", 8, "half", 1, 1, ""),
+            backup(16),
+            note("B4", 8, "half", 2, 1, ""),
+            note("B4", 8, "half", 2, 1, ""),
+        ]
+        .concat(),
+    ];
+    let loaded = part_in("dotted_second.musicxml", 1, 4, &measures);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let left = |event: usize| {
+        heads(&loaded, &layout, e[event])
+            .iter()
+            .map(|h| h[0])
+            .fold(f32::INFINITY, f32::min)
+    };
+    let right = |event: usize| {
+        heads(&loaded, &layout, e[event])
+            .iter()
+            .map(|h| h[2])
+            .fold(f32::NEG_INFINITY, f32::max)
+    };
+    near(
+        left(0),
+        right(2) + 0.1,
+        "a dotted upper half right of an undotted lower half",
+    );
+    let Some(Event::Pitched(n)) = loaded.reduced.score.events.get(e[0]) else {
+        panic!("a note");
+    };
+    let dot = layout
+        .glyphs
+        .iter()
+        .find(|g| {
+            matches!(&g.provenance.source, TypedObjectId::Pitch(p) if n.pitches.iter().any(|q| q.id == *p))
+                && g.glyph.as_str() == "augmentationDot"
+        })
+        .map(glyph_box)
+        .expect("its dot");
+    assert!(dot[0] > right(0), "its dot after its own head");
+    assert!(left(6) > left(4) + 1.0, "both dotted, the lower right");
+    assert!(
+        left(10) > left(8) + 1.0,
+        "the lower dotted, the lower right"
+    );
+    near(
+        left(12),
+        right(14) + 0.1,
+        "crossed at a second, the dotted upper right",
+    );
+    assert!(left(18) > left(16) + 1.0, "neither dotted, the lower right");
+}
+
 /// A slur takes its side as MuseScore's `SlurTieLayout::computeUp` sets it:
 /// opposite its first note's direction, a whole note's as its stem would
 /// turn, so under low whole notes; above where its voice's notes turn both

@@ -1056,10 +1056,10 @@ const ACCIDENTAL_STACK_GAP: f32 = 0.15; // …and this far clear of another acci
 const SECOND_CLEARANCE: f32 = 0.02; // heads set beside each other stand this far apart
 /// The gap between two voices' heads at a unison they do not share, the
 /// later set right of the other, and an upper voice with dots set right of a
-/// lower one without (`ChordLayout::calculateChordOffsets`: 0.15 and 0.1 of
-/// a space past the other's head).
+/// lower one without, at a unison or a second (`ChordLayout::calculateChordOffsets`:
+/// 0.15 and 0.1 of a space past the other's head).
 const UNISON_CLEARANCE: f32 = 0.15;
-const DOTTED_UNISON_CLEARANCE: f32 = 0.1;
+const DOTTED_CLEARANCE: f32 = 0.1;
 const KEY_GAP: f32 = 0.6; // the gap between a clef's ink and the key signature after it
 const LEAD_GAP: f32 = 0.8; // the gap between a lead's ink and the first column after it
 const KEY_ACC_X: f32 = 0.9; // x advance per key-signature accidental
@@ -7816,10 +7816,12 @@ fn component_ties(
 /// share stands apart as MuseScore's `calculateChordOffsets` sets it: the
 /// later voice `UNISON_CLEARANCE` right of the other's head, but an upper
 /// voice with dots beside a lower one without, which goes after it and
-/// stands `DOTTED_UNISON_CLEARANCE` right of it, and an upper voice the lower
+/// stands `DOTTED_CLEARANCE` right of it, and an upper voice the lower
 /// crosses at a unison, reaching above its lowest head, which goes after it
 /// too and shares no head with it unless their heads where they meet pair
-/// off as unisons they could share. The dots of every head
+/// off as unisons they could share. An upper voice with dots a second above
+/// a lower one without, or crossed by it with a second where they meet, goes
+/// after it too, `DOTTED_CLEARANCE` right of it. The dots of every head
 /// stand right of all of the column's heads. `ups`, `stemmed` and `places`
 /// are each head's stem direction, whether its stem is drawn, and its voice
 /// place.
@@ -7886,23 +7888,24 @@ fn place_heads(
             .iter()
             .any(|&i| of(b).iter().any(|&j| heads[i].step == heads[j].step))
     };
-    // Where two voices cross at a unison, the lower reaching above the
-    // upper's lowest head, MuseScore reads the heads they meet at, skipping
-    // any across its stem, and moves the upper voice where it finds a unison
-    // there, unless every head pairs off as a unison it would share and none
-    // stands across its stem (`shareHeads`). A second between the voices'
-    // heads, which parts them as well, parts them here by a head it leaves
-    // unpaired or one set across: a voice holding both its heads sets one
-    // across.
-    let parted = |upper: EventId, lower: EventId| {
+    // Where two voices cross, the lower reaching above the upper's lowest
+    // head, MuseScore reads the heads they meet at, skipping any across its
+    // stem: whether it finds a unison there, and a second (`conflictUnison`,
+    // `conflictSecondUpHigher`, `conflictSecondDownHigher`), and whether it
+    // moves the upper voice for a unison, which it does unless every head
+    // pairs off as a unison it would share and none stands across its stem
+    // (`shareHeads`). A second between the voices' heads, which parts them
+    // as well, parts them here by a head it leaves unpaired or one set
+    // across: a voice holding both its heads sets one across.
+    let meeting = |upper: EventId, lower: EventId| {
         let (high, low) = (of(upper), of(lower));
         let top = low.iter().map(|&j| heads[j].step).max();
         let bottom = high.iter().map(|&i| heads[i].step).min();
         let (Some(top), Some(bottom)) = (top, bottom) else {
-            return false;
+            return (false, false, false);
         };
         if top <= bottom {
-            return false;
+            return (false, false, false);
         }
         let mut meet: Vec<usize> = high
             .iter()
@@ -7911,7 +7914,7 @@ fn place_heads(
             .chain(low.iter().copied().filter(|&j| heads[j].step >= bottom - 1))
             .collect();
         meet.sort_by_key(|&i| heads[i].step);
-        let (mut found, mut shared, mut pending) = (false, true, false);
+        let (mut found, mut second, mut shared, mut pending) = (false, false, true, false);
         let mut last: Option<usize> = None;
         for &n in &meet {
             if dx[n] != 0.0 {
@@ -7925,13 +7928,28 @@ fn place_heads(
                     pending = false;
                 }
                 _ => {
+                    second |= last.is_some_and(|p| heads[n].step - heads[p].step == 1);
                     shared &= !pending;
                     pending = true;
                 }
             }
             last = Some(n);
         }
-        found && (pending || !shared)
+        (found, second, found && (pending || !shared))
+    };
+    let parted = |upper: EventId, lower: EventId| meeting(upper, lower).2;
+    // An upper voice with dots meets a lower one without where MuseScore
+    // moves the up voice right of it (`upOffset`, `maxDownWidth` and 0.1 of
+    // a space): a second, the lower's highest head a step under the upper's
+    // lowest (`chordlayout.cpp` 1905 to 1908), or a unison or a second where
+    // they meet or cross (2112 and 2113).
+    let dotted_meet = |upper: EventId, lower: EventId| {
+        let top = of(lower).iter().map(|&j| heads[j].step).max();
+        let bottom = of(upper).iter().map(|&i| heads[i].step).min();
+        let second_under = matches!((top, bottom), (Some(t), Some(b)) if b - t == 1);
+        dotted(upper)
+            && !dotted(lower)
+            && (second_under || unison(upper, lower) || meeting(upper, lower).1)
     };
     let crossed: Vec<(EventId, EventId)> = events
         .iter()
@@ -7941,16 +7959,15 @@ fn place_heads(
         })
         .collect();
     // An upper voice goes after a lower one, as MuseScore moves the up voice
-    // then (`upOffset`), where it meets the lower at a unison with dots the
-    // lower lacks, or crosses it at a unison they do not share.
+    // then (`upOffset`), where it has dots the lower lacks and meets it at a
+    // unison or a second, or crosses it at a unison they do not share.
     let after: Vec<EventId> = events
         .iter()
         .copied()
         .filter(|&upper| {
             events.iter().any(|&lower| {
                 rank(places[of(lower)[0]]) > rank(places[of(upper)[0]])
-                    && ((dotted(upper) && !dotted(lower) && unison(upper, lower))
-                        || crossed.contains(&(upper, lower)))
+                    && (dotted_meet(upper, lower) || crossed.contains(&(upper, lower)))
             })
         })
         .collect();
@@ -7982,9 +7999,9 @@ fn place_heads(
                             && heads[j].dots == 0
                             && rank(places[i]) < rank(places[j]);
                         let gap = match (unison, dotted_upper) {
-                            (false, _) => SECOND_CLEARANCE,
-                            (true, true) => DOTTED_UNISON_CLEARANCE,
+                            (_, true) => DOTTED_CLEARANCE,
                             (true, false) => UNISON_CLEARANCE,
+                            (false, false) => SECOND_CLEARANCE,
                         };
                         reach = reach.max(br + gap);
                     }

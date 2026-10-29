@@ -2610,3 +2610,14 @@ is set:
   the upper voice's head, and an earlier voice's accidental went unread
   (`an_arpeggio_stands_by_its_own_chord_and_clear_of_other_voices_accidentals`).
   The engraver itself is unchanged.
+
+## ENGRAVER_VERSION 88 → 89: a dotted upper voice a second above an undotted lower goes right (X4c fix round 1's addendum, 2026-10-29)
+
+- An upper voice with dots a second above a lower one without, or crossed
+  by it with a second or a unison where they meet, stands 0.1 right of the
+  lower's head, its dots after its own, as MuseScore's
+  `calculateChordOffsets` moves the up voice there. The lower voice had
+  stood right of it, the upper's dots after the lower's head; fix round 1
+  had taken the branch at a unison alone
+  (`a_dotted_upper_voice_a_second_above_an_undotted_lower_goes_right`). The
+  engraver itself is unchanged.

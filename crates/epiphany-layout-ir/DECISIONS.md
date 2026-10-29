@@ -1422,6 +1422,19 @@ column's spring the padding after it.
   pages: two voices' wholes crossing in a chord with seconds had set the
   lower voice's head right of the upper's displaced second, where MuseScore
   sets it left of the upper's chord.
+- An upper voice with dots a second above a lower one without, the lower's
+  highest head a step under the upper's lowest, goes right of the lower and
+  stands 0.1 right of its head, as `calculateChordOffsets` moves the up
+  voice there (`chordlayout.cpp` 1905 to 1908: `maxDownWidth` and 0.1 of a
+  space), the branch the unison above takes where the voices meet; its dots
+  then stand after its own head. So too where the voices cross and the
+  heads they meet at hold a second or a unison (2112 and 2113: any
+  conflict, the up voice dotted and the down one not). The lower voice had
+  stood right of the upper, and the upper's dots after the lower's head;
+  MuseScore's export sets the upper voice right at every such place.
+  MuseScore's other branches for voices crossing at a second, without those
+  dots (2114 to 2190), are not taken: the lower voice stands right of the
+  heads it meets, as before.
 - An arpeggio stands its gap left of its own chord's heads and accidentals
   and, where its chord stands right of another voice's, left of its
   column's origin by the same gap, as MuseScore's `ChordLayout::layoutPitched`
