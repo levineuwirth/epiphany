@@ -603,6 +603,93 @@ fn a_close_mark_leaves_its_notes_tie_room() {
     );
 }
 
+/// A staccato on its stem's side, beside another voice, keeps its untied
+/// place where a tie leaves or reaches its note on that side: MuseScore
+/// gives the tie room only in `layoutArticulations`' branches on the head's
+/// side (`chordlayout.cpp` 921, 928, 983 and 990), never on the stem's
+/// (882, 944). An upper voice's tied C5 halves, their staccatos over their
+/// stems, at the height of its untied ones; a lower voice's tied A4 halves,
+/// their staccatos under their stems, likewise.
+#[test]
+fn a_tied_close_mark_on_its_stems_side_keeps_its_untied_place() {
+    let staccato = "<articulations><staccato/></articulations>";
+    let tied = |pitch: &str, kind: &str, voice: u8| {
+        note(
+            pitch,
+            4,
+            "half",
+            voice,
+            1,
+            &format!("<tied type=\"{kind}\"/>{staccato}"),
+        )
+        .replacen(
+            "</duration>",
+            &format!("</duration><tie type=\"{kind}\"/>"),
+            1,
+        )
+    };
+    let upper = |tie: bool| {
+        [
+            if tie {
+                tied("C5", "start", 1)
+            } else {
+                note("C5", 4, "half", 1, 1, staccato)
+            },
+            if tie {
+                tied("C5", "stop", 1)
+            } else {
+                note("C5", 4, "half", 1, 1, staccato)
+            },
+            backup(8),
+            note("E4", 8, "whole", 2, 1, ""),
+        ]
+        .concat()
+    };
+    let lower = |tie: bool| {
+        [
+            note("E5", 8, "whole", 1, 1, ""),
+            backup(8),
+            if tie {
+                tied("A4", "start", 2)
+            } else {
+                note("A4", 4, "half", 2, 1, staccato)
+            },
+            if tie {
+                tied("A4", "stop", 2)
+            } else {
+                note("A4", 4, "half", 2, 1, staccato)
+            },
+        ]
+        .concat()
+    };
+    let loaded = part(
+        "stem_side_ties.musicxml",
+        1,
+        &[upper(true), upper(false), lower(true), lower(false)],
+    );
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let centre = |ink: Ink| (ink[1] + ink[3]) * 0.5;
+    // Each mark's height from its own head: tied, then untied.
+    let off = |k: usize, name: &str| {
+        centre(the_glyph(&layout, e[k], name)) - centre(head(&loaded, &layout, e[k]))
+    };
+    for k in [0, 1] {
+        near(
+            off(k, "articStaccatoAbove"),
+            off(k + 3, "articStaccatoAbove"),
+            "an upper voice's tied staccato at its untied place",
+        );
+    }
+    for k in [7, 8] {
+        near(
+            off(k, "articStaccatoBelow"),
+            off(k + 3, "articStaccatoBelow"),
+            "a lower voice's tied staccato at its untied place",
+        );
+    }
+}
+
 /// A lone tie, from a single note, takes its side by Gould's rules where
 /// they reach past the engraver's (D100 Q3), and a close mark leaves the
 /// room on the side it is drawn: between consecutive stems turned opposite
@@ -3309,6 +3396,57 @@ fn a_slur_takes_its_side_as_musescore_computes_it() {
     assert!(!above(n - 8), "from the first voice to the second");
     assert!(above(n - 4), "over down stems");
     assert!(!above(n - 2), "under up stems");
+}
+
+/// A slur over the first voice whose staff shows a later voice only by
+/// hidden rests takes its side from its first note, as one alone does:
+/// MuseScore's `Measure::hasVoices` counts a rest only where it is visible
+/// (`measure.cpp` 2409 to 2411). E4 F4 G4 F4 with a hidden whole rest in
+/// the second voice, under; with the rest shown, by voice, over.
+#[test]
+fn a_slur_over_a_voice_shown_only_by_hidden_rests_takes_its_first_notes_side() {
+    let slur = |kind: &str| format!("<slur type=\"{kind}\" number=\"1\"/>");
+    let run = |hidden: bool| {
+        let rest = note("rest", 8, "whole", 2, 1, "");
+        [
+            note("E4", 2, "quarter", 1, 1, &slur("start")),
+            note("F4", 2, "quarter", 1, 1, ""),
+            note("G4", 2, "quarter", 1, 1, ""),
+            note("F4", 2, "quarter", 1, 1, &slur("stop")),
+            backup(8),
+            if hidden {
+                rest.replacen("<note>", "<note print-object=\"no\">", 1)
+            } else {
+                rest
+            },
+        ]
+        .concat()
+    };
+    let loaded = part("hidden_rest_slurs.musicxml", 1, &[run(true), run(false)]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let above = |first: usize| {
+        let slur = loaded
+            .reduced
+            .score
+            .cross_cutting
+            .slurs
+            .iter()
+            .find(|s| s.start_event == e[first])
+            .expect("a slur from that note");
+        let curve = layout
+            .curves
+            .iter()
+            .find(|c| c.provenance.source == TypedObjectId::Slur(slur.id))
+            .expect("its curve");
+        let cp = curve.control_points();
+        cp[1].y.0 > cp[0].y.0
+    };
+    assert!(
+        !above(0),
+        "a hidden rest shows no voice: under, by its first note"
+    );
+    assert!(above(5), "a rest shown: over, by voice");
 }
 
 /// A slur's ends are read as MuseScore's `computeUp` reads them: a later
