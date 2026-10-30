@@ -469,7 +469,8 @@ fn a_close_mark_leaves_its_notes_tie_room() {
     .concat();
     // A tie arriving from a beamed C5 whose stem the beam turns up, at a C5
     // alone, stem down, whose tenuto stands above: the stems opposite, the
-    // tie arcs away from the middle line, above (Gould, p. 64).
+    // tie arcs away from the middle line, above (Gould, p. 64); the beamed
+    // C5's staccato stands under it, on the other side.
     let beam = |n: String, kind: &str| {
         n.replacen(
             "</type>",
@@ -480,11 +481,15 @@ fn a_close_mark_leaves_its_notes_tie_room() {
     let turned = [
         beam(note("G4", 1, "eighth", 1, 1, ""), "begin"),
         beam(
-            note("C5", 1, "eighth", 1, 1, "<tied type=\"start\"/>").replacen(
-                "</duration>",
-                "</duration><tie type=\"start\"/>",
+            note(
+                "C5",
                 1,
-            ),
+                "eighth",
+                1,
+                1,
+                &format!("<tied type=\"start\"/>{}", marks("staccato")),
+            )
+            .replacen("</duration>", "</duration><tie type=\"start\"/>", 1),
             "end",
         ),
         tied_note("C5", "stop", &marks("tenuto")),
@@ -600,6 +605,15 @@ fn a_close_mark_leaves_its_notes_tie_room() {
         centre(tenuto),
         c5 + 2.0,
         "a tenuto over a tie arriving above",
+    );
+    // The beamed C5's own staccato, under its head, its tie leaving above:
+    // a tie on the other side leaves no room, the mark centred in the space
+    // under its head as an untied one.
+    let c5 = centre(head(&loaded, &layout, e[27]));
+    near(
+        centre(the_glyph(&layout, e[27], "articStaccatoBelow")),
+        c5 - 1.0,
+        "a staccato under a tie leaving above keeps its place",
     );
 }
 
