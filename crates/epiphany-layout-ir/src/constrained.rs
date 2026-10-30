@@ -7679,12 +7679,12 @@ fn tie_joins<'h>(
 /// rules for ties reach past [`tie_above`]'s (D100 Q3), `None` elsewhere:
 /// from a note alone (its voice neither upper nor lower) into two-part
 /// writing, as the part it joins, the upper part above and the lower below
-/// (*Behind Bars*, p. 67, "the upper part takes upward-curving ties, the
-/// lower part downward-curving ties"); between two single notes alone whose
+/// (*Behind Bars*, p. 67, where the upper part's ties curve up and the
+/// lower part's down); between two single notes alone whose
 /// stems, drawn or as they would turn, go opposite ways, away from the
-/// middle line, and above on it (p. 64, "consecutive stems in opposite
-/// directions: ties curve away from the middle stave-line"; a tie between
-/// stemless notes "behaves as if stems were present"). MuseScore sets a tie
+/// middle line, and above on it (p. 64, where ties between stems turned
+/// opposite ways curve away from the middle line, and a tie between
+/// stemless notes is set as though they had stems). MuseScore sets a tie
 /// of the first rule so (`SlurTieLayout::calculateDirection`, by the end
 /// chord's direction where its staff shows voices) and every tie of the
 /// second above, the practice Gould names to avoid; LilyPond sets the second

@@ -1503,18 +1503,18 @@ below cites the page it follows.
   (`lll`, `chordlayout.cpp` 144 to 154) and sets the gap past it at the
   difference (225 to 229), and `ArpeggioLayout::clearAccidentals` widens
   another chord's accidental by 0.3 (`arpeggiolayout.cpp` 186 to 188).
-  Gould gives no figure ("as close to each chord as the accidentals will
-  allow", p. 132), so MuseScore's stands; LilyPond keeps 0.5. X4c.3 had
+  Gould gives no figure (p. 132 asks only that it stand as near its chord
+  as the accidentals let it), so MuseScore's stands; LilyPond keeps 0.5. X4c.3 had
   read `arpeggioNoteDistance` (0.4) for both. MuseScore insets an arrowed
   arpeggio beside an accidental by its arrow's overhang
   (`ArpeggioLayout::insetDistance`); the gap here is from its ink, the
   arrow's included, as it is beside a head.
 - A one-note tremolo on a note that draws no stem stands on its stem's
   side, as the addendum sets it, by Gould's distances (D100 Q1): its
-  strokes' nearest ink at least one stave-space clear of the notehead's,
-  "so as not to obscure it" (*Behind Bars*, p. 221), and within the staff,
-  no ink past either outer line, "so as not to be confused with, nor
-  collide with, a ledger line" (p. 222). A note outside the staff has its
+  strokes' nearest ink a space or more clear of the head's, so that they
+  do not hide it (*Behind Bars*, p. 221), and within the staff, no ink past
+  either outer line, where a stroke could be taken for a ledger line or
+  meet one (p. 222). A note outside the staff has its
   strokes raised or lowered into it, further than a space from the head.
   Where both cannot hold the staff wins, the strokes held at the far line
   nearer the head than a space, but never nearer the head's ink than 0.25,
@@ -1532,10 +1532,9 @@ below cites the page it follows.
   before, on its stem.
 - An altered unison, two voices on one step with two alterations,
   chromatic or by a quarter-tone alone, keeps two heads, and each
-  accidental stands directly before its own head, "so that it is clear
-  which accidental belongs to which part" (Gould, *Behind Bars*, p. 91,
-  her "and not" example the accidentals stacked before both heads; D100
-  Q2). The voice set right of the other, as the unison rules above set it,
+  accidental stands directly before its own head, so that each part's
+  accidental is plainly its own (Gould, *Behind Bars*, p. 91, whose
+  counter-example stacks the accidentals before both heads; D100 Q2). The voice set right of the other, as the unison rules above set it,
   takes all its accidentals before its own heads, stacked among themselves
   as a column's are, and stands where they clear the heads before it and
   those heads' ledger lines by `ACCIDENTAL_GAP` (0.2), its own ledger lines
@@ -1552,12 +1551,12 @@ below cites the page it follows.
 - A lone tie, one leaving a single note, takes its side by Gould's rules
   where they reach past the engraver's (D100 Q3): from a note alone, its
   voice neither upper nor lower, into two-part writing, as the part it
-  joins, "the upper part ... upward-curving ties, the lower part
-  downward-curving" (*Behind Bars*, p. 67; the rule for a part read for
-  the note joining it); between two single notes alone whose stems, drawn
+  joins, the upper part's ties curving up and the lower part's down
+  (*Behind Bars*, p. 67; the rule for a part read for the note joining
+  it); between two single notes alone whose stems, drawn
   or as they would turn, go opposite ways, away from the middle line, and
-  above on it, "ties curve away from the middle stave-line", a tie between
-  stemless notes behaving "as if stems were present" (p. 64). Every other
+  above on it, as Gould sets ties between stems turned opposite ways, a
+  tie between stemless notes set as though they had stems (p. 64). Every other
   tie keeps its side: by its voice beside another voice, a chord's by its
   place in it, a lone tie with its stems one way opposite them. A close
   mark's tie room follows the side drawn. MuseScore sets the first rule so,

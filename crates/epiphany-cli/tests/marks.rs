@@ -880,8 +880,8 @@ fn a_lone_tie_takes_its_side_as_gould_sets_it() {
 /// An ornament's accidentals stand 0.35 off it, above and below, at 0.6 of
 /// their size (`TLayout::layoutOrnament`), over a note and under a lower
 /// voice's; and a one-note tremolo on a note that draws no stem stands as
-/// Gould sets it (*Behind Bars*): its strokes at least one stave-space clear
-/// of the notehead (p. 221) and within the staff (p. 222). Where both cannot
+/// Gould sets it (*Behind Bars*): its strokes a space or more clear of the
+/// head's ink (p. 221) and within the staff (p. 222). Where both cannot
 /// hold the staff wins, but never nearer the head's ink than 0.25 (D101).
 /// A space clear over C4 and G4 (one stroke), and under A5 and D5 (two
 /// strokes); lowered to the top line under C6; within the staff, nearer
@@ -3163,8 +3163,8 @@ fn a_dotted_upper_voice_a_second_above_an_undotted_lower_goes_right() {
 
 /// At an altered unison, two voices on one step with two alterations, the
 /// heads stand apart and each accidental stands directly before its own
-/// head, the right voice's between the two, so that it is clear which
-/// accidental belongs to which part (Gould, *Behind Bars*, p. 91): a natural
+/// head, the right voice's between the two, so that each part's accidental
+/// is plainly its own (Gould, *Behind Bars*, p. 91): a natural
 /// over a flat, the lower voice right; a natural over a quarter-tone flat
 /// written as MuseScore writes its arrows, likewise; a dotted upper voice's
 /// flat over an undotted natural, the upper voice right; and a natural over

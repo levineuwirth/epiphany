@@ -32,9 +32,9 @@ const STACCATO_ACCENT_KERN: f32 = 0.2;
 /// (`tremoloOutSidePadding`).
 const TREMOLO_OUTSIDE_PADDING: f32 = 0.5;
 /// How far a stemless note's tremolo strokes stand clear of its head's ink:
-/// "at least one stave-space clear of a notehead, so as not to obscure it"
-/// (Gould, *Behind Bars*, p. 221); and the least they keep where the staff
-/// holds them nearer (the owner's ruling, D101).
+/// a space at least, so that they do not hide the head (Gould, *Behind
+/// Bars*, p. 221); and the least they keep where the staff holds them
+/// nearer (the owner's ruling, D101).
 const TREMOLO_HEAD_CLEARANCE: f32 = 1.0;
 const TREMOLO_HEAD_FLOOR: f32 = 0.25;
 /// The gap between an arpeggio and the heads right of it
