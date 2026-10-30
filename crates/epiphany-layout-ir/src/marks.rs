@@ -29,10 +29,14 @@ const ARTICULATION_MIN_DISTANCE: f32 = 0.4;
 /// straight after it on its side stands (`stacAccentKern`).
 const STACCATO_ACCENT_KERN: f32 = 0.2;
 /// How far in from its stem's tip a one-note tremolo's strokes start
-/// (`tremoloOutSidePadding`), and how far a stemless note's stand off its
-/// head (`tremoloNoteSidePadding`).
+/// (`tremoloOutSidePadding`).
 const TREMOLO_OUTSIDE_PADDING: f32 = 0.5;
-const TREMOLO_NOTE_SIDE_PADDING: f32 = 1.25;
+/// How far a stemless note's tremolo strokes stand clear of its head's ink:
+/// "at least one stave-space clear of a notehead, so as not to obscure it"
+/// (Gould, *Behind Bars*, p. 221); and the least they keep where the staff
+/// holds them nearer (the owner's ruling, D101).
+const TREMOLO_HEAD_CLEARANCE: f32 = 1.0;
+const TREMOLO_HEAD_FLOOR: f32 = 0.25;
 /// The gap between an arpeggio and the heads right of it
 /// (`arpeggioNoteDistance`); and, where a head stands on a ledger line and
 /// none has an accidental, between it and the ledger line, which reaches
@@ -708,11 +712,14 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
     // A one-note tremolo: its strokes on the stem, 0.5 in from its tip and
     // further in past a flag or beams, kept off the staff's outer line on
     // the head's side. On a note that draws no stem, on the side its stem
-    // would leave from, beyond the head it would leave, 1.25 off it less
-    // 0.5, centred on that head or, where a head stands across the stem, on
-    // the stem's line, and kept off the staff's outer line on the head's
-    // side, as MuseScore sets it (`TremoloLayout::layout`,
-    // `layoutOneNoteTremolo`).
+    // would leave from, as MuseScore sets it (`TremoloLayout::layout`,
+    // `layoutOneNoteTremolo`), beyond the head it would leave, centred on
+    // that head or, where a head stands across the stem, on the stem's line;
+    // and as Gould sets it: `TREMOLO_HEAD_CLEARANCE` clear of the head's ink
+    // (p. 221) and within the staff, no ink past either outer line (p. 222).
+    // Where both cannot hold the staff wins, but the strokes never stand
+    // nearer the head's ink than `TREMOLO_HEAD_FLOOR`, passing the far line
+    // where the staff cannot hold them so (D101).
     for mark in marks {
         let EventMark::Tremolo { strokes } = mark else {
             continue;
@@ -746,11 +753,18 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
             } else {
                 seg.dx + (head.left.0 + head.right.0) * 0.5
             };
-            let off = TREMOLO_NOTE_SIDE_PADDING - TREMOLO_OUTSIDE_PADDING;
             centre_y = if seg.up {
-                (high + off + h * 0.5).max(bottom_line + h * 0.5)
+                let bottom = (head_top + TREMOLO_HEAD_CLEARANCE)
+                    .max(bottom_line)
+                    .min(top_line - h)
+                    .max(head_top + TREMOLO_HEAD_FLOOR);
+                bottom + h * 0.5
             } else {
-                (low - off - h * 0.5).min(top_line - h * 0.5)
+                let top = (head_bottom - TREMOLO_HEAD_CLEARANCE)
+                    .min(top_line)
+                    .max(bottom_line + h)
+                    .min(head_bottom - TREMOLO_HEAD_FLOOR);
+                top - h * 0.5
             };
         }
         placed.glyphs.push(MarkGlyph {

@@ -603,9 +603,19 @@ fn a_close_mark_leaves_its_notes_tie_room() {
 
 /// An ornament's accidentals stand 0.35 off it, above and below, at 0.6 of
 /// their size (`TLayout::layoutOrnament`), over a note and under a lower
-/// voice's; and a one-note tremolo over a
-/// note that draws no stem stands with its foot 1.25 off the head's centre
-/// less the 0.5 padding (`tremoloNoteSidePadding`, `tremoloOutSidePadding`).
+/// voice's; and a one-note tremolo on a note that draws no stem stands as
+/// Gould sets it (*Behind Bars*): its strokes at least one stave-space clear
+/// of the notehead (p. 221) and within the staff (p. 222). Where both cannot
+/// hold the staff wins, but never nearer the head's ink than 0.25 (D101).
+/// A space clear over C4 and G4 (one stroke), and under A5 and D5 (two
+/// strokes); lowered to the top line under C6; within the staff, nearer
+/// than a space, over G4 (three strokes)
+/// and A4 (two) and under C5 (two); 0.25 clear, past the far line, over A4
+/// (three) and under B4 (three). MuseScore stands a space off the head's
+/// centre, its held ink a quarter past the line
+/// (`TremoloLayout::layoutOneNoteTremolo`); the engraver had stood 0.75 off
+/// the centre, 0.25 clear of a whole head's ink, and held the strokes on the
+/// head's side alone.
 #[test]
 fn an_ornaments_accidentals_and_a_stemless_tremolo_stand_their_distances_off() {
     let measure = [
@@ -646,7 +656,23 @@ fn an_ornaments_accidentals_and_a_stemless_tremolo_stand_their_distances_off() {
         ),
     ]
     .concat();
-    let loaded = part("ornament_distances.musicxml", 1, &[measure, whole, lower]);
+    let trem = |n: u8| format!("<ornaments><tremolo type=\"single\">{n}</tremolo></ornaments>");
+    let held = [
+        note("C4", 8, "whole", 1, 1, &trem(3)),
+        note("A5", 8, "whole", 1, 1, &trem(3)),
+        note("A4", 8, "whole", 1, 1, &trem(3)),
+        note("D5", 8, "whole", 1, 1, &trem(2)),
+        note("G4", 8, "whole", 1, 1, &trem(1)),
+        note("A4", 8, "whole", 1, 1, &trem(2)),
+        note("C5", 8, "whole", 1, 1, &trem(2)),
+        note("B4", 8, "whole", 1, 1, &trem(3)),
+        note("C6", 8, "whole", 1, 1, &trem(3)),
+    ];
+    let loaded = part(
+        "ornament_distances.musicxml",
+        1,
+        &[[measure, whole, lower].as_slice(), &held].concat(),
+    );
     let layout = engrave(&loaded.reduced.score).layout;
     let e = events(&loaded);
 
@@ -686,12 +712,84 @@ fn an_ornaments_accidentals_and_a_stemless_tremolo_stand_their_distances_off() {
     );
     near(runs[0][3], mordent[1] - 0.35, "the sharp 0.35 under it");
 
-    let strokes = the_glyph(&layout, e[2], "tremolo3");
-    let head = head(&loaded, &layout, e[2]);
-    near(
-        strokes[1],
-        (head[1] + head[3]) * 0.5 + 1.25 - 0.5,
-        "the strokes over a whole note",
+    // Each stemless tremolo's distance, gathered so that a failure shows
+    // every value that moved: (what, found, expected).
+    let mut found = Vec::new();
+    let strokes = |k: usize, name: &str| the_glyph(&layout, e[k], name);
+    let ink = |k: usize| head(&loaded, &layout, e[k]);
+    // A note's staff's bottom and top lines, from its head `steps` steps
+    // over the bottom line (E4), whatever system it stands on.
+    let lines = |k: usize, steps: f32| {
+        let bottom = (ink(k)[1] + ink(k)[3]) * 0.5 - steps * 0.5;
+        (bottom, bottom + 4.0)
+    };
+    for (k, name, what) in [
+        (5, "tremolo3", "three strokes a space over C4"),
+        (9, "tremolo1", "one stroke a space over G4"),
+    ] {
+        found.push((what, strokes(k, name)[1], ink(k)[3] + 1.0));
+    }
+    for (k, name, what) in [
+        (6, "tremolo3", "three strokes a space under A5"),
+        (8, "tremolo2", "two strokes a space under D5"),
+    ] {
+        found.push((what, strokes(k, name)[3], ink(k)[1] - 1.0));
+    }
+    for (k, name, steps, what) in [
+        (
+            2,
+            "tremolo3",
+            2.0,
+            "three strokes over G4 held at the top line",
+        ),
+        (
+            10,
+            "tremolo2",
+            3.0,
+            "two strokes over A4 held at the top line",
+        ),
+    ] {
+        found.push((what, strokes(k, name)[3], lines(k, steps).1));
+    }
+    found.push((
+        "three strokes under C6 lowered to the top line",
+        strokes(13, "tremolo3")[3],
+        lines(13, 12.0).1,
+    ));
+    found.push((
+        "two strokes under C5 held at the bottom line",
+        strokes(11, "tremolo2")[1],
+        lines(11, 5.0).0,
+    ));
+    found.push((
+        "three strokes over A4 0.25 clear",
+        strokes(7, "tremolo3")[1],
+        ink(7)[3] + 0.25,
+    ));
+    found.push((
+        "three strokes under B4 0.25 clear",
+        strokes(12, "tremolo3")[3],
+        ink(12)[1] - 0.25,
+    ));
+    let moved: Vec<_> = found
+        .iter()
+        .filter(|(_, a, b)| (a - b).abs() >= 0.01)
+        .collect();
+    assert!(moved.is_empty(), "{moved:?}");
+    // Held at the top line nearer the head than a space, but past the floor;
+    // and where the staff cannot hold them past it, past the far line.
+    for k in [2, 10] {
+        let name = if k == 2 { "tremolo3" } else { "tremolo2" };
+        let clear = strokes(k, name)[1] - ink(k)[3];
+        assert!(clear > 0.25 && clear < 1.0, "{k}: {clear}");
+    }
+    assert!(
+        strokes(7, "tremolo3")[3] > lines(7, 3.0).1 + 0.1,
+        "past the top line"
+    );
+    assert!(
+        strokes(12, "tremolo3")[1] < lines(12, 4.0).0 - 0.1,
+        "past the bottom line"
     );
 }
 
@@ -1743,11 +1841,12 @@ fn tremolo_strokes_stand_on_their_stems() {
 }
 
 /// A one-note tremolo on a note that draws no stem stands on the side its
-/// stem would leave from, as MuseScore's `TremoloLayout::layout` sets it:
-/// over a whole note under the middle line, its foot 0.75 over the head, and
-/// under one over it, its top 0.75 under the head; a high note's strokes kept
-/// at the top line and a low note's at the bottom line
-/// (`layoutOneNoteTremolo`); centred on the head, or on the stem's line where
+/// stem would leave from, as MuseScore's `TremoloLayout::layout` sets it,
+/// and by Gould's distances (D100 Q1, D101): over a whole note under the
+/// middle line, held at the top line, and under one over it, held at the
+/// bottom line, each nearer than a space and at least 0.25 clear; a high
+/// note's strokes a space under it and a low note's raised to the bottom
+/// line, within the staff; centred on the head, or on the stem's line where
 /// a head of the chord stands across it, over the highest head of a chord
 /// whose stem would turn up and under the lowest of one turned down.
 #[test]
@@ -1768,27 +1867,31 @@ fn a_stemless_notes_tremolo_stands_on_its_stems_side() {
     let strokes = |m: usize| the_glyph(&layout, e[m], "tremolo3");
     let heads_of = |m: usize| heads(&loaded, &layout, e[m]);
     let centre_y = |h: Ink| (h[1] + h[3]) * 0.5;
+    // A head's staff's bottom line, the head `steps` steps over it.
+    let bottom_line = |h: Ink, steps: f32| centre_y(h) - steps * 0.5;
     let g4 = heads_of(0)[0];
-    near(strokes(0)[1], centre_y(g4) + 0.75, "over a head turned up");
+    near(
+        strokes(0)[3],
+        bottom_line(g4, 2.0) + 4.0,
+        "over a head turned up, at the top line",
+    );
+    assert!(strokes(0)[1] - g4[3] >= 0.25 - 0.01, "0.25 clear at least");
     near(centre_x(strokes(0)), centre_x(g4), "centred on it");
     let d5 = heads_of(1)[0];
     near(
-        strokes(1)[3],
-        centre_y(d5) - 0.75,
-        "under a head turned down",
+        strokes(1)[1],
+        bottom_line(d5, 6.0),
+        "under a head turned down, at the bottom line",
     );
+    assert!(d5[1] - strokes(1)[3] >= 0.25 - 0.01, "0.25 clear at least");
     near(centre_x(strokes(1)), centre_x(d5), "centred on it");
     let a5 = heads_of(2)[0];
-    near(
-        strokes(2)[3],
-        centre_y(a5) - 1.0,
-        "a high note's at the top line",
-    );
+    near(strokes(2)[3], a5[1] - 1.0, "a high note's a space under it");
     let a3 = heads_of(3)[0];
     near(
         strokes(3)[1],
-        centre_y(a3) + 2.0,
-        "a low note's at the bottom line",
+        bottom_line(a3, -4.0),
+        "a low note's raised to the bottom line",
     );
     let down = heads_of(4);
     assert!(down[0][0] < down[1][0] - 1.0, "the D5 across its stem");
@@ -1798,9 +1901,9 @@ fn a_stemless_notes_tremolo_stands_on_its_stems_side() {
         "on the stem's line, a chord turned down",
     );
     near(
-        strokes(4)[3],
-        centre_y(down[0]) - 0.75,
-        "under its lowest head",
+        strokes(4)[1],
+        bottom_line(down[0], 6.0),
+        "under its lowest head, at the bottom line",
     );
     let up = heads_of(5);
     assert!(up[1][0] > up[0][0] + 1.0, "the G4 across its stem");
@@ -1810,9 +1913,9 @@ fn a_stemless_notes_tremolo_stands_on_its_stems_side() {
         "on the stem's line, a chord turned up",
     );
     near(
-        strokes(5)[1],
-        centre_y(up[1]) + 0.75,
-        "over its highest head",
+        strokes(5)[3],
+        bottom_line(up[1], 2.0) + 4.0,
+        "over its highest head, at the top line",
     );
 }
 

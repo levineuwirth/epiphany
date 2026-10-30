@@ -1440,15 +1440,16 @@ column's spring the padding after it.
   `TremoloLayout::layout` sets it (`tremololayout.cpp` 66 to 101; its
   comment says "above", but `layoutOneNoteTremolo` takes the side from the
   chord's direction, 109 to 155): beyond the head the stem would leave, the
-  highest of a chord turned up and the lowest of one turned down, 1.25 off
-  it less the 0.5 at its far end (`tremoloNoteSidePadding`,
-  `tremoloOutSidePadding`), centred on that head or, where a head of the
-  chord stands across the stem, on the stem's line (`stemPosX`); and kept
-  off the staff's outer line on the head's side, a note turned up never
-  setting its strokes under the bottom line nor one turned down over the
-  top line (148 to 154), as a stemmed note's strokes are kept. It had stood
-  over the highest head, centred on the head, whichever way the stem would
-  turn (D96).
+  highest of a chord turned up and the lowest of one turned down, centred
+  on that head or, where a head of the chord stands across the stem, on
+  the stem's line (`stemPosX`). It had stood over the highest head,
+  centred on the head, whichever way the stem would turn (D96). Its
+  distance from the head and the lines that hold it are Gould's since fix
+  round 2 (below); the addendum had set MuseScore's 1.25 off the head less
+  the 0.5 at its far end (`tremoloNoteSidePadding`,
+  `tremoloOutSidePadding`), measured from the head's centre, and kept the
+  strokes off the staff's outer line on the head's side alone (148 to
+  154).
 - An arpeggio stands its gap left of its own chord's heads and accidentals
   and, where its chord stands right of another voice's, left of its
   column's origin by the same gap, as MuseScore's `ChordLayout::layoutPitched`
@@ -1501,3 +1502,24 @@ below cites the page it follows.
   arpeggio beside an accidental by its arrow's overhang
   (`ArpeggioLayout::insetDistance`); the gap here is from its ink, the
   arrow's included, as it is beside a head.
+- A one-note tremolo on a note that draws no stem stands on its stem's
+  side, as the addendum sets it, by Gould's distances (D100 Q1): its
+  strokes' nearest ink at least one stave-space clear of the notehead's,
+  "so as not to obscure it" (*Behind Bars*, p. 221), and within the staff,
+  no ink past either outer line, "so as not to be confused with, nor
+  collide with, a ledger line" (p. 222). A note outside the staff has its
+  strokes raised or lowered into it, further than a space from the head.
+  Where both cannot hold the staff wins, the strokes held at the far line
+  nearer the head than a space, but never nearer the head's ink than 0.25,
+  the owner's ruling (D101): where the staff cannot hold them that clear,
+  they stand 0.25 clear and pass the far line, as the engraver set them
+  before. Gould names two or more strokes; a single stroke is held to the
+  same distances. MuseScore stands a space off the head's centre, half a
+  space clear of a whole head's ink, and holds the strokes at the line on
+  the head's side alone, its sheared ink a quarter past it
+  (`TremoloLayout::layoutOneNoteTremolo`, `tremololayout.cpp` 109 to 155;
+  `TremoloSingleChord`'s path, `tremolosinglechord.cpp` 158 to 187);
+  LilyPond stands 1.07 off the centre and holds them at no line
+  (`stem-tremolo.cc`). The addendum had stood 0.75 off the centre, a
+  quarter clear of a whole head's ink. A stemmed one-note tremolo stands as
+  before, on its stem.

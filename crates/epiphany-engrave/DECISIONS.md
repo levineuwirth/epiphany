@@ -2640,3 +2640,14 @@ is set:
   keeps from a head (D97 Q1,
   `an_arpeggio_stands_its_accidental_distance_off_an_accidental`). The
   engraver itself is unchanged.
+
+## ENGRAVER_VERSION 91 → 92: a stemless note's tremolo stands a space clear of its head and within the staff (X4c fix round 2, 2026-10-30)
+
+- A one-note tremolo on a note that draws no stem stands with its strokes
+  at least a space clear of the head's ink and within the staff, as Gould
+  sets it (D100 Q1); where both cannot hold, within the staff, but never
+  nearer the head's ink than 0.25 (D101). It had stood 0.75 off the head's
+  centre, held at the line on the head's side alone
+  (`an_ornaments_accidentals_and_a_stemless_tremolo_stand_their_distances_off`,
+  `a_stemless_notes_tremolo_stands_on_its_stems_side`). The engraver itself
+  is unchanged.
