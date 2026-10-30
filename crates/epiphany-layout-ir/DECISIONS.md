@@ -1549,3 +1549,23 @@ below cites the page it follows.
   itself set right of a third voice's head a second away, its accidental
   stays in the column's stack, before that third voice's head on its own
   line.
+- A lone tie, one leaving a single note, takes its side by Gould's rules
+  where they reach past the engraver's (D100 Q3): from a note alone, its
+  voice neither upper nor lower, into two-part writing, as the part it
+  joins, "the upper part ... upward-curving ties, the lower part
+  downward-curving" (*Behind Bars*, p. 67; the rule for a part read for
+  the note joining it); between two single notes alone whose stems, drawn
+  or as they would turn, go opposite ways, away from the middle line, and
+  above on it, "ties curve away from the middle stave-line", a tie between
+  stemless notes behaving "as if stems were present" (p. 64). Every other
+  tie keeps its side: by its voice beside another voice, a chord's by its
+  place in it, a lone tie with its stems one way opposite them. A close
+  mark's tie room follows the side drawn. MuseScore sets the first rule so,
+  by the end chord's direction where its staff shows voices
+  (`SlurTieLayout::calculateDirection`, `slurtielayout.cpp` 3028), and
+  every tie of the second above (3035), the practice Gould names to avoid,
+  a tie meeting an up-stemmed first note's tail; LilyPond sets the second
+  by staff position, as Gould does, and the first by the voice it starts
+  in. The tie a note's own decomposition draws between its components
+  keeps the engraver's rule: its components turn alike unless a beam turns
+  one, which no file of the corpus is known to do.

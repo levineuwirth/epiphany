@@ -2724,6 +2724,22 @@ pub fn try_to_constrained(
         // event from a note of one component, one its event's decomposition
         // ties to its second, and one arriving from the event before.
         let mut tied_heads: BTreeMap<EventId, Vec<(f32, bool)>> = BTreeMap::new();
+        // Each event's heads by component, highest first: a tie takes its side
+        // from its head's place among them.
+        let mut chord_ys: BTreeMap<(EventId, usize), Vec<f32>> = BTreeMap::new();
+        for head in pitch_heads
+            .values()
+            .chain(unpitched_heads.values())
+            .flatten()
+        {
+            chord_ys
+                .entry((head.event, head.comp))
+                .or_default()
+                .push(head.y);
+        }
+        for ys in chord_ys.values_mut() {
+            ys.sort_by(|a, b| b.total_cmp(a));
+        }
         for (_, staff, content) in &specs {
             let Some(LayoutContent::Tie(tie)) = content else {
                 continue;
@@ -2735,6 +2751,7 @@ pub fn try_to_constrained(
                 &unpitched_heads,
                 &event_stems,
                 &event_voices,
+                &chord_ys,
                 yo,
             );
             for (a, b, above) in joins {
@@ -2903,22 +2920,6 @@ pub fn try_to_constrained(
         }
         let no_notes: BTreeMap<ColumnKey, ColumnInk> = BTreeMap::new();
 
-        // Each event's heads by component, highest first: a tie takes its side
-        // from its head's place among them.
-        let mut chord_ys: BTreeMap<(EventId, usize), Vec<f32>> = BTreeMap::new();
-        for head in pitch_heads
-            .values()
-            .chain(unpitched_heads.values())
-            .flatten()
-        {
-            chord_ys
-                .entry((head.event, head.comp))
-                .or_default()
-                .push(head.y);
-        }
-        for ys in chord_ys.values_mut() {
-            ys.sort_by(|a, b| b.total_cmp(a));
-        }
         // Each staff column's ink a tie's end must stand clear of; and each
         // note's own, which a tuplet's bracket across two staves clears.
         let mut tie_ink: BTreeMap<(Option<StaffId>, ColumnKey), Vec<InkBox>> = BTreeMap::new();
@@ -4397,6 +4398,7 @@ pub fn try_to_constrained(
                             &unpitched_heads,
                             &event_stems,
                             &event_voices,
+                            &chord_ys,
                             yo,
                         ),
                         _ => Vec::new(),
@@ -7610,14 +7612,17 @@ fn tie_above(
 
 /// The heads a tie between two events joins, highest first: each pitch's
 /// last head to the head its next event starts with (an unpitched note's
-/// alike), with the side it arcs on (`tie_above`, by its start event's
-/// voice and last stem).
+/// alike), with the side it arcs on: a lone tie from a single note by
+/// [`lone_tie_side`] where Gould's rules reach it, else by `tie_above`, by
+/// its start event's voice and last stem. `chords` holds each event's heads'
+/// `y` by component.
 fn tie_joins<'h>(
     tie: &TieContent,
     pitch_heads: &'h BTreeMap<PitchId, Vec<Head>>,
     unpitched_heads: &'h BTreeMap<EventId, Vec<Head>>,
     stems: &BTreeMap<EventId, Vec<StemSeg>>,
     voices: &BTreeMap<EventId, VoicePlace>,
+    chords: &BTreeMap<(EventId, usize), Vec<f32>>,
     yo: f32,
 ) -> Vec<(&'h Head, &'h Head, bool)> {
     let mut joins: Vec<(&Head, &Head)> = Vec::new();
@@ -7639,11 +7644,70 @@ fn tie_joins<'h>(
         .map(|seg| seg.up);
     let voice = voices.get(&tie.start).copied();
     let n = joins.len();
+    let single =
+        |event: EventId, comp: usize| chords.get(&(event, comp)).is_some_and(|ys| ys.len() == 1);
+    let up = |event: EventId, comp: usize| {
+        stems
+            .get(&event)
+            .and_then(|segs| segs.iter().find(|seg| seg.comp == comp))
+            .map(|seg| seg.up)
+    };
     joins
         .into_iter()
         .enumerate()
-        .map(|(i, (a, b))| (a, b, tie_above(voice, i, n, stem_up, a.y, yo)))
+        .map(|(i, (a, b))| {
+            let lone = (n == 1 && single(tie.start, a.comp))
+                .then(|| {
+                    lone_tie_side(
+                        (voice, voices.get(&tie.end).copied()),
+                        single(tie.end, b.comp),
+                        (up(tie.start, a.comp), up(tie.end, b.comp)),
+                        a.y,
+                        yo,
+                    )
+                })
+                .flatten();
+            (
+                a,
+                b,
+                lone.unwrap_or_else(|| tie_above(voice, i, n, stem_up, a.y, yo)),
+            )
+        })
         .collect()
+}
+
+/// The side a lone tie arcs on, one leaving a single note, where Gould's
+/// rules for ties reach past [`tie_above`]'s (D100 Q3), `None` elsewhere:
+/// from a note alone (its voice neither upper nor lower) into two-part
+/// writing, as the part it joins, the upper part above and the lower below
+/// (*Behind Bars*, p. 67, "the upper part takes upward-curving ties, the
+/// lower part downward-curving ties"); between two single notes alone whose
+/// stems, drawn or as they would turn, go opposite ways, away from the
+/// middle line, and above on it (p. 64, "consecutive stems in opposite
+/// directions: ties curve away from the middle stave-line"; a tie between
+/// stemless notes "behaves as if stems were present"). MuseScore sets a tie
+/// of the first rule so (`SlurTieLayout::calculateDirection`, by the end
+/// chord's direction where its staff shows voices) and every tie of the
+/// second above, the practice Gould names to avoid; LilyPond sets the second
+/// by staff position, as Gould does, and the first by its start's voice.
+fn lone_tie_side(
+    (start, end): (Option<VoicePlace>, Option<VoicePlace>),
+    end_single: bool,
+    (start_up, end_up): (Option<bool>, Option<bool>),
+    y: f32,
+    yo: f32,
+) -> Option<bool> {
+    if matches!(start, Some(VoicePlace::Upper | VoicePlace::Lower)) {
+        return None;
+    }
+    match end {
+        Some(VoicePlace::Upper) => Some(true),
+        Some(VoicePlace::Lower) => Some(false),
+        _ => match (start_up, end_up) {
+            (Some(a), Some(b)) if a != b && end_single => Some(y >= yo + STAFF_HEIGHT * 0.5 - 1e-3),
+            _ => None,
+        },
+    }
 }
 
 /// What a tie between a note's components takes its side from: each event's
@@ -7744,9 +7808,9 @@ fn tie_ends(
 }
 
 /// The ties between the successive components of one pitch (or unpitched
-/// note) that its decomposition ties, each taking its side as a tie between
-/// two events does (`tie_above`), synthesized from `provenance`, with the
-/// slots its ends ride.
+/// note) that its decomposition ties, each taking its side by `tie_above`,
+/// as a tie between two events does where [`lone_tie_side`] does not reach
+/// it, synthesized from `provenance`, with the slots its ends ride.
 fn component_ties(
     provenance: &Provenance,
     heads: &[Head],

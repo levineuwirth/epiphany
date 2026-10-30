@@ -467,8 +467,9 @@ fn a_close_mark_leaves_its_notes_tie_room() {
         note("rest", 2, "quarter", 1, 1, ""),
     ]
     .concat();
-    // A tie arriving from a beamed C5 whose stem the beam turns up, so the
-    // tie arcs below, at a C5 alone whose tenuto stands above.
+    // A tie arriving from a beamed C5 whose stem the beam turns up, at a C5
+    // alone, stem down, whose tenuto stands above: the stems opposite, the
+    // tie arcs away from the middle line, above (Gould, p. 64).
     let beam = |n: String, kind: &str| {
         n.replacen(
             "</type>",
@@ -585,8 +586,9 @@ fn a_close_mark_leaves_its_notes_tie_room() {
         "a staccato over a split half",
     );
 
-    // The tie from the beamed C5, its stem up, arcs below; the tenuto over
-    // the C5 it reaches stands as an untied one, in the top space.
+    // The tie from the beamed C5, its stem up, to the C5 stem down arcs
+    // above, so the tenuto over the C5 it reaches takes its room, a line
+    // further out, in the space over the top line.
     let c5 = head(&loaded, &layout, e[27]);
     assert!(
         stem(&layout, e[27]).2 > c5[3] + 1.0,
@@ -596,9 +598,182 @@ fn a_close_mark_leaves_its_notes_tie_room() {
     let c5 = centre(head(&loaded, &layout, e[28]));
     near(
         centre(tenuto),
-        c5 + 1.0,
-        "a tenuto over a tie arriving below",
+        c5 + 2.0,
+        "a tenuto over a tie arriving above",
     );
+}
+
+/// A lone tie, from a single note, takes its side by Gould's rules where
+/// they reach past the engraver's (D100 Q3), and a close mark leaves the
+/// room on the side it is drawn: between consecutive stems turned opposite
+/// ways it curves away from the middle line, and up on it (*Behind Bars*,
+/// p. 64), a whole note's stem counted as it would turn: a beamed C5 turned
+/// up to a C5 turned down, above, its tenuto taking the room; a beamed G4
+/// turned down to a G4 turned up, below; a beamed B4 turned up to a B4
+/// turned down, above; a beamed G4 turned down to a whole G4, below. A note
+/// alone tied into two-part writing curves as the part it joins, the upper
+/// part up and the lower down (p. 67): a whole A4 into the upper part,
+/// above; a half C5 into the lower part, below, its tenuto taking no room.
+/// The engraver had set each opposite its first note's stem, or by the
+/// middle line where it draws none. A tie leaving a part keeps its part's
+/// side, and a chord's one tie its place: the upper part's G4 into one
+/// voice turned down, above; a chord turned up tying its C5 to a C5 turned
+/// down, below.
+#[test]
+fn a_lone_tie_takes_its_side_as_gould_sets_it() {
+    let tie = |n: String, kind: &str| {
+        n.replacen(
+            "</duration>",
+            &format!("</duration><tie type=\"{kind}\"/>"),
+            1,
+        )
+    };
+    let beam = |n: String, kind: &str| {
+        n.replacen(
+            "</type>",
+            &format!("</type><beam number=\"1\">{kind}</beam>"),
+            1,
+        )
+    };
+    let start = "<tied type=\"start\"/>";
+    let stop = "<tied type=\"stop\"/>";
+    let tenuto_stop = "<tied type=\"stop\"/><articulations><tenuto/></articulations>";
+    let tenuto_start = "<tied type=\"start\"/><articulations><tenuto/></articulations>";
+    let turned = |low: &str, high: &str, tied: &str| {
+        let (first, second) = if tied == low {
+            (high, low)
+        } else {
+            (low, high)
+        };
+        [
+            beam(note(first, 1, "eighth", 1, 1, ""), "begin"),
+            beam(tie(note(second, 1, "eighth", 1, 1, start), "start"), "end"),
+        ]
+        .concat()
+    };
+    let measures = [
+        // A beamed C5 turned up by G4, to a C5 turned down with a tenuto.
+        [
+            turned("G4", "C5", "C5"),
+            tie(note("C5", 2, "quarter", 1, 1, tenuto_stop), "stop"),
+            note("rest", 4, "half", 1, 1, ""),
+        ]
+        .concat(),
+        // A beamed G4 turned down by E5, to a G4 turned up.
+        [
+            turned("G4", "E5", "G4"),
+            tie(note("G4", 2, "quarter", 1, 1, stop), "stop"),
+            note("rest", 4, "half", 1, 1, ""),
+        ]
+        .concat(),
+        // A beamed B4 turned up by E4, to a B4 turned down.
+        [
+            turned("E4", "B4", "B4"),
+            tie(note("B4", 2, "quarter", 1, 1, stop), "stop"),
+            note("rest", 4, "half", 1, 1, ""),
+        ]
+        .concat(),
+        // A beamed G4 turned down by E5, to a whole G4.
+        [
+            note("rest", 6, "half", 1, 1, "").replacen("</type>", "</type><dot/>", 1),
+            turned("G4", "E5", "G4"),
+        ]
+        .concat(),
+        tie(note("G4", 8, "whole", 1, 1, stop), "stop"),
+        // A whole A4 alone into the upper part.
+        tie(note("A4", 8, "whole", 1, 1, start), "start"),
+        [
+            tie(note("A4", 8, "whole", 1, 1, stop), "stop"),
+            backup(8),
+            note("D4", 8, "whole", 2, 1, ""),
+        ]
+        .concat(),
+        // A half C5 alone, with a tenuto, into the lower part.
+        [
+            note("rest", 4, "half", 1, 1, ""),
+            tie(note("C5", 4, "half", 1, 1, tenuto_start), "start"),
+        ]
+        .concat(),
+        [
+            note("E5", 8, "whole", 1, 1, ""),
+            backup(8),
+            tie(note("C5", 8, "whole", 2, 1, stop), "stop"),
+        ]
+        .concat(),
+        // Kept as they were: the upper part's G4 tied into one voice, to a
+        // G4 a beam turns down; and a chord's one tie, E4 C5 turned up, its
+        // C5 to a C5 alone turned down.
+        [
+            note("rest", 4, "half", 1, 1, ""),
+            tie(note("G4", 4, "half", 1, 1, start), "start"),
+            backup(8),
+            note("D4", 8, "whole", 2, 1, ""),
+        ]
+        .concat(),
+        [
+            beam(tie(note("G4", 1, "eighth", 1, 1, stop), "stop"), "begin"),
+            beam(note("E5", 1, "eighth", 1, 1, ""), "end"),
+            note("rest", 6, "half", 1, 1, "").replacen("</type>", "</type><dot/>", 1),
+        ]
+        .concat(),
+        [
+            note("E4", 2, "quarter", 1, 1, ""),
+            tie(chord("C5", 2, "quarter", 1, 1, start), "start"),
+            tie(note("C5", 2, "quarter", 1, 1, stop), "stop"),
+            note("rest", 4, "half", 1, 1, ""),
+        ]
+        .concat(),
+    ];
+    let loaded = part("lone_ties.musicxml", 1, &measures);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let above = |first: usize| {
+        let tie = loaded
+            .reduced
+            .score
+            .cross_cutting
+            .ties
+            .iter()
+            .find(|t| t.start_event == e[first])
+            .expect("a tie from that note");
+        let curve = layout
+            .curves
+            .iter()
+            .find(|c| c.provenance.source == TypedObjectId::Tie(tie.id))
+            .expect("its curve");
+        let cp = curve.control_points();
+        cp[1].y.0 > cp[0].y.0
+    };
+    let centre = |ink: Ink| (ink[1] + ink[3]) * 0.5;
+    assert!(
+        stem(&layout, e[1]).2 > head(&loaded, &layout, e[1])[3] + 1.0,
+        "the beamed C5 turned up"
+    );
+    assert!(above(1), "stems opposite over the middle line: above");
+    near(
+        centre(the_glyph(&layout, e[2], "articTenutoAbove")),
+        centre(head(&loaded, &layout, e[2])) + 2.0,
+        "its tenuto takes the room",
+    );
+    assert!(
+        stem(&layout, e[5]).1 < head(&loaded, &layout, e[5])[1] - 1.0,
+        "the beamed G4 turned down"
+    );
+    assert!(!above(5), "stems opposite under the middle line: below");
+    assert!(above(9), "stems opposite on the middle line: above");
+    assert!(!above(14), "to a whole note as its stem would turn: below");
+    assert!(above(16), "a note alone into the upper part: above");
+    assert!(!above(20), "a note alone into the lower part: below");
+    near(
+        centre(the_glyph(&layout, e[20], "articTenutoAbove")),
+        centre(head(&loaded, &layout, e[20])) + 1.0,
+        "its tenuto takes no room",
+    );
+    assert!(
+        above(24),
+        "the upper part's tie into one voice: above, by its part"
+    );
+    assert!(!above(29), "a chord's one tie: opposite its stem, below");
 }
 
 /// An ornament's accidentals stand 0.35 off it, above and below, at 0.6 of

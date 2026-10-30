@@ -2666,3 +2666,16 @@ is set:
   following Gould, keeps as two heads; the quarter-tone fixture's unison is
   such a one, which fix round 1 said MuseScore does not share. The
   engraver itself is unchanged.
+
+## ENGRAVER_VERSION 93 → 94: a lone tie takes its side by Gould's rules (X4c fix round 2, 2026-10-30)
+
+- A tie from a single note alone into two-part writing curves as the part
+  it joins, above into the upper part and below into the lower; a tie
+  between two single notes alone whose stems, drawn or as they would turn,
+  go opposite ways curves away from the middle line, and above on it, as
+  Gould sets them (D100 Q3). Each had taken the side opposite its first
+  note's stem, or by the middle line where it drew none. A close mark's tie
+  room follows the side drawn
+  (`a_lone_tie_takes_its_side_as_gould_sets_it`,
+  `a_close_mark_leaves_its_notes_tie_room`). The engraver itself is
+  unchanged.
