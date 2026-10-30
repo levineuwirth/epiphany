@@ -33,14 +33,20 @@ const STACCATO_ACCENT_KERN: f32 = 0.2;
 /// head (`tremoloNoteSidePadding`).
 const TREMOLO_OUTSIDE_PADDING: f32 = 0.5;
 const TREMOLO_NOTE_SIDE_PADDING: f32 = 1.25;
-/// The gap between an arpeggio and the heads or accidentals right of it
-/// (`arpeggioNoteDistance`), and, where a head stands on a ledger line and
+/// The gap between an arpeggio and the heads right of it
+/// (`arpeggioNoteDistance`); and, where a head stands on a ledger line and
 /// none has an accidental, between it and the ledger line, which reaches
 /// `LEDGER_LINE_LENGTH` past its head (MuseScore's padding from an arpeggio
 /// to a ledger line, and `ledgerLineLength`; `ChordLayout`'s arpeggio gap).
 const ARPEGGIO_NOTE_DISTANCE: f32 = 0.4;
 const ARPEGGIO_LEDGER_DISTANCE: f32 = 0.3;
 const LEDGER_LINE_LENGTH: f32 = 0.33;
+/// The gap between an arpeggio and an accidental right of it, its own
+/// chord's or another's (`arpeggioAccidentalDistance`), which MuseScore's
+/// `ChordLayout::layoutPitched` keeps from its own chord's by reading each
+/// accidental `accidentalDistance` further left and leaving the difference.
+const ARPEGGIO_ACCIDENTAL_DISTANCE: f32 = 0.3;
+const ACCIDENTAL_DISTANCE: f32 = 0.25;
 /// The step from one arpeggio wiggle to the next, Bravura's
 /// `wiggleArpeggiatoUp` advance, in staff spaces.
 pub(super) const ARPEGGIO_WIGGLE_STEP: f32 = 1.02;
@@ -98,14 +104,17 @@ impl OtherInk {
     /// Its box widened by the gap an arpeggio keeps from it, as MuseScore
     /// pads each accidental and ledger line of another chord before meeting
     /// it with an arpeggio (`ArpeggioLayout::clearAccidentals`): an
-    /// accidental by the gap an arpeggio keeps from its own chord's, a ledger
-    /// line, reaching `LEDGER_LINE_LENGTH` past its head, by
-    /// `ARPEGGIO_LEDGER_DISTANCE`.
+    /// accidental by `ARPEGGIO_ACCIDENTAL_DISTANCE`, the gap an arpeggio
+    /// keeps from its own chord's, a ledger line, reaching
+    /// `LEDGER_LINE_LENGTH` past its head, by `ARPEGGIO_LEDGER_DISTANCE`.
     fn padded(self) -> [f32; 4] {
         match self {
-            OtherInk::Accidental([l, b, r, t]) => {
-                [l - ARPEGGIO_NOTE_DISTANCE, b, r + ARPEGGIO_NOTE_DISTANCE, t]
-            }
+            OtherInk::Accidental([l, b, r, t]) => [
+                l - ARPEGGIO_ACCIDENTAL_DISTANCE,
+                b,
+                r + ARPEGGIO_ACCIDENTAL_DISTANCE,
+                t,
+            ],
             OtherInk::Ledger { left, right, y } => {
                 let reach = LEDGER_LINE_LENGTH + ARPEGGIO_LEDGER_DISTANCE;
                 [left - reach, y, right + reach, y]
@@ -793,13 +802,17 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
 
     // An arpeggio left of the chord, from its lowest head to its highest,
     // and further left past the ledger line a head stands on, the first a
-    // space under the staff or over it. Where its chord stands right of
-    // another voice's, it stands left of the column's origin, as MuseScore
-    // clamps the chord's `x` to the segment's origin (`arpChordX`,
-    // `minChordX`) and spans its own track alone by default
-    // (`Arpeggio::m_span`). Then, once, it moves clear of every accidental
-    // and ledger line of the column's other chords that it meets, its height
-    // its heads' and its width its ink's (`ArpeggioLayout::clearAccidentals`).
+    // space under the staff or over it. Where its chord draws an accidental,
+    // `ARPEGGIO_ACCIDENTAL_DISTANCE` left of the leftmost's ink, as
+    // MuseScore reads each accidental `ACCIDENTAL_DISTANCE` further left and
+    // keeps the difference (`ChordLayout::layoutPitched`, `lll` and the
+    // arpeggio's `gapSize`). Where its chord stands right of another
+    // voice's, it stands left of the column's origin, as MuseScore clamps
+    // the chord's `x` to the segment's origin (`arpChordX`, `minChordX`) and
+    // spans its own track alone by default (`Arpeggio::m_span`). Then, once,
+    // it moves clear of every accidental and ledger line of the column's
+    // other chords that it meets, its height its heads' and its width its
+    // ink's (`ArpeggioLayout::clearAccidentals`).
     let ledgered =
         !chord.accidentals && (low <= chord.yo - 1.0 + 1e-3 || high >= chord.yo + 5.0 - 1e-3);
     let gap = if ledgered {
@@ -808,11 +821,19 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
         ARPEGGIO_NOTE_DISTANCE
     };
     let origin = metrics(chord.head).map_or(0.0, |m| m.bounding_box().left.0);
+    let reach = chord.heads_left.min(origin);
+    let right = match chord.accidental_ink.iter().map(|a| a[0]).reduce(f32::min) {
+        Some(left) => {
+            reach.min(left - ACCIDENTAL_DISTANCE)
+                - (ARPEGGIO_ACCIDENTAL_DISTANCE - ACCIDENTAL_DISTANCE)
+        }
+        None => reach - gap,
+    };
     for mark in marks {
         if let EventMark::Arpeggio { direction } = mark {
             let mut arpeggio = Arpeggio {
                 direction: *direction,
-                right: chord.heads_left.min(origin) - gap,
+                right,
                 bottom: low - 0.5,
                 top: high + 0.5,
             };

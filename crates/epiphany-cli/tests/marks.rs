@@ -53,7 +53,7 @@ fn part_in(name: &str, staves: u8, divisions: u8, measures: &[String]) -> Loaded
     loaded
 }
 
-/// A note: its pitch as a step and octave (`"C5"`, `"F#4"`) or `"rest"`, its
+/// A note: its pitch as a step and octave (`"C5"`, `"F#4"`, `"Bb4"`) or `"rest"`, its
 /// duration in eighths and type, its voice and staff, and what its
 /// `<notations>` hold, if anything.
 fn note(pitch: &str, duration: u8, kind: &str, voice: u8, staff: u8, notations: &str) -> String {
@@ -61,9 +61,10 @@ fn note(pitch: &str, duration: u8, kind: &str, voice: u8, staff: u8, notations: 
         String::from("<rest/>")
     } else {
         let (step, rest) = pitch.split_at(1);
-        let (alter, octave) = match rest.strip_prefix('#') {
-            Some(octave) => ("<alter>1</alter>", octave),
-            None => ("", rest),
+        let (alter, octave) = match (rest.strip_prefix('#'), rest.strip_prefix('b')) {
+            (Some(octave), _) => ("<alter>1</alter>", octave),
+            (_, Some(octave)) => ("<alter>-1</alter>", octave),
+            _ => ("", rest),
         };
         format!("<pitch><step>{step}</step>{alter}<octave>{octave}</octave></pitch>")
     };
@@ -1338,9 +1339,10 @@ fn an_arpeggio_takes_room_and_other_marks_take_none() {
     );
 }
 
-/// An arpeggio stands 0.4 left of its chord's heads and accidentals, and,
-/// where a head stands on a ledger line and none has an accidental, past
-/// the ledger line: 0.3 clear of its 0.33 reach past the head, as
+/// An arpeggio stands 0.4 left of its chord's heads and 0.3 left of its
+/// accidentals, and, where a head stands on a ledger line and none has an
+/// accidental, past the ledger line: 0.3 clear of its 0.33 reach past the
+/// head, as
 /// MuseScore's chord layout sets the gap (`arpeggioLedgerDistance`,
 /// `ledgerLineLength`). The gap is from its ink, an arrow's too, which
 /// reaches past a wiggle's edge: MuseScore sets the arpeggio's whole width
@@ -1392,10 +1394,10 @@ fn an_arpeggio_stands_clear_of_its_chords_ledger_lines() {
     };
     near(gap(e[0]).0, 0.3 + 0.33, "past the ledger line");
     near(gap(e[1]).0, 0.4, "in the staff");
-    // With an accidental, 0.4 from the accidental's ink.
+    // With an accidental, 0.3 from the accidental's ink.
     let sharp = named(&layout, "accidentalSharp");
     assert_eq!(sharp.len(), 1);
-    near(sharp[0][0] - gap(e[2]).1, 0.4, "left of the accidental");
+    near(sharp[0][0] - gap(e[2]).1, 0.3, "left of the accidental");
     // An arrow's ink as a wiggle's.
     for (k, arrow) in [(4, '\u{EAAD}'), (5, '\u{EAAE}')] {
         let run = layout
@@ -1563,7 +1565,7 @@ fn an_arpeggio_stands_by_its_own_chord_and_clear_of_other_voices_accidentals() {
     );
     near(
         run(e[8])[2],
-        sharp(e[9])[0] - 0.4,
+        sharp(e[9])[0] - 0.3,
         "left of a later voice's sharp",
     );
     assert!(
@@ -1572,7 +1574,7 @@ fn an_arpeggio_stands_by_its_own_chord_and_clear_of_other_voices_accidentals() {
     );
     near(
         run(e[11])[2],
-        sharp(e[10])[0] - 0.4,
+        sharp(e[10])[0] - 0.3,
         "left of an earlier voice's sharp",
     );
     assert!(
@@ -1628,6 +1630,86 @@ fn an_arpeggio_stands_by_its_own_chord_and_clear_of_other_voices_accidentals() {
         arpeggio[2],
         left(e[19]) - 0.4,
         "a sharp wholly left of it not met",
+    );
+}
+
+/// An arpeggio stands 0.3 off an accidental where it stands 0.4 off a head:
+/// MuseScore keeps `arpeggioAccidentalDistance` from its own chord's
+/// accidental, reading it `accidentalDistance` further left and leaving the
+/// difference (`ChordLayout::layoutPitched`), and pads another chord's by it
+/// (`ArpeggioLayout::clearAccidentals`). Its own chord's sharp; the flat of
+/// a lower voice set right of an upper one at a second, which stands left of
+/// both voices' heads; and an upper voice's arpeggio by a later voice's
+/// sharp within its height.
+#[test]
+fn an_arpeggio_stands_its_accidental_distance_off_an_accidental() {
+    let own = [
+        note("C5", 16, "whole", 1, 1, "<arpeggiate/>"),
+        chord("E5", 16, "whole", 1, 1, "<arpeggiate/>"),
+        chord("G#5", 16, "whole", 1, 1, "<arpeggiate/>"),
+    ]
+    .concat();
+    let moved = [
+        note("C5", 16, "whole", 1, 1, ""),
+        backup(16),
+        note("Bb4", 16, "whole", 2, 1, "<arpeggiate/>"),
+    ]
+    .concat();
+    let other = [
+        note("C5", 16, "whole", 1, 1, "<arpeggiate/>"),
+        chord("G5", 16, "whole", 1, 1, "<arpeggiate/>"),
+        backup(16),
+        note("F#5", 16, "whole", 2, 1, ""),
+    ]
+    .concat();
+    let loaded = part_in("arpeggio_accidentals.musicxml", 1, 4, &[own, moved, other]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let run = |event: EventId| {
+        let runs: Vec<Ink> = layout
+            .texts
+            .iter()
+            .filter(|t| t.provenance.source == TypedObjectId::Event(event))
+            .map(text_box)
+            .collect();
+        assert_eq!(runs.len(), 1, "one arpeggio");
+        runs[0]
+    };
+    let accidental = |event: EventId, name: &str| {
+        let Some(Event::Pitched(n)) = loaded.reduced.score.events.get(event) else {
+            panic!("a note");
+        };
+        let found: Vec<Ink> = layout
+            .glyphs
+            .iter()
+            .filter(|g| {
+                matches!(&g.provenance.source, TypedObjectId::Pitch(p) if n.pitches.iter().any(|q| q.id == *p))
+                    && g.glyph.as_str() == name
+            })
+            .map(glyph_box)
+            .collect();
+        assert_eq!(found.len(), 1, "one {name}");
+        found[0]
+    };
+    let left = |event: EventId| {
+        heads(&loaded, &layout, event)
+            .iter()
+            .map(|h| h[0])
+            .fold(f32::INFINITY, f32::min)
+    };
+    near(
+        run(e[0])[2],
+        accidental(e[0], "accidentalSharp")[0] - 0.3,
+        "off its own chord's sharp",
+    );
+    assert!(left(e[2]) > left(e[1]) + 1.0, "the lower voice right");
+    let flat = accidental(e[2], "accidentalFlat");
+    assert!(flat[2] < left(e[1]), "its flat left of both voices' heads");
+    near(run(e[2])[2], flat[0] - 0.3, "off its own flat, moved right");
+    near(
+        run(e[3])[2],
+        accidental(e[4], "accidentalSharp")[0] - 0.3,
+        "off a later voice's sharp",
     );
 }
 

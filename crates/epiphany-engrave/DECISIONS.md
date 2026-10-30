@@ -2631,3 +2631,12 @@ is set:
   It had stood over the chord whichever way its stem would turn
   (`a_stemless_notes_tremolo_stands_on_its_stems_side`, D96). The engraver
   itself is unchanged.
+
+## ENGRAVER_VERSION 90 → 91: an arpeggio stands 0.3 off an accidental (X4c fix round 2, 2026-10-30)
+
+- An arpeggio stands 0.3 of a space left of its own chord's accidentals and
+  of another chord's that it meets, as MuseScore keeps
+  `arpeggioAccidentalDistance` from both; it had stood 0.4 off, the gap it
+  keeps from a head (D97 Q1,
+  `an_arpeggio_stands_its_accidental_distance_off_an_accidental`). The
+  engraver itself is unchanged.

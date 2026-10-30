@@ -1272,11 +1272,11 @@ column's spring the padding after it.
   mark's lines so too, its metronome after its last line. An empty line
   takes its step and draws nothing. The shaped faces cover no U+000A, so a
   line break is never shaped.
-- An arpeggio stands 0.4 left of its chord's heads and accidentals, but,
-  where a head stands on a ledger line (a space under the staff or over it,
-  or further) and no head draws an accidental, 0.3 past the ledger line's
-  reach of 0.33, as MuseScore's chord layout sets its gap
-  (`arpeggioLedgerDistance`, `ledgerLineLength`). The gap is from its ink:
+- An arpeggio stands 0.4 left of its chord's heads and 0.3 left of their
+  accidentals (fix round 2, below), but, where a head stands on a ledger
+  line (a space under the staff or over it, or further) and no head draws
+  an accidental, 0.3 past the ledger line's reach of 0.33, as MuseScore's
+  chord layout sets its gap (`arpeggioLedgerDistance`, `ledgerLineLength`). The gap is from its ink:
   an arrow, which reaches past the turned wiggle's edge, ends at the
   arpeggio's right edge too, as MuseScore sets the arpeggio's whole width
   left of its gap.
@@ -1463,8 +1463,8 @@ column's spring the padding after it.
   115 to 212, from `measurelayout.cpp` 1235): its height from half a space
   under its lowest head to half a space over its highest, as
   `computeHeight` takes it (310 to 322), and its width its ink's; an
-  accidental's box widened by the gap it keeps from its own chord's
-  accidentals and a ledger line, reaching 0.33 past its head, by 0.3; it
+  accidental's box widened by 0.3, the gap it keeps from its own chord's
+  accidentals, and a ledger line, reaching 0.33 past its head, by 0.3; it
   then stands left of the furthest it met. Another voice's head is not
   read, as MuseScore reads none: an arpeggio meets a lower voice's head set
   left of its stem within its height. Read beside MuseScore's own pages,
@@ -1473,9 +1473,31 @@ column's spring the padding after it.
   another a lower voice's arpeggio stays by its own head under the upper
   voice's sharp a fifth above, which its height does not reach. MuseScore
   keeps 0.3 from an accidental, its own chord's or another's
-  (`arpeggioAccidentalDistance`), where X4c.3 set 0.4; found here and not
-  changed. Fix round 1 had read the chords of its own voice and the later
+  (`arpeggioAccidentalDistance`), where X4c.3 set 0.4; found here and set
+  by fix round 2 (below). Fix round 1 had read the chords of its own voice and the later
   ones as one span, which MuseScore spans only where a score sets it:
   that kept an upper voice moved right clear, but not a lower voice moved
   right of an upper one at a unison or a second, whose arpeggio stood over
   the upper voice's head, and it read no earlier voice's accidental.
+
+## Placement by Gould's rules, after review 2 (X4c fix round 2, 2026-10-30)
+
+Under D99 Gould's *Behind Bars* (2011) is the standard for what a rule
+should be, MuseScore 4.7.5 and LilyPond 2.26.0 the comparators; each rule
+below cites the page it follows.
+
+- An arpeggio stands 0.3 of a space left of the leftmost ink of its own
+  chord's accidentals, and 0.3 left of another chord's accidental it meets,
+  where it stands 0.4 left of a head, as MuseScore keeps
+  `arpeggioAccidentalDistance` (`styledef.cpp` 552) from both
+  (D97 Q1): `ChordLayout::layoutPitched` reads each of its chord's
+  accidentals `accidentalDistance` (0.25) further left than it stands
+  (`lll`, `chordlayout.cpp` 144 to 154) and sets the gap past it at the
+  difference (225 to 229), and `ArpeggioLayout::clearAccidentals` widens
+  another chord's accidental by 0.3 (`arpeggiolayout.cpp` 186 to 188).
+  Gould gives no figure ("as close to each chord as the accidentals will
+  allow", p. 132), so MuseScore's stands; LilyPond keeps 0.5. X4c.3 had
+  read `arpeggioNoteDistance` (0.4) for both. MuseScore insets an arrowed
+  arpeggio beside an accidental by its arrow's overhang
+  (`ArpeggioLayout::insetDistance`); the gap here is from its ink, the
+  arrow's included, as it is beside a head.
