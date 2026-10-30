@@ -83,8 +83,6 @@ pub(super) struct Chord<'a> {
     pub yo: f32,
     /// The chord's first component is in a beam.
     pub beamed: bool,
-    /// A head of it draws an accidental.
-    pub accidentals: bool,
     /// Its heads' accidentals' ink, each `[left, bottom, right, top]`, `x`
     /// from the column.
     pub accidental_ink: Vec<[f32; 4]>,
@@ -827,8 +825,9 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
     // it moves clear of every accidental and ledger line of the column's
     // other chords that it meets, its height its heads' and its width its
     // ink's (`ArpeggioLayout::clearAccidentals`).
-    let ledgered =
-        !chord.accidentals && (low <= chord.yo - 1.0 + 1e-3 || high >= chord.yo + 5.0 - 1e-3);
+    // The ledger gap reads no accidental: a chord drawing one takes the
+    // accidental's gap instead, as MuseScore's `gapSize` does.
+    let ledgered = low <= chord.yo - 1.0 + 1e-3 || high >= chord.yo + 5.0 - 1e-3;
     let gap = if ledgered {
         ARPEGGIO_LEDGER_DISTANCE + LEDGER_LINE_LENGTH
     } else {
