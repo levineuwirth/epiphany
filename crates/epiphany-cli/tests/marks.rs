@@ -2515,7 +2515,8 @@ fn a_tremolo_pairs_tuplet_is_numbered_as_its_own() {
 
 /// Two voices share a head at a unison only where both draw a stem, the same
 /// head and dots, as MuseScore's `ChordLayout::calculateChordOffsets` shares
-/// one: two whole notes, a two-note tremolo's written whole among them, and
+/// one, and the same alteration, a quarter-tone's included, where MuseScore
+/// shares one differing only by a quarter-tone (Gould, p. 91): two whole notes, a two-note tremolo's written whole among them, and
 /// a quarter beside a half stand apart, the lower voice 0.15 right of the
 /// upper's head, a lower voice with dots too, and both with dots; an upper
 /// voice with dots beside a lower one without stands 0.1 right of it; two
@@ -2865,6 +2866,176 @@ fn a_dotted_upper_voice_a_second_above_an_undotted_lower_goes_right() {
         "crossed at a second, the dotted upper right",
     );
     assert!(left(18) > left(16) + 1.0, "neither dotted, the lower right");
+}
+
+/// At an altered unison, two voices on one step with two alterations, the
+/// heads stand apart and each accidental stands directly before its own
+/// head, the right voice's between the two, so that it is clear which
+/// accidental belongs to which part (Gould, *Behind Bars*, p. 91): a natural
+/// over a flat, the lower voice right; a natural over a quarter-tone flat
+/// written as MuseScore writes its arrows, likewise; a dotted upper voice's
+/// flat over an undotted natural, the upper voice right; and a natural over
+/// a sharp on a ledger line, the sharp clear of both heads' ledger lines; a
+/// unison of one alteration shows its one sign before both heads (p. 91),
+/// a dotted upper voice set right carrying it or not.
+/// Each stands `ACCIDENTAL_GAP` (0.2) clear of the heads and ledger lines
+/// beside it. MuseScore stacks both left of both heads, and shares a head
+/// where only a quarter-tone differs; LilyPond shares any.
+#[test]
+fn an_altered_unisons_accidentals_stand_each_before_its_own_head() {
+    let arrow = |n: String| {
+        n.replacen(
+            "<type>half</type>",
+            "<type>half</type><accidental>flat-up</accidental>",
+            1,
+        )
+    };
+    let chromatic = [
+        note("B4", 8, "half", 1, 1, ""),
+        note("rest", 8, "half", 1, 1, ""),
+        backup(16),
+        note("Bb4", 8, "half", 2, 1, ""),
+        note("rest", 8, "half", 2, 1, ""),
+    ]
+    .concat();
+    let quarter = [
+        note("B4", 8, "half", 1, 1, ""),
+        note("rest", 8, "half", 1, 1, ""),
+        backup(16),
+        arrow(note("B4", 8, "half", 2, 1, "")),
+        note("rest", 8, "half", 2, 1, ""),
+    ]
+    .concat();
+    let dotted = [
+        note("Bb4", 12, "half", 1, 1, "").replacen(
+            "<type>half</type>",
+            "<type>half</type><dot/>",
+            1,
+        ),
+        note("rest", 4, "quarter", 1, 1, ""),
+        backup(16),
+        note("B4", 8, "half", 2, 1, ""),
+        note("rest", 8, "half", 2, 1, ""),
+    ]
+    .concat();
+    let ledger = [
+        note("C4", 8, "half", 1, 1, ""),
+        note("rest", 8, "half", 1, 1, ""),
+        backup(16),
+        note("C#4", 8, "half", 2, 1, ""),
+        note("rest", 8, "half", 2, 1, ""),
+    ]
+    .concat();
+    // One alteration in both voices, two whole notes set apart: shown once,
+    // the column's way, the heads 0.15 apart.
+    let same = [
+        note("F#5", 16, "whole", 1, 1, ""),
+        backup(16),
+        note("F#5", 16, "whole", 2, 1, ""),
+    ]
+    .concat();
+    // And with the upper voice dotted, set right, carrying the one sign: it
+    // stands before both, as Gould would set a unison of one alteration.
+    let same_dotted = [
+        note("F#5", 12, "half", 1, 1, "").replacen(
+            "<type>half</type>",
+            "<type>half</type><dot/>",
+            1,
+        ),
+        note("rest", 4, "quarter", 1, 1, ""),
+        backup(16),
+        note("F#5", 8, "half", 2, 1, ""),
+        note("rest", 8, "half", 2, 1, ""),
+    ]
+    .concat();
+    let loaded = part_in(
+        "altered_unisons.musicxml",
+        1,
+        4,
+        &[chromatic, quarter, dotted, ledger, same, same_dotted],
+    );
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let accidental = |event: EventId| {
+        let Some(Event::Pitched(n)) = loaded.reduced.score.events.get(event) else {
+            panic!("a note");
+        };
+        let found: Vec<Ink> = layout
+            .glyphs
+            .iter()
+            .filter(|g| {
+                matches!(&g.provenance.source, TypedObjectId::Pitch(p) if n.pitches.iter().any(|q| q.id == *p))
+                    && g.glyph.as_str().starts_with("accidental")
+            })
+            .map(glyph_box)
+            .collect();
+        assert_eq!(found.len(), 1, "one accidental of {event:?}");
+        found[0]
+    };
+    // (left voice's note, right voice's note) in each measure.
+    for (left, right, what) in [
+        (e[0], e[2], "a flat"),
+        (e[4], e[6], "a quarter-tone flat"),
+        (e[10], e[8], "a dotted upper voice's flat"),
+    ] {
+        let (a, b) = (head(&loaded, &layout, left), head(&loaded, &layout, right));
+        let (p, q) = (accidental(left), accidental(right));
+        assert!(b[0] > a[2], "{what}: the heads apart");
+        near(
+            p[2],
+            a[0] - 0.2,
+            &format!("{what}: the left head's before it"),
+        );
+        near(
+            q[2],
+            b[0] - 0.2,
+            &format!("{what}: directly before its own head"),
+        );
+        near(
+            q[0],
+            a[2] + 0.2,
+            &format!("{what}: clear of the other head"),
+        );
+    }
+    let (a, b) = (head(&loaded, &layout, e[12]), head(&loaded, &layout, e[14]));
+    let sharp = accidental(e[14]);
+    let (la, lb) = (
+        ledgers(&loaded, &layout, e[12]),
+        ledgers(&loaded, &layout, e[14]),
+    );
+    assert_eq!((la.len(), lb.len()), (1, 1), "a ledger line each");
+    assert!(b[0] > a[2], "on a ledger line: the heads apart");
+    near(
+        sharp[2],
+        lb[0][0] - 0.2,
+        "the sharp before its own ledger line",
+    );
+    near(
+        sharp[0],
+        la[0][2] + 0.2,
+        "the sharp clear of the other's ledger line",
+    );
+    near(
+        accidental(e[12])[2],
+        a[0] - 0.3 - 0.2,
+        "the natural before its own",
+    );
+    let (a, b) = (head(&loaded, &layout, e[16]), head(&loaded, &layout, e[17]));
+    near(b[0], a[2] + 0.15, "one alteration: the heads 0.15 apart");
+    let sharps = named(&layout, "accidentalSharp");
+    assert_eq!(sharps.len(), 3, "the ledger line's and one F sharp's each");
+    near(
+        sharps[1][2],
+        a[0] - 0.2,
+        "one alteration: shown once, before both",
+    );
+    let (a, b) = (head(&loaded, &layout, e[18]), head(&loaded, &layout, e[20]));
+    assert!(a[0] > b[2], "the dotted upper voice right");
+    near(
+        sharps[2][2],
+        b[0] - 0.2,
+        "one alteration: before both, dotted",
+    );
 }
 
 /// A slur takes its side as MuseScore's `SlurTieLayout::computeUp` sets it:

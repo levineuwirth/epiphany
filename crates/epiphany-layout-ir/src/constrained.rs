@@ -1866,7 +1866,8 @@ pub fn try_to_constrained(
 
         // Each staff column's heads, set clear of each other, with the stem
         // of a voice that moves moving with it.
-        for refs in column_heads.values() {
+        let mut accidentals_before: BTreeMap<_, BTreeSet<EventId>> = BTreeMap::new();
+        for (column, refs) in &column_heads {
             let heads: Vec<&Head> = refs
                 .iter()
                 .map(|r| r.get(&pitch_heads, &unpitched_heads))
@@ -1898,7 +1899,10 @@ pub fn try_to_constrained(
                         .is_some_and(|seg| seg.drawn)
                 })
                 .collect();
-            let (dxs, shifts, dot_x) = place_heads(&heads, &ups, &stemmed, &places);
+            let (dxs, shifts, dot_x, before) = place_heads(&heads, &ups, &stemmed, &places);
+            if !before.is_empty() {
+                accidentals_before.insert(column.clone(), before);
+            }
             for (r, dx) in refs.iter().zip(dxs) {
                 let head = r.get_mut(&mut pitch_heads, &mut unpitched_heads);
                 head.dx = dx;
@@ -1917,12 +1921,15 @@ pub fn try_to_constrained(
         // Each staff column's accidentals, placed together by their ink. The
         // source layout separates the column from the one before by as much
         // as they reach left of its heads (and a head set left of a stem).
-        for ((_, key), refs) in &column_heads {
+        let no_events = BTreeSet::new();
+        for (column, refs) in &column_heads {
+            let key = &column.1;
             let heads: Vec<&Head> = refs
                 .iter()
                 .map(|r| r.get(&pitch_heads, &unpitched_heads))
                 .collect();
-            let (origins, leftmost) = place_accidentals(&heads);
+            let before = accidentals_before.get(column).unwrap_or(&no_events);
+            let (origins, leftmost) = place_accidentals(&heads, before);
             for (r, xs) in refs.iter().zip(origins) {
                 r.get_mut(&mut pitch_heads, &mut unpitched_heads)
                     .accidental_x = xs;
@@ -7813,7 +7820,9 @@ fn component_ties(
 /// before it that its heads would touch, its stem with it, so a lower voice a
 /// second under an upper one stands to its right with their stems in one
 /// line. A unison two voices share (one glyph, one alteration, one count of
-/// dots, both drawing a stem) is one head drawn twice. A unison they do not
+/// dots, both drawing a stem) is one head drawn twice; MuseScore shares one
+/// of two alterations differing only by a quarter-tone, which Gould keeps as
+/// two heads (*Behind Bars*, p. 91). A unison they do not
 /// share stands apart as MuseScore's `calculateChordOffsets` sets it: the
 /// later voice `UNISON_CLEARANCE` right of the other's head, but an upper
 /// voice with dots beside a lower one without, which goes after it and
@@ -7822,16 +7831,22 @@ fn component_ties(
 /// too and shares no head with it unless their heads where they meet pair
 /// off as unisons they could share. An upper voice with dots a second above
 /// a lower one without, or crossed by it with a second where they meet, goes
-/// after it too, `DOTTED_CLEARANCE` right of it. The dots of every head
-/// stand right of all of the column's heads. `ups`, `stemmed` and `places`
-/// are each head's stem direction, whether its stem is drawn, and its voice
-/// place.
+/// after it too, `DOTTED_CLEARANCE` right of it. A voice set right of
+/// another at an altered unison, one step with two alterations, carrying
+/// an accidental, takes its accidentals before its own heads, as Gould sets
+/// each accidental beside its own part (*Behind Bars*, p. 91), and stands
+/// where they clear the heads before it and their ledger lines by
+/// `ACCIDENTAL_GAP`; it is returned among the events [`place_accidentals`]
+/// places so. The dots of every head stand right of all of the column's
+/// heads. `ups`, `stemmed` and `places` are each head's stem direction,
+/// whether its stem is drawn, and its voice place.
+#[allow(clippy::type_complexity)]
 fn place_heads(
     heads: &[&Head],
     ups: &[bool],
     stemmed: &[bool],
     places: &[VoicePlace],
-) -> (Vec<f32>, Vec<(EventId, usize, f32)>, f32) {
+) -> (Vec<f32>, Vec<(EventId, usize, f32)>, f32, BTreeSet<EventId>) {
     let ink = |head: &Head| {
         metrics(head.name).map_or([0.0, -0.5, NOTEHEAD_STEM_X, 0.5], |m| {
             let b = m.bounding_box();
@@ -7976,12 +7991,37 @@ fn place_heads(
     events.extend(after);
     let mut shifts = Vec::new();
     let mut standing: Vec<usize> = Vec::new();
+    let mut before = BTreeSet::new();
+    let ledger_half = STAFF_LINE_THICKNESS / 2.0;
     for &event in &events {
         let mine = of(event);
         let mut shift = 0.0f32;
-        // Each pass moves it right of the furthest head it touches, so it
-        // ends within one pass per head standing.
-        for _ in 0..=standing.len() {
+        let left = mine
+            .iter()
+            .map(|&i| dx[i] + ink(heads[i])[0])
+            .fold(f32::INFINITY, f32::min);
+        // At an altered unison with a head before it, its accidentals stand
+        // before its own heads: their stacks, placed against them unmoved.
+        let altered = mine.iter().any(|&i| {
+            standing.iter().any(|&j| {
+                heads[i].step == heads[j].step
+                    && heads[i].alteration.is_some()
+                    && heads[j].alteration.is_some()
+                    && heads[i].alteration != heads[j].alteration
+            })
+        });
+        let own = if altered {
+            stack_accidentals(heads, &dx, &mine, &mine).1
+        } else {
+            Vec::new()
+        };
+        if !own.is_empty() {
+            before.insert(event);
+        }
+        // Each pass moves it right of the furthest head it touches, and its
+        // own accidentals past the heads and ledger lines they meet, so it
+        // ends within two passes per head standing.
+        for _ in 0..=2 * standing.len() + 1 {
             let mut reach = f32::NEG_INFINITY;
             for &i in &mine {
                 let a = ink(heads[i]);
@@ -8008,13 +8048,34 @@ fn place_heads(
                     }
                 }
             }
+            for b in &own {
+                for &j in &standing {
+                    let [l, bottom, r, top] = ink(heads[j]);
+                    let (bl, br) = (dx[j] + l, dx[j] + r);
+                    let mut obstacles = vec![(bl, br, heads[j].y + bottom, heads[j].y + top)];
+                    for step in ledger_steps(heads[j].step) {
+                        let y = heads[j].y + (step - heads[j].step) as f32 * 0.5;
+                        obstacles.push((
+                            bl - LEDGER_LINE_EXTENSION,
+                            br + LEDGER_LINE_EXTENSION,
+                            y - ledger_half,
+                            y + ledger_half,
+                        ));
+                    }
+                    for (ol, or, ob, ot) in obstacles {
+                        if b[1] < ot
+                            && ob < b[3]
+                            && shift + b[0] < or + ACCIDENTAL_GAP
+                            && shift + b[2] + ACCIDENTAL_GAP > ol
+                        {
+                            reach = reach.max(or + ACCIDENTAL_GAP - b[0] + left);
+                        }
+                    }
+                }
+            }
             if !reach.is_finite() {
                 break;
             }
-            let left = mine
-                .iter()
-                .map(|&i| dx[i] + ink(heads[i])[0])
-                .fold(f32::INFINITY, f32::min);
             shift = reach - left;
         }
         if shift != 0.0 {
@@ -8029,7 +8090,7 @@ fn place_heads(
         .map(|i| dx[i] + ink(heads[i])[2])
         .fold(f32::NEG_INFINITY, f32::max);
     let dot_x = if right.is_finite() { right } else { 0.0 } + DOT_GAP;
-    (dx, shifts, dot_x)
+    (dx, shifts, dot_x, before)
 }
 
 /// A drawn beam across two staves, as a tuplet of its notes places its
@@ -8385,15 +8446,60 @@ fn beam_members(
 /// it that it would otherwise touch, a column further out each time. They are
 /// placed from the outside in (the highest, the lowest, the next highest, and
 /// so on), so the highest stands nearest the heads; a pitch's own stack stays
-/// together, innermost nearest. Returns each head's accidental origins, and
-/// the leftmost ink of the column's heads and accidentals.
-fn place_accidentals(heads: &[&Head]) -> (Vec<Vec<f32>>, f32) {
+/// together, innermost nearest. But each event of `before`, a voice
+/// [`place_heads`] set right of another at an altered unison, takes its
+/// accidentals before its own heads, placed so among themselves, as Gould
+/// sets each accidental beside its own part (*Behind Bars*, p. 91). Returns
+/// each head's accidental origins, and the leftmost ink of the column's
+/// heads and accidentals.
+fn place_accidentals(heads: &[&Head], before: &BTreeSet<EventId>) -> (Vec<Vec<f32>>, f32) {
+    let dx: Vec<f32> = heads.iter().map(|head| head.dx).collect();
+    let all: Vec<usize> = (0..heads.len()).collect();
+    let column: Vec<usize> = all
+        .iter()
+        .copied()
+        .filter(|&i| !before.contains(&heads[i].event))
+        .collect();
+    let mut origins = vec![Vec::new(); heads.len()];
+    let (placed, _, mut leftmost) = stack_accidentals(heads, &dx, &column, &all);
+    for (i, xs) in placed {
+        origins[i] = xs;
+    }
+    for &event in before {
+        let own: Vec<usize> = all
+            .iter()
+            .copied()
+            .filter(|&i| heads[i].event == event)
+            .collect();
+        let (placed, _, left) = stack_accidentals(heads, &dx, &own, &own);
+        for (i, xs) in placed {
+            origins[i] = xs;
+        }
+        leftmost = leftmost.min(left);
+    }
+    (origins, leftmost)
+}
+
+/// Places the accidentals of the heads `members` together, as
+/// [`place_accidentals`] places a column's, left of the heads `bounds` and
+/// of the ledger lines they draw, `dx` each head's `x` from the column's:
+/// each member's accidental origins, every placed stack's box (left,
+/// bottom, right, top) and the leftmost ink of the bounds' heads and the
+/// stacks.
+#[allow(clippy::type_complexity)]
+fn stack_accidentals(
+    heads: &[&Head],
+    dx: &[f32],
+    members: &[usize],
+    bounds: &[usize],
+) -> (Vec<(usize, Vec<f32>)>, Vec<[f32; 4]>, f32) {
     let ledger_half = STAFF_LINE_THICKNESS / 2.0;
     let mut heads_left = f32::INFINITY;
     // Each ledger line's left end and `y`.
     let mut ledgers: Vec<(f32, f32)> = Vec::new();
-    for head in heads {
-        let left = head.dx + metrics(head.name).map_or(0.0, |m| m.bounding_box().left.0);
+    for &i in bounds {
+        let head = heads[i];
+        let left = dx[i] + metrics(head.name).map_or(0.0, |m| m.bounding_box().left.0);
         heads_left = heads_left.min(left);
         for step in ledger_steps(head.step) {
             let y = head.y + (step - head.step) as f32 * 0.5;
@@ -8403,7 +8509,9 @@ fn place_accidentals(heads: &[&Head]) -> (Vec<Vec<f32>>, f32) {
     if !heads_left.is_finite() {
         heads_left = 0.0;
     }
-    let mut order: Vec<usize> = (0..heads.len())
+    let mut order: Vec<usize> = members
+        .iter()
+        .copied()
         .filter(|i| !heads[*i].accidentals.is_empty())
         .collect();
     order.sort_by(|a, b| heads[*b].y.total_cmp(&heads[*a].y).then(a.cmp(b)));
@@ -8419,7 +8527,7 @@ fn place_accidentals(heads: &[&Head]) -> (Vec<Vec<f32>>, f32) {
     }
     // Each placed stack's box: left, bottom, right, top.
     let mut placed: Vec<[f32; 4]> = Vec::new();
-    let mut origins = vec![Vec::new(); heads.len()];
+    let mut origins = Vec::with_capacity(outside_in.len());
     let mut leftmost = heads_left;
     for i in outside_in {
         let head = heads[i];
@@ -8463,13 +8571,15 @@ fn place_accidentals(heads: &[&Head]) -> (Vec<Vec<f32>>, f32) {
         placed.push([right - width, low, right, high]);
         leftmost = leftmost.min(right - width);
         let mut edge = right;
+        let mut xs = Vec::with_capacity(boxes.len());
         for b in &boxes {
             let origin = edge - b[2];
-            origins[i].push(origin);
+            xs.push(origin);
             edge = origin + b[0] - ACCIDENTAL_STACK_GAP;
         }
+        origins.push((i, xs));
     }
-    (origins, leftmost)
+    (origins, placed, leftmost)
 }
 
 /// Draws a notehead with what rides with it: the ledger lines it needs, its

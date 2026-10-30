@@ -1336,7 +1336,14 @@ column's spring the padding after it.
   `ChordLayout::calculateChordOffsets` shares one (`chordlayout.cpp` 1997:
   "both chords have same number of dots, both have stems, and both
   noteheads are same type"); a two-note tremolo's note counts by its
-  written value, so a written whole shares with nothing. A unison not
+  written value, so a written whole shares with nothing. They share one
+  only at the same alteration, a quarter-tone's included, where MuseScore
+  shares a unison of one spelling whose notes differ only by a quarter-tone
+  accidental: it compares the notes' `tpc` (1982), and every quarter-tone
+  accidental leaves `tpc` at the natural (`accidental.cpp` 65 to 98), so
+  the quarter-tone fixture's unison is one MuseScore shares, as fix round 1
+  said it did not. An altered unison keeps two heads, as Gould sets it
+  (*Behind Bars*, p. 91; fix round 2, below). A unison not
   shared stands apart as MuseScore sets it (2112 to 2117): the lower voice
   0.15 right of the upper's head, but an upper voice with dots beside a
   lower one without, which stands 0.1 right of the lower's head instead.
@@ -1523,3 +1530,22 @@ below cites the page it follows.
   (`stem-tremolo.cc`). The addendum had stood 0.75 off the centre, a
   quarter clear of a whole head's ink. A stemmed one-note tremolo stands as
   before, on its stem.
+- An altered unison, two voices on one step with two alterations,
+  chromatic or by a quarter-tone alone, keeps two heads, and each
+  accidental stands directly before its own head, "so that it is clear
+  which accidental belongs to which part" (Gould, *Behind Bars*, p. 91,
+  her "and not" example the accidentals stacked before both heads; D100
+  Q2). The voice set right of the other, as the unison rules above set it,
+  takes all its accidentals before its own heads, stacked among themselves
+  as a column's are, and stands where they clear the heads before it and
+  those heads' ledger lines by `ACCIDENTAL_GAP` (0.2), its own ledger lines
+  as a column's accidentals clear them; the other voices' accidentals keep
+  the column's stack. A unison of one alteration shows its one sign before
+  both heads, as Gould's note under the same example asks. MuseScore
+  stacks every accidental of a segment before all its heads and shares a
+  head where only a quarter-tone differs; LilyPond merges two voices' heads
+  on one staff position whatever their pitch and prints one accidental
+  (`note-collision.cc` 89 to 180). Where the left head of the pair is
+  itself set right of a third voice's head a second away, its accidental
+  stays in the column's stack, before that third voice's head on its own
+  line.

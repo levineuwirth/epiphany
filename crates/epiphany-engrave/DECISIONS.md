@@ -2651,3 +2651,18 @@ is set:
   (`an_ornaments_accidentals_and_a_stemless_tremolo_stand_their_distances_off`,
   `a_stemless_notes_tremolo_stands_on_its_stems_side`). The engraver itself
   is unchanged.
+
+## ENGRAVER_VERSION 92 → 93: each accidental of an altered unison stands before its own head (X4c fix round 2, 2026-10-30)
+
+- Two voices on one step with two alterations keep two heads, and the
+  voice set right takes its accidentals before its own heads, standing
+  where they clear the other's head and ledger lines, as Gould sets an
+  altered unison (D100 Q2); every accidental of the column had stood
+  before all its heads
+  (`an_altered_unisons_accidentals_stand_each_before_its_own_head`).
+  Version 78's entry says a unison is shared "as MuseScore shares them":
+  MuseScore also shares a unison of one spelling whose notes differ only by
+  a quarter-tone accidental, comparing their `tpc`, which the engraver,
+  following Gould, keeps as two heads; the quarter-tone fixture's unison is
+  such a one, which fix round 1 said MuseScore does not share. The
+  engraver itself is unchanged.
