@@ -2124,7 +2124,8 @@ fn tremolo_strokes_stand_on_their_stems() {
 /// note's strokes a space under it and a low note's raised to the bottom
 /// line, within the staff; centred on the head, or on the stem's line where
 /// a head of the chord stands across it, over the highest head of a chord
-/// whose stem would turn up and under the lowest of one turned down.
+/// whose stem would turn up and under the lowest of one turned down, a space
+/// clear of that head over the staff and under it.
 #[test]
 fn a_stemless_notes_tremolo_stands_on_its_stems_side() {
     let trem = "<ornaments><tremolo type=\"single\">3</tremolo></ornaments>";
@@ -2136,6 +2137,8 @@ fn a_stemless_notes_tremolo_stands_on_its_stems_side() {
         whole("A3"),
         [whole("D5"), chord("E5", 16, "whole", 1, 1, "")].concat(),
         [whole("F4"), chord("G4", 16, "whole", 1, 1, "")].concat(),
+        [whole("A5"), chord("C6", 16, "whole", 1, 1, "")].concat(),
+        [whole("A3"), chord("C4", 16, "whole", 1, 1, "")].concat(),
     ];
     let loaded = part_in("stemless_tremolos.musicxml", 1, 4, &measures);
     let layout = engrave(&loaded.reduced.score).layout;
@@ -2192,6 +2195,20 @@ fn a_stemless_notes_tremolo_stands_on_its_stems_side() {
         strokes(5)[3],
         bottom_line(up[1], 2.0) + 4.0,
         "over its highest head, at the top line",
+    );
+    // Over the staff and under it, a chord's strokes a space clear of the
+    // head they leave: under A5 C6's lowest, over A3 C4's highest.
+    let high = heads_of(6);
+    near(
+        strokes(6)[3],
+        high[0][1] - 1.0,
+        "a space under its lowest head",
+    );
+    let low = heads_of(7);
+    near(
+        strokes(7)[1],
+        low[1][3] + 1.0,
+        "a space over its highest head",
     );
 }
 
