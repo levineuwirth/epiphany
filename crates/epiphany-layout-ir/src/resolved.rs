@@ -30,6 +30,7 @@ use crate::glyph::{GlyphCatalogIdentity, GlyphReference};
 use crate::logical::ScoreVersion;
 use crate::provenance::{Provenance, SynthesisKind};
 use crate::spatial::{BoundingBox, Margins, Point, Rect, Size2D, StaffSpace, Transform2D};
+use crate::text::{CaretAffinity, FaceSynthesis, ResolvedText, TextAlign, TextDirection};
 use crate::StemDirection;
 
 /// A glyph with a definitive position (Chapter 7 §"ResolvedLayoutIR":
@@ -96,6 +97,7 @@ pub struct PrimitiveIndices {
     pub glyphs: Vec<u32>,
     pub strokes: Vec<u32>,
     pub curves: Vec<u32>,
+    pub texts: Vec<u32>,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -124,6 +126,9 @@ pub struct ResolvedLayoutIR {
     /// Resolved cubic-bézier curve primitives (slurs, …), positioned by the
     /// solver alongside the glyphs and strokes.
     pub curves: Vec<Curve>,
+    /// Shaped text runs, positioned alongside the glyphs
+    /// (`req:layoutir:text-run`).
+    pub texts: Vec<ResolvedText>,
     pub engraving_decisions: Vec<EngravingDecision>,
     /// The catalog identity under which this layout was produced — required for
     /// any byte-equal conformance claim (Chapter 7 §7.3.2).
@@ -194,17 +199,7 @@ impl CanonicalEncode for ResolvedLayoutIR {
             let (qx, qy) = quantize(glyph.position);
             qx.encode_canonical(out);
             qy.encode_canonical(out);
-            match glyph.transform {
-                None => out.push(0),
-                Some(transform) => {
-                    out.push(1);
-                    for row in transform.matrix {
-                        for value in row {
-                            encode_f32(out, value);
-                        }
-                    }
-                }
-            }
+            encode_transform(out, &glyph.transform);
             encode_bounding_box(out, glyph.bounding_box);
             out.extend_from_slice(&glyph.style.rgba.to_le_bytes());
             out.extend_from_slice(&glyph.layer.to_le_bytes());
@@ -240,11 +235,133 @@ impl CanonicalEncode for ResolvedLayoutIR {
                 epiphany_core::LineStyle::Wavy => 3,
             });
         }
+        push_len(out, self.texts.len());
+        for text in &self.texts {
+            encode_text(out, text);
+        }
         push_len(out, self.engraving_decisions.len());
         for decision in &self.engraving_decisions {
             encode_decision(out, decision);
         }
         encode_catalog(out, &self.catalog);
+    }
+}
+
+/// A text run's rendering fingerprint (`req:layoutir:resolved-primitives`):
+/// its provenance, source string and shaping identity, then its positioned
+/// glyphs, clusters and boxes, quantized as glyph positions are.
+fn encode_text(out: &mut Vec<u8>, text: &ResolvedText) {
+    encode_provenance(out, &text.provenance);
+    encode_str(out, &text.text);
+    let shaping = &text.shaping;
+    push_len(out, shaping.faces.len());
+    for face in &shaping.faces {
+        encode_str(out, &face.family.0);
+        match face.version {
+            None => out.push(0),
+            Some(v) => {
+                out.push(1);
+                out.extend_from_slice(&v.major.to_le_bytes());
+                out.extend_from_slice(&v.minor.to_le_bytes());
+                out.extend_from_slice(&v.patch.to_le_bytes());
+            }
+        }
+        out.extend_from_slice(&face.file_hash);
+        out.extend_from_slice(&face.face_index.to_le_bytes());
+        push_len(out, face.variations.len());
+        for (axis, value) in &face.variations {
+            out.extend_from_slice(&axis.0);
+            value.encode_canonical(out);
+        }
+        out.push(match face.synthesis {
+            FaceSynthesis::None => 0,
+            FaceSynthesis::Emboldened => 1,
+            FaceSynthesis::Slanted => 2,
+        });
+    }
+    encode_str(out, &shaping.shaper.0);
+    let v = shaping.shaper_version;
+    for part in [v.major, v.minor, v.patch] {
+        out.extend_from_slice(&part.to_le_bytes());
+    }
+    push_len(out, shaping.features.len());
+    for feature in &shaping.features {
+        out.extend_from_slice(&feature.tag);
+        out.extend_from_slice(&feature.value.to_le_bytes());
+    }
+    let u = shaping.unicode_version;
+    out.extend_from_slice(&[u.major, u.minor, u.update]);
+    push_len(out, text.segments.len());
+    for segment in &text.segments {
+        out.extend_from_slice(&segment.face.to_le_bytes());
+        push_len(out, segment.glyphs.len());
+        for glyph in &segment.glyphs {
+            out.extend_from_slice(&glyph.glyph_id.to_le_bytes());
+            let (x, y) = quantize(glyph.offset);
+            x.encode_canonical(out);
+            y.encode_canonical(out);
+            encode_transform(out, &glyph.transform);
+        }
+        out.extend_from_slice(&segment.source.start.to_le_bytes());
+        out.extend_from_slice(&segment.source.end.to_le_bytes());
+        out.push(match segment.direction {
+            TextDirection::LeftToRight => 0,
+            TextDirection::RightToLeft => 1,
+        });
+        out.extend_from_slice(&segment.script.0);
+        encode_str(out, &segment.language.0);
+        encode_staff_space(out, segment.size);
+    }
+    push_len(out, text.clusters.clusters.len());
+    for cluster in &text.clusters.clusters {
+        out.extend_from_slice(&cluster.source.start.to_le_bytes());
+        out.extend_from_slice(&cluster.source.end.to_le_bytes());
+        out.extend_from_slice(&cluster.segment.to_le_bytes());
+        out.extend_from_slice(&cluster.glyphs.start.to_le_bytes());
+        out.extend_from_slice(&cluster.glyphs.end.to_le_bytes());
+        out.push(cluster.resolved as u8);
+        push_len(out, cluster.carets.len());
+        for caret in &cluster.carets {
+            out.extend_from_slice(&caret.offset.to_le_bytes());
+            encode_staff_space(out, caret.x);
+            out.push(match caret.affinity {
+                CaretAffinity::Downstream => 0,
+                CaretAffinity::Upstream => 1,
+            });
+        }
+    }
+    encode_bounding_box(out, text.bounds);
+    encode_bounding_box(out, text.reserved_box);
+    let (x, y) = quantize(text.origin);
+    x.encode_canonical(out);
+    y.encode_canonical(out);
+    out.push(match text.align {
+        TextAlign::Left => 0,
+        TextAlign::Center => 1,
+        TextAlign::Right => 2,
+    });
+    out.extend_from_slice(&text.style.rgba.to_le_bytes());
+    out.extend_from_slice(&text.layer.to_le_bytes());
+}
+
+/// A length-prefixed UTF-8 string.
+fn encode_str(out: &mut Vec<u8>, s: &str) {
+    push_len(out, s.len());
+    out.extend_from_slice(s.as_bytes());
+}
+
+/// An optional transform: its presence, then its matrix row by row.
+fn encode_transform(out: &mut Vec<u8>, transform: &Option<Transform2D>) {
+    match transform {
+        None => out.push(0),
+        Some(transform) => {
+            out.push(1);
+            for row in transform.matrix {
+                for value in row {
+                    encode_f32(out, value);
+                }
+            }
+        }
     }
 }
 
@@ -460,6 +577,7 @@ mod tests {
             glyphs,
             strokes: vec![],
             curves: vec![],
+            texts: vec![],
             engraving_decisions: decisions,
             catalog: GlyphCatalogIdentity::default(),
             unowned: PrimitiveIndices::default(),
@@ -491,13 +609,14 @@ mod tests {
         // encodes its five counts — pages, glyphs, strokes, curves,
         // engraving_decisions — as u32 zeros (20 bytes) right after the 32-byte
         // ScoreVersion source, then the catalog. Under u64 that region would be
-        // 40 bytes, shifting the catalog and lengthening the output by 20.
+        // 48 bytes, shifting the catalog and lengthening the output by 24. (The
+        // texts' count joined the four primitive counts and the decisions'.)
         let bytes = ir(vec![], vec![]).canonical_bytes();
         let source_len = ScoreVersion::default().0.len();
         assert_eq!(source_len, 32, "ScoreVersion source is 32 bytes");
         // The first count prefix (pages) is a 4-byte u32 zero — not 8 bytes.
         assert_eq!(&bytes[source_len..source_len + 4], &0u32.to_le_bytes());
-        // The five count prefixes occupy exactly 5 × 4 bytes; then the catalog,
+        // The six count prefixes occupy exactly 6 × 4 bytes; then the catalog,
         // whose length we recompute independently (no magic number).
         let catalog_len = {
             let mut c = Vec::new();
@@ -506,8 +625,8 @@ mod tests {
         };
         assert_eq!(
             bytes.len(),
-            source_len + 5 * 4 + catalog_len,
-            "five u32 count prefixes (20 bytes), not u64 (40 bytes)"
+            source_len + 6 * 4 + catalog_len,
+            "six u32 count prefixes (24 bytes), not u64 (48 bytes)"
         );
     }
 
@@ -626,11 +745,13 @@ mod tests {
             glyphs: vec![0],
             strokes: vec![],
             curves: vec![],
+            texts: vec![],
         };
         perturbed.unowned = PrimitiveIndices {
             glyphs: vec![],
             strokes: vec![7],
             curves: vec![3, 4],
+            texts: vec![2],
         };
 
         assert_ne!(
@@ -641,6 +762,116 @@ mod tests {
             base_bytes,
             perturbed.canonical_bytes(),
             "canonical bytes must not see it"
+        );
+    }
+
+    fn run(raw: u128, words: &str, face: crate::text::TextFace) -> ResolvedText {
+        crate::text::shape_text(
+            Provenance::projected(
+                TypedObjectId::Marker(epiphany_core::MarkerId::from_raw(raw)),
+                vec![],
+            ),
+            words,
+            face,
+            2.016,
+            TextAlign::Left,
+            Point::new(10.0, -3.5),
+        )
+        .0
+    }
+
+    fn with_texts(texts: Vec<ResolvedText>) -> ResolvedLayoutIR {
+        let mut layout = ir(vec![glyph(1, 1.0)], vec![]);
+        layout.texts = texts;
+        layout
+    }
+
+    #[test]
+    fn canonical_bytes_capture_text_runs() {
+        use crate::text::TextFace;
+        let base = with_texts(vec![run(1, "Allegro", TextFace::Roman)]);
+        let a = base.canonical_bytes();
+        assert_ne!(a, with_texts(vec![]).canonical_bytes());
+
+        let mut jittered = base.clone();
+        jittered.texts[0].origin = Point::new(10.0 + 1.0 / 4096.0, -3.5);
+        assert_eq!(a, jittered.canonical_bytes(), "sub-grid jitter is absorbed");
+
+        let mut moved = base.clone();
+        moved.texts[0].origin = Point::new(10.0 + 1.0 / 1024.0, -3.5);
+        assert_ne!(a, moved.canonical_bytes());
+
+        let mut nudged = base.clone();
+        let g = &mut nudged.texts[0].segments[0].glyphs[2];
+        g.offset = Point::new(g.offset.x.0 + 1.0 / 1024.0, g.offset.y.0);
+        assert_ne!(a, nudged.canonical_bytes(), "a glyph's offset is encoded");
+
+        let mut regid = base.clone();
+        regid.texts[0].segments[0].glyphs[2].glyph_id += 1;
+        assert_ne!(a, regid.canonical_bytes(), "a glyph's id is encoded");
+
+        let mut reworded = base.clone();
+        reworded.texts[0].text = String::from("Allegra");
+        assert_ne!(a, reworded.canonical_bytes(), "the string is encoded");
+
+        let mut other_face = base.clone();
+        let mut shaping = (*other_face.texts[0].shaping).clone();
+        shaping.faces[0].file_hash[0] ^= 1;
+        other_face.texts[0].shaping = std::sync::Arc::new(shaping);
+        assert_ne!(
+            a,
+            other_face.canonical_bytes(),
+            "the faces' hashes are encoded"
+        );
+
+        let mut caret = base.clone();
+        let stop = &mut caret.texts[0].clusters.clusters[0].carets[0];
+        stop.affinity = crate::text::CaretAffinity::Upstream;
+        assert_ne!(a, caret.canonical_bytes(), "the caret stops are encoded");
+
+        let mut box_ = base.clone();
+        box_.texts[0].reserved_box.top = StaffSpace(9.0);
+        assert_ne!(a, box_.canonical_bytes(), "the reserved box is encoded");
+    }
+
+    /// Shaped runs give the same canonical bytes on every run, and on every
+    /// toolchain and profile the suite runs under: the shaping, its scale to
+    /// staff spaces, the clusters and their encoding together. A change to any
+    /// of them moves this digest and is then a deliberate change.
+    #[test]
+    fn text_runs_encode_the_same_on_every_run() {
+        use crate::text::TextFace;
+        let layout = || {
+            with_texts(vec![
+                run(1, "Andante con moto", TextFace::Roman),
+                run(2, "dolce", TextFace::Italic),
+                run(3, "Allegro \u{ECA5} = 132", TextFace::Bold),
+                run(4, "Kyrie e-", TextFace::BoldItalic),
+                run(5, "a\u{4E2D}b \u{0301}", TextFace::Roman),
+            ])
+        };
+        // The runs' own encoding, apart from the rest of the layout, whose
+        // catalog identity hashes the whole metrics table.
+        let digest = |l: &ResolvedLayoutIR| -> String {
+            let mut bytes = Vec::new();
+            for text in &l.texts {
+                encode_text(&mut bytes, text);
+            }
+            let mut preimage =
+                epiphany_determinism::Preimage::new(epiphany_determinism::DomainTag::FONT_FILE);
+            preimage.push_bytes(&bytes);
+            preimage
+                .finish()
+                .as_bytes()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect()
+        };
+        let first = digest(&layout());
+        assert_eq!(first, digest(&layout()));
+        assert_eq!(
+            first,
+            "5b7599651187eaf8951360eacfee1991c637630d5f8947ab4d452853c5da3fba"
         );
     }
 }

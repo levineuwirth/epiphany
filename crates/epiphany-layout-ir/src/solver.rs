@@ -476,8 +476,9 @@ impl StubSolver {
         } else {
             Vec::new()
         };
-        // Strokes and curves pass through verbatim (the stub resolves no
-        // geometry), gated on the same structural validity as the glyphs.
+        // Strokes, curves and text runs pass through verbatim (the stub
+        // resolves no geometry), gated on the same structural validity as the
+        // glyphs.
         let strokes = if structural_valid {
             input.strokes.clone()
         } else {
@@ -485,6 +486,11 @@ impl StubSolver {
         };
         let curves = if structural_valid {
             input.curves.clone()
+        } else {
+            Vec::new()
+        };
+        let texts = if structural_valid {
+            input.texts.iter().map(|t| t.text.clone()).collect()
         } else {
             Vec::new()
         };
@@ -497,6 +503,7 @@ impl StubSolver {
             glyphs: (0..glyphs.len() as u32).collect(),
             strokes: (0..strokes.len() as u32).collect(),
             curves: (0..curves.len() as u32).collect(),
+            texts: (0..texts.len() as u32).collect(),
         };
         let pages = input
             .regions
@@ -533,6 +540,7 @@ impl StubSolver {
                 glyphs,
                 strokes,
                 curves,
+                texts,
                 engraving_decisions: input.engraving_decisions.clone(),
                 catalog: input.catalog.clone(),
                 unowned,
@@ -629,6 +637,7 @@ mod tests {
             glyphs,
             strokes: vec![],
             curves: vec![],
+            texts: vec![],
             vertical_bands: vec![band],
             constraints: vec![],
             break_origins: vec![],
@@ -639,6 +648,8 @@ mod tests {
             system_leads: Vec::new(),
             staff_groups: Vec::new(),
             cross_staff_beams: Vec::new(),
+            family: Vec::new(),
+            endings: Vec::new(),
         }
     }
 
@@ -721,6 +732,7 @@ mod tests {
             glyphs: vec![unknown],
             strokes: vec![],
             curves: vec![],
+            texts: vec![],
             vertical_bands: vec![band],
             constraints: vec![],
             break_origins: vec![],
@@ -731,6 +743,8 @@ mod tests {
             system_leads: Vec::new(),
             staff_groups: Vec::new(),
             cross_staff_beams: Vec::new(),
+            family: Vec::new(),
+            endings: Vec::new(),
         };
         let report = StubSolver.solve(&input, &SolverConfig::default());
         assert_eq!(report.status, SolveStatus::InternalError);
@@ -795,9 +809,10 @@ mod tests {
         );
         assert_eq!(
             layout.strokes.len(),
-            40,
-            "the rich fixture's real stroke count (its tuplet's bracket, four \
-             strokes, in place of the anchor it drew before)"
+            43,
+            "the rich fixture's real stroke count (its tuplet's bracket and its \
+             rehearsal mark's frame, four strokes each, in place of the anchors \
+             they drew before)"
         );
         // Its tie, drawn as an arc, and the curve added above.
         assert_eq!(layout.curves.len(), 2);

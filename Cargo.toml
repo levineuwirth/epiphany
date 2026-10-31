@@ -7,6 +7,7 @@ members = [
     "crates/epiphany-bundle",
     "crates/epiphany-ops",
     "crates/epiphany-textproj",
+    "crates/epiphany-text",
     "crates/epiphany-layout-ir",
     "crates/epiphany-glyphs",
     "crates/epiphany-engrave",
@@ -70,6 +71,16 @@ epiphany-layout-ir = { path = "crates/epiphany-layout-ir" }
 # hold the table privately); a future canvas-tessellating editor-app renderer
 # is why it is its own crate rather than a layout-ir module.
 epiphany-glyphs = { path = "crates/epiphany-glyphs" }
+# The text faces, pinned by content hash, and the shaper that sets words in
+# them (X4c, disposition E of spec/ANALYSIS_TEXT_RUN_PRIMITIVES.md): the first
+# outside dependencies of the engraving crates. The shaper, its outline reader
+# and the grapheme segmentation are pinned exactly, since each moves ink or
+# caret stops when it changes; their licences (MIT, Apache-2.0, Zlib,
+# Unicode-3.0) and MSRVs (1.85 or lower) were checked when they were taken.
+epiphany-text = { path = "crates/epiphany-text" }
+harfrust = "=0.14.0"
+skrifa = { version = "=0.48.0", default-features = false, features = ["std"] }
+unicode-segmentation = "=1.13.3"
 # Agent I's Phase-2 visible-slice crates: epiphany-engrave is the real
 # constraint solver (Chapter 9 Minimal tier — in progress) consuming the
 # ConstrainedLayoutIR; epiphany-render-svg is the SVG renderer behind the

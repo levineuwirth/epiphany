@@ -10408,6 +10408,11 @@ pub struct ConstrainedLayoutIR {
     /// Cubic-Bezier curve primitives (slurs), likewise.
     pub curves: Vec<Curve>,
 
+    /// Shaped text runs (lyrics, tempo, staff and expression text,
+    /// rehearsal marks), each riding one spring slot and owned by one
+    /// band, as a glyph is.
+    pub texts: Vec<TextObject>,
+
     /// Additional constraints not captured by spring parameters.
     pub constraints: Vec<LayoutConstraint>,
 
@@ -10448,6 +10453,13 @@ pub enum LayoutDiagnosticKind {
     /// carried as a traced anchor rather than drawn at a guessed
     /// shape.
     UnbundledGlyph(GlyphReference),
+
+    /// A codepoint no face of a text run's chain covers.
+    UncoveredCodepoint { codepoint: u32 },
+
+    /// A text run that reads right to left, which an engraver that
+    /// shapes left to right only draws, but not as it reads.
+    RightToLeftText,
 }
 
 pub enum LayoutConstraint {
@@ -10522,6 +10534,9 @@ pub struct ResolvedLayoutIR {
     /// alongside the glyphs.
     pub curves: Vec<Curve>,
 
+    /// Shaped text runs, positioned alongside the glyphs.
+    pub texts: Vec<ResolvedText>,
+
     /// Engraving decisions, including any made by the constraint
     /// solver (e.g., soft system breaks placed by casting-off).
     pub engraving_decisions: Vec<EngravingDecision>,
@@ -10592,23 +10607,93 @@ pub struct Curve {
     /// owner is not recoverable from its geometry.
     pub vertical_band: VerticalBandId,
 }
+
+/// A shaped run of text (disposition E): its source string, every input
+/// that determined its glyphs, and the glyphs themselves, positioned.
+pub struct ResolvedText {
+    pub provenance: Provenance,
+    /// The source string, verbatim: for accessibility, search and editing.
+    pub text: String,
+    pub shaping: TextShapingIdentity,
+    /// The shaped result every consumer draws; a logical partition of `text`.
+    pub segments: Vec<ShapedSegment>,
+    /// Source ranges to glyph ranges and caret stops.
+    pub clusters: ClusterMap,
+    /// The ink shaping produced, and what the solver allocated around it.
+    pub bounds: BoundingBox,
+    pub reserved_box: BoundingBox,
+    pub origin: Point2D,
+    /// The alignment applied (a record; offsets below already carry it).
+    pub align: TextAlign,
+    pub style: GlyphStyle,
+    pub layer: i32,
+}
+
+pub struct TextShapingIdentity {
+    /// The ordered face chain; resolution is closed over it.
+    pub faces: Vec<TextFaceIdentity>,
+    pub shaper: ShaperId,
+    pub shaper_version: SemVer,
+    /// The OpenType features applied, in canonical order.
+    pub features: Vec<FeatureSetting>,
+    /// The Unicode version of the segmentation that fixes caret stops
+    /// and of any itemization.
+    pub unicode_version: UnicodeVersion,
+}
+
+pub struct TextFaceIdentity {
+    pub family: FontId,              // diagnostic only
+    pub version: Option<SemVer>,
+    /// BLAKE3 of the face file's bytes under the tag "MUSCFNTF".
+    pub file_hash: [u8; 32],
+    pub face_index: u32,
+    pub variations: Vec<(AxisTag, CanonicalF64)>,
+    pub synthesis: FaceSynthesis,
+}
+
+pub struct ShapedSegment {
+    /// Index into `TextShapingIdentity::faces`.
+    pub face: u32,
+    pub glyphs: Vec<PositionedGlyph>,
+    /// Half-open UTF-8 byte range of `ResolvedText::text`.
+    pub source: Range<u32>,
+    pub direction: TextDirection,
+    pub script: ScriptTag,
+    pub language: LanguageTag,
+    /// The em, in staff spaces.
+    pub size: StaffSpace,
+}
+
+pub struct PositionedGlyph {
+    /// A glyph id in the face's own namespace.
+    pub glyph_id: u32,
+    /// From `origin`, alignment applied; staff spaces, y up.
+    pub offset: Point2D,
+    pub transform: Option<Transform2D>,
+}
 \end{lstlisting}
 
 \begin{requirement}
   \label{req:layoutir:resolved-primitives}
   \textbf{Non-glyph resolved primitives (ratified schema-major-2,
-  Phase~F).} Beyond glyphs, \texttt{ResolvedLayoutIR} carries
-  non-glyph \emph{line-stroke} primitives (staff lines, stems,
-  barlines, brackets) and \emph{cubic-B\'ezier curve} primitives
-  (slurs). Each \MUST{} carry provenance --- the basis of hit-testing
-  (\ref{sec:layoutir:provenance}) --- and is positioned by the solver
-  like a glyph: a spanning stroke or curve is re-spaced by the same
-  horizontal coordinate map its endpoint columns move under. These
-  primitives are \emph{non-canonical}: like layout identifiers and
-  glyph positions, they are not part of document state and enter no
-  content hash (\ref{req:layoutir:object-id-derivation}). A conformant
-  renderer draws them alongside the glyphs; the renderer encoding
-  itself is out of scope (\ref{sec:layoutir:render}).
+  Phase~F; text runs added by X4c).} Beyond glyphs,
+  \texttt{ResolvedLayoutIR} carries non-glyph \emph{line-stroke}
+  primitives (staff lines, stems, barlines, brackets),
+  \emph{cubic-B\'ezier curve} primitives (slurs), and \emph{shaped text
+  runs} (\texttt{ResolvedText}: lyrics, tempo, staff and expression
+  text, rehearsal marks). Each \MUST{} carry provenance --- the basis of
+  hit-testing (\ref{sec:layoutir:provenance}) --- and is positioned by
+  the solver like a glyph: a spanning stroke or curve is re-spaced by the
+  same horizontal coordinate map its endpoint columns move under, and a
+  text run moves rigidly with the spring slot it rides. These
+  primitives are \emph{non-canonical}: like layout identifiers and glyph
+  positions, they are not part of document state and enter no content
+  hash (\ref{req:layoutir:object-id-derivation}). They do enter the
+  resolved layout's rendering fingerprint, as a glyph's position does:
+  a text run's positioned glyphs, its shaping identity and its source
+  string are encoded, quantized as glyph positions are. A conformant
+  renderer draws them alongside the glyphs; the renderer encoding itself
+  is out of scope (\ref{sec:layoutir:render}).
 \end{requirement}
 
 \begin{requirement}
@@ -10632,6 +10717,50 @@ pub struct Curve {
   conformant canonical encoding of \texttt{ResolvedLayoutIR} therefore
   omits \texttt{vertical\_band} even from the strokes and curves that
   carry it.
+\end{requirement}
+
+\begin{requirement}
+  \label{req:layoutir:text-run}
+  \textbf{A text run is shaped once and drawn as shaped.} A
+  \texttt{ResolvedText} \MUST{} carry its source string and the glyphs
+  shaping produced from it, and no consumer --- canvas, export, hit
+  test --- \MUST{} shape the string again: a renderer draws each
+  \texttt{PositionedGlyph} from the face its segment names, at
+  \texttt{origin} plus its offset, and never derives glyphs from
+  \texttt{text}. The run \MUST{} satisfy:
+  \begin{itemize}
+    \item every bound in \texttt{segments} and \texttt{clusters} is a
+      UTF-8 character boundary of \texttt{text};
+    \item the segments' source ranges partition \texttt{text}: they cover
+      it and do not overlap, whatever their visual order;
+    \item each cluster carries its source range, its glyphs, and its caret
+      stops, each stop a position and a bidi affinity, at the grapheme
+      boundaries of the run's \texttt{unicode\_version};
+    \item a cluster shaping could not resolve is represented by an
+      explicit unresolved marker and reported
+      (\ref{req:layoutir:coverage-diagnostics}), never dropped;
+    \item offsets and bounds are staff spaces, y up, quantized to the
+      $1/1024$ grid glyph positions use.
+  \end{itemize}
+  Where the run's source is a value the model holds to NFC
+  (\ref{req:graph:text-nfc}), \texttt{text} is that value and so in NFC;
+  a run drawn from a string the model does not hold to NFC carries it
+  verbatim and \MUSTNOT{} be documented as NFC.
+\end{requirement}
+
+\begin{requirement}
+  \label{req:layoutir:text-faces}
+  \textbf{Text faces are pinned by content.} Every face a run's chain
+  names \MUST{} be an exact file every consumer can obtain, identified by
+  \texttt{file\_hash}, BLAKE3 over the file's bytes with the reserved
+  layout tag \texttt{"MUSCFNTF"}. Resolution is closed over the chain: a
+  codepoint no face of the chain covers \MUST{} be reported as a
+  \texttt{LayoutDiagnostic} naming the run's source and the codepoint,
+  and \MUSTNOT{} be drawn from a face the chain does not name. Ambient
+  lookup --- a chain entry naming a face by family alone --- is
+  non-conformant. Two layouts produced under different face hashes,
+  shaper versions, feature sets or Unicode versions are layouts under
+  different inputs (\ref{req:solver:within-implementation-byte-stability}).
 \end{requirement}
 
 \begin{requirement}
@@ -10713,8 +10842,9 @@ pub struct RenderConfiguration {
   Implementations producing \texttt{RenderIR} \MUST{} preserve
   provenance from \texttt{ResolvedLayoutIR}: every renderer primitive
   \MUST{} be traceable to its originating \texttt{ResolvedLayoutIR}
-  primitive --- a \texttt{ResolvedGlyph}, \texttt{Stroke}, or
-  \texttt{Curve} --- and therefore to its score graph source. This is
+  primitive --- a \texttt{ResolvedGlyph}, \texttt{Stroke},
+  \texttt{Curve}, or \texttt{ResolvedText} --- and therefore to its
+  score graph source. This is
   the basis of hit-testing, selection, and back-reference navigation
   in the UI.
 
@@ -16108,8 +16238,9 @@ Every reserved built-in eight-byte domain tag, in one place. The nine
 whose preimages produce identifiers and content hashes that are part of
 the interoperable, durably persisted form every conforming
 implementation must reproduce bit-identically --- are
-listed first; \texttt{MUSCFNTM} and \texttt{MUSCLOID} are
-\emph{non-canonical} (layout-only) and listed last, for completeness
+listed first; \texttt{MUSCFNTM}, \texttt{MUSCLOID} and
+\texttt{MUSCFNTF} are \emph{non-canonical} (layout-only) and listed
+last, for completeness
 (see Section~\ref{sec:bytes:deferred}). Registered extensions may
 additionally mint \emph{system-derived} tags, which \MUST{} begin with
 \texttt{MUSCS}, be exactly eight bytes, and not collide with a reserved
@@ -16143,6 +16274,8 @@ tag (Section~\ref{sec:bytes:system-derived}).
   \texttt{MUSCLOID} & Layout-object id --- \emph{non-canonical},
     wired by the reference implementation as of P12-I2
     (Requirement~\ref{req:layoutir:object-id-derivation}) \\
+  \texttt{MUSCFNTF} & Text face file hash for layout conformance ---
+    \emph{non-canonical} (Requirement~\ref{req:layoutir:text-faces}) \\
   \bottomrule
 \end{longtable}
 
@@ -17362,6 +17495,20 @@ layouts they own versus inherit:
   the wire from schema major~5 (Binary Format companion
   \sectionsc{Schema Major 5}); the reduction algorithm version is
   \texttt{4}, which X4b opened.
+  \\
+  \today & \sectionsc{ResolvedLayoutIR} &
+  \textbf{X4c: text runs} (roadmap D57, D79; disposition E of the
+  text-run analysis). The constrained and resolved stages gain a fourth
+  primitive, the shaped text run (\texttt{TextObject}, riding a spring
+  slot; \texttt{ResolvedText}, its source string, shaping identity,
+  positioned glyphs, clusters and boxes), named in
+  Requirement~\ref{req:layoutir:resolved-primitives}, which also enters
+  it in the rendering fingerprint; Requirements~\ref{req:layoutir:text-run}
+  and~\ref{req:layoutir:text-faces} say it is shaped once and drawn as
+  shaped, from faces pinned by content under the new non-canonical tag
+  \texttt{MUSCFNTF}. \texttt{LayoutDiagnosticKind} gains
+  \texttt{UncoveredCodepoint} and \texttt{RightToLeftText}. No byte of
+  document state and no reduction verdict changes.
   \\
   \bottomrule
 \end{longtable}

@@ -2191,3 +2191,491 @@ Besides these, as version 53 states, the lead's, signatures', changes' and
 barlines' springs are kept whole: the barline's own spring after it stands
 1.5 from its glyph's origin, where MuseScore's `barNoteDistance` is 1.25 from
 the barline's right edge.
+
+## ENGRAVER_VERSION 56 → 57: text runs ride their slots (X4c.2, 2026-10-22)
+
+The resolved layout carries shaped text runs (`texts`), a fourth primitive.
+The spacing pass moves each run by its slot's rigid delta, as it moves the
+slot's glyphs, and casting places it with the slot's system and its staff's
+shift. A run's ink is its staff's content by height alone: it joins the
+staff's extent, so the gap to the next staff makes room for it (D79's Q14),
+and it takes no room across, so a run neither widens a column nor a system.
+Lyrics, which do take room, are X4c.5's. No score draws a run yet, but the
+runs' count enters every layout's canonical bytes, so the version moves.
+Locked by `a_text_run_rides_its_slot_and_its_staff` and
+`a_text_run_takes_its_staffs_room_on_the_page`.
+
+## ENGRAVER_VERSION 57 → 58: marks at notes, fermatas and breath marks (X4c.3, 2026-10-22)
+
+The projection now draws a note's articulations, techniques, ornaments,
+tremolo strokes, jazz marks and arpeggio, and a fermata, breath mark or
+caesura, and names in `ConstrainedLayoutIR::family` how a solver must treat
+each. The engraver follows it:
+
+- A member taking no room across (`Room::None`: every mark but the arpeggio,
+  every fermata) gives its slot neither width nor its x: the spacing pass
+  takes a slot's source from its first glyph that takes room, so a mark the
+  projection emits before its note's head never moves the note. MuseScore's
+  chord shape leaves its articulations out of spacing too
+  (`ChordLayout::fillShape`; `an_arpeggio_takes_room_and_other_marks_take_none`,
+  `marks_take_no_room_at_the_floor`). An arpeggio takes room as an
+  accidental does (`Room::Ink`).
+- A breath mark or caesura stands right-aligned in a fixed column of its
+  own, whose spring is the 1.0 MuseScore pads a breath by after it. Before
+  it, it keeps 1.0 from the ink where their heights meet and from its
+  staff's heads, stems, dots and rests at any height, at natural spacing
+  and at the floor, MuseScore never kerning a breath against its voice; an
+  accidental after it keeps 1.0 where their heights meet (`Ink::Breath`;
+  `a_breath_mark_takes_a_column_after_its_note`,
+  `a_breath_mark_keeps_its_padding_at_the_floor`).
+- Once a system is set across, the family's placed members (a fermata now;
+  dynamics, syllables and tempo marks in later rows) are placed staff by
+  staff in MuseScore's order, each moved away from its staff until it clears
+  the ink under it by its distance, never toward it, a row's members at the
+  height the furthest needs (`family::place`). Their ink then joins their
+  staff's extent, so the gap to the next staff makes room for it
+  (`a_fermata_between_two_staves_holds_them_apart`).
+- A mark placed past the end of a stem meeting a beam across two staves
+  rides the beam's staff and stands between the staves with it, the content
+  of neither (`a_mark_past_a_beam_across_two_staves_stands_past_it`).
+
+## ENGRAVER_VERSION 58 → 59: dynamics and hairpins (X4c.4, 2026-10-22)
+
+The projection draws dynamics and hairpins, each a placed member of the
+family, and the engraver places them as MuseScore 4.7.5 does once a system
+is set:
+
+- Members are placed one by one in MuseScore's order, each joining the ink
+  the next is placed against; once all of one order are placed, the members
+  of a row (a dynamic and the hairpins meeting it, end to end) move out
+  until their optical centres stand at the outermost of theirs
+  (`AlignmentLayout::alignItemsWithTheirSnappingChain`), a dynamic's centre
+  half its x-height over its baseline and a hairpin's its axis
+  (`a_row_aligns_its_members_centres_at_the_outermost`,
+  `a_chain_of_dynamics_and_hairpins_stands_in_one_row`).
+- A dynamic or hairpin of a grand staff's upper staff, below it, stands
+  centred between the two staves once they are set, as far as the ink
+  between them lets it, a row's members together
+  (`dynamicsHairpinsAutoCenterOnGrandStaff`;
+  `a_grand_staffs_dynamic_stands_between_its_staves`).
+- A hairpin over a system break is drawn a piece in each system, each piece
+  opening from its axis as MuseScore draws one: to the full opening at its
+  wide end, and to the continuation's half space at a narrow end the break
+  leaves open (`a_hairpin_over_a_system_break_opens_each_piece`); a piece
+  the system sets shorter than a space has its end moved out to a space
+  (`a_hairpin_is_at_least_a_space_long`).
+
+## ENGRAVER_VERSION 59 → 60: lyrics (X4c.5, 2026-10-22)
+
+- A syllable takes room against its staff's verse alone (`Room::Verse`, D79's
+  Q13): it stands at least 0.25 after the verse's syllable before it
+  (`lyricsMinDistance`), or 0.5 where a hyphen joins them, room for the
+  shortest dash and its pads, at natural spacing and at the floor
+  (`a_verse_keeps_its_syllables_apart`). A run that takes room, a syllable
+  or an arpeggio, widens its slot in casting too, so a system holds it.
+- Once a system is set, a verse is placed against the ink under it, never
+  against another verse, its syllables aligned on their baseline a space
+  clear of that ink; a verse moved moves the verses outside it as far
+  (`LyricsLayout::checkCollisionsWithStaffElements`;
+  `verses_move_with_the_verses_inside_them`).
+- A stroke anchored in two systems (a hairpin, hyphen or melisma line over a
+  break) splits where they break, rather than by where its spaced ends fall:
+  a hairpin or line ending at a later system's first note no longer rides
+  its first system whole. Its anchored ends ride their slots' deltas, as
+  within one system, where it is placed as where it is drawn, so a
+  justified system no longer stretches a hairpin's or line's end away from
+  its note.
+- A hyphen is drawn as dashes along each of its pieces, one in each 16
+  spaces of it, each 0.4 to 0.6 long and centred in its share
+  (`lyricsDashMaxDistance`, `lyricsDashMinLength`, `lyricsDashMaxLength`);
+  one too short for its least dash grows to it about its centre. A hyphen
+  or melisma line going on past its system stops a quarter space short of
+  the system's end (`endingXForOpenEndedLines`); carried into a later system
+  it starts at that system's first column (`firstNoteRestSegmentX`: the
+  lesser of a space past the lead's ink and the first note), and a hyphen's
+  piece there too short for its least dash grows back from its end, so the
+  dash stands 0.05 before the syllable opening the system
+  (`LyricsLayout::layoutDashes`). A melisma line's piece shorter than a
+  space, less a tolerance of 0.05, is not drawn (`lyricsMelismaMinLength`,
+  `lyricsMelismaForce` off).
+
+## ENGRAVER_VERSION 60 → 61: tempo marks, staff text and rehearsal marks (X4c.6, 2026-10-22)
+
+- The family is placed in MuseScore's order with the rehearsal marks after
+  the tempo marks, so a rehearsal mark stands outside a tempo mark it meets
+  (`SystemLayout::layoutSystemElements` places them last), and a segno or
+  coda after both (`markersAndJumps`).
+- A member at its measure's start (`MeasureStart`) is set across once its
+  system is: a rehearsal mark centred on its barline's right edge, where
+  its measure starts, and a segno or coda on the barline's middle, both by
+  the ink of the barline column there; where the measure opens its system
+  or follows no barline, a rehearsal mark is centred just after the ink of
+  the system's lead and of the columns before its own (its signatures), and
+  a segno or coda on the system's left edge (`TLayout::layoutRehearsalMark`,
+  `MarkerLayout::doLayoutMarker`). Its runs and its frame move together, in
+  its placing as in its drawing.
+- A tempo mark is not set right of a rehearsal mark at its measure, as
+  MuseScore's `tempoAlignRightOfRehearsalMark` does; the two stand one over
+  the other.
+
+## ENGRAVER_VERSION 61 → 62: trill lines (X4c.7, 2026-10-22)
+
+- A trill line's wiggles are set piece by piece once its system is: as many
+  `wiggleTrill` as reach along the piece to the nearest, one each advance
+  (`LineSegment::symbolLine`), from after the sign on its first piece and
+  from the system's first column on a piece carried into a later one; the
+  line's stroke then draws nothing, a traced anchor, and its wiggles' ink is
+  its piece's ink in the family's placing.
+- Every line of the family, a hairpin's legs as a hyphen, is split over a
+  system break as MuseScore splits a line (`TLayout::layoutSystemSLine`): a
+  piece going on stops a quarter space short of its system's end and a
+  piece carried into a later system starts at its first column. A hairpin's
+  first piece had run to the system's end, and its next from the system's
+  first ink.
+
+## ENGRAVER_VERSION 62 → 63: the family's strokes take no room (X4c.9, 2026-10-22)
+
+- A stroke of a member taking no room across (a rehearsal mark's frame, a
+  hairpin's legs, a lyric line, a trill line's carrier, a two-note tremolo's
+  strokes) widens no slot in the spacing pass, as the member's glyphs do
+  not. A rehearsal mark's frame rides its measure's first slot at both ends,
+  so it had been folded into that slot's extent as a stem is, and a frame
+  wider than the room before its first note pushed the measure's content
+  right by the excess (`a_rehearsal_mark_takes_no_room`).
+
+## ENGRAVER_VERSION 63 → 64: a column's place is its first glyph that takes room (X4c.9, 2026-10-22)
+
+- Casting reads a column's reference x, by which it orders a region's
+  columns and shares a justified system's stretch among them, from its
+  first glyph that takes room, as the spacing pass reads a slot's source.
+  It had read the first glyph the projection emitted there, and the
+  projection emits a note's marks before its head: a scoop left of a note
+  opening a measure set its column before the barline it follows, and the
+  barline was drawn after the note, over it
+  (`a_mark_gives_its_column_no_place`). A column of marks alone keeps its
+  first glyph's x.
+
+## ENGRAVER_VERSION 64 → 65: a two-note tremolo laid out as a beam (X4c.10, 2026-10-24)
+
+- The projection lays a two-note tremolo out as MuseScore does, as a beam of
+  its two notes whose strokes are its levels: both stems turn one way and
+  reach the outermost stroke, and the strokes stand a space inside each
+  stem (`a_two_note_tremolo_is_a_beam_inset_from_its_stems`). They had been
+  drawn about the line joining the stems' midpoints, from stem to stem, so
+  they crossed the second chord's accidentals. Each stroke's ends ride the
+  two notes' columns, as a beam's do; the engraver itself is unchanged.
+
+## ENGRAVER_VERSION 65 → 66: a one-note tremolo lengthens its stem (X4c.10, 2026-10-24)
+
+- A stem carrying a one-note tremolo is as long as MuseScore's
+  `StemLayout::calcMinStemLength` makes it to hold the strokes, and a beam
+  over such a stem stands far enough out for it; three strokes or more had
+  run to the head on a stem of the plain length
+  (`a_one_note_tremolo_lengthens_its_stem`). The engraver itself is
+  unchanged.
+
+## ENGRAVER_VERSION 66 → 67: a one-note tremolo and a chord line take room (X4c.10, 2026-10-24)
+
+- A member of the family taking room as its chord's ink (`Room::Ink`: a
+  one-note tremolo, a chord line, an arpeggio) widens its slot as the
+  chord's own ink does, as MuseScore's `ChordLayout::fillShape` adds a
+  tremolo and a chord line to the chord's shape; the other marks still take
+  none.
+- No member of the family gives its column its place: a slot's source in
+  the spacing pass, and its reference x in casting, is its first glyph not
+  of the family, which a member taking room no longer is by taking it
+  (`a_mark_gives_its_column_no_place`).
+- A chord line keeps 0.35 from the ink either side of it at its height and
+  0.65 before a barline, and a one-note tremolo 0.35 from the ink after it,
+  MuseScore's padding for a chord line and, as for a beam, for a tremolo
+  (`PaddingTable::createTable`; `Ink::ChordLine`, `Ink::Tremolo`;
+  `a_tremolo_and_a_chord_line_take_room`).
+
+## ENGRAVER_VERSION 67 → 68: a visiting chord's marks by its own staff's voices (X4c.10, 2026-10-24)
+
+- A chord visiting another staff sets its marks at its stem only where the
+  staff it belongs to shows another voice while it sounds, and otherwise as
+  a chord alone does, at its head, as MuseScore reads that staff's voices
+  (`Measure::hasVoices`; `a_visiting_chords_marks_follow_its_own_staffs_voices`).
+  Every visiting chord had taken its marks at its stem. The engraver itself
+  is unchanged.
+
+## ENGRAVER_VERSION 68 → 69: a tuplet on one staff stands out of it (X4c.10, 2026-10-24)
+
+- A tuplet whose ends share a staff keeps its bracket's line, where its
+  number is centred, at least 1.25 outside the staff on its side,
+  bracketed or not, as MuseScore's default `tupletOutOfStaff` sets it
+  (`TupletLayout::layoutBracket`); it had cleared only its columns' ink, so
+  over low notes stemmed up it stood in the staff, its number on the top
+  line (`a_tuplet_on_one_staff_stands_out_of_it`). A tuplet riding a beam
+  across two staves is placed as before. The rich fixture's tuplet moves
+  out of its staff: its two golden files are re-blessed under D10.
+
+## ENGRAVER_VERSION 69 → 70: an ending opening a system is drawn on it (X4c.10, 2026-10-24)
+
+- An ending whose barline closes a system, its line going on into the
+  next, is drawn wholly on the next system, as MuseScore lays a spanner out
+  only on a system its start precedes the end of (`SystemLayout`,
+  `tick() >= etick`): its hook, numbers and line start there,
+  `BAR_NOTE_DISTANCE` (1.25) before the system's first note or rest, its
+  hook's half width further on (`Volta::linePos`), and the piece of its line
+  at the earlier system's end is dropped (`ConstrainedLayoutIR::endings`;
+  `an_ending_opening_a_system_is_drawn_wholly_on_it`). Its hook and numbers
+  had ridden the barline, so they stood at the end of the system before.
+  Its numbers take height on the system they move to and no room across,
+  where their place is not yet known; an ending opening mid-system is drawn
+  as before. The repeat fixture's first ending opens a system: its engraved
+  golden and snapshot are re-blessed under D10.
+
+## ENGRAVER_VERSION 70 → 71: a text's lines drawn stacked (X4c.10, 2026-10-24)
+
+- A staff text or tempo mark written in lines is drawn a run a line, the
+  first on its baseline and each further line Edwin's line (1.2 of its
+  size) lower, as MuseScore sets a text on its baseline (`TextLayout`,
+  `BASELINE`); a tempo mark's metronome follows its last line. The runs
+  move together, so the whole text clears the staff as one
+  (`a_text_in_lines_is_drawn_in_lines`). The importer now keeps a text's
+  line breaks (D81's Q2); a line break had been an uncovered codepoint.
+
+## ENGRAVER_VERSION 71 → 72: an arpeggio clears its chord's ledger lines (X4c.10, 2026-10-24)
+
+- An arpeggio before a chord with a head on a ledger line and no
+  accidental stands 0.63 left of the heads, MuseScore's padding from an
+  arpeggio to a ledger line (0.3) past the line's reach (0.33), not 0.4, so
+  it no longer meets the ledger line
+  (`an_arpeggio_stands_clear_of_its_chords_ledger_lines`). The engraver
+  itself is unchanged.
+
+## ENGRAVER_VERSION 72 → 73: an arpeggio's arrow stands left of its gap (X4c.10, 2026-10-25)
+
+- An arpeggio's ink ends at its right edge, an arrow's too, so its whole
+  width and its gap stand left of the chord, as MuseScore sets them
+  (`ChordLayout`, the arpeggio's width and gap). An arrow, wider than a
+  wiggle, had reached 0.32 past the edge toward the heads, so an arpeggio
+  with an arrow stood that much nearer its chord than its gap, and met a
+  ledger line its gap clears
+  (`an_arpeggio_stands_clear_of_its_chords_ledger_lines`). The engraver
+  itself is unchanged.
+
+## ENGRAVER_VERSION 73 → 74: a two-note tremolo's notes at their written value (X4c.11, 2026-10-27)
+
+- Each note of a two-note tremolo is drawn at its written value, one value
+  longer than it sounds and its dots kept, as MuseScore keeps the pair
+  (`Chord::setTremoloTwoChord`): its head, stem, flag and beams by that
+  value, its sounding duration and the spacing by it unchanged. A pair
+  MuseScore writes as halves at a 2:1 time modification had drawn as
+  quarters, and as wholes as halves on stems; a sounding whole is written a
+  breve (`a_two_note_tremolos_notes_are_drawn_at_their_written_value`). A
+  stemless note's strokes are inset from its head's edge, with no stem's
+  width beside it (`chordBeamAnchorX`). The engraver itself is unchanged.
+
+## ENGRAVER_VERSION 74 → 75: a slur over a stemless tremolo pair on its pair's side (X4c.11, 2026-10-27)
+
+- A slur over a two-note tremolo's stemless notes stands away from the way
+  its pair turns, as MuseScore sets a slur opposite its first chord's
+  direction, its stem drawn or not (`SlurTieLayout::computeUp`). Drawn at
+  their written value, such notes had given their columns no stem, and a
+  slur over stemless notes goes above, so under a low pair it had flipped
+  over the heads and through the strokes
+  (`a_slur_over_a_stemless_tremolo_pair_stands_away_from_its_strokes`). The
+  engraver itself is unchanged.
+
+## ENGRAVER_VERSION 75 → 76: a slur clears a stemless tremolo pair's strokes (X4c.11, 2026-10-28)
+
+- A slur on the side a two-note tremolo's stemless notes turn to passes
+  over their strokes, as MuseScore's slur clears the tremolo's shape
+  (`SlurTieLayout::getSegmentShape`). A stemless note's column had reached
+  no further than its head, where a stemmed note's stem reaches the
+  strokes, so an upper voice's slur over such a pair ran through them
+  (`a_slur_on_a_stemless_tremolo_pairs_strokes_side_passes_over_them`).
+  The engraver itself is unchanged.
+
+## ENGRAVER_VERSION 76 → 77: a close mark leaves its note's tie room (X4c fix round 1, 2026-10-28)
+
+- A staccato or tenuto on the side a tie leaves or reaches its note's outer
+  head stands clear of the tie, as MuseScore's `leaveSpaceForTie` sets it:
+  a line further out in the staff where its head stands in a space, and 0.4
+  further for a staccato and 0.6 for a tenuto where it is set from the
+  head. It had stood where it stands on an untied note
+  (`a_close_mark_leaves_its_notes_tie_room`). The engraver itself is
+  unchanged.
+
+## ENGRAVER_VERSION 77 → 78: a unison two voices do not share stands apart (X4c fix round 1, 2026-10-28)
+
+- Two voices' heads at a unison are one head only where both draw a stem,
+  as MuseScore shares them (`calculateChordOffsets`); two whole notes, a
+  two-note tremolo's written whole among them, had shared one. A unison not
+  shared stands apart as MuseScore sets it, the lower voice 0.15 right of
+  the upper's head, or an upper voice with dots 0.1 right of a lower one
+  without, where it had stood 0.02 right
+  (`a_unison_two_voices_do_not_share_stands_apart`). The engraver itself
+  is unchanged.
+
+## ENGRAVER_VERSION 78 → 79: a slur takes its side as MuseScore computes it (X4c fix round 1, 2026-10-28)
+
+- A slur goes opposite its first note's direction, a whole note's as its
+  stem would turn; above where its voice's notes turn both ways between its
+  ends; and by voice where its staff shows another voice anywhere in its
+  span, as MuseScore's `SlurTieLayout::computeUp` sets it. Slurs over whole
+  notes had gone above, a whole note turned the other way had counted no
+  direction, and a later voice entering after the first note had not set
+  the side (`a_slur_takes_its_side_as_musescore_computes_it`). The engraver
+  itself is unchanged.
+
+## ENGRAVER_VERSION 79 → 80: a tremolo pair's tuplet at its own ratio (X4c fix round 1, 2026-10-28)
+
+- A tuplet a two-note tremolo's note opens is read at its own ratio, the
+  pair's 2:1 divided out of the time modification, and numbered as
+  MuseScore numbers it, 2 where it was 4; every pair member, in a tuplet or
+  not, is drawn at its written value, so a pair in a triplet another note
+  opens draws halves where it drew the quarters it sounds
+  (`a_tremolo_pairs_tuplet_is_numbered_as_its_own`). The engraver itself
+  is unchanged; the importer and the layout IR's drawn value change.
+
+## ENGRAVER_VERSION 80 → 81: an outside mark clears its chord's accidentals (X4c fix round 1, 2026-10-28)
+
+- A mark outside the staff that meets its chord's own accidental across
+  stands 0.4 clear of it, as MuseScore's autoplace lifts it: a trill mark or
+  mordent over a note with an accidental had stood on the accidental's top
+  (`an_outside_mark_clears_its_chords_accidentals`). The engraver itself is
+  unchanged.
+
+## ENGRAVER_VERSION 81 → 82: an accent kerns toward a staccato outside the staff (X4c fix round 1, 2026-10-28)
+
+- An accent set straight after a staccato on its side stands 0.2 nearer it
+  where the staccato stands outside the staff, as MuseScore kerns the two
+  (`stacAccentKern`); it had stood the full 0.4 off
+  (`an_accent_kerns_toward_a_staccato_outside_the_staff`). The engraver
+  itself is unchanged.
+
+## ENGRAVER_VERSION 82 → 83: a stress mark aligns with the stem (X4c fix round 1, 2026-10-28)
+
+- A stress mark on its note's stem side stands centred between the head and
+  the stem, as an accent does, MuseScore counting it a basic articulation;
+  it had stood centred on the head
+  (`a_stress_mark_aligns_with_the_stem_as_an_accent_does`). The engraver
+  itself is unchanged.
+
+## ENGRAVER_VERSION 83 → 84: a second close mark steps as MuseScore sets it (X4c fix round 1, 2026-10-28)
+
+- A second staccato or tenuto on a side stands a space past where it would
+  stand alone in the staff, its centre a space past the first's, and
+  outside the staff past the first by its height and 0.4, as MuseScore's
+  `layoutArticulations` sets it; in the staff it had stood a space past the
+  first mark's outer edge (`a_second_close_mark_steps_as_musescore_sets_it`).
+  The engraver itself is unchanged.
+
+## ENGRAVER_VERSION 84 → 85: a slur's ends read as MuseScore reads them (X4c fix round 1, 2026-10-29)
+
+- A slur from a chord in a beam across two staves goes above; the voices a
+  slur's side is read from are read to the end of its last note or rest,
+  drawn or not; a slur ending on a rest reads no mixture of its voice's
+  directions, and one starting on a rest reads no voices, as MuseScore's
+  `computeUp` reads them. A second voice's slur ending on a hidden rest had
+  arced over its staff (`a_slur_reads_its_span_to_a_hidden_rest_and_a_beam_across_staves`).
+  The engraver itself is unchanged.
+
+## ENGRAVER_VERSION 85 → 86: a unison where the lower voice crosses moves the upper voice (X4c fix round 1, 2026-10-29)
+
+- Where a lower voice crosses an upper one at a unison, reaching above its
+  lowest head, the upper voice stands 0.15 right of the lower's head, as
+  MuseScore's `calculateChordOffsets` moves the up voice there, and the two
+  share no head unless their heads where they meet pair off as unisons they
+  could share. The lower voice had stood right of the upper's heads, past
+  any second of its chord
+  (`a_unison_where_the_lower_voice_crosses_moves_the_upper_voice`). The
+  engraver itself is unchanged.
+
+## ENGRAVER_VERSION 86 → 87: an arpeggio clears a later voice's chord in its column (X4c fix round 1, 2026-10-29)
+
+- An arpeggio stands left of every chord of its staff's column, of its own
+  voice or a later one, that its height meets, by its gap from the furthest
+  of their heads and accidentals, as MuseScore sets an arpeggio left of the
+  chords its span covers. It had stood by its own chord alone, so an upper
+  voice moved right of a lower one at a unison set its arpeggio among the
+  lower voice's heads, and a later voice's accidental further out met it
+  (`an_arpeggio_stands_left_of_a_later_voices_chord_in_its_column`). The
+  engraver itself is unchanged.
+
+## ENGRAVER_VERSION 87 → 88: an arpeggio stands left of its column's origin and clear of other voices' accidentals (X4c fix round 1's addendum, 2026-10-29)
+
+- An arpeggio stands left of its own chord and, where that chord stands
+  right of another voice's, left of its column's origin, as MuseScore
+  clamps the chord's `x` to its segment's origin; then once clear of every
+  accidental and ledger line of the column's other chords that its box
+  meets, whatever their voice, as MuseScore's `clearAccidentals` moves it.
+  Version 87 read its own and later voices' chords as a span, which
+  MuseScore's default span of one voice does not cover, so a lower voice
+  moved right of an upper one at a unison or a second set its arpeggio over
+  the upper voice's head, and an earlier voice's accidental went unread
+  (`an_arpeggio_stands_by_its_own_chord_and_clear_of_other_voices_accidentals`).
+  The engraver itself is unchanged.
+
+## ENGRAVER_VERSION 88 → 89: a dotted upper voice a second above an undotted lower goes right (X4c fix round 1's addendum, 2026-10-29)
+
+- An upper voice with dots a second above a lower one without, or crossed
+  by it with a second or a unison where they meet, stands 0.1 right of the
+  lower's head, its dots after its own, as MuseScore's
+  `calculateChordOffsets` moves the up voice there. The lower voice had
+  stood right of it, the upper's dots after the lower's head; fix round 1
+  had taken the branch at a unison alone
+  (`a_dotted_upper_voice_a_second_above_an_undotted_lower_goes_right`). The
+  engraver itself is unchanged.
+
+## ENGRAVER_VERSION 89 → 90: a stemless note's tremolo stands on its stem's side (X4c fix round 1's addendum, 2026-10-29)
+
+- A one-note tremolo on a note that draws no stem stands beyond the head
+  its stem would leave, on that stem's side, centred on the head or on the
+  stem's line where a head stands across it, and kept off the staff's outer
+  line on the head's side, as MuseScore's `TremoloLayout::layout` sets it.
+  It had stood over the chord whichever way its stem would turn
+  (`a_stemless_notes_tremolo_stands_on_its_stems_side`, D96). The engraver
+  itself is unchanged.
+
+## ENGRAVER_VERSION 90 → 91: an arpeggio stands 0.3 off an accidental (X4c fix round 2, 2026-10-30)
+
+- An arpeggio stands 0.3 of a space left of its own chord's accidentals and
+  of another chord's that it meets, as MuseScore keeps
+  `arpeggioAccidentalDistance` from both; it had stood 0.4 off, the gap it
+  keeps from a head (D97 Q1,
+  `an_arpeggio_stands_its_accidental_distance_off_an_accidental`). The
+  engraver itself is unchanged.
+
+## ENGRAVER_VERSION 91 → 92: a stemless note's tremolo stands a space clear of its head and within the staff (X4c fix round 2, 2026-10-30)
+
+- A one-note tremolo on a note that draws no stem stands with its strokes
+  at least a space clear of the head's ink and within the staff, as Gould
+  sets it (D100 Q1); where both cannot hold, within the staff, but never
+  nearer the head's ink than 0.25 (D101). It had stood 0.75 off the head's
+  centre, held at the line on the head's side alone
+  (`an_ornaments_accidentals_and_a_stemless_tremolo_stand_their_distances_off`,
+  `a_stemless_notes_tremolo_stands_on_its_stems_side`). The engraver itself
+  is unchanged.
+
+## ENGRAVER_VERSION 92 → 93: each accidental of an altered unison stands before its own head (X4c fix round 2, 2026-10-30)
+
+- Two voices on one step with two alterations keep two heads, and the
+  voice set right takes its accidentals before its own heads, standing
+  where they clear the other's head and ledger lines, as Gould sets an
+  altered unison (D100 Q2); every accidental of the column had stood
+  before all its heads
+  (`an_altered_unisons_accidentals_stand_each_before_its_own_head`).
+  Version 78's entry says a unison is shared "as MuseScore shares them":
+  MuseScore also shares a unison of one spelling whose notes differ only by
+  a quarter-tone accidental, comparing their `tpc`, which the engraver,
+  following Gould, keeps as two heads; the quarter-tone fixture's unison is
+  such a one, which fix round 1 said MuseScore does not share. The
+  engraver itself is unchanged.
+
+## ENGRAVER_VERSION 93 → 94: a lone tie takes its side by Gould's rules (X4c fix round 2, 2026-10-30)
+
+- A tie from a single note alone into two-part writing curves as the part
+  it joins, above into the upper part and below into the lower; a tie
+  between two single notes alone whose stems, drawn or as they would turn,
+  go opposite ways curves away from the middle line, and above on it, as
+  Gould sets them (D100 Q3). Each had taken the side opposite its first
+  note's stem, or by the middle line where it drew none. A close mark's tie
+  room follows the side drawn
+  (`a_lone_tie_takes_its_side_as_gould_sets_it`,
+  `a_close_mark_leaves_its_notes_tie_room`). The engraver itself is
+  unchanged.

@@ -13,30 +13,35 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use epiphany_core::{
-    Clef, EventId, KeySignature, LineStyle, MeasureId, MeasurePosition, MusicalDuration, NoteValue,
-    PitchId, PitchSpelling, RationalTime, RepeatStructureId, SpellingNominal, StaffId, TimeAnchor,
+    Clef, EventId, EventMark, HairpinDirection, KeySignature, LineStyle, MarkerKind, MeasureId,
+    MeasurePosition, MusicalDuration, NoteValue, Ornament, OrnamentKind, PitchId, PitchSpelling,
+    RationalTime, RepeatStructureId, SpannerKind, SpellingNominal, StaffId, TimeAnchor,
     TypedObjectId, WallClockTime,
 };
 use epiphany_determinism::{DomainTag, Preimage};
 
 use crate::engrave_theory::{
     accidental_glyph, alteration_glyph, clef_glyph_for, flag_count, flag_glyph, has_stem,
-    key_alteration, key_signature, notehead_glyph, rest_glyph, stack_quarter_tones, staff_position,
-    StaffStep,
+    key_alteration, key_signature, longer_value, notehead_glyph, rest_glyph, stack_quarter_tones,
+    staff_position, StaffStep, BREVE_NOTEHEAD,
 };
 use crate::engraving::{EngravingDecision, OverrideKind, OverridePriority, OverrideTarget};
 use crate::glyph::{metrics, BravuraCatalog, GlyphCatalog, GlyphCatalogIdentity, GlyphReference};
 use crate::logical::{
-    apply_offset, BarlineKind, LayoutContent, LogicalLayoutIR, PlacedClef, PlacedKeySignature,
-    RepeatContent, RepeatPlacement, ScoreVersion, SlurContent, SlurDirection, SlurEndpoint,
-    StaffContent, VoicePlace,
+    apply_offset, BarlineKind, LayoutContent, LogicalLayoutIR, MarkerContent, MarkerPlace,
+    PlacedClef, PlacedKeySignature, RepeatContent, RepeatPlacement, ScoreVersion, SlurContent,
+    SlurDirection, SlurEndpoint, SpannerContent, StaffContent, TieContent, VoicePlace,
 };
 use crate::provenance::{
-    manifestation_layout_id, LayoutObjectId, Provenance, SynthesisInstanceKey, SynthesisKind,
-    SynthesisRegistryId,
+    manifestation_layout_id, synthesized_layout_id, LayoutObjectId, Provenance,
+    SynthesisInstanceKey, SynthesisKind, SynthesisRegistryId,
 };
 use crate::solver::{ConstraintStrength, SpringSlotId};
 use crate::spatial::{BoundingBox, Point, Rect, Size2D, StaffSpace};
+use crate::text::{
+    shape_text, symbol_run, ResolvedText, ShapingGaps, Symbol, SymbolPlace, TextAlign, TextFace,
+    TextObject, Turn,
+};
 use crate::time_axis::{time_cmp, SlotPlacement, TimeAxisModel, TimePoint};
 use crate::vertical_band::{inter_staff_gap_id, VerticalBand, VerticalBandId};
 
@@ -167,6 +172,10 @@ pub struct ConstrainedLayoutIR {
     pub strokes: Vec<Stroke>,
     /// Cubic-bézier curve primitives (slurs, …).
     pub curves: Vec<Curve>,
+    /// Shaped text runs (lyrics, tempo, staff and expression text, rehearsal
+    /// marks), each riding one spring slot and owned by one band, as a glyph
+    /// is ([`crate::text`]).
+    pub texts: Vec<TextObject>,
     pub vertical_bands: Vec<VerticalBand>,
     pub constraints: Vec<LayoutConstraint>,
     /// The user-override attributions behind the projected break constraints in
@@ -201,6 +210,209 @@ pub struct ConstrainedLayoutIR {
     /// lower staff from rising past its `rise_limit`, and moves the beam end
     /// of each stem reaching it from the lower staff with the upper.
     pub cross_staff_beams: Vec<CrossStaffBeam>,
+    /// The expression family's marks, dynamics, lines and words (X4c), as a
+    /// solver treats them: which primitives move together, whether they take
+    /// room across, and, for those a solver places off their staff once the
+    /// system is set, how.
+    pub family: Vec<FamilyMark>,
+    /// Each ending's start: a solver that breaks a system at the barline an
+    /// ending opens after draws the whole ending on the next system.
+    pub endings: Vec<EndingStart>,
+}
+
+/// An ending's start (see [`ConstrainedLayoutIR::endings`]): the barline
+/// slot it opens at, its start's hook and its numbers, which ride that
+/// slot, and its line, which starts there. Where a solver breaks a system at that
+/// barline, and the line goes on into the next system, the ending is drawn
+/// wholly on the next: MuseScore lays a spanner out only on a system its
+/// start precedes the end of (`SystemLayout`, `tick() >= etick`), and starts
+/// an ending opening a system [`BAR_NOTE_DISTANCE`] before the system's first
+/// note or rest (`Volta::linePos`).
+#[derive(Clone, PartialEq, Debug)]
+pub struct EndingStart {
+    pub barline: SpringSlotId,
+    pub hook: GlyphObjectId,
+    pub numbers: Vec<GlyphObjectId>,
+    pub line: GlyphObjectId,
+}
+
+/// How far before a system's first note or rest an ending opening the
+/// system starts (MuseScore's `barNoteDistance`).
+pub const BAR_NOTE_DISTANCE: f32 = 1.25;
+
+/// One member of the expression family as a solver must treat it (see
+/// [`ConstrainedLayoutIR::family`]): a mark at a note, a dynamic, a hairpin,
+/// a syllable, a tempo mark. Its primitives are drawn where the projection
+/// put them, unless it is placed: then a solver moves them together, away
+/// from their staff, until they clear the staff's ink as the system sets it,
+/// as MuseScore's autoplace does.
+#[derive(Clone, PartialEq, Debug)]
+pub struct FamilyMark {
+    /// Its staff's band.
+    pub band: VerticalBandId,
+    /// Its glyphs, strokes and text runs, by stable id.
+    pub glyphs: Vec<GlyphObjectId>,
+    pub strokes: Vec<GlyphObjectId>,
+    pub texts: Vec<GlyphObjectId>,
+    /// The room it takes across in the spacing pass.
+    pub room: Room,
+    /// How a solver places it off its staff, if it does.
+    pub placement: Option<Autoplace>,
+    /// A line a solver draws piece by piece where a system break cuts it,
+    /// if the member is one.
+    pub line: Option<FamilyLine>,
+}
+
+/// A line of the family a solver draws piece by piece where a system break
+/// cuts it, as MuseScore draws its segments: a hairpin by its shape, its
+/// strokes its upper and its lower leg; a hyphen as dashes along its stroke
+/// (`LyricsLayout`: [`LYRIC_DASH_MIN`] to [`LYRIC_DASH_MAX`] long, one in
+/// each [`LYRIC_DASH_MAX_DISTANCE`] of it); a melisma line drawn only where
+/// it is at least [`LYRIC_MELISMA_MIN`] long.
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub enum FamilyLine {
+    Hairpin(HairpinShape),
+    Hyphen,
+    Melisma,
+    /// A trill line's wiggles, along its stroke from after its sign
+    /// ([`TRILL_WIGGLE`], one in each of its advance, as many as the piece
+    /// holds to the nearest: `LineSegment::symbolLine`).
+    Trill,
+}
+
+/// A trill line's wiggle, which a solver sets along its line piece by piece.
+pub const TRILL_WIGGLE: &str = "wiggleTrill";
+
+/// A hyphen's dash length's bounds (`lyricsDashMinLength`,
+/// `lyricsDashMaxLength`), the longest stretch one dash serves
+/// (`lyricsDashMaxDistance`), and a melisma line's least length
+/// (`lyricsMelismaMinLength`), in staff spaces.
+pub const LYRIC_DASH_MIN: f32 = 0.4;
+pub const LYRIC_DASH_MAX: f32 = 0.6;
+pub const LYRIC_DASH_MAX_DISTANCE: f32 = 16.0;
+pub const LYRIC_MELISMA_MIN: f32 = 1.0;
+
+/// A hairpin's shape (MuseScore's `TLayout::layoutHairpinSegment`): its legs
+/// open from its axis to [`HAIRPIN_HEIGHT`] at its wide end, a crescendo's
+/// at its end and a diminuendo's at its start, and a piece continuing over a
+/// system break opens [`HAIRPIN_CONT_HEIGHT`] at its narrow end.
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub struct HairpinShape {
+    pub crescendo: bool,
+    /// Its axis's height in the projection's frame.
+    pub axis: f32,
+}
+
+/// A hairpin's opening at its wide end (`hairpinHeight`) and at the narrow
+/// end of a piece continuing over a system break (`hairpinContHeight`), in
+/// staff spaces.
+pub const HAIRPIN_HEIGHT: f32 = 1.15;
+pub const HAIRPIN_CONT_HEIGHT: f32 = 0.5;
+/// The least length of a hairpin's piece, which a solver keeps where the
+/// system sets it.
+pub const HAIRPIN_MIN_LENGTH: f32 = 1.0;
+
+impl FamilyMark {
+    /// A glyph the projection places for good at its note, taking no room
+    /// across: an articulation, an ornament, a tremolo's strokes.
+    pub fn marking(band: VerticalBandId, glyph: GlyphObjectId) -> Self {
+        FamilyMark {
+            band,
+            glyphs: vec![glyph],
+            strokes: Vec::new(),
+            texts: Vec::new(),
+            room: Room::None,
+            placement: None,
+            line: None,
+        }
+    }
+}
+
+/// The room a member of the family takes across. A member never gives its
+/// column its place: a column's source is its first glyph not of the
+/// family, so a mark the projection emits before its note's head never
+/// moves the note's column.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum Room {
+    /// None: its ink meets other ink freely, as MuseScore lets a dynamic or
+    /// an articulation's do.
+    None,
+    /// As any ink of its column: an arpeggio left of its chord, a one-note
+    /// tremolo on its stem, a chord line beside its head.
+    Ink,
+    /// A syllable's: clear of the earlier syllables of its staff and verse
+    /// at any height, by more where a hyphen follows it, and of no other ink.
+    Verse { verse: u16, hyphen: bool },
+}
+
+/// How a solver places a member of the family off its staff once the
+/// system is set: on which side, after which other members (`order`, so
+/// what MuseScore lays out first stands nearest the staff), how far clear
+/// of the ink already there, and with which others it stands in one row.
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub struct Autoplace {
+    pub above: bool,
+    pub order: PlaceOrder,
+    pub min_distance: f32,
+    /// Its row, if it stands in one: a verse's syllables, a dynamic and the
+    /// hairpins that meet it.
+    pub row: Option<Row>,
+    /// The band of the other staff of its grand staff it stands toward, if
+    /// any: once the staves are set, a solver centres it between the two, as
+    /// far as the ink between them lets it (MuseScore's
+    /// `dynamicsHairpinsAutoCenterOnGrandStaff`).
+    pub between: Option<VerticalBandId>,
+    /// Where it stands across once its system is set, if at its measure's
+    /// start rather than where the projection put it.
+    pub across: Option<MeasureStart>,
+}
+
+/// A member standing at its measure's start, as MuseScore sets a rehearsal
+/// mark (`TLayout::layoutRehearsalMark`) or a segno or coda
+/// (`MarkerLayout::doLayoutMarker`): by the ink of the barline column
+/// `barline` where that column stands in the member's system, or, where the
+/// measure opens its system or follows no barline, at the system's start.
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub struct MeasureStart {
+    pub barline: Option<SpringSlotId>,
+    pub kind: MeasureMark,
+}
+
+/// How a member at its measure's start stands across.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum MeasureMark {
+    /// Centred on the barline's right edge, where its measure starts, or,
+    /// opening a system, just after the lead's ink: a rehearsal mark.
+    Rehearsal,
+    /// Centred on the barline, or, opening a system, on the system's left
+    /// edge: a segno or coda.
+    Repeat,
+}
+
+/// A row of the family: its members in one system, once each is placed, are
+/// aligned on their optical centres at the outermost of them, as MuseScore's
+/// `AlignmentLayout` aligns a dynamic and the hairpins snapped to it.
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub struct Row {
+    pub id: u128,
+    /// The member's optical centre's height in the projection's frame.
+    pub centre: f32,
+}
+
+/// The order a solver places the family off its staves in, MuseScore's
+/// (`SystemLayout::layoutSystemElements`): what comes first stands nearest.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum PlaceOrder {
+    Trill,
+    Fermata,
+    Dynamic,
+    Lyric,
+    StaffText,
+    Tempo,
+    /// Placed after the tempo marks, so standing outside them.
+    Rehearsal,
+    /// A segno or coda (`markersAndJumps`).
+    Marker,
 }
 
 /// A beam joining notes on two staves of a region (see
@@ -216,7 +428,8 @@ pub struct CrossStaffBeam {
     /// The staff whose notes' stems turn up to it.
     pub lower: StaffId,
     /// Every primitive standing between the two staves: the beam's strokes,
-    /// each member's stem, and the number of a tuplet the beam carries.
+    /// each member's stem, the number of a tuplet the beam carries, and the
+    /// marks placed from a member's stem end.
     pub ink: Vec<GlyphObjectId>,
     /// The stems from the lower staff's notes: each one's `from` (at its
     /// head) rides the lower staff, and its `to` (at the beam) the upper.
@@ -313,6 +526,36 @@ pub enum LayoutDiagnosticKind {
     /// sixteenth-or-shorter rest); the object is carried as a traced anchor
     /// rather than drawn at a guessed shape.
     UnbundledGlyph(GlyphReference),
+    /// A character of a text run no face of its chain covers: it stays in
+    /// the run's string, in an unresolved cluster, and is drawn from no face
+    /// (`req:layoutir:text-faces`).
+    UncoveredCodepoint { codepoint: u32 },
+    /// A text run with characters that read right to left, which the
+    /// engraver shapes left to right only: it is drawn, but not as it reads.
+    RightToLeftText,
+}
+
+/// What shaping a text run left to report, as diagnostics against its source
+/// (`req:layoutir:text-faces`): each character no face of its chain covers,
+/// in the order the string holds them, and a run that reads right to left.
+pub fn text_diagnostics(source: TypedObjectId, gaps: &ShapingGaps) -> Vec<LayoutDiagnostic> {
+    let mut out: Vec<LayoutDiagnostic> = gaps
+        .uncovered
+        .iter()
+        .map(|c| LayoutDiagnostic {
+            source,
+            kind: LayoutDiagnosticKind::UncoveredCodepoint {
+                codepoint: u32::from(*c),
+            },
+        })
+        .collect();
+    if gaps.right_to_left {
+        out.push(LayoutDiagnostic {
+            source,
+            kind: LayoutDiagnosticKind::RightToLeftText,
+        });
+    }
+    out
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
@@ -485,6 +728,14 @@ pub enum ConstrainedValidationError {
     InvalidCurveGeometry(GlyphObjectId),
     /// A span anchor names no stroke or curve, or a slot that does not exist.
     DanglingSpanAnchor(GlyphObjectId),
+    /// Two text runs share a stable id.
+    DuplicateTextId(GlyphObjectId),
+    /// A text run's origin, a glyph's offset, its size or its boxes do not
+    /// quantize, or a box is inverted.
+    InvalidTextGeometry(GlyphObjectId),
+    /// A member of the family names a primitive that does not exist, or a
+    /// band that does not.
+    DanglingFamilyMember(GlyphObjectId),
 }
 
 /// A malformed logical-stage value that cannot be transformed without losing
@@ -701,6 +952,64 @@ impl ConstrainedLayoutIR {
             }
         }
 
+        let mut text_ids = BTreeSet::new();
+        for text in &self.texts {
+            let id = text.id();
+            if !text_ids.insert(id) {
+                return Err(ConstrainedValidationError::DuplicateTextId(id));
+            }
+            let run = &text.text;
+            let boxed = |b: &BoundingBox| {
+                [b.left, b.bottom, b.right, b.top]
+                    .iter()
+                    .all(|v| v.quantize().is_some())
+                    && b.left.0 <= b.right.0
+                    && b.bottom.0 <= b.top.0
+            };
+            let geometry_quantizes = run.origin.quantize().is_some()
+                && boxed(&run.bounds)
+                && boxed(&run.reserved_box)
+                && run.segments.iter().all(|segment| {
+                    segment.size.quantize().is_some()
+                        && segment.glyphs.iter().all(|g| g.offset.quantize().is_some())
+                });
+            if !geometry_quantizes {
+                return Err(ConstrainedValidationError::InvalidTextGeometry(id));
+            }
+            if !slot_ids.contains(&text.horizontal_slot) {
+                return Err(ConstrainedValidationError::UnknownSlot(
+                    text.horizontal_slot,
+                ));
+            }
+            if !band_ids.contains(&text.vertical_band) {
+                return Err(ConstrainedValidationError::UnknownBand(text.vertical_band));
+            }
+        }
+
+        let stroke_ids: BTreeSet<GlyphObjectId> = self.strokes.iter().map(Stroke::id).collect();
+        for mark in &self.family {
+            let dangling = mark
+                .glyphs
+                .iter()
+                .find(|id| !glyphs_by_id.contains_key(id))
+                .or_else(|| mark.strokes.iter().find(|id| !stroke_ids.contains(id)))
+                .or_else(|| mark.texts.iter().find(|id| !text_ids.contains(id)));
+            if let Some(id) = dangling {
+                return Err(ConstrainedValidationError::DanglingFamilyMember(*id));
+            }
+            if !band_ids.contains(&mark.band) {
+                return Err(ConstrainedValidationError::UnknownBand(mark.band));
+            }
+            if let Some(slot) = mark
+                .placement
+                .and_then(|p| p.across)
+                .and_then(|across| across.barline)
+                .filter(|slot| !slot_ids.contains(slot))
+            {
+                return Err(ConstrainedValidationError::UnknownSlot(slot));
+            }
+        }
+
         let spanning: BTreeSet<GlyphObjectId> = self
             .strokes
             .iter()
@@ -745,6 +1054,12 @@ const NOTEHEAD_STEM_X: f32 = 1.15;
 const ACCIDENTAL_GAP: f32 = 0.2; // an accidental's ink stands this far clear of a head or ledger line
 const ACCIDENTAL_STACK_GAP: f32 = 0.15; // …and this far clear of another accidental
 const SECOND_CLEARANCE: f32 = 0.02; // heads set beside each other stand this far apart
+/// The gap between two voices' heads at a unison they do not share, the
+/// later set right of the other, and an upper voice with dots set right of a
+/// lower one without, at a unison or a second (`ChordLayout::calculateChordOffsets`:
+/// 0.15 and 0.1 of a space past the other's head).
+const UNISON_CLEARANCE: f32 = 0.15;
+const DOTTED_CLEARANCE: f32 = 0.1;
 const KEY_GAP: f32 = 0.6; // the gap between a clef's ink and the key signature after it
 const LEAD_GAP: f32 = 0.8; // the gap between a lead's ink and the first column after it
 const KEY_ACC_X: f32 = 0.9; // x advance per key-signature accidental
@@ -807,6 +1122,52 @@ const DOT_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x4155_474D_444F_
 /// The registry id for a flag, synthesized from its event and keyed by
 /// component.
 const FLAG_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x464C_4147_474C_5948); // "FLAGGLYH"
+/// The marks drawn at a note (X4c.3): its articulations, techniques,
+/// ornaments, tremolo strokes, jazz marks and arpeggio, each keyed by its
+/// part ([`NoteMarkPart`]).
+const MARK_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x4E4F_5445_4D41_524B); // "NOTEMARK"
+
+/// One primitive of a note's marks, by its role: a mark's glyph, by its tag
+/// (an [`EventMark`]'s wire tag, or [`NoteMarkPart::ornament_tag`]'s), an
+/// ornament's small accidental above or below it, the arpeggio's run, or a
+/// two-note tremolo's `k`-th stroke. A note's marks are a set, one of each
+/// tag, so the part names its primitive.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum NoteMarkPart {
+    Glyph(u8),
+    Accidental { tag: u8, above: bool },
+    Arpeggio,
+    TremoloStroke(u8),
+}
+
+impl NoteMarkPart {
+    /// An ornament's tag among a note's marks: past every [`EventMark`]'s.
+    pub fn ornament_tag(kind: epiphany_core::OrnamentKind) -> u8 {
+        32 + kind as u8
+    }
+
+    fn key(self) -> SynthesisInstanceKey {
+        SynthesisInstanceKey(match self {
+            NoteMarkPart::Glyph(tag) => u128::from(tag) << 8,
+            NoteMarkPart::Accidental { tag, above } => {
+                1 << 32 | u128::from(tag) << 8 | u128::from(above)
+            }
+            NoteMarkPart::Arpeggio => 2 << 32,
+            NoteMarkPart::TremoloStroke(k) => 3 << 32 | u128::from(k),
+        })
+    }
+
+    /// The stable id of this part of `event`'s marks, as the projection
+    /// draws it.
+    pub fn id(self, event: EventId) -> LayoutObjectId {
+        synthesized_layout_id(
+            &TypedObjectId::Event(event),
+            SynthesisKind::Registered(MARK_SYNTHESIS),
+            self.key(),
+        )
+    }
+}
+
 /// The registry id for an unpitched note's stem, synthesized from its event
 /// (whose exact provenance its first notehead carries) and keyed by component.
 const STEM_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x5354_454D_5354_524B); // "STEMSTRK"
@@ -825,6 +1186,11 @@ const TUPLET_CLEARANCE: f32 = 0.5; // a tuplet's number or bracket stands this f
 const TUPLET_HOOK: f32 = 0.6; // the length of a bracket's end hooks, toward the notes
 const TUPLET_NUMBER_GAP: f32 = 0.25; // the gap each side of the number in its bracket
 const TUPLET_BRACKET_THICKNESS: f32 = 0.16; // SMuFL's tupletBracketThickness
+/// How far outside its staff a tuplet on one staff keeps its bracket's line,
+/// where its number is centred: MuseScore's `tupletOutOfStaff` sets the
+/// bracket's ends `tupletVStemDistance` (0.5) outside the staff and its line
+/// `tupletBracketHookHeight` (0.75) beyond them (`TupletLayout::layoutBracket`).
+const TUPLET_OUT_OF_STAFF: f32 = 1.25;
 const TIE_OFFSET: f32 = 0.4; // how far off its heads' centres a tie's ends sit
 const TIE_MIN_HEIGHT: f32 = 0.3; // a tie's apex height, at least…
 const TIE_MAX_HEIGHT: f32 = 0.8; // …and at most, in staff spaces
@@ -933,6 +1299,8 @@ pub fn try_to_constrained(
     let mut glyphs = Vec::new();
     let mut strokes = Vec::new();
     let mut curves = Vec::new();
+    let mut texts: Vec<TextObject> = Vec::new();
+    let mut family: Vec<FamilyMark> = Vec::new();
     let mut diagnostics = Vec::new();
     let mut vertical_bands = Vec::new();
     let mut horizontal_slots = Vec::new();
@@ -940,6 +1308,7 @@ pub fn try_to_constrained(
     let mut break_origins = Vec::new();
     let mut constrained_regions = Vec::new();
     let mut span_anchors: Vec<SpanAnchor> = Vec::new();
+    let mut endings: Vec<EndingStart> = Vec::new();
     let mut system_leads: Vec<SystemLead> = Vec::new();
     let mut staff_groups: Vec<GroupSpan> = Vec::new();
     let mut cross_staff_beams: Vec<CrossStaffBeam> = Vec::new();
@@ -1014,6 +1383,11 @@ pub fn try_to_constrained(
         // Accidentals in context: which accidental each pitch's first head shows.
         let shown_accidentals = context_accidentals(&region.objects);
 
+        // A two-note tremolo joins an event to the next of its voice; both are
+        // drawn at their written value ([`drawn_value`]).
+        let next_in_voice = next_in_voice(&region.objects);
+        let tremolo_members = tremolo_members(&region.objects, &next_in_voice);
+
         // Pass 1 — compute every glyph's notation, keyed for emission in pass 2,
         // and collect the distinct columns it occupies. A note/rest notated as a
         // multi-component (tied) decomposition yields one notehead/stem/rest per
@@ -1066,12 +1440,17 @@ pub fn try_to_constrained(
         // The staves whose region-closing barline is a final one (the rest
         // close on a single barline, their run continuing in a later region).
         let mut final_staves: BTreeSet<StaffId> = BTreeSet::new();
+        // Each note's and unpitched note's marks and ornaments.
+        let mut mark_sources: BTreeMap<EventId, (Vec<EventMark>, Vec<Ornament>)> = BTreeMap::new();
 
         for object in &region.objects {
             let staff = object.staff();
             let yo = staff.map(&y_origin).unwrap_or(0.0);
             match (object.provenance().source, object.content()) {
                 (TypedObjectId::Event(eid), LayoutContent::Note(note)) => {
+                    if !note.marks.is_empty() || !note.ornaments.is_empty() {
+                        mark_sources.insert(eid, (note.marks.clone(), note.ornaments.clone()));
+                    }
                     event_staff.extend(staff.map(|st| (eid, st)));
                     spans.extend(component_spans(
                         &note.position,
@@ -1087,7 +1466,10 @@ pub fn try_to_constrained(
                         let key = ColumnKey::Timed(time.clone(), ColumnRole::Note);
                         keys.insert(key.clone());
                         let clef = active_clef_or(clef_seq(staff), &time, clef_default(staff));
-                        let name = notehead_glyph(value);
+                        let (name, value) = drawn_value(
+                            value,
+                            written_longer(&tremolo_members, eid, &note.components, comp),
+                        );
                         let mut placed = Vec::with_capacity(note.pitches.len());
                         for pitch in &note.pitches {
                             let (step, missing) = spelling_step(&pitch.spelling, &clef);
@@ -1162,6 +1544,9 @@ pub fn try_to_constrained(
                             key,
                             comp,
                             voiced_up(note.voice),
+                            (comp == 0)
+                                .then(|| marks::one_note_tremolo(&note.marks))
+                                .flatten(),
                         );
                         if let Some(staff) = staff {
                             merge_ink(&mut column_ink, staff, &seg.key, ink);
@@ -1172,6 +1557,9 @@ pub fn try_to_constrained(
                     event_voices.insert(eid, note.voice);
                 }
                 (TypedObjectId::Event(eid), LayoutContent::Unpitched(unpitched)) => {
+                    if !unpitched.marks.is_empty() {
+                        mark_sources.insert(eid, (unpitched.marks.clone(), Vec::new()));
+                    }
                     event_staff.extend(staff.map(|st| (eid, st)));
                     // An unpitched note: a notehead at its staff position, read
                     // as on a five-line staff, with the stem, flag and dots of
@@ -1196,7 +1584,10 @@ pub fn try_to_constrained(
                         });
                         let key = ColumnKey::Timed(time, ColumnRole::Note);
                         keys.insert(key.clone());
-                        let name = notehead_glyph(value);
+                        let (name, value) = drawn_value(
+                            value,
+                            written_longer(&tremolo_members, eid, &unpitched.components, comp),
+                        );
                         let dot_y =
                             dot_positions(yo, &[step], unpitched.voice == VoicePlace::Lower)[0];
                         let heads = unpitched_heads.entry(eid).or_default();
@@ -1230,6 +1621,9 @@ pub fn try_to_constrained(
                             key,
                             comp,
                             voiced_up(unpitched.voice),
+                            (comp == 0)
+                                .then(|| marks::one_note_tremolo(&unpitched.marks))
+                                .flatten(),
                         );
                         if let Some(staff) = staff {
                             merge_ink(&mut column_ink, staff, &seg.key, ink);
@@ -1395,6 +1789,43 @@ pub fn try_to_constrained(
                     // will use.
                     keys.insert(ColumnKey::Lead);
                 }
+                // A system mark where no note starts (a tempo or rehearsal
+                // mark, a segno or coda) stands in the note column of its
+                // time, made for it where none is, whatever staff it has.
+                (TypedObjectId::Marker(_), LayoutContent::Marker(marker))
+                    if matches!(
+                        marker.kind,
+                        MarkerKind::Tempo(_)
+                            | MarkerKind::Rehearsal(_)
+                            | MarkerKind::Segno
+                            | MarkerKind::Coda
+                    ) =>
+                {
+                    if let MarkerPlace::Time(time) = &marker.at {
+                        keys.insert(ColumnKey::Timed(time.clone(), ColumnRole::Note));
+                    }
+                }
+                // A breath mark or caesura stands in a column of its own where
+                // its note's sound ends, before what follows there.
+                (TypedObjectId::Marker(_), LayoutContent::Marker(marker)) if staff.is_some() => {
+                    // A dynamic or staff text where no note of its staff starts
+                    // stands in the note column of its time, made for it where
+                    // none is.
+                    if let (MarkerKind::Dynamic(_) | MarkerKind::Text(_), MarkerPlace::Time(time)) =
+                        (&marker.kind, &marker.at)
+                    {
+                        keys.insert(ColumnKey::Timed(time.clone(), ColumnRole::Note));
+                    }
+                    if let Some((time, name)) = breath_place(marker) {
+                        let key = ColumnKey::Timed(time, ColumnRole::Breath);
+                        // The mark stands left of its column: room for it
+                        // and its padding before the column.
+                        let width = metrics(name).map_or(0.0, |m| m.bounding_box().right.0);
+                        let entry = column_overhang.entry(key.clone()).or_insert(0.0);
+                        *entry = entry.max(width + BREATH_GAP);
+                        keys.insert(key);
+                    }
+                }
                 _ => {}
             }
         }
@@ -1435,7 +1866,8 @@ pub fn try_to_constrained(
 
         // Each staff column's heads, set clear of each other, with the stem
         // of a voice that moves moving with it.
-        for refs in column_heads.values() {
+        let mut accidentals_before: BTreeMap<_, BTreeSet<EventId>> = BTreeMap::new();
+        for (column, refs) in &column_heads {
             let heads: Vec<&Head> = refs
                 .iter()
                 .map(|r| r.get(&pitch_heads, &unpitched_heads))
@@ -1458,7 +1890,19 @@ pub fn try_to_constrained(
                         .unwrap_or(VoicePlace::Alone)
                 })
                 .collect();
-            let (dxs, shifts, dot_x) = place_heads(&heads, &ups, &places);
+            let stemmed: Vec<bool> = heads
+                .iter()
+                .map(|head| {
+                    event_stems
+                        .get(&head.event)
+                        .and_then(|segs| segs.iter().find(|seg| seg.comp == head.comp))
+                        .is_some_and(|seg| seg.drawn)
+                })
+                .collect();
+            let (dxs, shifts, dot_x, before) = place_heads(&heads, &ups, &stemmed, &places);
+            if !before.is_empty() {
+                accidentals_before.insert(column.clone(), before);
+            }
             for (r, dx) in refs.iter().zip(dxs) {
                 let head = r.get_mut(&mut pitch_heads, &mut unpitched_heads);
                 head.dx = dx;
@@ -1477,12 +1921,15 @@ pub fn try_to_constrained(
         // Each staff column's accidentals, placed together by their ink. The
         // source layout separates the column from the one before by as much
         // as they reach left of its heads (and a head set left of a stem).
-        for ((_, key), refs) in &column_heads {
+        let no_events = BTreeSet::new();
+        for (column, refs) in &column_heads {
+            let key = &column.1;
             let heads: Vec<&Head> = refs
                 .iter()
                 .map(|r| r.get(&pitch_heads, &unpitched_heads))
                 .collect();
-            let (origins, leftmost) = place_accidentals(&heads);
+            let before = accidentals_before.get(column).unwrap_or(&no_events);
+            let (origins, leftmost) = place_accidentals(&heads, before);
             for (r, xs) in refs.iter().zip(origins) {
                 r.get_mut(&mut pitch_heads, &mut unpitched_heads)
                     .accidental_x = xs;
@@ -1719,11 +2166,26 @@ pub fn try_to_constrained(
                     (ends[1] - ends[0]).clamp(-MAX_BEAM_RISE, MAX_BEAM_RISE)
                 };
                 let slope = if xn > x0 { rise / (xn - x0) } else { 0.0 };
+                // A member carrying a one-note tremolo asks the length that
+                // holds it inside the beam (`tremolo_stem_min`).
+                let lengths: Vec<f32> = (0..n)
+                    .map(|i| {
+                        mark_sources
+                            .get(&members[i])
+                            .and_then(|(marks, _)| marks::one_note_tremolo(marks))
+                            .map_or(length, |glyph| {
+                                let outside = tremolo_outside(yo, near[i], up);
+                                length.max(tremolo_stem_min(
+                                    glyph, up, outside, None, counts[i], true,
+                                ))
+                            })
+                    })
+                    .collect();
                 let needs = (0..n).map(|i| {
                     let need = if up {
-                        (near[i] + length).max(middle)
+                        (near[i] + lengths[i]).max(middle)
                     } else {
-                        (near[i] - length).min(middle)
+                        (near[i] - lengths[i]).min(middle)
                     };
                     need - slope * (xs[i] - x0)
                 });
@@ -2036,6 +2498,160 @@ pub fn try_to_constrained(
             }
         }
 
+        // Two-note tremolos, laid out as MuseScore lays them out
+        // (`TremoloLayout::layoutTwoNotesTremolo`): as a beam of the two notes,
+        // its strokes counted as beams, their stems turned as a beam group's
+        // and lengthened to it (`BeamTremoloLayout::calculateAnchors`,
+        // `extendStem`); a stemless note's anchor stands where its stem would,
+        // at its head's edge with no stem's width beside it
+        // (`chordBeamAnchorX`), and no stem is drawn to it. The strokes are
+        // that beam's levels, the first outermost and each further one
+        // `BEAM_STEP` nearer the heads, inset from each anchor by
+        // `TREMOLO_STEM_GAP`, by less where they would run shorter than
+        // `TREMOLO_MIN_RUN`, but never under `TREMOLO_MIN_STEM_GAP`
+        // (`TremoloLayout::createBeamSegments`). A pair whose stems a beam
+        // already sets keeps them, its strokes the beam's further levels. Each
+        // stroke's ends ride the two notes' columns.
+        let mut tremolo_strokes: BTreeMap<EventId, TremoloStrokes> = BTreeMap::new();
+        for (eid, (event_marks_of, _)) in &mark_sources {
+            let Some(strokes) = event_marks_of.iter().find_map(|m| match m {
+                EventMark::TremoloWithNext { strokes } => Some((*strokes).max(1)),
+                _ => None,
+            }) else {
+                continue;
+            };
+            let Some(&next) = next_in_voice.get(eid) else {
+                continue;
+            };
+            let pair = [*eid, next];
+            let segs: Option<Vec<&StemSeg>> = pair
+                .iter()
+                .map(|e| event_stems.get(e)?.iter().find(|s| s.comp == 0))
+                .collect();
+            let (Some(segs), Some(&staff)) = (segs, event_staff.get(eid)) else {
+                continue;
+            };
+            let (Some(a), Some(b)) = (columns.get(&segs[0].key), columns.get(&segs[1].key)) else {
+                continue;
+            };
+            let slots = [a.slot, b.slot];
+            let beamed = |s: &StemSeg| s.drawn && s.flag.is_none() && s.beams > 0;
+            let middle = y_origin(staff) + STAFF_HEIGHT * 0.5;
+            let up = if segs.iter().any(|s| beamed(s)) {
+                segs[0].up
+            } else {
+                let above = segs
+                    .iter()
+                    .map(|s| s.hi - middle)
+                    .fold(f32::NEG_INFINITY, f32::max);
+                let below = segs
+                    .iter()
+                    .map(|s| middle - s.lo)
+                    .fold(f32::NEG_INFINITY, f32::max);
+                segs.iter().find_map(|s| s.voiced).unwrap_or(below > above)
+            };
+            let sign = if up { 1.0 } else { -1.0 };
+            let x_off = |s: &StemSeg| {
+                metrics(s.head).map_or(if up { NOTEHEAD_STEM_X } else { 0.0 }, |m| {
+                    let b = m.bounding_box();
+                    if up {
+                        b.right.0
+                    } else {
+                        b.left.0
+                    }
+                })
+            };
+            let xs = [
+                a.x + segs[0].dx + x_off(segs[0]),
+                b.x + segs[1].dx + x_off(segs[1]),
+            ];
+            if xs[1] <= xs[0] {
+                continue;
+            }
+            // A drawn stem's outer edge is half its width outside its anchor.
+            let stem_edge =
+                [segs[0], segs[1]].map(|s| if s.drawn { STEM_THICKNESS / 2.0 } else { 0.0 });
+            // The outer edge of the outermost stroke, along the beam.
+            let edge: Box<dyn Fn(f32) -> f32> = if segs.iter().any(|s| beamed(s)) {
+                let ends = [segs[0].end, segs[1].end];
+                let most = segs.iter().map(|s| s.beams).max().unwrap_or(0);
+                let slope = (ends[1] - ends[0]) / (xs[1] - xs[0]);
+                let inset = sign * f32::from(most) * BEAM_STEP;
+                let x0 = xs[0];
+                Box::new(move |x| ends[0] + slope * (x - x0) - inset)
+            } else {
+                let near = [
+                    if up { segs[0].hi } else { segs[0].lo },
+                    if up { segs[1].hi } else { segs[1].lo },
+                ];
+                let length = STEM_LENGTH + f32::from(strokes.saturating_sub(2)) * BEAM_STEP;
+                let rise = (near[1] - near[0]).clamp(-MAX_BEAM_RISE, MAX_BEAM_RISE);
+                let slope = rise / (xs[1] - xs[0]);
+                let x0 = xs[0];
+                let needs = (0..2).map(|i| {
+                    let need = if up {
+                        (near[i] + length).max(middle)
+                    } else {
+                        (near[i] - length).min(middle)
+                    };
+                    need - slope * (xs[i] - x0)
+                });
+                let intercept = if up {
+                    needs.fold(f32::NEG_INFINITY, f32::max)
+                } else {
+                    needs.fold(f32::INFINITY, f32::min)
+                };
+                for (i, e) in pair.iter().enumerate() {
+                    let at = edge_at(intercept, slope, x0, xs[i]);
+                    let seg = event_stems
+                        .get_mut(e)
+                        .and_then(|segs| segs.iter_mut().find(|s| s.comp == 0))
+                        .expect("a member has a stem");
+                    seg.up = up;
+                    seg.x_off = x_off(seg);
+                    seg.end = at;
+                    seg.tip = at;
+                    seg.flag = None;
+                    let (key, drawn) = (seg.key.clone(), seg.drawn);
+                    if let Some(ink) = column_ink.get_mut(&(event_staff[e], key)) {
+                        // A stemless note keeps the way its pair turns it,
+                        // which a slur takes its side from, as MuseScore's
+                        // reads a chord's direction, its stem drawn or not
+                        // (`SlurTieLayout::computeUp`, `calcIsUp`); and its
+                        // column reaches the strokes as a stem would, which
+                        // a slur clears, as MuseScore's clears the tremolo's
+                        // shape (`SlurTieLayout::getSegmentShape`).
+                        if drawn {
+                            ink.stem_up = Some(up);
+                        } else {
+                            ink.stem_up.get_or_insert(up);
+                        }
+                        if up {
+                            ink.top = ink.top.max(at);
+                        } else {
+                            ink.bottom = ink.bottom.min(at);
+                        }
+                    }
+                }
+                Box::new(move |x| edge_at(intercept, slope, x0, x))
+            };
+            // The strokes run between the stems' outer edges, inset.
+            let (from, to) = (xs[0] - stem_edge[0], xs[1] + stem_edge[1]);
+            let gap = tremolo_stem_gap(to - from);
+            let (from, to) = (from + gap, to - gap);
+            let lines = (0..strokes)
+                .map(|k| {
+                    let centre =
+                        |x: f32| edge(x) - sign * (BEAM_THICKNESS / 2.0 + f32::from(k) * BEAM_STEP);
+                    (
+                        (Point::new(from, centre(from)), slots[0]),
+                        (Point::new(to, centre(to)), slots[1]),
+                    )
+                })
+                .collect();
+            tremolo_strokes.insert(*eid, lines);
+        }
+
         // (provenance, owning staff, engraving content) for the region object,
         // then its contents, then this region's spanning cross-region objects.
         let specs: Vec<(&Provenance, Option<StaffId>, Option<&LayoutContent>)> =
@@ -2054,6 +2670,27 @@ pub fn try_to_constrained(
                         .map(|object| (&object.provenance, object.staff, None)),
                 )
                 .collect();
+        // Each note a trill line starts at (X4c.7): its trill ornament is the
+        // line's first symbol, drawn with the line, not as a mark of its own
+        // (`TLayout::layoutTrillSegment`).
+        let trill_starts: BTreeSet<EventId> = specs
+            .iter()
+            .filter_map(|(_, _, content)| match content {
+                Some(LayoutContent::Spanner(SpannerContent {
+                    kind: SpannerKind::TrillExtension,
+                    start: MarkerPlace::Event { event, .. },
+                    ..
+                })) => Some(*event),
+                _ => None,
+            })
+            .collect();
+        let event_provenance: BTreeMap<EventId, &Provenance> = specs
+            .iter()
+            .filter_map(|(provenance, _, _)| match provenance.source {
+                TypedObjectId::Event(event) => Some((event, *provenance)),
+                _ => None,
+            })
+            .collect();
 
         // Where this region's glyphs begin in the global vector, so constraint
         // emission below can see exactly the glyphs pass 2 produced for it.
@@ -2070,14 +2707,23 @@ pub fn try_to_constrained(
             staves_in_order: Vec::new(),
         };
 
-        // Regroup the note-column ink by staff: a slur's obstacle field is its own
-        // staff's columns, never the sibling staff that shares their x.
-        let mut staff_notes: BTreeMap<StaffId, BTreeMap<ColumnKey, ColumnInk>> = BTreeMap::new();
-        for ((staff, key), column) in column_ink {
-            staff_notes.entry(staff).or_default().insert(key, column);
+        // Each note's marks, placed by its own heads, stem, flag and beam and its
+        // staff's lines (`marks`), now that its stem and beam are settled; the
+        // column's ink takes them in, so a slur passes over them.
+        let mut first_heads: BTreeMap<EventId, Vec<&Head>> = BTreeMap::new();
+        for head in pitch_heads
+            .values()
+            .chain(unpitched_heads.values())
+            .flatten()
+            .filter(|head| head.comp == 0)
+        {
+            first_heads.entry(head.event).or_default().push(head);
         }
-        let no_notes: BTreeMap<ColumnKey, ColumnInk> = BTreeMap::new();
-
+        // Each first component's heads a tie leaves or reaches, with the
+        // side it arcs on, as the ties are drawn below: a tie to the next
+        // event from a note of one component, one its event's decomposition
+        // ties to its second, and one arriving from the event before.
+        let mut tied_heads: BTreeMap<EventId, Vec<(f32, bool)>> = BTreeMap::new();
         // Each event's heads by component, highest first: a tie takes its side
         // from its head's place among them.
         let mut chord_ys: BTreeMap<(EventId, usize), Vec<f32>> = BTreeMap::new();
@@ -2094,6 +2740,185 @@ pub fn try_to_constrained(
         for ys in chord_ys.values_mut() {
             ys.sort_by(|a, b| b.total_cmp(a));
         }
+        for (_, staff, content) in &specs {
+            let Some(LayoutContent::Tie(tie)) = content else {
+                continue;
+            };
+            let yo = staff.map(&y_origin).unwrap_or(0.0);
+            let joins = tie_joins(
+                tie,
+                &pitch_heads,
+                &unpitched_heads,
+                &event_stems,
+                &event_voices,
+                &chord_ys,
+                yo,
+            );
+            for (a, b, above) in joins {
+                for head in [a, b].into_iter().filter(|head| head.comp == 0) {
+                    tied_heads
+                        .entry(head.event)
+                        .or_default()
+                        .push((head.y, above));
+                }
+            }
+        }
+        for (eid, heads) in &first_heads {
+            let (Some(seg), Some(&staff)) = (
+                event_stems
+                    .get(eid)
+                    .and_then(|segs| segs.iter().find(|seg| seg.comp == 0)),
+                event_staff.get(eid),
+            ) else {
+                continue;
+            };
+            let mut ys: Vec<f32> = heads.iter().map(|head| head.y).collect();
+            ys.sort_by(|a, b| b.total_cmp(a));
+            let stem_up = seg.drawn.then_some(seg.up);
+            let voice = event_voices.get(eid).copied();
+            for head in heads.iter().filter(|head| head.tied) {
+                let i = ys.iter().position(|&y| y == head.y).unwrap_or(0);
+                let above = tie_above(voice, i, ys.len(), stem_up, head.y, y_origin(staff));
+                tied_heads.entry(*eid).or_default().push((head.y, above));
+            }
+        }
+        let mut event_marks: BTreeMap<EventId, marks::Placed> = BTreeMap::new();
+        // A chord visiting another staff whose own staff shows no other
+        // voice there stands as a chord alone (`StaffContent::visiting_alone`).
+        let visiting_alone: BTreeSet<EventId> = region
+            .objects
+            .iter()
+            .filter_map(|object| match object.content() {
+                LayoutContent::Staff(content) => Some(&content.visiting_alone),
+                _ => None,
+            })
+            .flatten()
+            .copied()
+            .collect();
+        // Each staff column's accidentals and ledger lines, with the event
+        // whose head draws them: an arpeggio stands clear of another chord's,
+        // whatever its voice, as MuseScore's `clearAccidentals` reads every
+        // chord of the staff its span does not cover.
+        let mut column_others: ColumnOthers = BTreeMap::new();
+        for (at, refs) in &column_heads {
+            let others = column_others.entry(at.clone()).or_default();
+            for r in refs {
+                let head = r.get(&pitch_heads, &unpitched_heads);
+                for (name, x) in head.accidentals.iter().zip(&head.accidental_x) {
+                    if let Some(b) = metrics(name).map(|m| m.bounding_box()) {
+                        others.push((
+                            head.event,
+                            marks::OtherInk::Accidental([
+                                x + b.left.0,
+                                head.y + b.bottom.0,
+                                x + b.right.0,
+                                head.y + b.top.0,
+                            ]),
+                        ));
+                    }
+                }
+                let (left, right) = metrics(head.name).map_or((0.0, NOTEHEAD_STEM_X), |m| {
+                    let b = m.bounding_box();
+                    (b.left.0, b.right.0)
+                });
+                for step in ledger_steps(head.step) {
+                    others.push((
+                        head.event,
+                        marks::OtherInk::Ledger {
+                            left: head.dx + left,
+                            right: head.dx + right,
+                            y: head.y + (step - head.step) as f32 * 0.5,
+                        },
+                    ));
+                }
+            }
+        }
+        for (eid, (event_marks_of, ornaments)) in &mark_sources {
+            let (Some(seg), Some(&staff), Some(heads)) = (
+                event_stems
+                    .get(eid)
+                    .and_then(|segs| segs.iter().find(|seg| seg.comp == 0)),
+                event_staff.get(eid),
+                first_heads.get(eid),
+            ) else {
+                continue;
+            };
+            let head = heads.first().map_or("noteheadBlack", |h| h.name);
+            let head_box = metrics(head).map(|m| m.bounding_box());
+            let (head_left, head_right) =
+                head_box.map_or((0.0, NOTEHEAD_STEM_X), |b| (b.left.0, b.right.0));
+            let mut left = f32::INFINITY;
+            let mut right = f32::NEG_INFINITY;
+            let mut accidental_ink = Vec::new();
+            for h in heads {
+                left = left.min(h.dx + head_left);
+                right = right.max(h.dx + head_right);
+                for (name, x) in h.accidentals.iter().zip(&h.accidental_x) {
+                    if let Some(b) = metrics(name).map(|m| m.bounding_box()) {
+                        left = left.min(x + b.left.0);
+                        accidental_ink.push([
+                            x + b.left.0,
+                            h.y + b.bottom.0,
+                            x + b.right.0,
+                            h.y + b.top.0,
+                        ]);
+                    }
+                }
+            }
+            // A tie on a side at the chord's outer head there: a tie outside
+            // its chord, MuseScore's default placement (`isOuterTieOfChord`).
+            let ties = tied_heads.get(eid).map_or(&[][..], Vec::as_slice);
+            let outer_tie = |y: f32, above: bool| {
+                ties.iter()
+                    .any(|&(at, side)| side == above && (at - y).abs() < 1e-3)
+            };
+            let chord = marks::Chord {
+                seg,
+                head,
+                heads_left: left,
+                heads_right: right,
+                across: heads.iter().any(|h| (h.dx - seg.dx).abs() > 1e-3),
+                others: heads
+                    .first()
+                    .and_then(|h| column_others.get(&(Some(staff), h.key.clone())))
+                    .map_or_else(Vec::new, |others| {
+                        others
+                            .iter()
+                            .filter(|(event, _)| event != eid)
+                            .map(|(_, ink)| *ink)
+                            .collect()
+                    }),
+                voice: if visiting_alone.contains(eid) {
+                    VoicePlace::Alone
+                } else {
+                    event_voices.get(eid).copied().unwrap_or(VoicePlace::Alone)
+                },
+                yo: y_origin(staff),
+                beamed: seg.drawn && seg.flag.is_none() && seg.beams > 0,
+                accidental_ink,
+                tie_above: outer_tie(seg.hi, true),
+                tie_below: outer_tie(seg.lo, false),
+            };
+            let ornaments: Vec<Ornament> = ornaments
+                .iter()
+                .filter(|o| !(o.kind == OrnamentKind::Trill && trill_starts.contains(eid)))
+                .cloned()
+                .collect();
+            let placed = marks::place(&chord, event_marks_of, &ornaments);
+            if let Some(ink) = column_ink.get_mut(&(staff, seg.key.clone())) {
+                marks::into_ink(ink, &placed);
+            }
+            event_marks.insert(*eid, placed);
+        }
+
+        // Regroup the note-column ink by staff: a slur's obstacle field is its own
+        // staff's columns, never the sibling staff that shares their x.
+        let mut staff_notes: BTreeMap<StaffId, BTreeMap<ColumnKey, ColumnInk>> = BTreeMap::new();
+        for ((staff, key), column) in column_ink {
+            staff_notes.entry(staff).or_default().insert(key, column);
+        }
+        let no_notes: BTreeMap<ColumnKey, ColumnInk> = BTreeMap::new();
+
         // Each staff column's ink a tie's end must stand clear of; and each
         // note's own, which a tuplet's bracket across two staves clears.
         let mut tie_ink: BTreeMap<(Option<StaffId>, ColumnKey), Vec<InkBox>> = BTreeMap::new();
@@ -2183,6 +3008,427 @@ pub fn try_to_constrained(
         }
         clear_visitors(&mut event_rests, &visiting, &visitor_ink, &columns);
 
+        // The dynamics and hairpins of each staff, placed before any is
+        // emitted: a hairpin keeps its distance from a dynamic at either of its
+        // ends, and a dynamic and the hairpins meeting it, end to end, are one
+        // chain, which a solver sets in one row. A voice's staff takes its
+        // dynamics and hairpins above (D79's Q10).
+        let vocal: BTreeSet<StaffId> = region
+            .objects
+            .iter()
+            .filter_map(|object| match (object.staff(), object.content()) {
+                (Some(st), LayoutContent::Staff(content)) if content.vocal => Some(st),
+                _ => None,
+            })
+            .collect();
+        // Each grand staff's staves, top first.
+        let grand: Vec<Vec<StaffId>> = region
+            .objects
+            .iter()
+            .filter_map(|object| match object.content() {
+                LayoutContent::Group(group)
+                    if group.kind == epiphany_core::StaffGroupKind::GrandStaff =>
+                {
+                    Some(group.staves.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        let mut dynamics: BTreeMap<u128, DynamicPlacing> = BTreeMap::new();
+        // Keyed by staff and the note column of a time.
+        let note_at = |time: TimePoint| ColumnKey::Timed(time, ColumnRole::Note);
+        let mut dynamic_ink: BTreeMap<(StaffId, ColumnKey), (f32, f32)> = BTreeMap::new();
+        let mut chains: BTreeMap<u128, u128> = BTreeMap::new();
+        let mut chain_ends: BTreeMap<(StaffId, ColumnKey), Vec<u128>> = BTreeMap::new();
+        for (provenance, staff, content) in &specs {
+            let Some(st) = *staff else {
+                continue;
+            };
+            let id = provenance.stable_id.0;
+            match content {
+                Some(LayoutContent::Marker(MarkerContent {
+                    kind: MarkerKind::Dynamic(dynamic),
+                    at,
+                })) => {
+                    let (event, time) = match at {
+                        MarkerPlace::Event { event, time, .. } => (Some(*event), time.clone()),
+                        MarkerPlace::Time(time) => (None, time.clone()),
+                        MarkerPlace::Unresolved => continue,
+                    };
+                    let key = ColumnKey::Timed(time.clone(), ColumnRole::Note);
+                    let Some(info) = columns.get(&key) else {
+                        continue;
+                    };
+                    let centre = info.x + note_centre(event, &event_stems, &event_rests);
+                    let yo = y_origin(st);
+                    let above = vocal.contains(&st);
+                    let baseline = if above {
+                        yo + STAFF_HEIGHT + DYNAMIC_ABOVE
+                    } else {
+                        yo - DYNAMIC_BELOW
+                    };
+                    let (ink, left, right) = match dynamic_glyph(dynamic) {
+                        Some(name) => {
+                            let b = metrics(name)
+                                .expect("dynamic metrics are bundled")
+                                .bounding_box();
+                            // Its optical centre on the head's.
+                            let x = centre - dynamic_optical_centre(name);
+                            (DynamicInk::Glyph { name, x }, x + b.left.0, x + b.right.0)
+                        }
+                        None => {
+                            let epiphany_core::Dynamic::Other(words) = dynamic else {
+                                continue;
+                            };
+                            let (run, gaps) = shape_text(
+                                (*provenance).clone(),
+                                words.as_str(),
+                                TextFace::Italic,
+                                DYNAMIC_TEXT_SIZE,
+                                TextAlign::Center,
+                                Point::new(centre, baseline),
+                            );
+                            for d in text_diagnostics(provenance.source, &gaps) {
+                                emit.diag(d.source, d.kind);
+                            }
+                            let (l, r) = (centre + run.bounds.left.0, centre + run.bounds.right.0);
+                            (DynamicInk::Words(Box::new(run)), l, r)
+                        }
+                    };
+                    dynamic_ink.insert((st, note_at(time.clone())), (left, right));
+                    chain_ends.entry((st, note_at(time))).or_default().push(id);
+                    dynamics.insert(
+                        id,
+                        DynamicPlacing {
+                            key,
+                            above,
+                            baseline,
+                            ink,
+                        },
+                    );
+                }
+                Some(LayoutContent::Spanner(SpannerContent {
+                    kind: SpannerKind::Hairpin(_),
+                    start,
+                    end,
+                })) => {
+                    for time in [place_time(start), place_time(end)].into_iter().flatten() {
+                        chain_ends.entry((st, note_at(time))).or_default().push(id);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for members in chain_ends.values() {
+            for pair in members.windows(2) {
+                let (a, b) = (
+                    chain_of(&mut chains, pair[0]),
+                    chain_of(&mut chains, pair[1]),
+                );
+                chains.insert(a.max(b), a.min(b));
+            }
+        }
+        // Each syllable, placed before any is emitted, so a hyphen reaches the
+        // next: centred on its note's head, but for its leading and trailing
+        // marks, or, where a melisma line extends from it or a verse number
+        // leads it, its letters from the head's left
+        // (`LyricsLayout::layout`).
+        let mut syllables: BTreeMap<(EventId, u16), SyllablePlacing> = BTreeMap::new();
+        for (provenance, staff, content) in &specs {
+            let (Some(st), Some(LayoutContent::Lyric(lyric))) = (*staff, content) else {
+                continue;
+            };
+            let key = ColumnKey::Timed(lyric.time.clone(), ColumnRole::Note);
+            let Some(info) = columns.get(&key) else {
+                continue;
+            };
+            let (mut run, gaps) = shape_text(
+                (*provenance).clone(),
+                lyric.text.as_str(),
+                TextFace::Roman,
+                LYRIC_TEXT_SIZE,
+                TextAlign::Left,
+                Point::new(0.0, 0.0),
+            );
+            for d in text_diagnostics(provenance.source, &gaps) {
+                emit.diag(d.source, d.kind);
+            }
+            let (lead, trail, advance) = syllable_margins(&run, lyric.text.as_str());
+            // A verse number leads letters; digits alone are the syllable.
+            let numbered = lyric
+                .text
+                .as_str()
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_digit())
+                && lyric.text.as_str().chars().any(char::is_alphabetic);
+            let x = if lyric.melisma_end.is_some() || numbered {
+                info.x + note_left(Some(lyric.event), &event_stems, &event_rests) - lead
+            } else {
+                info.x + note_centre(Some(lyric.event), &event_stems, &event_rests)
+                    - (lead + advance - trail) * 0.5
+            };
+            let baseline =
+                y_origin(st) - LYRIC_BELOW - LYRIC_LINE * f32::from(lyric.verse.saturating_sub(1));
+            run.origin = Point::new(x - run.reserved_box.left.0, baseline);
+            let (left, right) = (
+                run.origin.x.0 + run.bounds.left.0,
+                run.origin.x.0 + run.bounds.right.0,
+            );
+            syllables.insert(
+                (lyric.event, lyric.verse),
+                SyllablePlacing {
+                    key,
+                    run,
+                    left,
+                    right,
+                },
+            );
+        }
+        // Each text mark, placed before any is emitted (X4c.6): staff text
+        // over its staff, upright, left at its note (D79's Q9); a tempo mark,
+        // rehearsal mark, segno or coda over the region's top staff, as
+        // MuseScore draws a system object, and one repeating another's kind,
+        // words and time from another part drawn once.
+        let measures: Vec<&crate::logical::MeasureContent> = region
+            .objects
+            .iter()
+            .filter_map(|object| match object.content() {
+                LayoutContent::Measure(measure) => Some(measure),
+                _ => None,
+            })
+            .collect();
+        let mut text_marks: BTreeMap<u128, TextMarkPlacing> = BTreeMap::new();
+        let mut drawn_once: Vec<(&MarkerKind, TimePoint)> = Vec::new();
+        for (provenance, staff, content) in &specs {
+            let Some(LayoutContent::Marker(marker)) = content else {
+                continue;
+            };
+            let system = match marker.kind {
+                MarkerKind::Tempo(_)
+                | MarkerKind::Rehearsal(_)
+                | MarkerKind::Segno
+                | MarkerKind::Coda => true,
+                MarkerKind::Text(_) => false,
+                _ => continue,
+            };
+            let (event, time) = match &marker.at {
+                MarkerPlace::Event { event, time, .. } => (Some(*event), time.clone()),
+                MarkerPlace::Time(time) => (None, time.clone()),
+                MarkerPlace::Unresolved => continue,
+            };
+            let Some(st) = (if system {
+                staff_order.first().copied()
+            } else {
+                *staff
+            }) else {
+                continue;
+            };
+            if system {
+                let twin = drawn_once.iter().any(|(kind, at)| {
+                    **kind == marker.kind && time_total(at, &time) == Ordering::Equal
+                });
+                if twin {
+                    continue;
+                }
+                drawn_once.push((&marker.kind, time.clone()));
+            }
+            let note = ColumnKey::Timed(time.clone(), ColumnRole::Note);
+            let Some(info) = columns.get(&note) else {
+                continue;
+            };
+            let top = y_origin(st) + STAFF_HEIGHT;
+            let left = info.x + note_left(event, &event_stems, &event_rests);
+            let measure = measures
+                .iter()
+                .find(|m| time_total(&m.start, &time) == Ordering::Equal);
+            // Its measure's barline, where the mark stands at a measure's start.
+            let barline = measure.map(|_| ColumnKey::Timed(time.clone(), ColumnRole::Barline));
+            let mut gaps = Vec::new();
+            let mut shape = |text: &str, face: TextFace, size: f32, at: Point, k: u128| {
+                let provenance = if k == 0 {
+                    (*provenance).clone()
+                } else {
+                    Provenance::synthesized(
+                        provenance.source,
+                        SynthesisKind::Registered(TEXT_MARK_SYNTHESIS),
+                        SynthesisInstanceKey(k),
+                        provenance.dependencies.clone(),
+                    )
+                };
+                let (run, gap) = shape_text(provenance, text, face, size, TextAlign::Left, at);
+                gaps.push(gap);
+                run
+            };
+            let placing = match &marker.kind {
+                // Each line of the text a run, the first on the baseline and
+                // each further one a line lower (`TextLayout`, `BASELINE`).
+                MarkerKind::Text(words) => TextMarkPlacing {
+                    key: note,
+                    staff: st,
+                    runs: words
+                        .as_str()
+                        .split('\n')
+                        .enumerate()
+                        .filter(|(_, line)| !line.is_empty())
+                        .map(|(i, line)| {
+                            let baseline =
+                                top + STAFF_TEXT_ABOVE - i as f32 * TEXT_LINE * STAFF_TEXT_SIZE;
+                            shape(
+                                line,
+                                TextFace::Roman,
+                                STAFF_TEXT_SIZE,
+                                Point::new(left, baseline),
+                                i as u128,
+                            )
+                        })
+                        .collect(),
+                    frame: None,
+                    order: PlaceOrder::StaffText,
+                    across: None,
+                },
+                MarkerKind::Tempo(tempo) => {
+                    // Over the time signature its measure opens with, if one
+                    // shows (`TLayout::layoutTempoText`).
+                    let signature = measure
+                        .filter(|m| m.time_signature.is_some())
+                        .map(|m| signature_column(m))
+                        .and_then(|key| Some((columns.get(&key)?.x + TIME_SIG_X, key)));
+                    let (x, key) = signature.unwrap_or((left, note));
+                    // The pen, across and the baseline it stands on.
+                    let mut at = (x, top + TEMPO_ABOVE);
+                    let mut runs = Vec::new();
+                    let mut k = 0u128;
+                    let mut set = |runs: &mut Vec<ResolvedText>,
+                                   at: &mut (f32, f32),
+                                   text: &str,
+                                   face,
+                                   size| {
+                        let run = shape(text, face, size, Point::new(at.0, at.1), k);
+                        at.0 += run.reserved_box.right.0 - run.reserved_box.left.0;
+                        k += 1;
+                        runs.push(run);
+                    };
+                    // Its words' lines before their last each a run a line
+                    // above the next, as staff text's; the last and the
+                    // metronome after it on the last line.
+                    let mut words = tempo
+                        .text
+                        .as_ref()
+                        .map(|t| t.as_str())
+                        .filter(|t| !t.is_empty());
+                    if let Some((lines, last)) = words.and_then(|w| w.rsplit_once('\n')) {
+                        for line in lines.split('\n') {
+                            if !line.is_empty() {
+                                set(&mut runs, &mut at, line, TextFace::Bold, TEMPO_SIZE);
+                            }
+                            at = (x, at.1 - TEXT_LINE * TEMPO_SIZE);
+                        }
+                        words = Some(last).filter(|t| !t.is_empty());
+                    }
+                    match (&tempo.metronome, words) {
+                        (Some(metronome), words) => {
+                            if let Some(words) = words {
+                                let words = format!("{words} ");
+                                set(&mut runs, &mut at, &words, TextFace::Bold, TEMPO_SIZE);
+                            }
+                            set(
+                                &mut runs,
+                                &mut at,
+                                &metronome_beat(metronome),
+                                TextFace::Symbols,
+                                TEMPO_SYMBOL_SIZE,
+                            );
+                            set(
+                                &mut runs,
+                                &mut at,
+                                &format!(" = {}", metronome.per_minute.as_str()),
+                                TextFace::Bold,
+                                TEMPO_SIZE,
+                            );
+                        }
+                        (None, Some(words)) => {
+                            set(&mut runs, &mut at, words, TextFace::Bold, TEMPO_SIZE)
+                        }
+                        (None, None) => {}
+                    }
+                    TextMarkPlacing {
+                        key,
+                        staff: st,
+                        runs,
+                        frame: None,
+                        order: PlaceOrder::Tempo,
+                        across: None,
+                    }
+                }
+                MarkerKind::Rehearsal(words) => {
+                    let mut run = shape(
+                        words.as_str(),
+                        TextFace::Bold,
+                        REHEARSAL_SIZE,
+                        Point::new(0.0, top + REHEARSAL_ABOVE),
+                        0,
+                    );
+                    // Centred on its note until a solver sets it at its
+                    // measure's start.
+                    let (l, r) = (run.bounds.left.0, run.bounds.right.0);
+                    run.origin = Point::new(left - (l + r) * 0.5, run.origin.y.0);
+                    // Its frame about its ink, at least as wide as high, a
+                    // padding off it (`TextBase::layoutFrame`).
+                    let (x, y) = (run.origin.x.0, run.origin.y.0);
+                    let (mut l, mut r) = (x + l, x + r);
+                    let (b, t) = (y + run.bounds.bottom.0, y + run.bounds.top.0);
+                    let grow = ((t - b) - (r - l)).max(0.0) * 0.5;
+                    (l, r) = (l - grow, r + grow);
+                    let pad = REHEARSAL_PADDING + REHEARSAL_FRAME * 0.5;
+                    TextMarkPlacing {
+                        key: note,
+                        staff: st,
+                        runs: vec![run],
+                        frame: Some([l - pad, b - pad, r + pad, t + pad]),
+                        order: PlaceOrder::Rehearsal,
+                        across: measure.map(|_| (barline.clone(), MeasureMark::Rehearsal)),
+                    }
+                }
+                MarkerKind::Segno | MarkerKind::Coda => {
+                    let symbol = if marker.kind == MarkerKind::Segno {
+                        "\u{E047}" // segno
+                    } else {
+                        "\u{E048}" // coda
+                    };
+                    let mut run = shape(
+                        symbol,
+                        TextFace::Symbols,
+                        REPEAT_SYMBOL_SIZE,
+                        Point::new(0.0, top + REPEAT_ABOVE),
+                        0,
+                    );
+                    let (l, r) = (run.bounds.left.0, run.bounds.right.0);
+                    run.origin = Point::new(left - (l + r) * 0.5, run.origin.y.0);
+                    TextMarkPlacing {
+                        key: note,
+                        staff: st,
+                        runs: vec![run],
+                        frame: None,
+                        order: PlaceOrder::Marker,
+                        across: measure.map(|_| (barline.clone(), MeasureMark::Repeat)),
+                    }
+                }
+                _ => continue,
+            };
+            for gap in &gaps {
+                for d in text_diagnostics(provenance.source, gap) {
+                    emit.diag(d.source, d.kind);
+                }
+            }
+            text_marks.insert(provenance.stable_id.0, placing);
+        }
+        // Each hairpin leg's, hyphen's and melisma line's slots, anchored once
+        // the columns they ride are known to hold glyphs.
+        let mut hairpin_anchors: Vec<(GlyphObjectId, SpringSlotId, SpringSlotId)> = Vec::new();
+        // This region's first run and family member.
+        let (text_start, family_start) = (texts.len(), family.len());
+
         // Pass 2 — emit. Each logical object's exact provenance lands on exactly
         // one primitive; the extras a multi-component object owns are synthesized.
         for (provenance, staff, content) in specs {
@@ -2231,6 +3477,8 @@ pub fn try_to_constrained(
                                 beams: Vec::new(),
                                 cross_beams: Vec::new(),
                                 visiting: Default::default(),
+                                visiting_alone: Default::default(),
+                                vocal: false,
                             };
                             &default_content
                         }
@@ -2423,6 +3671,157 @@ pub fn try_to_constrained(
                                     staff,
                                     info.slot,
                                 );
+                            }
+                        }
+                        // The note's marks (`marks`), each synthesized from it:
+                        // glyphs at the column of its first component, and an
+                        // ornament's small accidentals and an arpeggio set as
+                        // symbol runs. They take no room across, but for the
+                        // arpeggio, which stands left of the chord as an
+                        // accidental does.
+                        if let (Some(placed), Some(seg)) =
+                            (event_marks.get(&eid), segs.iter().find(|seg| seg.comp == 0))
+                        {
+                            let info = column(&seg.key);
+                            let band = band_of(staff);
+                            // A mark past the end of a stem meeting a beam across
+                            // two staves stands between them with the beam: it
+                            // rides the beam's staff and is neither staff's ink.
+                            let beam = kneed_stems.get(&eid).map(|&(record, _)| {
+                                (record, Some(cross_staff_beams[record].upper))
+                            });
+                            let staff_at = |at_stem_end: bool| match beam {
+                                Some((_, upper)) if at_stem_end => upper,
+                                _ => staff,
+                            };
+                            let band_at = |at_stem_end: bool| band_of(staff_at(at_stem_end));
+                            let mark_provenance = |part: NoteMarkPart| {
+                                Provenance::synthesized(
+                                    provenance.source,
+                                    SynthesisKind::Registered(MARK_SYNTHESIS),
+                                    part.key(),
+                                    provenance.dependencies.clone(),
+                                )
+                            };
+                            for g in &placed.glyphs {
+                                let p = mark_provenance(NoteMarkPart::Glyph(g.tag));
+                                let id = GlyphObjectId(p.stable_id.0);
+                                emit.glyph(
+                                    &p,
+                                    g.name,
+                                    Point::new(info.x + g.x, g.y),
+                                    band_at(g.at_stem_end),
+                                    staff_at(g.at_stem_end),
+                                    info.slot,
+                                );
+                                if let (Some((record, _)), true) = (beam, g.at_stem_end) {
+                                    cross_staff_beams[record].ink.push(id);
+                                }
+                                // A tremolo or chord line takes room in its
+                                // column as its chord's ink does.
+                                family.push(FamilyMark {
+                                    room: if g.room { Room::Ink } else { Room::None },
+                                    ..FamilyMark::marking(band_at(g.at_stem_end), id)
+                                });
+                            }
+                            let mut runs: Vec<(ResolvedText, Room, bool)> = Vec::new();
+                            for a in &placed.accidentals {
+                                let (Some(codepoint), Some(b)) = (
+                                    marks::accidental_codepoint(a.name),
+                                    metrics(a.name).map(|m| m.bounding_box()),
+                                ) else {
+                                    continue;
+                                };
+                                let symbol = Symbol {
+                                    codepoint,
+                                    at: SymbolPlace::Corner(Point::new(
+                                        0.6 * b.left.0,
+                                        0.6 * b.bottom.0,
+                                    )),
+                                    scale: 0.6,
+                                    turn: Turn::None,
+                                };
+                                runs.push((
+                                    symbol_run(
+                                        mark_provenance(NoteMarkPart::Accidental {
+                                            tag: a.tag,
+                                            above: a.above,
+                                        }),
+                                        &[symbol],
+                                        Point::new(info.x + a.x, a.y),
+                                    ),
+                                    Room::None,
+                                    a.at_stem_end,
+                                ));
+                            }
+                            // A two-note tremolo: strokes as the levels of a beam
+                            // between this note's stem and the next note's of its
+                            // voice, riding both columns.
+                            for (k, (from, to)) in tremolo_strokes
+                                .get(&eid)
+                                .cloned()
+                                .unwrap_or_default()
+                                .into_iter()
+                                .enumerate()
+                            {
+                                let (stroke, start, end) = (
+                                    line_stroke(
+                                        mark_provenance(NoteMarkPart::TremoloStroke(k as u8)),
+                                        from.0,
+                                        to.0,
+                                        BEAM_THICKNESS,
+                                        band,
+                                    ),
+                                    from.1,
+                                    to.1,
+                                );
+                                span_anchors.push(SpanAnchor {
+                                    primitive: stroke.id(),
+                                    start,
+                                    end,
+                                });
+                                family.push(FamilyMark {
+                                    band,
+                                    glyphs: Vec::new(),
+                                    strokes: vec![stroke.id()],
+                                    texts: Vec::new(),
+                                    room: Room::None,
+                                    placement: None,
+                                    line: None,
+                                });
+                                emit.stroke(stroke);
+                            }
+                            if let Some(arpeggio) = &placed.arpeggio {
+                                let mut run = symbol_run(
+                                    mark_provenance(NoteMarkPart::Arpeggio),
+                                    &marks::arpeggio_symbols(arpeggio),
+                                    Point::new(info.x + arpeggio.right, arpeggio.bottom),
+                                );
+                                // Its ink, an arrow's too, ends at its right
+                                // edge: MuseScore sets the arpeggio's whole
+                                // width and its gap left of the chord.
+                                run.origin.x.0 -= run.bounds.right.0;
+                                runs.push((run, Room::Ink, false));
+                            }
+                            for (run, room, at_stem_end) in runs {
+                                let id = run.id();
+                                texts.push(TextObject {
+                                    text: run,
+                                    horizontal_slot: info.slot,
+                                    vertical_band: band_at(at_stem_end),
+                                });
+                                if let (Some((record, _)), true) = (beam, at_stem_end) {
+                                    cross_staff_beams[record].ink.push(id);
+                                }
+                                family.push(FamilyMark {
+                                    band: band_at(at_stem_end),
+                                    glyphs: Vec::new(),
+                                    strokes: Vec::new(),
+                                    texts: vec![id],
+                                    room,
+                                    placement: None,
+                                    line: None,
+                                });
                             }
                         }
                     }
@@ -2715,6 +4114,12 @@ pub fn try_to_constrained(
                             start: start.slot,
                             end: end.slot,
                         });
+                        let mut opening = EndingStart {
+                            barline: start.slot,
+                            hook: line.id(),
+                            numbers: Vec::new(),
+                            line: line.id(),
+                        };
                         emit.stroke(line);
                         for (element, column) in [(1u128, start), (2u128, end)] {
                             let hook = line_stroke(
@@ -2724,6 +4129,9 @@ pub fn try_to_constrained(
                                 VOLTA_LINE_THICKNESS,
                                 band_of(staff),
                             );
+                            if element == 1 {
+                                opening.hook = hook.id();
+                            }
                             span_anchors.push(SpanAnchor {
                                 primitive: hook.id(),
                                 start: column.slot,
@@ -2747,8 +4155,10 @@ pub fn try_to_constrained(
                                 } else {
                                     VOLTA_TEXT_DROP
                                 };
+                                let provenance = volta_provenance(element);
+                                opening.numbers.push(GlyphObjectId(provenance.stable_id.0));
                                 emit.glyph(
-                                    &volta_provenance(element),
+                                    &provenance,
                                     name,
                                     Point::new(cursor, y - drop),
                                     band_of(top_staff),
@@ -2760,6 +4170,7 @@ pub fn try_to_constrained(
                             }
                             cursor += VOLTA_ENDING_GAP;
                         }
+                        endings.push(opening);
                     }
                 }
                 TypedObjectId::StaffGroup(_) => {
@@ -2809,6 +4220,7 @@ pub fn try_to_constrained(
                                 voices: &event_voices,
                                 beams: &beam_sets,
                                 staff: st,
+                                yo: y_origin(st),
                             },
                         )
                     };
@@ -2978,31 +4390,20 @@ pub fn try_to_constrained(
                     // below, a middle or lone tie away from its stem (by its
                     // staff position when it has none). The structure's exact provenance rides its first
                     // arc; a tie with no head to join keeps a traced anchor.
-                    let mut joins: Vec<(&Head, &Head)> = Vec::new();
-                    let mut start_event = None;
-                    if let Some(LayoutContent::Tie(tie)) = content {
-                        start_event = Some(tie.start);
-                        if tie.pairs.is_empty() {
-                            let a = unpitched_heads.get(&tie.start).and_then(|h| h.last());
-                            let b = unpitched_heads.get(&tie.end).and_then(|h| h.first());
-                            joins.extend(a.zip(b));
-                        }
-                        for (a, b) in &tie.pairs {
-                            let a = pitch_heads.get(a).and_then(|h| h.last());
-                            let b = pitch_heads.get(b).and_then(|h| h.first());
-                            joins.extend(a.zip(b));
-                        }
-                    }
-                    joins.sort_by(|x, y| y.0.y.total_cmp(&x.0.y));
-                    let stem_up = start_event
-                        .and_then(|e| event_stems.get(&e))
-                        .and_then(|segs| segs.last())
-                        .filter(|seg| seg.drawn)
-                        .map(|seg| seg.up);
-                    let voice = start_event.and_then(|e| event_voices.get(&e)).copied();
+                    let joins = match content {
+                        Some(LayoutContent::Tie(tie)) => tie_joins(
+                            tie,
+                            &pitch_heads,
+                            &unpitched_heads,
+                            &event_stems,
+                            &event_voices,
+                            &chord_ys,
+                            yo,
+                        ),
+                        _ => Vec::new(),
+                    };
                     let n = joins.len();
-                    for (i, (a, b)) in joins.iter().enumerate() {
-                        let above = tie_above(voice, i, n, stem_up, a.y, yo);
+                    for (i, &(a, b, above)) in joins.iter().enumerate() {
                         let tie_provenance = if i == 0 {
                             provenance.clone()
                         } else {
@@ -3044,6 +4445,638 @@ pub fn try_to_constrained(
                         ));
                     }
                 }
+                TypedObjectId::Marker(_) => {
+                    // A point mark this tier draws: a fermata over its chord or
+                    // rest, placed again by a solver once its system is set; a
+                    // breath mark or caesura in its column; a text mark. Any
+                    // other, or one with no staff, keeps a traced anchor.
+                    let drawn = match (content, staff) {
+                        (Some(LayoutContent::Marker(_)), _)
+                            if text_marks.contains_key(&provenance.stable_id.0) =>
+                        {
+                            // A text mark: its runs, a rehearsal mark's frame
+                            // about them, placed again by a solver once its
+                            // system is set.
+                            let mark = &text_marks[&provenance.stable_id.0];
+                            let info = column(&mark.key);
+                            let band = band_of(Some(mark.staff));
+                            let mut runs = Vec::new();
+                            for run in &mark.runs {
+                                runs.push(run.id());
+                                texts.push(TextObject {
+                                    text: run.clone(),
+                                    horizontal_slot: info.slot,
+                                    vertical_band: band,
+                                });
+                            }
+                            let mut frame = Vec::new();
+                            if let Some([l, b, r, t]) = mark.frame {
+                                let half = REHEARSAL_FRAME * 0.5;
+                                let sides = [
+                                    ((l - half, t), (r + half, t)),
+                                    ((l - half, b), (r + half, b)),
+                                    ((l, b), (l, t)),
+                                    ((r, b), (r, t)),
+                                ];
+                                for (k, (from, to)) in sides.into_iter().enumerate() {
+                                    let stroke = line_stroke(
+                                        Provenance::synthesized(
+                                            provenance.source,
+                                            SynthesisKind::Registered(TEXT_FRAME_SYNTHESIS),
+                                            SynthesisInstanceKey(k as u128 + 1),
+                                            provenance.dependencies.clone(),
+                                        ),
+                                        Point::new(from.0, from.1),
+                                        Point::new(to.0, to.1),
+                                        REHEARSAL_FRAME,
+                                        band,
+                                    );
+                                    hairpin_anchors.push((stroke.id(), info.slot, info.slot));
+                                    frame.push(stroke.id());
+                                    emit.stroke(stroke);
+                                }
+                            }
+                            let across = mark.across.as_ref().map(|(barline, kind)| MeasureStart {
+                                barline: barline
+                                    .as_ref()
+                                    .and_then(|k| columns.get(k))
+                                    .map(|c| c.slot),
+                                kind: *kind,
+                            });
+                            family.push(FamilyMark {
+                                band,
+                                glyphs: Vec::new(),
+                                strokes: frame,
+                                texts: runs,
+                                room: Room::None,
+                                placement: Some(Autoplace {
+                                    above: true,
+                                    order: mark.order,
+                                    min_distance: TEXT_MIN_DISTANCE,
+                                    row: None,
+                                    between: None,
+                                    across,
+                                }),
+                                line: None,
+                            });
+                            true
+                        }
+                        (Some(LayoutContent::Marker(marker)), Some(_)) => match &marker.kind {
+                            MarkerKind::Fermata(fermata) => {
+                                let place = match &marker.at {
+                                    MarkerPlace::Event { event, time, .. } => {
+                                        Some((Some(*event), time.clone()))
+                                    }
+                                    MarkerPlace::Time(time) => Some((None, time.clone())),
+                                    MarkerPlace::Unresolved => None,
+                                };
+                                let key = place
+                                    .as_ref()
+                                    .map(|(_, time)| {
+                                        ColumnKey::Timed(time.clone(), ColumnRole::Note)
+                                    })
+                                    .filter(|key| columns.contains_key(key));
+                                match (place, key) {
+                                    (Some((event, _)), Some(key)) => {
+                                        let info = column(&key);
+                                        let above = !fermata.inverted;
+                                        let name = fermata_glyph(fermata, above);
+                                        let b = metrics(name)
+                                            .expect("fermata metrics are bundled")
+                                            .bounding_box();
+                                        // Centred on its chord's heads or its rest.
+                                        let centre = note_centre(event, &event_stems, &event_rests);
+                                        let x = info.x + centre - (b.left.0 + b.right.0) * 0.5;
+                                        // Off its staff; a solver clears it of the ink
+                                        // under it once the system is set, as
+                                        // MuseScore's autoplace does.
+                                        let y = if above {
+                                            yo + STAFF_HEIGHT + FERMATA_OFFSET - b.bottom.0
+                                        } else {
+                                            yo - FERMATA_OFFSET - b.top.0
+                                        };
+                                        emit.glyph(
+                                            provenance,
+                                            name,
+                                            Point::new(x, y),
+                                            band_of(staff),
+                                            staff,
+                                            info.slot,
+                                        );
+                                        family.push(FamilyMark {
+                                            band: band_of(staff),
+                                            glyphs: vec![GlyphObjectId(provenance.stable_id.0)],
+                                            strokes: Vec::new(),
+                                            texts: Vec::new(),
+                                            room: Room::None,
+                                            placement: Some(Autoplace {
+                                                above,
+                                                order: PlaceOrder::Fermata,
+                                                min_distance: FERMATA_MIN_DISTANCE,
+                                                row: None,
+                                                between: None,
+                                                across: None,
+                                            }),
+                                            line: None,
+                                        });
+                                        true
+                                    }
+                                    _ => false,
+                                }
+                            }
+                            MarkerKind::Breath(_) | MarkerKind::Caesura(_) => {
+                                match breath_place(marker) {
+                                    Some((time, name)) => {
+                                        let info =
+                                            column(&ColumnKey::Timed(time, ColumnRole::Breath));
+                                        let b = metrics(name)
+                                            .expect("breath metrics are bundled")
+                                            .bounding_box();
+                                        let h = b.top.0 - b.bottom.0;
+                                        let below = matches!(
+                                            marker.at,
+                                            MarkerPlace::Event {
+                                                voice: VoicePlace::Lower,
+                                                ..
+                                            }
+                                        );
+                                        // A breath mark half a space off its staff, a
+                                        // caesura across its outer line, each ending at
+                                        // its column (`TLayout::layoutBreath`).
+                                        let bottom = match (&marker.kind, below) {
+                                            (MarkerKind::Caesura(_), false) => {
+                                                yo + STAFF_HEIGHT - h * 0.5
+                                            }
+                                            (MarkerKind::Caesura(_), true) => yo - h * 0.5,
+                                            (_, false) => yo + STAFF_HEIGHT + 0.5,
+                                            (_, true) => yo - 0.5 - h,
+                                        };
+                                        emit.glyph(
+                                            provenance,
+                                            name,
+                                            Point::new(info.x - b.right.0, bottom - b.bottom.0),
+                                            band_of(staff),
+                                            staff,
+                                            info.slot,
+                                        );
+                                        true
+                                    }
+                                    None => false,
+                                }
+                            }
+                            MarkerKind::Dynamic(_) => match dynamics.get(&provenance.stable_id.0) {
+                                Some(d) => {
+                                    let info = column(&d.key);
+                                    let band = band_of(staff);
+                                    let placement = Some(Autoplace {
+                                        above: d.above,
+                                        order: PlaceOrder::Dynamic,
+                                        min_distance: DYNAMIC_MIN_DISTANCE,
+                                        row: Some(Row {
+                                            id: chain_of(&mut chains, provenance.stable_id.0),
+                                            centre: d.baseline + DYNAMIC_CENTRE,
+                                        }),
+                                        between: staff
+                                            .and_then(|st| grand_neighbour(&grand, st, d.above))
+                                            .map(|n| band_of(Some(n))),
+                                        across: None,
+                                    });
+                                    let (glyphs, runs) = match &d.ink {
+                                        DynamicInk::Glyph { name, x } => {
+                                            emit.glyph(
+                                                provenance,
+                                                name,
+                                                Point::new(*x, d.baseline),
+                                                band,
+                                                staff,
+                                                info.slot,
+                                            );
+                                            (
+                                                vec![GlyphObjectId(provenance.stable_id.0)],
+                                                Vec::new(),
+                                            )
+                                        }
+                                        DynamicInk::Words(run) => {
+                                            texts.push(TextObject {
+                                                text: (**run).clone(),
+                                                horizontal_slot: info.slot,
+                                                vertical_band: band,
+                                            });
+                                            (Vec::new(), vec![run.id()])
+                                        }
+                                    };
+                                    family.push(FamilyMark {
+                                        band,
+                                        glyphs,
+                                        strokes: Vec::new(),
+                                        texts: runs,
+                                        room: Room::None,
+                                        placement,
+                                        line: None,
+                                    });
+                                    true
+                                }
+                                None => false,
+                            },
+                            _ => false,
+                        },
+                        _ => false,
+                    };
+                    if !drawn {
+                        emit.stroke(anchor(
+                            provenance,
+                            Point::new(default_x, yo),
+                            band_of(staff),
+                        ));
+                    }
+                }
+                TypedObjectId::LyricLine(_) => {
+                    // A syllable under its note in its verse's row, placed
+                    // again by a solver once its system is set; a hyphen to
+                    // the next syllable of its verse where its word goes on,
+                    // and a melisma line to its last note where it extends.
+                    let drawn = match (content, staff) {
+                        (Some(LayoutContent::Lyric(lyric)), Some(_)) => {
+                            match syllables.get(&(lyric.event, lyric.verse)) {
+                                Some(syllable) => {
+                                    let info = column(&syllable.key);
+                                    let band = band_of(staff);
+                                    let baseline = syllable.run.origin.y.0;
+                                    let placement = Some(Autoplace {
+                                        above: false,
+                                        order: PlaceOrder::Lyric,
+                                        min_distance: LYRIC_MIN_DISTANCE,
+                                        row: Some(Row {
+                                            id: u128::from(lyric.verse),
+                                            centre: baseline,
+                                        }),
+                                        between: None,
+                                        across: None,
+                                    });
+                                    let hyphen = matches!(
+                                        lyric.syllabic,
+                                        epiphany_core::Syllabic::Begin
+                                            | epiphany_core::Syllabic::Middle
+                                    );
+                                    texts.push(TextObject {
+                                        text: syllable.run.clone(),
+                                        horizontal_slot: info.slot,
+                                        vertical_band: band,
+                                    });
+                                    family.push(FamilyMark {
+                                        band,
+                                        glyphs: Vec::new(),
+                                        strokes: Vec::new(),
+                                        texts: vec![syllable.run.id()],
+                                        room: Room::Verse {
+                                            verse: lyric.verse,
+                                            hyphen,
+                                        },
+                                        placement,
+                                        line: None,
+                                    });
+                                    let next = lyric
+                                        .next
+                                        .as_ref()
+                                        .and_then(|(e, _)| syllables.get(&(*e, lyric.verse)))
+                                        .filter(|_| hyphen);
+                                    let end = lyric.melisma_end.as_ref().and_then(|(e, t)| {
+                                        let key = ColumnKey::Timed(t.clone(), ColumnRole::Note);
+                                        let info = columns.get(&key)?;
+                                        Some((
+                                            key,
+                                            info.x
+                                                + note_right(Some(*e), &event_stems, &event_rests),
+                                        ))
+                                    });
+                                    let lines = [
+                                        next.map(|n| {
+                                            (
+                                                FamilyLine::Hyphen,
+                                                syllable.right + LYRIC_DASH_PAD,
+                                                n.left - LYRIC_DASH_PAD,
+                                                baseline + LYRIC_DASH_Y,
+                                                n.key.clone(),
+                                                1u128,
+                                            )
+                                        }),
+                                        end.map(|(key, x)| {
+                                            (
+                                                FamilyLine::Melisma,
+                                                syllable.right + LYRIC_MELISMA_PAD,
+                                                x,
+                                                baseline,
+                                                key,
+                                                2u128,
+                                            )
+                                        }),
+                                    ];
+                                    for (kind, x0, x1, y, key, k) in lines.into_iter().flatten() {
+                                        let stroke = line_stroke(
+                                            Provenance::synthesized(
+                                                provenance.source,
+                                                SynthesisKind::Registered(LYRIC_LINE_SYNTHESIS),
+                                                SynthesisInstanceKey(k),
+                                                provenance.dependencies.clone(),
+                                            ),
+                                            // Each end rides its own column, so the
+                                            // two may cross here where the columns
+                                            // stand closer than their syllables,
+                                            // which spacing sets apart.
+                                            Point::new(x0, y),
+                                            Point::new(x1, y),
+                                            LYRIC_LINE_WIDTH,
+                                            band,
+                                        );
+                                        hairpin_anchors.push((
+                                            stroke.id(),
+                                            info.slot,
+                                            column(&key).slot,
+                                        ));
+                                        family.push(FamilyMark {
+                                            band,
+                                            glyphs: Vec::new(),
+                                            strokes: vec![stroke.id()],
+                                            texts: Vec::new(),
+                                            room: Room::None,
+                                            placement,
+                                            line: Some(kind),
+                                        });
+                                        emit.stroke(stroke);
+                                    }
+                                    true
+                                }
+                                None => false,
+                            }
+                        }
+                        _ => false,
+                    };
+                    if !drawn {
+                        emit.stroke(anchor(
+                            provenance,
+                            Point::new(default_x, yo),
+                            band_of(staff),
+                        ));
+                    }
+                }
+                TypedObjectId::Spanner(_) => {
+                    // A hairpin from its start's column to before its end's,
+                    // clear of a dynamic at either end, its legs opening from
+                    // its axis, placed again by a solver once its system is
+                    // set. Any other line, or one with no staff, keeps a traced
+                    // anchor.
+                    let drawn = match (content, staff) {
+                        (
+                            Some(LayoutContent::Spanner(SpannerContent {
+                                kind: SpannerKind::Hairpin(direction),
+                                start,
+                                end,
+                            })),
+                            Some(st),
+                        ) => {
+                            let ends = place_time(start)
+                                .zip(place_time(end))
+                                .and_then(|(t0, t1)| {
+                                    let first = first_column(&columns, &t0, true)?;
+                                    let last = first_column(&columns, &t1, false)?;
+                                    Some((t0, t1, first, last))
+                                })
+                                .filter(|(_, _, first, last)| last.1.x > first.1.x);
+                            match ends {
+                                Some((t0, t1, (_, first), (_, last))) => {
+                                    let mut x0 = first.x;
+                                    if let Some(&(_, right)) = dynamic_ink.get(&(st, note_at(t0))) {
+                                        x0 = x0.max(right + HAIRPIN_DYNAMIC_GAP);
+                                    }
+                                    let mut x1 = last.x - HAIRPIN_END_INSET;
+                                    if let Some(&(left, _)) = dynamic_ink.get(&(st, note_at(t1))) {
+                                        // Short of a dynamic it meets.
+                                        x1 = x1.min(left - HAIRPIN_DYNAMIC_GAP);
+                                    }
+                                    let above = vocal.contains(&st);
+                                    let axis = if above {
+                                        yo + STAFF_HEIGHT + HAIRPIN_POS
+                                    } else {
+                                        yo - HAIRPIN_POS
+                                    };
+                                    let crescendo = *direction == HairpinDirection::Crescendo;
+                                    let h = HAIRPIN_HEIGHT * 0.5;
+                                    let (narrow, wide) =
+                                        if crescendo { (x0, x1) } else { (x1, x0) };
+                                    let band = band_of(staff);
+                                    let legs: Vec<Stroke> = [h, -h]
+                                        .into_iter()
+                                        .enumerate()
+                                        .map(|(k, dy)| {
+                                            let prov = if k == 0 {
+                                                provenance.clone()
+                                            } else {
+                                                Provenance::synthesized(
+                                                    provenance.source,
+                                                    SynthesisKind::Registered(HAIRPIN_SYNTHESIS),
+                                                    SynthesisInstanceKey(k as u128),
+                                                    provenance.dependencies.clone(),
+                                                )
+                                            };
+                                            let (tip, mouth) = (
+                                                Point::new(narrow, axis),
+                                                Point::new(wide, axis + dy),
+                                            );
+                                            let (from, to) = if crescendo {
+                                                (tip, mouth)
+                                            } else {
+                                                (mouth, tip)
+                                            };
+                                            line_stroke(prov, from, to, HAIRPIN_LINE_WIDTH, band)
+                                        })
+                                        .collect();
+                                    for leg in &legs {
+                                        hairpin_anchors.push((leg.id(), first.slot, last.slot));
+                                    }
+                                    family.push(FamilyMark {
+                                        band,
+                                        glyphs: Vec::new(),
+                                        strokes: legs.iter().map(Stroke::id).collect(),
+                                        texts: Vec::new(),
+                                        room: Room::None,
+                                        placement: Some(Autoplace {
+                                            above,
+                                            order: PlaceOrder::Dynamic,
+                                            min_distance: HAIRPIN_MIN_DISTANCE,
+                                            row: Some(Row {
+                                                id: chain_of(&mut chains, provenance.stable_id.0),
+                                                centre: axis,
+                                            }),
+                                            between: grand_neighbour(&grand, st, above)
+                                                .map(|n| band_of(Some(n))),
+                                            across: None,
+                                        }),
+                                        line: Some(FamilyLine::Hairpin(HairpinShape {
+                                            crescendo,
+                                            axis,
+                                        })),
+                                    });
+                                    for leg in legs {
+                                        emit.stroke(leg);
+                                    }
+                                    true
+                                }
+                                None => false,
+                            }
+                        }
+                        (
+                            Some(LayoutContent::Spanner(SpannerContent {
+                                kind: SpannerKind::TrillExtension,
+                                start,
+                                end,
+                            })),
+                            Some(_),
+                        ) => {
+                            // A trill line from its note's column to a space
+                            // before where its last note ends: the trill sign,
+                            // then wiggles a solver sets piece by piece, above
+                            // in a first or only voice and below in a second
+                            // (`TLayout::layoutTrillSegment`, `SLine::linePos`).
+                            let t1 = match end {
+                                MarkerPlace::Event { end, .. } => end.clone(),
+                                MarkerPlace::Time(time) => Some(time.clone()),
+                                MarkerPlace::Unresolved => None,
+                            };
+                            let ends = place_time(start)
+                                .zip(t1)
+                                .and_then(|(t0, t1)| {
+                                    let first = first_column(&columns, &t0, true)?;
+                                    let last = first_column(&columns, &t1, false)?;
+                                    Some((first, last))
+                                })
+                                .filter(|(first, last)| last.1.x > first.1.x);
+                            match ends {
+                                Some(((_, first), (_, last))) => {
+                                    let above = !matches!(
+                                        start,
+                                        MarkerPlace::Event {
+                                            voice: VoicePlace::Lower,
+                                            ..
+                                        }
+                                    );
+                                    let y = if above {
+                                        yo + STAFF_HEIGHT + TRILL_ABOVE
+                                    } else {
+                                        yo - TRILL_BELOW
+                                    };
+                                    let band = band_of(staff);
+                                    let sign = Provenance::synthesized(
+                                        provenance.source,
+                                        SynthesisKind::Registered(TRILL_SYNTHESIS),
+                                        SynthesisInstanceKey(0),
+                                        provenance.dependencies.clone(),
+                                    );
+                                    emit.glyph(
+                                        &sign,
+                                        TRILL_SIGN,
+                                        Point::new(first.x, y),
+                                        band,
+                                        staff,
+                                        first.slot,
+                                    );
+                                    // The trill's accidental over or under its
+                                    // sign, small, 0.35 off it, as over the
+                                    // ornament it stands for.
+                                    let mut runs = Vec::new();
+                                    let event = match start {
+                                        MarkerPlace::Event { event, .. } => Some(*event),
+                                        _ => None,
+                                    };
+                                    let accidental = event
+                                        .and_then(|e| mark_sources.get(&e))
+                                        .and_then(|(_, ornaments)| {
+                                            ornaments.iter().find(|o| o.kind == OrnamentKind::Trill)
+                                        })
+                                        .and_then(|o| o.accidental_above.as_ref())
+                                        .and_then(crate::engrave_theory::accidental_glyph);
+                                    let small = accidental.and_then(|name| {
+                                        Some((
+                                            marks::accidental_codepoint(name)?,
+                                            metrics(name)?.bounding_box(),
+                                            metrics(TRILL_SIGN)?.bounding_box(),
+                                            event.and_then(|e| event_provenance.get(&e))?,
+                                        ))
+                                    });
+                                    if let Some((codepoint, a, b, owner)) = small {
+                                        let x = first.x + (b.left.0 + b.right.0) * 0.5
+                                            - 0.6 * (a.left.0 + a.right.0) * 0.5;
+                                        let ay = y + b.top.0 + 0.35 - 0.6 * a.bottom.0;
+                                        let part = NoteMarkPart::Accidental {
+                                            tag: NoteMarkPart::ornament_tag(OrnamentKind::Trill),
+                                            above: true,
+                                        };
+                                        let run = symbol_run(
+                                            Provenance::synthesized(
+                                                owner.source,
+                                                SynthesisKind::Registered(MARK_SYNTHESIS),
+                                                part.key(),
+                                                owner.dependencies.clone(),
+                                            ),
+                                            &[Symbol {
+                                                codepoint,
+                                                at: SymbolPlace::Corner(Point::new(
+                                                    0.6 * a.left.0,
+                                                    0.6 * a.bottom.0,
+                                                )),
+                                                scale: 0.6,
+                                                turn: Turn::None,
+                                            }],
+                                            Point::new(x, ay),
+                                        );
+                                        runs.push(run.id());
+                                        texts.push(TextObject {
+                                            text: run,
+                                            horizontal_slot: first.slot,
+                                            vertical_band: band,
+                                        });
+                                    }
+                                    // The wiggles' line, from after the sign to
+                                    // its end, which a solver fills.
+                                    let carrier = line_stroke(
+                                        provenance.clone(),
+                                        Point::new(first.x + glyph_advance(TRILL_SIGN), y),
+                                        Point::new(last.x - TRILL_END_INSET, y),
+                                        TRILL_CARRIER_WIDTH,
+                                        band,
+                                    );
+                                    hairpin_anchors.push((carrier.id(), first.slot, last.slot));
+                                    family.push(FamilyMark {
+                                        band,
+                                        glyphs: vec![GlyphObjectId(sign.stable_id.0)],
+                                        strokes: vec![carrier.id()],
+                                        texts: runs,
+                                        room: Room::None,
+                                        placement: Some(Autoplace {
+                                            above,
+                                            order: PlaceOrder::Trill,
+                                            min_distance: TRILL_MIN_DISTANCE,
+                                            row: None,
+                                            between: None,
+                                            across: None,
+                                        }),
+                                        line: Some(FamilyLine::Trill),
+                                    });
+                                    emit.stroke(carrier);
+                                    true
+                                }
+                                None => false,
+                            }
+                        }
+                        _ => false,
+                    };
+                    if !drawn {
+                        emit.stroke(anchor(
+                            provenance,
+                            Point::new(default_x, yo),
+                            band_of(staff),
+                        ));
+                    }
+                }
                 TypedObjectId::Slur(_) => {
                     // A slur engraves to a cubic-bézier curve arcing between its
                     // two endpoint columns. No curve is honest — the traced
@@ -3064,6 +5097,7 @@ pub fn try_to_constrained(
                             staff
                                 .and_then(|st| staff_notes.get(&st))
                                 .unwrap_or(&no_notes),
+                            &event_stems,
                         ),
                         _ => None,
                     };
@@ -3191,6 +5225,60 @@ pub fn try_to_constrained(
                 });
             }
         }
+        // A run riding a column no glyph holds (a mark where no note of any
+        // staff starts) rides the nearest column before it that holds one,
+        // or else the first, its place kept, and a frame about it with it; a
+        // mark at its measure's start whose barline column holds no glyph
+        // stands as at a system's start.
+        let held = |slot: &SpringSlotId| column_members.get(slot).is_some_and(|m| !m.is_empty());
+        let held_columns: Vec<(&ColumnKey, SpringSlotId)> = columns
+            .iter()
+            .filter(|(_, info)| held(&info.slot))
+            .map(|(key, info)| (key, info.slot))
+            .collect();
+        let key_of: BTreeMap<SpringSlotId, &ColumnKey> =
+            columns.iter().map(|(key, info)| (info.slot, key)).collect();
+        let nearest = |slot: SpringSlotId| -> SpringSlotId {
+            if held(&slot) {
+                return slot;
+            }
+            let Some(key) = key_of.get(&slot) else {
+                return slot;
+            };
+            held_columns
+                .iter()
+                .rev()
+                .find(|(k, _)| *k <= *key)
+                .or_else(|| held_columns.first())
+                .map_or(slot, |(_, held)| *held)
+        };
+        for text in &mut texts[text_start..] {
+            text.horizontal_slot = nearest(text.horizontal_slot);
+        }
+        for anchor in &mut hairpin_anchors {
+            if anchor.1 == anchor.2 {
+                let slot = nearest(anchor.1);
+                (anchor.1, anchor.2) = (slot, slot);
+            }
+        }
+        for mark in &mut family[family_start..] {
+            if let Some(across) = mark.placement.as_mut().and_then(|p| p.across.as_mut()) {
+                across.barline = across.barline.filter(|slot| held(slot));
+            }
+        }
+        // A hairpin's legs ride the columns of its ends where both hold
+        // glyphs, and map as a whole otherwise.
+        let realized =
+            |slot: &SpringSlotId| column_members.get(slot).is_some_and(|m| !m.is_empty());
+        for (primitive, start, end) in hairpin_anchors {
+            if realized(&start) && realized(&end) {
+                span_anchors.push(SpanAnchor {
+                    primitive,
+                    start,
+                    end,
+                });
+            }
+        }
 
         // One spring slot per glyph-bearing column, in column order (so the solver
         // accumulates a monotonic x), members = the column's glyphs. Stroke-only
@@ -3239,6 +5327,8 @@ pub fn try_to_constrained(
                         + gap
                 })
             };
+            // A breath mark's column keeps its padding after the mark's right
+            // edge, and no more.
             let preferred = match key {
                 ColumnKey::Lead => reserve(LEAD_GAP),
                 ColumnKey::Timed(_, ColumnRole::Signature) => reserve(SIGNATURE_GAP),
@@ -3246,9 +5336,13 @@ pub fn try_to_constrained(
                 ColumnKey::Timed(_, ColumnRole::Barline) if key_change_reach.contains_key(key) => {
                     reserve(CLEF_CHANGE_GAP)
                 }
+                ColumnKey::Timed(_, ColumnRole::Breath) => reserve(BREATH_GAP),
                 _ => 0.0,
             }
-            .max(COLUMN_PREFERRED_WIDTH);
+            .max(match key {
+                ColumnKey::Timed(_, ColumnRole::Breath) => 0.0,
+                _ => COLUMN_PREFERRED_WIDTH,
+            });
             let (preferred, stretch) = match durations.get(key) {
                 Some(&width) => (width, 1.0),
                 None if info.note_column => (preferred, 1.0),
@@ -3499,6 +5593,7 @@ pub fn try_to_constrained(
         glyphs,
         strokes,
         curves,
+        texts,
         vertical_bands,
         constraints,
         break_origins,
@@ -3509,6 +5604,8 @@ pub fn try_to_constrained(
         system_leads,
         staff_groups,
         cross_staff_beams,
+        family,
+        endings,
     })
 }
 
@@ -3597,6 +5694,8 @@ struct StemSeg {
     voiced: Option<bool>,
     /// Where the stem attaches, as an x offset from the column's notehead x.
     x_off: f32,
+    /// The notehead glyph its heads draw, whose edges the stem attaches to.
+    head: &'static str,
     /// How far its voice stands right of the column's x, beside another
     /// voice's head a second away.
     dx: f32,
@@ -3615,11 +5714,13 @@ struct StemSeg {
 /// it must clear, and which way its stem points.
 #[derive(Clone, Copy)]
 struct ColumnInk {
-    /// Highest and lowest ink, noteheads and stem alike, in staff spaces.
+    /// Highest and lowest ink, noteheads and stem alike, in staff spaces; a
+    /// two-note tremolo's stemless note reaches its strokes as a stem would.
     top: f32,
     bottom: f32,
     /// `Some(true)` when the column's stem is drawn and points up; `None` when
-    /// the column draws no stem (a whole note).
+    /// the column draws no stem (a whole note), but a two-note tremolo's
+    /// stemless note, which keeps the way its pair turns it.
     stem_up: Option<bool>,
     /// The notehead's horizontal centre, as an offset from the column's x.
     centre: f32,
@@ -3701,6 +5802,10 @@ fn clear_rests(rests: &mut BTreeMap<EventId, Vec<RestSeg>>, sounding: &[Sounding
 /// Each staff column's ink of the voices visiting its staff, each box with
 /// the stem direction of the component it belongs to.
 type VisitorInk = BTreeMap<(Option<StaffId>, ColumnKey), Vec<(InkBox, bool)>>;
+
+/// Each staff column's accidentals and ledger lines, each with the event
+/// whose head draws it, which another chord's arpeggio stands clear of.
+type ColumnOthers = BTreeMap<(Option<StaffId>, ColumnKey), Vec<(EventId, marks::OtherInk)>>;
 
 /// Moves each drawn rest of a staff's own voices whose ink (its glyph and
 /// dots) meets the ink of a voice visiting the staff from its home on another
@@ -3856,13 +5961,16 @@ enum ColumnKey {
     End,
 }
 
-/// Within one musical time: a clef change taking effect there, then the
-/// barline ending the measure before it, then the signatures the measure
-/// starting there introduces, then its notes. A system break falls between
-/// the barline and what follows it, so a clef change at a measure's start
-/// ends the system before it, as a courtesy, when that measure opens the next.
+/// Within one musical time: a breath mark after the note whose sound ends
+/// there, a clef change taking effect there, then the barline ending the
+/// measure before it, then the signatures the measure starting there
+/// introduces, then its notes. A system break falls between the barline and
+/// what follows it, so a clef change at a measure's start ends the system
+/// before it, as a courtesy, when that measure opens the next.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum ColumnRole {
+    /// A breath mark or caesura, where the note before it ends.
+    Breath,
     Clef,
     Barline,
     Signature,
@@ -4214,6 +6322,7 @@ fn slur_curve(
     columns: &BTreeMap<ColumnKey, ColumnInfo>,
     band: VerticalBandId,
     notes: &BTreeMap<ColumnKey, ColumnInk>,
+    stems: &BTreeMap<EventId, Vec<StemSeg>>,
 ) -> Option<Curve> {
     let start_key = slur_endpoint_key(&slur.start)?;
     let end_key = slur_endpoint_key(&slur.end)?;
@@ -4241,10 +6350,31 @@ fn slur_curve(
         return None;
     }
 
-    // Side: an authored direction wins; `Auto` goes opposite the stems.
+    // Side: an authored direction, or one its voices give, wins. `Auto` goes
+    // as MuseScore's `SlurTieLayout::computeUp` sets it: above where its
+    // voice's notes turn both ways between its ends (`isDirectionMixture`),
+    // else opposite its first note's direction, a stemless note's as its stem
+    // would turn. A slur starting on no note of a staff's own voice goes
+    // opposite the stems in its span.
+    let turns: Vec<bool> = slur
+        .chords
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| stems.get(e).map(|segs| (i, segs)))
+        .flat_map(|(i, segs)| {
+            let last = i + 1 == slur.chords.len() && i > 0;
+            segs.iter()
+                .filter(move |seg| !last || seg.comp == 0)
+                .map(|seg| seg.up)
+        })
+        .collect();
     let above = match slur.direction {
         SlurDirection::Below => false,
         SlurDirection::Above => true,
+        SlurDirection::Auto if !turns.is_empty() => {
+            let first = turns[0];
+            turns.iter().any(|&up| up != first) || !first
+        }
         SlurDirection::Auto => {
             let ups = spanned
                 .iter()
@@ -4555,6 +6685,92 @@ fn components_of(
         .take(if implicit { 1 } else { usize::MAX })
 }
 
+/// Each event's next in its voice: a region lists a voice's events after it,
+/// in order.
+fn next_in_voice(objects: &[crate::logical::LayoutObject]) -> BTreeMap<EventId, EventId> {
+    let mut voice_events: BTreeMap<epiphany_core::VoiceId, Vec<EventId>> = BTreeMap::new();
+    let mut current_voice: Option<epiphany_core::VoiceId> = None;
+    for object in objects {
+        match object.provenance().source {
+            TypedObjectId::Voice(voice) => current_voice = Some(voice),
+            TypedObjectId::Event(eid) => {
+                if let Some(voice) = current_voice {
+                    voice_events.entry(voice).or_default().push(eid);
+                }
+            }
+            _ => {}
+        }
+    }
+    voice_events
+        .values()
+        .flat_map(|events| events.windows(2).map(|pair| (pair[0], pair[1])))
+        .collect()
+}
+
+/// The members of every two-note tremolo: each note or unpitched note
+/// carrying one and the next of its voice, where that is a note too.
+fn tremolo_members(
+    objects: &[crate::logical::LayoutObject],
+    next_in_voice: &BTreeMap<EventId, EventId>,
+) -> BTreeSet<EventId> {
+    let notes: BTreeMap<EventId, &[EventMark]> = objects
+        .iter()
+        .filter_map(|object| {
+            let TypedObjectId::Event(eid) = object.provenance().source else {
+                return None;
+            };
+            match object.content() {
+                LayoutContent::Note(note) => Some((eid, note.marks.as_slice())),
+                LayoutContent::Unpitched(unpitched) => Some((eid, unpitched.marks.as_slice())),
+                _ => None,
+            }
+        })
+        .collect();
+    notes
+        .iter()
+        .filter(|(_, marks)| {
+            marks
+                .iter()
+                .any(|m| matches!(m, EventMark::TremoloWithNext { .. }))
+        })
+        .filter_map(|(eid, _)| {
+            let next = next_in_voice
+                .get(eid)
+                .filter(|next| notes.contains_key(next))?;
+            Some([*eid, *next])
+        })
+        .flatten()
+        .collect()
+}
+
+/// Whether component `comp` of `event` is drawn one value longer than it
+/// sounds: a two-note tremolo's member, decomposed, in a tuplet or not. A
+/// tuplet's ratio is its own, the importer dividing a pair's 2:1 out of the
+/// time modification it reads it from.
+fn written_longer(
+    members: &BTreeSet<EventId>,
+    event: EventId,
+    components: &[crate::logical::PlacedComponent],
+    comp: usize,
+) -> bool {
+    members.contains(&event) && comp < components.len()
+}
+
+/// The notehead a component is drawn with and the value its stem, flag and
+/// beams are cut by: its own, or, `longer`, its written value one longer, as
+/// MuseScore keeps a two-note tremolo's notes, its dots kept and its sounding
+/// duration unchanged (`Chord::setTremoloTwoChord`). A sounding whole is
+/// written a breve, which takes no stem or flag, as a whole takes none.
+fn drawn_value(value: NoteValue, longer: bool) -> (&'static str, NoteValue) {
+    if !longer {
+        return (notehead_glyph(value), value);
+    }
+    match longer_value(value) {
+        Some(written) => (notehead_glyph(written), written),
+        None => (BREVE_NOTEHEAD, NoteValue::Whole),
+    }
+}
+
 /// The stem direction a voice beside another gives: up for an upper voice,
 /// down for a lower; none alone.
 fn voiced_up(place: VoicePlace) -> Option<bool> {
@@ -4572,7 +6788,8 @@ fn voiced_up(place: VoicePlace) -> Option<bool> {
 /// shorter takes its flag at that tip, the stem lengthened to the flag's far
 /// edge where its ink passes the tip. `fallback` is where a head-less
 /// component's stem would sit. A voice beside another (`voiced`) turns the
-/// stem its own way instead.
+/// stem its own way instead. A stem carrying a one-note `tremolo` is as long
+/// as it needs to hold it ([`tremolo_stem_min`]).
 #[allow(clippy::too_many_arguments)]
 fn note_stem(
     value: NoteValue,
@@ -4583,6 +6800,7 @@ fn note_stem(
     key: ColumnKey,
     comp: usize,
     voiced: Option<bool>,
+    tremolo: Option<&'static str>,
 ) -> (StemSeg, ColumnInk) {
     let ys: Vec<f32> = steps.iter().map(|step| step_to_y(yo, *step)).collect();
     let drawn = has_stem(value) && !ys.is_empty();
@@ -4603,17 +6821,31 @@ fn note_stem(
     } else {
         head_box.map_or(0.0, |b| b.left.0)
     };
-    let tip = if up {
-        (top + STEM_LENGTH).max(middle)
-    } else {
-        (bottom - STEM_LENGTH).min(middle)
-    };
     let direction = if up {
         epiphany_core::StemDirection::Up
     } else {
         epiphany_core::StemDirection::Down
     };
     let flag = drawn.then(|| flag_glyph(value, direction)).flatten();
+    let length = match tremolo {
+        Some(glyph) => {
+            let outside = tremolo_outside(yo, if up { top } else { bottom }, up);
+            STEM_LENGTH.max(tremolo_stem_min(
+                glyph,
+                up,
+                outside,
+                flag,
+                flag_count(value),
+                false,
+            ))
+        }
+        None => STEM_LENGTH,
+    };
+    let tip = if up {
+        (top + length).max(middle)
+    } else {
+        (bottom - length).min(middle)
+    };
     let flag_box = flag.and_then(metrics).map(|m| m.bounding_box());
     // A 32nd's or shorter flag reaches back past the tip, and the stem is
     // lengthened to meet its far edge; an eighth's or sixteenth's ends at the
@@ -4653,6 +6885,7 @@ fn note_stem(
         up,
         voiced,
         x_off,
+        head: name,
         dx: 0.0,
         tip,
         end,
@@ -4660,6 +6893,63 @@ fn note_stem(
         beams: flag_count(value),
     };
     (seg, ink)
+}
+
+/// The least length, from the head nearest its end, of a stem carrying the
+/// one-note tremolo `glyph`, as MuseScore's `StemLayout::calcMinStemLength`
+/// counts it in quarter spaces: the tremolo's height, the 0.5 it keeps from
+/// the stem's end (`tremoloOutSidePadding`) and the 1.25 from that head
+/// (`tremoloNoteSidePadding`), or `outside` quarters where the head stands
+/// outside the staff on the stem's side ([`tremolo_outside`]); past a
+/// `flag`, the flag's height less two quarters and the cutout its curl
+/// leaves (`hookOffset`, at most 11, less 5 up or 7 down, 2 less again for
+/// two flags or more), so the tremolo stands clear of the flag as
+/// `TremoloLayout::layoutOneNoteTremolo` sets it; in a beam of `beams`
+/// levels, the beams' height on top (3 quarters each, less 1). MuseScore
+/// keeps a beamed stem at least an inner length besides (10 quarters for one
+/// beam, 7 for three or more), which never binds here: Bravura's single
+/// stroke and paddings alone make 10.
+fn tremolo_stem_min(
+    glyph: &str,
+    up: bool,
+    outside: i32,
+    flag: Option<&str>,
+    beams: u8,
+    beamed: bool,
+) -> f32 {
+    let height = |name: &str| {
+        metrics(name).map_or(0.0, |m| {
+            let b = m.bounding_box();
+            b.top.0 - b.bottom.0
+        })
+    };
+    let mut quarters = (height(glyph) * 4.0).ceil() as i32 + 2 + outside.max(5);
+    if let Some(flag) = flag.filter(|_| !beamed) {
+        let hook = ((height(flag) * 4.0).floor() as i32 - 2).min(11);
+        let cutout = if up { 5 } else { 7 } - if beams >= 2 { 2 } else { 0 };
+        quarters += hook - cutout;
+    }
+    if beamed {
+        quarters += i32::from(beams) * 3 - 1;
+    }
+    quarters as f32 / 4.0
+}
+
+/// How far, in quarter spaces, the head nearest a stem's end, at `y`,
+/// stands outside its staff on the stem's side, as
+/// `StemLayout::calcMinStemLength` reads it: a down stem's head more than
+/// half a space over the top line by its distance above that line, an up
+/// stem's head more than a space under the bottom line by its distance
+/// under the line a space above that; zero otherwise.
+fn tremolo_outside(yo: f32, y: f32, up: bool) -> i32 {
+    let line = ((yo + STAFF_HEIGHT - y) * 4.0).round() as i32;
+    if !up && line < -2 {
+        -line
+    } else if up && line > 20 {
+        line - 16
+    } else {
+        0
+    }
 }
 
 /// Folds one component's ink into its staff's column record.
@@ -5107,6 +7397,8 @@ struct TupletInk<'a> {
     voices: &'a BTreeMap<EventId, VoicePlace>,
     beams: &'a BTreeSet<Vec<EventId>>,
     staff: StaffId,
+    /// The staff's bottom line.
+    yo: f32,
 }
 
 /// A tuplet's marks: its number's digit glyphs and where they stand, the slot
@@ -5121,7 +7413,9 @@ struct TupletMarks {
 /// A tuplet's number and bracket, from its first member's column to its last
 /// member's, standing `TUPLET_CLEARANCE` clear of the ink of every column
 /// between: above for an upper voice, below for a lower, and alone on the
-/// side most of its stems point (above when none has a stem). The number
+/// side most of its stems point (above when none has a stem); and, its ends
+/// sharing its staff, its bracket's line, where the number is centred, at
+/// least `TUPLET_OUT_OF_STAFF` outside the staff, bracketed or not. The number
 /// shows the ratio's `actual` term, centered on the span; the bracket, with
 /// a gap for the number and its ends hooked toward the notes, is left out
 /// when the members are notes beamed together as one group. The tuplet's
@@ -5217,9 +7511,9 @@ fn tuplet_marks(tuplet: &crate::logical::TupletContent, at: &TupletInk) -> Optio
     let width: f32 = boxes.iter().map(|b| b.right.0 - b.left.0).sum();
     let height = boxes.iter().map(|b| b.top.0).fold(0.0, f32::max);
     let base = if above {
-        top + TUPLET_CLEARANCE
+        (top + TUPLET_CLEARANCE).max(at.yo + STAFF_HEIGHT + TUPLET_OUT_OF_STAFF - height / 2.0)
     } else {
-        bottom - TUPLET_CLEARANCE
+        (bottom - TUPLET_CLEARANCE).min(at.yo - TUPLET_OUT_OF_STAFF + height / 2.0)
     };
     let baseline = if above { base } else { base - height };
     let mut x = (x0 + x1) / 2.0 - width / 2.0;
@@ -5312,6 +7606,106 @@ fn tie_above(
         _ if n > 1 && 2 * i + 1 < n => true,
         _ if n > 1 && 2 * i + 1 > n => false,
         _ => stem_up.map_or(y >= yo + STAFF_HEIGHT * 0.5, |up| !up),
+    }
+}
+
+/// The heads a tie between two events joins, highest first: each pitch's
+/// last head to the head its next event starts with (an unpitched note's
+/// alike), with the side it arcs on: a lone tie from a single note by
+/// [`lone_tie_side`] where Gould's rules reach it, else by `tie_above`, by
+/// its start event's voice and last stem. `chords` holds each event's heads'
+/// `y` by component.
+fn tie_joins<'h>(
+    tie: &TieContent,
+    pitch_heads: &'h BTreeMap<PitchId, Vec<Head>>,
+    unpitched_heads: &'h BTreeMap<EventId, Vec<Head>>,
+    stems: &BTreeMap<EventId, Vec<StemSeg>>,
+    voices: &BTreeMap<EventId, VoicePlace>,
+    chords: &BTreeMap<(EventId, usize), Vec<f32>>,
+    yo: f32,
+) -> Vec<(&'h Head, &'h Head, bool)> {
+    let mut joins: Vec<(&Head, &Head)> = Vec::new();
+    if tie.pairs.is_empty() {
+        let a = unpitched_heads.get(&tie.start).and_then(|h| h.last());
+        let b = unpitched_heads.get(&tie.end).and_then(|h| h.first());
+        joins.extend(a.zip(b));
+    }
+    for (a, b) in &tie.pairs {
+        let a = pitch_heads.get(a).and_then(|h| h.last());
+        let b = pitch_heads.get(b).and_then(|h| h.first());
+        joins.extend(a.zip(b));
+    }
+    joins.sort_by(|x, y| y.0.y.total_cmp(&x.0.y));
+    let stem_up = stems
+        .get(&tie.start)
+        .and_then(|segs| segs.last())
+        .filter(|seg| seg.drawn)
+        .map(|seg| seg.up);
+    let voice = voices.get(&tie.start).copied();
+    let n = joins.len();
+    let single =
+        |event: EventId, comp: usize| chords.get(&(event, comp)).is_some_and(|ys| ys.len() == 1);
+    let up = |event: EventId, comp: usize| {
+        stems
+            .get(&event)
+            .and_then(|segs| segs.iter().find(|seg| seg.comp == comp))
+            .map(|seg| seg.up)
+    };
+    joins
+        .into_iter()
+        .enumerate()
+        .map(|(i, (a, b))| {
+            let lone = (n == 1 && single(tie.start, a.comp))
+                .then(|| {
+                    lone_tie_side(
+                        (voice, voices.get(&tie.end).copied()),
+                        single(tie.end, b.comp),
+                        (up(tie.start, a.comp), up(tie.end, b.comp)),
+                        a.y,
+                        yo,
+                    )
+                })
+                .flatten();
+            (
+                a,
+                b,
+                lone.unwrap_or_else(|| tie_above(voice, i, n, stem_up, a.y, yo)),
+            )
+        })
+        .collect()
+}
+
+/// The side a lone tie arcs on, one leaving a single note, where Gould's
+/// rules for ties reach past [`tie_above`]'s (D100 Q3), `None` elsewhere:
+/// from a note alone (its voice neither upper nor lower) into two-part
+/// writing, as the part it joins, the upper part above and the lower below
+/// (*Behind Bars*, p. 67, where the upper part's ties curve up and the
+/// lower part's down); between two single notes alone whose
+/// stems, drawn or as they would turn, go opposite ways, away from the
+/// middle line, and above on it (p. 64, where ties between stems turned
+/// opposite ways curve away from the middle line, and a tie between
+/// stemless notes is set as though they had stems). MuseScore sets a tie
+/// of the first rule so (`SlurTieLayout::calculateDirection`, by the end
+/// chord's direction where its staff shows voices) and every tie of the
+/// second above, the practice Gould names to avoid; LilyPond sets the second
+/// by staff position, as Gould does, and the first by its start's voice.
+fn lone_tie_side(
+    (start, end): (Option<VoicePlace>, Option<VoicePlace>),
+    end_single: bool,
+    (start_up, end_up): (Option<bool>, Option<bool>),
+    y: f32,
+    yo: f32,
+) -> Option<bool> {
+    if matches!(start, Some(VoicePlace::Upper | VoicePlace::Lower)) {
+        return None;
+    }
+    match end {
+        Some(VoicePlace::Upper) => Some(true),
+        Some(VoicePlace::Lower) => Some(false),
+        _ => match (start_up, end_up) {
+            (Some(a), Some(b)) if a != b && end_single => Some(y >= yo + STAFF_HEIGHT * 0.5 - 1e-3),
+            _ => None,
+        },
     }
 }
 
@@ -5413,9 +7807,9 @@ fn tie_ends(
 }
 
 /// The ties between the successive components of one pitch (or unpitched
-/// note) that its decomposition ties, each taking its side as a tie between
-/// two events does (`tie_above`), synthesized from `provenance`, with the
-/// slots its ends ride.
+/// note) that its decomposition ties, each taking its side by `tie_above`,
+/// as a tie between two events does where [`lone_tie_side`] does not reach
+/// it, synthesized from `provenance`, with the slots its ends ride.
 fn component_ties(
     provenance: &Provenance,
     heads: &[Head],
@@ -5489,14 +7883,33 @@ fn component_ties(
 /// before it that its heads would touch, its stem with it, so a lower voice a
 /// second under an upper one stands to its right with their stems in one
 /// line. A unison two voices share (one glyph, one alteration, one count of
-/// dots) is one head drawn twice. The dots of every head stand right of all
-/// of the column's heads. `ups` and `places` are each head's stem direction
-/// and voice place.
+/// dots, both drawing a stem) is one head drawn twice; MuseScore shares one
+/// of two alterations differing only by a quarter-tone, which Gould keeps as
+/// two heads (*Behind Bars*, p. 91). A unison they do not
+/// share stands apart as MuseScore's `calculateChordOffsets` sets it: the
+/// later voice `UNISON_CLEARANCE` right of the other's head, but an upper
+/// voice with dots beside a lower one without, which goes after it and
+/// stands `DOTTED_CLEARANCE` right of it, and an upper voice the lower
+/// crosses at a unison, reaching above its lowest head, which goes after it
+/// too and shares no head with it unless their heads where they meet pair
+/// off as unisons they could share. An upper voice with dots a second above
+/// a lower one without, or crossed by it with a second where they meet, goes
+/// after it too, `DOTTED_CLEARANCE` right of it. A voice set right of
+/// another at an altered unison, one step with two alterations, carrying
+/// an accidental, takes its accidentals before its own heads, as Gould sets
+/// each accidental beside its own part (*Behind Bars*, p. 91), and stands
+/// where they clear the heads before it and their ledger lines by
+/// `ACCIDENTAL_GAP`; it is returned among the events [`place_accidentals`]
+/// places so. The dots of every head stand right of all of the column's
+/// heads. `ups`, `stemmed` and `places` are each head's stem direction,
+/// whether its stem is drawn, and its voice place.
+#[allow(clippy::type_complexity)]
 fn place_heads(
     heads: &[&Head],
     ups: &[bool],
+    stemmed: &[bool],
     places: &[VoicePlace],
-) -> (Vec<f32>, Vec<(EventId, usize, f32)>, f32) {
+) -> (Vec<f32>, Vec<(EventId, usize, f32)>, f32, BTreeSet<EventId>) {
     let ink = |head: &Head| {
         metrics(head.name).map_or([0.0, -0.5, NOTEHEAD_STEM_X, 0.5], |m| {
             let b = m.bounding_box();
@@ -5540,14 +7953,138 @@ fn place_heads(
         VoicePlace::Lower => 2,
     };
     events.sort_by_key(|event| (rank(places[of(*event)[0]]), *event));
+    let shareable = |i: usize, j: usize| {
+        heads[i].step == heads[j].step
+            && heads[i].name == heads[j].name
+            && heads[i].dots == heads[j].dots
+            && heads[i].alteration == heads[j].alteration
+            && stemmed[i]
+            && stemmed[j]
+    };
+    let dotted = |event: EventId| of(event).iter().any(|&i| heads[i].dots > 0);
+    let unison = |a: EventId, b: EventId| {
+        of(a)
+            .iter()
+            .any(|&i| of(b).iter().any(|&j| heads[i].step == heads[j].step))
+    };
+    // Where two voices cross, the lower reaching above the upper's lowest
+    // head, MuseScore reads the heads they meet at, skipping any across its
+    // stem: whether it finds a unison there, and a second (`conflictUnison`,
+    // `conflictSecondUpHigher`, `conflictSecondDownHigher`), and whether it
+    // moves the upper voice for a unison, which it does unless every head
+    // pairs off as a unison it would share and none stands across its stem
+    // (`shareHeads`). A second between the voices' heads, which parts them
+    // as well, parts them here by a head it leaves unpaired or one set
+    // across: a voice holding both its heads sets one across.
+    let meeting = |upper: EventId, lower: EventId| {
+        let (high, low) = (of(upper), of(lower));
+        let top = low.iter().map(|&j| heads[j].step).max();
+        let bottom = high.iter().map(|&i| heads[i].step).min();
+        let (Some(top), Some(bottom)) = (top, bottom) else {
+            return (false, false, false);
+        };
+        if top <= bottom {
+            return (false, false, false);
+        }
+        let mut meet: Vec<usize> = high
+            .iter()
+            .copied()
+            .filter(|&i| heads[i].step <= top + 1)
+            .chain(low.iter().copied().filter(|&j| heads[j].step >= bottom - 1))
+            .collect();
+        meet.sort_by_key(|&i| heads[i].step);
+        let (mut found, mut second, mut shared, mut pending) = (false, false, true, false);
+        let mut last: Option<usize> = None;
+        for &n in &meet {
+            if dx[n] != 0.0 {
+                shared = false;
+                continue;
+            }
+            match last {
+                Some(p) if heads[p].step == heads[n].step => {
+                    found = true;
+                    shared &= shareable(p, n);
+                    pending = false;
+                }
+                _ => {
+                    second |= last.is_some_and(|p| heads[n].step - heads[p].step == 1);
+                    shared &= !pending;
+                    pending = true;
+                }
+            }
+            last = Some(n);
+        }
+        (found, second, found && (pending || !shared))
+    };
+    let parted = |upper: EventId, lower: EventId| meeting(upper, lower).2;
+    // An upper voice with dots meets a lower one without where MuseScore
+    // moves the up voice right of it (`upOffset`, `maxDownWidth` and 0.1 of
+    // a space): a second, the lower's highest head a step under the upper's
+    // lowest (`chordlayout.cpp` 1905 to 1908), or a unison or a second where
+    // they meet or cross (2112 and 2113).
+    let dotted_meet = |upper: EventId, lower: EventId| {
+        let top = of(lower).iter().map(|&j| heads[j].step).max();
+        let bottom = of(upper).iter().map(|&i| heads[i].step).min();
+        let second_under = matches!((top, bottom), (Some(t), Some(b)) if b - t == 1);
+        dotted(upper)
+            && !dotted(lower)
+            && (second_under || unison(upper, lower) || meeting(upper, lower).1)
+    };
+    let crossed: Vec<(EventId, EventId)> = events
+        .iter()
+        .flat_map(|&upper| events.iter().map(move |&lower| (upper, lower)))
+        .filter(|&(upper, lower)| {
+            rank(places[of(lower)[0]]) > rank(places[of(upper)[0]]) && parted(upper, lower)
+        })
+        .collect();
+    // An upper voice goes after a lower one, as MuseScore moves the up voice
+    // then (`upOffset`), where it has dots the lower lacks and meets it at a
+    // unison or a second, or crosses it at a unison they do not share.
+    let after: Vec<EventId> = events
+        .iter()
+        .copied()
+        .filter(|&upper| {
+            events.iter().any(|&lower| {
+                rank(places[of(lower)[0]]) > rank(places[of(upper)[0]])
+                    && (dotted_meet(upper, lower) || crossed.contains(&(upper, lower)))
+            })
+        })
+        .collect();
+    events.retain(|event| !after.contains(event));
+    events.extend(after);
     let mut shifts = Vec::new();
     let mut standing: Vec<usize> = Vec::new();
+    let mut before = BTreeSet::new();
+    let ledger_half = STAFF_LINE_THICKNESS / 2.0;
     for &event in &events {
         let mine = of(event);
         let mut shift = 0.0f32;
-        // Each pass moves it right of the furthest head it touches, so it
-        // ends within one pass per head standing.
-        for _ in 0..=standing.len() {
+        let left = mine
+            .iter()
+            .map(|&i| dx[i] + ink(heads[i])[0])
+            .fold(f32::INFINITY, f32::min);
+        // At an altered unison with a head before it, its accidentals stand
+        // before its own heads: their stacks, placed against them unmoved.
+        let altered = mine.iter().any(|&i| {
+            standing.iter().any(|&j| {
+                heads[i].step == heads[j].step
+                    && heads[i].alteration.is_some()
+                    && heads[j].alteration.is_some()
+                    && heads[i].alteration != heads[j].alteration
+            })
+        });
+        let own = if altered {
+            stack_accidentals(heads, &dx, &mine, &mine).1
+        } else {
+            Vec::new()
+        };
+        if !own.is_empty() {
+            before.insert(event);
+        }
+        // Each pass moves it right of the furthest head it touches, and its
+        // own accidentals past the heads and ledger lines they meet, so it
+        // ends within two passes per head standing.
+        for _ in 0..=2 * standing.len() + 1 {
             let mut reach = f32::NEG_INFINITY;
             for &i in &mine {
                 let a = ink(heads[i]);
@@ -5557,24 +8094,52 @@ fn place_heads(
                     let b = ink(heads[j]);
                     let (bl, br) = (dx[j] + b[0], dx[j] + b[2]);
                     let (bb, bt) = (heads[j].y + b[1], heads[j].y + b[3]);
-                    let shared = heads[i].step == heads[j].step
-                        && heads[i].name == heads[j].name
-                        && heads[i].dots == heads[j].dots
-                        && heads[i].alteration == heads[j].alteration
+                    let unison = heads[i].step == heads[j].step;
+                    let shared = shareable(i, j)
+                        && !crossed.contains(&(heads[i].event, heads[j].event))
                         && shift + dx[i] == dx[j];
                     if !shared && al < br && bl < ar && ab < bt && bb < at {
-                        reach = reach.max(br);
+                        let dotted_upper = heads[i].dots > 0
+                            && heads[j].dots == 0
+                            && rank(places[i]) < rank(places[j]);
+                        let gap = match (unison, dotted_upper) {
+                            (_, true) => DOTTED_CLEARANCE,
+                            (true, false) => UNISON_CLEARANCE,
+                            (false, false) => SECOND_CLEARANCE,
+                        };
+                        reach = reach.max(br + gap);
+                    }
+                }
+            }
+            for b in &own {
+                for &j in &standing {
+                    let [l, bottom, r, top] = ink(heads[j]);
+                    let (bl, br) = (dx[j] + l, dx[j] + r);
+                    let mut obstacles = vec![(bl, br, heads[j].y + bottom, heads[j].y + top)];
+                    for step in ledger_steps(heads[j].step) {
+                        let y = heads[j].y + (step - heads[j].step) as f32 * 0.5;
+                        obstacles.push((
+                            bl - LEDGER_LINE_EXTENSION,
+                            br + LEDGER_LINE_EXTENSION,
+                            y - ledger_half,
+                            y + ledger_half,
+                        ));
+                    }
+                    for (ol, or, ob, ot) in obstacles {
+                        if b[1] < ot
+                            && ob < b[3]
+                            && shift + b[0] < or + ACCIDENTAL_GAP
+                            && shift + b[2] + ACCIDENTAL_GAP > ol
+                        {
+                            reach = reach.max(or + ACCIDENTAL_GAP - b[0] + left);
+                        }
                     }
                 }
             }
             if !reach.is_finite() {
                 break;
             }
-            let left = mine
-                .iter()
-                .map(|&i| dx[i] + ink(heads[i])[0])
-                .fold(f32::INFINITY, f32::min);
-            shift = reach - left + SECOND_CLEARANCE;
+            shift = reach - left;
         }
         if shift != 0.0 {
             for &i in &mine {
@@ -5588,7 +8153,7 @@ fn place_heads(
         .map(|i| dx[i] + ink(heads[i])[2])
         .fold(f32::NEG_INFINITY, f32::max);
     let dot_x = if right.is_finite() { right } else { 0.0 } + DOT_GAP;
-    (dx, shifts, dot_x)
+    (dx, shifts, dot_x, before)
 }
 
 /// A drawn beam across two staves, as a tuplet of its notes places its
@@ -5944,15 +8509,60 @@ fn beam_members(
 /// it that it would otherwise touch, a column further out each time. They are
 /// placed from the outside in (the highest, the lowest, the next highest, and
 /// so on), so the highest stands nearest the heads; a pitch's own stack stays
-/// together, innermost nearest. Returns each head's accidental origins, and
-/// the leftmost ink of the column's heads and accidentals.
-fn place_accidentals(heads: &[&Head]) -> (Vec<Vec<f32>>, f32) {
+/// together, innermost nearest. But each event of `before`, a voice
+/// [`place_heads`] set right of another at an altered unison, takes its
+/// accidentals before its own heads, placed so among themselves, as Gould
+/// sets each accidental beside its own part (*Behind Bars*, p. 91). Returns
+/// each head's accidental origins, and the leftmost ink of the column's
+/// heads and accidentals.
+fn place_accidentals(heads: &[&Head], before: &BTreeSet<EventId>) -> (Vec<Vec<f32>>, f32) {
+    let dx: Vec<f32> = heads.iter().map(|head| head.dx).collect();
+    let all: Vec<usize> = (0..heads.len()).collect();
+    let column: Vec<usize> = all
+        .iter()
+        .copied()
+        .filter(|&i| !before.contains(&heads[i].event))
+        .collect();
+    let mut origins = vec![Vec::new(); heads.len()];
+    let (placed, _, mut leftmost) = stack_accidentals(heads, &dx, &column, &all);
+    for (i, xs) in placed {
+        origins[i] = xs;
+    }
+    for &event in before {
+        let own: Vec<usize> = all
+            .iter()
+            .copied()
+            .filter(|&i| heads[i].event == event)
+            .collect();
+        let (placed, _, left) = stack_accidentals(heads, &dx, &own, &own);
+        for (i, xs) in placed {
+            origins[i] = xs;
+        }
+        leftmost = leftmost.min(left);
+    }
+    (origins, leftmost)
+}
+
+/// Places the accidentals of the heads `members` together, as
+/// [`place_accidentals`] places a column's, left of the heads `bounds` and
+/// of the ledger lines they draw, `dx` each head's `x` from the column's:
+/// each member's accidental origins, every placed stack's box (left,
+/// bottom, right, top) and the leftmost ink of the bounds' heads and the
+/// stacks.
+#[allow(clippy::type_complexity)]
+fn stack_accidentals(
+    heads: &[&Head],
+    dx: &[f32],
+    members: &[usize],
+    bounds: &[usize],
+) -> (Vec<(usize, Vec<f32>)>, Vec<[f32; 4]>, f32) {
     let ledger_half = STAFF_LINE_THICKNESS / 2.0;
     let mut heads_left = f32::INFINITY;
     // Each ledger line's left end and `y`.
     let mut ledgers: Vec<(f32, f32)> = Vec::new();
-    for head in heads {
-        let left = head.dx + metrics(head.name).map_or(0.0, |m| m.bounding_box().left.0);
+    for &i in bounds {
+        let head = heads[i];
+        let left = dx[i] + metrics(head.name).map_or(0.0, |m| m.bounding_box().left.0);
         heads_left = heads_left.min(left);
         for step in ledger_steps(head.step) {
             let y = head.y + (step - head.step) as f32 * 0.5;
@@ -5962,7 +8572,9 @@ fn place_accidentals(heads: &[&Head]) -> (Vec<Vec<f32>>, f32) {
     if !heads_left.is_finite() {
         heads_left = 0.0;
     }
-    let mut order: Vec<usize> = (0..heads.len())
+    let mut order: Vec<usize> = members
+        .iter()
+        .copied()
         .filter(|i| !heads[*i].accidentals.is_empty())
         .collect();
     order.sort_by(|a, b| heads[*b].y.total_cmp(&heads[*a].y).then(a.cmp(b)));
@@ -5978,7 +8590,7 @@ fn place_accidentals(heads: &[&Head]) -> (Vec<Vec<f32>>, f32) {
     }
     // Each placed stack's box: left, bottom, right, top.
     let mut placed: Vec<[f32; 4]> = Vec::new();
-    let mut origins = vec![Vec::new(); heads.len()];
+    let mut origins = Vec::with_capacity(outside_in.len());
     let mut leftmost = heads_left;
     for i in outside_in {
         let head = heads[i];
@@ -6022,13 +8634,15 @@ fn place_accidentals(heads: &[&Head]) -> (Vec<Vec<f32>>, f32) {
         placed.push([right - width, low, right, high]);
         leftmost = leftmost.min(right - width);
         let mut edge = right;
+        let mut xs = Vec::with_capacity(boxes.len());
         for b in &boxes {
             let origin = edge - b[2];
-            origins[i].push(origin);
+            xs.push(origin);
             edge = origin + b[0] - ACCIDENTAL_STACK_GAP;
         }
+        origins.push((i, xs));
     }
-    (origins, leftmost)
+    (origins, placed, leftmost)
 }
 
 /// Draws a notehead with what rides with it: the ledger lines it needs, its
@@ -6323,6 +8937,454 @@ fn column_slot_id(region: LayoutObjectId, rank: usize) -> SpringSlotId {
     preimage.push_u64_le(rank as u64);
     SpringSlotId(preimage.finish_trunc128())
 }
+
+/// A two-note tremolo's strokes, each `((from, its slot), (to, its slot))`,
+/// the outermost first.
+type TremoloStrokes = Vec<((Point, SpringSlotId), (Point, SpringSlotId))>;
+
+/// The height at `x` of a beam's outer edge standing at `intercept` over
+/// `x0` and rising by `slope`.
+fn edge_at(intercept: f32, slope: f32, x0: f32, x: f32) -> f32 {
+    intercept + slope * (x - x0)
+}
+
+/// How far a two-note tremolo's strokes stand in from each stem (MuseScore's
+/// `stemGapSp`), how short they may run before it gives some of that up,
+/// half the shortfall from each end, and the least it keeps
+/// (`TremoloLayout::createBeamSegments`).
+const TREMOLO_STEM_GAP: f32 = 1.0;
+const TREMOLO_MIN_RUN: f32 = 0.6;
+const TREMOLO_MIN_STEM_GAP: f32 = 0.4;
+
+/// How far a two-note tremolo's strokes stand in from each end of `span`,
+/// the distance between its stems' outer edges. A run within a ten-thousandth
+/// of `TREMOLO_MIN_RUN` is as long as it, as MuseScore compares them
+/// (`RealIsEqualOrMore`).
+fn tremolo_stem_gap(span: f32) -> f32 {
+    let run = span - 2.0 * TREMOLO_STEM_GAP;
+    if run + 1e-4 < TREMOLO_MIN_RUN {
+        (TREMOLO_STEM_GAP - (TREMOLO_MIN_RUN - run) * 0.5).max(TREMOLO_MIN_STEM_GAP)
+    } else {
+        TREMOLO_STEM_GAP
+    }
+}
+
+/// The gap a breath mark or caesura keeps from what stands before and after
+/// it: MuseScore's padding for a breath (`PaddingTable::createTable`).
+const BREATH_GAP: f32 = 1.0;
+/// A fermata's distance off its staff (`fermataPosAbove`, `fermataPosBelow`)
+/// and from its chord's ink and other ink (`fermataMinDistance`).
+const FERMATA_OFFSET: f32 = 0.5;
+const FERMATA_MIN_DISTANCE: f32 = 0.4;
+/// A dynamic's baseline below its staff and above it (`dynamicsPosBelow`,
+/// `dynamicsPosAbove`), its distance from other ink (`dynamicsMinDistance`),
+/// and its optical centre's height over its baseline, half a dynamic's
+/// x-height (`AlignmentLayout::yOpticalCenter`).
+const DYNAMIC_BELOW: f32 = 2.0;
+const DYNAMIC_ABOVE: f32 = 1.0;
+const DYNAMIC_MIN_DISTANCE: f32 = 0.5;
+const DYNAMIC_CENTRE: f32 = 0.46;
+/// A dynamic set as words: italic at 10 points (`dynamicsFontSize`), in
+/// staff spaces.
+const DYNAMIC_TEXT_SIZE: f32 = 2.016;
+/// A hairpin's axis off its staff (`hairpinPosBelow`, `hairpinPosAbove`), its
+/// line width (`hairpinLineWidth`), its distance from other ink
+/// (`hairpinMinDistance`) and from a dynamic it meets
+/// (`autoplaceHairpinDynamicsDistance`, `TLayout::manageHairpinSnapping`),
+/// and how far before the column of its end it stops (`SLine::linePos`).
+const HAIRPIN_POS: f32 = 1.75;
+const HAIRPIN_LINE_WIDTH: f32 = 0.12;
+const HAIRPIN_MIN_DISTANCE: f32 = 0.7;
+const HAIRPIN_DYNAMIC_GAP: f32 = 0.5;
+const HAIRPIN_END_INSET: f32 = 1.0;
+
+/// A syllable's size, Edwin at 10 points (`lyricsOddFontSize`); its first
+/// verse's baseline under its staff (`lyricsPosBelow`); the step from verse
+/// to verse, Edwin's line at that size, its ascender, descender and gap
+/// 1200 of its 1000 units (`lyricsLineHeight` 1.0); a verse's distance from
+/// the ink over it (`lyricsMinTopDistance`); a hyphen's distance from its
+/// syllables (`lyricsDashPad`) and its height over their baseline, half
+/// Edwin's x-height of 466 units (`lyricsDashYposRatio`); the line width of
+/// a hyphen and a melisma line (`lyricsDashLineThickness`,
+/// `lyricsLineThickness`); and the gap before a melisma line
+/// (`lyricsMelismaPad`).
+const LYRIC_TEXT_SIZE: f32 = 2.016;
+const LYRIC_BELOW: f32 = 3.0;
+const LYRIC_LINE: f32 = 1.2 * LYRIC_TEXT_SIZE;
+const LYRIC_MIN_DISTANCE: f32 = 1.0;
+const LYRIC_DASH_PAD: f32 = 0.05;
+const LYRIC_DASH_Y: f32 = 0.5 * 0.466 * LYRIC_TEXT_SIZE;
+const LYRIC_LINE_WIDTH: f32 = 0.1;
+const LYRIC_MELISMA_PAD: f32 = 0.2;
+
+/// A trill line's sign (`ornamentTrill`), its baseline half a space over its
+/// staff (`trillPosAbove`) or two under it (`trillPosBelow`), its end a
+/// space before its last note's end (`SLine::linePos`), a half space clear
+/// of the ink under it (`trillMinDistance`); the width of the line its
+/// wiggles are set along, which draws nothing itself.
+const TRILL_SIGN: &str = "ornamentTrill";
+const TRILL_ABOVE: f32 = 0.5;
+const TRILL_BELOW: f32 = 2.0;
+const TRILL_END_INSET: f32 = 1.0;
+const TRILL_MIN_DISTANCE: f32 = 0.5;
+const TRILL_CARRIER_WIDTH: f32 = 0.1;
+
+/// The registry id for a trill line's sign (key 0), synthesized from the
+/// line.
+const TRILL_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x5452_494C_4C49_4E45); // "TRILLINE"
+
+/// Text marks (X4c.6), in staff spaces at MuseScore's default points over
+/// its 1.75 mm space (D79's Q7): staff text in Edwin at 10 points, its
+/// baseline a space over its staff (`staffTextPosAbove`); a tempo mark in
+/// Edwin bold at 12, its metronome's beat in Bravura Text at 20
+/// (`tempoMusicalSymbolSize`), its baseline 2.0 over the top staff
+/// (`tempoPosAbove`); a rehearsal mark in Edwin bold at 14 in a square frame
+/// 0.5 off its ink and 0.16 wide (`rehearsalMarkFramePadding`,
+/// `rehearsalMarkFrameWidth`), and a segno or coda in Bravura Text at 18
+/// (`repeatLeftMusicalSymbolSize`), each with its baseline 2.0 over the top
+/// staff (`rehearsalMarkPosAbove`, `markerPosAbove`); each a half space
+/// clear of the ink under it (`staffTextMinDistance`, `tempoMinDistance`,
+/// `rehearsalMarkMinDistance`, `repeatMinDistance`).
+const STAFF_TEXT_SIZE: f32 = 2.016;
+/// A text's line, Edwin's ascender, descender and gap, 1200 of its 1000
+/// units, as a share of its size: the step from one line of a staff text
+/// or tempo mark to the next.
+const TEXT_LINE: f32 = 1.2;
+const STAFF_TEXT_ABOVE: f32 = 1.0;
+const TEMPO_SIZE: f32 = 2.419;
+const TEMPO_SYMBOL_SIZE: f32 = 4.032;
+const TEMPO_ABOVE: f32 = 2.0;
+const REHEARSAL_SIZE: f32 = 2.822;
+const REHEARSAL_PADDING: f32 = 0.5;
+const REHEARSAL_FRAME: f32 = 0.16;
+const REHEARSAL_ABOVE: f32 = 2.0;
+const REPEAT_SYMBOL_SIZE: f32 = 3.629;
+const REPEAT_ABOVE: f32 = 2.0;
+const TEXT_MIN_DISTANCE: f32 = 0.5;
+
+/// The registry ids for a staff text's further lines (key `i` for its `i`th
+/// line), a tempo mark's further runs (each next key in turn: its words'
+/// further lines, then its metronome's beat and figure, the first run of
+/// all key 0) and a rehearsal mark's frame (keys 1 to 4), synthesized from
+/// the mark.
+const TEXT_MARK_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x5445_5854_4D41_524B); // "TEXTMARK"
+const TEXT_FRAME_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x5445_5854_4652_4D45); // "TEXTFRME"
+
+/// A text mark placed before it is emitted: the column it rides and its
+/// staff, its runs where they stand, a rehearsal mark's frame (its lines'
+/// centres: left, bottom, right, top), its placing order, and, at its
+/// measure's start, its barline's column and how it stands there.
+struct TextMarkPlacing {
+    key: ColumnKey,
+    staff: StaffId,
+    runs: Vec<ResolvedText>,
+    frame: Option<[f32; 4]>,
+    order: PlaceOrder,
+    across: Option<(Option<ColumnKey>, MeasureMark)>,
+}
+
+/// A metronome mark's beat as Bravura Text sets it: the note, then a space
+/// and a dot for each dot (`TempoText`'s patterns, `metNote…Up`,
+/// `metAugmentationDot`).
+fn metronome_beat(metronome: &epiphany_core::Metronome) -> String {
+    let note = match metronome.beat {
+        NoteValue::Whole => '\u{ECA2}',
+        NoteValue::Half => '\u{ECA3}',
+        NoteValue::Quarter => '\u{ECA5}',
+        NoteValue::Eighth => '\u{ECA7}',
+        NoteValue::Sixteenth => '\u{ECA9}',
+        NoteValue::ThirtySecond => '\u{ECAB}',
+        NoteValue::SixtyFourth => '\u{ECAD}',
+    };
+    let mut beat = String::from(note);
+    if metronome.dots > 0 {
+        beat.push(' ');
+        beat.extend(std::iter::repeat_n('\u{ECB7}', usize::from(metronome.dots)));
+    }
+    beat
+}
+
+/// A syllable placed before it is emitted: its column, its run where it
+/// stands, and its ink across.
+struct SyllablePlacing {
+    key: ColumnKey,
+    run: ResolvedText,
+    left: f32,
+    right: f32,
+}
+
+/// The widths of a syllable's leading and trailing marks (a verse number,
+/// punctuation), which MuseScore leaves out when it aligns the syllable, by
+/// the run's caret stops; and its advance.
+fn syllable_margins(run: &ResolvedText, text: &str) -> (f32, f32, f32) {
+    let advance = run.reserved_box.right.0 - run.reserved_box.left.0;
+    let caret = |offset: usize| {
+        run.clusters
+            .clusters
+            .iter()
+            .flat_map(|c| c.carets.iter())
+            .find(|stop| stop.offset as usize == offset)
+            .map(|stop| stop.x.0 - run.reserved_box.left.0)
+    };
+    let first = text.char_indices().find(|(_, c)| c.is_alphabetic());
+    let last = text.char_indices().rev().find(|(_, c)| c.is_alphabetic());
+    match (first, last) {
+        (Some((a, _)), Some((b, c))) => {
+            let lead = caret(a).unwrap_or(0.0);
+            let trail = caret(b + c.len_utf8()).map_or(0.0, |x| advance - x);
+            (lead, trail, advance)
+        }
+        _ => (0.0, 0.0, advance),
+    }
+}
+
+/// A dynamic placed before it is emitted: its column, its side and baseline,
+/// and its ink.
+struct DynamicPlacing {
+    key: ColumnKey,
+    above: bool,
+    baseline: f32,
+    ink: DynamicInk,
+}
+
+/// A dynamic's ink: its SMuFL glyph at its origin's x, or, for a dynamic no
+/// glyph names, its words as a run.
+enum DynamicInk {
+    Glyph { name: &'static str, x: f32 },
+    Words(Box<ResolvedText>),
+}
+
+/// A dynamic's SMuFL glyph; `None` for one written as words.
+fn dynamic_glyph(dynamic: &epiphany_core::Dynamic) -> Option<&'static str> {
+    use epiphany_core::Dynamic::*;
+    Some(match dynamic {
+        Pppppp => "dynamicPPPPPP",
+        Ppppp => "dynamicPPPPP",
+        Pppp => "dynamicPPPP",
+        Ppp => "dynamicPPP",
+        Pp => "dynamicPP",
+        P => "dynamicPiano",
+        Mp => "dynamicMP",
+        Mf => "dynamicMF",
+        F => "dynamicForte",
+        Ff => "dynamicFF",
+        Fff => "dynamicFFF",
+        Ffff => "dynamicFFFF",
+        Fffff => "dynamicFFFFF",
+        Ffffff => "dynamicFFFFFF",
+        Fp => "dynamicFortePiano",
+        Sf => "dynamicSforzando1",
+        Sfz => "dynamicSforzato",
+        Sffz => "dynamicSforzatoFF",
+        Sfp => "dynamicSforzandoPiano",
+        Sfpp => "dynamicSforzandoPianissimo",
+        Rf => "dynamicRinforzando1",
+        Rfz => "dynamicRinforzando2",
+        Fz => "dynamicForzando",
+        Niente => "dynamicNiente",
+        Other(_) => return None,
+    })
+}
+
+/// A dynamic glyph's optical centre across, from its origin, in staff
+/// spaces: Bravura 1.392's `opticalCenter` anchors (`bravura_metadata.json` at
+/// the commit the catalog pins, SHA-256 `5c18a034…9881c`), which MuseScore
+/// centres a dynamic on its note by (`DynamicsLayout::doLayoutDynamic`).
+fn dynamic_optical_centre(name: &str) -> f32 {
+    match name {
+        "dynamicPPPPPP" => 4.248,
+        "dynamicPPPPP" => 3.552,
+        "dynamicPPPP" => 3.004,
+        "dynamicPPP" => 2.368,
+        "dynamicPP" => 1.708,
+        "dynamicPiano" => 1.22,
+        "dynamicMP" => 1.848,
+        "dynamicMF" => 1.796,
+        "dynamicForte" => 1.256,
+        "dynamicFF" => 1.852,
+        "dynamicFFF" => 2.472,
+        "dynamicFFFF" => 2.824,
+        "dynamicFFFFF" => 2.976,
+        "dynamicFFFFFF" => 3.504,
+        "dynamicFortePiano" => 1.5,
+        "dynamicSforzando1" => 1.3,
+        "dynamicSforzato" => 1.76,
+        "dynamicSforzatoFF" => 2.276,
+        "dynamicSforzandoPiano" => 1.904,
+        "dynamicSforzandoPianissimo" => 1.972,
+        "dynamicRinforzando1" => 1.564,
+        "dynamicRinforzando2" => 2.084,
+        "dynamicForzando" => 1.352,
+        "dynamicNiente" => 0.616,
+        _ => metrics(name).map_or(0.0, |m| {
+            let b = m.bounding_box();
+            (b.left.0 + b.right.0) * 0.5
+        }),
+    }
+}
+
+/// The staff of `staff`'s grand staff a mark below it, or above it, stands
+/// toward: the next staff down, or up, of the grand staff, if there is one.
+fn grand_neighbour(grand: &[Vec<StaffId>], staff: StaffId, above: bool) -> Option<StaffId> {
+    grand.iter().find_map(|staves| {
+        let at = staves.iter().position(|s| *s == staff)?;
+        if above {
+            at.checked_sub(1).map(|k| staves[k])
+        } else {
+            staves.get(at + 1).copied()
+        }
+    })
+}
+
+/// Where a point mark or a line's end stands in time, if anywhere.
+fn place_time(place: &MarkerPlace) -> Option<TimePoint> {
+    match place {
+        MarkerPlace::Event { time, .. } | MarkerPlace::Time(time) => Some(time.clone()),
+        MarkerPlace::Unresolved => None,
+    }
+}
+
+/// The first column at `time` or after it (a note column alone, when
+/// `note`): where a line starting or ending there stands. A line ending at
+/// its region's end ends at the final barline's column.
+fn first_column<'a>(
+    columns: &'a BTreeMap<ColumnKey, ColumnInfo>,
+    time: &TimePoint,
+    note: bool,
+) -> Option<(&'a ColumnKey, &'a ColumnInfo)> {
+    columns
+        .range(ColumnKey::Timed(time.clone(), ColumnRole::Breath)..)
+        .find(|(key, _)| match key {
+            ColumnKey::Timed(_, role) => !note || *role == ColumnRole::Note,
+            ColumnKey::End => !note,
+            ColumnKey::Lead => false,
+        })
+}
+
+/// The chain a dynamic or hairpin belongs to, by the least stable id of its
+/// members.
+fn chain_of(chains: &mut BTreeMap<u128, u128>, id: u128) -> u128 {
+    let mut root = id;
+    while let Some(&up) = chains.get(&root) {
+        if up == root {
+            break;
+        }
+        root = up;
+    }
+    if root != id {
+        chains.insert(id, root);
+    }
+    root
+}
+
+/// The x a mark centred on a note stands on, from its column: its first
+/// component's head's centre, or its rest's, or a black head's where it has
+/// neither.
+fn note_centre(
+    event: Option<EventId>,
+    stems: &BTreeMap<EventId, Vec<StemSeg>>,
+    rests: &BTreeMap<EventId, Vec<RestSeg>>,
+) -> f32 {
+    let head = metrics("noteheadBlack")
+        .expect("notehead metrics are bundled")
+        .bounding_box();
+    event
+        .and_then(|e| {
+            match stems
+                .get(&e)
+                .and_then(|segs| segs.iter().find(|s| s.comp == 0))
+            {
+                Some(seg) => Some(seg.dx + (head.left.0 + head.right.0) * 0.5),
+                None => {
+                    let rest = rests
+                        .get(&e)?
+                        .iter()
+                        .find(|r| r.visible && r.name.is_some())?;
+                    let rb = metrics(rest.name?)?.bounding_box();
+                    Some((rb.left.0 + rb.right.0) * 0.5)
+                }
+            }
+        })
+        .unwrap_or((head.left.0 + head.right.0) * 0.5)
+}
+
+/// The x a note's ink starts at, from its column: its first component's
+/// head's left, or its rest's.
+fn note_left(
+    event: Option<EventId>,
+    stems: &BTreeMap<EventId, Vec<StemSeg>>,
+    rests: &BTreeMap<EventId, Vec<RestSeg>>,
+) -> f32 {
+    let head = metrics("noteheadBlack")
+        .expect("notehead metrics are bundled")
+        .bounding_box();
+    note_centre(event, stems, rests) - (head.right.0 - head.left.0) * 0.5
+}
+
+/// The x a note's head ends at, from its column.
+fn note_right(
+    event: Option<EventId>,
+    stems: &BTreeMap<EventId, Vec<StemSeg>>,
+    rests: &BTreeMap<EventId, Vec<RestSeg>>,
+) -> f32 {
+    let head = metrics("noteheadBlack")
+        .expect("notehead metrics are bundled")
+        .bounding_box();
+    note_centre(event, stems, rests) + (head.right.0 - head.left.0) * 0.5
+}
+
+/// The registry id for a syllable's hyphen (key 1) and melisma line (key
+/// 2), synthesized from the syllable.
+const LYRIC_LINE_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x4C59_524C_494E_4553); // "LYRLINES"
+
+/// The registry id for a hairpin's lower leg, synthesized from the hairpin.
+const HAIRPIN_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x4841_4952_5049_4E53); // "HAIRPINS"
+
+/// A breath mark's or caesura's glyph.
+fn breath_glyph(kind: &MarkerKind) -> Option<&'static str> {
+    use epiphany_core::{BreathMark, CaesuraMark};
+    Some(match kind {
+        MarkerKind::Breath(BreathMark::Comma) => "breathMarkComma",
+        MarkerKind::Breath(BreathMark::Tick) => "breathMarkTick",
+        MarkerKind::Caesura(CaesuraMark::Normal) => "caesura",
+        MarkerKind::Caesura(CaesuraMark::Thick) => "caesuraThick",
+        MarkerKind::Caesura(CaesuraMark::Short) => "caesuraShort",
+        MarkerKind::Caesura(CaesuraMark::Curved) => "caesuraCurved",
+        _ => return None,
+    })
+}
+
+/// Where a breath mark or caesura stands, and its glyph: where its note's
+/// sound ends, or at its time where it stands on no note.
+fn breath_place(marker: &MarkerContent) -> Option<(TimePoint, &'static str)> {
+    let name = breath_glyph(&marker.kind)?;
+    let time = match &marker.at {
+        MarkerPlace::Event { end: Some(end), .. } => end.clone(),
+        MarkerPlace::Time(time) => time.clone(),
+        _ => return None,
+    };
+    Some((time, name))
+}
+
+/// A fermata's glyph by its shape and side.
+fn fermata_glyph(fermata: &epiphany_core::Fermata, above: bool) -> &'static str {
+    use epiphany_core::FermataShape::*;
+    match (fermata.shape, above) {
+        (Normal, true) => "fermataAbove",
+        (Normal, false) => "fermataBelow",
+        (Short, true) => "fermataShortAbove",
+        (Short, false) => "fermataShortBelow",
+        (Long, true) => "fermataLongAbove",
+        (Long, false) => "fermataLongBelow",
+        (VeryShort, true) => "fermataVeryShortAbove",
+        (VeryShort, false) => "fermataVeryShortBelow",
+        (VeryLong, true) => "fermataVeryLongAbove",
+        (VeryLong, false) => "fermataVeryLongBelow",
+    }
+}
+
+#[path = "marks.rs"]
+mod marks;
 
 #[cfg(test)]
 mod tests {
@@ -6856,6 +9918,8 @@ mod tests {
             components: vec![],
             duration: None,
             pitches: vec![],
+            marks: Vec::new(),
+            ornaments: Vec::new(),
         });
         let logical = LogicalLayoutIR {
             source: ScoreVersion::default(),
@@ -6978,6 +10042,8 @@ mod tests {
                 pitch,
                 spelling: Some(spelling),
             }],
+            marks: Vec::new(),
+            ornaments: Vec::new(),
         });
         let manifested = |src, content| {
             LayoutObject::from_projection_with_content(
@@ -7058,6 +10124,8 @@ mod tests {
                 pitch,
                 spelling: Some(spelling),
             }],
+            marks: Vec::new(),
+            ornaments: Vec::new(),
         });
         let manifested = |src, content| {
             LayoutObject::from_projection_with_content(
@@ -7180,6 +10248,8 @@ mod tests {
                     components: vec![component(NoteValue::Quarter, 0, false)],
                     duration: None,
                     pitches,
+                    marks: Vec::new(),
+                    ornaments: Vec::new(),
                 }),
             ));
         }
@@ -7214,6 +10284,8 @@ mod tests {
                     pitch: split,
                     spelling: Some(PitchSpelling::cmn(CmnNominal::A, 4)),
                 }],
+                marks: Vec::new(),
+                ornaments: Vec::new(),
             }),
         ));
         let c = to_constrained(&LogicalLayoutIR {
@@ -7340,6 +10412,8 @@ mod tests {
                             pitch,
                             spelling: Some(PitchSpelling::cmn(CmnNominal::E, 4)),
                         }],
+                        marks: Vec::new(),
+                        ornaments: Vec::new(),
                     }),
                 ),
                 manifested(TypedObjectId::Pitch(pitch), LayoutContent::Structural),
@@ -7407,6 +10481,7 @@ mod tests {
                 components: vec![component(NoteValue::Sixteenth, 0)],
                 duration: None,
                 staff_position: StaffPosition(4),
+                marks: Vec::new(),
             }),
         )]);
         let head = named(&c, "noteheadBlack");
@@ -7449,6 +10524,8 @@ mod tests {
             beams: Vec::new(),
             cross_beams: Vec::new(),
             visiting: Default::default(),
+            visiting_alone: Default::default(),
+            vocal: false,
         });
         let logical = LogicalLayoutIR {
             source: ScoreVersion::default(),
@@ -7660,6 +10737,8 @@ mod tests {
                 pitch,
                 spelling: Some(PitchSpelling::cmn(CmnNominal::C, 4)),
             }],
+            marks: Vec::new(),
+            ornaments: Vec::new(),
         });
         let manifested = |src, content| {
             LayoutObject::from_projection_with_content(
@@ -7783,6 +10862,8 @@ mod tests {
             beams: Vec::new(),
             cross_beams: Vec::new(),
             visiting: Default::default(),
+            visiting_alone: Default::default(),
+            vocal: false,
         });
         let logical = LogicalLayoutIR {
             source: ScoreVersion::default(),
@@ -8036,6 +11117,8 @@ mod tests {
                     spelling: Some(PitchSpelling::cmn(CmnNominal::E, 4)),
                 },
             ],
+            marks: Vec::new(),
+            ornaments: Vec::new(),
         });
         let logical = LogicalLayoutIR {
             source: ScoreVersion::default(),
@@ -8154,6 +11237,8 @@ mod tests {
                         beams: Vec::new(),
                         cross_beams: Vec::new(),
                         visiting: Default::default(),
+                        visiting_alone: Default::default(),
+                        vocal: false,
                     }),
                 ),
                 with_content(
@@ -8168,6 +11253,8 @@ mod tests {
                             pitch,
                             spelling: Some(PitchSpelling::cmn(CmnNominal::C, 4)),
                         }],
+                        marks: Vec::new(),
+                        ornaments: Vec::new(),
                     }),
                 ),
                 with_content(
@@ -9007,6 +12094,8 @@ mod tests {
                                 pitch,
                                 spelling: Some(spelling),
                             }],
+                            marks: Vec::new(),
+                            ornaments: Vec::new(),
                         }),
                     ),
                     manifested(TypedObjectId::Pitch(pitch), LayoutContent::Structural),
@@ -9302,6 +12391,7 @@ mod tests {
             up: true,
             voiced: None,
             x_off: 0.0,
+            head: "noteheadBlack",
             dx: 0.0,
             tip: 0.0,
             end: 0.0,
@@ -9350,5 +12440,233 @@ mod tests {
             at_point.y.0 >= 3.0,
             "over its own notes it stands above the upper staff's ink there"
         );
+    }
+
+    #[test]
+    fn a_runs_uncovered_characters_are_each_reported_against_its_source() {
+        use crate::text::{shape_text, TextAlign, TextFace};
+        use epiphany_core::MarkerId;
+        let source = TypedObjectId::Marker(MarkerId::from_raw(3));
+        let (_, gaps) = shape_text(
+            Provenance::projected(source, vec![]),
+            "a\u{4E2D}b\u{4E2E}",
+            TextFace::Roman,
+            2.0,
+            TextAlign::Left,
+            Point::new(0.0, 0.0),
+        );
+        assert_eq!(
+            text_diagnostics(source, &gaps),
+            vec![
+                LayoutDiagnostic {
+                    source,
+                    kind: LayoutDiagnosticKind::UncoveredCodepoint { codepoint: 0x4E2D },
+                },
+                LayoutDiagnostic {
+                    source,
+                    kind: LayoutDiagnosticKind::UncoveredCodepoint { codepoint: 0x4E2E },
+                },
+            ]
+        );
+        let covered = ShapingGaps::default();
+        assert!(text_diagnostics(source, &covered).is_empty());
+        let backwards = ShapingGaps {
+            uncovered: Vec::new(),
+            right_to_left: true,
+        };
+        assert_eq!(
+            text_diagnostics(source, &backwards),
+            vec![LayoutDiagnostic {
+                source,
+                kind: LayoutDiagnosticKind::RightToLeftText,
+            }]
+        );
+    }
+
+    /// A breath mark stands right-aligned against its own column, which
+    /// holds nothing else, and its column's spring is the padding after its
+    /// right edge: the constrained frame states MuseScore's rule, whatever a
+    /// solver does with it.
+    #[test]
+    fn a_breath_mark_ends_at_its_column_and_keeps_its_padding_after() {
+        use epiphany_core::{AnchorOffset, BreathMark, Marker, MarkerKind};
+        let mut score = epiphany_core::generators::valid_score_rich(5);
+        let event = region_a_events(&score)[0];
+        let id = score.identity.mint();
+        score.cross_cutting.markers.push(Marker {
+            id,
+            anchor: TimeAnchor::Event {
+                id: event,
+                offset: AnchorOffset::Zero,
+            },
+            kind: MarkerKind::Breath(BreathMark::Comma),
+        });
+        let c = to_constrained(&to_logical(&score));
+        let mark = c
+            .glyphs
+            .iter()
+            .find(|g| g.provenance.source == TypedObjectId::Marker(id))
+            .expect("the breath mark is drawn");
+        assert_eq!(mark.glyph.as_str(), "breathMarkComma");
+        let alone = c
+            .glyphs
+            .iter()
+            .filter(|g| g.horizontal_slot == mark.horizontal_slot)
+            .count();
+        assert_eq!(alone, 1, "its column holds it alone");
+        let slot = c
+            .horizontal_slots
+            .iter()
+            .find(|s| s.id == mark.horizontal_slot)
+            .expect("its slot");
+        assert_eq!(slot.stretch_factor, 0.0, "a fixed column");
+        let right = mark.bounding_box.right.0;
+        assert!(
+            (slot.preferred_width.0 - (right + BREATH_GAP)).abs() < 1e-4,
+            "{} against {right}",
+            slot.preferred_width.0
+        );
+        // Its right edge at the column: the next note's column, at the same
+        // time, stands the column's step and the note's own room after it.
+        let column_x = mark.baseline.x.0 + right;
+        let next = c
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str().starts_with("notehead"))
+            .map(|g| g.baseline.x.0)
+            .filter(|&x| x > mark.baseline.x.0)
+            .fold(f32::INFINITY, f32::min);
+        assert!(
+            next >= column_x + COLUMN_X_STEP - 1e-4,
+            "{next} after {column_x}"
+        );
+    }
+
+    /// Every member of the family names primitives the layout holds, by
+    /// their kind, and a band that exists.
+    #[test]
+    fn a_family_member_must_name_what_the_layout_holds() {
+        let base = to_constrained(&to_logical(&epiphany_core::generators::valid_score_rich(5)));
+        let (glyph, stroke) = (base.glyphs[0].id(), base.strokes[0].id());
+        let band = base.glyphs[0].vertical_band;
+        let with = |mark: FamilyMark| {
+            let mut ir = base.clone();
+            ir.family.push(mark);
+            ir.validate()
+        };
+        let good = FamilyMark {
+            band,
+            glyphs: vec![glyph],
+            strokes: vec![stroke],
+            texts: Vec::new(),
+            room: Room::None,
+            placement: None,
+            line: None,
+        };
+        assert_eq!(with(good.clone()), Ok(()));
+        // A glyph named as a stroke, a stroke as a text run.
+        assert_eq!(
+            with(FamilyMark {
+                strokes: vec![glyph],
+                ..good.clone()
+            }),
+            Err(ConstrainedValidationError::DanglingFamilyMember(glyph))
+        );
+        assert_eq!(
+            with(FamilyMark {
+                texts: vec![stroke],
+                ..good.clone()
+            }),
+            Err(ConstrainedValidationError::DanglingFamilyMember(stroke))
+        );
+        let lost = GlyphObjectId(u128::MAX - 3);
+        assert_eq!(
+            with(FamilyMark {
+                glyphs: vec![lost],
+                ..good.clone()
+            }),
+            Err(ConstrainedValidationError::DanglingFamilyMember(lost))
+        );
+        let nowhere = VerticalBandId(u128::MAX - 1);
+        assert_eq!(
+            with(FamilyMark {
+                band: nowhere,
+                ..good
+            }),
+            Err(ConstrainedValidationError::UnknownBand(nowhere))
+        );
+    }
+
+    #[test]
+    fn a_text_run_must_ride_a_slot_and_a_band_that_exist_and_quantize() {
+        use crate::text::{shape_text, TextAlign, TextFace, TextObject};
+        use epiphany_core::MarkerId;
+        let base = to_constrained(&to_logical(&epiphany_core::generators::valid_score_rich(5)));
+        let glyph = base.glyphs[0].clone();
+        let run = |at: Point| {
+            shape_text(
+                Provenance::projected(TypedObjectId::Marker(MarkerId::from_raw(2)), vec![]),
+                "cresc.",
+                TextFace::Italic,
+                2.0,
+                TextAlign::Left,
+                at,
+            )
+            .0
+        };
+        let with = |text: TextObject| {
+            let mut ir = base.clone();
+            ir.texts.push(text);
+            ir.validate()
+        };
+        let good = TextObject {
+            text: run(Point::new(1.0, -6.0)),
+            horizontal_slot: glyph.horizontal_slot,
+            vertical_band: glyph.vertical_band,
+        };
+        assert_eq!(with(good.clone()), Ok(()));
+        let id = good.id();
+        let lost = SpringSlotId(u128::MAX - 1);
+        assert_eq!(
+            with(TextObject {
+                horizontal_slot: lost,
+                ..good.clone()
+            }),
+            Err(ConstrainedValidationError::UnknownSlot(lost))
+        );
+        let nowhere = VerticalBandId(u128::MAX - 1);
+        assert_eq!(
+            with(TextObject {
+                vertical_band: nowhere,
+                ..good.clone()
+            }),
+            Err(ConstrainedValidationError::UnknownBand(nowhere))
+        );
+        assert_eq!(
+            with(TextObject {
+                text: run(Point::new(f32::NAN, 0.0)),
+                ..good.clone()
+            }),
+            Err(ConstrainedValidationError::InvalidTextGeometry(id))
+        );
+        let mut twice = base.clone();
+        twice.texts.push(good.clone());
+        twice.texts.push(good);
+        assert_eq!(
+            twice.validate(),
+            Err(ConstrainedValidationError::DuplicateTextId(id))
+        );
+    }
+
+    /// A two-note tremolo's strokes stand a space in from each stem, but
+    /// where that leaves them under 0.6 long they give up half the shortfall
+    /// at each end, down to 0.4 (`TremoloLayout::createBeamSegments`).
+    #[test]
+    fn a_two_note_tremolo_gives_up_its_inset_only_when_short() {
+        assert_eq!(tremolo_stem_gap(5.0), 1.0);
+        assert_eq!(tremolo_stem_gap(2.6), 1.0);
+        assert!((tremolo_stem_gap(2.3) - 0.85).abs() < 1e-6);
+        assert!((tremolo_stem_gap(1.4) - 0.4).abs() < 1e-6);
+        assert_eq!(tremolo_stem_gap(0.5), 0.4);
     }
 }

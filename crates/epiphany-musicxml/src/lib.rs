@@ -80,8 +80,9 @@
 //!   and coda are markers. One a direction places stands on the first note or
 //!   rest of its staff starting where it stands (the note, not a grace before
 //!   it), or where none starts, at the position in the region. A run of
-//!   `<words>` is one text; the words of a text line are its text, and those
-//!   of a tempo its mark's.
+//!   `<words>` is one text, its pieces joined as written, each line's break
+//!   and each space kept, and the whole trimmed; the words of a text line are
+//!   its text, and those of a tempo its mark's.
 //! - A `<sound tempo>` sets a segment of the score's tempo map, in quarter
 //!   notes per minute, once at each place any part sets one; the mark its
 //!   direction shows is written in the same transaction, with no link

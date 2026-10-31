@@ -159,8 +159,11 @@ fn fixtures_render_to_golden_locked_svg_and_snapshot() {
         );
         assert_eq!(
             out.stats.provenance_count,
-            out.stats.glyph_count + out.stats.stroke_count + out.stats.curve_count,
-            "{fixture}: every drawn glyph, stroke, and curve must carry a provenance trace"
+            out.stats.glyph_count
+                + out.stats.stroke_count
+                + out.stats.curve_count
+                + out.stats.run_count,
+            "{fixture}: every drawn glyph, stroke, curve and run must carry a provenance trace"
         );
         let class_sum: usize = out.stats.class_counts.values().sum();
         assert_eq!(
@@ -323,8 +326,11 @@ fn engraver_output_is_golden_locked_well_formed_with_every_glyph_drawn() {
         );
         assert_eq!(
             out.stats.provenance_count,
-            out.stats.glyph_count + out.stats.stroke_count + out.stats.curve_count,
-            "{fixture}: every drawn glyph, stroke, and curve must carry a provenance trace"
+            out.stats.glyph_count
+                + out.stats.stroke_count
+                + out.stats.curve_count
+                + out.stats.run_count,
+            "{fixture}: every drawn glyph, stroke, curve and run must carry a provenance trace"
         );
         assert!(
             out.diagnostics.is_empty(),
