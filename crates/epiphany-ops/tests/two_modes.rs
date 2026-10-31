@@ -37,8 +37,17 @@ use epiphany_ops::fuzz::modes;
 /// payload shapes (a grace rewritten, a pedal line without its sign, a
 /// syllable deleted) each come to about six in the budget rather than three or
 /// four; at 64, an arm added to the generator lost the syllable's delete from
-/// the budget by the draws moving alone.
-const CI_BUDGET: [(u64, u64, usize); 2] = [(96, 0x4A_0001, 24), (128, 0x4A_0001, 64)];
+/// the budget by the draws moving alone. Each arm added since moved the draws
+/// and lost a thin row at the one seed, kept only by choosing weights there
+/// (C5b review 3's L3), so the budget is sized by its rows at twenty other
+/// seeds: at 168 and 224 histories, 1.75 times the 96 and 128 it held, every
+/// row it asserts passes with both chunks reseeded at each of `0x4B_0001` to
+/// `0x5E_0001` at the generator and weights of X5b's fix round 3, where 1.5
+/// times failed two of them (D104 Q2). One row would need more than double:
+/// a `ModifyCrossCutting` refused for its wall-clock offset, which fails three
+/// of the twenty reseeds at twice the budget; it moves to D50's bar (below).
+/// In CI the suite ran 64.5 s at 96 and 128 on X5b's merge of `main`.
+const CI_BUDGET: [(u64, u64, usize); 2] = [(168, 0x4A_0001, 24), (224, 0x4A_0001, 64)];
 
 /// The CI budget's runs, one per chunk with its authored count, shared by the
 /// tests that read them.
@@ -473,9 +482,16 @@ fn the_ci_budget_refuses_what_reduction_version_5_refuses() {
         ) > 0,
         "no region refused for its offset from a region's edge"
     );
+    // A `ModifyCrossCutting` refused for its wall-clock offset is not
+    // asserted here: at twice the budget it fails three of the twenty reseeds
+    // the budget is sized at, so it needs more than double, and it moves to
+    // D50's bar, which requires it refused `WrongRegionTimeModel` in every
+    // chunk, as it requires every coverage row authored and applied (D104
+    // Q2). Its rule is held by `anchor_offsets.rs`'s
+    // `a_marker_modified_onto_a_wall_clock_offset_in_a_metric_region_is_refused`
+    // and its spanner's twin.
     for holder in [
         "CreateCrossCutting+wall-clock offset",
-        "ModifyCrossCutting+wall-clock offset",
         "CreateRepeatStructure+wall-clock offset",
         "SetUserSystemBreak+wall-clock offset",
         "SetUserPageBreak+wall-clock offset",
