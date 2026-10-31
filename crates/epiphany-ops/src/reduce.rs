@@ -6233,8 +6233,8 @@ impl<'a> Reducer<'a> {
                 };
             }
         }
-        // And it is a map `SetTempoSegment`'s writes could leave, read as a
-        // write reads the map it leaves: its segments in order of their
+        // And it is well formed as a `SetTempoSegment` write's map must be,
+        // read as a write reads the map it leaves: its segments in order of their
         // starts' resolved positions, each shape carrying its end data, and
         // no segment's resolved end before its own start or past the next
         // segment's start (reduction version 5, D90 Q3: before it a map out
@@ -7679,6 +7679,90 @@ impl<'a> Reducer<'a> {
                     }
                 }
                 _ => out.push(restoration),
+            }
+        }
+        out
+    }
+
+    /// The tempo map of `scope` (the score's for `None`) as an undo's
+    /// restorations would leave it: each key's current value in the tempo
+    /// chains, with `restorations`' tempo segments of that scope installed over
+    /// their keys, every present segment beside its key in key order. Read
+    /// purely from the chains both modes keep, as a write reads the map it
+    /// leaves ([`Self::prospective_tempo_write_well_formed`]).
+    fn tempo_map_restorations_leave<'r>(
+        &'r self,
+        scope: Option<RegionId>,
+        restorations: &'r [ValueRestoration],
+    ) -> Vec<(MusicalPosition, &'r TempoSegment)> {
+        let mut map: BTreeMap<&MusicalPosition, Option<&TempoSegment>> = BTreeMap::new();
+        for ((chain_scope, position), chain) in &self.tempo_segment_chain {
+            if *chain_scope == scope {
+                if let Some(value) = chain.current() {
+                    map.insert(position, value.as_ref());
+                }
+            }
+        }
+        for restoration in restorations {
+            if let ValueRestoration::TempoSegment {
+                region,
+                position,
+                value,
+            } = restoration
+            {
+                if *region == scope {
+                    map.insert(position, value.as_ref());
+                }
+            }
+        }
+        map.into_iter()
+            .filter_map(|(position, segment)| Some((position.clone(), segment?)))
+            .collect()
+    }
+
+    /// `StrictInverse`/`Cascade`: whether the whole restoration set, applied
+    /// together, would leave a tempo map malformed as a write's would be
+    /// (`tempo_segments_well_formed`: a shape without its end data, a resolved
+    /// end before its own start or past the next segment's start), read per
+    /// scope it touches (reduction version 5, C5b review 3's M1: before it an
+    /// undo restored a key's earlier segment unread, and a segment written
+    /// since could overlap it, `req:time:tempo-segment-order`).
+    fn tempo_restorations_malform_a_map(&self, restorations: &[ValueRestoration]) -> bool {
+        let scopes: BTreeSet<Option<RegionId>> = restorations
+            .iter()
+            .filter_map(|restoration| match restoration {
+                ValueRestoration::TempoSegment { region, .. } => Some(*region),
+                _ => None,
+            })
+            .collect();
+        scopes.into_iter().any(|scope| {
+            !tempo_segments_well_formed(&self.tempo_map_restorations_leave(scope, restorations))
+        })
+    }
+
+    /// `BestEffort`: the canonical-order greedy over tempo restorations, as
+    /// [`Self::select_invariant20_safe_restorations`] is over meter ones —
+    /// walking `restorations` in `collect_restorations`' order, admitting each
+    /// tempo segment's restoration whose addition keeps its scope's map, with
+    /// the restorations admitted before it, well formed, and skipping the
+    /// rest; every other restoration is admitted (reduction version 5, C5b
+    /// review 3's M1). A key whose restoration is skipped keeps its current
+    /// value, which the undo's guard then reads as the undo leaves it.
+    fn select_tempo_safe_restorations(
+        &self,
+        restorations: Vec<ValueRestoration>,
+    ) -> Vec<ValueRestoration> {
+        let mut out: Vec<ValueRestoration> = Vec::new();
+        for restoration in restorations {
+            let scope = match &restoration {
+                ValueRestoration::TempoSegment { region, .. } => Some(*region),
+                _ => None,
+            };
+            out.push(restoration);
+            if let Some(scope) = scope {
+                if !tempo_segments_well_formed(&self.tempo_map_restorations_leave(scope, &out)) {
+                    out.pop();
+                }
             }
         }
         out
@@ -9417,6 +9501,26 @@ impl<'a> Reducer<'a> {
                     self.conflicts.insert(conflict);
                     return OperationEffect::Conflicted { conflict: cid };
                 }
+                // So must it leave every tempo map well formed, read as a
+                // write reads the map it leaves: per scope, the chains'
+                // current values with the tempo restorations installed
+                // (reduction version 5, C5b review 3's M1: before it the
+                // undo restored a key's earlier segment unread, and a segment
+                // written since could overlap it,
+                // `req:time:tempo-segment-order`).
+                if self.tempo_restorations_malform_a_map(&restorations) {
+                    let conflict = ConflictRecord::new(
+                        ConflictKind::TransactionConflict {
+                            transaction: op.target,
+                            failed_members: vec![env.id],
+                        },
+                        vec![env.id],
+                        vec![],
+                    );
+                    let cid = conflict.id;
+                    self.conflicts.insert(conflict);
+                    return OperationEffect::Conflicted { conflict: cid };
+                }
                 let repairs = self.tombstone_undo_targets(env, &targets);
                 self.apply_restorations(env, restorations);
                 if repairs.is_empty() {
@@ -9426,6 +9530,12 @@ impl<'a> Reducer<'a> {
                 }
             }
             UndoPolicy::BestEffort => {
+                // A tempo restoration that would leave its map malformed, as
+                // a write's would be, is skipped, its key keeping its current
+                // value, and everything below reads the restorations so
+                // chosen: the guard holds what a skipped key's segment names
+                // (reduction version 5, C5b review 3's M1).
+                let restorations = self.select_tempo_safe_restorations(restorations);
                 // Tombstone the still-live, non-stranding mints; restore the
                 // still-last-written keys; skip the rest. A mint kept for
                 // what names it holds what it names in turn, so the guard is

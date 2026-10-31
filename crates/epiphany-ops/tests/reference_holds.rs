@@ -20,7 +20,11 @@
 //! holds, reading the tempo chains, would see one of (D89). A tempo map whose
 //! region the same undo removes, or which is not live, holds nothing against
 //! an undo removing a region (D90 Q1), and a region is not created carrying a
-//! tempo map no sequence of `SetTempoSegment` writes could leave (D90 Q3).
+//! tempo map malformed as a `SetTempoSegment` write's would be (D90 Q3). An
+//! undo reads the tempo maps its restorations leave as such a write reads the
+//! map it leaves (C5b review 3's M1, D104 Q1): a strict or cascading undo
+//! conflicts where a map would be malformed, and a best-effort one skips the
+//! restorations that would malform it.
 //!
 //! Each history is one author's, built by hand on a small score: a metric
 //! region holding a staff instance, a measure, a voice and a note, and a
@@ -847,7 +851,7 @@ fn a_region_carrying_tempo_segments_on_distinct_keys_applies_and_holds() {
 }
 
 /// D90 Q3, one step past D89's refusal: a `CreateRegion` whose carried tempo
-/// map no sequence of `SetTempoSegment` writes could leave is refused
+/// map is malformed as a `SetTempoSegment` write's would be is refused
 /// `TempoMapMalformed` in both modes, read as such a write reads the map it
 /// leaves. Before it each of these applied: a map out of order or
 /// overlapping against `req:time:tempo-segment-order`, the rest unseen.
@@ -1658,5 +1662,272 @@ fn a_member_s_cascade_carries_the_children_of_the_tuplet_it_removes() {
             "{policy:?}"
         );
         assert!(tuplets(&aware).is_empty(), "{policy:?}");
+    }
+}
+
+/// A linear segment from the metric region's start to `to` bars into it, its
+/// end tempo set.
+fn linear_to(to: i64) -> TempoSegment {
+    TempoSegment {
+        start: edge(METRIC, AnchorOffset::Zero),
+        end: Some(edge(METRIC, bars(to))),
+        start_tempo: Tempo::quarter(90.0).expect("a tempo"),
+        end_tempo: Some(Tempo::quarter(60.0).expect("a tempo")),
+        shape: TempoShape::Linear,
+    }
+}
+
+/// A constant segment `at` bars into the metric region, with no end.
+fn constant_at(at: i64) -> TempoSegment {
+    let mut segment = valuegen::tempo_segment(METRIC, MusicalPosition::origin(), 90.0);
+    segment.start = edge(METRIC, bars(at));
+    segment
+}
+
+impl History {
+    /// `segment` written into `scope`'s map at its own start.
+    fn write(
+        &mut self,
+        transaction: Option<TransactionId>,
+        scope: Option<RegionId>,
+        segment: TempoSegment,
+    ) -> OperationId {
+        let start = segment.start.clone();
+        self.tempo_segment(transaction, scope, start, Some(segment))
+    }
+
+    /// An undo of `target` authored in `transaction`.
+    fn undo_in(
+        &mut self,
+        transaction: TransactionId,
+        target: TransactionId,
+        policy: UndoPolicy,
+    ) -> OperationId {
+        self.push_payload(
+            Some(transaction),
+            OperationPayload::UndoTransaction(UndoTransactionPayload { target, policy }),
+        )
+    }
+}
+
+/// The segments of `scope`'s map (the score's for `None`) in the graph-aware
+/// score.
+fn tempo_map(aware: &GraphMaterialization, scope: Option<RegionId>) -> Vec<TempoSegment> {
+    match scope {
+        None => aware.score.tempo_map.segments.clone(),
+        Some(region) => aware
+            .score
+            .canvas
+            .regions
+            .iter()
+            .find(|r| r.id == region)
+            .and_then(|r| r.local_tempo_map.as_ref())
+            .map(|map| map.segments.clone())
+            .unwrap_or_default(),
+    }
+}
+
+/// C5b review 3's M1 and its third route, each a key's earlier segment an
+/// undo restores beside a segment written since: a segment from the region's
+/// start to three bars in shortened to one in a transaction, then a constant
+/// segment written two bars in; a constant segment two bars in removed in a
+/// transaction, then a segment from the start to three bars in; and a
+/// constant segment two bars in written in a transaction a second undoes,
+/// then a segment from the start to three bars in, and the second undone.
+#[derive(Clone, Copy, Debug)]
+enum Restoring {
+    Shortening,
+    Removal,
+    UndoOfAnUndo,
+}
+
+/// `route` in `scope`'s map under `policy`, the later write overlapping the
+/// restored segment where `overlapping` is set and meeting it end to start
+/// where not; returns the history, its last undo, the map that undo leaves
+/// where it restores the segment, and the map before it.
+fn restoring(
+    route: Restoring,
+    scope: Option<RegionId>,
+    overlapping: bool,
+    policy: UndoPolicy,
+) -> (History, OperationId, Vec<TempoSegment>, Vec<TempoSegment>) {
+    let mut h = History::new();
+    let (later, restored, kept);
+    let target = match route {
+        Restoring::Shortening => {
+            h.write(None, scope, linear_to(3));
+            let transaction = h.transaction(500);
+            h.write(Some(transaction), scope, linear_to(1));
+            later = constant_at(if overlapping { 2 } else { 3 });
+            restored = vec![linear_to(3), later.clone()];
+            kept = vec![linear_to(1), later.clone()];
+            transaction
+        }
+        Restoring::Removal => {
+            h.write(None, scope, constant_at(2));
+            let transaction = h.transaction(500);
+            h.tempo_segment(Some(transaction), scope, edge(METRIC, bars(2)), None);
+            later = linear_to(if overlapping { 3 } else { 2 });
+            restored = vec![later.clone(), constant_at(2)];
+            kept = vec![later.clone()];
+            transaction
+        }
+        Restoring::UndoOfAnUndo => {
+            let first = h.transaction(500);
+            h.write(Some(first), scope, constant_at(2));
+            let second = h.transaction(501);
+            h.undo_in(second, first, policy);
+            later = linear_to(if overlapping { 3 } else { 2 });
+            restored = vec![later.clone(), constant_at(2)];
+            kept = vec![later.clone()];
+            second
+        }
+    };
+    h.write(None, scope, later);
+    let undo = h.undo(target, policy);
+    (h, undo, restored, kept)
+}
+
+/// C5b review 3's M1: an undo reads the tempo maps its restorations leave
+/// as a write reads the map it leaves. Where the restored segment would
+/// overlap one written since, a strict or cascading undo conflicts and a
+/// best-effort one applies without that restoration, the map left as it
+/// stood, in both modes; before it each restored the segment and broke
+/// `req:time:tempo-segment-order`. In the region's map and the score's, by
+/// each route; the controls, the later write meeting the restored segment
+/// end to start, restore it under every policy.
+#[test]
+fn an_undo_leaving_a_tempo_map_malformed_is_held() {
+    for route in [
+        Restoring::Shortening,
+        Restoring::Removal,
+        Restoring::UndoOfAnUndo,
+    ] {
+        for scope in [Some(METRIC), None] {
+            for policy in POLICIES {
+                let case = format!("{route:?}, {scope:?}, {policy:?}");
+                let (h, undo, _, kept) = restoring(route, scope, true, policy);
+                let (free, aware) = h.reduce();
+                match policy {
+                    UndoPolicy::BestEffort => {
+                        assert!(undone(&free, undo), "{case}: {:?}", effect(&free, undo))
+                    }
+                    _ => assert!(
+                        matches!(effect(&free, undo), OperationEffect::Conflicted { .. }),
+                        "{case}: {:?}",
+                        effect(&free, undo)
+                    ),
+                }
+                assert_eq!(tempo_map(&aware, scope), kept, "{case}");
+                let (h, undo, restored, _) = restoring(route, scope, false, policy);
+                let (free, aware) = h.reduce();
+                assert!(
+                    undone(&free, undo),
+                    "{case}'s control: {:?}",
+                    effect(&free, undo)
+                );
+                assert_eq!(tempo_map(&aware, scope), restored, "{case}'s control");
+            }
+        }
+    }
+}
+
+/// A best-effort undo restores the tempo segments that leave their map well
+/// formed and skips the rest: a transaction shortening a segment and removing
+/// another five bars in, a constant segment then written two bars in, and the
+/// transaction undone. The removal's restoration applies, the shortening's
+/// would overlap the later segment and is skipped; a strict or cascading undo
+/// conflicts and restores neither.
+#[test]
+fn a_best_effort_undo_restores_the_tempo_segments_that_leave_the_map_well_formed() {
+    for policy in POLICIES {
+        let mut h = History::new();
+        h.write(None, Some(METRIC), linear_to(3));
+        h.write(None, Some(METRIC), constant_at(5));
+        let transaction = h.transaction(500);
+        h.write(Some(transaction), Some(METRIC), linear_to(1));
+        h.tempo_segment(Some(transaction), Some(METRIC), edge(METRIC, bars(5)), None);
+        h.write(None, Some(METRIC), constant_at(2));
+        let undo = h.undo(transaction, policy);
+        let (free, aware) = h.reduce();
+        let map = tempo_map(&aware, Some(METRIC));
+        match policy {
+            UndoPolicy::BestEffort => {
+                assert!(undone(&free, undo), "{:?}", effect(&free, undo));
+                assert_eq!(map, vec![linear_to(1), constant_at(2), constant_at(5)]);
+            }
+            _ => {
+                assert!(
+                    matches!(effect(&free, undo), OperationEffect::Conflicted { .. }),
+                    "{policy:?}: {:?}",
+                    effect(&free, undo)
+                );
+                assert_eq!(map, vec![linear_to(1), constant_at(2)], "{policy:?}");
+            }
+        }
+    }
+}
+
+/// The score's map and a region's are read apart: a constant segment two
+/// bars into the region's map, removed in a transaction and restored by its
+/// undo, applies under every policy though the score's map holds a segment
+/// from the region's start to three bars in, which the region's segment would
+/// overlap were the two one map.
+#[test]
+fn an_undo_reads_each_tempo_map_apart() {
+    for policy in POLICIES {
+        let mut h = History::new();
+        h.write(None, None, linear_to(3));
+        h.write(None, Some(METRIC), constant_at(2));
+        let transaction = h.transaction(500);
+        h.tempo_segment(Some(transaction), Some(METRIC), edge(METRIC, bars(2)), None);
+        let undo = h.undo(transaction, policy);
+        let (free, aware) = h.reduce();
+        assert!(undone(&free, undo), "{policy:?}: {:?}", effect(&free, undo));
+        assert_eq!(tempo_map(&aware, Some(METRIC)), vec![constant_at(2)]);
+        assert_eq!(tempo_map(&aware, None), vec![linear_to(3)]);
+    }
+}
+
+/// One step past M1's rule: a key whose restoration a best-effort undo skips
+/// keeps its segment, and that segment holds what it names. A transaction
+/// enters a note and writes, over a segment from the region's start to three
+/// bars in, a segment starting at that note and ending a bar in (a note
+/// resolves to the map's origin, the key the segment replaces); a constant
+/// segment is then written two bars in, and the transaction undone. The
+/// restoration would overlap the later segment and is skipped, so the note
+/// stays, held by the segment at it: a strict or cascading undo conflicts,
+/// and a best-effort one keeps the note and the segment, the graph clean in
+/// both modes.
+#[test]
+fn a_skipped_tempo_restoration_s_segment_holds_what_it_names() {
+    for policy in POLICIES {
+        let mut h = History::new();
+        h.write(None, Some(METRIC), linear_to(3));
+        let transaction = h.transaction(500);
+        h.note(Some(transaction), LATER_NOTE, 4);
+        let mut at_the_note = constant_at(0);
+        at_the_note.start = at_note(LATER_NOTE);
+        at_the_note.end = Some(edge(METRIC, bars(1)));
+        h.write(Some(transaction), Some(METRIC), at_the_note.clone());
+        h.write(None, Some(METRIC), constant_at(2));
+        let undo = h.undo(transaction, policy);
+        let (free, aware) = h.reduce();
+        match policy {
+            UndoPolicy::BestEffort => {
+                assert!(undone(&free, undo), "{:?}", effect(&free, undo))
+            }
+            _ => assert!(
+                matches!(effect(&free, undo), OperationEffect::Conflicted { .. }),
+                "{policy:?}: {:?}",
+                effect(&free, undo)
+            ),
+        }
+        assert!(live(&aware, TypedObjectId::Event(LATER_NOTE)), "{policy:?}");
+        assert_eq!(
+            tempo_map(&aware, Some(METRIC)),
+            vec![at_the_note.clone(), constant_at(2)],
+            "{policy:?}"
+        );
     }
 }

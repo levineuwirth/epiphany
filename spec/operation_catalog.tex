@@ -910,9 +910,13 @@ and a member's cascade carries the tuplets nested in the ones it removes
 tempo map holds two segments on one key is refused \texttt{TempoMapMalformed},
 as two writes at the key would leave one
 (Section~\ref{sec:k0:structural-containers}), and so is one whose carried map
-no sequence of \texttt{SetTempoSegment} writes could leave: out of order,
+is malformed as a \texttt{SetTempoSegment} write's would be: out of order,
 overlapping, a segment ending before its start or a non-constant one without
-its end data (Section~\ref{sec:k0:structural-containers}). An undo removing a region reads
+its end data (Section~\ref{sec:k0:structural-containers}). An undo reads the
+tempo maps its restorations leave as such a write reads the map it leaves: a
+strict or cascading undo conflicts where a map would be so malformed, and a
+best-effort one skips the restorations that would malform it
+(Section~\ref{sec:k0:undo}). An undo removing a region reads
 a tempo map whose region the same undo removes, or which is not live, as
 holding nothing, as it reads one naming an event
 (Section~\ref{sec:k0:structural-containers}). Accordingly
@@ -2037,8 +2041,8 @@ base holding such a map, a region's or the score's, is one no writer writes,
 refused at reopen with every base (Binary Format companion,
 \texttt{req:binfmt:op-block-boundary}).
 
-So is a \texttt{CreateRegion} whose carried tempo map no sequence of
-\texttt{SetTempoSegment} writes could leave, read as such a write reads the
+So is a \texttt{CreateRegion} whose carried tempo map is malformed as a
+\texttt{SetTempoSegment} write's would be, read as such a write reads the
 map it leaves (Section~\ref{sec:k0:meter-tempo}): its segments not in order of
 their starts' resolved positions, a non-constant segment without its end
 tempo or its end, or a segment whose resolved end precedes its own start or
@@ -3090,7 +3094,11 @@ with \texttt{WrongRegionTimeModel} (Section~\ref{sec:framework:anchor-offsets}).
 recording; identical concurrent writes reduce idempotently.
 
 \textbf{Undo semantics.} Value-restoring per Section~\ref{sec:k0:undo}: undo
-restores the key's chain-predecessor value (or its absence).
+restores the key's chain-predecessor value (or its absence). Since
+version~0.22.0 a tempo segment's restoration is read as a write is, against
+the map the undo's restorations leave: a strict or cascading undo conflicts
+where that map would be malformed, and a best-effort one skips the
+restoration, the key keeping its value (Section~\ref{sec:k0:undo}).
 
 \textbf{Re-anchoring.} An event-anchored \texttt{anchor}/\texttt{start} whose
 event is later tombstoned degrades by the framework's anchor rules; the
@@ -3305,7 +3313,21 @@ override, a break's anchor) is superseded by the operation that tombstoned it,
 so an undo of an undo restores no value naming what the first undo removed
 (since version~0.19.0, before which it restored the dangling reference);
 \texttt{BestEffort} restores the still-last-written keys and skips
-the superseded ones. Restorations are expressed in the effect status (a fully
+the superseded ones. Since version~0.22.0 an undo reads the tempo maps its
+restorations leave as a \texttt{SetTempoSegment} reads the map it leaves
+(Section~\ref{sec:k0:meter-tempo}): per map, every key's current value with
+the undo's tempo restorations installed. Where a map would be malformed as a
+write's would be (a segment ending before its own start or past the next
+segment's start, or a shape without its end data), \texttt{StrictInverse} and
+\texttt{Cascade} refuse the whole undo with a \texttt{TransactionConflict},
+and \texttt{BestEffort} applies, in canonical order, each tempo restoration
+that keeps its map well formed with those admitted before it, skipping the
+rest; a skipped key keeps its value, which holds what it names as the undo
+leaves it (before which the undo restored a key's earlier segment unread, so
+a segment shortened or removed in a transaction, a later segment written
+where the shorter map allowed it, and the transaction undone, or an undo of
+an undo restoring a segment over one written since, left two segments
+overlapping). Restorations are expressed in the effect status (a fully
 clean compensation is \texttt{Applied}; a mixed one is
 \texttt{AppliedWithRepair} carrying only the tombstone repairs) --- no new
 repair vocabulary.

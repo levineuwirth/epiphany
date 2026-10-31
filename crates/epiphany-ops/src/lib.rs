@@ -949,13 +949,31 @@ pub mod vectors;
 ///     `StrictInverse` and `Cascade` and kept the first under `BestEffort`,
 ///     and a deleted region's map, which its chains keep, held a region it
 ///     named against that region's undo. Locked by `reference_holds.rs`.
-///     And a `CreateRegion` whose carried tempo map no sequence of
-///     `SetTempoSegment` writes could leave is refused `TempoMapMalformed` in
+///     And a `CreateRegion` whose carried tempo map is malformed as a
+///     `SetTempoSegment` write's would be is refused `TempoMapMalformed` in
 ///     both modes, read as such a write reads the map it leaves: its
 ///     segments out of order by their starts' resolved positions, one ending
 ///     past the next one's start or before its own, or a non-constant one
 ///     without its end tempo or its end; version `4` applied it. Locked by
 ///     `reference_holds.rs` and the committed histories `319` to `322`.
+///   - **What C5b review 3 found** (X5b's fix round 3, D104 Q1, verdicts),
+///     older than X5b and one author's. An undo reads the tempo maps its
+///     restorations leave as a `SetTempoSegment` reads the map it leaves:
+///     per map, every key's current value in the tempo chains with the
+///     undo's tempo restorations installed. Where a map would be malformed
+///     as a write's would be (a segment ending before its own start or past
+///     the next one's, or a shape without its end data), a `StrictInverse`
+///     or `Cascade` undo conflicts (`TransactionConflict`), and a
+///     `BestEffort` one applies the tempo restorations that leave every map
+///     well formed, a canonical-order greedy as for meter restorations,
+///     skipping the rest; a skipped key keeps its value, and the undo's
+///     guard reads the map so left, so what that value names is held. In
+///     both modes. Version `4` restored a key's earlier segment unread, so a
+///     segment shortened or removed in a transaction, a later segment written
+///     where the shorter map allowed it, and the transaction undone, or an
+///     undo of an undo restoring a segment over one written since, left two
+///     segments overlapping (`req:time:tempo-segment-order`). Locked by
+///     `reference_holds.rs` and the committed histories `323` to `358`.
 ///
 ///   With it, at the same epoch 16, a wire addition that changes no verdict:
 ///   `MarkerKind` appends `ExpressionText` (X5b.7, D79 Q9), reduced as any

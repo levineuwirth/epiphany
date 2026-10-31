@@ -2287,10 +2287,17 @@ pub struct Tempo {
   Catalog, \sectionsc{Structural Containers}; reduction algorithm
   version~\texttt{5}, before which the create applied and reduction held
   the first segment at the key alone). So is a region created carrying a
-  map no sequence of \texttt{SetTempoSegment} writes could leave: out of
+  map malformed as a \texttt{SetTempoSegment} write's would be: out of
   order, overlapping, a segment ending before its start, or a non-constant
   one without its end data (reduction algorithm version~\texttt{5}, before
-  which the create applied).
+  which the create applied). An undo reads the maps its restorations leave
+  as such a write reads the map it leaves, every key's current value with
+  the undo's restorations installed: where a map would be so malformed, a
+  strict or cascading undo conflicts and a best-effort one applies only the
+  restorations that leave every map well formed (Operation Catalog,
+  \sectionsc{UndoTransaction}; reduction algorithm version~\texttt{5},
+  before which the undo restored a key's earlier segment unread, so a
+  segment written since could overlap it).
 \end{requirement}
 
 \begin{requirement}
@@ -17625,8 +17632,10 @@ layouts they own versus inherit:
   paragraph say what the catalog does: a break leaves its event's removal
   alone, and a present break holds its measure against an undo.
   \texttt{req:time:tempo-segment-order} says a segment's end does not
-  precede its start, and that a region created carrying a map no
-  \texttt{SetTempoSegment} writes could leave is refused.
+  precede its start, that a region created carrying a map malformed as a
+  \texttt{SetTempoSegment} write's would be is refused, and that an undo
+  whose restorations would leave a map so malformed is held, a best-effort
+  one applying only the restorations that leave every map well formed.
   \\
   \bottomrule
 \end{longtable}

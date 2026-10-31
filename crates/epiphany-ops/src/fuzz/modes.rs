@@ -128,7 +128,7 @@
 //! at its own start, a measure's or another region's, in either order, and
 //! one time in two the note then deleted (arm 72): the create is refused
 //! `TempoMapMalformed` (D89). And a region placed in a metric model carrying a
-//! tempo map no sequence of `SetTempoSegment` writes could leave, its segments
+//! tempo map malformed as a `SetTempoSegment` write's would be, its segments
 //! a bar or more into its start out of order, one ending past the next one's
 //! start, one ending before its own start, or a linear one without its end
 //! tempo (arm 73): the create is refused `TempoMapMalformed` (D90 Q3).
@@ -1001,8 +1001,9 @@ fn kind_shapes(payload: &OperationPayload) -> Vec<&'static str> {
             {
                 out.push("CreateRegion+tempo map with two segments on one key");
             }
-            // Arm 73's shapes, each a map no `SetTempoSegment` writes leave
-            // (D90 Q3), read by its segments' resolved positions in order.
+            // Arm 73's shapes, each a map malformed as a `SetTempoSegment`
+            // write's would be (D90 Q3), read by its segments' resolved
+            // positions in order.
             let keyed: Vec<_> = op
                 .region
                 .local_tempo_map
@@ -4566,8 +4567,8 @@ fn make(
             out
         }
         73 => {
-            // A region carrying a tempo map no sequence of `SetTempoSegment`
-            // writes could leave (X5b fix round 2's addendum, D90 Q3): placed
+            // A region carrying a tempo map malformed as a `SetTempoSegment`
+            // write's would be (X5b fix round 2's addendum, D90 Q3): placed
             // as an editor places one, in a metric model, its segments a bar
             // or more into its own start out of order, one ending past the
             // next one's start, one ending before its own start, or a linear

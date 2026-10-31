@@ -947,8 +947,8 @@ pub fn decode_vectors() -> Vec<DecodeVector> {
         two_on_one_key.to_canonical_bytes(),
     ));
 
-    // X5b (D90 Q3): a region created carrying a tempo map no sequence of
-    // `SetTempoSegment` writes could leave: its segments out of order, one
+    // X5b (D90 Q3): a region created carrying a tempo map malformed as a
+    // `SetTempoSegment` write's would be: its segments out of order, one
     // ending past the next one's start, one ending before its own start, or
     // a linear one without its end tempo. Each decodes; reduction refuses it
     // `TempoMapMalformed`, as such a write is refused.
