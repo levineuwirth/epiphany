@@ -131,7 +131,14 @@
 //! tempo map malformed as a `SetTempoSegment` write's would be, its segments
 //! a bar or more into its start out of order, one ending past the next one's
 //! start, one ending before its own start, or a linear one without its end
-//! tempo (arm 73): the create is refused `TempoMapMalformed` (D90 Q3).
+//! tempo (arm 73): the create is refused `TempoMapMalformed` (D90 Q3). And
+//! in a metric region's map or the score's, segments with ends, one shortened
+//! or removed in a transaction a later undo targets, or written in a
+//! transaction an undo undoes and that undo undone in turn, a segment written
+//! between where the shorter or emptier map allows it, overlapping the
+//! restored segment one time in two (arm 74): a strict or cascading undo
+//! conflicts where the restoration would overlap, and a best-effort one skips
+//! it (C5b review 3's M1, D104 Q1).
 //!
 //! Everything is seeded: [`generate`] is a function of its seed and length, so
 //! a finding reproduces from both. [`minimize`] shrinks a failing history to
@@ -697,9 +704,9 @@ fn read_under_their_ids(
 }
 
 /// The payload shapes schema major 5 adds, and those reduction version 5
-/// reads (X5b), each counted beside its kind; and arm 70's gesture, read
-/// from the history ([`gesture_shapes`]).
-const SHAPES: [&str; 40] = [
+/// reads (X5b), each counted beside its kind; and arms 70's and 74's
+/// gestures, read from the history ([`gesture_shapes`]).
+const SHAPES: [&str; 41] = [
     "InsertEvent+marks",
     "InsertEvent+ornaments",
     "InsertEvent+grace",
@@ -740,6 +747,7 @@ const SHAPES: [&str; 40] = [
     "CreateTuplet+parent",
     "CreateTuplet+parent, several members",
     "UndoTransaction+a signature a later grid names",
+    "UndoTransaction+a tempo segment restored beside one written since",
 ];
 
 /// The shapes reduction version 5 refuses wherever they are written, each
@@ -767,8 +775,13 @@ pub const REFUSED: [&str; 7] = [
 /// authored history around each envelope, so that the CI budget counts the
 /// arm's reach (D90 Q2): a region whose extent names a note or a measure an
 /// envelope after it makes (arm 69, refused `TargetMissing` since X5b's fix
-/// round 1), and an undo of a transaction that set a time signature a grid
-/// set outside it names (arm 70, held while the grid names it, D86 Q1).
+/// round 1), an undo of a transaction that set a time signature a grid
+/// set outside it names (arm 70, held while the grid names it, D86 Q1), and
+/// an undo of a transaction that wrote a tempo segment, or undid one that
+/// did, a segment written since in the same map outside it, a segment with an
+/// end among them (arm 74, a strict or cascading undo held where the
+/// restoration would overlap the later one, C5b review 3's M1). Only arm 74
+/// writes a segment with an end.
 fn gesture_shapes(authored: &[OperationEnvelope]) -> Vec<Vec<&'static str>> {
     let mut minted_at: BTreeMap<TypedObjectId, usize> = BTreeMap::new();
     for (index, envelope) in authored.iter().enumerate() {
@@ -808,6 +821,54 @@ fn gesture_shapes(authored: &[OperationEnvelope]) -> Vec<Vec<&'static str>> {
                 });
                 if gridded {
                     out.push("UndoTransaction+a signature a later grid names");
+                }
+                // The tempo writes the undo would restore: the target's, or
+                // those of a transaction an undo in the target undoes.
+                let tempo_of = |tx: TransactionId| {
+                    before
+                        .iter()
+                        .enumerate()
+                        .filter(move |(_, e)| e.transaction == Some(tx))
+                        .filter_map(|(i, e)| match &e.payload {
+                            OperationPayload::Primitive(OperationKind::SetTempoSegment(op)) => {
+                                Some((i, op))
+                            }
+                            _ => None,
+                        })
+                };
+                let mut restored: Vec<(usize, &SetTempoSegmentOp)> =
+                    tempo_of(undo.target).collect();
+                for e in before.iter().filter(|e| e.transaction == Some(undo.target)) {
+                    if let OperationPayload::UndoTransaction(inner) = &e.payload {
+                        restored.extend(tempo_of(inner.target));
+                    }
+                }
+                if let Some(first) = restored.iter().map(|(i, _)| *i).min() {
+                    let scopes: BTreeSet<Option<RegionId>> =
+                        restored.iter().map(|(_, op)| op.region).collect();
+                    let since: Vec<&SetTempoSegmentOp> = before
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, e)| *i > first && e.transaction != Some(undo.target))
+                        .filter_map(|(_, e)| match &e.payload {
+                            OperationPayload::Primitive(OperationKind::SetTempoSegment(op))
+                                if scopes.contains(&op.region) =>
+                            {
+                                Some(op)
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    let ended = restored
+                        .iter()
+                        .map(|(_, op)| *op)
+                        .chain(since.iter().copied())
+                        .any(|op| op.segment.as_ref().is_some_and(|s| s.end.is_some()));
+                    if !since.is_empty() && ended {
+                        out.push(
+                            "UndoTransaction+a tempo segment restored beside one written since",
+                        );
+                    }
                 }
             }
             out
@@ -4654,6 +4715,127 @@ fn make(
                 region: carrier,
             }))]
         }
+        74 => {
+            // A tempo segment an undo restores beside one written since (C5b
+            // review 3's M1, D104 Q1): in a metric region's map or the
+            // score's, segments with ends two bars or more into the region,
+            // one shortened or removed in a transaction a later undo
+            // targets, or written in a transaction an undo undoes and that
+            // undo undone in turn; between, a segment written where the
+            // shorter or emptier map allows it, overlapping the restored one
+            // one time in two and meeting it end to start otherwise. The undo
+            // by any policy: a strict or cascading one conflicts where the
+            // restoration would overlap, and a best-effort one skips it.
+            if sim.replicas[r].open.is_some() {
+                return None;
+            }
+            let metric: Vec<RegionId> = h
+                .regions
+                .iter()
+                .filter(|(_, model, _)| model.coordinate_discipline().admits_musical_offsets())
+                .map(|(id, _, _)| *id)
+                .collect();
+            let region = *sim.rng.pick(&metric)?;
+            let scope = sim.rng.chance(2).then_some(region);
+            let at = |bars: i64| {
+                valuegen::region_start_anchor(
+                    region,
+                    MusicalPosition(RationalTime::from_int(bars as i32)),
+                )
+            };
+            let segment = |from: i64, to: Option<i64>, linear: bool| {
+                let mut segment = valuegen::tempo_segment(region, MusicalPosition::origin(), 90.0);
+                segment.start = at(from);
+                segment.end = to.map(at);
+                if linear {
+                    segment.shape = epiphany_core::TempoShape::Linear;
+                    segment.end_tempo =
+                        Some(epiphany_core::Tempo::quarter(60.0).expect("positive finite bpm"));
+                }
+                segment
+            };
+            let write = |segment: epiphany_core::TempoSegment| {
+                prim(OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                    region: scope,
+                    start: segment.start.clone(),
+                    segment: Some(segment),
+                }))
+            };
+            let declare = |id: TransactionId| {
+                prim(OperationKind::DeclareTransaction(TransactionDescriptor {
+                    id,
+                    label: String::from("change the tempo"),
+                    category: None,
+                }))
+            };
+            let undo = |target: TransactionId, policy: UndoPolicy| {
+                OperationPayload::UndoTransaction(UndoTransactionPayload { target, policy })
+            };
+            let b = 3 + sim.rng.below(2) as i64;
+            let overlapping = sim.rng.chance(2);
+            let linear = sim.rng.chance(2);
+            let policy = random_policy(&mut sim.rng);
+            let tx: TransactionId = sim.mint(r);
+            match sim.rng.below(3) {
+                0 => {
+                    // A segment from two bars in shortened to end at `b`,
+                    // then a constant segment written at `b + 1`, which the
+                    // restored end passes, or at `b + 2`, where it ends.
+                    sim.replicas[r].queued.push((tx, 2));
+                    vec![
+                        write(segment(2, Some(b + 2), linear)),
+                        declare(tx),
+                        write(segment(2, Some(b), linear)),
+                        write(segment(
+                            if overlapping { b + 1 } else { b + 2 },
+                            None,
+                            false,
+                        )),
+                        undo(tx, policy),
+                    ]
+                }
+                1 => {
+                    // A constant segment at `b` removed, then a segment from
+                    // two bars in ending past it or at it.
+                    sim.replicas[r].queued.push((tx, 2));
+                    vec![
+                        write(segment(b, None, false)),
+                        declare(tx),
+                        prim(OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                            region: scope,
+                            start: at(b),
+                            segment: None,
+                        })),
+                        write(segment(
+                            2,
+                            Some(if overlapping { b + 1 } else { b }),
+                            linear,
+                        )),
+                        undo(tx, policy),
+                    ]
+                }
+                _ => {
+                    // A constant segment at `b` written in a transaction a
+                    // second undoes, a segment from two bars in then written
+                    // ending past it or at it, and the second undone.
+                    let second: TransactionId = sim.mint(r);
+                    sim.replicas[r].queued.push((tx, 2));
+                    sim.replicas[r].queued.push((second, 2));
+                    vec![
+                        declare(tx),
+                        write(segment(b, None, false)),
+                        declare(second),
+                        undo(tx, policy),
+                        write(segment(
+                            2,
+                            Some(if overlapping { b + 1 } else { b }),
+                            linear,
+                        )),
+                        undo(second, policy),
+                    ]
+                }
+            }
+        }
         _ => return None,
     })
 }
@@ -5212,7 +5394,7 @@ fn tie_entry(
 /// Each arm of [`make`] and how often it is drawn: the editing of notes,
 /// pitches and their marks three times as often as the score's structure and
 /// settings, as an editor's history runs.
-const ARMS: [(u64, u64); 74] = [
+const ARMS: [(u64, u64); 75] = [
     (0, 4),
     (1, 3),
     (2, 3),
@@ -5287,6 +5469,7 @@ const ARMS: [(u64, u64); 74] = [
     (71, 4),
     (72, 2),
     (73, 1),
+    (74, 5),
 ];
 
 fn draw_arm(rng: &mut Rng) -> u64 {

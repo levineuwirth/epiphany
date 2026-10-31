@@ -435,7 +435,9 @@ fn the_ci_budget_authors_and_applies_every_kind() {
 /// budget holds each arm's reach (D90 Q2): arm 69's region naming what its
 /// author makes next, refused `TargetMissing`, and arm 70's undo of a
 /// signature a later grid names, held by a strict or cascading undo's
-/// conflict.
+/// conflict; and arm 74's undo restoring a tempo segment beside one written
+/// since (C5b review 3's M1), held likewise where the restoration would
+/// overlap the later segment.
 #[test]
 fn the_ci_budget_refuses_what_reduction_version_5_refuses() {
     let sum = |count: &dyn Fn(&modes::Coverage) -> u64| {
@@ -504,6 +506,19 @@ fn the_ci_budget_refuses_what_reduction_version_5_refuses() {
             .unwrap_or(0)
     });
     assert!(held > 0, "no undo of a signature a later grid names held");
+    let held = sum(&|c| {
+        c.other
+            .get(&(
+                String::from("UndoTransaction+a tempo segment restored beside one written since"),
+                String::from("Conflicted"),
+            ))
+            .copied()
+            .unwrap_or(0)
+    });
+    assert!(
+        held > 0,
+        "no undo restoring a tempo segment beside one written since held"
+    );
     for shape in modes::REFUSED {
         let authored = sum(&|c| c.authored.get(shape).copied().unwrap_or(0));
         let applied = sum(&|c| c.applied.get(shape).copied().unwrap_or(0));
