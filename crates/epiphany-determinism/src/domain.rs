@@ -68,11 +68,17 @@ impl DomainTag {
     /// tag lives in the layout namespace, not among the canonical system tags
     /// (Chapter 8 §"Domain-tag registry").
     pub const LAYOUT_OBJECT_ID: DomainTag = DomainTag(*b"MUSCLOID");
+    /// A text face file's identity (Chapter 7, Requirement
+    /// `req:layoutir:text-faces`): BLAKE3 over the face file's bytes. Like
+    /// [`Self::FONT_METRICS`], a reserved built-in but **non-canonical**: it
+    /// identifies an input of a layout, which is not document state.
+    pub const FONT_FILE: DomainTag = DomainTag(*b"MUSCFNTF");
 
     /// Every built-in tag, in declaration order. The closed core vocabulary
     /// (the nine canonical tags plus the non-canonical layout tags
-    /// [`Self::FONT_METRICS`] and [`Self::LAYOUT_OBJECT_ID`]).
-    pub const BUILTINS: [DomainTag; 11] = [
+    /// [`Self::FONT_METRICS`], [`Self::LAYOUT_OBJECT_ID`] and
+    /// [`Self::FONT_FILE`]).
+    pub const BUILTINS: [DomainTag; 12] = [
         Self::CHUNK,
         Self::MANIFEST,
         Self::BLOB,
@@ -84,6 +90,7 @@ impl DomainTag {
         Self::SYSTEM_PITCH,
         Self::SYSTEM_ANOMALY,
         Self::LAYOUT_OBJECT_ID,
+        Self::FONT_FILE,
     ];
 
     /// Constructs a domain tag from raw bytes, accepting only the spec's closed
@@ -255,6 +262,7 @@ mod tests {
         assert_eq!(DomainTag::SYSTEM_PITCH.as_bytes(), b"MUSCSPCH");
         assert_eq!(DomainTag::SYSTEM_ANOMALY.as_bytes(), b"MUSCSANM");
         assert_eq!(DomainTag::LAYOUT_OBJECT_ID.as_bytes(), b"MUSCLOID");
+        assert_eq!(DomainTag::FONT_FILE.as_bytes(), b"MUSCFNTF");
         assert_eq!(&BUNDLE_MAGIC, b"MUSCBND\0");
         assert_eq!(&SUPERBLOCK_MAGIC, b"MUSCSUPR");
     }
@@ -299,6 +307,13 @@ mod tests {
         );
         assert!(DomainTag::LAYOUT_OBJECT_ID.is_builtin());
         assert!(!DomainTag::LAYOUT_OBJECT_ID.is_system_derived());
+        // So is the text-face tag (`req:layoutir:text-faces`).
+        assert_eq!(
+            DomainTag::from_bytes(*b"MUSCFNTF").unwrap(),
+            DomainTag::FONT_FILE
+        );
+        assert!(DomainTag::FONT_FILE.is_builtin());
+        assert!(!DomainTag::FONT_FILE.is_system_derived());
         // Extension system tag: accepted.
         assert!(DomainTag::from_bytes(*b"MUSCSEXT")
             .unwrap()

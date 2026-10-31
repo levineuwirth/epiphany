@@ -1028,11 +1028,13 @@ mod tests {
         // the page is paid for in inter-system density. A catalog refinement
         // that scores only EXCESS stretch (or measures gap uniformity) is a
         // deferred follow-up, alongside the casting_off / justified-raggedness
-        // note. Pinned so the interaction is not silent (review finding).
+        // note. Pinned so the interaction is not silent (review finding). A
+        // page holds two systems, the first with the fixture's rehearsal mark
+        // over it, so justification has a gap to spread.
         let geometry = PageGeometry {
             size: Size2D {
                 width: StaffSpace(40.0),
-                height: StaffSpace(30.0),
+                height: StaffSpace(34.0),
             },
             margins: Margins {
                 top: StaffSpace(5.0),
@@ -1081,6 +1083,7 @@ mod tests {
             &glyphs,
             &strokes,
             &curves,
+            &remap.texts(&input),
             &crate::casting::Respacing {
                 skyline: &remap.skyline,
                 curves: &remap.unpassed_curves(&input),

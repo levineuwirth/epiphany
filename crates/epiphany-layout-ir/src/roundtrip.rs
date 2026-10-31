@@ -77,10 +77,12 @@ pub struct RoundTripReport {
     pub render_strokes: usize,
     /// Curve primitives (slurs, …).
     pub render_curves: usize,
-    /// Total render primitives — glyphs, strokes, **and** curves.
+    /// Text runs (lyrics, tempo marks, …).
+    pub render_texts: usize,
+    /// Total render primitives — glyphs, strokes, curves **and** text runs.
     pub render_primitives: usize,
     /// Every score-graph source recovered from the RenderIR (glyphs + strokes
-    /// + curves).
+    /// + curves + text runs).
     pub recovered_sources: BTreeSet<TypedObjectId>,
 }
 
@@ -170,7 +172,8 @@ pub fn round_trip_with<S: ConstraintSolver>(score: &Score, solver: &S) -> RoundT
             .iter()
             .map(|g| &g.provenance)
             .chain(constrained.strokes.iter().map(|s| &s.provenance))
-            .chain(constrained.curves.iter().map(|c| &c.provenance)),
+            .chain(constrained.curves.iter().map(|c| &c.provenance))
+            .chain(constrained.texts.iter().map(|t| &t.text.provenance)),
     );
     for (id, provenance) in &logical_map {
         assert_eq!(
@@ -239,6 +242,11 @@ pub fn round_trip_with<S: ConstraintSolver>(score: &Score, solver: &S) -> RoundT
             report.layout.curves, constrained.curves,
             "stub solver must return the input curves verbatim"
         );
+        let texts: Vec<_> = constrained.texts.iter().map(|t| t.text.clone()).collect();
+        assert_eq!(
+            report.layout.texts, texts,
+            "stub solver must return the input text runs verbatim"
+        );
     }
 
     let resolved_map = provenance_map(
@@ -249,7 +257,8 @@ pub fn round_trip_with<S: ConstraintSolver>(score: &Score, solver: &S) -> RoundT
             .iter()
             .map(|g| &g.provenance)
             .chain(report.layout.strokes.iter().map(|s| &s.provenance))
-            .chain(report.layout.curves.iter().map(|c| &c.provenance)),
+            .chain(report.layout.curves.iter().map(|c| &c.provenance))
+            .chain(report.layout.texts.iter().map(|t| &t.provenance)),
     );
     // Every constrained object survives into the resolved layout with its exact
     // provenance. A conformant solver may additionally *synthesize* objects of
@@ -302,6 +311,10 @@ pub fn round_trip_with<S: ConstraintSolver>(score: &Score, solver: &S) -> RoundT
         render.curves, report.layout.curves,
         "render must carry the resolved curves verbatim"
     );
+    assert_eq!(
+        render.texts, report.layout.texts,
+        "render must carry the resolved text runs verbatim"
+    );
     let render_map = provenance_map(
         "render",
         render
@@ -309,7 +322,8 @@ pub fn round_trip_with<S: ConstraintSolver>(score: &Score, solver: &S) -> RoundT
             .iter()
             .map(|p| &p.provenance)
             .chain(render.strokes.iter().map(|s| &s.provenance))
-            .chain(render.curves.iter().map(|c| &c.provenance)),
+            .chain(render.curves.iter().map(|c| &c.provenance))
+            .chain(render.texts.iter().map(|t| &t.provenance)),
     );
     assert_eq!(
         resolved_map, render_map,
@@ -317,7 +331,7 @@ pub fn round_trip_with<S: ConstraintSolver>(score: &Score, solver: &S) -> RoundT
     );
 
     // Provenance back to graph identity: the recovered source *set* — over every
-    // primitive (glyph, stroke, and curve) — is exactly the set laid out (a
+    // primitive (glyph, stroke, curve and text run) — is exactly the set laid out (a
     // surjection: every source recovered, nothing spurious), while the primitive
     // count equals the distinct-stable-id count, so each layout object (and each
     // synthesized derived primitive) is represented exactly once.
@@ -328,13 +342,14 @@ pub fn round_trip_with<S: ConstraintSolver>(score: &Score, solver: &S) -> RoundT
         .map(|p| p.provenance.source)
         .chain(render.strokes.iter().map(|s| s.provenance.source))
         .chain(render.curves.iter().map(|c| c.provenance.source))
+        .chain(render.texts.iter().map(|t| t.provenance.source))
         .collect();
     assert_eq!(
         expected, recovered,
         "RenderIR sources do not match the laid-out graph objects"
     );
     assert_eq!(
-        render.primitives.len() + render.strokes.len() + render.curves.len(),
+        render.primitives.len() + render.strokes.len() + render.curves.len() + render.texts.len(),
         render_map.len(),
         "render produced two primitives with the same stable id"
     );
@@ -350,7 +365,11 @@ pub fn round_trip_with<S: ConstraintSolver>(score: &Score, solver: &S) -> RoundT
         glyphs: constrained.glyphs.len(),
         render_strokes: render.strokes.len(),
         render_curves: render.curves.len(),
-        render_primitives: render.primitives.len() + render.strokes.len() + render.curves.len(),
+        render_texts: render.texts.len(),
+        render_primitives: render.primitives.len()
+            + render.strokes.len()
+            + render.curves.len()
+            + render.texts.len(),
         recovered_sources: recovered,
     }
 }
@@ -514,7 +533,7 @@ mod tests {
             let report = round_trip(&valid_score(seed));
             assert_eq!(
                 report.render_primitives,
-                report.glyphs + report.render_strokes + report.render_curves
+                report.glyphs + report.render_strokes + report.render_curves + report.render_texts
             );
             // Every laid-out source is recovered, nothing spurious (the
             // surjection). A source may back several primitives now — a staff's

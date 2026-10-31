@@ -74,6 +74,7 @@
 
 pub mod casting;
 mod clearance;
+mod family;
 mod quality;
 mod spacing;
 
@@ -84,8 +85,9 @@ use epiphany_layout_ir::{
     all_available, profile_thresholds, Axis, BravuraCatalog, ConstrainedLayoutIR, ConstraintId,
     ConstraintSolver, ConstraintStrength, Curve, GlyphCatalog, GlyphObject, GlyphObjectId,
     InvalidationSet, LayoutConstraint, Point, PrimitiveIndices, QualityMetricVector, Rect,
-    ResolvedGlyph, ResolvedLayoutIR, SolveReport, SolveStatus, SolverBudgetUsed, SolverConfig,
-    SolverState, SolverTier, SolverVersion, SolverWarning, SolverWarningKind, SpringSlotId, Stroke,
+    ResolvedGlyph, ResolvedLayoutIR, ResolvedText, SolveReport, SolveStatus, SolverBudgetUsed,
+    SolverConfig, SolverState, SolverTier, SolverVersion, SolverWarning, SolverWarningKind,
+    SpringSlotId, Stroke,
 };
 
 pub use casting::{PageGeometry, INTER_PAGE_GAP, SYSTEM_CONTINUATION_SYNTHESIS};
@@ -354,8 +356,11 @@ pub struct Engraver {
 /// accidentals. It went to `55`, past both, when the two were taken
 /// together, and to `56` when a compressed system's floor began keeping a
 /// tie whose first note has a flag on its side the span to start past the
-/// flag, so compression no longer sets such a tie back into it.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(56);
+/// flag, so compression no longer sets such a tie back into it, and to `57`
+/// when the resolved layout began carrying shaped text runs, a fourth
+/// primitive each riding its slot and joining its staff's extent, whose count
+/// enters every layout's canonical bytes though no score yet draws one.
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(94);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -403,17 +408,19 @@ impl Engraver {
         // not leak geometry into the diagnostic layout (which reaches
         // canonical_bytes / the renderer).
         let remap = structural_valid.then(|| HorizontalRemap::build(input));
-        let (spaced_glyphs, spaced_strokes, spaced_curves): (
+        let (spaced_glyphs, spaced_strokes, spaced_curves, spaced_texts): (
             Vec<ResolvedGlyph>,
             Vec<Stroke>,
             Vec<Curve>,
+            Vec<ResolvedText>,
         ) = match &remap {
             Some(remap) => (
                 remap.glyphs(input),
                 remap.strokes(input),
                 remap.curves(input),
+                remap.texts(input),
             ),
-            None => (Vec::new(), Vec::new(), Vec::new()),
+            None => (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
         };
         // Casting-off: break the spaced line into systems, stack them, assign
         // pages, and bake every position into the single world frame. Pure
@@ -428,6 +435,7 @@ impl Engraver {
                 &spaced_glyphs,
                 &spaced_strokes,
                 &spaced_curves,
+                &spaced_texts,
                 &casting::Respacing {
                     skyline: &remap.skyline,
                     curves: &remap.unpassed_curves(input),
@@ -539,7 +547,7 @@ impl Engraver {
         // glyph/stroke positions baked, the engraver's break decisions appended
         // to the pipeline's (Chapter 7 §"ResolvedLayoutIR": decisions "including
         // any the solver itself made").
-        let (glyphs, strokes, curves, pages, engraving_decisions, unowned) = match cast {
+        let (glyphs, strokes, curves, texts, pages, engraving_decisions, unowned) = match cast {
             Some(cast) => {
                 let mut decisions = input.engraving_decisions.clone();
                 decisions.extend(cast.decisions);
@@ -547,12 +555,14 @@ impl Engraver {
                     cast.glyphs,
                     cast.strokes,
                     cast.curves,
+                    cast.texts,
                     cast.pages,
                     decisions,
                     cast.unowned,
                 )
             }
             None => (
+                Vec::new(),
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
@@ -571,6 +581,7 @@ impl Engraver {
                 glyphs,
                 strokes,
                 curves,
+                texts,
                 engraving_decisions,
                 catalog: input.catalog.clone(),
                 unowned,
@@ -771,6 +782,28 @@ impl HorizontalRemap {
                     style: c.style,
                     line: c.line,
                     vertical_band: c.vertical_band,
+                }
+            })
+            .collect()
+    }
+
+    /// Re-places each text run by its slot's rigid delta, as a glyph moves:
+    /// a run moves rigidly with the slot it rides
+    /// (`req:layoutir:resolved-primitives`). A run whose slot the spacing
+    /// never placed maps through the interpolated map.
+    fn texts(&self, input: &ConstrainedLayoutIR) -> Vec<ResolvedText> {
+        input
+            .texts
+            .iter()
+            .map(|t| {
+                let x = t.text.origin.x.0;
+                let x = match self.slot_delta.get(&t.horizontal_slot) {
+                    Some(delta) => x + delta,
+                    None => self.map(x),
+                };
+                ResolvedText {
+                    origin: Point::new(x, t.text.origin.y.0),
+                    ..t.text.clone()
                 }
             })
             .collect()
@@ -1241,6 +1274,8 @@ mod tests {
                             beams: Vec::new(),
                             cross_beams: Vec::new(),
                             visiting: Default::default(),
+                            visiting_alone: Default::default(),
+                            vocal: false,
                         }),
                     ),
                     manifested(
@@ -1254,6 +1289,8 @@ mod tests {
                                 pitch,
                                 spelling: Some(PitchSpelling::cmn(CmnNominal::C, 5)),
                             }],
+                            marks: Vec::new(),
+                            ornaments: Vec::new(),
                         }),
                     ),
                     manifested(TypedObjectId::Pitch(pitch), LayoutContent::Structural),
@@ -1676,6 +1713,8 @@ mod tests {
                             pitch,
                             spelling: Some(PitchSpelling::cmn(CmnNominal::C, 6)),
                         }],
+                        marks: Vec::new(),
+                        ornaments: Vec::new(),
                     }),
                 ),
                 manifested(TypedObjectId::Pitch(pitch), LayoutContent::Structural),
@@ -1690,6 +1729,8 @@ mod tests {
                 beams: Vec::new(),
                 cross_beams: Vec::new(),
                 visiting: Default::default(),
+                visiting_alone: Default::default(),
+                vocal: false,
             }),
         )];
         objects.extend(note(1, 101, MusicalPosition::origin()));
@@ -2110,6 +2151,8 @@ mod tests {
                     pitch: pid,
                     spelling: Some(spelling),
                 }],
+                marks: Vec::new(),
+                ornaments: Vec::new(),
             })
         };
         let logical = LogicalLayoutIR {
@@ -2213,6 +2256,8 @@ mod tests {
                             beams: Vec::new(),
                             cross_beams: Vec::new(),
                             visiting: Default::default(),
+                            visiting_alone: Default::default(),
+                            vocal: false,
                         }),
                     ),
                     manifested(
@@ -2226,6 +2271,8 @@ mod tests {
                                 pitch,
                                 spelling: Some(PitchSpelling::cmn(CmnNominal::C, 5)),
                             }],
+                            marks: Vec::new(),
+                            ornaments: Vec::new(),
                         }),
                     ),
                     manifested(TypedObjectId::Pitch(pitch), LayoutContent::Structural),
@@ -2691,13 +2738,14 @@ mod tests {
     #[test]
     fn page_overflow_starts_a_second_page() {
         use epiphany_layout_ir::{Margins, Size2D, StaffSpace};
-        // A deliberately small page: 50×10 staff spaces of content, so the
-        // ten-measure fixture wraps into systems (≈7 staff spaces tall) of
-        // which only one fits a page — the multi-page path.
+        // A deliberately small page: 50×14 staff spaces of content, so the
+        // ten-measure fixture wraps into systems (≈7 staff spaces tall, the
+        // first ≈11.5 with its rehearsal mark over it) of which only one fits
+        // a page — the multi-page path.
         let geometry = PageGeometry {
             size: Size2D {
                 width: StaffSpace(60.0),
-                height: StaffSpace(20.0),
+                height: StaffSpace(24.0),
             },
             margins: Margins {
                 top: StaffSpace(5.0),
@@ -3492,5 +3540,122 @@ mod tests {
             justified[2] - justified[0] > ragged[2] - ragged[0] + 1.0,
             "the heads stretch: {ragged:?} ragged, {justified:?} justified"
         );
+    }
+
+    /// A copy of `input` with one text run riding the slot of its first
+    /// notehead, owned by that head's band, `below` staff spaces under the
+    /// lowest ink of the whole input, so nothing else reaches its depth.
+    fn with_a_run_below(
+        input: &ConstrainedLayoutIR,
+        below: f32,
+    ) -> (ConstrainedLayoutIR, GlyphObject) {
+        use epiphany_core::{MarkerId, TypedObjectId};
+        use epiphany_layout_ir::{shape_text, Provenance, TextAlign, TextFace, TextObject};
+        let head = input
+            .glyphs
+            .iter()
+            .find(|g| g.glyph.as_str().starts_with("notehead"))
+            .expect("the fixture draws a note")
+            .clone();
+        let lowest = input
+            .glyphs
+            .iter()
+            .map(|g| g.baseline.y.0 + g.bounding_box.bottom.0)
+            .chain(input.strokes.iter().map(|s| s.from.y.0.min(s.to.y.0)))
+            .fold(f32::INFINITY, f32::min);
+        let (text, _) = shape_text(
+            Provenance::projected(TypedObjectId::Marker(MarkerId::from_raw(7)), vec![]),
+            "dolce",
+            TextFace::Italic,
+            2.0,
+            TextAlign::Left,
+            Point::new(head.baseline.x.0 + 0.25, lowest - below),
+        );
+        let mut input = input.clone();
+        input.texts.push(TextObject {
+            text,
+            horizontal_slot: head.horizontal_slot,
+            vertical_band: head.vertical_band,
+        });
+        (input, head)
+    }
+
+    #[test]
+    fn a_text_run_rides_its_slot_and_its_staff() {
+        let (input, head) = with_a_run_below(&fixture(), 8.0);
+        assert!(input.validate().is_ok());
+        let report = Engraver::default().solve(&input, &SolverConfig::default());
+        assert!(report.status.is_renderable());
+        let placed_head = report
+            .layout
+            .glyphs
+            .iter()
+            .find(|g| g.provenance.stable_id == head.provenance.stable_id)
+            .expect("the head is drawn");
+        // The run added last, after any the fixture's marks draw.
+        let last = input.texts.len() - 1;
+        let run = &report.layout.texts[last];
+        let constrained = &input.texts[last].text;
+        // It keeps its offset from the head whose slot it rides, across and
+        // down, however the slot is spaced and its system placed.
+        let before = (
+            constrained.origin.x.0 - head.baseline.x.0,
+            constrained.origin.y.0 - head.baseline.y.0,
+        );
+        let after = (
+            run.origin.x.0 - placed_head.position.x.0,
+            run.origin.y.0 - placed_head.position.y.0,
+        );
+        assert!(
+            (before.0 - after.0).abs() < 1e-3 && (before.1 - after.1).abs() < 1e-3,
+            "the run moved apart from its slot: {before:?} became {after:?}"
+        );
+        assert_eq!(run.segments, constrained.segments, "drawn as shaped");
+        // The system that owns the head owns the run.
+        let owner = report
+            .layout
+            .systems()
+            .position(|s| s.primitives.texts.contains(&(last as u32)))
+            .expect("a system owns the run");
+        let head_index = report
+            .layout
+            .glyphs
+            .iter()
+            .position(|g| g.provenance.stable_id == head.provenance.stable_id)
+            .expect("the head is drawn") as u32;
+        let head_owner = report
+            .layout
+            .systems()
+            .position(|s| s.primitives.glyphs.contains(&head_index));
+        assert_eq!(Some(owner), head_owner);
+    }
+
+    #[test]
+    fn a_text_run_takes_its_staffs_room_on_the_page() {
+        let input = fixture();
+        let (with, _) = with_a_run_below(&input, 12.0);
+        let report = Engraver::default().solve(&with, &SolverConfig::default());
+        let last = with.texts.len() - 1;
+        let run = &report.layout.texts[last];
+        let owner = report
+            .layout
+            .systems()
+            .find(|s| s.primitives.texts.contains(&(last as u32)))
+            .expect("a system owns the run");
+        // The run's ink stands inside its system, which grew to hold it.
+        let bottom = run.origin.y.0 + run.bounds.bottom.0;
+        assert!(
+            bottom >= owner.bounding_box.origin.y.0 - 1e-3,
+            "the run's ink at {bottom} hangs below its system at {}",
+            owner.bounding_box.origin.y.0
+        );
+        let plain = Engraver::default().solve(&input, &SolverConfig::default());
+        let height = |r: &SolveReport| -> f32 {
+            r.layout
+                .systems()
+                .map(|s| s.bounding_box.size.height.0)
+                .sum()
+        };
+        assert!(height(&report) > height(&plain) + 5.0);
     }
 }

@@ -2,13 +2,13 @@ fixture=ten_measure_with_slurs solver=stub
 glyph_count=51
 path_count=51
 fallback_rect_count=0
-stroke_count=90
+stroke_count=93
 curve_count=4
-provenance_count=145
+provenance_count=149
 layer_count=1
 hard_constraint_count=90
 xml_well_formed=true
-view_box=[-3.065 -7.4599996 225.36159 14.851999]
+view_box=[-3.065 -7.4599996 225.36159 18.199814]
 class_counts:
   barline=10
   clef=1

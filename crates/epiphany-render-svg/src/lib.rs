@@ -63,6 +63,7 @@ mod outline;
 mod page;
 mod pdf;
 mod svg;
+mod text;
 pub mod xml;
 
 pub use export::{export_pages, ExportPage};

@@ -216,6 +216,11 @@ pub struct RenderStats {
     pub stroke_count: usize,
     /// `<path>` curve elements emitted (one per resolved curve: slur, …).
     pub curve_count: usize,
+    /// Text runs drawn, each a `<g>` carrying its string as its
+    /// `aria-label`, around a `<path>` per shaped glyph.
+    pub run_count: usize,
+    /// `<path>` elements emitted for the runs' glyphs.
+    pub run_glyph_count: usize,
     /// Elements carrying a `data-prov` trace back to a score-graph source.
     pub provenance_count: usize,
     /// Distinct layers, each rendered as one `<g>` group.
@@ -281,6 +286,8 @@ pub fn render(resolved: &ResolvedLayoutIR, options: &RenderOptions) -> RenderOut
                     fallback_rect_count: 0,
                     stroke_count: 0,
                     curve_count: 0,
+                    run_count: 0,
+                    run_glyph_count: 0,
                     provenance_count: 0,
                     layer_count: 0,
                     class_counts,
@@ -308,18 +315,27 @@ pub fn render(resolved: &ResolvedLayoutIR, options: &RenderOptions) -> RenderOut
     for (i, curve) in resolved.curves.iter().enumerate() {
         curve_layers.entry(curve.layer).or_default().push(i);
     }
+    let mut text_layers: BTreeMap<i32, Vec<usize>> = BTreeMap::new();
+    for (i, text) in resolved.texts.iter().enumerate() {
+        text_layers.entry(text.layer).or_default().push(i);
+    }
     let layer_ids: std::collections::BTreeSet<i32> = glyph_layers
         .keys()
         .chain(stroke_layers.keys())
         .chain(curve_layers.keys())
+        .chain(text_layers.keys())
         .copied()
         .collect();
+    // Each text glyph's outline as path data in its face's units, once.
+    let mut text_paths: BTreeMap<(epiphany_text::Face, u32), String> = BTreeMap::new();
 
     let mut path_count = 0;
     let mut text_count = 0;
     let mut fallback_rect_count = 0;
     let mut stroke_count = 0;
     let mut curve_count = 0;
+    let mut run_count = 0;
+    let mut run_glyph_count = 0;
     let mut provenance_count = 0;
 
     let mut s = String::new();
@@ -509,6 +525,88 @@ pub fn render(resolved: &ResolvedLayoutIR, options: &RenderOptions) -> RenderOut
                 }
             }
         }
+
+        // Text runs, drawn as shaped: each glyph's outline from the face its
+        // segment names, never the string set again
+        // (`req:layoutir:text-run`). The string rides the run's group as its
+        // `aria-label`, so it survives without being drawn twice.
+        if let Some(indices) = text_layers.get(layer) {
+            for &i in indices {
+                let run = &resolved.texts[i];
+                let (fill, opacity) = colour(run.style.rgba);
+                let prov = if options.emit_provenance {
+                    provenance_count += 1;
+                    text_provenance_attrs(&run.provenance)
+                } else {
+                    String::new()
+                };
+                run_count += 1;
+                let _ = writeln!(
+                    s,
+                    "      <g aria-label=\"{}\"{}>",
+                    escape_attr(&run.text),
+                    prov
+                );
+                match crate::text::placed(run) {
+                    Ok(glyphs) => {
+                        for g in glyphs {
+                            let d = text_paths
+                                .entry((g.face, g.glyph))
+                                .or_insert_with(|| crate::text::svg_path(g.face, g.glyph, num));
+                            if d.is_empty() {
+                                continue;
+                            }
+                            run_glyph_count += 1;
+                            let turn = match crate::text::linear(&g.transform) {
+                                Some([a, b, c, d]) => format!(
+                                    " matrix({} {} {} {} 0 0)",
+                                    num(a),
+                                    num(b),
+                                    num(c),
+                                    num(d)
+                                ),
+                                None => String::new(),
+                            };
+                            let _ = writeln!(
+                                s,
+                                "        <path d=\"{}\" transform=\"translate({} {}){} scale({})\" \
+                                 fill=\"{}\"{}/>",
+                                d,
+                                num(g.x),
+                                num(g.y),
+                                turn,
+                                crate::text::scale_number(g.scale),
+                                fill,
+                                opacity,
+                            );
+                        }
+                    }
+                    Err(face) => {
+                        // A face this build does not carry: the run's ink box,
+                        // as an unbundled glyph's, never another face's glyphs.
+                        fallback_rect_count += 1;
+                        diagnostics.push(Diagnostic {
+                            message: format!(
+                                "a text run names a face this build does not carry ({face}); \
+                                 drew its bounds"
+                            ),
+                            glyph: None,
+                        });
+                        let (l, b, r, t) = crate::text::ink(run);
+                        let _ = writeln!(
+                            s,
+                            "        <rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" \
+                             fill=\"none\" stroke=\"#cc0000\" stroke-width=\"0.05\"/>",
+                            num(l),
+                            num(b),
+                            num((r - l).max(0.0)),
+                            num((t - b).max(0.0)),
+                        );
+                    }
+                }
+                s.push_str("      </g>\n");
+            }
+        }
         s.push_str("    </g>\n");
     }
 
@@ -523,6 +621,8 @@ pub fn render(resolved: &ResolvedLayoutIR, options: &RenderOptions) -> RenderOut
             fallback_rect_count,
             stroke_count,
             curve_count,
+            run_count,
+            run_glyph_count,
             provenance_count,
             layer_count: layer_ids.len(),
             class_counts,
@@ -610,6 +710,19 @@ fn content_bounds(resolved: &ResolvedLayoutIR, margin: f32) -> Option<(f32, f32,
             }
         }
     }
+    // A text run's ink, placed at its origin.
+    for run in &resolved.texts {
+        let (l, b, r, t) = crate::text::ink(run);
+        for (px, py) in [(l, b), (r, t)] {
+            if px.is_finite() && py.is_finite() {
+                any = true;
+                min_x = min_x.min(px);
+                min_y = min_y.min(py);
+                max_x = max_x.max(px);
+                max_y = max_y.max(py);
+            }
+        }
+    }
     if !any {
         return None;
     }
@@ -664,6 +777,15 @@ fn dash_attrs(line: LineStyle) -> &'static str {
         LineStyle::Dashed => " stroke-dasharray=\"0.5 0.35\"",
         LineStyle::Dotted => " stroke-dasharray=\"0 0.28\" stroke-linecap=\"round\"",
     }
+}
+
+/// `data-*` provenance attributes for a text run.
+fn text_provenance_attrs(p: &Provenance) -> String {
+    format!(
+        " data-prov=\"{:032x}\" data-source-kind=\"{}\" data-kind=\"text\"",
+        p.stable_id.0,
+        p.source.discriminant(),
+    )
 }
 
 /// `data-*` provenance attributes for a curve (a cubic-bézier primitive).
@@ -842,6 +964,20 @@ mod tests {
             .layout
     }
 
+    /// The stub's layout of a rich score without the runs its marks draw,
+    /// for a test of what it adds alone.
+    fn runless(seed: u64) -> ResolvedLayoutIR {
+        let mut layout = stub_layout(seed);
+        layout.texts.clear();
+        layout.unowned.texts.clear();
+        for page in &mut layout.pages {
+            for system in &mut page.systems {
+                system.primitives.texts.clear();
+            }
+        }
+        layout
+    }
+
     #[test]
     fn a_stroke_renders_as_a_traced_line() {
         let mut layout = stub_layout(11);
@@ -874,8 +1010,8 @@ mod tests {
         );
         assert_eq!(
             out.stats.provenance_count,
-            glyph_count + base_strokes + 1 + layout.curves.len(),
-            "every glyph, stroke and curve is traced"
+            glyph_count + base_strokes + 1 + layout.curves.len() + layout.texts.len(),
+            "every glyph, stroke, curve and run is traced"
         );
     }
 
@@ -1009,7 +1145,7 @@ mod tests {
         assert!(out.diagnostics.is_empty());
         assert_eq!(
             out.stats.provenance_count,
-            layout.glyphs.len() + layout.strokes.len() + layout.curves.len()
+            layout.glyphs.len() + layout.strokes.len() + layout.curves.len() + layout.texts.len()
         );
         assert!(out.svg.contains("<svg"));
         assert!(out.svg.contains("data-prov="));
@@ -1090,7 +1226,7 @@ mod tests {
         assert!(out.svg.contains("set in the embedded font"));
         assert_eq!(
             out.stats.provenance_count,
-            layout.glyphs.len() + layout.strokes.len() + layout.curves.len()
+            layout.glyphs.len() + layout.strokes.len() + layout.curves.len() + layout.texts.len()
         );
         assert!(out.svg.contains("data-prov="));
     }
@@ -1133,6 +1269,7 @@ mod tests {
             glyphs: vec![],
             strokes: vec![],
             curves: vec![],
+            texts: vec![],
             engraving_decisions: vec![],
             catalog: Default::default(),
             unowned: Default::default(),
@@ -1198,5 +1335,120 @@ mod tests {
         let out = render(&layout, &RenderOptions::default());
         let total: usize = out.stats.class_counts.values().sum();
         assert_eq!(total, layout.glyphs.len());
+    }
+
+    /// A layout holding one shaped run, the words chosen so its chain sets
+    /// one character in each face and leaves one uncovered.
+    fn with_a_run(words: &str) -> ResolvedLayoutIR {
+        let mut layout = runless(3);
+        let (run, _) = epiphany_layout_ir::shape_text(
+            epiphany_layout_ir::Provenance::projected(
+                epiphany_core::TypedObjectId::Marker(epiphany_core::MarkerId::from_raw(9)),
+                vec![],
+            ),
+            words,
+            epiphany_layout_ir::TextFace::Roman,
+            2.016,
+            epiphany_layout_ir::TextAlign::Left,
+            Point::new(5.0, -20.0),
+        );
+        layout.texts.push(run);
+        layout
+    }
+
+    #[test]
+    fn a_text_run_is_drawn_as_shaped_outlines_under_its_string() {
+        let words = "Ped. & \u{ECA5} \u{4E2D}";
+        let layout = with_a_run(words);
+        let run = &layout.texts[0];
+        let inked: usize = run
+            .segments
+            .iter()
+            .flat_map(|s| s.glyphs.iter().map(move |g| (s.face, g.glyph_id)))
+            .filter(|(face, glyph)| {
+                let identity = &run.shaping.faces[*face as usize];
+                let face = epiphany_layout_ir::face_by_hash(&identity.file_hash).unwrap();
+                face.glyph_bounds(*glyph).is_some()
+            })
+            .count();
+        assert!(inked >= 5, "the run inks its letters and its note");
+        let out = render(&layout, &RenderOptions::default());
+        assert!(out.is_well_formed());
+        assert_eq!(out.stats.run_count, 1);
+        assert_eq!(out.stats.run_glyph_count, inked, "one path per inked glyph");
+        // The string travels as the run's label, escaped, and is set nowhere
+        // as text a viewer would shape again.
+        assert!(out
+            .svg
+            .contains("aria-label=\"Ped. &amp; \u{ECA5} \u{4E2D}\""));
+        assert_eq!(out.stats.text_count, 0);
+        assert!(!out.svg.contains("<text"));
+        // Its outlines are its faces', placed at the run's glyphs.
+        let first = &run.segments[0].glyphs[0];
+        let face = epiphany_text::Face::EdwinRoman;
+        let d = crate::text::svg_path(face, first.glyph_id, num);
+        assert!(out.svg.contains(&format!(
+            "<path d=\"{d}\" transform=\"translate({} {}) scale(0.002016)\"",
+            num(run.origin.x.0 + first.offset.x.0),
+            num(run.origin.y.0 + first.offset.y.0),
+        )));
+        // And the frame holds its ink.
+        let [min_x, min_y, w, h] = out.stats.view_box;
+        let (l, b, r, t) = crate::text::ink(run);
+        assert!(l >= min_x && b >= min_y && r <= min_x + w && t <= min_y + h);
+    }
+
+    /// A symbol run's turned glyph is drawn turned about its origin, its
+    /// transform's linear part between the placement and the scale; an
+    /// unturned one carries none.
+    #[test]
+    fn a_turned_symbol_is_drawn_turned() {
+        use epiphany_layout_ir::{symbol_run, Symbol, SymbolPlace, Turn};
+        let mut layout = runless(3);
+        let symbol = |turn: Turn| Symbol {
+            codepoint: '\u{EAA9}',
+            at: SymbolPlace::Origin(Point::new(0.0, 0.0)),
+            scale: 1.0,
+            turn,
+        };
+        let provenance = epiphany_layout_ir::Provenance::projected(
+            epiphany_core::TypedObjectId::Marker(epiphany_core::MarkerId::from_raw(9)),
+            vec![],
+        );
+        layout.texts.push(symbol_run(
+            provenance,
+            &[symbol(Turn::Anticlockwise), symbol(Turn::None)],
+            Point::new(5.0, -20.0),
+        ));
+        let out = render(&layout, &RenderOptions::default());
+        assert!(out.is_well_formed());
+        assert_eq!(out.stats.run_glyph_count, 2);
+        let [a, b, c, d] =
+            crate::text::linear(&layout.texts[0].segments[0].glyphs[0].transform).expect("turned");
+        let turned = format!(
+            ") matrix({} {} {} {} 0 0) scale(",
+            num(a),
+            num(b),
+            num(c),
+            num(d)
+        );
+        assert_eq!(out.svg.matches(&turned).count(), 1, "{turned}");
+        assert_eq!(out.svg.matches(" matrix(").count(), 1);
+    }
+
+    #[test]
+    fn a_run_naming_an_unknown_face_is_drawn_as_its_bounds_and_diagnosed() {
+        let mut layout = with_a_run("dolce");
+        let mut shaping = (*layout.texts[0].shaping).clone();
+        shaping.faces[0].file_hash = [7; 32];
+        layout.texts[0].shaping = std::sync::Arc::new(shaping);
+        let out = render(&layout, &RenderOptions::default());
+        assert!(out.is_well_formed());
+        assert_eq!(out.stats.run_glyph_count, 0);
+        assert_eq!(out.stats.fallback_rect_count, 1);
+        assert!(out
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("does not carry (Edwin Roman)")));
     }
 }

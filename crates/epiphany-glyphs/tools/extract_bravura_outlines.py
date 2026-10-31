@@ -74,7 +74,26 @@ NAMES = ["noteheadBlack","noteheadHalf","noteheadWhole","noteheadDoubleWhole",
 "accidentalFiveQuarterTonesSharpArrowUp","accidentalThreeQuarterTonesSharpArrowDown",
 "accidentalThreeQuarterTonesFlatArrowUp","accidentalFiveQuarterTonesFlatArrowDown",
 "accidentalQuarterToneFlatStein","accidentalThreeQuarterTonesFlatZimmermann",
-"accidentalQuarterToneSharpStein","accidentalThreeQuarterTonesSharpStein"]
+"accidentalQuarterToneSharpStein","accidentalThreeQuarterTonesSharpStein",
+# X4c: the expression family's marks, dynamics and lines.
+"articStaccatoAbove","articStaccatoBelow","articStaccatissimoAbove","articStaccatissimoBelow",
+"articStaccatissimoStrokeAbove","articStaccatissimoStrokeBelow","articTenutoAbove","articTenutoBelow",
+"articTenutoStaccatoAbove","articTenutoStaccatoBelow","articAccentAbove","articAccentBelow",
+"articMarcatoAbove","articMarcatoBelow","articStressAbove","articStressBelow",
+"articUnstressAbove","articUnstressBelow",
+"stringsUpBow","stringsDownBow","stringsHarmonic","brassMuteOpen","brassMuteClosed",
+"pluckedSnapPizzicatoAbove","pluckedSnapPizzicatoBelow",
+"brassScoop","brassFallLipShort","brassDoitShort","brassPlop",
+"tremolo1","tremolo2","tremolo3","tremolo4","tremolo5",
+"breathMarkComma","breathMarkTick","caesura","caesuraThick","caesuraShort","caesuraCurved",
+"fermataAbove","fermataBelow","fermataShortAbove","fermataShortBelow","fermataLongAbove","fermataLongBelow",
+"fermataVeryShortAbove","fermataVeryShortBelow","fermataVeryLongAbove","fermataVeryLongBelow",
+"ornamentTrill","ornamentMordent","ornamentShortTrill","ornamentTurn","ornamentTurnInverted",
+"dynamicPPPPPP","dynamicPPPPP","dynamicPPPP","dynamicPPP","dynamicPP","dynamicMP","dynamicMF",
+"dynamicFF","dynamicFFF","dynamicFFFF","dynamicFFFFF","dynamicFFFFFF","dynamicFortePiano",
+"dynamicSforzando1","dynamicSforzato","dynamicSforzatoFF","dynamicSforzandoPiano",
+"dynamicSforzandoPianissimo","dynamicRinforzando1","dynamicRinforzando2","dynamicForzando",
+"dynamicNiente","wiggleTrill","segno","coda"]
 
 def verify(data, expected, what):
     actual = hashlib.sha256(data).hexdigest()

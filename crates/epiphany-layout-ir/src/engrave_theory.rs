@@ -105,6 +105,24 @@ pub fn notehead_glyph(value: NoteValue) -> &'static str {
     }
 }
 
+/// The notehead of a breve, the value one longer than a whole, which the
+/// model does not hold but a two-note tremolo of sounding wholes is written at.
+pub const BREVE_NOTEHEAD: &str = "noteheadDoubleWhole";
+
+/// The value one longer than `value`, as a two-note tremolo's notes are
+/// written; `None` for a whole, whose longer value is a breve.
+pub fn longer_value(value: NoteValue) -> Option<NoteValue> {
+    Some(match value {
+        NoteValue::Whole => return None,
+        NoteValue::Half => NoteValue::Whole,
+        NoteValue::Quarter => NoteValue::Half,
+        NoteValue::Eighth => NoteValue::Quarter,
+        NoteValue::Sixteenth => NoteValue::Eighth,
+        NoteValue::ThirtySecond => NoteValue::Sixteenth,
+        NoteValue::SixtyFourth => NoteValue::ThirtySecond,
+    })
+}
+
 /// The SMuFL rest glyph for a note value. Every value the model holds, the
 /// whole to the 64th, has its glyph bundled; the `Option` stays so a value
 /// added to the model without one is surfaced rather than misdrawn.

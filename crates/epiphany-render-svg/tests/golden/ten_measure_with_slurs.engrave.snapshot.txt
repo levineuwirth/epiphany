@@ -2,13 +2,13 @@ fixture=ten_measure_with_slurs solver=engrave
 glyph_count=53
 path_count=53
 fallback_rect_count=0
-stroke_count=100
+stroke_count=103
 curve_count=5
-provenance_count=158
+provenance_count=162
 layer_count=1
 hard_constraint_count=90
 xml_well_formed=true
-view_box=[5.435 -43.56759 94.065 38.06701]
+view_box=[5.435 -47.467403 94.065 41.967403]
 class_counts:
   barline=10
   clef=3

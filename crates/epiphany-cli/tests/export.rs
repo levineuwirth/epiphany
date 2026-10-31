@@ -198,9 +198,9 @@ fn a_page_whose_music_overruns_its_paper_is_extended_not_cut() {
 /// X5a's export of pages holding X4b's grace notes and a voice visiting the
 /// staff below its home: each page's SVG carries exactly the provenance of the
 /// primitives the layout's page holds, and the PDF draws as many glyphs,
-/// strokes and curves, so the export draws what the layout draws. The layout
-/// leaves the grace notes out until X4c draws them, and draws the visitor on
-/// its home's side, its stem toward the staff above.
+/// strokes, curves and runs, so the export draws what the layout draws. The
+/// layout leaves the grace notes out until X4d draws them, and draws the
+/// visitor on its home's side, its stem toward the staff above.
 #[test]
 fn pages_with_graces_and_a_visiting_voice_export_what_the_layout_draws() {
     use epiphany_core::{Event, TypedObjectId};
@@ -223,12 +223,13 @@ fn pages_with_graces_and_a_visiting_voice_export_what_the_layout_draws() {
             .map(|g| g.provenance.stable_id.0)
             .chain(page.strokes.iter().map(|s| s.provenance.stable_id.0))
             .chain(page.curves.iter().map(|c| c.provenance.stable_id.0))
+            .chain(page.texts.iter().map(|t| t.provenance.stable_id.0))
             .map(|id| format!("{id:032x}"))
             .collect();
         out.sort();
         out
     };
-    let (mut glyphs, mut strokes, mut curves) = (0, 0, 0);
+    let (mut glyphs, mut strokes, mut curves, mut runs) = (0, 0, 0, 0);
     for number in 1..=2 {
         let page = epiphany_cli::page(layout, number).unwrap();
         let svg = std::fs::read_to_string(&exported.paths[number - 1]).unwrap();
@@ -245,12 +246,19 @@ fn pages_with_graces_and_a_visiting_voice_export_what_the_layout_draws() {
         glyphs += page.glyphs.len();
         strokes += page.strokes.len();
         curves += page.curves.len();
+        runs += page.texts.len();
     }
     let pdf = std::fs::read(&exported.paths[2]).unwrap();
     let text = String::from_utf8_lossy(&pdf);
     assert_eq!(media_boxes(&pdf).len(), 2);
+    // A run draws a form per glyph, after its own placement.
+    let run_glyphs = text.matches(" cm /T").count();
+    assert!(
+        runs > 0 && run_glyphs >= runs,
+        "{runs} runs, {run_glyphs} glyphs"
+    );
     assert_eq!(
-        text.matches(" Do Q").count() + text.matches(" re S Q").count(),
+        text.matches(" Do Q").count() - run_glyphs + text.matches(" re S Q").count(),
         glyphs
     );
     assert_eq!(text.matches(" l S Q").count(), strokes);

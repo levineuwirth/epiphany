@@ -84,12 +84,14 @@ use epiphany_core::{StaffId, TypedObjectId};
 use epiphany_layout_ir::{
     continuation_instance_key, inter_staff_gap_id, is_barline_glyph, is_rigid_width_stroke,
     metrics, synthesized_layout_id, tie_arc, BreakClass, BreakKind, ConstrainedLayoutIR, Curve,
-    DecisionSource, EngravingDecision, EngravingDecisionKind, EngravingOverrideId, GlyphObject,
-    GlyphObjectId, GlyphReference, GlyphStyle, GroupSign, GroupSpan, LayoutConstraint,
-    LayoutObjectId, LeadGlyph, Margins, Point, PrimitiveIndices, Provenance, Rect, ResolvedGlyph,
-    ResolvedMeasure, ResolvedPage, ResolvedStaff, ResolvedSystem, Size2D, SpringSlotId, StaffSpace,
-    Stroke, SynthesisInstanceKey, SynthesisKind, SynthesisRegistryId, SystemLead, TimePoint,
-    Transform2D, VerticalBand, VerticalBandId, VerticalBandKind,
+    DecisionSource, EngravingDecision, EngravingDecisionKind, EngravingOverrideId, FamilyLine,
+    GlyphObject, GlyphObjectId, GlyphReference, GlyphStyle, GroupSign, GroupSpan, HairpinShape,
+    LayoutConstraint, LayoutObjectId, LeadGlyph, Margins, MeasureMark, Point, PrimitiveIndices,
+    Provenance, Rect, ResolvedGlyph, ResolvedMeasure, ResolvedPage, ResolvedStaff, ResolvedSystem,
+    ResolvedText, Size2D, SpringSlotId, StaffSpace, Stroke, SynthesisInstanceKey, SynthesisKind,
+    SynthesisRegistryId, SystemLead, TimePoint, Transform2D, VerticalBand, VerticalBandId,
+    VerticalBandKind, BAR_NOTE_DISTANCE, HAIRPIN_CONT_HEIGHT, HAIRPIN_HEIGHT, HAIRPIN_MIN_LENGTH,
+    LYRIC_DASH_MAX, LYRIC_DASH_MAX_DISTANCE, LYRIC_DASH_MIN, LYRIC_MELISMA_MIN, TRILL_WIGGLE,
 };
 
 use crate::clearance::InkRect;
@@ -130,8 +132,19 @@ pub const SYSTEM_CONTINUATION_SYNTHESIS: SynthesisRegistryId =
 /// region-local ordinal and the glyph.
 pub const SYSTEM_LEAD_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x5359_534C_4541_4447); // "SYSLEADG"
 
+/// A staff's height, bottom line to top, in staff spaces.
+const STAFF_SPAN: f32 = 4.0;
+
 /// The gap between a system-start lead's ink and the system's first column.
 const LEAD_GAP: f32 = 0.8;
+
+/// How far before its system's end a line over a break stops
+/// (`lineEndToBarlineDistance`).
+const LINE_END_GAP: f32 = 0.25;
+
+/// How much shorter than its least length a melisma line may stand and
+/// still be drawn (`LyricsLayout::layoutMelismaLine`'s tolerance).
+const LYRIC_MELISMA_TOLERANCE: f32 = 0.05;
 
 /// A tie continued into a later system starts this far clear of the system's
 /// lead (the widest of its staves' clefs and key signatures)…
@@ -282,6 +295,8 @@ pub(crate) struct CastLayout {
     /// Casteljau subdivision (the first keeps the source's provenance, the rest
     /// are synthesized continuations, like system-spanning strokes).
     pub curves: Vec<Curve>,
+    /// Final text runs, in input order, each moved with its slot's system.
+    pub texts: Vec<ResolvedText>,
     /// The populated page tree (empty when the input declares no regions).
     pub pages: Vec<ResolvedPage>,
     /// Break decisions this pass made (chosen breaks in reading order, then
@@ -563,16 +578,26 @@ pub(crate) fn cast_off(
     spaced_glyphs: &[ResolvedGlyph],
     spaced_strokes: &[Stroke],
     spaced_curves: &[Curve],
+    spaced_texts: &[ResolvedText],
     respacing: &Respacing,
     geometry: &PageGeometry,
 ) -> CastLayout {
     // ---- Slot table (spaced coordinates) --------------------------------
+    // The family's glyphs that take no room across keep their slot but give
+    // it no width.
+    let roomless = crate::family::roomless_glyphs(input);
     let mut slots: BTreeMap<SpringSlotId, SlotInfo> = BTreeMap::new();
     for (i, (glyph, spaced)) in input.glyphs.iter().zip(spaced_glyphs).enumerate() {
         let name = glyph.glyph.as_str();
         let x = spaced.position.x.0;
-        let lo = x + glyph.bounding_box.left.0;
-        let hi = x + glyph.bounding_box.right.0;
+        let (lo, hi) = if roomless.contains(&glyph.id()) {
+            (f32::INFINITY, f32::NEG_INFINITY)
+        } else {
+            (
+                x + glyph.bounding_box.left.0,
+                x + glyph.bounding_box.right.0,
+            )
+        };
         let entry = slots.entry(glyph.horizontal_slot).or_insert(SlotInfo {
             id: glyph.horizontal_slot,
             x,
@@ -609,6 +634,44 @@ pub(crate) fn cast_off(
         }
         if name.starts_with("notehead") || name.starts_with("rest") {
             entry.note = true;
+        }
+    }
+    // A slot's reference x is its first glyph not of the family, as its
+    // source is in the spacing pass: the projection emits a note's marks
+    // before its head, and a mark standing off its note (a scoop left of its
+    // head), even one taking room, must neither order its column nor take
+    // its share of a justified stretch.
+    let family = crate::family::family_glyphs(input);
+    for info in slots.values_mut() {
+        if let Some(&i) = info
+            .members
+            .iter()
+            .find(|&&i| !family.contains(&input.glyphs[i].id()))
+        {
+            info.x = spaced_glyphs[i].position.x.0;
+        }
+    }
+    // A slot holding only such glyphs stands at its source.
+    for info in slots.values_mut() {
+        if info.lo > info.hi {
+            (info.lo, info.hi) = (info.x, info.x);
+        }
+    }
+    // A run of the family that takes room, an arpeggio or a syllable, widens
+    // its slot as the spacing pass lets it.
+    let room: BTreeSet<GlyphObjectId> = crate::family::texts_with_room(input)
+        .into_iter()
+        .filter(|(_, room)| *room != epiphany_layout_ir::Room::None)
+        .map(|(text, _)| text.id())
+        .collect();
+    for (text, spaced) in input.texts.iter().zip(spaced_texts) {
+        if !room.contains(&text.id()) {
+            continue;
+        }
+        if let Some(entry) = slots.get_mut(&text.horizontal_slot) {
+            let x = spaced.origin.x.0;
+            entry.lo = entry.lo.min(x + spaced.bounds.left.0);
+            entry.hi = entry.hi.max(x + spaced.bounds.right.0);
         }
     }
     // Fold each rigid stroke (a ledger line) into its owning slot's extent, so
@@ -1010,6 +1073,26 @@ pub(crate) fn cast_off(
             if let Some(s) = anchored_system(stroke.id()) {
                 return StrokeFate::Rigid(Some(s));
             }
+            // One anchored in two systems (a hairpin, hyphen or melisma line
+            // over a break) splits where they break: to its first system's
+            // end, through any between, and from its last system's start.
+            if let Some((a, b)) = anchors.get(&stroke.id()).and_then(|(start, end)| {
+                Some((*system_of_slot.get(start)?, *system_of_slot.get(end)?))
+            }) {
+                if a < b {
+                    let (from, to) = (spaced.from, spaced.to);
+                    let mut segments = vec![(a, from, Point::new(clips[a].1, from.y.0))];
+                    segments.extend((a + 1..b).map(|s| {
+                        (
+                            s,
+                            Point::new(clips[s].0, from.y.0),
+                            Point::new(clips[s].1, to.y.0),
+                        )
+                    }));
+                    segments.push((b, Point::new(clips[b].0, to.y.0), to));
+                    return StrokeFate::Split(segments);
+                }
+            }
             stroke_fate(
                 stroke,
                 spaced,
@@ -1021,6 +1104,65 @@ pub(crate) fn cast_off(
             )
         })
         .collect();
+    // An ending whose barline closes a system while its line goes on into the
+    // next is drawn wholly on the next, as MuseScore lays a spanner out only
+    // on a system its start precedes the end of (`SystemLayout`): each such
+    // ending's system, and each part of its start (its hook, numbers and
+    // line) by id. Its hook rides that system, and its line's piece at the
+    // earlier system's end, which would hold only its start, is dropped.
+    let mut ending_to: BTreeMap<usize, usize> = BTreeMap::new();
+    for (e, ending) in input.endings.iter().enumerate() {
+        let Some(&a) = system_of_slot.get(&ending.barline) else {
+            continue;
+        };
+        let plan = &systems[a];
+        let closes = plan
+            .slots
+            .last()
+            .is_some_and(|&i| region_slots[plan.region][i].id == ending.barline);
+        let goes_on = anchors
+            .get(&ending.line)
+            .and_then(|(_, end)| system_of_slot.get(end))
+            .is_some_and(|&b| b > a);
+        if closes
+            && goes_on
+            && systems
+                .get(a + 1)
+                .is_some_and(|next| next.region == plan.region)
+        {
+            ending_to.insert(e, a + 1);
+        }
+    }
+    let ending_of: BTreeMap<GlyphObjectId, usize> = ending_to
+        .keys()
+        .flat_map(|&e| {
+            let ending = &input.endings[e];
+            ending
+                .numbers
+                .iter()
+                .chain([&ending.hook, &ending.line])
+                .map(move |id| (*id, e))
+        })
+        .collect();
+    let moved_hooks: BTreeSet<GlyphObjectId> =
+        ending_to.keys().map(|&e| input.endings[e].hook).collect();
+    let mut fates = fates;
+    for (si, stroke) in input.strokes.iter().enumerate() {
+        let Some(e) = ending_of.get(&stroke.id()) else {
+            continue;
+        };
+        let to = ending_to[e];
+        fates[si] = match &fates[si] {
+            StrokeFate::Split(segments) => StrokeFate::Split(
+                segments
+                    .iter()
+                    .filter(|(s, _, _)| *s >= to)
+                    .cloned()
+                    .collect(),
+            ),
+            _ => StrokeFate::Rigid(Some(to)),
+        };
+    }
     // A curve rides one system whole when it fits within one, or splits into
     // per-system sub-cubics (de Casteljau) when it spans a break — the same
     // nearest-region / clip-overlap logic strokes use.
@@ -1103,6 +1245,16 @@ pub(crate) fn cast_off(
         .iter()
         .map(|c| staff_of(c.vertical_band))
         .collect();
+    let text_staff_of: Vec<Option<StaffId>> = input
+        .texts
+        .iter()
+        .map(|t| staff_of(t.vertical_band))
+        .collect();
+    let text_system: Vec<Option<usize>> = input
+        .texts
+        .iter()
+        .map(|t| system_of_slot.get(&t.horizontal_slot).copied())
+        .collect();
 
     // The ink of each beam across two staves stands between them and is
     // neither staff's content: the solve keeps the lower staff from rising
@@ -1163,19 +1315,33 @@ pub(crate) fn cast_off(
                 .or_insert((lo_y, hi_y));
         }
     };
+    // The family a solver places off its staves joins them below, once
+    // placed; the rest of the family's ink takes height on its staff and no
+    // room across.
+    let placed = crate::family::Placed::of(input);
     for (s, plan) in systems.iter().enumerate() {
         for &i in &plan.slots {
             for &g in &region_slots[plan.region][i].members {
+                let id = input.glyphs[g].id();
+                if placed.glyphs.contains_key(&id) {
+                    continue;
+                }
+                // A moved ending's numbers stand on its system, where their
+                // place across is not yet known: they take its height alone.
+                let moved = ending_of.get(&id).map(|e| ending_to[e]);
+                let s = moved.unwrap_or(s);
                 let glyph = &spaced_glyphs[g];
                 let (x, y) = (glyph.position.x.0, glyph.position.y.0);
                 let (lo_y, hi_y) = (
                     y + glyph.bounding_box.bottom.0,
                     y + glyph.bounding_box.top.0,
                 );
-                extents[s].add_x(
-                    x + glyph.bounding_box.left.0,
-                    x + glyph.bounding_box.right.0,
-                );
+                if !roomless.contains(&id) && moved.is_none() {
+                    extents[s].add_x(
+                        x + glyph.bounding_box.left.0,
+                        x + glyph.bounding_box.right.0,
+                    );
+                }
                 if between.contains(&input.glyphs[g].id()) {
                     continue;
                 }
@@ -1187,6 +1353,9 @@ pub(crate) fn cast_off(
         }
     }
     for (si, (fate, spaced)) in fates.iter().zip(spaced_strokes).enumerate() {
+        if placed.strokes.contains_key(&spaced.id()) {
+            continue;
+        }
         let half = (spaced.thickness.0 * 0.5).max(0.0);
         let staff = stroke_staff_of[si];
         let is_staff_line = matches!(spaced.provenance.source, TypedObjectId::Staff(_));
@@ -1202,7 +1371,9 @@ pub(crate) fn cast_off(
                 Some(end) if is_staff_line => end,
                 _ => to.x.0,
             };
-            extents[s].add_x(from.x.0 - half, right + half);
+            if !moved_hooks.contains(&spaced.id()) {
+                extents[s].add_x(from.x.0 - half, right + half);
+            }
             if between.contains(&spaced.id()) {
                 continue;
             }
@@ -1245,6 +1416,454 @@ pub(crate) fn cast_off(
                 }
             }
         }
+    }
+
+    // A text run's ink is its staff's content, by height alone: a run takes
+    // no room across, beside the slot it rides.
+    for (ti, text) in spaced_texts.iter().enumerate() {
+        let Some(s) = text_system[ti].filter(|_| !placed.texts.contains_key(&text.id())) else {
+            continue;
+        };
+        if between.contains(&text.id()) {
+            continue;
+        }
+        let (y, b) = (text.origin.y.0, text.bounds);
+        match text_staff_of[ti] {
+            Some(_) => into_staff(
+                &mut staff_ext,
+                s,
+                text_staff_of[ti],
+                y + b.bottom.0,
+                y + b.top.0,
+            ),
+            None => extents[s].add_y(y + b.bottom.0, y + b.top.0),
+        }
+    }
+
+    // ---- The family placed off its staves (X4c) -----------------------------
+    // Each system's map across depends on its extent across alone, so it is
+    // set here, before the family a solver places off its staves is placed
+    // against each staff's ink where the system sets it (`family::place`);
+    // that ink then joins its staff's extent, so the gap to the next staff
+    // makes room for it.
+    let springs: BTreeMap<SpringSlotId, f32> = input
+        .horizontal_slots
+        .iter()
+        .map(|slot| (slot.id, slot.stretch_factor * slot.preferred_width.0))
+        .collect();
+    let hplace: Vec<(Placement, bool)> = systems
+        .iter()
+        .enumerate()
+        .map(|(s, plan)| {
+            let ext = extents[s].normalized();
+            // A later system's content starts after its lead.
+            let base_dx = geometry.margins.left.0 + lead_w[s] - ext.min_x;
+            let width = width_limit - lead_w[s];
+            let squeezed = held_system[s]
+                .then(|| {
+                    compress_system(
+                        plan,
+                        &ext,
+                        base_dx,
+                        0.0,
+                        &region_slots,
+                        respacing.skyline,
+                        width,
+                    )
+                })
+                .flatten();
+            let compressed = squeezed.is_some();
+            let placement = squeezed.unwrap_or_else(|| {
+                justify_system(
+                    plan,
+                    &ext,
+                    base_dx,
+                    0.0,
+                    &region_slots,
+                    &region_systems,
+                    &springs,
+                    width,
+                )
+            });
+            (placement, compressed)
+        })
+        .collect();
+    // Each line of the family (a hairpin's leg, a hyphen, a melisma line, a
+    // trill line's wiggles), by its stroke.
+    let family_lines: BTreeMap<GlyphObjectId, FamilyLine> = input
+        .family
+        .iter()
+        .filter(|mark| mark.line.is_some())
+        .flat_map(|mark| {
+            mark.strokes
+                .iter()
+                .map(move |id| (*id, mark.line.expect("a line")))
+        })
+        .collect();
+    // How far across each moved ending's start moves from where the spacing
+    // set it, so its hook stands `BAR_NOTE_DISTANCE` before its system's
+    // first note or rest, as MuseScore starts an ending opening a system
+    // (`Volta::linePos`), its line's half width further on; and so, for any
+    // part of it, the system it stands on and that shift.
+    let ending_dx: BTreeMap<usize, f32> = ending_to
+        .iter()
+        .filter_map(|(&e, &t)| {
+            let plan = &systems[t];
+            let first = plan
+                .slots
+                .iter()
+                .map(|&i| &region_slots[plan.region][i])
+                .find(|info| info.note)?;
+            let left = first
+                .members
+                .iter()
+                .filter(|&&g| {
+                    let name = input.glyphs[g].glyph.as_str();
+                    name.starts_with("notehead") || name.starts_with("rest")
+                })
+                .map(|&g| spaced_glyphs[g].position.x.0 + spaced_glyphs[g].bounding_box.left.0)
+                .reduce(f32::min)?;
+            let x = left + hplace[t].0.slot_dx(first.x) - shift_of(first.id);
+            let hook = input
+                .strokes
+                .iter()
+                .position(|stroke| stroke.id() == input.endings[e].hook)?;
+            let hook = &spaced_strokes[hook];
+            Some((
+                e,
+                x - BAR_NOTE_DISTANCE + hook.thickness.0 * 0.5 - hook.from.x.0,
+            ))
+        })
+        .collect();
+    let ending_shift = |id: GlyphObjectId| -> Option<(usize, f32)> {
+        let e = ending_of.get(&id)?;
+        Some((ending_to[e], *ending_dx.get(e)?))
+    };
+    // Where a split stroke's piece stands across in its system, in the
+    // family's placing as in its drawing.
+    let piece_x =
+        |source: &Stroke, k: usize, n: usize, s: usize, p: &Placement, from: f32, to: f32| {
+            split_piece_x(
+                k,
+                n,
+                (from, to),
+                p,
+                anchors.get(&source.id()),
+                &slot_source_x,
+                family_lines.contains_key(&source.id()).then(|| {
+                    let plan = &systems[s];
+                    plan.slots
+                        .first()
+                        .map_or(geometry.margins.left.0 + lead_w[s], |&i| {
+                            let x = region_slots[plan.region][i].x;
+                            x + p.slot_dx(x)
+                        })
+                }),
+            )
+        };
+    // Each member standing at its measure's start, set across once its
+    // system is: centred on its barline's ink there, on its right edge for a
+    // rehearsal mark (where the measure starts) and on its middle for a
+    // segno or coda; or, where the measure opens its system, just after the
+    // ink of the system's lead and of the columns before the member's, or on
+    // the system's left edge.
+    let mut family_dx: BTreeMap<usize, f32> = BTreeMap::new();
+    let text_at: BTreeMap<GlyphObjectId, usize> = input
+        .texts
+        .iter()
+        .enumerate()
+        .map(|(i, text)| (text.id(), i))
+        .collect();
+    for (f, mark) in input.family.iter().enumerate() {
+        let Some(across) = mark.placement.and_then(|p| p.across) else {
+            continue;
+        };
+        // Its runs' ink across where their slot sets them, and their slot.
+        let mut ink: Option<(usize, SpringSlotId, f32, f32)> = None;
+        for i in mark.texts.iter().filter_map(|id| text_at.get(id)) {
+            let (text, spaced) = (&input.texts[*i], &spaced_texts[*i]);
+            let Some(s) = text_system[*i] else {
+                continue;
+            };
+            let slot = text.horizontal_slot;
+            let sx = slot_source_x
+                .get(&slot)
+                .copied()
+                .unwrap_or(spaced.origin.x.0);
+            let x = spaced.origin.x.0 + hplace[s].0.slot_dx(sx) - shift_of(slot);
+            let (l, r) = (x + spaced.bounds.left.0, x + spaced.bounds.right.0);
+            ink = Some(match ink {
+                Some((s, slot, a, b)) => (s, slot, a.min(l), b.max(r)),
+                None => (s, slot, l, r),
+            });
+        }
+        let Some((s, slot, l, r)) = ink else {
+            continue;
+        };
+        // The ink of the glyphs in this system's slots matching `pick`.
+        let glyph_ink = |pick: &dyn Fn(SpringSlotId) -> bool| {
+            input
+                .glyphs
+                .iter()
+                .zip(spaced_glyphs)
+                .filter(|(g, _)| {
+                    system_of_slot.get(&g.horizontal_slot) == Some(&s) && pick(g.horizontal_slot)
+                })
+                .map(|(g, spaced)| {
+                    let sx = slot_source_x
+                        .get(&g.horizontal_slot)
+                        .copied()
+                        .unwrap_or(spaced.position.x.0);
+                    let x =
+                        spaced.position.x.0 + hplace[s].0.slot_dx(sx) - shift_of(g.horizontal_slot);
+                    (x + g.bounding_box.left.0, x + g.bounding_box.right.0)
+                })
+                .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)))
+        };
+        let barline = across
+            .barline
+            .filter(|b| system_of_slot.get(b) == Some(&s))
+            .and_then(|b| glyph_ink(&|slot| slot == b));
+        let target = match (barline, across.kind) {
+            (Some((_, right)), MeasureMark::Rehearsal) => right,
+            (Some((left, right)), MeasureMark::Repeat) => (left + right) * 0.5,
+            (None, MeasureMark::Rehearsal) => {
+                let lead = if lead_w[s] > 0.0 {
+                    geometry.margins.left.0 + lead_w[s] - LEAD_GAP
+                } else {
+                    geometry.margins.left.0
+                };
+                let own = slot_source_x.get(&slot).copied().unwrap_or(f32::INFINITY);
+                let before =
+                    glyph_ink(&|other| slot_source_x.get(&other).is_some_and(|&x| x < own));
+                before.map_or(lead, |(_, right)| lead.max(right))
+            }
+            (None, MeasureMark::Repeat) => geometry.margins.left.0,
+        };
+        family_dx.insert(f, target - (l + r) * 0.5);
+    }
+    let member_dx = |f: Option<&usize>| f.and_then(|f| family_dx.get(f)).copied().unwrap_or(0.0);
+    let mut family_dy: BTreeMap<(usize, usize), f32> = BTreeMap::new();
+    // The placed family's pieces and the ink each was placed against, kept
+    // for centring a grand staff's once its staves are set.
+    let mut family_pieces: Vec<crate::family::Piece> = Vec::new();
+    let mut family_sky: BTreeMap<(usize, VerticalBandId), Vec<InkRect>> = BTreeMap::new();
+    if !(placed.glyphs.is_empty() && placed.strokes.is_empty() && placed.texts.is_empty()) {
+        let mut pieces: Vec<crate::family::Piece> = Vec::new();
+        let mut piece_of: BTreeMap<(usize, usize), usize> = BTreeMap::new();
+        let mut piece = |pieces: &mut Vec<crate::family::Piece>, family: usize, system: usize| {
+            *piece_of.entry((family, system)).or_insert_with(|| {
+                pieces.push(crate::family::Piece {
+                    family,
+                    system,
+                    boxes: Vec::new(),
+                });
+                pieces.len() - 1
+            })
+        };
+        let mut sky: BTreeMap<(usize, VerticalBandId), Vec<InkRect>> = BTreeMap::new();
+        let rect = |l: f32, r: f32, b: f32, t: f32| InkRect {
+            left: l.min(r),
+            right: l.max(r),
+            bottom: b.min(t),
+            top: b.max(t),
+        };
+        // Glyphs, each moved with its slot, or a moved ending's start.
+        for (glyph, spaced) in input.glyphs.iter().zip(spaced_glyphs) {
+            let Some(&s) = system_of_slot.get(&glyph.horizontal_slot) else {
+                continue;
+            };
+            let sx = slot_source_x
+                .get(&glyph.horizontal_slot)
+                .copied()
+                .unwrap_or(spaced.position.x.0);
+            let (s, x) = match ending_shift(glyph.id()) {
+                Some((t, dx)) => (t, spaced.position.x.0 + dx),
+                None => (
+                    s,
+                    spaced.position.x.0 + hplace[s].0.slot_dx(sx) - shift_of(glyph.horizontal_slot),
+                ),
+            };
+            let (y, b) = (spaced.position.y.0, glyph.bounding_box);
+            let ink = rect(x + b.left.0, x + b.right.0, y + b.bottom.0, y + b.top.0);
+            match placed.glyphs.get(&glyph.id()) {
+                Some(&f) => {
+                    let i = piece(&mut pieces, f, s);
+                    pieces[i].boxes.push(ink);
+                }
+                None if !between.contains(&glyph.id()) => {
+                    sky.entry((s, glyph.vertical_band)).or_default().push(ink)
+                }
+                None => {}
+            }
+        }
+        // Strokes, each where its system sets it; a traced anchor draws
+        // nothing.
+        for (si, ((stroke, spaced), fate)) in input
+            .strokes
+            .iter()
+            .zip(spaced_strokes)
+            .zip(&fates)
+            .enumerate()
+        {
+            let _ = si;
+            if stroke.from == stroke.to || between.contains(&stroke.id()) {
+                continue;
+            }
+            let half = (spaced.thickness.0 * 0.5).max(0.0);
+            let segments: Vec<(usize, Point, Point)> = match fate {
+                StrokeFate::Rigid(Some(s)) => {
+                    let p = place_stroke(
+                        stroke,
+                        spaced,
+                        &hplace[*s].0,
+                        &slot_source_x,
+                        &input.glyphs,
+                        anchors.get(&stroke.id()),
+                    );
+                    let dx = member_dx(placed.strokes.get(&stroke.id()));
+                    let (from_x, to_x) = match ending_shift(stroke.id()) {
+                        Some((_, shift)) => (spaced.from.x.0 + shift, spaced.to.x.0 + shift),
+                        None => (p.from.x.0 + dx, p.to.x.0 + dx),
+                    };
+                    vec![(
+                        *s,
+                        Point::new(from_x, p.from.y.0),
+                        Point::new(to_x, p.to.y.0),
+                    )]
+                }
+                StrokeFate::Rigid(None) => Vec::new(),
+                StrokeFate::Split(segments) => segments
+                    .iter()
+                    .enumerate()
+                    .map(|(k, (s, from, to))| {
+                        let p = &hplace[*s].0;
+                        let (mut fx, tx) =
+                            piece_x(stroke, k, segments.len(), *s, p, from.x.0, to.x.0);
+                        if let (0, Some((_, shift))) = (k, ending_shift(stroke.id())) {
+                            fx = spaced.from.x.0 + shift;
+                        }
+                        (*s, Point::new(fx, from.y.0), Point::new(tx, to.y.0))
+                    })
+                    .collect(),
+            };
+            for (s, from, to) in segments {
+                let ink = if family_lines.get(&stroke.id()) == Some(&FamilyLine::Trill) {
+                    // A trill line's ink is its wiggles' along it.
+                    let w = metrics(TRILL_WIGGLE)
+                        .expect("the wiggle is bundled")
+                        .bounding_box();
+                    rect(from.x.0, to.x.0, from.y.0 + w.bottom.0, from.y.0 + w.top.0)
+                } else {
+                    rect(
+                        from.x.0 - half,
+                        to.x.0 + half,
+                        from.y.0.min(to.y.0) - half,
+                        from.y.0.max(to.y.0) + half,
+                    )
+                };
+                match placed.strokes.get(&stroke.id()) {
+                    Some(&f) => {
+                        let i = piece(&mut pieces, f, s);
+                        pieces[i].boxes.push(ink);
+                    }
+                    None => sky.entry((s, stroke.vertical_band)).or_default().push(ink),
+                }
+            }
+        }
+        // Curves, sampled along their arcs where their systems set them.
+        for (curve, fate) in spaced_curves.iter().zip(&curve_fates) {
+            let half = (curve.thickness.0 * 0.5).max(0.0);
+            let segments: Vec<(usize, [Point; 4])> = match fate {
+                CurveFate::Rigid(Some(s)) => {
+                    let p = &hplace[*s].0;
+                    let slot_dx =
+                        |slot: &SpringSlotId| slot_source_x.get(slot).map(|&sx| p.slot_dx(sx));
+                    let cp = match anchors
+                        .get(&curve.id())
+                        .and_then(|(start, end)| Some((slot_dx(start)?, slot_dx(end)?)))
+                    {
+                        Some((start, end)) => {
+                            crate::anchored_curve(curve.control_points(), start, end)
+                        }
+                        None => curve
+                            .control_points()
+                            .map(|pt| Point::new(p.x(pt.x.0), pt.y.0)),
+                    };
+                    vec![(*s, cp)]
+                }
+                CurveFate::Rigid(None) => Vec::new(),
+                CurveFate::Split(segments) => segments
+                    .iter()
+                    .map(|(s, cp)| {
+                        let p = &hplace[*s].0;
+                        (*s, cp.map(|pt| Point::new(p.x(pt.x.0), pt.y.0)))
+                    })
+                    .collect(),
+            };
+            for (s, cp) in segments {
+                let at = |t: f32| {
+                    let u = 1.0 - t;
+                    let w = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+                    (
+                        (0..4).map(|k| w[k] * cp[k].x.0).sum::<f32>(),
+                        (0..4).map(|k| w[k] * cp[k].y.0).sum::<f32>(),
+                    )
+                };
+                const SAMPLES: usize = 12;
+                let band = sky.entry((s, curve.vertical_band)).or_default();
+                let mut last = at(0.0);
+                for k in 1..=SAMPLES {
+                    let next = at(k as f32 / SAMPLES as f32);
+                    band.push(rect(
+                        last.0 - half,
+                        next.0 + half,
+                        last.1.min(next.1) - half,
+                        last.1.max(next.1) + half,
+                    ));
+                    last = next;
+                }
+            }
+        }
+        // Text runs, each moved with its slot.
+        for ((text, spaced), system) in input.texts.iter().zip(spaced_texts).zip(&text_system) {
+            let Some(s) = *system else {
+                continue;
+            };
+            let sx = slot_source_x
+                .get(&text.horizontal_slot)
+                .copied()
+                .unwrap_or(spaced.origin.x.0);
+            let x = spaced.origin.x.0 + hplace[s].0.slot_dx(sx) - shift_of(text.horizontal_slot)
+                + member_dx(placed.texts.get(&text.id()));
+            let (y, b) = (spaced.origin.y.0, spaced.bounds);
+            let ink = rect(x + b.left.0, x + b.right.0, y + b.bottom.0, y + b.top.0);
+            match placed.texts.get(&text.id()) {
+                Some(&f) => {
+                    let i = piece(&mut pieces, f, s);
+                    pieces[i].boxes.push(ink);
+                }
+                None if !between.contains(&text.id()) => {
+                    sky.entry((s, text.vertical_band)).or_default().push(ink)
+                }
+                None => {}
+            }
+        }
+        let shifts = crate::family::place(&input.family, &pieces, &sky);
+        for (p, by) in pieces.iter().zip(shifts) {
+            family_dy.insert((p.family, p.system), by);
+            let staff = staff_of(input.family[p.family].band);
+            for b in &p.boxes {
+                match staff {
+                    Some(_) => {
+                        into_staff(&mut staff_ext, p.system, staff, b.bottom + by, b.top + by)
+                    }
+                    None => extents[p.system].add_y(b.bottom + by, b.top + by),
+                }
+            }
+        }
+        family_pieces = pieces;
+        family_sky = sky;
     }
 
     // A later system's leads are its staves' content too.
@@ -1360,6 +1979,102 @@ pub(crate) fn cast_off(
         }
     }
 
+    // A dynamic or hairpin of a grand staff stands centred between its two
+    // staves once they are set, as far as the ink between them lets it, the
+    // members of a row together (`AlignmentLayout::alignStaffCenteredItems`).
+    let mut centred: BTreeMap<(usize, u128), Vec<usize>> = BTreeMap::new();
+    for (i, p) in family_pieces.iter().enumerate() {
+        let Some(place) = input.family[p.family].placement else {
+            continue;
+        };
+        if place.between.is_some() {
+            let row = place.row.map_or(u128::MAX - i as u128, |row| row.id);
+            centred.entry((p.system, row)).or_default().push(i);
+        }
+    }
+    for ((s, _), members) in centred {
+        let first = &input.family[family_pieces[members[0]].family];
+        let Some(place) = first.placement else {
+            continue;
+        };
+        let (own, Some(other)) = (first.band, place.between) else {
+            continue;
+        };
+        let line = |band: VerticalBandId| {
+            let st = staff_of(band)?;
+            Some((
+                *staff_ref.get(&(s, st))?,
+                staff_shift.get(&(s, st)).copied().unwrap_or(0.0),
+            ))
+        };
+        let (Some((own_top, own_shift)), Some((other_top, other_shift))) = (line(own), line(other))
+        else {
+            continue;
+        };
+        // The other staff in this one's frame, and the middle of the gap
+        // between their lines, a reference being a top line's ink.
+        let off = own_shift - other_shift;
+        let half = |band: VerticalBandId| {
+            input
+                .strokes
+                .iter()
+                .find(|s| {
+                    s.vertical_band == band
+                        && matches!(s.provenance.source, TypedObjectId::Staff(_))
+                })
+                .map_or(0.0, |s| s.thickness.0 * 0.5)
+        };
+        let target = (own_top - half(own) + other_top - half(other) + off - STAFF_SPAN) * 0.5;
+        let centre = place.row.map_or(0.0, |row| row.centre)
+            + family_dy
+                .get(&(first_of(&family_pieces, &members), s))
+                .copied()
+                .unwrap_or(0.0);
+        // As far as its own staff's ink and the other's let it.
+        let (mut up, mut down) = (f32::INFINITY, f32::NEG_INFINITY);
+        for &i in &members {
+            let p = &family_pieces[i];
+            let dy = family_dy.get(&(p.family, s)).copied().unwrap_or(0.0);
+            let min = input.family[p.family]
+                .placement
+                .map_or(0.0, |place| place.min_distance);
+            for b in &p.boxes {
+                let meets = |r: &&InkRect| r.left < b.right && r.right > b.left;
+                for r in family_sky
+                    .get(&(s, own))
+                    .into_iter()
+                    .flatten()
+                    .filter(meets)
+                {
+                    if place.above {
+                        down = down.max(r.top + min - (b.bottom + dy));
+                    } else {
+                        up = up.min(r.bottom - min - (b.top + dy));
+                    }
+                }
+                for r in family_sky
+                    .get(&(s, other))
+                    .into_iter()
+                    .flatten()
+                    .filter(meets)
+                {
+                    if place.above {
+                        up = up.min(r.bottom + off - min - (b.top + dy));
+                    } else {
+                        down = down.max(r.top + off + min - (b.bottom + dy));
+                    }
+                }
+            }
+        }
+        if down > up {
+            continue;
+        }
+        let delta = (target - centre).clamp(down, up);
+        for &i in &members {
+            *family_dy.entry((family_pieces[i].family, s)).or_insert(0.0) += delta;
+        }
+    }
+
     // Fold each staff's SHIFTED content y-extent into its system extent, so the
     // stacking/justification below sees the taller, separated system.
     for ((s, st), (lo, hi)) in &staff_ext {
@@ -1376,13 +2091,6 @@ pub(crate) fn cast_off(
         .0;
     let content_height = geometry.content_height();
     let bounded = content_height > 0.0;
-    // Each slot's spring, the share of a justified system's slack the
-    // interval after it takes.
-    let springs: BTreeMap<SpringSlotId, f32> = input
-        .horizontal_slots
-        .iter()
-        .map(|slot| (slot.id, slot.stretch_factor * slot.preferred_width.0))
-        .collect();
     let mut placements: Vec<Placement> = Vec::with_capacity(systems.len());
     // Whether each system is compressed, its curves then passed again.
     let mut compressed: Vec<bool> = Vec::with_capacity(systems.len());
@@ -1402,36 +2110,12 @@ pub(crate) fn cast_off(
             page_floor = cursor - content_height.max(0.0);
             page_systems.push(Vec::new());
         }
-        // A later system's content starts after its lead.
-        let base_dx = geometry.margins.left.0 + lead_w[s] - ext.min_x;
-        let dy = cursor - ext.max_y;
-        let width = width_limit - lead_w[s];
-        let squeezed = held_system[s]
-            .then(|| {
-                compress_system(
-                    plan,
-                    ext,
-                    base_dx,
-                    dy,
-                    &region_slots,
-                    respacing.skyline,
-                    width,
-                )
-            })
-            .flatten();
-        compressed.push(squeezed.is_some());
-        placements.push(squeezed.unwrap_or_else(|| {
-            justify_system(
-                plan,
-                ext,
-                base_dx,
-                dy,
-                &region_slots,
-                &region_systems,
-                &springs,
-                width,
-            )
-        }));
+        // The system's map across, set before the family was placed; its
+        // height now.
+        let (mut placement, squeezed) = hplace[s].clone();
+        placement.dy = cursor - ext.max_y;
+        compressed.push(squeezed);
+        placements.push(placement);
         page_systems
             .last_mut()
             .expect("a page was opened above")
@@ -1531,8 +2215,16 @@ pub(crate) fn cast_off(
         .zip(&input.glyphs)
         .enumerate()
         .map(|(gi, (spaced, glyph))| {
-            let system = system_of_slot.get(&glyph.horizontal_slot).copied();
+            let moved = ending_shift(glyph.id());
+            let system = match moved {
+                Some((t, _)) => Some(t),
+                None => system_of_slot.get(&glyph.horizontal_slot).copied(),
+            };
             let (dx, dy) = match system {
+                Some(s) if moved.is_some() => (
+                    moved.map_or(0.0, |(_, dx)| dx),
+                    placements[s].dy - staff_dy(s, glyph_staff_of[gi]),
+                ),
                 Some(s) => {
                     // Slot-relative: every member of a slot translates by the
                     // map at the slot's source, so intra-slot offsets survive.
@@ -1540,9 +2232,15 @@ pub(crate) fn cast_off(
                         .get(&glyph.horizontal_slot)
                         .copied()
                         .unwrap_or(spaced.position.x.0);
+                    let lift = placed
+                        .glyphs
+                        .get(&glyph.id())
+                        .and_then(|f| family_dy.get(&(*f, s)))
+                        .copied()
+                        .unwrap_or(0.0);
                     (
                         placements[s].slot_dx(sx) - shift_of(glyph.horizontal_slot),
-                        placements[s].dy - staff_dy(s, glyph_staff_of[gi]),
+                        placements[s].dy - staff_dy(s, glyph_staff_of[gi]) + lift,
                     )
                 }
                 None => (0.0, 0.0),
@@ -1586,6 +2284,18 @@ pub(crate) fn cast_off(
         }
     }
 
+    // Each hairpin leg, by its stroke: its hairpin's shape, and which leg,
+    // up 1 and down -1.
+    let hairpin_legs: BTreeMap<GlyphObjectId, (HairpinShape, f32)> = input
+        .family
+        .iter()
+        .filter_map(|mark| match mark.line {
+            Some(FamilyLine::Hairpin(shape)) => Some((shape, &mark.strokes)),
+            _ => None,
+        })
+        .filter(|(_, legs)| legs.len() == 2)
+        .flat_map(|(shape, legs)| [(legs[0], (shape, 1.0)), (legs[1], (shape, -1.0))])
+        .collect();
     // Per-system staff-line marks, for the resolved staff records below.
     let mut staff_marks: BTreeMap<(usize, StaffId), StaffAgg> = BTreeMap::new();
     let mut strokes: Vec<Stroke> = Vec::with_capacity(spaced_strokes.len());
@@ -1604,9 +2314,17 @@ pub(crate) fn cast_off(
     {
         match fate {
             StrokeFate::Rigid(sys) => {
-                let stroke = match sys {
+                let lift = |s: usize| {
+                    placed
+                        .strokes
+                        .get(&source.id())
+                        .and_then(|f| family_dy.get(&(*f, s)))
+                        .copied()
+                        .unwrap_or(0.0)
+                };
+                let mut stroke = match sys {
                     Some(s) => {
-                        let p = placements[*s].sunk(staff_dy(*s, stroke_staff_of[si]));
+                        let p = placements[*s].sunk(staff_dy(*s, stroke_staff_of[si]) - lift(*s));
                         let mut stroke = place_stroke(
                             source,
                             spaced,
@@ -1616,6 +2334,17 @@ pub(crate) fn cast_off(
                             anchors.get(&source.id()),
                         );
                         end_staff_line(&mut stroke, staff_end[*s].map(|x| p.x(x)));
+                        if hairpin_legs.contains_key(&source.id()) {
+                            keep_hairpin_length(&mut stroke);
+                        }
+                        let dx = member_dx(placed.strokes.get(&source.id()));
+                        stroke.from = Point::new(stroke.from.x.0 + dx, stroke.from.y.0);
+                        stroke.to = Point::new(stroke.to.x.0 + dx, stroke.to.y.0);
+                        // A moved ending's hook stands where its start does.
+                        if let Some((_, shift)) = ending_shift(source.id()) {
+                            stroke.from = Point::new(spaced.from.x.0 + shift, stroke.from.y.0);
+                            stroke.to = Point::new(spaced.to.x.0 + shift, stroke.to.y.0);
+                        }
                         // A stem reaching a beam across two staves: its beam
                         // end rides the staff the beam does.
                         if let Some(&upper) = reach_upper.get(&source.id()) {
@@ -1629,14 +2358,37 @@ pub(crate) fn cast_off(
                 if let (Some(s), TypedObjectId::Staff(staff)) = (sys, spaced.provenance.source) {
                     mark_staff(&mut staff_marks, *s, staff, &stroke);
                 }
+                let more = lyric_line(&mut stroke, family_lines.get(&source.id()), false);
+                for (j, dash) in more.into_iter().enumerate() {
+                    continuations.push(Stroke {
+                        provenance: extra_dash(spaced, 0, j),
+                        ..dash
+                    });
+                    continuation_system.push(*sys);
+                }
+                if family_lines.get(&source.id()) == Some(&FamilyLine::Trill) {
+                    for (i, x) in trill_wiggles(&mut stroke).into_iter().enumerate() {
+                        glyphs.push(wiggle(spaced, 0, i, Point::new(x, stroke.from.y.0)));
+                        glyph_system.push(*sys);
+                        appended_bands.push(stroke.vertical_band);
+                    }
+                }
                 strokes.push(stroke);
                 stroke_system.push(*sys);
             }
             StrokeFate::Split(segments) => {
+                let leg = hairpin_legs.get(&source.id());
                 for (k, (s, from, to)) in segments.iter().enumerate() {
                     // A split stroke spans systems — a staff line or volta
-                    // bracket — so each segment stretches with its system.
-                    let p = placements[*s].sunk(staff_dy(*s, stroke_staff_of[si]));
+                    // bracket, a hairpin — so each segment stretches with its
+                    // system, a placed one lifted as its piece there is.
+                    let lift = placed
+                        .strokes
+                        .get(&source.id())
+                        .and_then(|f| family_dy.get(&(*f, *s)))
+                        .copied()
+                        .unwrap_or(0.0);
+                    let p = placements[*s].sunk(staff_dy(*s, stroke_staff_of[si]) - lift);
                     let provenance = if k == 0 {
                         // The first segment carries the original stroke's exact
                         // provenance: the object survives, re-shaped.
@@ -1649,26 +2401,72 @@ pub(crate) fn cast_off(
                             spaced.provenance.dependencies.clone(),
                         )
                     };
-                    // A staff line reaches back under a later system's lead.
-                    let from_x = if lead_w[*s] > 0.0
+                    // A staff line reaches back under a later system's lead,
+                    // and a moved ending's line starts where its hook stands.
+                    let (mut from_x, to_x) =
+                        piece_x(source, k, segments.len(), *s, &p, from.x.0, to.x.0);
+                    if let (0, Some((_, shift))) = (k, ending_shift(source.id())) {
+                        from_x = spaced.from.x.0 + shift;
+                    }
+                    if lead_w[*s] > 0.0
                         && matches!(spaced.provenance.source, TypedObjectId::Staff(_))
                     {
-                        geometry.margins.left.0
-                    } else {
-                        p.x(from.x.0)
+                        from_x = geometry.margins.left.0;
+                    }
+                    // A hairpin's piece opens from its axis as MuseScore draws
+                    // each piece of one over a system break: to its full
+                    // opening at its wide end, and to its continuation's at a
+                    // narrow end the break leaves open.
+                    let (from_y, to_y) = match leg {
+                        Some(&(shape, sign)) => {
+                            let (full, cont) = (HAIRPIN_HEIGHT * 0.5, HAIRPIN_CONT_HEIGHT * 0.5);
+                            let (open, last) = (k > 0, k + 1 < segments.len());
+                            if shape.crescendo {
+                                (
+                                    shape.axis + sign * if open { cont } else { 0.0 },
+                                    shape.axis + sign * full,
+                                )
+                            } else {
+                                (
+                                    shape.axis + sign * full,
+                                    shape.axis + sign * if last { cont } else { 0.0 },
+                                )
+                            }
+                        }
+                        None => (from.y.0, to.y.0),
                     };
                     let mut stroke = Stroke {
                         provenance,
-                        from: Point::new(from_x, from.y.0 + p.dy),
-                        to: Point::new(p.x(to.x.0), to.y.0 + p.dy),
+                        from: Point::new(from_x, from_y + p.dy),
+                        to: Point::new(to_x, to_y + p.dy),
                         thickness: spaced.thickness,
                         layer: spaced.layer,
                         style: spaced.style,
                         vertical_band: spaced.vertical_band,
                     };
                     end_staff_line(&mut stroke, staff_end[*s].map(|x| p.x(x)));
+                    if leg.is_some() {
+                        keep_hairpin_length(&mut stroke);
+                    }
                     if let TypedObjectId::Staff(staff) = spaced.provenance.source {
                         mark_staff(&mut staff_marks, *s, staff, &stroke);
+                    }
+                    // A piece after the first ends at a syllable opening its
+                    // system, or spans one whole, longer than any dash.
+                    let more = lyric_line(&mut stroke, family_lines.get(&source.id()), k > 0);
+                    for (j, dash) in more.into_iter().enumerate() {
+                        continuations.push(Stroke {
+                            provenance: extra_dash(spaced, k, j),
+                            ..dash
+                        });
+                        continuation_system.push(Some(*s));
+                    }
+                    if family_lines.get(&source.id()) == Some(&FamilyLine::Trill) {
+                        for (i, x) in trill_wiggles(&mut stroke).into_iter().enumerate() {
+                            glyphs.push(wiggle(spaced, k, i, Point::new(x, stroke.from.y.0)));
+                            glyph_system.push(Some(*s));
+                            appended_bands.push(stroke.vertical_band);
+                        }
                     }
                     if k == 0 {
                         strokes.push(stroke);
@@ -1832,6 +2630,40 @@ pub(crate) fn cast_off(
     }
     curves.extend(curve_continuations);
     curve_system.extend(curve_continuation_system);
+
+    // Text runs: each moves with its slot, as the glyphs of its slot do, and
+    // with its staff's shift.
+    let texts: Vec<ResolvedText> = spaced_texts
+        .iter()
+        .zip(&input.texts)
+        .enumerate()
+        .map(|(ti, (spaced, text))| {
+            let (dx, dy) = match text_system[ti] {
+                Some(s) => {
+                    let sx = slot_source_x
+                        .get(&text.horizontal_slot)
+                        .copied()
+                        .unwrap_or(spaced.origin.x.0);
+                    let lift = placed
+                        .texts
+                        .get(&text.id())
+                        .and_then(|f| family_dy.get(&(*f, s)))
+                        .copied()
+                        .unwrap_or(0.0);
+                    (
+                        placements[s].slot_dx(sx) - shift_of(text.horizontal_slot)
+                            + member_dx(placed.texts.get(&text.id())),
+                        placements[s].dy - staff_dy(s, text_staff_of[ti]) + lift,
+                    )
+                }
+                None => (0.0, 0.0),
+            };
+            ResolvedText {
+                origin: Point::new(spaced.origin.x.0 + dx, spaced.origin.y.0 + dy),
+                ..spaced.clone()
+            }
+        })
+        .collect();
 
     // ---- Staff groups and the systemic barline ------------------------------
     // A system of two or more staves opens with a line joining them; each
@@ -2045,6 +2877,12 @@ pub(crate) fn cast_off(
             None => unowned.curves.push(i as u32),
         }
     }
+    for (i, system) in text_system.iter().enumerate() {
+        match system {
+            Some(s) => owned[*s].texts.push(i as u32),
+            None => unowned.texts.push(i as u32),
+        }
+    }
 
     // ---- The resolved page tree ---------------------------------------------
     let resolved_systems: Vec<ResolvedSystem> = systems
@@ -2109,6 +2947,7 @@ pub(crate) fn cast_off(
         appended_bands,
         strokes,
         curves,
+        texts,
         pages,
         decisions,
         system_start_slots,
@@ -2706,6 +3545,150 @@ fn param_at_x(cp: [Point; 4], x: f32) -> f32 {
         }
     }
     0.5 * (lo + hi)
+}
+
+/// Where piece `k` of a stroke split into `n` over systems stands across in
+/// its system, from the spaced ends of its piece: an anchored end rides its
+/// slot's delta, as it does within one system, so a justified system keeps
+/// it at its note; a line of the family (`line_start` its system's
+/// first column) carried into a later system starts at that column, the
+/// lesser of a space past the lead's ink and the first note
+/// (`Measure::firstNoteRestSegmentX`), the lead's gap being under a space,
+/// and one going on stops short of its system's end
+/// (`endingXForOpenEndedLines`).
+fn split_piece_x(
+    k: usize,
+    n: usize,
+    (from, to): (f32, f32),
+    p: &Placement,
+    anchor: Option<&(SpringSlotId, SpringSlotId)>,
+    slot_source_x: &BTreeMap<SpringSlotId, f32>,
+    line_start: Option<f32>,
+) -> (f32, f32) {
+    let slot_dx = |slot: &SpringSlotId| slot_source_x.get(slot).map(|&sx| p.slot_dx(sx));
+    let from_x = match line_start {
+        Some(x) if k > 0 => x,
+        _ => anchor
+            .filter(|_| k == 0)
+            .and_then(|(start, _)| slot_dx(start))
+            .map_or_else(|| p.x(from), |dx| from + dx),
+    };
+    let to_x = if line_start.is_some() && k + 1 < n {
+        p.x(to) - LINE_END_GAP
+    } else {
+        anchor
+            .filter(|_| k + 1 == n)
+            .and_then(|(_, end)| slot_dx(end))
+            .map_or_else(|| p.x(to), |dx| to + dx)
+    };
+    (from_x, to_x)
+}
+
+/// A trill line's piece where the system sets it: the origins across of the
+/// wiggles along it, one in each wiggle's advance, as many as it holds to
+/// the nearest (`LineSegment::symbolLine`); the stroke itself then draws
+/// nothing, a traced anchor.
+fn trill_wiggles(line: &mut Stroke) -> Vec<f32> {
+    let advance = metrics(TRILL_WIGGLE).map_or(1.0, |m| m.advance as f32 / 1024.0);
+    let (x0, x1) = (line.from.x.0, line.to.x.0);
+    let n = ((x1 - x0) / advance).round().max(0.0) as usize;
+    line.to = line.from;
+    (0..n).map(|i| x0 + advance * i as f32).collect()
+}
+
+/// A trill line's wiggle `i` of its piece `piece`, at `at`: synthesized from
+/// the line.
+fn wiggle(spaced: &Stroke, piece: usize, i: usize, at: Point) -> ResolvedGlyph {
+    ResolvedGlyph {
+        provenance: Provenance::synthesized(
+            spaced.provenance.source,
+            SynthesisKind::Registered(TRILL_WIGGLE_SYNTHESIS),
+            SynthesisInstanceKey(((piece as u128) << 32) | i as u128),
+            spaced.provenance.dependencies.clone(),
+        ),
+        glyph: GlyphReference::borrowed(TRILL_WIGGLE),
+        position: at,
+        transform: None,
+        bounding_box: metrics(TRILL_WIGGLE)
+            .expect("the wiggle is bundled")
+            .bounding_box(),
+        style: GlyphStyle { rgba: 0x0000_00ff },
+        layer: 0,
+    }
+}
+
+/// The registry id for a trill line's wiggles, synthesized from the line,
+/// keyed by piece and place.
+const TRILL_WIGGLE_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x5452_4957_4947_4C45); // "TRIWIGLE"
+
+/// A hyphen's or melisma line's piece where the system sets it: a hyphen's
+/// as dashes, one in each `LYRIC_DASH_MAX_DISTANCE` of it, each between
+/// `LYRIC_DASH_MIN` and `LYRIC_DASH_MAX` long and centred in its share, the
+/// first in `line`'s place and the rest returned; one too short for its
+/// least dash grows to it about its centre, or, `before` a syllable opening
+/// its system, back from its end (`LyricsLayout::layoutDashes`). A melisma
+/// line's piece is kept only where it is at least `LYRIC_MELISMA_MIN` long,
+/// and no ink otherwise.
+fn lyric_line(line: &mut Stroke, kind: Option<&FamilyLine>, before: bool) -> Vec<Stroke> {
+    let (x0, x1, y) = (line.from.x.0, line.to.x.0, line.from.y.0);
+    let span = x1 - x0;
+    match kind {
+        Some(FamilyLine::Melisma) => {
+            if span < LYRIC_MELISMA_MIN - LYRIC_MELISMA_TOLERANCE {
+                line.to = line.from;
+            }
+            Vec::new()
+        }
+        Some(FamilyLine::Hyphen) => {
+            let n = (span / LYRIC_DASH_MAX_DISTANCE).ceil().max(1.0);
+            if before && span < LYRIC_DASH_MIN {
+                line.from = Point::new(x1 - LYRIC_DASH_MIN, y);
+                return Vec::new();
+            }
+            let share = span / n;
+            let length = share.clamp(LYRIC_DASH_MIN, LYRIC_DASH_MAX);
+            let dash = |k: f32| {
+                let centre = x0 + share * (k + 0.5);
+                Stroke {
+                    from: Point::new(centre - length * 0.5, y),
+                    to: Point::new(centre + length * 0.5, y),
+                    ..line.clone()
+                }
+            };
+            let more = (1..n as usize).map(|k| dash(k as f32)).collect();
+            *line = dash(0.0);
+            more
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// A hyphen's further dash's provenance: synthesized from its first, keyed
+/// by the piece it stands in and its place there.
+fn extra_dash(spaced: &Stroke, piece: usize, k: usize) -> Provenance {
+    Provenance::synthesized(
+        spaced.provenance.source,
+        SynthesisKind::Registered(SYSTEM_CONTINUATION_SYNTHESIS),
+        continuation_instance_key(
+            spaced.provenance.stable_id,
+            (1 << 20) + (piece as u32) * 1024 + k as u32 + 1,
+        ),
+        spaced.provenance.dependencies.clone(),
+    )
+}
+
+/// A hairpin's piece stands at least its least length, its end moved out
+/// where the system set it shorter (`TLayout::layoutHairpinSegment`).
+fn keep_hairpin_length(leg: &mut Stroke) {
+    let least = leg.from.x.0 + HAIRPIN_MIN_LENGTH;
+    if leg.to.x.0 < least {
+        leg.to = Point::new(least, leg.to.y.0);
+    }
+}
+
+/// The family member of a group's first piece.
+fn first_of(pieces: &[crate::family::Piece], members: &[usize]) -> usize {
+    pieces[members[0]].family
 }
 
 /// Linear interpolation between two points.
@@ -3706,18 +4689,197 @@ mod tests {
         };
         assert_eq!(measure_count(&plain), 10);
         assert_eq!(measure_count(&repeats), 10);
-        // The volta brackets sit above the staff, so the system carrying them
-        // is taller than any repeat-free system.
-        let max_height = |report: &crate::SolveReport| -> f32 {
+        // The volta brackets sit above the staff, so the systems carrying them
+        // stand taller than the repeat-free fixture's (whose first holds its
+        // rehearsal mark, as the repeat fixture's does).
+        let height = |report: &crate::SolveReport| -> f32 {
             report
                 .layout
                 .pages
                 .iter()
                 .flat_map(|page| &page.systems)
                 .map(|system| system.bounding_box.size.height.0)
-                .fold(0.0, f32::max)
+                .sum()
         };
-        assert!(max_height(&repeats) > max_height(&plain));
+        assert!(height(&repeats) > height(&plain));
+    }
+
+    /// An ending whose first measure opens a system is drawn wholly on that
+    /// system, as MuseScore lays a spanner out only on a system its start
+    /// precedes the end of (`SystemLayout`): the repeat fixture's first
+    /// ending, whose measure opens the third system, has its hook, its number
+    /// and its line there, the hook `BAR_NOTE_DISTANCE` before the system's
+    /// first note, nothing at the end of the system before, and the system's
+    /// notes where they stand without it; its second ending, opening
+    /// mid-system, stands at its barline. Begun a measure earlier, in the
+    /// second system, the first ending stays there and runs on into the third.
+    #[test]
+    fn an_ending_opening_a_system_is_drawn_wholly_on_it() {
+        use crate::Engraver;
+        use epiphany_core::{AnchorOffset, MeasurePosition, RepeatKind, TimeAnchor};
+        use epiphany_layout_ir::{
+            to_constrained, to_logical, ConstraintSolver, ResolvedLayoutIR, SolverConfig,
+            BAR_NOTE_DISTANCE,
+        };
+        let solve = |score: &epiphany_core::Score| {
+            let input = to_constrained(&to_logical(score));
+            let layout = Engraver::default()
+                .solve(&input, &SolverConfig::default())
+                .layout;
+            (input, layout)
+        };
+        // Where each primitive of `input` is drawn: its system, by id.
+        fn system_of(
+            layout: &ResolvedLayoutIR,
+            glyph: Option<GlyphObjectId>,
+            stroke: Option<GlyphObjectId>,
+        ) -> usize {
+            let systems: Vec<&ResolvedSystem> =
+                layout.pages.iter().flat_map(|page| &page.systems).collect();
+            if let Some(id) = stroke {
+                let i = layout
+                    .strokes
+                    .iter()
+                    .position(|s| s.id() == id)
+                    .expect("drawn");
+                return systems
+                    .iter()
+                    .position(|sys| sys.primitives.strokes.contains(&(i as u32)))
+                    .expect("owned");
+            }
+            let id = glyph.expect("a glyph or a stroke");
+            let i = layout
+                .glyphs
+                .iter()
+                .position(|g| GlyphObjectId(g.provenance.stable_id.0) == id)
+                .expect("drawn");
+            systems
+                .iter()
+                .position(|sys| sys.primitives.glyphs.contains(&(i as u32)))
+                .expect("owned")
+        }
+        let barline_system = |input: &ConstrainedLayoutIR, layout: &ResolvedLayoutIR, slot| {
+            let glyph = input
+                .glyphs
+                .iter()
+                .find(|g| g.horizontal_slot == slot && is_barline_glyph(g.glyph.as_str()))
+                .expect("a barline");
+            system_of(layout, Some(glyph.id()), None)
+        };
+        let first_note = |layout: &ResolvedLayoutIR, s: usize| {
+            let system = layout
+                .pages
+                .iter()
+                .flat_map(|page| &page.systems)
+                .nth(s)
+                .expect("a system");
+            system
+                .primitives
+                .glyphs
+                .iter()
+                .map(|&i| &layout.glyphs[i as usize])
+                .filter(|g| g.glyph.as_str().starts_with("notehead"))
+                .map(|g| g.position.x.0 + g.bounding_box.left.0)
+                .fold(f32::INFINITY, f32::min)
+        };
+
+        let mut score = epiphany_testkit::fixtures::ten_measure_with_repeats(0x000A_11CE);
+        let (input, layout) = solve(&score);
+        assert_eq!(input.endings.len(), 2, "two endings");
+        let first = &input.endings[0];
+        let hook = &layout.strokes[layout
+            .strokes
+            .iter()
+            .position(|s| s.id() == first.hook)
+            .expect("drawn")];
+        let line = &layout.strokes[layout
+            .strokes
+            .iter()
+            .position(|s| s.id() == first.line)
+            .expect("drawn")];
+        assert_eq!(
+            system_of(&layout, None, Some(first.hook)),
+            2,
+            "the first ending on the third system"
+        );
+        assert_eq!(
+            system_of(&layout, None, Some(first.line)),
+            2,
+            "its line too"
+        );
+        assert_eq!(
+            barline_system(&input, &layout, first.barline),
+            1,
+            "its barline ends the second"
+        );
+        for number in &first.numbers {
+            assert_eq!(system_of(&layout, Some(*number), None), 2, "and its number");
+        }
+        let half = hook.thickness.0 * 0.5;
+        assert!(
+            (hook.from.x.0 - half - (first_note(&layout, 2) - BAR_NOTE_DISTANCE)).abs() < 1e-3,
+            "the hook {} before the first note",
+            hook.from.x.0
+        );
+        assert!(
+            (line.from.x.0 - hook.from.x.0).abs() < 1e-3,
+            "the line from the hook"
+        );
+        // The third system's notes stand where they stand without it, but for
+        // the half width of the line's piece there, which joins the system's
+        // extent as before.
+        let mut without = score.clone();
+        without.cross_cutting.repeats[1].voltas.remove(0);
+        let (_, alone) = solve(&without);
+        assert!((first_note(&layout, 2) - first_note(&alone, 2)).abs() < 0.05);
+        // Nothing of it at the end of the second system.
+        let second_system = layout
+            .pages
+            .iter()
+            .flat_map(|page| &page.systems)
+            .nth(1)
+            .expect("a system");
+        let at_end = second_system
+            .primitives
+            .strokes
+            .iter()
+            .map(|&i| &layout.strokes[i as usize])
+            .filter(|s| s.provenance.source == line.provenance.source && s.from.y == line.from.y)
+            .count();
+        assert_eq!(
+            at_end, 0,
+            "no piece of an ending at the second system's end"
+        );
+        // The second ending opens mid-system, at its barline.
+        let second = &input.endings[1];
+        assert_eq!(
+            system_of(&layout, None, Some(second.hook)),
+            barline_system(&input, &layout, second.barline)
+        );
+
+        // Begun at the sixth measure, mid-system, it runs on from there.
+        let sixth = score.canvas.regions[0].staff_instances()[0].measures[5].id;
+        let RepeatKind::Volta = score.cross_cutting.repeats[1].kind else {
+            panic!("the volta repeat");
+        };
+        score.cross_cutting.repeats[1].voltas[0].start = TimeAnchor::Measure {
+            id: sixth,
+            position: MeasurePosition::Start,
+            offset: AnchorOffset::Zero,
+        };
+        let (input, layout) = solve(&score);
+        let first = &input.endings[0];
+        assert_eq!(barline_system(&input, &layout, first.barline), 1);
+        assert_eq!(
+            system_of(&layout, None, Some(first.hook)),
+            1,
+            "it starts on the second"
+        );
+        assert_eq!(
+            system_of(&layout, None, Some(first.line)),
+            1,
+            "its line's first piece too"
+        );
     }
 
     #[test]
@@ -3981,9 +5143,10 @@ mod tests {
         );
         assert_eq!(
             stroke_counts,
-            vec![34, 37, 29],
+            vec![37, 37, 29],
             "the three/four/three measure split's real per-system stroke counts \
-             (the tie in the first system is a curve)"
+             (the tie in the first system is a curve; the rehearsal mark's frame, \
+             four strokes, takes its traced anchor's place)"
         );
         assert_eq!(
             glyph_counts.iter().sum::<usize>(),
@@ -4065,5 +5228,83 @@ mod tests {
             owner_continuation, 1,
             "the continuation is owned by the system it was split INTO, not the source's"
         );
+    }
+
+    /// A melisma line's piece stands where it is a space long less MuseScore's
+    /// tolerance, and not shorter; a hyphen's piece too short for its least
+    /// dash grows to it about its centre, or, before a syllable opening its
+    /// system, back from its end (`LyricsLayout::layoutMelismaLine`,
+    /// `LyricsLayout::layoutDashes`).
+    #[test]
+    fn a_lyric_lines_piece_keeps_its_least_lengths() {
+        use epiphany_core::{RegionId, ReplicaId};
+        let line = |x1: f32| Stroke {
+            provenance: Provenance::projected(
+                TypedObjectId::Region(RegionId::new(ReplicaId(1), 1)),
+                Vec::new(),
+            ),
+            from: Point::new(0.0, 0.0),
+            to: Point::new(x1, 0.0),
+            thickness: StaffSpace(0.1),
+            layer: 0,
+            style: GlyphStyle::default(),
+            vertical_band: VerticalBandId(0),
+        };
+        let ends = |s: &Stroke| (s.from.x.0, s.to.x.0);
+        let melisma = |x1: f32, before: bool| {
+            let mut s = line(x1);
+            lyric_line(&mut s, Some(&FamilyLine::Melisma), before);
+            ends(&s)
+        };
+        assert_eq!(melisma(0.97, false), (0.0, 0.97));
+        assert_eq!(melisma(0.94, false), (0.0, 0.0));
+        let hyphen = |x1: f32, before: bool| {
+            let mut s = line(x1);
+            let more = lyric_line(&mut s, Some(&FamilyLine::Hyphen), before);
+            assert!(more.is_empty());
+            ends(&s)
+        };
+        let near = |(a, b): (f32, f32), (c, d): (f32, f32)| {
+            assert!((a - c).abs() < 1e-5 && (b - d).abs() < 1e-5, "{a} {b}");
+        };
+        near(hyphen(0.2, false), (-0.1, 0.3));
+        near(hyphen(0.2, true), (-0.2, 0.2));
+        near(hyphen(0.5, true), (0.0, 0.5));
+    }
+
+    /// A trill line's piece holds as many wiggles as reach to the nearest
+    /// along it, none where it is shorter than half of one or its ends
+    /// cross, and then draws nothing itself (`LineSegment::symbolLine`).
+    #[test]
+    fn a_trill_lines_piece_holds_its_wiggles_to_the_nearest() {
+        use epiphany_core::{RegionId, ReplicaId};
+        let advance = 971.0 / 1024.0;
+        let line = |x1: f32| Stroke {
+            provenance: Provenance::projected(
+                TypedObjectId::Region(RegionId::new(ReplicaId(1), 1)),
+                Vec::new(),
+            ),
+            from: Point::new(1.0, 2.0),
+            to: Point::new(x1, 2.0),
+            thickness: StaffSpace(0.1),
+            layer: 0,
+            style: GlyphStyle::default(),
+            vertical_band: VerticalBandId(0),
+        };
+        for (x1, n) in [
+            (1.0 + 0.49 * advance, 0),
+            (1.0 + 0.51 * advance, 1),
+            (1.0 + 3.4 * advance, 3),
+            (1.0 + 3.6 * advance, 4),
+            (0.5, 0),
+        ] {
+            let mut stroke = line(x1);
+            let wiggles = trill_wiggles(&mut stroke);
+            assert_eq!(wiggles.len(), n, "{x1}");
+            for (i, x) in wiggles.iter().enumerate() {
+                assert!((x - (1.0 + i as f32 * advance)).abs() < 1e-5);
+            }
+            assert_eq!(stroke.to, stroke.from, "a traced anchor");
+        }
     }
 }
