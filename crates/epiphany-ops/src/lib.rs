@@ -974,6 +974,14 @@ pub mod vectors;
 ///     undo of an undo restoring a segment over one written since, left two
 ///     segments overlapping (`req:time:tempo-segment-order`). Locked by
 ///     `reference_holds.rs` and the committed histories `323` to `358`.
+///   - **What the owner ruled at C5b review 3** (D94 Q1, a verdict), older
+///     than X5b. A region's delete and a migration out
+///     of musical time read a region's tempo map only while its region is
+///     live, as an undo's region arm reads it: a deleted carrier's map, one
+///     whose create was undone, or a deleted region's written map holds
+///     nothing against the region it names and strands nothing, in both
+///     modes, where version `4` refused the delete `ContainerNotEmpty` and
+///     stranded the migration. Locked by `reference_holds.rs`.
 ///
 ///   With it, at the same epoch 16, a wire addition that changes no verdict:
 ///   `MarkerKind` appends `ExpressionText` (X5b.7, D79 Q9), reduced as any

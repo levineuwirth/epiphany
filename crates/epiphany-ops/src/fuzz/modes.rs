@@ -603,12 +603,25 @@ pub struct Coverage {
     pub other: BTreeMap<(String, String), u64>,
 }
 
+/// The effect shape a candidate of an equivocated slot that reduction did not
+/// read is counted under: its id's effect is another envelope's.
+pub const NOT_READ: &str = "not read: an equivocated candidate reduction did not choose";
+
 impl Coverage {
+    /// Counts each authored envelope by its kind and shapes, credited with
+    /// its id's effect only where it is the envelope reduction read under that
+    /// id ([`read_under_their_ids`]): an equivocating twin shares its victim's
+    /// id, and the effect reduction records for the id is the chosen
+    /// candidate's alone (C5b review 3's L2, D94 Q2: before it a candidate not
+    /// chosen was credited the chosen one's effect, so a refused shape could
+    /// be counted applied). A candidate not read is counted under
+    /// [`NOT_READ`].
     fn record(&mut self, authored: &[OperationEnvelope], state: &MaterializedState) {
         let effects: BTreeMap<_, _> = state.effects.iter().cloned().collect();
         let gestures = gesture_shapes(authored);
-        for (envelope, gesture) in authored.iter().zip(gestures) {
-            let effect = effects.get(&envelope.id);
+        let read = read_under_their_ids(authored, &effects);
+        for ((envelope, gesture), read) in authored.iter().zip(gestures).zip(read) {
+            let effect = effects.get(&envelope.id).filter(|_| read);
             let applied = matches!(
                 effect,
                 Some(OperationEffect::Applied | OperationEffect::AppliedWithRepair { .. })
@@ -624,7 +637,12 @@ impl Coverage {
                 if applied {
                     *self.applied.entry(name).or_default() += 1;
                 } else {
-                    *self.other.entry((name, effect_shape(effect))).or_default() += 1;
+                    let shape = if read {
+                        effect_shape(effect)
+                    } else {
+                        String::from(NOT_READ)
+                    };
+                    *self.other.entry((name, shape)).or_default() += 1;
                 }
             }
         }
@@ -646,6 +664,36 @@ impl Coverage {
         kinds.extend(SHAPES.iter().map(|s| (*s).to_owned()));
         kinds
     }
+}
+
+/// Whether reduction read each of `authored` under its id: the only envelope
+/// with that id, or, of an equivocated id's candidates, the one a governing
+/// `ResolveEquivocation` chose. Reduction's pre-pass lets only a resolve whose
+/// own slot is single govern, and records the governing one `Applied`; an
+/// equivocated id no resolve governs reduces none of its candidates.
+fn read_under_their_ids(
+    authored: &[OperationEnvelope],
+    effects: &BTreeMap<OperationId, OperationEffect>,
+) -> Vec<bool> {
+    let mut count: BTreeMap<OperationId, usize> = BTreeMap::new();
+    for envelope in authored {
+        *count.entry(envelope.id).or_default() += 1;
+    }
+    let chosen: BTreeMap<OperationId, crate::EnvelopeHash> = authored
+        .iter()
+        .filter(|envelope| count[&envelope.id] == 1)
+        .filter(|envelope| matches!(effects.get(&envelope.id), Some(OperationEffect::Applied)))
+        .filter_map(|envelope| match &envelope.payload {
+            OperationPayload::ResolveEquivocation(op) => Some((op.target, op.chosen)),
+            _ => None,
+        })
+        .collect();
+    authored
+        .iter()
+        .map(|envelope| {
+            count[&envelope.id] == 1 || chosen.get(&envelope.id) == Some(&envelope.envelope_hash())
+        })
+        .collect()
 }
 
 /// The payload shapes schema major 5 adds, and those reduction version 5
@@ -5877,6 +5925,91 @@ pub fn parse(text: &str) -> Result<Vec<OperationEnvelope>, epiphany_core::textva
 #[cfg(test)]
 mod tests {
     use super::witness_shape;
+
+    /// The CI budget credits an envelope with its id's effect only where it
+    /// is the envelope reduction read under that id (C5b review 3's L2, D94
+    /// Q2). An equivocation planted over a refused shape, a constant tempo
+    /// segment recording its end tempo: its twin, which applies, chosen by a
+    /// resolve. The refused shape's `REFUSED` row stays applied 0 and its
+    /// kind's row is credited nothing, both counted not read; the twin it was
+    /// read as is credited applied.
+    #[test]
+    fn an_equivocating_twin_s_effect_is_credited_to_the_twin_alone() {
+        use super::{
+            valuegen, Coverage, ResolveEquivocationPayload, SetMetadataOp, SetTempoSegmentOp,
+            NOT_READ,
+        };
+        use crate::causal::CausalContext;
+        use crate::opset::OperationSet;
+        use crate::stamp::{HybridLogicalClock, OperationStamp};
+        use crate::support::AuthorId;
+        use epiphany_core::{MusicalPosition, OperationId, RegionId, ReplicaId, WallClockTime};
+        let at = |replica: u64, clock: i64, context: CausalContext, payload| {
+            let id = OperationId::new(ReplicaId(replica), 0);
+            OperationEnvelope {
+                id,
+                author: AuthorId(u128::from(replica)),
+                stamp: OperationStamp::new(HybridLogicalClock::new(WallClockTime(clock), 0), id),
+                causal_context: context,
+                transaction: None,
+                payload,
+            }
+        };
+        let mut segment = valuegen::tempo_segment(
+            RegionId::new(ReplicaId(1), 9),
+            MusicalPosition::origin(),
+            90.0,
+        );
+        segment.end_tempo = Some(segment.start_tempo.clone());
+        let victim = at(
+            1,
+            1,
+            CausalContext::new(),
+            OperationPayload::Primitive(OperationKind::SetTempoSegment(SetTempoSegmentOp {
+                region: None,
+                start: segment.start.clone(),
+                segment: Some(segment),
+            })),
+        );
+        let mut twin = victim.clone();
+        twin.payload = OperationPayload::Primitive(OperationKind::SetMetadata(SetMetadataOp {
+            metadata: valuegen::score_metadata(9),
+        }));
+        let resolve = at(
+            2,
+            2,
+            CausalContext::new().with_seen(ReplicaId(1), 0),
+            OperationPayload::ResolveEquivocation(ResolveEquivocationPayload {
+                target: victim.id,
+                chosen: twin.envelope_hash(),
+            }),
+        );
+        let authored = vec![victim.clone(), twin, resolve];
+        let mut set = OperationSet::new();
+        set.accept_all(authored.iter().cloned());
+        let state = set.reduce();
+        // As planted: the id's one effect is the twin's, applied.
+        assert!(matches!(
+            state.effects.iter().find(|(id, _)| *id == victim.id),
+            Some((_, OperationEffect::Applied))
+        ));
+        let mut coverage = Coverage::default();
+        coverage.record(&authored, &state);
+        let refused = "SetTempoSegment+constant with an end tempo";
+        assert_eq!(coverage.authored.get(refused), Some(&1));
+        assert_eq!(coverage.applied.get(refused), None, "the refused shape");
+        assert_eq!(coverage.applied.get("SetTempoSegment"), None, "its kind");
+        for name in [refused, "SetTempoSegment"] {
+            assert_eq!(
+                coverage
+                    .other
+                    .get(&(String::from(name), String::from(NOT_READ))),
+                Some(&1),
+                "{name}"
+            );
+        }
+        assert_eq!(coverage.applied.get("SetMetadata"), Some(&1), "the twin");
+    }
     use super::{
         BTreeMap, BTreeSet, DeleteEventOp, ModifyEventOp, OperationEffect, OperationEnvelope,
         OperationKind, OperationPayload, TupletCompensation,

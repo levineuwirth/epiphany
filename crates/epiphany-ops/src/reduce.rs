@@ -8699,16 +8699,21 @@ impl<'a> Reducer<'a> {
         // as its instances do: deleting the region would leave the segment's
         // anchor naming nothing (`CrossCuttingRefsResolve`). Read from the
         // tempo chains both modes keep (reduction version 3: before it the
-        // delete applied).
+        // delete applied). A region's map is read only while its region is
+        // live, as an undo's region arm reads it: a region's chains outlive
+        // it, and a map whose region is gone holds nothing (reduction version
+        // 5, D94 Q1: before it a deleted carrier's map, or one whose create
+        // was undone, held the region it named, `ContainerNotEmpty`).
         let anchors_here = |anchor: &TimeAnchor| matches!(anchor, TimeAnchor::Region { id, .. } if *id == op.region);
         let tempo_anchored = self.tempo_segment_chain.iter().any(|((map, _), chain)| {
-            *map != Some(op.region)
-                && matches!(
-                    chain.current(),
-                    Some(Some(segment))
-                        if anchors_here(&segment.start)
-                            || segment.end.as_ref().is_some_and(anchors_here)
-                )
+            map.is_none_or(|owner| {
+                owner != op.region && self.owner_licenses_block(TypedObjectId::Region(owner), &[])
+            }) && matches!(
+                chain.current(),
+                Some(Some(segment))
+                    if anchors_here(&segment.start)
+                        || segment.end.as_ref().is_some_and(anchors_here)
+            )
         });
         // A live marker or spanner anchored to the region holds it likewise
         // (schema major 5, reduction version 4).
@@ -9085,14 +9090,18 @@ impl<'a> Reducer<'a> {
             };
             // A live tempo segment of any map anchored here by a musical
             // offset strands the region itself, the segment having no id of
-            // its own (reduction version 3).
-            let tempo_stranded = self.tempo_segment_chain.values().any(|chain| {
-                matches!(
-                    chain.current(),
-                    Some(Some(segment))
-                        if musical_here(&segment.start)
-                            || segment.end.as_ref().is_some_and(musical_here)
-                )
+            // its own (reduction version 3); a region's map read only while
+            // its region is live, as the delete reads it (reduction version
+            // 5, D94 Q1: before it a map whose region was gone stranded the
+            // migration).
+            let tempo_stranded = self.tempo_segment_chain.iter().any(|((map, _), chain)| {
+                map.is_none_or(|owner| self.owner_licenses_block(TypedObjectId::Region(owner), &[]))
+                    && matches!(
+                        chain.current(),
+                        Some(Some(segment))
+                            if musical_here(&segment.start)
+                                || segment.end.as_ref().is_some_and(musical_here)
+                    )
             });
             // A live staff instance of the region holding a clef or key change,
             // which the chains key by musical position, strands itself

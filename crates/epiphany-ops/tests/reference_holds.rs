@@ -1466,10 +1466,9 @@ fn a_deleted_region_s_tempo_map_holds_nothing_against_an_undo() {
         assert!(undone(&free, undo), "{policy:?}: {:?}", effect(&free, undo));
         assert!(!live(&aware, TypedObjectId::Region(EMPTY)), "{policy:?}");
     }
-    // A region's delete still reads a deleted carrier's map, which its tempo
-    // chain keeps: the delete is refused `ContainerNotEmpty`, where the rule
-    // table holds a referent for a live holder. Conservative, nothing left
-    // naming nothing, and older than X5b (reduction version 3).
+    // And a region's delete reads it so (D94 Q1): the deleted carrier's map,
+    // which its tempo chain keeps, holds nothing, and the delete applies,
+    // where before it was refused `ContainerNotEmpty` (reduction version 3).
     let mut h = History::new();
     h.region(None, EMPTY, valuegen::metric_model(), 5_000_000_000);
     carrying(&mut h, vec![edge(EMPTY, AnchorOffset::Zero)]);
@@ -1479,12 +1478,135 @@ fn a_deleted_region_s_tempo_map_holds_nothing_against_an_undo() {
     let delete = h.push(OperationKind::DeleteRegion(epiphany_ops::DeleteRegionOp {
         region: EMPTY,
     }));
-    let (free, _) = h.reduce();
-    assert!(
-        refused(&free, delete, PreconditionFailureReason::ContainerNotEmpty),
-        "{:?}",
-        effect(&free, delete)
-    );
+    let (free, aware) = h.reduce();
+    assert!(applied(&free, delete), "{:?}", effect(&free, delete));
+    assert!(!live(&aware, TypedObjectId::Region(EMPTY)));
+}
+
+fn delete_region(h: &mut History, region: RegionId) -> OperationId {
+    h.push(OperationKind::DeleteRegion(epiphany_ops::DeleteRegionOp {
+        region,
+    }))
+}
+
+/// D94 Q1, as C5b review 3 widened it: a map whose region is not live holds
+/// nothing against the region it names. Its delete applies once the
+/// carrier's create is undone; the control, the carrier live, is refused
+/// `ContainerNotEmpty`, as before for both.
+#[test]
+fn an_undone_carrier_s_map_holds_nothing_against_a_delete() {
+    for undone_first in [true, false] {
+        let mut h = History::new();
+        h.region(None, EMPTY, valuegen::metric_model(), 5_000_000_000);
+        let transaction = h.transaction(500);
+        let created = h.push_in(
+            Some(transaction),
+            OperationKind::CreateRegion(CreateRegionOp {
+                region: {
+                    let mut region = valuegen::region(CARRIER);
+                    region.time_model = valuegen::metric_model();
+                    region.time_extent = TimeExtent {
+                        start: wall(7_000_000_000),
+                        end: wall(7_000_001_000),
+                    };
+                    let mut segment =
+                        valuegen::tempo_segment(CARRIER, MusicalPosition::origin(), 90.0);
+                    segment.start = edge(EMPTY, AnchorOffset::Zero);
+                    region.local_tempo_map = Some(TempoMap {
+                        initial: None,
+                        segments: vec![segment],
+                    });
+                    region
+                },
+            }),
+        );
+        if undone_first {
+            let undo = h.undo(transaction, UndoPolicy::StrictInverse);
+            let (free, _) = h.reduce();
+            assert!(undone(&free, undo), "{:?}", effect(&free, undo));
+        }
+        let delete = delete_region(&mut h, EMPTY);
+        let (free, aware) = h.reduce();
+        assert!(applied(&free, created));
+        if undone_first {
+            assert!(applied(&free, delete), "{:?}", effect(&free, delete));
+            assert!(!live(&aware, TypedObjectId::Region(EMPTY)));
+        } else {
+            assert!(
+                refused(&free, delete, PreconditionFailureReason::ContainerNotEmpty),
+                "the control: {:?}",
+                effect(&free, delete)
+            );
+            assert!(live(&aware, TypedObjectId::Region(EMPTY)));
+        }
+    }
+}
+
+/// D94 Q1, widened: a segment written into a region's map naming another
+/// region holds it only while the first region is live. With the first
+/// region deleted, the named region's delete applies; the control, the
+/// first region live, is refused `ContainerNotEmpty`.
+#[test]
+fn a_deleted_region_s_written_tempo_map_holds_nothing_against_a_delete() {
+    for deleted in [true, false] {
+        let mut h = History::new();
+        h.region(None, EMPTY, valuegen::metric_model(), 5_000_000_000);
+        h.region(None, CARRIER, valuegen::metric_model(), 7_000_000_000);
+        let written = h.tempo(None, Some(CARRIER), edge(EMPTY, AnchorOffset::Zero), true);
+        if deleted {
+            let gone = delete_region(&mut h, CARRIER);
+            let (free, _) = h.reduce();
+            assert!(applied(&free, gone), "{:?}", effect(&free, gone));
+        }
+        let delete = delete_region(&mut h, EMPTY);
+        let (free, aware) = h.reduce();
+        assert!(applied(&free, written), "{:?}", effect(&free, written));
+        if deleted {
+            assert!(applied(&free, delete), "{:?}", effect(&free, delete));
+            assert!(!live(&aware, TypedObjectId::Region(EMPTY)));
+        } else {
+            assert!(
+                refused(&free, delete, PreconditionFailureReason::ContainerNotEmpty),
+                "the control: {:?}",
+                effect(&free, delete)
+            );
+            assert!(live(&aware, TypedObjectId::Region(EMPTY)));
+        }
+    }
+}
+
+/// D94 Q1, widened to the migration's strand, which reads the same chains:
+/// a region's migration out of musical time applies once the carrier whose
+/// segment names it by a musical offset is deleted; the control, the carrier
+/// live, conflicts, the segment stranded, as before for both.
+#[test]
+fn a_deleted_carrier_s_map_strands_no_migration() {
+    for deleted in [true, false] {
+        let mut h = History::new();
+        h.region(None, EMPTY, valuegen::metric_model(), 5_000_000_000);
+        carrying(&mut h, vec![edge(EMPTY, bars(1))]);
+        if deleted {
+            delete_region(&mut h, CARRIER);
+        }
+        let migrated = h.push(OperationKind::ChangeRegionTimeModel(
+            ChangeRegionTimeModelOp {
+                region: EMPTY,
+                new_time_model: valuegen::proportional_model(),
+                declared_incompatible: Vec::new(),
+                remapping: PositionRemapping::PreserveTime,
+            },
+        ));
+        let (free, _) = h.reduce();
+        if deleted {
+            assert!(applied(&free, migrated), "{:?}", effect(&free, migrated));
+        } else {
+            assert!(
+                matches!(effect(&free, migrated), OperationEffect::Conflicted { .. }),
+                "the control: {:?}",
+                effect(&free, migrated)
+            );
+        }
+    }
 }
 
 fn tuplet(

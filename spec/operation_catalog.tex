@@ -1888,7 +1888,9 @@ overlapping another event of its voice (invariant~3; since version~0.19.0, the
 migration having applied before it). A target that admits no musical offset
 strands each of the region's live measures as well, named beside the events,
 and a live tempo segment of any map anchored to the region by a musical offset
-strands the region itself, named among them, the segment having no identifier,
+strands the region itself, named among them, the segment having no identifier
+(since version~0.22.0 a map whose region is not live strands nothing, before
+which a deleted carrier's map stranded it),
 and a live staff instance of the region holding a clef or key change, which
 stands at a musical offset, strands that instance, named among them,
 and an applied such migration drops the region's system and page breaks and
@@ -1977,8 +1979,10 @@ subsequent operations. A delete is a delete-wins tombstone, but a
 live children --- the caller deletes contents first (a staff instance's live
 measure holds it since version~0.22.0, before which the delete applied and took
 the measure from the graph). A region is held so by a
-live tempo segment of another map anchored to it and, since version~0.21.0, by
-a live marker or spanner anchored to it. Graph-aware reduction adds
+live tempo segment of another map anchored to it (since version~0.22.0 a map
+whose region is not live, deleted or its create undone, holds nothing, before
+which such a map, which its region's chains keep, held the region) and, since
+version~0.21.0, by a live marker or spanner anchored to it. Graph-aware reduction adds
 or removes the container and maintains the region's staff extent so
 \texttt{RegionExtents} stays satisfied.
 
