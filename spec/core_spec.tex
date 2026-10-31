@@ -2292,9 +2292,11 @@ pub struct Tempo {
   one without its end data (reduction algorithm version~\texttt{5}, before
   which the create applied). An undo reads the maps its restorations leave
   as such a write reads the map it leaves, every key's current value with
-  the undo's restorations installed: where a map would be so malformed, a
-  strict or cascading undo conflicts and a best-effort one applies only the
-  restorations that leave every map well formed (Operation Catalog,
+  the undo's restorations installed. Where they leave every map well
+  formed, every policy applies them all; where a map would be so malformed,
+  a strict or cascading undo conflicts, and a best-effort one admits the
+  removals among them, then, in canonical order, each restoration that
+  keeps its map well formed with those admitted before it (Operation Catalog,
   \sectionsc{UndoTransaction}; reduction algorithm version~\texttt{5},
   before which the undo restored a key's earlier segment unread, so a
   segment written since could overlap it).
@@ -17635,7 +17637,9 @@ layouts they own versus inherit:
   precede its start, that a region created carrying a map malformed as a
   \texttt{SetTempoSegment} write's would be is refused, and that an undo
   whose restorations would leave a map so malformed is held, a best-effort
-  one applying only the restorations that leave every map well formed.
+  one admitting the removals among them and then, in canonical order, the
+  restorations that keep each map well formed, and applying them all where
+  they leave every map well formed.
   \\
   \bottomrule
 \end{longtable}

@@ -915,7 +915,8 @@ overlapping, a segment ending before its start or a non-constant one without
 its end data (Section~\ref{sec:k0:structural-containers}). An undo reads the
 tempo maps its restorations leave as such a write reads the map it leaves: a
 strict or cascading undo conflicts where a map would be so malformed, and a
-best-effort one skips the restorations that would malform it
+best-effort one admits the removals among them and skips the restorations
+that would malform it, applying them all where none would
 (Section~\ref{sec:k0:undo}). An undo removing a region reads
 a tempo map whose region the same undo removes, or which is not live, as
 holding nothing, as it reads one naming an event
@@ -3320,14 +3321,17 @@ so an undo of an undo restores no value naming what the first undo removed
 the superseded ones. Since version~0.22.0 an undo reads the tempo maps its
 restorations leave as a \texttt{SetTempoSegment} reads the map it leaves
 (Section~\ref{sec:k0:meter-tempo}): per map, every key's current value with
-the undo's tempo restorations installed. Where a map would be malformed as a
-write's would be (a segment ending before its own start or past the next
+the undo's tempo restorations installed. Where they leave every map well
+formed, every policy applies them all alike. Where a map would be malformed
+as a write's would be (a segment ending before its own start or past the next
 segment's start, or a shape without its end data), \texttt{StrictInverse} and
 \texttt{Cascade} refuse the whole undo with a \texttt{TransactionConflict},
-and \texttt{BestEffort} applies, in canonical order, each tempo restoration
-that keeps its map well formed with those admitted before it, skipping the
-rest; a skipped key keeps its value, which holds what it names as the undo
-leaves it (before which the undo restored a key's earlier segment unread, so
+and \texttt{BestEffort} first admits every tempo removal (a restoration to
+absence), since taking a segment out of a well-formed map never malforms it,
+then, in canonical order, each tempo restoration that keeps its map well
+formed with the removals and the restorations admitted before it, skipping
+the rest; a skipped key keeps its value, which holds what it names as the
+undo leaves it (before which the undo restored a key's earlier segment unread, so
 a segment shortened or removed in a transaction, a later segment written
 where the shorter map allowed it, and the transaction undone, or an undo of
 an undo restoring a segment over one written since, left two segments

@@ -1198,3 +1198,83 @@ fn a_marker_an_undo_would_restore_into_a_migrated_region_stays_out_in_both_modes
         "the marker went back into the migrated region: {anchor:?}"
     );
 }
+
+/// D106: twelve histories one step past C5b review 3's M1 fix (`359` to
+/// `370`), each a transaction undone with nothing written since, under each
+/// policy, in a region's map and the score's. One transaction shortens a
+/// segment from the region's start to end a bar in and writes a constant
+/// segment two bars in, in the room the shortening made; the other removes a
+/// constant segment two bars in and writes a segment from the start ending
+/// three bars in. Each undo's whole restoration set leaves its map well
+/// formed, so each applies (its `# verdict:`) and every policy leaves every
+/// tempo map as `StrictInverse` does, the set restored: the segment ending
+/// three bars in alone, or the constant segment two bars in alone. Before
+/// D106 a best-effort undo of the first left the segment ending a bar in.
+#[test]
+fn a_well_formed_tempo_restoration_set_leaves_each_map_as_strict_does() {
+    use epiphany_core::{
+        AnchorOffset, IdentityContext, MusicalDuration, RationalTime, ReplicaId, Score,
+        TempoSegment, TempoShape, TimeAnchor,
+    };
+    use epiphany_ops::OperationSet;
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/two_modes");
+    let names: Vec<String> = std::fs::read_dir(&dir)
+        .expect("the committed histories' directory")
+        .map(|e| {
+            e.expect("a directory entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    // Every tempo map holding a segment, the score's first, as the
+    // graph-aware reduction of the committed history numbered `n` leaves it.
+    let maps = |n: u32| -> (String, Vec<Vec<TempoSegment>>) {
+        let name = names
+            .iter()
+            .find(|f| f.starts_with(&format!("{n}-")))
+            .unwrap_or_else(|| panic!("no committed history {n}"))
+            .clone();
+        let mut set = OperationSet::new();
+        set.accept_all(committed_history(&name));
+        let aware = set.reduce_onto(&Score::empty(IdentityContext::new(ReplicaId(0))));
+        let mut maps = vec![aware.score.tempo_map.segments.clone()];
+        maps.extend(
+            aware
+                .score
+                .canvas
+                .regions
+                .iter()
+                .filter_map(|r| r.local_tempo_map.as_ref())
+                .map(|map| map.segments.clone()),
+        );
+        maps.retain(|map| !map.is_empty());
+        (name, maps)
+    };
+    let bars = |n: i32| AnchorOffset::Musical(MusicalDuration(RationalTime::from_int(n)));
+    for first in [359, 362, 365, 368] {
+        let (strict_name, strict) = maps(first + 2);
+        let [map] = strict.as_slice() else {
+            panic!("{strict_name}: {strict:?}")
+        };
+        let [segment] = map.as_slice() else {
+            panic!("{strict_name}: {map:?}")
+        };
+        if strict_name.contains("shortened") {
+            assert!(
+                matches!(&segment.end, Some(TimeAnchor::Region { offset, .. }) if *offset == bars(3)),
+                "{strict_name}: {segment:?}"
+            );
+        } else {
+            assert!(
+                matches!(&segment.start, TimeAnchor::Region { offset, .. } if *offset == bars(2))
+                    && segment.shape == TempoShape::Constant,
+                "{strict_name}: {segment:?}"
+            );
+        }
+        for n in [first, first + 1] {
+            let (name, left) = maps(n);
+            assert_eq!(left, strict, "{name} leaves its maps as {strict_name} does");
+        }
+    }
+}

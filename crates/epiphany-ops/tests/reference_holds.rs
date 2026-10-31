@@ -24,7 +24,9 @@
 //! undo reads the tempo maps its restorations leave as such a write reads the
 //! map it leaves (C5b review 3's M1, D104 Q1): a strict or cascading undo
 //! conflicts where a map would be malformed, and a best-effort one skips the
-//! restorations that would malform it.
+//! restorations that would malform it; where none would, it restores them
+//! all, and otherwise it admits the removals before it walks the
+//! restorations (D106).
 //!
 //! Each history is one author's, built by hand on a small score: a metric
 //! region holding a staff instance, a measure, a voice and a note, and a
@@ -2051,5 +2053,92 @@ fn a_skipped_tempo_restoration_s_segment_holds_what_it_names() {
             vec![at_the_note.clone(), constant_at(2)],
             "{policy:?}"
         );
+    }
+}
+
+/// A linear segment `from` bars into the metric region to `to` bars in, its
+/// end tempo set.
+fn linear_between(from: i64, to: i64) -> TempoSegment {
+    let mut segment = linear_to(to);
+    segment.start = edge(METRIC, bars(from));
+    segment
+}
+
+/// D106, one step past M1's rule: a best-effort undo applies its whole
+/// restoration set where that set leaves every tempo map well formed, as a
+/// strict or cascading one does. A transaction shortens a segment from the
+/// region's start to three bars in to end one bar in, and writes a constant
+/// segment two bars in, in the room the shortening made; undone with nothing
+/// written since, every policy restores both keys, the segment ending three
+/// bars in again and the later one gone, in the region's map and the
+/// score's. Before D106 the best-effort walk met the end's restoration while
+/// the later segment still stood and skipped it, leaving the segment
+/// shortened.
+#[test]
+fn a_best_effort_undo_with_nothing_written_since_restores_as_strict_does() {
+    for scope in [Some(METRIC), None] {
+        for policy in POLICIES {
+            let mut h = History::new();
+            h.write(None, scope, linear_to(3));
+            let transaction = h.transaction(500);
+            h.write(Some(transaction), scope, linear_to(1));
+            h.write(Some(transaction), scope, constant_at(2));
+            let undo = h.undo(transaction, policy);
+            let (free, aware) = h.reduce();
+            let case = format!("{scope:?}, {policy:?}");
+            assert!(undone(&free, undo), "{case}: {:?}", effect(&free, undo));
+            assert_eq!(tempo_map(&aware, scope), vec![linear_to(3)], "{case}");
+        }
+    }
+}
+
+/// D106: where a later write blocks one restoration, a best-effort undo
+/// admits every removal before it walks the restorations, so an earlier
+/// key's restoration that fits once a later key's removal is admitted still
+/// applies. Over a segment from the region's start to three bars in and a
+/// constant segment five bars in, a transaction shortens the first to end a
+/// bar in, writes a constant segment two bars in and removes the one five
+/// bars in; a linear segment from four bars in to six is written after it.
+/// Undone best-effort, the segment two bars in goes and the first ends three
+/// bars in again, while the constant segment five bars in, which the later
+/// one would overlap, stays out; a strict or cascading undo conflicts and
+/// restores nothing. In the region's map and the score's. Before D106 the
+/// walk met the first's restoration while the segment two bars in still
+/// stood and skipped it too.
+#[test]
+fn a_best_effort_undo_admits_its_removals_before_its_restorations() {
+    for scope in [Some(METRIC), None] {
+        for policy in POLICIES {
+            let mut h = History::new();
+            h.write(None, scope, linear_to(3));
+            h.write(None, scope, constant_at(5));
+            let transaction = h.transaction(500);
+            h.write(Some(transaction), scope, linear_to(1));
+            h.write(Some(transaction), scope, constant_at(2));
+            h.tempo_segment(Some(transaction), scope, edge(METRIC, bars(5)), None);
+            h.write(None, scope, linear_between(4, 6));
+            let undo = h.undo(transaction, policy);
+            let (free, aware) = h.reduce();
+            let case = format!("{scope:?}, {policy:?}");
+            let map = tempo_map(&aware, scope);
+            match policy {
+                UndoPolicy::BestEffort => {
+                    assert!(undone(&free, undo), "{case}: {:?}", effect(&free, undo));
+                    assert_eq!(map, vec![linear_to(3), linear_between(4, 6)], "{case}");
+                }
+                _ => {
+                    assert!(
+                        matches!(effect(&free, undo), OperationEffect::Conflicted { .. }),
+                        "{case}: {:?}",
+                        effect(&free, undo)
+                    );
+                    assert_eq!(
+                        map,
+                        vec![linear_to(1), constant_at(2), linear_between(4, 6)],
+                        "{case}"
+                    );
+                }
+            }
+        }
     }
 }

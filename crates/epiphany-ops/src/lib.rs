@@ -960,20 +960,27 @@ pub mod vectors;
 ///     older than X5b and one author's. An undo reads the tempo maps its
 ///     restorations leave as a `SetTempoSegment` reads the map it leaves:
 ///     per map, every key's current value in the tempo chains with the
-///     undo's tempo restorations installed. Where a map would be malformed
-///     as a write's would be (a segment ending before its own start or past
-///     the next one's, or a shape without its end data), a `StrictInverse`
-///     or `Cascade` undo conflicts (`TransactionConflict`), and a
-///     `BestEffort` one applies the tempo restorations that leave every map
-///     well formed, a canonical-order greedy as for meter restorations,
-///     skipping the rest; a skipped key keeps its value, and the undo's
-///     guard reads the map so left, so what that value names is held. In
-///     both modes. Version `4` restored a key's earlier segment unread, so a
-///     segment shortened or removed in a transaction, a later segment written
-///     where the shorter map allowed it, and the transaction undone, or an
-///     undo of an undo restoring a segment over one written since, left two
-///     segments overlapping (`req:time:tempo-segment-order`). Locked by
-///     `reference_holds.rs` and the committed histories `323` to `358`.
+///     undo's tempo restorations installed. Where they leave every map well
+///     formed, every policy applies them all, as version `4` did. Where a map
+///     would be malformed as a write's would be (a segment ending before its
+///     own start or past the next one's, or a shape without its end data), a
+///     `StrictInverse` or `Cascade` undo conflicts (`TransactionConflict`),
+///     and a `BestEffort` one admits every tempo removal first, a removal
+///     never malforming a map, then, in canonical order, each restoration of
+///     a segment that keeps its map well formed with those admitted before
+///     it, skipping the rest (D106: X5b's fix round 3 walked every
+///     best-effort undo's restorations in canonical order, removals in their
+///     turn, so a segment shortened in a transaction that then wrote one in
+///     the room the shortening made stayed shortened when the transaction
+///     was undone with nothing written since). A skipped key keeps its
+///     value, and the undo's guard reads the map so left, so what that value
+///     names is held. In both modes. Version `4` restored a key's earlier
+///     segment unread, so a segment shortened or removed in a transaction, a
+///     later segment written where the shorter map allowed it, and the
+///     transaction undone, or an undo of an undo restoring a segment over one
+///     written since, left two segments overlapping
+///     (`req:time:tempo-segment-order`). Locked by `reference_holds.rs`, the
+///     selection's unit test and the committed histories `323` to `370`.
 ///   - **What the owner ruled at C5b review 3** (D94 Q1, a verdict), older
 ///     than X5b. A region's delete and a migration out
 ///     of musical time read a region's tempo map only while its region is

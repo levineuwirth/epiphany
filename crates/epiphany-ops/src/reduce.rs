@@ -7693,7 +7693,7 @@ impl<'a> Reducer<'a> {
     fn tempo_map_restorations_leave<'r>(
         &'r self,
         scope: Option<RegionId>,
-        restorations: &'r [ValueRestoration],
+        restorations: impl IntoIterator<Item = &'r ValueRestoration>,
     ) -> Vec<(MusicalPosition, &'r TempoSegment)> {
         let mut map: BTreeMap<&MusicalPosition, Option<&TempoSegment>> = BTreeMap::new();
         for ((chain_scope, position), chain) in &self.tempo_segment_chain {
@@ -7740,32 +7740,63 @@ impl<'a> Reducer<'a> {
         })
     }
 
-    /// `BestEffort`: the canonical-order greedy over tempo restorations, as
-    /// [`Self::select_invariant20_safe_restorations`] is over meter ones —
-    /// walking `restorations` in `collect_restorations`' order, admitting each
-    /// tempo segment's restoration whose addition keeps its scope's map, with
-    /// the restorations admitted before it, well formed, and skipping the
-    /// rest; every other restoration is admitted (reduction version 5, C5b
-    /// review 3's M1). A key whose restoration is skipped keeps its current
-    /// value, which the undo's guard then reads as the undo leaves it.
+    /// `BestEffort`'s tempo restorations (reduction version 5, C5b review 3's
+    /// M1, and D106). Where the whole set leaves every tempo map well formed
+    /// ([`Self::tempo_restorations_malform_a_map`] false) it is applied
+    /// whole, exactly as `StrictInverse` and `Cascade` would apply it.
+    /// Otherwise every tempo removal (a restoration to absence) is admitted
+    /// first, since taking a segment out of a well-formed map never malforms
+    /// it; then, walking `restorations` in `collect_restorations`' canonical
+    /// order, each restoration of a tempo segment is admitted where its
+    /// scope's map, with the removals and the restorations admitted before
+    /// it, stays well formed, and skipped where not, as
+    /// [`Self::select_invariant20_safe_restorations`] walks meter ones. Every
+    /// other restoration is admitted, and the admitted keep their order. A
+    /// key whose restoration is skipped keeps its current value, which the
+    /// undo's guard then reads as the undo leaves it. Before D106 the walk
+    /// ran on every best-effort undo and met each removal in its turn, so a
+    /// segment shortened in a transaction that then wrote one in the room the
+    /// shortening made, the transaction undone with nothing written since,
+    /// stayed shortened where `StrictInverse` and `Cascade` restored it.
     fn select_tempo_safe_restorations(
         &self,
         restorations: Vec<ValueRestoration>,
     ) -> Vec<ValueRestoration> {
-        let mut out: Vec<ValueRestoration> = Vec::new();
-        for restoration in restorations {
-            let scope = match &restoration {
-                ValueRestoration::TempoSegment { region, .. } => Some(*region),
-                _ => None,
+        if !self.tempo_restorations_malform_a_map(&restorations) {
+            return restorations;
+        }
+        let mut admitted: Vec<bool> = restorations
+            .iter()
+            .map(|restoration| {
+                !matches!(
+                    restoration,
+                    ValueRestoration::TempoSegment { value: Some(_), .. }
+                )
+            })
+            .collect();
+        for (index, restoration) in restorations.iter().enumerate() {
+            let ValueRestoration::TempoSegment {
+                region: scope,
+                value: Some(_),
+                ..
+            } = restoration
+            else {
+                continue;
             };
-            out.push(restoration);
-            if let Some(scope) = scope {
-                if !tempo_segments_well_formed(&self.tempo_map_restorations_leave(scope, &out)) {
-                    out.pop();
-                }
+            admitted[index] = true;
+            let chosen = restorations
+                .iter()
+                .zip(&admitted)
+                .filter_map(|(restoration, admitted)| admitted.then_some(restoration));
+            if !tempo_segments_well_formed(&self.tempo_map_restorations_leave(*scope, chosen)) {
+                admitted[index] = false;
             }
         }
-        out
+        restorations
+            .into_iter()
+            .zip(admitted)
+            .filter_map(|(restoration, admitted)| admitted.then_some(restoration))
+            .collect()
     }
 
     /// The time signatures named by the current value of each grid or
@@ -9539,11 +9570,14 @@ impl<'a> Reducer<'a> {
                 }
             }
             UndoPolicy::BestEffort => {
-                // A tempo restoration that would leave its map malformed, as
-                // a write's would be, is skipped, its key keeping its current
-                // value, and everything below reads the restorations so
-                // chosen: the guard holds what a skipped key's segment names
-                // (reduction version 5, C5b review 3's M1).
+                // The tempo restorations apply whole where they leave every
+                // map well formed, as under the other policies; otherwise the
+                // removals are admitted first and a restoration that would
+                // leave its map malformed, as a write's would be, is skipped,
+                // its key keeping its current value. Everything below reads
+                // the restorations so chosen: the guard holds what a skipped
+                // key's segment names (reduction version 5, C5b review 3's
+                // M1, and D106).
                 let restorations = self.select_tempo_safe_restorations(restorations);
                 // Tombstone the still-live, non-stranding mints; restore the
                 // still-last-written keys; skip the rest. A mint kept for
@@ -26328,6 +26362,76 @@ mod tests {
                 }
                 _ => panic!("expected the admitted restoration to be a MeterChange with a value"),
             }
+        }
+
+        /// D106: a best-effort undo applies its whole tempo restoration set
+        /// wherever that set leaves every map well formed, as `StrictInverse`
+        /// and `Cascade` would. Through a history the removals-first walk
+        /// reaches the same set, since every map the chains hold is well
+        /// formed and on such a map the walk admits a well-formed set whole;
+        /// so the rule is pinned here, on a reducer whose region map holds,
+        /// against that invariant, a segment from the start ending a bar in,
+        /// one two bars in ending five bars in, and one four bars in. The
+        /// whole set, the first lengthened to end two bars in and the second
+        /// shortened to end three bars in, leaves the map well formed and is
+        /// admitted whole; the walk alone meets the first beside the second's
+        /// current value and skips it.
+        #[test]
+        fn d106_best_effort_applies_a_well_formed_tempo_set_whole() {
+            let region = RegionId::new(ReplicaId(1), 1);
+            let at = |bars: i32| TimeAnchor::Region {
+                id: region,
+                edge: RegionEdge::Start,
+                offset: if bars == 0 {
+                    AnchorOffset::Zero
+                } else {
+                    AnchorOffset::Musical(MusicalDuration(RationalTime::from_int(bars)))
+                },
+            };
+            let segment = |from: i32, to: Option<i32>| {
+                let mut segment =
+                    crate::valuegen::tempo_segment(region, MusicalPosition::origin(), 90.0);
+                segment.start = at(from);
+                segment.end = to.map(at);
+                segment
+            };
+            let op_set = OperationSet::new();
+            let mut r = Reducer::new(&op_set);
+            for current in [segment(0, Some(1)), segment(2, Some(5)), segment(4, None)] {
+                let mut chain = WriteChain::new();
+                chain.seed(Some(current.clone()));
+                r.tempo_segment_chain.insert(
+                    (Some(region), resolved_anchor_position(&current.start)),
+                    chain,
+                );
+            }
+            let restore = |segment: TempoSegment| ValueRestoration::TempoSegment {
+                region: Some(region),
+                position: resolved_anchor_position(&segment.start),
+                value: Some(segment),
+            };
+            let restorations = vec![restore(segment(0, Some(2))), restore(segment(2, Some(3)))];
+            assert!(
+                !r.tempo_restorations_malform_a_map(&restorations),
+                "the whole set leaves the map well formed"
+            );
+            let ends = |restorations: &[ValueRestoration]| -> Vec<Option<MusicalPosition>> {
+                restorations
+                    .iter()
+                    .filter_map(|restoration| match restoration {
+                        ValueRestoration::TempoSegment {
+                            value: Some(segment),
+                            ..
+                        } => Some(segment.end.as_ref().map(resolved_anchor_position)),
+                        _ => None,
+                    })
+                    .collect()
+            };
+            assert_eq!(
+                ends(&r.select_tempo_safe_restorations(restorations.clone())),
+                ends(&restorations),
+                "a well-formed set is applied whole"
+            );
         }
 
         /// Genesis tranche G3b packet 2, coordinator-directed follow-up:
