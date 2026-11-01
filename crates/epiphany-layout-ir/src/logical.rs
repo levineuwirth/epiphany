@@ -1119,6 +1119,11 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
 /// A beam keeps its other notes while two remain. Borrowed when the score
 /// holds no grace note.
 pub(crate) fn drawn_view(score: &Score) -> Cow<'_, Score> {
+    under_ottavas(without_graces(score))
+}
+
+/// The score with every grace note left out (see [`drawn_view`]).
+fn without_graces(score: &Score) -> Cow<'_, Score> {
     let graces: BTreeSet<EventId> = score
         .events
         .iter()
@@ -1151,6 +1156,86 @@ pub(crate) fn drawn_view(score: &Score) -> Cow<'_, Score> {
     view.decomposition_attachments
         .retain(|attachment| !graces.contains(&attachment.target));
     Cow::Owned(view)
+}
+
+/// The score with the notes under each ottava at their written place (X4d.1).
+/// The model holds every note at its sounding pitch, as the file gives it with
+/// its octave shift; an ottava's notes are written its octaves nearer the
+/// staff, an 8va's an octave lower, and drawn so, as Gould sets them under the
+/// sign (*Behind Bars*, pp. 28 to 31) and as MuseScore keeps a note's written
+/// pitch apart from the shift it plays at (`Note::epitch`). A note is under an
+/// ottava of its staff where its onset is at or after the ottava's start and
+/// before its end, in the start's region; its explicit spelling moves with it.
+/// Borrowed when the score draws no ottava over a note.
+fn under_ottavas(score: Cow<'_, Score>) -> Cow<'_, Score> {
+    const DEPTH: u8 = 16;
+    let musical = |anchor: &TimeAnchor| match resolve_time_anchor_inner(&score, anchor, DEPTH) {
+        Some(TimePoint::Musical(at)) => Some(at),
+        _ => None,
+    };
+    let mut moves: Vec<(EventId, epiphany_core::TranspositionInterval)> = Vec::new();
+    for spanner in &score.cross_cutting.spanners {
+        let epiphany_core::SpannerKind::OctaveLine(shift) = spanner.kind else {
+            continue;
+        };
+        let (Some(start), Some(end)) = (musical(&spanner.start), musical(&spanner.end)) else {
+            continue;
+        };
+        if shift.0 == 0 || start >= end {
+            continue;
+        }
+        let Some(region) = start_region(&score, &spanner.start) else {
+            continue;
+        };
+        let interval = epiphany_core::TranspositionInterval {
+            diatonic_steps: -7 * i32::from(shift.0),
+            chromatic_steps: -12 * i32::from(shift.0),
+        };
+        for instance in region.staff_instances() {
+            if !spanner.staves.contains(&instance.staff) {
+                continue;
+            }
+            for event in instance.voices.iter().flat_map(|voice| voice.events.iter()) {
+                let Some(EventPosition::Musical(onset)) =
+                    score.events.get(*event).map(Event::position)
+                else {
+                    continue;
+                };
+                if start <= *onset && *onset < end {
+                    moves.push((*event, interval));
+                }
+            }
+        }
+    }
+    if moves.is_empty() {
+        return score;
+    }
+    let mut view = score.into_owned();
+    crate::written::move_pitches(&mut view, moves);
+    Cow::Owned(view)
+}
+
+/// The region a line's start stands in: the one holding the event or the
+/// measure its anchor names, or the region it names.
+fn start_region<'a>(score: &'a Score, anchor: &TimeAnchor) -> Option<&'a Region> {
+    let regions = &score.canvas.regions;
+    match anchor {
+        TimeAnchor::Region { id, .. } => regions.iter().find(|region| region.id == *id),
+        TimeAnchor::Event { id, .. } => regions.iter().find(|region| {
+            region
+                .staff_instances()
+                .iter()
+                .flat_map(|instance| instance.voices.iter())
+                .any(|voice| voice.events.contains(id))
+        }),
+        TimeAnchor::Measure { id, .. } => regions.iter().find(|region| {
+            region
+                .staff_instances()
+                .iter()
+                .any(|instance| instance.measures.iter().any(|measure| measure.id == *id))
+        }),
+        TimeAnchor::WallClock { .. } => None,
+    }
 }
 
 /// The canonical bytes of a projected break override's anchor (its ordering

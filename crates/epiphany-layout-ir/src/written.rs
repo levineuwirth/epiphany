@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use epiphany_core::{
-    Event, KeySignature, PitchId, Score, SpellingDirective, SpellingScope, StaffId,
+    Event, EventId, KeySignature, PitchId, Score, SpellingDirective, SpellingScope, StaffId,
     TranspositionInterval,
 };
 
@@ -80,6 +80,19 @@ pub fn written_view(score: &Score) -> Score {
             }
         }
     }
+    move_pitches(&mut view, events);
+    view
+}
+
+/// Each listed event's pitches moved by its interval, and the explicit
+/// spellings of the pitches moved with them: a pitch the interval cannot move
+/// keeps its place, and a spelling that cannot follow is dropped, so the pitch
+/// takes its own. Shared by a transposing part's written pitch and the notes an
+/// ottava draws nearer their staff.
+pub(crate) fn move_pitches(
+    view: &mut Score,
+    events: impl IntoIterator<Item = (EventId, TranspositionInterval)>,
+) {
     let mut moved: BTreeMap<PitchId, (TranspositionInterval, epiphany_core::Pitch)> =
         BTreeMap::new();
     for (id, interval) in events {
@@ -119,5 +132,4 @@ pub fn written_view(score: &Score) -> Score {
             None => false,
         }
     });
-    view
 }

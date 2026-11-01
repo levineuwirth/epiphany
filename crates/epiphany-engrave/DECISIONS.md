@@ -2679,3 +2679,18 @@ is set:
   (`a_lone_tie_takes_its_side_as_gould_sets_it`,
   `a_close_mark_leaves_its_notes_tie_room`). The engraver itself is
   unchanged.
+
+## ENGRAVER_VERSION 94 → 95: the notes under an ottava at their written place (X4d.1, 2026-11-01)
+
+- The model holds every note at its sounding pitch, as the file gives it
+  with its octave shift, and the layout drew a note under an ottava there,
+  an 8va's an octave high on ledger lines no score shows. The layout now
+  draws the score through a view (`drawn_view`) in which each note of an
+  ottava's staff whose onset is at or after the ottava's start and before
+  its end, in the start's region, stands its octaves nearer the staff, its
+  explicit spelling moved with it (`written::move_pitches`, shared with a
+  transposing part's written pitch). Gould sets the notes under the sign at
+  their written place (*Behind Bars*, pp. 28 to 31), as MuseScore keeps a
+  note's written pitch apart from the shift it plays at (`Note::epitch`)
+  (`the_notes_under_an_ottava_stand_at_their_written_place`).
+
