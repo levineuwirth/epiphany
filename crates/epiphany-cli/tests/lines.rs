@@ -884,6 +884,43 @@ fn a_gradual_tempo_change_in_two_parts_is_drawn_once_over_the_system() {
     assert!(words[0].origin.y.0 > staves[0].1, "over the top staff");
 }
 
+/// A gradual tempo change held by a lower part alone is drawn over the
+/// system's top staff all the same.
+#[test]
+fn a_gradual_tempo_change_in_a_lower_part_stands_over_the_system() {
+    let measure =
+        |with: bool| {
+            format!(
+            "<attributes><divisions>2</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+             </time><clef><sign>G</sign><line>2</line></clef></attributes>{}{}{}{}{}{}",
+            if with { text_line("rit.", false) } else { String::new() },
+            q("C5"),
+            q("D5"),
+            if with { text_line_stop() } else { String::new() },
+            q("E5"),
+            q("F5"),
+        )
+        };
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part><score-part id=\"P2\"><part-name>B</part-name>\
+         </score-part></part-list><part id=\"P1\"><measure number=\"1\">{}</measure>\
+         </part><part id=\"P2\"><measure number=\"1\">{}</measure></part>\
+         </score-partwise>",
+        measure(false),
+        measure(true),
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("tempo_change_lower.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = engrave_loaded(&loaded).layout;
+    let staves = staves(&layout);
+    assert!(staves.len() >= 2, "two staves");
+    let words = runs(&layout, "rit.");
+    assert_eq!(words.len(), 1, "drawn once");
+    assert!(words[0].origin.y.0 > staves[0].1, "over the top staff");
+}
+
 /// A text line opening with a dynamic term is a verbal crescendo, as
 /// MuseScore's hairpin of the line type and Gould's verbal crescendo (pp. 101
 /// and 106): its words italic, 2.0 under the staff on the line's baseline,
@@ -1059,11 +1096,23 @@ fn a_glissando_on_one_line_slants_toward_its_slide() {
         )],
     );
     let layout = engrave_loaded(&loaded).layout;
+    let e = events(&loaded);
     let s = line_strokes(&loaded, &layout, |k| matches!(k, SpannerKind::Glissando))[0];
     assert!(
         s.to.y.0 > s.from.y.0 + 0.1,
         "rising toward the sharp: {s:?}"
     );
+    // On the line from a quarter space under its first head's centre to a
+    // quarter space over its last's.
+    let centre = |ink: Ink| ((ink[0] + ink[2]) * 0.5, (ink[1] + ink[3]) * 0.5);
+    let (a, b) = (
+        centre(head(&loaded, &layout, e[0])),
+        centre(head(&loaded, &layout, e[1])),
+    );
+    let (a, b) = ((a.0, a.1 - 0.25), (b.0, b.1 + 0.25));
+    let on = |x: f32| a.1 + (x - a.0) * (b.1 - a.1) / (b.0 - a.0);
+    near(s.from.y.0, on(s.from.x.0), "its start on that line");
+    near(s.to.y.0, on(s.to.x.0), "its end on that line");
     let length = ((s.to.x.0 - s.from.x.0).powi(2) + (s.to.y.0 - s.from.y.0).powi(2)).sqrt();
     let words = runs(&layout, "gliss.");
     let fits = words
