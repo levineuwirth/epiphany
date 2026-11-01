@@ -2929,3 +2929,15 @@ engraver's own placing reproduces it:
   `expression_text_moves_with_its_dynamic_off_a_barline`,
   `expression_text_stands_outside_a_verbal_crescendo_starting_with_it`; the
   staff text test reads its italic words under the lower staff.
+
+## ENGRAVER_VERSION 104 → 105: a dynamic glyph moved off a barline (X4d.3, 2026-11-01)
+
+- A dynamic drawn as a glyph moves off a barline through the staves as
+  dynamic words do (version 100's rule): the move across was given to a
+  placed member's text runs and strokes, and not to its glyphs, so a
+  dynamic glyph stood where it was while the rule judged it moved. It is
+  drawn moved, and placed off its staff against the ink where it is moved
+  to (`a_dynamic_glyph_stands_clear_of_a_barline_through_the_staves`,
+  `a_dynamic_moved_off_a_barline_stands_clear_of_the_ink_it_moves_to`).
+  X4d.4's sweep of every page found it: a glyph dynamic within a quarter
+  space of a barline's line through the gap it stands in.

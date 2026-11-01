@@ -413,3 +413,160 @@ fn an_accent_stands_clear_of_another_voices_stem() {
         "alone it stands nearer"
     );
 }
+
+/// A dynamic drawn as a glyph moves off a barline through the staves as
+/// dynamic words do: on a grand staff a wide pppppp at a measure's first note
+/// stands a quarter space right of the barline before it; on one staff it
+/// stays centred on its note, over the barline.
+#[test]
+fn a_dynamic_glyph_stands_clear_of_a_barline_through_the_staves() {
+    let dynamic = |name: &str| {
+        format!(
+            "<direction placement=\"below\"><direction-type><dynamics><{name}/></dynamics>\
+             </direction-type><staff>1</staff></direction>"
+        )
+    };
+    let measure = |marked: bool, staves: u8| {
+        let first = if marked {
+            dynamic("pppppp")
+        } else {
+            String::new()
+        };
+        let upper = format!(
+            "{first}{}{}{}{}",
+            note("C5", 2, "quarter", 1, ""),
+            note("D5", 2, "quarter", 1, ""),
+            note("E5", 2, "quarter", 1, ""),
+            note("F5", 2, "quarter", 1, ""),
+        );
+        let lower = if staves == 2 {
+            format!("{}{}", backup(8), note("C3", 8, "whole", 2, ""))
+        } else {
+            String::new()
+        };
+        format!("{upper}{lower}")
+    };
+    let grand = part(
+        "dynamic_glyph_barline_grand.musicxml",
+        2,
+        &[measure(false, 2), measure(true, 2), measure(false, 2)],
+    );
+    let layout = engrave_loaded(&grand).layout;
+    let soft = only(&layout, "dynamicPPPPPP");
+    let bars = barlines(&layout, soft[3]);
+    let before = bars
+        .iter()
+        .filter(|b| b.1 < (soft[0] + soft[2]) * 0.5)
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .expect("the barline before");
+    near(soft[0], before.1 + 0.25, "the pppppp right of the barline");
+
+    let alone = part(
+        "dynamic_glyph_barline_alone.musicxml",
+        1,
+        &[measure(false, 1), measure(true, 1), measure(false, 1)],
+    );
+    let layout = engrave_loaded(&alone).layout;
+    let soft = only(&layout, "dynamicPPPPPP");
+    let bars = barlines(&layout, soft[3]);
+    let before = bars
+        .iter()
+        .filter(|b| b.1 < (soft[0] + soft[2]) * 0.5)
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .expect("the barline before");
+    assert!(
+        soft[0] < before.1,
+        "on one staff the pppppp stays over the barline"
+    );
+}
+
+/// A dynamic moved off a barline is placed off its staff where it is moved
+/// to: in two parts a bracket joins, a wide pppppp at a measure's first note,
+/// moved right of the barline before it, reaches the ledger lines of the low
+/// note after it, which it does not reach unmoved, and stands under that
+/// note's ink.
+#[test]
+fn a_dynamic_moved_off_a_barline_stands_clear_of_the_ink_it_moves_to() {
+    let dynamic = "<direction placement=\"below\"><direction-type><dynamics><pppppp/>\
+                   </dynamics></direction-type></direction>";
+    let quarter = |pitch: &str| {
+        let (step, octave) = pitch.split_at(1);
+        format!(
+            "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+             <duration>2</duration><voice>1</voice><type>quarter</type></note>"
+        )
+    };
+    let upper = |marked: bool| {
+        format!(
+            "{}{}{}{}{}",
+            if marked { dynamic } else { "" },
+            quarter("C5"),
+            quarter("A3"),
+            quarter("C5"),
+            quarter("C5"),
+        )
+    };
+    let lower = "<note><pitch><step>C</step><octave>4</octave></pitch><duration>8</duration>\
+                 <voice>1</voice><type>whole</type></note>";
+    let attributes = "<attributes><divisions>2</divisions><time><beats>4</beats>\
+                      <beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef>\
+                      </attributes>";
+    let measures = |content: &dyn Fn(usize) -> String| -> String {
+        (0..3)
+            .map(|m| {
+                format!(
+                    "<measure number=\"{}\">{}{}</measure>",
+                    m + 1,
+                    if m == 0 { attributes } else { "" },
+                    content(m)
+                )
+            })
+            .collect()
+    };
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><part-group type=\"start\" number=\"1\">\
+         <group-symbol>bracket</group-symbol><group-barline>yes</group-barline></part-group>\
+         <score-part id=\"P1\"><part-name>A</part-name></score-part><score-part id=\"P2\">\
+         <part-name>B</part-name></score-part><part-group type=\"stop\" number=\"1\"/>\
+         </part-list><part id=\"P1\">{}</part><part id=\"P2\">{}</part></score-partwise>",
+        measures(&|m| upper(m == 1)),
+        measures(&|_| lower.to_string()),
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("dynamic_moved_onto_ink.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    assert!(loaded.fidelity.passed(), "{:#?}", loaded.fidelity.failures);
+    let layout = engrave_loaded(&loaded).layout;
+    let soft = only(&layout, "dynamicPPPPPP");
+    let bars = barlines(&layout, soft[3]);
+    let before = bars
+        .iter()
+        .filter(|b| b.1 < (soft[0] + soft[2]) * 0.5)
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .expect("the barline before");
+    near(soft[0], before.1 + 0.25, "moved right of the barline");
+    // The low note's ledger lines, under the dynamic's moved span alone.
+    let ledgers: Vec<[f32; 4]> = layout
+        .strokes
+        .iter()
+        .filter(|s| (s.from.y.0 - s.to.y.0).abs() < 1e-4 && (s.to.x.0 - s.from.x.0).abs() < 2.0)
+        .map(|s| {
+            [
+                s.from.x.0.min(s.to.x.0),
+                s.from.y.0,
+                s.from.x.0.max(s.to.x.0),
+                s.from.y.0,
+            ]
+        })
+        .filter(|l| l[0] < soft[2] && l[2] > soft[0] && l[1] > soft[1] - 2.0)
+        .collect();
+    assert!(
+        !ledgers.is_empty(),
+        "the low note's ledger lines under the moved span"
+    );
+    let lowest = ledgers.iter().map(|l| l[1]).fold(f32::INFINITY, f32::min);
+    assert!(
+        soft[3] < lowest,
+        "under the ledger lines: {soft:?} {lowest}"
+    );
+}

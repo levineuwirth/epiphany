@@ -1893,7 +1893,9 @@ pub(crate) fn cast_off(
             bottom: b.min(t),
             top: b.max(t),
         };
-        // Glyphs, each moved with its slot, or a moved ending's start.
+        // Glyphs, each moved with its slot, or a moved ending's start; a
+        // member of the family moved across (a dynamic off a barline) by that
+        // move as well.
         for (glyph, spaced) in input.glyphs.iter().zip(spaced_glyphs) {
             let Some(&s) = system_of_slot.get(&glyph.horizontal_slot) else {
                 continue;
@@ -1906,7 +1908,8 @@ pub(crate) fn cast_off(
                 Some((t, dx)) => (t, spaced.position.x.0 + dx),
                 None => (
                     s,
-                    spaced.position.x.0 + hplace[s].0.slot_dx(sx) - shift_of(glyph.horizontal_slot),
+                    spaced.position.x.0 + hplace[s].0.slot_dx(sx) - shift_of(glyph.horizontal_slot)
+                        + member_dx(placed.glyphs.get(&glyph.id())),
                 ),
             };
             let (y, b) = (spaced.position.y.0, glyph.bounding_box);
@@ -2502,7 +2505,8 @@ pub(crate) fn cast_off(
                         .copied()
                         .unwrap_or(0.0);
                     (
-                        placements[s].slot_dx(sx) - shift_of(glyph.horizontal_slot),
+                        placements[s].slot_dx(sx) - shift_of(glyph.horizontal_slot)
+                            + member_dx(placed.glyphs.get(&glyph.id())),
                         placements[s].dy - staff_dy(s, glyph_staff_of[gi]) + lift,
                     )
                 }
