@@ -13,12 +13,16 @@ use epiphany_core::{
     CmnNominal, EventDuration, EventPosition, IdentityContext, MusicalDuration, MusicalPosition,
     RationalTime, ReplicaId, Score, VoiceId,
 };
+use epiphany_determinism::CanonicalEncode;
 use epiphany_editor_core::{
     DocumentError, EditorDocument, EditorError, EditorSession, ReadOnlyReason, Reconciled, Saved,
     ScoreSetup,
 };
 use epiphany_layout_ir::StubSolver;
-use epiphany_ops::{OperationEnvelope, OperationSet, CURRENT_REDUCTION_ALGORITHM_VERSION};
+use epiphany_ops::{
+    BlockStamp, OperationEnvelope, OperationSet, CURRENT_REDUCTION_ALGORITHM_VERSION,
+    HIGHEST_SCHEMA_MINOR,
+};
 
 fn whole(n: i64, d: i64) -> MusicalDuration {
     MusicalDuration(RationalTime::new(n, d).expect("a valid duration"))
@@ -427,14 +431,9 @@ fn the_first_edit_after_a_reopen_extends_the_stored_frontier() {
     }
 }
 
-/// A document holding an envelope in a historical layout is refused by name.
-#[test]
-fn a_historical_layout_is_refused_by_name() {
-    let historical = epiphany_ops::vectors::decode_vectors()
-        .into_iter()
-        .find(|(_, _, _, name, _)| name == "create_tuplet_before_major_4")
-        .map(|(.., bytes)| bytes)
-        .expect("the ops corpus carries the vector");
+/// A store holding one operation block of `payloads`, stamped `declared`: what a
+/// later or a non-conforming writer might have left.
+fn store_with_block(payloads: &[Vec<u8>], declared: SchemaVersion) -> MemStore {
     let mut bundle = Bundle::create(
         MemStore::new(),
         FileUuid([1; 16]),
@@ -445,8 +444,8 @@ fn a_historical_layout_is_refused_by_name() {
     bundle
         .commit_versioned(
             &[StagedChunk::operation_block_versioned(
-                encode_block(&[historical]),
-                SchemaVersion::for_major(3),
+                encode_block(payloads),
+                declared,
             )],
             bundle.superblock().manifest_schema_version,
             |ctx| {
@@ -456,11 +455,238 @@ fn a_historical_layout_is_refused_by_name() {
             },
         )
         .unwrap();
-    let store = MemStore::from_bytes(bundle.into_store().into_bytes());
+    MemStore::from_bytes(bundle.into_store().into_bytes())
+}
+
+/// The canonical bytes of each of `operations`, and the stamp minimal stamping
+/// derives for a block of them.
+fn block_of(operations: &[OperationEnvelope]) -> (Vec<Vec<u8>>, BlockStamp) {
+    (
+        operations
+            .iter()
+            .map(CanonicalEncode::to_canonical_bytes)
+            .collect(),
+        BlockStamp::derive(operations),
+    )
+}
+
+/// The decode corpus's vector `surface`/`name`, from the committed file.
+fn corpus_vector(surface: &str, name: &str) -> Vec<u8> {
+    let line = include_str!("../../../spec/vectors/decode_vectors.txt")
+        .lines()
+        .find(|line| {
+            let mut fields = line.split(' ');
+            fields.next() == Some(surface) && fields.nth(2) == Some(name)
+        })
+        .unwrap_or_else(|| panic!("the corpus carries {surface}/{name}"));
+    let hex = line.rsplit(' ').next().expect("a hex field");
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("hex"))
+        .collect()
+}
+
+/// A document holding an envelope in a historical layout is refused by name:
+/// its block's declared version, and the value whose layout was recognized.
+#[test]
+fn a_historical_layout_is_refused_by_name() {
+    let historical = epiphany_ops::vectors::decode_vectors()
+        .into_iter()
+        .find(|(_, _, _, name, _)| name == "create_tuplet_before_major_4")
+        .map(|(.., bytes)| bytes)
+        .expect("the ops corpus carries the vector");
     assert!(matches!(
-        EditorDocument::open(store),
-        Err(DocumentError::UnsupportedHistoricalEncoding { layout: "Tuplet" })
+        EditorDocument::open(store_with_block(&[historical], SchemaVersion::for_major(3))),
+        Err(DocumentError::UnsupportedLayout {
+            declared: BlockStamp { major: 3, minor: 0 },
+            value: Some("Tuplet"),
+        })
     ));
+}
+
+/// An envelope this build cannot decode at all, in a block whose hash verified,
+/// is refused by its block's version, no value named.
+#[test]
+fn an_undecodable_envelope_is_refused_by_its_block_s_version() {
+    let (mut payloads, stamp) = block_of(&setup_operations(1));
+    payloads[0].pop();
+    let declared = SchemaVersion::new(stamp.major, stamp.minor);
+    assert!(matches!(
+        EditorDocument::open(store_with_block(&payloads, declared)),
+        Err(DocumentError::UnsupportedLayout { declared: d, value: None }) if d == stamp
+    ));
+}
+
+/// A block from a later build, its minor past this build's last epoch, is
+/// refused by name before its envelopes are read.
+#[test]
+fn a_block_of_a_later_minor_is_refused_by_name() {
+    let (payloads, stamp) = block_of(&setup_operations(1));
+    let later = HIGHEST_SCHEMA_MINOR + 1;
+    assert!(matches!(
+        EditorDocument::open(store_with_block(&payloads, SchemaVersion::new(stamp.major, later))),
+        Err(DocumentError::UnsupportedSchemaMinor { major, minor })
+            if major == stamp.major && minor == later
+    ));
+    // The same operations stamped as derived open.
+    let document = EditorDocument::open(store_with_block(
+        &payloads,
+        SchemaVersion::new(stamp.major, stamp.minor),
+    ))
+    .expect("a block stamped as derived opens");
+    assert!(
+        !document.is_read_only(),
+        "{:?}",
+        document.read_only_reasons()
+    );
+}
+
+/// A block stamped above or below what its envelopes derive is refused by name,
+/// though every envelope in it decodes.
+#[test]
+fn a_mis_stamped_block_is_refused_by_name() {
+    let (payloads, derived) = block_of(&setup_operations(1));
+    for declared in [
+        BlockStamp {
+            major: derived.major + 1,
+            ..derived
+        },
+        BlockStamp {
+            major: derived.major - 1,
+            ..derived
+        },
+        BlockStamp {
+            minor: derived.minor + 1,
+            ..derived
+        },
+    ] {
+        let store = store_with_block(
+            &payloads,
+            SchemaVersion::new(declared.major, declared.minor),
+        );
+        assert!(matches!(
+            EditorDocument::open(store),
+            Err(DocumentError::MisStamped { declared: d, derived: e }) if d == declared && e == derived
+        ));
+    }
+}
+
+/// A legacy (format 0) container, which the bundle layer still decodes, is
+/// refused by name: the decode corpus's `document.container` vectors, read
+/// through the document layer as the text projection reads them.
+#[test]
+fn a_legacy_container_is_refused_by_name() {
+    let legacy = corpus_vector("document.container", "empty_legacy");
+    let bundle = Bundle::open(MemStore::from_bytes(legacy.clone()), caps())
+        .expect("the bundle layer decodes a legacy container");
+    assert_eq!(bundle.header().format_major, 0);
+    assert!(matches!(
+        EditorDocument::open(MemStore::from_bytes(legacy)),
+        Err(DocumentError::LegacyContainer)
+    ));
+    let current = corpus_vector("document.container", "empty_current");
+    EditorDocument::open(MemStore::from_bytes(current)).expect("the current container opens");
+}
+
+/// A canonical base whose tempo map, a region's or the score's, holds two
+/// segments on one key (the region's start and a measure's, which resolve to
+/// one position): what no history makes, since `SetTempoSegment` replaces the
+/// segment at its key and a region created carrying such a map is refused
+/// (reduction version 5), and what reduction, seeding one segment per key,
+/// would hold by its first segment alone. The writer writes no base, and
+/// reopen refuses every base before its root is decoded, so such a base is
+/// refused by name: this one, the score's current layout, by its root's
+/// major. The same document without it reopens.
+#[test]
+fn a_base_holding_two_tempo_segments_on_one_key_is_refused_by_name() {
+    use epiphany_bundle::{FrontierBytes, SnapshotId, SnapshotRef};
+    use epiphany_core::{
+        AnchorOffset, MeasurePosition, RegionEdge, Tempo, TempoMap, TempoSegment, TempoShape,
+        TimeAnchor,
+    };
+    let operations = setup_operations(2);
+    let (_, score) = reduced(&operations);
+    let region = &score.canvas.regions[0];
+    let second = region
+        .staff_instances()
+        .iter()
+        .flat_map(|instance| &instance.measures)
+        .nth(1)
+        .expect("a second measure")
+        .id;
+    let constant_at = |start: TimeAnchor| TempoSegment {
+        start,
+        end: None,
+        start_tempo: Tempo::quarter(96.0).expect("a tempo"),
+        end_tempo: None,
+        shape: TempoShape::Constant,
+    };
+    let two_on_one_key = TempoMap {
+        initial: None,
+        segments: vec![
+            constant_at(TimeAnchor::Region {
+                id: region.id,
+                edge: RegionEdge::Start,
+                offset: AnchorOffset::Zero,
+            }),
+            constant_at(TimeAnchor::Measure {
+                id: second,
+                position: MeasurePosition::Start,
+                offset: AnchorOffset::Zero,
+            }),
+        ],
+    };
+    let mut in_region = score.clone();
+    in_region.canvas.regions[0].local_tempo_map = Some(two_on_one_key.clone());
+    let mut in_score = score.clone();
+    in_score.tempo_map = two_on_one_key;
+    let control = EditorDocument::create(MemStore::new(), operations)
+        .expect("created")
+        .into_store()
+        .into_bytes();
+    for (map, base) in [("a region's", in_region), ("the score's", in_score)] {
+        let mut bundle = Bundle::open(MemStore::from_bytes(control.clone()), caps()).unwrap();
+        bundle
+            .commit(
+                &[StagedChunk {
+                    kind: ChunkKind::Snapshot,
+                    schema_version: SchemaVersion::for_major(5),
+                    payload: base.canonical_bytes(),
+                }],
+                |ctx| {
+                    let mut m = ctx.previous_manifest.clone();
+                    let root = ctx.new_chunks[0];
+                    m.canonical_base = Some(SnapshotRef {
+                        snapshot_id: SnapshotId([3; 16]),
+                        covers_causal_frontier: FrontierBytes::empty(),
+                        reduction_algorithm_version: ReductionAlgorithmVersion(
+                            CURRENT_REDUCTION_ALGORITHM_VERSION,
+                        ),
+                        profile_id: m.profile_declarations[0].profile_id,
+                        hash: root.hash,
+                        root,
+                    });
+                    m
+                },
+            )
+            .unwrap();
+        let based = bundle.into_store().into_bytes();
+        let reopened = EditorDocument::open(MemStore::from_bytes(based));
+        assert!(
+            matches!(
+                reopened,
+                Err(DocumentError::UnsupportedCanonicalMajor { schema_major: 5 })
+            ),
+            "{map}: {:?}",
+            reopened.err()
+        );
+    }
+    let reopened = EditorDocument::open(MemStore::from_bytes(control)).expect("the control opens");
+    assert!(
+        !reopened.is_read_only(),
+        "{:?}",
+        reopened.read_only_reasons()
+    );
 }
 
 fn caps() -> BundleCapabilities {

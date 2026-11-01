@@ -1820,3 +1820,26 @@ syllable an event and verse is, it reports under its own requirement,
 home there having no entry. Locked by
 `inv10_flags_dangling_marker_lyric_and_gesture_refs`, whose home cases now
 name another declared staff where they mean a visiting voice.
+
+## Every time anchor's target, read by invariant 10 (X5b fix round 1, 2026-10-26)
+
+C5b review 1's M3 (roadmap D87 Q1): invariant 10's enumerated surface, which
+is all `check_cross_cutting_refs` read, held the anchors of cross-cutting
+structures and tempo segments alone, though `collect_anchors` gathers every
+time anchor for invariant 9. A region's extent, its own model's and its
+grid's meter changes, a staff instance's grid, measure starts, clef and key
+changes, and a spelling range's ends were judged for their offsets and never
+for their targets, so a removal leaving one naming nothing broke the
+invariant's general clause unseen, and the two-mode fuzz, which judges graphs
+by this checker, could not find it. The checker now flags each such anchor
+whose event, measure or region the graph does not hold, under
+`CrossCuttingRefsResolve`, and the surface in `core_spec.tex`, the `/// 10.`
+block and the testkit's derived table name them (a meter change's and a
+spelling range's anchor as anchor targets beside the signature a meter change
+names). A user break's anchor is excepted: a break whose event or measure a
+later delete removes stays keyed by its anchor and draws nothing (roadmap
+D80), a transient dangling state the re-anchoring rules permit. Reduction
+holds each removal such an anchor would see (`epiphany-ops` `DECISIONS.md`).
+Locked by `inv10_flags_every_time_anchor_naming_nothing`: each class naming
+an event no score holds fires, each at its region's start does not, and a
+break naming that event does not.

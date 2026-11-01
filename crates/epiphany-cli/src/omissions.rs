@@ -26,11 +26,13 @@
 //!   (articulation, technique, ornament and its accidentals, tremolo, jazz
 //!   mark, arpeggio) with nothing drawn for it, by its class, and each
 //!   fermata, breath mark, caesura, dynamic, hairpin, syllable, staff text,
-//!   tempo mark, rehearsal mark, segno, coda and trill line with no ink, a
-//!   trill at a note a drawn trill line starts at standing as its sign; a mark of a
-//!   staff anchored at a region offset stands on no staff, so it is named as
-//!   drawn nowhere, while a tempo or rehearsal mark, segno or coda stands
-//!   over the system, drawn once where parts repeat it;
+//!   expression text, tempo mark, rehearsal mark, segno, coda and trill line
+//!   with no ink, a trill at a note a drawn trill line starts at standing as
+//!   its sign; a mark of a staff anchored at a region offset stands on no
+//!   staff, so it is named as drawn nowhere, while a tempo or rehearsal mark,
+//!   segno or coda stands over the system, drawn once where parts repeat it;
+//!   expression text is drawn as staff text until it is drawn italic and
+//!   below (roadmap D79 Q9), and counted by its own class where it has no ink;
 //! - each diagnostic the projection raised, by kind.
 //!
 //! Not checked, and counted as such: whether an accidental is the one the
@@ -738,6 +740,7 @@ pub fn omissions(
             MarkerKind::Caesura(_) => "caesura",
             MarkerKind::Dynamic(_) => "dynamic",
             MarkerKind::Text(_) => "staff text",
+            MarkerKind::ExpressionText(_) => "expression text",
             MarkerKind::Tempo(_) => "tempo mark",
             MarkerKind::Rehearsal(_) => "rehearsal mark",
             MarkerKind::Segno => "segno",

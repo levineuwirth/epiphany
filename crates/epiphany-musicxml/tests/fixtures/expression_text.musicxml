@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<!-- Hand-written for epiphany-musicxml's tests. Staff text and expression
+     text as MuseScore writes them: upright words, italic words, a run whose
+     first words are italic, and italic words a tempo mark takes. -->
+<score-partwise version="4.0">
+  <work><work-title>Expression text</work-title></work>
+  <identification><creator type="composer">Fixture</creator></identification>
+  <part-list>
+    <score-part id="P1"><part-name>Violin</part-name></score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>1</divisions>
+        <key><fifths>0</fifths></key>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+        <clef><sign>G</sign><line>2</line></clef>
+      </attributes>
+      <direction placement="above">
+        <direction-type><words font-style="italic">con moto</words></direction-type>
+        <sound tempo="96"/>
+      </direction>
+      <direction placement="above">
+        <direction-type><words>pizz.</words></direction-type>
+      </direction>
+      <note><pitch><step>G</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type></note>
+      <direction placement="below">
+        <direction-type><words font-style="italic">espressivo</words></direction-type>
+      </direction>
+      <note><pitch><step>A</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type></note>
+      <direction placement="below">
+        <direction-type><words font-style="italic">sotto voce</words><words>,</words></direction-type>
+      </direction>
+      <note><pitch><step>B</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type></note>
+      <note><pitch><step>C</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type></note>
+    </measure>
+  </part>
+</score-partwise>

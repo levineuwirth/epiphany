@@ -115,7 +115,74 @@ fn all() -> Vec<(String, String, String, String, Vec<u8>)> {
                 b,
             )
         });
-    ops.chain(bundle).chain(core).collect()
+    ops.chain(bundle).chain(core).chain(document()).collect()
+}
+
+/// The `document.container` surface: a whole bundle image as a production
+/// document reader opens it (Binary Format companion §"The Container Epoch").
+/// The bundle layer still decodes a legacy (format 0) container, and both
+/// document readers, the editor's document layer and the text projection,
+/// refuse it by name. Appended after core, so its first landing moved no
+/// earlier line.
+const DOCUMENT_CONTAINER: &str = "document.container";
+
+fn document() -> Vec<(String, String, String, String, Vec<u8>)> {
+    let current = epiphany_bundle::Bundle::create(
+        epiphany_bundle::MemStore::new(),
+        epiphany_bundle::FileUuid([0x5B; 16]),
+        epiphany_bundle::Manifest::empty(epiphany_bundle::DocumentId([0x5B; 16])),
+        crate::production_caps(),
+    )
+    .expect("an empty bundle is created")
+    .into_store()
+    .into_bytes();
+    let legacy = with_format_major(&current, 0);
+    [
+        ("accept", "-", "empty_current", current),
+        ("reject", "legacy-container", "empty_legacy", legacy),
+    ]
+    .into_iter()
+    .map(|(verdict, class, name, bytes)| {
+        (
+            DOCUMENT_CONTAINER.to_string(),
+            verdict.to_string(),
+            class.to_string(),
+            name.to_string(),
+            bytes,
+        )
+    })
+    .collect()
+}
+
+/// `image` with its fixed header's format major set to `major` and the header
+/// CRC recomputed: bytes 8 and 9 hold the major, 60 to 63 the CRC over the
+/// header's first 60 bytes (Binary Format companion §"The Fixed Header").
+fn with_format_major(image: &[u8], major: u16) -> Vec<u8> {
+    let mut out = image.to_vec();
+    out[8..10].copy_from_slice(&major.to_le_bytes());
+    let crc = epiphany_bundle::crc32c(&out[0..60]);
+    out[60..64].copy_from_slice(&crc.to_le_bytes());
+    out
+}
+
+/// Opens `bytes` as the text projection's document reader does: `Ok(true)` when
+/// it reads, `Err` when the bundle layer or the reader refuses it.
+fn check_document(surface: &str, bytes: &[u8]) -> Option<Result<bool, String>> {
+    if surface != DOCUMENT_CONTAINER {
+        return None;
+    }
+    Some(
+        match epiphany_bundle::Bundle::open(
+            epiphany_bundle::MemStore::from_bytes(bytes.to_vec()),
+            crate::production_caps(),
+        ) {
+            Err(e) => Err(format!("{e}")),
+            Ok(bundle) => match epiphany_textproj::project::document_from_bundle(&bundle) {
+                Ok(_) => Ok(true),
+                Err(e) => Err(format!("{e:?}")),
+            },
+        },
+    )
 }
 
 /// Renders the corpus file.
@@ -181,7 +248,8 @@ pub fn verify(text: &str) -> Result<usize, Vec<String>> {
     for row in &rows {
         let result = epiphany_ops::vectors::check(&row.surface, &row.bytes)
             .or_else(|| epiphany_bundle::vectors::check(&row.surface, &row.bytes))
-            .or_else(|| epiphany_core::vectors::check(&row.surface, &row.bytes));
+            .or_else(|| epiphany_core::vectors::check(&row.surface, &row.bytes))
+            .or_else(|| check_document(&row.surface, &row.bytes));
         let Some(result) = result else {
             failures.push(format!("{}: no decoder owns this surface", row.surface));
             continue;
@@ -261,6 +329,11 @@ mod tests {
             "truncated",
             "unknown-discriminant",
             "count-exceeds-remaining",
+            // The supported-layout boundary's refusals (roadmap D4).
+            "unsupported-schema-minor",
+            "mis-stamped",
+            "unsupported-layout",
+            "legacy-container",
         ] {
             assert!(
                 classes.contains(&required),

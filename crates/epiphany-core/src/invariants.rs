@@ -108,10 +108,15 @@ pub enum GraphInvariant {
     ///   - StaffGroup.members — declared staff.
     ///   - PartDefinition.staves — declared staff.
     ///   - ViewDefinition.active_layers — declared analysis layer.
-    ///   - MetricTimeModel.meters — declared time signature.
-    ///   - StaffBasedContent.default_metric_grid — declared time signature.
+    ///   - MetricTimeModel.meters — anchor target, declared time signature.
+    ///   - StaffBasedContent.default_metric_grid — anchor target, declared time signature.
     ///   - Measure.time_signature — declared time signature.
-    ///   - StaffInstance.local_metric_grid — declared time signature.
+    ///   - Measure.start — anchor target.
+    ///   - StaffInstance.local_metric_grid — anchor target, declared time signature.
+    ///   - StaffInstance.clef_sequence — anchor target.
+    ///   - StaffInstance.key_sequence — anchor target.
+    ///   - Region.time_extent — anchor target.
+    ///   - SpellingAttachment.scope — anchor target.
     ///   - NotatedComponent.tuplet — extant tuplet.
     ///   - IndeterminacyHints.alternatives — live event.
     ///   - TrajectoryEvent.start — live pitch.
@@ -122,12 +127,20 @@ pub enum GraphInvariant {
     ///   - TempoSegment.end — anchor target.
     ///   - Score.voice_homes — declared staff, extant voice.
     ///
+    ///     A user break's anchor is not in the surface (roadmap D80): a break
+    ///     whose event or measure a later delete removes stays keyed by its
+    ///     anchor and draws nothing. X5b's fix round 1 (D87 Q1) added the
+    ///     anchors of a region's extent, its own model's and its grid's meter
+    ///     changes, a staff instance's grid, measures, clef and key changes, and
+    ///     a spelling range, which invariant 9 already read for their offsets.
+    ///
     ///     Beyond that surface, the checker reaches four rules that are NOT
     ///     part of the normative invariant 10 and **no longer report under this
     ///     tag**. Since P13-S29 each carries its own `req:` label in the
     ///     `Requirement` arm of [`ViolationKind`]: tempo segment shape
     ///     (Chapter 3, `req:time:tempo-segment-shape`); tempo segment ordering
-    ///     and non-overlap (Chapter 3, `req:time:tempo-segment-order`);
+    ///     and non-overlap, a segment's end not before its own start among
+    ///     them (Chapter 3, `req:time:tempo-segment-order`);
     ///     aleatoric ordering and bounds region locality (Chapter 3,
     ///     `req:time:aleatoric-reference-locality`); and accidental
     ///     modification expressibility (Chapter 4,
@@ -1473,6 +1486,70 @@ impl<'a> GraphIndex<'a> {
             }
         }
 
+        // Every other time anchor invariant 9 reads names an object that
+        // exists (X5b fix round 1, D87 Q1): a region's extent, its own
+        // model's and its grid's meter changes, a staff instance's own grid's
+        // meter changes, its measures' starts and its clef and key changes,
+        // and a spelling range's ends. Before it the surface held the
+        // cross-cutting structures' and the tempo maps' anchors alone, so a
+        // removal leaving one of these naming nothing went unseen. A user
+        // break's anchor is excepted: a break whose event or measure a later
+        // delete removes stays keyed by its anchor and draws nothing (roadmap
+        // D80).
+        let mut anchored = |what: String, anchor: &TimeAnchor| {
+            flag(
+                self.anchor_target_exists(anchor),
+                format!("{what} anchor target {anchor:?} dangling"),
+            );
+        };
+        for r in &self.score.canvas.regions {
+            anchored(
+                format!("region {:?} extent start", r.id),
+                &r.time_extent.start,
+            );
+            anchored(format!("region {:?} extent end", r.id), &r.time_extent.end);
+            if let RegionTimeModel::Metric(m) = &r.time_model {
+                for mc in &m.meters {
+                    anchored(
+                        format!("region {:?} time-model meter change", r.id),
+                        &mc.anchor,
+                    );
+                }
+            }
+            if let Some(g) = r
+                .content
+                .staff_based()
+                .and_then(|c| c.default_metric_grid.as_ref())
+            {
+                for mc in &g.meter_sequence {
+                    anchored(
+                        format!("region {:?} default-grid meter change", r.id),
+                        &mc.anchor,
+                    );
+                }
+            }
+            for si in r.staff_instances() {
+                for mc in si.local_metric_grid.iter().flat_map(|g| &g.meter_sequence) {
+                    anchored(format!("instance {:?} meter change", si.id), &mc.anchor);
+                }
+                for m in &si.measures {
+                    anchored(format!("measure {:?} start", m.id), &m.start);
+                }
+                for c in &si.clef_sequence {
+                    anchored(format!("instance {:?} clef change", si.id), &c.anchor);
+                }
+                for k in &si.key_sequence {
+                    anchored(format!("instance {:?} key change", si.id), &k.anchor);
+                }
+            }
+        }
+        for a in &self.score.spelling_attachments {
+            if let SpellingScope::Range { start, end, .. } = &a.scope {
+                anchored(String::from("spelling range start"), start);
+                anchored(String::from("spelling range end"), end);
+            }
+        }
+
         // Decomposition components' tuplet references must resolve (Chapter 3):
         // a dangling `TupletId` would otherwise be silently treated as "no
         // tuplet" (the component left unscaled), which can let an inconsistent
@@ -1611,10 +1688,8 @@ impl<'a> GraphIndex<'a> {
                 match seg.shape {
                     TempoShape::Constant => flag(
                         ViolationKind::Requirement("req:time:tempo-segment-shape"),
-                        seg.end_tempo
-                            .as_ref()
-                            .is_none_or(|et| et == &seg.start_tempo),
-                        "constant tempo segment has end_tempo != start_tempo".to_string(),
+                        seg.end_tempo.is_none(),
+                        "constant tempo segment records an end_tempo".to_string(),
                     ),
                     TempoShape::Linear | TempoShape::Exponential | TempoShape::Curve => flag(
                         ViolationKind::Requirement("req:time:tempo-segment-shape"),
@@ -1622,8 +1697,18 @@ impl<'a> GraphIndex<'a> {
                         "non-constant tempo segment is missing its end_tempo".to_string(),
                     ),
                 }
-                // Ordering and non-overlap, where resolvable.
+                // Ordering and non-overlap, where resolvable: a segment's end
+                // not before its own start (reduction version 5, D90 Q3:
+                // before it a segment ending before its start passed), nor
+                // past the next segment's start.
                 let start = seg_pos(&seg.start);
+                if let (Some(s), Some(e)) = (&start, seg.end.as_ref().and_then(seg_pos)) {
+                    flag(
+                        ViolationKind::Requirement("req:time:tempo-segment-order"),
+                        e >= *s,
+                        "tempo segment ends before it starts".to_string(),
+                    );
+                }
                 if let (Some(ps), Some(s)) = (&prev_start, &start) {
                     flag(
                         ViolationKind::Requirement("req:time:tempo-segment-order"),
@@ -3189,20 +3274,9 @@ fn duration_bounds_kind(b: &crate::time::DurationBounds) -> BoundsKind {
 }
 
 /// Whether an anchor offset kind matches a region's coordinate discipline
-/// (invariant 9).
+/// (invariant 9), as reduction reads it too.
 fn offset_matches(offset: OffsetKind, disc: CoordinateDiscipline) -> bool {
-    use crate::graph::AleatoricAnchoringDiscipline as A;
-    match offset {
-        OffsetKind::Zero => true,
-        OffsetKind::Musical => disc.admits_musical_offsets(),
-        OffsetKind::WallClock => matches!(
-            disc,
-            CoordinateDiscipline::WallClock
-                | CoordinateDiscipline::Aleatoric(A::WallClock)
-                | CoordinateDiscipline::Aleatoric(A::EitherPerEvent)
-                | CoordinateDiscipline::Aleatoric(A::FreelyMixed)
-        ),
-    }
+    disc.admits_offset(offset)
 }
 
 /// Whether an anchor offset kind matches a *specific* coordinate clock — used
@@ -3752,6 +3826,135 @@ mod review_fix_tests {
                 },
             });
         assert!(fires(&s, GraphInvariant::VoiceOriginConsistent));
+    }
+
+    /// Invariant 10 reads every time anchor invariant 9 reads (X5b fix round
+    /// 1, D87 Q1): a region's extent, its own model's and its grid's meter
+    /// changes, a staff instance's own grid, measure starts, clef and key
+    /// changes, and a spelling range's ends, each naming an event no score
+    /// holds, fires; the same score with each anchored at its region's start
+    /// does not; and a user break naming that event is excepted (D80).
+    #[test]
+    fn inv10_flags_every_time_anchor_naming_nothing() {
+        use crate::graph::{
+            BeatGroup, ClefChange, KeySignature, KeySignatureChange, Measure,
+            MeasureNumberVisibility, MeterChange, MetricGrid, PowerOfTwo, RegionContent,
+            TimeSignature, TimeSignatureDisplay,
+        };
+        use crate::pitch::{SpellingAttachment, SpellingDirective, SpellingRule, SpellingScope};
+        let base = valid_score(60);
+        let r = base.identity.replica_id;
+        let region = base.canvas.regions[0].id;
+        let ghost = TimeAnchor::Event {
+            id: crate::ids::EventId::new(r, 9_200_001),
+            offset: AnchorOffset::Zero,
+        };
+        let start = TimeAnchor::Region {
+            id: region,
+            edge: RegionEdge::Start,
+            offset: AnchorOffset::Zero,
+        };
+        let signature = crate::ids::TimeSignatureId::new(r, 9_200_002);
+        let with = |anchor: &TimeAnchor, n: usize| {
+            let mut s = valid_score(60);
+            s.time_signatures.push(
+                TimeSignature::new(
+                    signature,
+                    TimeSignatureDisplay::Standard {
+                        numerator: 4,
+                        denominator: PowerOfTwo::new(4).unwrap(),
+                    },
+                    MusicalDuration::whole(),
+                    vec![BeatGroup {
+                        duration: MusicalDuration::whole(),
+                        subdivision: None,
+                        accent: 0,
+                    }],
+                )
+                .unwrap(),
+            );
+            let meter = MeterChange {
+                anchor: anchor.clone(),
+                time_signature: signature,
+            };
+            let reg = &mut s.canvas.regions[0];
+            match n {
+                0 => reg.time_extent.start = anchor.clone(),
+                1 => {
+                    if let RegionTimeModel::Metric(m) = &mut reg.time_model {
+                        m.meters.push(meter);
+                    }
+                }
+                2 => {
+                    if let RegionContent::StaffBased(c) = &mut reg.content {
+                        c.default_metric_grid = Some(MetricGrid {
+                            meter_sequence: vec![meter],
+                        });
+                    }
+                }
+                3 => {
+                    reg.content.staff_instances_mut().unwrap()[0].local_metric_grid =
+                        Some(MetricGrid {
+                            meter_sequence: vec![meter],
+                        })
+                }
+                4 => reg.content.staff_instances_mut().unwrap()[0]
+                    .measures
+                    .push(Measure {
+                        id: crate::ids::MeasureId::new(r, 9_200_003),
+                        start: anchor.clone(),
+                        time_signature: None,
+                        explicit_number: None,
+                        number_visibility: MeasureNumberVisibility::Auto,
+                    }),
+                5 => reg.content.staff_instances_mut().unwrap()[0]
+                    .clef_sequence
+                    .push(ClefChange {
+                        anchor: anchor.clone(),
+                        clef: crate::graph::Clef::treble(),
+                    }),
+                6 => reg.content.staff_instances_mut().unwrap()[0]
+                    .key_sequence
+                    .push(KeySignatureChange {
+                        anchor: anchor.clone(),
+                        key: KeySignature::new(0).unwrap(),
+                    }),
+                7 => s.spelling_attachments.push(SpellingAttachment {
+                    scope: SpellingScope::Range {
+                        start: anchor.clone(),
+                        end: anchor.clone(),
+                        voices: crate::pitch::VoiceSelector::All,
+                    },
+                    directive: SpellingDirective::Rule(SpellingRule {
+                        rule_set: crate::pitch::SpellingRuleSetId::new("rs"),
+                    }),
+                    source: crate::pitch::SpellingSource::UserChosen,
+                    priority: 0,
+                    layer: None,
+                }),
+                _ => {
+                    if let RegionContent::StaffBased(c) = &mut reg.content {
+                        c.user_system_breaks.push(anchor.clone());
+                    }
+                }
+            }
+            s
+        };
+        for n in 0..8 {
+            assert!(
+                fires(&with(&ghost, n), GraphInvariant::CrossCuttingRefsResolve),
+                "anchor class {n} naming an event no score holds"
+            );
+            assert!(
+                !fires(&with(&start, n), GraphInvariant::CrossCuttingRefsResolve),
+                "anchor class {n} at its region's start"
+            );
+        }
+        assert!(
+            !fires(&with(&ghost, 8), GraphInvariant::CrossCuttingRefsResolve),
+            "a user break naming nothing is excepted"
+        );
+        assert!(!fires(&base, GraphInvariant::CrossCuttingRefsResolve));
     }
 
     #[test]
@@ -7142,11 +7345,23 @@ mod s29_violation_kind_tests {
             end_tempo: Some(tempo(120.0)),
             shape: TempoShape::Constant,
         });
-        assert_requirement_condition(
-            &s,
-            SHAPE,
-            "constant tempo segment has end_tempo != start_tempo",
-        );
+        assert_requirement_condition(&s, SHAPE, "constant tempo segment records an end_tempo");
+    }
+
+    /// A constant segment recording an end tempo equal to its start tempo is
+    /// reported too (P13-S8, reduction version 5): the requirement says the
+    /// end tempo is absent, and an equal one is a second spelling of one
+    /// tempo.
+    #[test]
+    fn tempo_constant_with_an_equal_end_reports_shape() {
+        let s = one_segment(405, |rid| TempoSegment {
+            start: anchor(rid, 0),
+            end: None,
+            start_tempo: tempo(120.0),
+            end_tempo: Some(tempo(120.0)),
+            shape: TempoShape::Constant,
+        });
+        assert_requirement_condition(&s, SHAPE, "constant tempo segment records an end_tempo");
     }
 
     #[test]
@@ -7192,6 +7407,25 @@ mod s29_violation_kind_tests {
     fn tempo_overlap_reports_order() {
         let s = two_segments(406, (2, 3), (1, 2));
         assert_requirement_condition(&s, ORDER, "tempo segments overlap in musical time");
+    }
+
+    /// A segment whose end comes before its own start is reported (D90 Q3):
+    /// the checker read an end only against the next segment's start, so a
+    /// region created carrying such a segment passed. One ending where it
+    /// starts is not reported.
+    #[test]
+    fn tempo_segment_ending_before_its_start_reports_order() {
+        let ending = |at: i32| {
+            one_segment(408, move |rid| TempoSegment {
+                start: anchor(rid, 2),
+                end: Some(anchor(rid, at)),
+                start_tempo: tempo(60.0),
+                end_tempo: None,
+                shape: TempoShape::Constant,
+            })
+        };
+        assert_requirement_condition(&ending(1), ORDER, "tempo segment ends before it starts");
+        assert!(check_requirement(&ending(2), ORDER).is_empty());
     }
     // ---- C8-C10 need their fixtures from the existing corpus ----------------
 
@@ -7416,12 +7650,13 @@ mod s29_violation_kind_tests {
     }
 
     #[test]
-    /// Pin 3a. The `.tex` requirement block equals pin 3's pinned source, by
+    /// Pin 3a. The `.tex` requirement block equals its pinned source, by
     /// whitespace-collapsed **equality** — not required phrases plus a
     /// forbidden-stem list. A stem inventory cannot anticipate the sentence
-    /// someone will actually write, and M14e is exactly that sentence: it uses
-    /// no forbidden stem and settles P13-S8 inside a requirement minted not to.
-    fn tempo_segment_shape_requirement_states_its_clauses_and_stays_s8_neutral() {
+    /// someone will actually write. The block was minted neutral on P13-S8;
+    /// X5b settled S8 (D80 Q14: a constant segment's `end_tempo` is absent),
+    /// and the pin moved with it, deliberately.
+    fn tempo_segment_shape_requirement_states_its_clauses() {
         const TEX: &str = include_str!("../../../spec/core_spec.tex");
         const LABEL: &str = r"\label{req:time:tempo-segment-shape}";
 
@@ -7439,13 +7674,17 @@ mod s29_violation_kind_tests {
                 r"\begin{requirement}
   \label{req:time:tempo-segment-shape}
   A tempo segment's \texttt{shape} and its \texttt{end\_tempo} \MUST{} be
-  compatible. If \texttt{shape} is \texttt{Constant} and \texttt{end\_tempo}
-  is present, it \MUST{} equal \texttt{start\_tempo}. If \texttt{shape} is
-  \texttt{Linear}, \texttt{Exponential} or \texttt{Curve}, \texttt{end\_tempo}
-  \MUST{} be present.
+  compatible. If \texttt{shape} is \texttt{Constant}, \texttt{end\_tempo}
+  \MUST{} be absent. If \texttt{shape} is \texttt{Linear},
+  \texttt{Exponential} or \texttt{Curve}, \texttt{end\_tempo} \MUST{} be
+  present.
 
-  This requirement states the compatibility that is enforced. It does not
-  determine whether a constant segment records an \texttt{end\_tempo} at all.
+  A constant segment that recorded an \texttt{end\_tempo} equal to its
+  \texttt{start\_tempo} would be a second spelling of one tempo, with a hash of
+  its own. A decoder rejects one rather than normalizing it (Binary Format
+  companion, \sectionsc{Graph Value Layouts}), and reduction refuses a value
+  built in memory (reduction algorithm version~\texttt{5}; until then an equal
+  end tempo was admitted).
 \end{requirement}"
             ),
             "pin 3's block is frozen; any edit must be deliberate"

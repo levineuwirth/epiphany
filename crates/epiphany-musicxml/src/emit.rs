@@ -14,14 +14,14 @@ use epiphany_core::{
     ClefChange, Event, EventDuration, EventId, EventPosition, ForeignFormatId, IdentifiedPitch,
     IdentityContext, Instrument, InstrumentId, KeySignature, KeySignatureChange, Lyric,
     LyricLineId, Marker, MarkerId, MarkerKind, Measure, MeasureId, MeasureNumberVisibility,
-    MetricTimeModel, MusicalDuration, MusicalPosition, OperationId, PitchId, PitchedEvent,
-    PowerOfTwo, RationalTime, Region, RegionContent, RegionEdge, RegionId, RegionTimeModel,
-    ReplicaId, Rest, ScoreMetadata, Slur, SlurId, SlurKind, SpanStyle, Spanner, SpannerId, Staff,
-    StaffExtent, StaffGroup, StaffGroupId, StaffGroupKind, StaffId, StaffInstance, StaffInstanceId,
-    StaffLineConfiguration, StaffPosition, StemConfiguration, Tempo, TempoSegment, TempoShape, Tie,
-    TieClass, TieId, TimeAnchor, TimeExtent, TimeSignature, TimeSignatureDisplay, TimeSignatureId,
-    Timestamp, TransactionId, Tuplet, TupletRatio, UnpitchedEvent, UnpitchedMember,
-    UnpitchedMemberId, Voice, VoiceId, VoiceOrigin, WallClockTime,
+    MeasurePosition, MetricTimeModel, MusicalDuration, MusicalPosition, OperationId, PitchId,
+    PitchedEvent, PowerOfTwo, RationalTime, Region, RegionContent, RegionEdge, RegionId,
+    RegionTimeModel, ReplicaId, Rest, ScoreMetadata, Slur, SlurId, SlurKind, SpanStyle, Spanner,
+    SpannerId, Staff, StaffExtent, StaffGroup, StaffGroupId, StaffGroupKind, StaffId,
+    StaffInstance, StaffInstanceId, StaffLineConfiguration, StaffPosition, StemConfiguration,
+    Tempo, TempoSegment, TempoShape, Tie, TieClass, TieId, TimeAnchor, TimeExtent, TimeSignature,
+    TimeSignatureDisplay, TimeSignatureId, Timestamp, TransactionId, Tuplet, TupletRatio,
+    UnpitchedEvent, UnpitchedMember, UnpitchedMemberId, Voice, VoiceId, VoiceOrigin, WallClockTime,
 };
 use epiphany_determinism::CanonicalF64;
 use epiphany_ops::{
@@ -633,14 +633,27 @@ pub fn emit(mut source: SourceScore, replica: ReplicaId) -> Import {
         ids.measures.push(per_staff);
     }
 
-    // The file's line and page breaks, as the region's user breaks at the
-    // measures they come before: musical offsets from the region's start,
-    // which the reducer keys each break by.
-    for measure in &source.measures {
+    // The file's line and page breaks, as the region's user breaks anchored
+    // to the start of the measure they come before, in the region's first
+    // staff instance; the reducer keys each break by its anchor (reduction
+    // version 5).
+    for (m, measure) in source.measures.iter().enumerate() {
         let Some(kind) = measure.break_before else {
             continue;
         };
-        let anchor = region_anchor(region_id, &measure.onset);
+        let Some(&measure_id) = ids
+            .measures
+            .first()
+            .and_then(|staves| staves.first())
+            .and_then(|measures| measures.get(m))
+        else {
+            continue;
+        };
+        let anchor = TimeAnchor::Measure {
+            id: measure_id,
+            position: MeasurePosition::Start,
+            offset: AnchorOffset::Zero,
+        };
         let op = match kind {
             SourceBreak::System => OperationKind::SetUserSystemBreak(SetUserSystemBreakOp {
                 region: region_id,

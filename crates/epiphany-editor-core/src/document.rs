@@ -36,18 +36,20 @@
 //! it copies what a session draws, saved and unsaved, into a new document under
 //! a fresh file identity.
 //!
-//! Reopen reads what the current writer writes. An envelope in a recognized
-//! historical layout is refused by name
-//! ([`DocumentError::UnsupportedHistoricalEncoding`], Ruling B's interim); the
-//! general boundary on mixed-major files is a later phase's.
+//! Reopen reads what the current writer writes, mixed-major files included,
+//! and refuses anything else by name (roadmap D4): a legacy container
+//! ([`DocumentError::LegacyContainer`]), and an operation block outside the
+//! supported-layout boundary [`epiphany_ops::decode_operation_block`] holds
+//! every block to ([`DocumentError::UnsupportedSchemaMinor`],
+//! [`DocumentError::MisStamped`], [`DocumentError::UnsupportedLayout`]).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use epiphany_bundle::{
     chunk_id, decode_block, pack_operation_blocks, BlockStore, Bundle, BundleCapabilities,
-    BundleError, ChunkId, ChunkKind, CommitContext, DocumentId, FileUuid, IntegrityAnomaly,
-    Manifest, ReductionAlgorithmVersion, SchemaVersion, StagedChunk,
+    BundleError, ChunkId, ChunkKind, CommitContext, DocumentId, FileUuid, FormatEpoch,
+    IntegrityAnomaly, Manifest, ReductionAlgorithmVersion, SchemaVersion, StagedChunk,
 };
 use epiphany_core::{
     Clef, IdentityContext, Instrument, KeySignature, KeySignatureChange, Measure,
@@ -59,10 +61,10 @@ use epiphany_core::{
 use epiphany_determinism::CanonicalEncode;
 use epiphany_layout_ir::ConstraintSolver;
 use epiphany_ops::{
-    decode_envelope, operation_block_introduced_minor, AuthorId, CausalContext, CreateInstrumentOp,
-    CreateMeasureOp, CreateRegionOp, CreateStaffInstanceOp, CreateStaffOp, CreateVoiceOp,
-    EnvelopeDecodeError, HybridLogicalClock, OperationEnvelope, OperationKind, OperationPayload,
-    OperationSet, OperationStamp, SetMetadataOp, SetTimeSignatureOp,
+    decode_operation_block, operation_block_introduced_minor, AuthorId, BlockStamp, CausalContext,
+    CreateInstrumentOp, CreateMeasureOp, CreateRegionOp, CreateStaffInstanceOp, CreateStaffOp,
+    CreateVoiceOp, HybridLogicalClock, OperationBlockError, OperationEnvelope, OperationKind,
+    OperationPayload, OperationSet, OperationStamp, SetMetadataOp, SetTimeSignatureOp,
     CURRENT_REDUCTION_ALGORITHM_VERSION,
 };
 
@@ -241,15 +243,35 @@ pub enum DocumentError {
     /// (pruning is unimplemented), and a base cannot be reduced from an empty
     /// score, so it is refused by name.
     CanonicalBase,
-    /// An envelope is in a historical layout this build recognizes and does not
-    /// read: before the product's 1.0 release nothing is migrated, and a layout
-    /// outside the supported boundary is refused by name.
-    UnsupportedHistoricalEncoding {
-        /// The value whose layout is historical.
-        layout: &'static str,
+    /// The container is format major 0, which the bundle layer still decodes
+    /// and no current writer makes: outside the supported boundary (D4).
+    LegacyContainer,
+    /// An operation block declares a schema minor later than this build's: a
+    /// later build wrote it ([`OperationBlockError::UnsupportedSchemaMinor`]).
+    UnsupportedSchemaMinor {
+        /// The block's declared major.
+        major: u16,
+        /// The block's declared minor.
+        minor: u16,
     },
-    /// An envelope failed to decode.
-    Envelope(EnvelopeDecodeError),
+    /// An operation block's envelopes decode, but it is not stamped as minimal
+    /// stamping derives from them ([`OperationBlockError::MisStamped`]).
+    MisStamped {
+        /// The version the block declares.
+        declared: BlockStamp,
+        /// The version its envelopes derive.
+        derived: BlockStamp,
+    },
+    /// An operation block holds an envelope that does not decode under the live
+    /// layouts: before the product's 1.0 release nothing is migrated, and a
+    /// layout outside the supported boundary is refused by name
+    /// ([`OperationBlockError::UnsupportedLayout`]).
+    UnsupportedLayout {
+        /// The version the block declares.
+        declared: BlockStamp,
+        /// The value whose historical layout was recognized, if one was.
+        value: Option<&'static str>,
+    },
     /// The document is read-only and grants no lease.
     ReadOnly(Vec<ReadOnlyReason>),
     /// The session holds no lease: it was opened on a bare score, or as a view.
@@ -288,11 +310,33 @@ impl std::fmt::Display for DocumentError {
             DocumentError::CanonicalBase => {
                 f.write_str("the document carries a canonical base, which this build cannot open")
             }
-            DocumentError::UnsupportedHistoricalEncoding { layout } => write!(
-                f,
-                "an operation carries a {layout} in a historical layout this build does not read"
+            DocumentError::LegacyContainer => f.write_str(
+                "the document is a legacy (format 0) container, which this build does not open",
             ),
-            DocumentError::Envelope(e) => write!(f, "an operation failed to decode: {e:?}"),
+            DocumentError::UnsupportedSchemaMinor { major, minor } => write!(
+                f,
+                "{}",
+                OperationBlockError::UnsupportedSchemaMinor {
+                    major: *major,
+                    minor: *minor
+                }
+            ),
+            DocumentError::MisStamped { declared, derived } => write!(
+                f,
+                "{}",
+                OperationBlockError::MisStamped {
+                    declared: *declared,
+                    derived: *derived
+                }
+            ),
+            DocumentError::UnsupportedLayout { declared, value } => write!(
+                f,
+                "{}",
+                OperationBlockError::UnsupportedLayout {
+                    declared: *declared,
+                    value: *value
+                }
+            ),
             DocumentError::ReadOnly(reasons) => write!(f, "the document is read-only: {reasons:?}"),
             DocumentError::NotLeased => f.write_str("the session was not leased from a document"),
             DocumentError::ForeignLease => {
@@ -322,6 +366,22 @@ impl std::error::Error for DocumentError {}
 impl From<BundleError> for DocumentError {
     fn from(e: BundleError) -> Self {
         DocumentError::Bundle(e)
+    }
+}
+
+impl From<OperationBlockError> for DocumentError {
+    fn from(e: OperationBlockError) -> Self {
+        match e {
+            OperationBlockError::UnsupportedSchemaMinor { major, minor } => {
+                DocumentError::UnsupportedSchemaMinor { major, minor }
+            }
+            OperationBlockError::MisStamped { declared, derived } => {
+                DocumentError::MisStamped { declared, derived }
+            }
+            OperationBlockError::UnsupportedLayout { declared, value } => {
+                DocumentError::UnsupportedLayout { declared, value }
+            }
+        }
     }
 }
 
@@ -419,9 +479,14 @@ impl<S: BlockStore> EditorDocument<S> {
     }
 
     /// Opens the document in `store`: the bundle's cold open, then every envelope
-    /// of every operation block decoded and replayed from an empty score.
+    /// of every operation block decoded and replayed from an empty score. A
+    /// legacy container, and a block outside the supported-layout boundary
+    /// ([`decode_operation_block`]), are refused by name.
     pub fn open(store: S) -> Result<Self, DocumentError> {
         let bundle = Bundle::open(store, production_caps())?;
+        if bundle.header().epoch == FormatEpoch::Legacy {
+            return Err(DocumentError::LegacyContainer);
+        }
         if let Some(schema_major) = bundle.anomalies().iter().find_map(|a| match a {
             IntegrityAnomaly::UnsupportedCanonicalChunkMajor { schema_major } => {
                 Some(*schema_major)
@@ -435,14 +500,14 @@ impl<S: BlockStore> EditorDocument<S> {
         }
         let mut envelopes = Vec::new();
         for root in bundle.manifest().operation_roots.clone() {
-            for bytes in bundle.read_operation_block(&root)? {
-                envelopes.push(decode_envelope(&bytes).map_err(|e| match e {
-                    EnvelopeDecodeError::UnsupportedLayout(layout) => {
-                        DocumentError::UnsupportedHistoricalEncoding { layout }
-                    }
-                    other => DocumentError::Envelope(other),
-                })?);
-            }
+            let declared = BlockStamp {
+                major: root.schema_version.major,
+                minor: root.schema_version.minor,
+            };
+            envelopes.extend(decode_operation_block(
+                &bundle.read_operation_block(&root)?,
+                declared,
+            )?);
         }
         Self::from_bundle(bundle, envelopes)
     }

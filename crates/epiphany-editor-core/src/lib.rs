@@ -65,7 +65,7 @@ use epiphany_core::prepass::{derive_annotations, DerivedAnnotations, PrePassProf
 use epiphany_core::{
     AcousticPitch, AcousticRealization, AnchorOffset, Clef, CmnNominal, Event, EventDuration,
     EventId, EventPosition, IdentifiedPitch, Measure, MeasureId, MeasureNumberVisibility,
-    MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId, PitchSpaceId,
+    MeasurePosition, MusicalDuration, MusicalPosition, OperationId, Pitch, PitchId, PitchSpaceId,
     PitchSpacePosition, PitchSpelling, PitchedEvent, RationalTime, RegionEdge, RegionId,
     RegionTimeModel, ReplicaId, ScalePosition, Score, Slur, SlurId, SpanStyle, SpellingDirective,
     SpellingNominal, SpellingScope, SpellingSourceKind, StaffId, StaffInstance, StaffInstanceId,
@@ -2612,10 +2612,12 @@ impl EditorSession {
 
     /// Sets (`present`) or clears a line or page break before the measure that
     /// starts at `at` in `region`, through `SetUserSystemBreak` or
-    /// `SetUserPageBreak`. The break is anchored at its musical offset from the
-    /// region's start, the reducer's key for it, so setting and clearing at one
-    /// place name one break (until breaks are keyed by their anchors, it does
-    /// not move with music inserted before it). Errors with
+    /// `SetUserPageBreak`. A break is anchored to the start of that measure in
+    /// the region's first staff instance holding one there, the reducer's key
+    /// for it (reduction version 5), so it moves with its measure. A clear
+    /// withdraws each break standing there in the form it stands: the measure's
+    /// start, or a musical offset from the region's start, which documents
+    /// written before version 5 hold. Errors with
     /// [`EditorError::NotAMeasureStart`] unless a measure of the region starts
     /// at `at`, after the region's start.
     pub fn set_break(
@@ -2625,32 +2627,68 @@ impl EditorSession {
         at: MusicalPosition,
         present: bool,
     ) -> Result<EditOutcome, EditorError> {
-        if at <= MusicalPosition::origin() || !self.measure_starts_in(region).contains(&at) {
+        if at <= MusicalPosition::origin() {
             return Err(EditorError::NotAMeasureStart);
         }
-        let anchor = TimeAnchor::Region {
-            id: region,
-            edge: RegionEdge::Start,
-            offset: AnchorOffset::Musical(MusicalDuration(at.0)),
+        let measure = self
+            .score
+            .staff_instances()
+            .filter(|(r, _)| *r == region)
+            .flat_map(|(_, si)| si.measures.iter())
+            .find(|m| self.measure_starts.get(&m.id) == Some(&at))
+            .map(|m| m.id)
+            .ok_or(EditorError::NotAMeasureStart)?;
+        let at_measure = TimeAnchor::Measure {
+            id: measure,
+            position: MeasurePosition::Start,
+            offset: AnchorOffset::Zero,
         };
-        self.apply(match kind {
-            LayoutBreak::System => OperationKind::SetUserSystemBreak(SetUserSystemBreakOp {
-                region,
-                anchor,
-                present,
-            }),
-            LayoutBreak::Page => OperationKind::SetUserPageBreak(SetUserPageBreakOp {
-                region,
-                anchor,
-                present,
-            }),
-        })
+        let mut anchors = if present {
+            Vec::new()
+        } else {
+            self.breaks_at(kind, region, &at)
+        };
+        if anchors.is_empty() {
+            anchors.push(at_measure);
+        }
+        let mut kinds: Vec<OperationKind> = anchors
+            .into_iter()
+            .map(|anchor| match kind {
+                LayoutBreak::System => OperationKind::SetUserSystemBreak(SetUserSystemBreakOp {
+                    region,
+                    anchor,
+                    present,
+                }),
+                LayoutBreak::Page => OperationKind::SetUserPageBreak(SetUserPageBreakOp {
+                    region,
+                    anchor,
+                    present,
+                }),
+            })
+            .collect();
+        if kinds.len() == 1 {
+            self.apply(kinds.remove(0))
+        } else {
+            self.apply_transaction("clear break", None, kinds)
+        }
     }
 
-    /// Whether a line or page break stands before `at` in `region`: a break
-    /// written as a musical offset from the region's start, as the editor and
-    /// the importer write them.
+    /// Whether a line or page break stands before `at` in `region`: one
+    /// anchored to the start of a measure starting there, as the editor and the
+    /// importer write them, or to the musical offset `at` from the region's
+    /// start, as they wrote them before reduction version 5.
     pub fn has_break(&self, kind: LayoutBreak, region: RegionId, at: &MusicalPosition) -> bool {
+        !self.breaks_at(kind, region, at).is_empty()
+    }
+
+    /// The anchors of the breaks of `kind` standing before `at` in `region`, in
+    /// either form [`Self::has_break`] reads.
+    fn breaks_at(
+        &self,
+        kind: LayoutBreak,
+        region: RegionId,
+        at: &MusicalPosition,
+    ) -> Vec<TimeAnchor> {
         let Some(content) = self
             .score
             .canvas
@@ -2659,19 +2697,29 @@ impl EditorSession {
             .find(|r| r.id == region)
             .and_then(|r| r.content.staff_based())
         else {
-            return false;
+            return Vec::new();
         };
         let breaks = match kind {
             LayoutBreak::System => &content.user_system_breaks,
             LayoutBreak::Page => &content.user_page_breaks,
         };
-        breaks.iter().any(|anchor| {
-            matches!(anchor, TimeAnchor::Region {
-                id,
-                edge: RegionEdge::Start,
-                offset: AnchorOffset::Musical(d),
-            } if *id == region && d.0 == at.0)
-        })
+        breaks
+            .iter()
+            .filter(|anchor| match anchor {
+                TimeAnchor::Region {
+                    id,
+                    edge: RegionEdge::Start,
+                    offset: AnchorOffset::Musical(d),
+                } => *id == region && d.0 == at.0,
+                TimeAnchor::Measure {
+                    id,
+                    position: MeasurePosition::Start,
+                    offset: AnchorOffset::Zero,
+                } => self.measure_starts.get(id) == Some(at),
+                _ => false,
+            })
+            .cloned()
+            .collect()
     }
 
     /// Toggles a line or page break after the measure that holds the anchor

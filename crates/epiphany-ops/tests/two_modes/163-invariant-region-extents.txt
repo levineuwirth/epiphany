@@ -1,6 +1,7 @@
 # class: invariant Invariant(RegionExtents: a region created at the place of one its author's view did not hold live, seen undone by an undo the merged history blocks
-# expect: deferred
-# deferred: a region created where one author's undo, blocked for that author's own earlier transaction member, left none (review 2's L1); every region overlap made by creating or filling regions is deferred until X5 refuses it by region extents compared in both modes (D52)
+# expect: agree
+# refused: RegionsOverlap, a fill of a region overlapping one that holds its staff (reduction version 5, X5b)
+# was deferred: a region created where one author's undo, blocked for that author's own earlier transaction member, left none (review 2's L1); every region overlap made by creating or filling regions is deferred until X5 refuses it by region extents compared in both modes (D52)
 # found: a hand-built probe, one author; 10 envelopes
 (envelope #x00000000000000010000000000000000 #x00000000000000000000000000000001 (stamp 1 0 #x00000000000000010000000000000000) (causal () ()) () (primitive (create-instrument (instrument #x000000000000000100000000000003d4 "instrument-980" () () #x () (clef g 2 0) (staff-line-configuration 5 #x000000000000f03f solid ()) ()))))
 (envelope #x00000000000000010000000000000001 #x00000000000000000000000000000001 (stamp 2 0 #x00000000000000010000000000000001) (causal ((#x0000000000000001 0)) ()) () (primitive (create-staff (staff #x000000000000000100000000000003d5 "staff-981" () #x000000000000000100000000000003d4 (staff-line-configuration 5 #x000000000000f03f solid ()) () (clef g 2 0)))))

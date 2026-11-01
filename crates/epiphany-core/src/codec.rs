@@ -1626,13 +1626,76 @@ impl Codec for Tempo {
     }
 }
 
-struct_codec!(TempoSegment {
-    start,
-    end,
-    start_tempo,
-    end_tempo,
-    shape
-});
+/// A tempo segment's codec, written out rather than by `struct_codec!` for one
+/// check: a `Constant` segment carrying an `end_tempo` is rejected, binary and
+/// text alike (reduction version 5, P13-S8; `req:time:tempo-segment-shape`).
+/// The derived codec accepted it, so one constant tempo had two spellings and
+/// two hashes. Every major shares this decoder, so a frozen major's score
+/// rejects it too; nothing is migrated.
+impl Codec for TempoSegment {
+    fn enc(&self, out: &mut Vec<u8>) {
+        self.start.enc(out);
+        self.end.enc(out);
+        self.start_tempo.enc(out);
+        self.end_tempo.enc(out);
+        self.shape.enc(out);
+    }
+    fn dec(r: &mut Reader<'_>) -> Result<Self> {
+        let segment = TempoSegment {
+            start: Codec::dec(r)?,
+            end: Codec::dec(r)?,
+            start_tempo: Codec::dec(r)?,
+            end_tempo: Codec::dec(r)?,
+            shape: Codec::dec(r)?,
+        };
+        if constant_with_end_tempo(&segment) {
+            return Err(ScoreDecodeError::Reconstruct("TempoSegment"));
+        }
+        Ok(segment)
+    }
+}
+
+impl crate::textvalue::TextValue for TempoSegment {
+    fn project(&self) -> crate::textvalue::Sexp {
+        let TempoSegment {
+            start,
+            end,
+            start_tempo,
+            end_tempo,
+            shape,
+        } = self;
+        crate::textvalue::Sexp::List(vec![
+            crate::textvalue::Sexp::Symbol(crate::textvalue::kebab("TempoSegment")),
+            crate::textvalue::TextValue::project(start),
+            crate::textvalue::TextValue::project(end),
+            crate::textvalue::TextValue::project(start_tempo),
+            crate::textvalue::TextValue::project(end_tempo),
+            crate::textvalue::TextValue::project(shape),
+        ])
+    }
+    fn parse(
+        s: &crate::textvalue::Sexp,
+    ) -> core::result::Result<Self, crate::textvalue::TextError> {
+        let fields = s.expect_struct(&crate::textvalue::kebab("TempoSegment"), 5)?;
+        let segment = TempoSegment {
+            start: crate::textvalue::TextValue::parse(&fields[0])?,
+            end: crate::textvalue::TextValue::parse(&fields[1])?,
+            start_tempo: crate::textvalue::TextValue::parse(&fields[2])?,
+            end_tempo: crate::textvalue::TextValue::parse(&fields[3])?,
+            shape: crate::textvalue::TextValue::parse(&fields[4])?,
+        };
+        if constant_with_end_tempo(&segment) {
+            return Err(crate::textvalue::TextError::NotCanonical("TempoSegment"));
+        }
+        Ok(segment)
+    }
+}
+
+/// Whether `segment` is `Constant` and records an `end_tempo`, which
+/// `req:time:tempo-segment-shape` says MUST be absent.
+fn constant_with_end_tempo(segment: &TempoSegment) -> bool {
+    matches!(segment.shape, TempoShape::Constant) && segment.end_tempo.is_some()
+}
 struct_codec!(TempoMap { initial, segments });
 
 // ===========================================================================
@@ -2320,6 +2383,11 @@ impl Codec for MarkerKind {
             }
             MarkerKind::Segno => out.push(7),
             MarkerKind::Coda => out.push(8),
+            // Appended at epoch 16 (X5b.7).
+            MarkerKind::ExpressionText(t) => {
+                out.push(9);
+                t.enc(out);
+            }
         }
     }
     fn dec(r: &mut Reader<'_>) -> Result<Self> {
@@ -2333,6 +2401,7 @@ impl Codec for MarkerKind {
             6 => MarkerKind::Rehearsal(Codec::dec(r)?),
             7 => MarkerKind::Segno,
             8 => MarkerKind::Coda,
+            9 => MarkerKind::ExpressionText(Codec::dec(r)?),
             tag => {
                 return Err(ScoreDecodeError::InvalidTag {
                     kind: "MarkerKind",
@@ -5254,6 +5323,11 @@ mod tests {
         );
         assert_eq!(hex(&MarkerKind::Segno), "07");
         assert_eq!(hex(&MarkerKind::Coda), "08");
+        // Appended at epoch 16 (X5b.7).
+        assert_eq!(
+            hex(&MarkerKind::ExpressionText(crate::Text::new("x"))),
+            "090100000078"
+        );
         assert_eq!(hex(&Syllabic::End), "03");
         // The appended tags of the line style and the spanner kind.
         assert_eq!(hex(&LineStyle::Wavy), "03");

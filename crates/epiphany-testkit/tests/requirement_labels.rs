@@ -53,6 +53,7 @@ const CHAPTER_AREAS: &[(&str, &str, &str)] = &[
     ("binary_format.tex", "Graph Value Layouts", "binfmt"),
     ("binary_format.tex", "Operation Wire Forms", "binfmt"),
     ("binary_format.tex", "Bundle Physical Layout", "binfmt"),
+    ("binary_format.tex", "Schema Evolution", "binfmt"),
     (
         "binary_format.tex",
         "Extension Declaration Blobs and Edit Barriers",

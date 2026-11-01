@@ -714,14 +714,16 @@ before the measure starting at `at`, through `SetUserSystemBreak` or
 key, toggling one after the selected note's measure. The importer writes a
 file's `<print new-system|new-page>` the same way.
 
-**Anchored by offset, not by measure.** A break is written as its musical
-offset from the region's start (`TimeAnchor::Region`, edge `Start`). The
-reducer keys a break's last-writer slot by its anchor's resolved position,
-and every anchor but such an offset resolves to the region's origin, so two
-measure- or event-anchored breaks in one region would share a slot. The
-layout now resolves the offset form too. The cost: a break does not move with
-music inserted before it, until breaks are keyed by their anchors (a model
-change).
+**Anchored to its measure (reduction version 5).** A break is written at the
+start of the measure it comes before, in the region's first staff instance
+holding one there (`TimeAnchor::Measure`, `Start`, no offset). Reduction
+version 5 keys a break's last-writer slot by its anchor, so breaks at
+different measures keep their own slots and a break moves with its measure.
+Until then a break was written as its musical offset from the region's
+start, the only form the old key told apart; documents written so still hold
+such breaks, which keep their own slots. `has_break` reads either form at a
+measure's start, and a clear withdraws each break standing there in its own
+form, so an older break is cleared as it was written.
 
 **Breaks and D30.** A user break is honored unless it would close a system
 holding no note. A continued tie's 1.5 staff spaces after a system's clef and

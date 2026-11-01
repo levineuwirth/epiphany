@@ -5122,9 +5122,9 @@ fn pen(run: &ResolvedText) -> (f32, f32) {
 
 /// Staff text stands over its staff, upright, its baseline a space over
 /// the staff, its pen from its note's head; words MuseScore writes as
-/// expression text, italic and below, stand the same until the model holds
-/// their kind (D79's Q9); and a note over the staff lifts the text a half
-/// space clear of it.
+/// expression text, which the model holds as their own kind, stand the same
+/// until they are drawn italic and below (D79's Q9); and a note over the
+/// staff lifts the text a half space clear of it.
 #[test]
 fn staff_text_stands_over_its_staff_from_its_note() {
     let measure = [
@@ -5637,6 +5637,50 @@ fn a_text_where_no_note_starts_stands_at_its_time() {
     let grow = ((ink[3] - ink[1]) - (ink[2] - ink[0])).max(0.0) * 0.5;
     near(l, ink[0] - grow - 0.58, "the frame's left");
     near(right, ink[2] + grow + 0.58, "the frame's right");
+}
+
+/// Expression text, drawn as staff text until it is drawn italic and below
+/// (D79's Q9), where no note starts stands at its time as staff text does,
+/// in a column made for it: italic words anchored an eighth into their
+/// measure, after the first note's head and before the second's.
+#[test]
+fn expression_text_where_no_note_starts_stands_at_its_time() {
+    use epiphany_core::{
+        AnchorOffset, MarkerKind, MeasurePosition, MusicalDuration, RationalTime, TimeAnchor,
+    };
+    let measure = [
+        words("rit.", 1, true),
+        note("C5", 4, "half", 1, 1, ""),
+        note("C5", 4, "half", 1, 1, ""),
+    ]
+    .concat();
+    let loaded = part("no_note_expression.musicxml", 1, &[measure]);
+    let mut score = loaded.reduced.score.clone();
+    let id = loaded.import.ids.measures[0][0][0];
+    let mut moved = 0;
+    for marker in &mut score.cross_cutting.markers {
+        if matches!(marker.kind, MarkerKind::ExpressionText(_)) {
+            marker.anchor = TimeAnchor::Measure {
+                id,
+                position: MeasurePosition::Start,
+                offset: AnchorOffset::Musical(MusicalDuration(
+                    RationalTime::new(1, 8).expect("an eighth"),
+                )),
+            };
+            moved += 1;
+        }
+    }
+    assert_eq!(moved, 1, "the italic words are expression text");
+    let layout = engrave(&score).layout;
+    let e = events(&loaded);
+    let (first, second) = (head(&loaded, &layout, e[0]), head(&loaded, &layout, e[1]));
+    let run = runs(&layout, "rit.");
+    assert_eq!(run.len(), 1, "drawn");
+    let x = pen(run[0]).0;
+    assert!(
+        x > first[2] && x < second[0],
+        "{x} after {first:?}, before {second:?}"
+    );
 }
 
 /// A mark at its measure's start is placed by its ink where it stands

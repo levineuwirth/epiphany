@@ -1810,9 +1810,13 @@ pub fn try_to_constrained(
                 (TypedObjectId::Marker(_), LayoutContent::Marker(marker)) if staff.is_some() => {
                     // A dynamic or staff text where no note of its staff starts
                     // stands in the note column of its time, made for it where
-                    // none is.
-                    if let (MarkerKind::Dynamic(_) | MarkerKind::Text(_), MarkerPlace::Time(time)) =
-                        (&marker.kind, &marker.at)
+                    // none is; so does expression text, drawn as staff text.
+                    if let (
+                        MarkerKind::Dynamic(_)
+                        | MarkerKind::Text(_)
+                        | MarkerKind::ExpressionText(_),
+                        MarkerPlace::Time(time),
+                    ) = (&marker.kind, &marker.at)
                     {
                         keys.insert(ColumnKey::Timed(time.clone(), ColumnRole::Note));
                     }
@@ -3209,7 +3213,7 @@ pub fn try_to_constrained(
                 | MarkerKind::Rehearsal(_)
                 | MarkerKind::Segno
                 | MarkerKind::Coda => true,
-                MarkerKind::Text(_) => false,
+                MarkerKind::Text(_) | MarkerKind::ExpressionText(_) => false,
                 _ => continue,
             };
             let (event, time) = match &marker.at {
@@ -3263,7 +3267,11 @@ pub fn try_to_constrained(
             let placing = match &marker.kind {
                 // Each line of the text a run, the first on the baseline and
                 // each further one a line lower (`TextLayout`, `BASELINE`).
-                MarkerKind::Text(words) => TextMarkPlacing {
+                // Expression text, which the model holds apart since X5b, is
+                // drawn as staff text until it is drawn italic and below
+                // (roadmap D79 Q9), as it was while the import wrote it as
+                // staff text.
+                MarkerKind::Text(words) | MarkerKind::ExpressionText(words) => TextMarkPlacing {
                     key: note,
                     staff: st,
                     runs: words
@@ -9389,6 +9397,57 @@ mod marks;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A break anchored to its music is placed where the music is (X5b.4,
+    /// breaks keyed by their anchors): an event's onset plus the offset, a
+    /// measure's start, so it moves with them; a musical offset from the
+    /// region's start stays where it was written.
+    #[test]
+    fn a_break_anchored_to_its_music_is_placed_where_the_music_is() {
+        use epiphany_core::{EventId, MeasureId, MusicalPosition, RegionEdge, RegionId, ReplicaId};
+        let region = RegionId::new(ReplicaId(1), 1);
+        let (event, measure) = (
+            EventId::new(ReplicaId(1), 2),
+            MeasureId::new(ReplicaId(1), 3),
+        );
+        let quarters = |n: i64| {
+            TimePoint::Musical(MusicalPosition(
+                RationalTime::new(n, 4).expect("a position"),
+            ))
+        };
+        let musical = |n: i64| {
+            AnchorOffset::Musical(MusicalDuration(
+                RationalTime::new(n, 4).expect("a duration"),
+            ))
+        };
+        let by_event = TimeAnchor::Event {
+            id: event,
+            offset: musical(1),
+        };
+        let by_measure = TimeAnchor::Measure {
+            id: measure,
+            position: MeasurePosition::Start,
+            offset: AnchorOffset::Zero,
+        };
+        let by_offset = TimeAnchor::Region {
+            id: region,
+            edge: RegionEdge::Start,
+            offset: musical(8),
+        };
+        for (onset, start) in [(4, 4), (6, 12)] {
+            let events = BTreeMap::from([(event, quarters(onset))]);
+            let measures = BTreeMap::from([(measure, quarters(start))]);
+            let place = |anchor| break_anchor_time(anchor, region, &events, &measures);
+            assert_eq!(place(&by_event), Some(quarters(onset + 1)));
+            assert_eq!(place(&by_measure), Some(quarters(start)));
+            assert_eq!(place(&by_offset), Some(quarters(8)));
+        }
+        // An event the layout cannot place (a delete took it) places nothing.
+        assert_eq!(
+            break_anchor_time(&by_event, region, &BTreeMap::new(), &BTreeMap::new()),
+            None
+        );
+    }
     use crate::logical::to_logical;
     use crate::time_axis::TimeAxis;
     use epiphany_core::generators::valid_score_rich;

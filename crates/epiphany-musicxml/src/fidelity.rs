@@ -1522,6 +1522,7 @@ pub fn expression_counts(score: &Score) -> BTreeMap<String, usize> {
             MarkerKind::Rehearsal(_) => "marker rehearsal",
             MarkerKind::Segno => "marker segno",
             MarkerKind::Coda => "marker coda",
+            MarkerKind::ExpressionText(_) => "marker expression text",
         });
     }
     for _ in &score.cross_cutting.lyrics {

@@ -27,3 +27,8 @@ epiphany-render-svg.workspace = true
 epiphany-editor-core.workspace = true
 epiphany-bundle.workspace = true
 epiphany-determinism.workspace = true
+
+[dev-dependencies]
+# The format boundary's test reopens each document through both production
+# readers, the document layer and the text projection.
+epiphany-textproj.workspace = true

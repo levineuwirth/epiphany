@@ -105,10 +105,7 @@ fn recheck(files: &[String]) {
     for path in files {
         let text = std::fs::read_to_string(path).expect("readable");
         let (class, _) = header(&text);
-        // A deferred history still fails as its class.
-        let declared_split = text
-            .lines()
-            .any(|l| l == "# expect: split" || l == "# expect: deferred");
+        let declared_split = text.lines().any(|l| l == "# expect: split");
         let found = modes::findings(&modes::parse(&text).expect("parses"));
         // A failing history shows its class and nothing else.
         let now = if !found.is_empty() && found.iter().all(|f| f.class == class) {

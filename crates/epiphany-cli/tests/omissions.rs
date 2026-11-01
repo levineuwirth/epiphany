@@ -781,6 +781,90 @@ fn text_marks_undrawn_are_counted_by_class() {
     );
 }
 
+/// Italic words import as expression text, which the engraver draws as staff
+/// text until it is drawn italic and below (roadmap D79 Q9): drawn, it is no
+/// omission, and with its ink taken away it is counted by its own class, the
+/// upright words beside it staff text drawn and not counted.
+#[test]
+fn expression_text_is_drawn_as_staff_text_and_counted_undrawn() {
+    use epiphany_core::MarkerKind;
+
+    let direction = |content: &str| {
+        format!(
+            "<direction placement=\"above\"><direction-type>{content}</direction-type>\
+             </direction>"
+        )
+    };
+    let measure = [
+        direction("<words>dolce</words>"),
+        direction("<words font-style=\"italic\">espressivo</words>"),
+        "<note><pitch><step>C</step><octave>5</octave></pitch><duration>8</duration>\
+         <voice>1</voice><type>whole</type></note>"
+            .to_string(),
+    ]
+    .concat();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
+         <attributes><divisions>2</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time><clef><sign>G</sign><line>2</line></clef></attributes>{measure}</measure>\
+         </part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("expression_text_omission.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let score = &loaded.reduced.score;
+    let marker = |words: &str| {
+        score
+            .cross_cutting
+            .markers
+            .iter()
+            .find(|m| match &m.kind {
+                MarkerKind::Text(t) | MarkerKind::ExpressionText(t) => t.as_str() == words,
+                _ => false,
+            })
+            .expect("a marker")
+    };
+    assert!(matches!(marker("dolce").kind, MarkerKind::Text(_)));
+    assert!(matches!(
+        marker("espressivo").kind,
+        MarkerKind::ExpressionText(_)
+    ));
+    let mut engraved = engrave(score);
+    let drawn = |engraved: &Engraved, words: &str| {
+        engraved
+            .layout
+            .texts
+            .iter()
+            .filter(|t| t.text == words)
+            .count()
+    };
+    assert_eq!(drawn(&engraved, "dolce"), 1, "the staff text is drawn");
+    assert_eq!(
+        drawn(&engraved, "espressivo"),
+        1,
+        "the expression text is drawn as staff text"
+    );
+    let counted = |engraved: &Engraved| {
+        omissions(score, &engraved.layout, &engraved.diagnostics)
+            .kinds
+            .into_iter()
+            .filter(|(kind, _)| kind.ends_with(" text"))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(counted(&engraved), vec![], "both drawn");
+
+    // The expression text's ink taken away.
+    let region = TypedObjectId::Region(score.canvas.regions[0].id);
+    let expression = TypedObjectId::Marker(marker("espressivo").id);
+    for t in &mut engraved.layout.texts {
+        if t.provenance.source == expression {
+            t.provenance.source = region;
+        }
+    }
+    assert_eq!(counted(&engraved), vec![("expression text".to_owned(), 1)]);
+}
+
 /// A trill line the engraver draws is no omission, nor the trill at its
 /// note, which its sign draws; taken away, each is counted.
 #[test]
