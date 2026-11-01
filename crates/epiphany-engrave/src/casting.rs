@@ -1764,6 +1764,9 @@ pub(crate) fn cast_off(
         .iter()
         .map(|(band, staff)| (*staff, *band))
         .collect();
+    // Each hairpin leg whose start or end moves with a dynamic moved off a
+    // barline: by its stroke, the move of its start and of its end.
+    let mut hairpin_ends: BTreeMap<GlyphObjectId, (f32, f32)> = BTreeMap::new();
     for (f, mark) in input.family.iter().enumerate() {
         let Some(p) = mark.placement else {
             continue;
@@ -1886,10 +1889,49 @@ pub(crate) fn cast_off(
                     if follows {
                         family_dx.entry(g).or_insert(dx);
                     }
+                    // A hairpin of its row starting at its note starts as far
+                    // past it as before, and one ending there ends as far
+                    // before it, as MuseScore lays a hairpin out from the
+                    // dynamics it snaps to once they are moved.
+                    let hairpin = matches!(other.line, Some(FamilyLine::Hairpin(_)))
+                        && other
+                            .placement
+                            .is_some_and(|q| q.row.map(|r| r.id) == Some(row.id));
+                    if !hairpin {
+                        continue;
+                    }
+                    for id in &other.strokes {
+                        let Some(&(start, end)) = anchors.get(id) else {
+                            continue;
+                        };
+                        let e = hairpin_ends.entry(*id).or_insert((0.0, 0.0));
+                        if start == slot && dx > 0.0 {
+                            e.0 = e.0.max(dx);
+                        }
+                        if end == slot && dx < 0.0 {
+                            e.1 = e.1.min(dx);
+                        }
+                    }
                 }
             }
         }
     }
+    // A stroke's ends moved as its hairpin's are, its left end by the start's
+    // move and its right by the end's.
+    let hairpin_moved = |id: GlyphObjectId, from: Point, to: Point| -> (Point, Point) {
+        let Some(&(start, end)) = hairpin_ends.get(&id) else {
+            return (from, to);
+        };
+        let (l, r) = if from.x.0 <= to.x.0 {
+            (start, end)
+        } else {
+            (end, start)
+        };
+        (
+            Point::new(from.x.0 + l, from.y.0),
+            Point::new(to.x.0 + r, to.y.0),
+        )
+    };
     let member_dx = |f: Option<&usize>| f.and_then(|f| family_dx.get(f)).copied().unwrap_or(0.0);
     let mut family_dy: BTreeMap<(usize, usize), f32> = BTreeMap::new();
     // The placed family's pieces and the ink each was placed against, kept
@@ -1985,6 +2027,7 @@ pub(crate) fn cast_off(
                         Point::new(to_x, p.to.y.0),
                         half,
                     );
+                    let (from, to) = hairpin_moved(stroke.id(), from, to);
                     vec![(*s, from, to)]
                 }
                 StrokeFate::Rigid(None) => Vec::new(),
@@ -2025,6 +2068,14 @@ pub(crate) fn cast_off(
                         .collect();
                     if let Some((s, a, b)) = segs.last_mut() {
                         (*a, *b) = clamp_before(stroke.id(), *s, &hplace[*s].0, *a, *b, half);
+                    }
+                    if let Some(&(start, end)) = hairpin_ends.get(&stroke.id()) {
+                        if let Some((_, a, _)) = segs.first_mut() {
+                            *a = Point::new(a.x.0 + start, a.y.0);
+                        }
+                        if let Some((_, _, b)) = segs.last_mut() {
+                            *b = Point::new(b.x.0 + end, b.y.0);
+                        }
                     }
                     let xs: Vec<(f32, f32)> = segs.iter().map(|(_, a, b)| (a.x.0, b.x.0)).collect();
                     if let Some(ys) = glissando_slope(stroke, spaced, &xs) {
@@ -2627,6 +2678,8 @@ pub(crate) fn cast_off(
                             anchors.get(&source.id()),
                         );
                         end_staff_line(&mut stroke, staff_end[*s].map(|x| p.x(x)));
+                        (stroke.from, stroke.to) =
+                            hairpin_moved(source.id(), stroke.from, stroke.to);
                         if hairpin_legs.contains_key(&source.id()) {
                             keep_hairpin_length(&mut stroke);
                         }
@@ -2741,10 +2794,20 @@ pub(crate) fn cast_off(
                     };
                     // A staff line reaches back under a later system's lead,
                     // and a moved ending's line starts where its hook stands.
-                    let (mut from_x, to_x) =
+                    let (mut from_x, mut to_x) =
                         piece_x(source, k, segments.len(), *s, &p, from.x.0, to.x.0);
                     if let (0, Some((_, shift))) = (k, ending_shift(source.id())) {
                         from_x = spaced.from.x.0 + shift;
+                    }
+                    // A hairpin's first piece starts, and its last ends, as
+                    // its dynamics there are moved.
+                    if let Some(&(start, end)) = hairpin_ends.get(&source.id()) {
+                        if k == 0 {
+                            from_x += start;
+                        }
+                        if k + 1 == segments.len() {
+                            to_x += end;
+                        }
                     }
                     if lead_w[*s] > 0.0
                         && matches!(spaced.provenance.source, TypedObjectId::Staff(_))

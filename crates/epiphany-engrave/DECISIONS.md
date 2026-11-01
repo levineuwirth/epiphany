@@ -2956,3 +2956,21 @@ engraver's own placing reproduces it:
   (`a_glissando_continued_into_a_system_stands_between_its_lead_and_its_chord`).
   X4d.4's sweep of every page found it: every glissando end standing
   nearer a head than a quarter space was such a piece.
+
+## ENGRAVER_VERSION 106 → 107: a hairpin moved with a dynamic moved off a barline (X4d.3, 2026-11-01)
+
+- A hairpin of a dynamic's row that starts at the dynamic's note starts as
+  far past it once the dynamic moves right off a barline, and one ending at
+  its note ends as far before it once it moves left, whole or cut by a
+  system break, as MuseScore lays a hairpin out from the dynamics it snaps
+  to after they move (`DynamicsLayout::manageBarlineCollisions` runs in the
+  dynamic's layout, before the hairpins). The hairpin had stayed where the
+  unmoved dynamic left it, its opening on the moved dynamic's ink. A moved
+  hairpin is placed off its staff over its moved span; that span lies within
+  the unmoved one, the part left out under its own dynamic, placed first in
+  the same row and aligned with it, so the placement's half of the rule
+  survives its mutation without a reachable page to tell it
+  (`a_hairpin_moves_its_ends_with_dynamics_moved_off_barlines`,
+  `a_hairpin_over_a_system_break_moves_its_ends_with_its_dynamics`). X4d.4's
+  sweep of every page found the hairpins meeting their dynamics' ink once
+  dynamic glyphs moved (version 105).

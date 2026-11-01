@@ -570,3 +570,225 @@ fn a_dynamic_moved_off_a_barline_stands_clear_of_the_ink_it_moves_to() {
         "under the ledger lines: {soft:?} {lowest}"
     );
 }
+
+/// A hairpin meeting a dynamic moved off a barline moves its end with it: on
+/// a grand staff, a crescendo from a wide pppppp at a measure's first note,
+/// moved right of the barline before it, starts half a space after it, and a
+/// diminuendo to dynamic words at a measure's last note, moved left of the
+/// barline after them, ends half a space before them, as each does at a
+/// dynamic left in place.
+#[test]
+fn a_hairpin_moves_its_ends_with_dynamics_moved_off_barlines() {
+    let direction = |content: &str| {
+        format!(
+            "<direction placement=\"below\"><direction-type>{content}</direction-type>\
+             <staff>1</staff></direction>"
+        )
+    };
+    let measure = |open: String, close: String| {
+        format!(
+            "{open}{}{}{}{close}{}{}{}",
+            note("C5", 2, "quarter", 1, ""),
+            note("D5", 2, "quarter", 1, ""),
+            note("E5", 2, "quarter", 1, ""),
+            note("F5", 2, "quarter", 1, ""),
+            backup(8),
+            note("C3", 8, "whole", 2, ""),
+        )
+    };
+    let stop = direction("<wedge type=\"stop\"/>");
+    let loaded = part(
+        "hairpin_moved_dynamics.musicxml",
+        2,
+        &[
+            measure(String::new(), String::new()),
+            measure(
+                format!(
+                    "{}{}",
+                    direction("<dynamics><pppppp/></dynamics>"),
+                    direction("<wedge type=\"crescendo\"/>")
+                ),
+                stop.clone(),
+            ),
+            measure(
+                direction("<wedge type=\"diminuendo\"/>"),
+                format!(
+                    "{stop}{}",
+                    direction(
+                        "<dynamics><other-dynamics>pianissimo e dolcissimo</other-dynamics>\
+                         </dynamics>"
+                    )
+                ),
+            ),
+            measure(String::new(), String::new()),
+        ],
+    );
+    let layout = engrave_loaded(&loaded).layout;
+    let soft = only(&layout, "dynamicPPPPPP");
+    let words = text_box(run(&layout, "pianissimo e dolcissimo"));
+    let before = barlines(&layout, soft[3])
+        .into_iter()
+        .filter(|b| b.1 < (soft[0] + soft[2]) * 0.5)
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .expect("the barline before the pppppp");
+    let after = barlines(&layout, words[3])
+        .into_iter()
+        .filter(|b| b.0 > (words[0] + words[2]) * 0.5)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .expect("the barline after the words");
+    near(
+        soft[0],
+        before.1 + 0.25,
+        "the pppppp moved right of its barline",
+    );
+    near(words[2], after.0 - 0.25, "the words moved left of theirs");
+    // Each hairpin's legs, left and right across.
+    let legs = |crescendo: bool| -> Vec<[f32; 2]> {
+        let hairpin = loaded
+            .reduced
+            .score
+            .cross_cutting
+            .spanners
+            .iter()
+            .find(|s| match &s.kind {
+                epiphany_core::SpannerKind::Hairpin(d) => {
+                    (*d == epiphany_core::HairpinDirection::Crescendo) == crescendo
+                }
+                _ => false,
+            })
+            .expect("the hairpin");
+        layout
+            .strokes
+            .iter()
+            .filter(|s| s.provenance.source == TypedObjectId::Spanner(hairpin.id) && s.from != s.to)
+            .map(|s| [s.from.x.0.min(s.to.x.0), s.from.x.0.max(s.to.x.0)])
+            .collect()
+    };
+    let crescendo = legs(true);
+    assert_eq!(crescendo.len(), 2, "two legs");
+    for leg in crescendo {
+        near(
+            leg[0],
+            soft[2] + 0.5,
+            "the crescendo half a space after the pppppp",
+        );
+    }
+    let diminuendo = legs(false);
+    assert_eq!(diminuendo.len(), 2, "two legs");
+    for leg in diminuendo {
+        near(
+            leg[1],
+            words[0] - 0.5,
+            "the diminuendo half a space before the words",
+        );
+    }
+}
+
+/// A hairpin a system break cuts moves its first piece's start and its last
+/// piece's end with the dynamics at them moved off barlines: a crescendo from
+/// a wide pppppp at a measure's first note, moved right of its barline, over
+/// a break to dynamic words at the next measure's last note, moved left of
+/// theirs.
+#[test]
+fn a_hairpin_over_a_system_break_moves_its_ends_with_its_dynamics() {
+    let direction = |content: &str| {
+        format!(
+            "<direction placement=\"below\"><direction-type>{content}</direction-type>\
+             <staff>1</staff></direction>"
+        )
+    };
+    let measure = |open: String, close: String, break_before: bool| {
+        format!(
+            "{}{open}{}{}{}{close}{}{}{}",
+            if break_before {
+                "<print new-system=\"yes\"/>"
+            } else {
+                ""
+            },
+            note("C5", 2, "quarter", 1, ""),
+            note("D5", 2, "quarter", 1, ""),
+            note("E5", 2, "quarter", 1, ""),
+            note("F5", 2, "quarter", 1, ""),
+            backup(8),
+            note("C3", 8, "whole", 2, ""),
+        )
+    };
+    let loaded = part(
+        "hairpin_split_moved_dynamics.musicxml",
+        2,
+        &[
+            measure(String::new(), String::new(), false),
+            measure(
+                format!(
+                    "{}{}",
+                    direction("<dynamics><pppppp/></dynamics>"),
+                    direction("<wedge type=\"crescendo\"/>")
+                ),
+                String::new(),
+                false,
+            ),
+            measure(
+                String::new(),
+                format!(
+                    "{}{}",
+                    direction("<wedge type=\"stop\"/>"),
+                    direction(
+                        "<dynamics><other-dynamics>pianissimo e dolcissimo</other-dynamics>\
+                         </dynamics>"
+                    )
+                ),
+                true,
+            ),
+            measure(String::new(), String::new(), false),
+        ],
+    );
+    let layout = engrave_loaded(&loaded).layout;
+    let soft = only(&layout, "dynamicPPPPPP");
+    let words = text_box(run(&layout, "pianissimo e dolcissimo"));
+    let hairpin = loaded
+        .reduced
+        .score
+        .cross_cutting
+        .spanners
+        .iter()
+        .find(|s| matches!(s.kind, epiphany_core::SpannerKind::Hairpin(_)))
+        .expect("a hairpin");
+    let pieces: Vec<[f32; 3]> = layout
+        .strokes
+        .iter()
+        .filter(|s| s.provenance.source == TypedObjectId::Spanner(hairpin.id) && s.from != s.to)
+        .map(|s| {
+            [
+                s.from.x.0.min(s.to.x.0),
+                s.from.x.0.max(s.to.x.0),
+                s.from.y.0,
+            ]
+        })
+        .collect();
+    assert_eq!(pieces.len(), 4, "two pieces of two legs: {pieces:?}");
+    // The first system's pieces stand at the pppppp's height, the second's
+    // at the words'.
+    let first: Vec<&[f32; 3]> = pieces
+        .iter()
+        .filter(|p| (p[2] - soft[1]).abs() < 4.0)
+        .collect();
+    let last: Vec<&[f32; 3]> = pieces
+        .iter()
+        .filter(|p| (p[2] - words[1]).abs() < 4.0)
+        .collect();
+    assert_eq!((first.len(), last.len()), (2, 2), "{pieces:?}");
+    for leg in first {
+        near(
+            leg[0],
+            soft[2] + 0.5,
+            "the first piece half a space after the pppppp",
+        );
+    }
+    for leg in last {
+        near(
+            leg[1],
+            words[0] - 0.5,
+            "the last piece half a space before the words",
+        );
+    }
+}
