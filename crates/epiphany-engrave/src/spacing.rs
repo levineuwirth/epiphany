@@ -34,7 +34,7 @@ use std::collections::BTreeMap;
 
 use epiphany_core::TypedObjectId;
 use epiphany_layout_ir::{
-    is_barline_glyph, is_rigid_width_stroke, ConstrainedLayoutIR, Room, SpringSlotId,
+    is_barline_glyph, is_rigid_width_stroke, ConstrainedLayoutIR, NoteMarkPart, Room, SpringSlotId,
     VerticalBandId, VerticalBandKind,
 };
 
@@ -61,7 +61,11 @@ const HYPHENED_GAP: f32 = 0.4 + 2.0 * 0.05;
 /// The least a barline's ink stands clear of the ink after it, an
 /// accidental's mostly: MuseScore's default distance from a barline to an
 /// accidental (0.65 spaces). The note itself stands further, by the
-/// barline's spring.
+/// barline's spring. An arpeggio keeps it at any height, over or under the
+/// staff as on it, as MuseScore never kerns ink past a barline and pads an
+/// arpeggio after one by 0.65 (`HorizontalSpacing::doComputeKerningType`,
+/// `PaddingTable`), and as Gould sets the sign after the barline (*Behind
+/// Bars*, p. 131; X4d.5).
 const BARLINE_CLEARANCE: f32 = 0.65;
 
 /// The height of one band of the skyline, in staff spaces.
@@ -297,6 +301,9 @@ fn staff_gap(earlier: Ink, later: Ink) -> Option<f32> {
 struct FloorSlot {
     preferred: f32,
     fixed: bool,
+    /// It holds barlines alone: an arpeggio after it keeps its clearance at
+    /// any height.
+    barline: bool,
     clearance: f32,
     bands: Vec<(i32, f32, f32)>,
     floor: Vec<(i32, Ink, f32, f32)>,
@@ -308,6 +315,8 @@ struct FloorSlot {
     /// Each syllable's staff's verse's index, its edges, and the gap the
     /// next of its verse keeps after it.
     verses: Vec<(usize, f32, f32, f32)>,
+    /// An arpeggio's left edge in it.
+    arpeggio: Option<f32>,
 }
 
 /// Every glyph-bearing slot's ink by kind, in source order, to space a run
@@ -353,6 +362,8 @@ impl Skyline {
         let mut band_edge = vec![f32::NEG_INFINITY; bands * INKS];
         let mut staff_edge = vec![f32::NEG_INFINITY; self.staves * INKS];
         let mut verse_edge = vec![f32::NEG_INFINITY; self.verses];
+        // The last barline's right edge with its clearance, at any height.
+        let mut barline_edge = f32::NEG_INFINITY;
         let mut placed: Vec<(usize, f32)> = Vec::with_capacity(ids.len());
         let mut out = Vec::with_capacity(ids.len());
         let mut previous: Option<(f32, f32)> = None;
@@ -389,6 +400,9 @@ impl Skyline {
             for &(verse, left, _, _) in &slot.verses {
                 target = target.max(verse_edge[verse] - left);
             }
+            if let Some(left) = slot.arpeggio {
+                target = target.max(barline_edge - left);
+            }
             for &(verse, _, right, gap) in &slot.verses {
                 verse_edge[verse] = target + right + gap;
             }
@@ -396,6 +410,11 @@ impl Skyline {
                 for &(band, _, right) in &slot.bands {
                     let edge = &mut fixed_edge[at(band)];
                     *edge = edge.max(target + right + slot.clearance);
+                }
+                if slot.barline {
+                    if let Some(right) = slot.bands.iter().map(|b| b.2).reduce(f32::max) {
+                        barline_edge = barline_edge.max(target + right + slot.clearance);
+                    }
                 }
             } else {
                 for &(band, kind, _, right) in &slot.floor {
@@ -452,6 +471,9 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
         /// Each syllable's ink across, by its staff and verse, with the gap
         /// the next of its verse keeps after it.
         verses: BTreeMap<(VerticalBandId, u16), (f32, f32, f32)>,
+        /// The leftmost edge of an arpeggio's run in it, which keeps a
+        /// barline's clearance at any height.
+        arpeggio: Option<f32>,
     }
 
     let preferred_of: BTreeMap<SpringSlotId, (f32, bool)> = input
@@ -536,6 +558,7 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
             floor: BTreeMap::new(),
             staff: BTreeMap::new(),
             verses: BTreeMap::new(),
+            arpeggio: None,
         });
         if roomless.contains(&glyph.id()) {
             continue;
@@ -672,6 +695,16 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
         if room != Room::Ink {
             continue;
         }
+        let is_arpeggio = match text.text.provenance.source {
+            TypedObjectId::Event(event) => {
+                text.text.provenance.stable_id == NoteMarkPart::Arpeggio.id(event)
+            }
+            _ => false,
+        };
+        if is_arpeggio {
+            let left = x + b.left.0;
+            extent.arpeggio = Some(extent.arpeggio.map_or(left, |l| l.min(left)));
+        }
         widen(
             extent,
             Ink::Accidental,
@@ -793,6 +826,9 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
     let mut voice_edge: BTreeMap<VerticalBandId, f32> = BTreeMap::new();
     // Each staff's verse's last syllable's right edge, with its gap.
     let mut verse_edge: BTreeMap<(VerticalBandId, u16), f32> = BTreeMap::new();
+    // The last barline's right edge with its clearance, at any height: an
+    // arpeggio keeps clear of it.
+    let mut barline_edge = f32::NEG_INFINITY;
     // The previous slot's target and spring.
     let mut previous: Option<(f32, f32)> = None;
     for (id, extent) in &slots {
@@ -819,6 +855,9 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
                 target = target.max(at + need);
             }
         }
+        if let Some(left) = extent.arpeggio {
+            target = target.max(barline_edge + (extent.source - left));
+        }
         for (verse, (left, _, _)) in &extent.verses {
             if let Some(&edge) = verse_edge.get(verse) {
                 target = target.max(edge + (extent.source - left));
@@ -828,6 +867,11 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
             verse_edge.insert(*verse, target + (right - extent.source) + gap);
         }
         let clearance = clearance_of(extent);
+        if extent.fixed && extent.barline {
+            if let Some(right) = extent.bands.values().map(|(_, r)| *r).reduce(f32::max) {
+                barline_edge = barline_edge.max(target + (right - extent.source) + clearance);
+            }
+        }
         for (band, (_, right)) in &extent.bands {
             let edge = target + (right - extent.source) + clearance;
             frontier
@@ -880,6 +924,7 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
                 FloorSlot {
                     preferred: extent.preferred,
                     fixed: extent.fixed,
+                    barline: extent.barline,
                     clearance: clearance_of(extent),
                     bands: extent
                         .bands
@@ -908,6 +953,7 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
                         .iter()
                         .map(|(verse, (l, r, gap))| (verse_index[verse], l - s, r - s, *gap))
                         .collect(),
+                    arpeggio: extent.arpeggio.map(|l| l - s),
                 }
             })
             .collect(),

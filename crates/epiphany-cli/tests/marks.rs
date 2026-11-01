@@ -2154,6 +2154,55 @@ fn an_arpeggio_stands_its_accidental_distance_off_an_accidental() {
     );
 }
 
+/// An arpeggio stands right of its measure's barline at any height, its
+/// barline's clearance (0.65) clear of it, as MuseScore never kerns ink past
+/// a barline and pads an arpeggio after one so, and as Gould sets the sign
+/// after the barline (*Behind Bars*, p. 131): on a chord over the staff,
+/// whose flat and arpeggio had tucked left of the barline where neither
+/// meets its height, as on a chord in the staff.
+#[test]
+fn an_arpeggio_stands_right_of_its_measures_barline() {
+    let rolled = |pitches: [&str; 3]| {
+        [
+            note(pitches[0], 4, "half", 1, 1, "<arpeggiate/>"),
+            chord(pitches[1], 4, "half", 1, 1, "<arpeggiate/>"),
+            chord(pitches[2], 4, "half", 1, 1, "<arpeggiate/>"),
+            note("rest", 4, "half", 1, 1, ""),
+        ]
+        .concat()
+    };
+    let measures = [
+        [
+            note("C5", 4, "half", 1, 1, ""),
+            note("rest", 4, "half", 1, 1, ""),
+        ]
+        .concat(),
+        rolled(["A5", "C6", "Eb6"]),
+        rolled(["A4", "C5", "Eb5"]),
+    ];
+    let loaded = part("arpeggio_barline.musicxml", 1, &measures);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let barlines = named(&layout, "barlineSingle");
+    for (event, what) in [(e[2], "over the staff"), (e[4], "in the staff")] {
+        let run = layout
+            .texts
+            .iter()
+            .find(|t| t.provenance.source == TypedObjectId::Event(event))
+            .map(text_box)
+            .expect("an arpeggio");
+        let barline = barlines
+            .iter()
+            .filter(|b| b[0] < run[2])
+            .max_by(|a, b| a[0].total_cmp(&b[0]))
+            .expect("the barline before");
+        assert!(
+            run[0] >= barline[2] + 0.65 - 0.01,
+            "{what}: {run:?} after {barline:?}"
+        );
+    }
+}
+
 /// A one-note tremolo's strokes stand on its stem between head and tip.
 #[test]
 fn tremolo_strokes_stand_on_their_stems() {

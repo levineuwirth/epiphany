@@ -2881,3 +2881,19 @@ engraver's own placing reproduces it:
   rule over both engines (D102). `a_one_note_tremolo_lengthens_its_stem`
   is rewritten to it: three strokes take a quarter's stem to 4.25, four to
   5.0, a beamed eighth's beam 4.75 and a stem's thickness out.
+
+## ENGRAVER_VERSION 102 → 103: an arpeggio right of its barline at any height (X4d.5, D102, 2026-11-01)
+
+- An arpeggio keeps a barline's clearance (0.65) after the barline before
+  it at any height, over or under the staff as on it, in the spacing pass
+  and at the compression floor alike. A barline's clearance had held only
+  where its own ink's height met the later ink's, so an arpeggio on a chord
+  over the staff, and the flat after it, tucked left of the barline. Gould
+  sets the arpeggio sign after the barline (*Behind Bars*, p. 131);
+  MuseScore never kerns ink past a barline and pads an arpeggio after one
+  by 0.65 (`HorizontalSpacing::doComputeKerningType`, `PaddingTable`);
+  LilyPond 2.26.0 sets the same chord's arpeggio right of the barline (a
+  hand-written probe). Other ink over or under the staff, which MuseScore
+  keeps right of a barline too, keeps the band rule here
+  (`an_arpeggio_stands_right_of_its_measures_barline`,
+  `a_compressed_systems_arpeggios_stand_right_of_their_barlines`).

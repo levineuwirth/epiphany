@@ -7160,6 +7160,80 @@ fn a_compressed_systems_ties_are_decided_where_it_sets_them() {
     );
 }
 
+/// A compressed system's arpeggios stand right of their barlines at any
+/// height: chords over the staff, each rolled, in systems the file breaks,
+/// keep their arpeggios the barline's clearance (0.65) after the barline
+/// before them on every page down to the narrowest whose line the systems'
+/// floor fits, where the floor had let them tuck past it.
+#[test]
+fn a_compressed_systems_arpeggios_stand_right_of_their_barlines() {
+    let note = |step: &str, alter: i8, octave: u8, chord: bool| {
+        format!(
+            "<note>{}<pitch><step>{step}</step>{}<octave>{octave}</octave></pitch>\
+             <duration>8</duration><voice>1</voice><type>half</type>\
+             <notations><arpeggiate/></notations></note>",
+            if chord { "<chord/>" } else { "" },
+            if alter == 0 {
+                String::new()
+            } else {
+                format!("<alter>{alter}</alter>")
+            }
+        )
+    };
+    let measure = [
+        note("A", 0, 5, false),
+        note("C", 0, 6, true),
+        note("E", -1, 6, true),
+        "<note><rest/><duration>8</duration><voice>1</voice><type>half</type></note>".to_string(),
+    ]
+    .concat();
+    let measures = vec![measure; 12];
+    let attributes = "<time><beats>4</beats><beat-type>4</beat-type></time>\
+                      <clef><sign>G</sign><line>2</line></clef>";
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("compressed_arpeggios.musicxml");
+    let (mut held, mut checked) = (0, 0);
+    for tenth in (300..=1500).rev().step_by(5) {
+        let width = tenth as f32 / 10.0;
+        std::fs::write(&path, broken_part(width, attributes, &measures, &[7])).expect("written");
+        let loaded = load(&path).expect("loads");
+        let report = solve_loaded(&loaded);
+        if !added_systems(&report).is_empty() {
+            break;
+        }
+        let layout = &report.layout;
+        let barlines: Vec<[f32; 4]> = layout
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str().starts_with("barline"))
+            .map(glyph_box)
+            .collect();
+        for run in layout
+            .texts
+            .iter()
+            .filter(|t| matches!(t.provenance.source, epiphany_core::TypedObjectId::Event(_)))
+        {
+            let (x, y, b) = (run.origin.x.0, run.origin.y.0, &run.bounds);
+            let r = [x + b.left.0, y + b.bottom.0, x + b.right.0, y + b.top.0];
+            // The barline before it on its staff, but at a system's start.
+            let Some(barline) = barlines
+                .iter()
+                .filter(|bar| bar[0] < r[2] && (bar[3] - r[1]).abs() < 3.0)
+                .max_by(|a, b| a[0].total_cmp(&b[0]))
+            else {
+                continue;
+            };
+            assert!(
+                r[0] >= barline[2] + 0.65 - 0.01,
+                "at width {width} an arpeggio {r:?} passes its barline {barline:?}"
+            );
+            checked += 1;
+        }
+        held += 1;
+    }
+    assert!(held > 10, "pages down to the floor held the file's systems");
+    assert!(checked > 100, "{checked} arpeggios after a barline");
+}
+
 /// A compressed system's slurs pass the ink where it sets them: in systems
 /// the file breaks, each of three slurs over flats (one rising to a flat, a
 /// two-note one falling to a flat, one raised over an interior flat) and a
