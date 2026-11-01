@@ -877,6 +877,73 @@ fn a_lone_tie_takes_its_side_as_gould_sets_it() {
     assert!(!above(29), "a chord's one tie: opposite its stem, below");
 }
 
+/// A lone note tied, stems opposite, into a chord keeps the side the
+/// engraver's `tie_above` gives it, opposite its own stem, where Gould's
+/// rule for ties between single notes turned opposite ways (away from the
+/// middle line, *Behind Bars*, p. 64) does not reach: a G4 a beam turns
+/// down, tied into a chord of C4 and G4 turned up, above, where that rule
+/// would set it below (`lone_tie_side`'s `end_single`, D102).
+#[test]
+fn a_lone_note_tied_into_a_chord_turned_the_other_way_keeps_its_stems_side() {
+    let tie = |n: String, kind: &str| {
+        n.replacen(
+            "</duration>",
+            &format!("</duration><tie type=\"{kind}\"/>"),
+            1,
+        )
+    };
+    let beam = |n: String, kind: &str| {
+        n.replacen(
+            "</type>",
+            &format!("</type><beam number=\"1\">{kind}</beam>"),
+            1,
+        )
+    };
+    let measure = [
+        beam(note("E5", 1, "eighth", 1, 1, ""), "begin"),
+        beam(
+            tie(
+                note("G4", 1, "eighth", 1, 1, "<tied type=\"start\"/>"),
+                "start",
+            ),
+            "end",
+        ),
+        tie(
+            note("G4", 2, "quarter", 1, 1, "<tied type=\"stop\"/>"),
+            "stop",
+        ),
+        chord("C4", 2, "quarter", 1, 1, ""),
+        note("rest", 4, "half", 1, 1, ""),
+    ]
+    .concat();
+    let loaded = part("lone_tie_into_chord.musicxml", 1, &[measure]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    assert!(
+        stem(&layout, e[1]).1 < head(&loaded, &layout, e[1])[1] - 1.0,
+        "the beamed G4 turned down"
+    );
+    assert!(
+        stem(&layout, e[2]).2 > head(&loaded, &layout, e[1])[3] + 1.0,
+        "the chord turned up, past its G4"
+    );
+    let tie = loaded
+        .reduced
+        .score
+        .cross_cutting
+        .ties
+        .iter()
+        .find(|t| t.start_event == e[1])
+        .expect("a tie from the G4");
+    let curve = layout
+        .curves
+        .iter()
+        .find(|c| c.provenance.source == TypedObjectId::Tie(tie.id))
+        .expect("its curve");
+    let cp = curve.control_points();
+    assert!(cp[1].y.0 > cp[0].y.0, "above, opposite its own stem");
+}
+
 /// An ornament's accidentals stand 0.35 off it, above and below, at 0.6 of
 /// their size (`TLayout::layoutOrnament`), over a note and under a lower
 /// voice's; and a one-note tremolo on a note that draws no stem stands as
