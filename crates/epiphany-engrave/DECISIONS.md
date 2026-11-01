@@ -2807,3 +2807,18 @@ engraver's own placing reproduces it:
   names it; the report counts a grace drawn small as drawn, one with a
   full-size glyph as drawn as a plain note
   (`a_grace_note_is_drawn_small_before_its_principal`, the `graces` suite).
+
+## ENGRAVER_VERSION 98 → 99: the dynamics placed before the hairpins (X4d.3, 2026-11-01)
+
+- The family's dynamics, expression text and hairpins are one stage placed
+  in MuseScore's order (`SystemLayout::layoutDynamicExpressionAndHairpins`):
+  every dynamic of a staff in a system first, then the expression text, then
+  the hairpins, verbal ones included, each joining the ink the next is
+  placed against; once all are placed, each chain of a dynamic and the
+  hairpins meeting it is aligned at its outermost centre
+  (`AlignmentLayout::alignItemsWithTheirSnappingChain`). They had been placed
+  as one order left to right, so a hairpin starting left of a dynamic of
+  another chain it ran over pushed the dynamic out
+  (`dynamics_are_placed_before_the_hairpins`). Gould asks only that a
+  sequence of dynamics and hairpins keep one horizontal plane where it can
+  (*Behind Bars*, p. 105), which the chains' alignment keeps.

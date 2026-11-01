@@ -476,7 +476,13 @@ pub struct Row {
 pub enum PlaceOrder {
     Trill,
     Fermata,
+    /// The dynamics, then the expression text, then the hairpins, verbal ones
+    /// included, each order placed whole before the next and every chain of
+    /// them aligned once all three are (`layoutDynamicExpressionAndHairpins`;
+    /// X4d.3).
     Dynamic,
+    Expression,
+    Hairpin,
     /// A text line or bracket (MuseScore's other spanners, after the
     /// dynamics and hairpins).
     TextLine,
@@ -491,6 +497,27 @@ pub enum PlaceOrder {
     Rehearsal,
     /// A segno or coda (`markersAndJumps`).
     Marker,
+}
+
+impl PlaceOrder {
+    /// The stage it is placed in: the dynamics, expression text and hairpins
+    /// are one stage, whose rows a solver aligns once the stage is placed;
+    /// every other order is its own.
+    pub fn stage(self) -> u8 {
+        match self {
+            PlaceOrder::Trill => 0,
+            PlaceOrder::Fermata => 1,
+            PlaceOrder::Dynamic | PlaceOrder::Expression | PlaceOrder::Hairpin => 2,
+            PlaceOrder::TextLine => 3,
+            PlaceOrder::Ottava => 4,
+            PlaceOrder::Pedal => 5,
+            PlaceOrder::Lyric => 6,
+            PlaceOrder::StaffText => 7,
+            PlaceOrder::Tempo => 8,
+            PlaceOrder::Rehearsal => 9,
+            PlaceOrder::Marker => 10,
+        }
+    }
 }
 
 /// A beam joining notes on two staves of a region (see
@@ -5378,7 +5405,7 @@ pub fn try_to_constrained(
                                         room: Room::None,
                                         placement: Some(Autoplace {
                                             above,
-                                            order: PlaceOrder::Dynamic,
+                                            order: PlaceOrder::Hairpin,
                                             min_distance: HAIRPIN_MIN_DISTANCE,
                                             row: Some(Row {
                                                 id: chain_of(&mut chains, provenance.stable_id.0),
@@ -5822,7 +5849,7 @@ pub fn try_to_constrained(
                                                     };
                                                     placement = Autoplace {
                                                         above,
-                                                        order: PlaceOrder::Dynamic,
+                                                        order: PlaceOrder::Hairpin,
                                                         min_distance: HAIRPIN_MIN_DISTANCE,
                                                         row: Some(Row {
                                                             id: chain_of(
