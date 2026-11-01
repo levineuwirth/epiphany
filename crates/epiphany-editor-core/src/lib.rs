@@ -2867,8 +2867,8 @@ impl EditorSession {
         }
         // A copied note takes its grace notes with it, as an editor deletes
         // them with it (D58's Q5): each grace of the voice standing at a
-        // copied note's onset, a rest taking none. Until grace notes are drawn
-        // they cannot be selected, so this is the one way a copy carries them.
+        // copied note's onset, a rest taking none. Selecting a note does not
+        // select its graces, so this is how a copy of it carries them.
         let onsets: BTreeSet<(VoiceId, MusicalPosition)> = located
             .iter()
             .filter(|(event, _, _)| self.is_note(*event))
@@ -9953,8 +9953,7 @@ mod tests {
 
     /// Inserts a grace note (an eighth acciaccatura, A4) into `score` before
     /// `principal`, at its onset and after any grace already there, and
-    /// returns its id: a grace as the import makes one, which the editor
-    /// cannot select or draw until grace notes are drawn.
+    /// returns its id: a grace as the import makes one.
     fn add_grace(score: &mut Score, principal: EventId) -> EventId {
         use epiphany_core::{Grace, GraceKind, NoteValue};
         let (voice, at) = {

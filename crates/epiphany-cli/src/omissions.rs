@@ -7,9 +7,9 @@
 //! for an object it does not engrave, and does not count as ink. The checks:
 //!
 //! - an event, pitch, tie or slur with no primitive at all;
-//! - a grace note, which the layout leaves out until grace notes are drawn
-//!   (X4c), named as left undrawn, with a slur or tie on one; and named as
-//!   drawn as a plain note should any ink trace to it;
+//! - a grace note, drawn small before its principal (X4d.2): named as left
+//!   undrawn where no ink traces to it, and as drawn as a plain note where a
+//!   full-size glyph does; a slur or tie on one, which the layout leaves out;
 //! - a tuplet whose number is shown with nothing drawn for it, or with its
 //!   bracket and no number;
 //! - a notehead or rest drawn at a value other than its duration's, a flag or
@@ -197,8 +197,11 @@ pub fn omissions(
     for c in &layout.curves {
         inked.insert(c.provenance.source);
     }
+    // The sources a run draws: a grace note's small head among them (X4d.2).
+    let mut run_sources: BTreeSet<TypedObjectId> = BTreeSet::new();
     for t in &layout.texts {
         inked.insert(t.provenance.source);
+        run_sources.insert(t.provenance.source);
     }
     // The notes a beam joins, named among its dependencies.
     let beamed: BTreeSet<TypedObjectId> = layout
@@ -209,7 +212,7 @@ pub fn omissions(
         .collect();
     let names = |source: TypedObjectId| glyphs.get(&source).cloned().unwrap_or_default();
 
-    // The grace notes, which the layout leaves out until they are drawn.
+    // The grace notes, drawn small before their principals (X4d.2).
     let graces: BTreeSet<epiphany_core::EventId> = score
         .events
         .iter()
@@ -372,12 +375,15 @@ pub fn omissions(
                     Event::Rest(r) if !r.visible => continue,
                     _ => {}
                 }
+                // A grace note is drawn small, its head a run: drawn as a
+                // full-size glyph it is a plain note, and with no ink it is
+                // left undrawn.
                 if graces.contains(id) {
-                    out.add(if sources.iter().any(|s| inked.contains(s)) {
-                        "grace note drawn as a plain note"
-                    } else {
-                        "grace note left undrawn"
-                    });
+                    if sources.iter().any(|s| glyphs.contains_key(s)) {
+                        out.add("grace note drawn as a plain note");
+                    } else if !sources.iter().any(|s| run_sources.contains(s)) {
+                        out.add("grace note left undrawn");
+                    }
                     continue;
                 }
                 if !sources.iter().any(|s| inked.contains(s)) {

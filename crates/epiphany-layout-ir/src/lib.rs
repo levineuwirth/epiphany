@@ -70,6 +70,7 @@ pub mod constrained;
 pub mod engrave_theory;
 pub mod engraving;
 pub mod glyph;
+mod graces;
 pub mod hittest;
 mod lines;
 pub use lines::tempo_term;

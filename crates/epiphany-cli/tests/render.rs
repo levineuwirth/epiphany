@@ -7723,43 +7723,13 @@ fn a_held_systems_floor_keeps_musescores_least_distances() {
     }
 }
 
-/// What a layout draws, as a sorted list: each glyph by name and place, each
-/// stroke with extent and each curve by its points, rounded, with provenance
-/// left out, so two imports whose ids differ compare by their ink.
-fn ink(layout: &epiphany_layout_ir::ResolvedLayoutIR) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for g in &layout.glyphs {
-        out.push(format!(
-            "glyph {} {:.3} {:.3}",
-            g.glyph.as_str(),
-            g.position.x.0,
-            g.position.y.0
-        ));
-    }
-    for s in layout.strokes.iter().filter(|s| s.from != s.to) {
-        out.push(format!(
-            "stroke {:.3} {:.3} {:.3} {:.3} {:.3}",
-            s.from.x.0, s.from.y.0, s.to.x.0, s.to.y.0, s.thickness.0
-        ));
-    }
-    for c in &layout.curves {
-        out.push(format!(
-            "curve {:.3} {:.3} {:.3} {:.3} {:.3} {:.3} {:.3} {:.3}",
-            c.p0.x.0, c.p0.y.0, c.p1.x.0, c.p1.y.0, c.p2.x.0, c.p2.y.0, c.p3.x.0, c.p3.y.0
-        ));
-    }
-    out.sort();
-    out
-}
-
-/// Until grace notes are drawn (X4c), the layout leaves a grace note out of
-/// what it draws: no ink traces to a grace or its pitch, its principal draws
-/// one head on its stem rather than a chord with it, and the page draws what
-/// the same measure without its graces draws, a beam among the graces and a
-/// slur from one to its principal included. The report names each grace and
-/// the slur as left undrawn.
+/// A grace note is drawn small before its principal (X4d.2), not as a member
+/// of its chord: each grace's head a run at 0.7 of a head's size traced to its
+/// pitch, no full-size glyph traced to a grace, its flat small, the group
+/// between the note before and the principal. A slur from a grace is still
+/// left undrawn, and the report names it and no grace.
 #[test]
-fn a_grace_note_is_not_drawn_as_a_member_of_its_principals_chord() {
+fn a_grace_note_is_drawn_small_before_its_principal() {
     use epiphany_core::TypedObjectId;
     let measure = |graces: &str| {
         format!(
@@ -7813,53 +7783,84 @@ fn a_grace_note_is_not_drawn_as_a_member_of_its_principals_chord() {
     let engraved = engrave(score);
     let layout = &engraved.layout;
     let mut grace_sources = Vec::new();
+    let mut grace_pitches = Vec::new();
     for e in &grace_events {
         grace_sources.push(TypedObjectId::Event(e.id()));
         if let epiphany_core::Event::Pitched(p) = e {
-            grace_sources.extend(p.pitches.iter().map(|ip| TypedObjectId::Pitch(ip.id)));
+            grace_pitches.extend(p.pitches.iter().map(|ip| TypedObjectId::Pitch(ip.id)));
         }
     }
-    let traced = layout
-        .glyphs
-        .iter()
-        .map(|g| &g.provenance)
-        .chain(
-            layout
-                .strokes
-                .iter()
-                .filter(|s| s.from != s.to)
-                .map(|s| &s.provenance),
-        )
-        .chain(layout.curves.iter().map(|c| &c.provenance))
-        .filter(|p| grace_sources.contains(&p.source))
-        .count();
-    assert_eq!(traced, 0, "no ink traces to a grace note or its pitch");
+    grace_sources.extend(grace_pitches.iter().copied());
+    assert!(
+        layout
+            .glyphs
+            .iter()
+            .all(|g| !grace_sources.contains(&g.provenance.source)),
+        "no full-size glyph traces to a grace"
+    );
     let heads = layout
         .glyphs
         .iter()
         .filter(|g| g.glyph.as_str().starts_with("notehead"))
         .count();
-    assert_eq!(heads, 4, "four heads, none of them a grace's");
+    assert_eq!(heads, 4, "four full-size heads, none of them a grace's");
+    let small: Vec<_> = layout
+        .texts
+        .iter()
+        .filter(|t| grace_pitches.contains(&t.provenance.source))
+        .collect();
+    assert_eq!(small.len(), 2, "each grace's head a run");
+    for run in &small {
+        let height = run.bounds.top.0 - run.bounds.bottom.0;
+        assert!((height - 0.7).abs() < 0.03, "a head at 0.7: {height}");
+    }
     assert!(
         layout
             .glyphs
             .iter()
             .all(|g| !g.glyph.as_str().starts_with("accidental")),
-        "the grace's flat is not drawn"
+        "no full-size accidental"
     );
+    assert_eq!(
+        layout.texts.iter().filter(|t| t.text == "\u{E260}").count(),
+        1,
+        "the grace's flat, small"
+    );
+    let principal = |layout: &epiphany_layout_ir::ResolvedLayoutIR| {
+        layout
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str().starts_with("notehead"))
+            .map(|g| g.position.x.0)
+            .fold(Vec::new(), |mut xs, x| {
+                xs.push(x);
+                xs
+            })
+    };
+    let with = principal(layout);
+    let grace_right = small
+        .iter()
+        .map(|t| t.origin.x.0 + t.bounds.right.0)
+        .fold(f32::NEG_INFINITY, f32::max);
+    // The second head of the measure is the principal, F4.
+    let mut xs = with.clone();
+    xs.sort_by(f32::total_cmp);
+    assert!(grace_right <= xs[1], "the graces before the principal");
     assert!(
         layout.curves.is_empty(),
         "the slur from a grace is not drawn"
     );
-    let without = load(&plain).expect("loads");
-    assert_eq!(
-        ink(layout),
-        ink(&engrave(&without.reduced.score).layout),
-        "the measure draws what it draws without its graces"
+    let grace_left = small
+        .iter()
+        .map(|t| t.origin.x.0 + t.bounds.left.0)
+        .fold(f32::INFINITY, f32::min);
+    assert!(
+        grace_left > xs[0] + 1.18,
+        "the graces clear of the note before"
     );
 
     let found = omissions(score, layout, &engraved.diagnostics);
-    assert_eq!(found.kinds.get("grace note left undrawn"), Some(&2));
+    assert_eq!(found.kinds.get("grace note left undrawn"), None);
     assert_eq!(
         found.kinds.get("slur on a grace note left undrawn"),
         Some(&1)

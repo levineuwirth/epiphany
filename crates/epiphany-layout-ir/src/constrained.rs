@@ -27,6 +27,7 @@ use crate::engrave_theory::{
 };
 use crate::engraving::{EngravingDecision, OverrideKind, OverridePriority, OverrideTarget};
 use crate::glyph::{metrics, BravuraCatalog, GlyphCatalog, GlyphCatalogIdentity, GlyphReference};
+use crate::graces;
 use crate::lines;
 use crate::logical::{
     apply_offset, BarlineKind, LayoutContent, LogicalLayoutIR, MarkerContent, MarkerPlace,
@@ -1472,6 +1473,9 @@ pub fn try_to_constrained(
         // component, each at `position + component.offset`.
         let mut pitch_heads: BTreeMap<PitchId, Vec<Head>> = BTreeMap::new();
         let mut unpitched_heads: BTreeMap<EventId, Vec<Head>> = BTreeMap::new();
+        // The region's grace notes (X4d.2), each set out before its principal
+        // once the columns' accidentals are placed.
+        let mut graces: Vec<(EventId, Option<StaffId>, &crate::logical::GraceContent)> = Vec::new();
         // Every head of each staff's column, whatever its voice: what an
         // accidental beside one of them must clear.
         let mut column_heads: BTreeMap<(Option<StaffId>, ColumnKey), Vec<HeadRef>> =
@@ -1525,6 +1529,11 @@ pub fn try_to_constrained(
             let staff = object.staff();
             let yo = staff.map(&y_origin).unwrap_or(0.0);
             match (object.provenance().source, object.content()) {
+                (TypedObjectId::Event(eid), LayoutContent::Grace(grace)) => {
+                    event_staff.extend(staff.map(|st| (eid, st)));
+                    event_voices.insert(eid, grace.voice);
+                    graces.push((eid, staff, grace));
+                }
                 (TypedObjectId::Event(eid), LayoutContent::Note(note)) => {
                     if !note.marks.is_empty() || !note.ornaments.is_empty() {
                         mark_sources.insert(eid, (note.marks.clone(), note.ornaments.clone()));
@@ -2018,6 +2027,36 @@ pub fn try_to_constrained(
             }
             if leftmost < 0.0 {
                 let entry = column_overhang.entry(key.clone()).or_insert(0.0);
+                *entry = entry.max(-leftmost);
+            }
+        }
+
+        // Each staff's grace notes before their principal (X4d.2): a voice's
+        // graces at one onset set out right to left before the ink of the
+        // principal's column on their staff, their reach widening the
+        // column's overhang as accidentals do.
+        let grace_placings = place_graces(
+            &graces,
+            &GraceInputs {
+                column_heads: &column_heads,
+                pitch_heads: &pitch_heads,
+                unpitched_heads: &unpitched_heads,
+                event_stems: &event_stems,
+                event_rests: &event_rests,
+                shown: &shown_accidentals,
+            },
+            |staff: Option<StaffId>, time: &TimePoint| {
+                (
+                    staff.map(&y_origin).unwrap_or(0.0),
+                    active_clef_or(clef_seq(staff), time, clef_default(staff)),
+                )
+            },
+            &mut diagnostics,
+        );
+        for placing in grace_placings.values() {
+            let leftmost = placing.ink().iter().map(|b| b[0]).fold(0.0f32, f32::min);
+            if leftmost < 0.0 {
+                let entry = column_overhang.entry(placing.key.clone()).or_insert(0.0);
                 *entry = entry.max(-leftmost);
             }
         }
@@ -3724,6 +3763,22 @@ pub fn try_to_constrained(
             Some((from, to, (ia.slot, ib.slot), [ca, cb]))
         };
 
+        // Each grace note's pitches' provenance (X4d.2): a head drawn with its
+        // event carries its pitch's.
+        let grace_pitches: BTreeSet<PitchId> = graces
+            .iter()
+            .flat_map(|(_, _, grace)| grace.pitches.iter().map(|p| p.pitch))
+            .collect();
+        let grace_pitch_provenance: BTreeMap<PitchId, &Provenance> = specs
+            .iter()
+            .filter_map(|(provenance, _, _)| match provenance.source {
+                TypedObjectId::Pitch(pid) if grace_pitches.contains(&pid) => {
+                    Some((pid, *provenance))
+                }
+                _ => None,
+            })
+            .collect();
+
         // Pass 2 — emit. Each logical object's exact provenance lands on exactly
         // one primitive; the extras a multi-component object owns are synthesized.
         for (provenance, staff, content) in specs {
@@ -3862,6 +3917,130 @@ pub fn try_to_constrained(
                     }
                 }
                 TypedObjectId::Event(eid) => match content {
+                    Some(LayoutContent::Grace(_)) => {
+                        // A grace note, small before its principal (X4d.2):
+                        // each head carrying its pitch's exact provenance (an
+                        // unpitched one its event's), its stem the event's,
+                        // every part riding the principal's slot, all one
+                        // member of the family taking room as an accidental
+                        // does.
+                        let drawn = grace_placings
+                            .get(&eid)
+                            .filter(|placing| !placing.shape.heads.is_empty())
+                            .and_then(|placing| Some((placing, columns.get(&placing.key)?)));
+                        match drawn {
+                            Some((placing, info)) => {
+                                let k = graces::GRACE_MAG;
+                                let band = band_of(staff);
+                                let at = |p: Point| Point::new(p.x.0 + info.x, p.y.0);
+                                let synth = |n: u128| {
+                                    Provenance::synthesized(
+                                        provenance.source,
+                                        SynthesisKind::Registered(GRACE_SYNTHESIS),
+                                        SynthesisInstanceKey(n),
+                                        provenance.dependencies.clone(),
+                                    )
+                                };
+                                let unpitched = placing.pitches.is_empty();
+                                let shape = &placing.shape;
+                                let mut runs: Vec<ResolvedText> = Vec::new();
+                                for (n, (origin, name, index)) in shape.heads.iter().enumerate() {
+                                    let prov = match index {
+                                        Some(i) => grace_pitch_provenance
+                                            .get(&placing.pitches[*i])
+                                            .map(|p| (*p).clone())
+                                            .unwrap_or_else(|| synth(0x100 + n as u128)),
+                                        None if n == 0 => provenance.clone(),
+                                        None => synth(0x100 + n as u128),
+                                    };
+                                    runs.extend(graces::small_glyph(prov, name, at(*origin)));
+                                }
+                                for (n, (origin, name, _)) in shape.accidentals.iter().enumerate() {
+                                    runs.extend(graces::small_glyph(
+                                        synth(0x200 + n as u128),
+                                        name,
+                                        at(*origin),
+                                    ));
+                                }
+                                if let Some((origin, name)) = shape.flag {
+                                    runs.extend(graces::small_glyph(synth(1), name, at(origin)));
+                                }
+                                let mut strokes: Vec<Stroke> = Vec::new();
+                                if let Some((x, a, b)) = shape.stem {
+                                    let prov = if unpitched {
+                                        synth(2)
+                                    } else {
+                                        provenance.clone()
+                                    };
+                                    strokes.push(line_stroke(
+                                        prov,
+                                        Point::new(x + info.x, a),
+                                        Point::new(x + info.x, b),
+                                        STEM_THICKNESS * k,
+                                        band,
+                                    ));
+                                }
+                                for (n, (a, b)) in shape.ledgers.iter().enumerate() {
+                                    strokes.push(line_stroke(
+                                        synth(0x300 + n as u128),
+                                        at(*a),
+                                        at(*b),
+                                        STAFF_LINE_THICKNESS * k,
+                                        band,
+                                    ));
+                                }
+                                if let Some((a, b)) = shape.slash {
+                                    strokes.push(line_stroke(
+                                        synth(3),
+                                        at(a),
+                                        at(b),
+                                        graces::SLASH_THICKNESS * k,
+                                        band,
+                                    ));
+                                }
+                                for (n, (a, b)) in placing.beams.iter().enumerate() {
+                                    strokes.push(line_stroke(
+                                        synth(0x400 + n as u128),
+                                        at(*a),
+                                        at(*b),
+                                        placing.beam_thickness,
+                                        band,
+                                    ));
+                                }
+                                for stroke in &strokes {
+                                    span_anchors.push(SpanAnchor {
+                                        primitive: stroke.id(),
+                                        start: info.slot,
+                                        end: info.slot,
+                                    });
+                                }
+                                family.push(FamilyMark {
+                                    band,
+                                    glyphs: Vec::new(),
+                                    strokes: strokes.iter().map(Stroke::id).collect(),
+                                    texts: runs.iter().map(ResolvedText::id).collect(),
+                                    room: Room::Ink,
+                                    placement: None,
+                                    line: None,
+                                });
+                                for run in runs {
+                                    texts.push(TextObject {
+                                        text: run,
+                                        horizontal_slot: info.slot,
+                                        vertical_band: band,
+                                    });
+                                }
+                                for stroke in strokes {
+                                    emit.stroke(stroke);
+                                }
+                            }
+                            None => emit.stroke(anchor(
+                                provenance,
+                                Point::new(default_x, yo),
+                                band_of(staff),
+                            )),
+                        }
+                    }
                     Some(LayoutContent::Note(_)) | Some(LayoutContent::Unpitched(_)) => {
                         let unpitched = matches!(content, Some(LayoutContent::Unpitched(_)));
                         let segs = event_stems.get(&eid).map(Vec::as_slice).unwrap_or(&[]);
@@ -4207,6 +4386,8 @@ pub fn try_to_constrained(
                         band_of(staff),
                     )),
                 },
+                // A grace note's pitch: its head is drawn with its event.
+                TypedObjectId::Pitch(pid) if grace_pitch_provenance.contains_key(&pid) => {}
                 TypedObjectId::Pitch(pid) => match pitch_heads.get(&pid) {
                     Some(heads) => {
                         for head in heads {
@@ -7991,10 +8172,13 @@ const CARRIED: i8 = i8::MIN;
 fn context_accidentals(
     objects: &[crate::logical::LayoutObject],
 ) -> BTreeMap<PitchId, Vec<&'static str>> {
+    // A note's or grace note's onset, a grace's order before its principal
+    // (none for a measured note), and its pitches.
+    type Sounded<'a> = (&'a TimePoint, Option<u16>, &'a [crate::logical::NotePitch]);
     struct Staff<'a> {
         keys: &'a [PlacedKeySignature],
         measures: Vec<&'a TimePoint>,
-        notes: Vec<&'a crate::logical::NoteContent>,
+        notes: Vec<Sounded<'a>>,
     }
     let mut staves: BTreeMap<StaffId, Staff> = BTreeMap::new();
     let mut tied_into: BTreeSet<PitchId> = BTreeSet::new();
@@ -8013,16 +8197,31 @@ fn context_accidentals(
         match object.content() {
             LayoutContent::Staff(content) => entry.keys = content.keys.as_slice(),
             LayoutContent::Measure(measure) => entry.measures.push(&measure.start),
-            LayoutContent::Note(note) => entry.notes.push(note),
+            LayoutContent::Note(note) => {
+                entry
+                    .notes
+                    .push((&note.position, None, note.pitches.as_slice()))
+            }
+            // A grace note joins its measure's accidental state before its
+            // principal, as Gould holds accidentals good for grace and
+            // measured notes alike (*Behind Bars*, p. 84; X4d.2).
+            LayoutContent::Grace(grace) => entry.notes.push((
+                &grace.position,
+                Some(grace.grace.order),
+                grace.pitches.as_slice(),
+            )),
             _ => {}
         }
     }
     let mut shown = BTreeMap::new();
     for staff in staves.values_mut() {
         staff.measures.sort_by(|a, b| time_total(a, b));
+        // In time, a grace before the measured notes at its onset, by its
+        // order.
+        let order = |grace: Option<u16>| grace.map_or((1u8, 0u16), |o| (0u8, o));
         staff
             .notes
-            .sort_by(|a, b| time_total(&a.position, &b.position));
+            .sort_by(|a, b| time_total(a.0, b.0).then(order(a.1).cmp(&order(b.1))));
         let mut measure = None;
         // Per letter and octave, the alteration in quarter-tones the measure
         // gives so far.
@@ -8030,9 +8229,9 @@ fn context_accidentals(
         // The notes of every voice that start at one time, together.
         for group in staff
             .notes
-            .chunk_by(|a, b| time_total(&a.position, &b.position) == Ordering::Equal)
+            .chunk_by(|a, b| time_total(a.0, b.0) == Ordering::Equal && a.1 == b.1)
         {
-            let at = &group[0].position;
+            let at = group[0].0;
             let index = staff
                 .measures
                 .partition_point(|start| time_total(start, at) != Ordering::Greater);
@@ -8049,7 +8248,7 @@ fn context_accidentals(
             // own tie and shows none.
             let mut heard: BTreeMap<(epiphany_core::CmnNominal, i8), (BTreeSet<i8>, bool)> =
                 BTreeMap::new();
-            for pitch in group.iter().flat_map(|note| &note.pitches) {
+            for pitch in group.iter().flat_map(|note| note.2) {
                 if let Some((place, alteration)) = tracked(pitch) {
                     let (alterations, fresh) = heard.entry(place).or_default();
                     alterations.insert(alteration);
@@ -8061,7 +8260,7 @@ fn context_accidentals(
                 .filter(|(_, (alterations, fresh))| alterations.len() > 1 && *fresh)
                 .map(|(place, _)| place)
                 .collect();
-            for pitch in group.iter().flat_map(|note| &note.pitches) {
+            for pitch in group.iter().flat_map(|note| note.2) {
                 let Some((place @ (nominal, _), alteration)) = tracked(pitch) else {
                     continue;
                 };
@@ -10105,6 +10304,12 @@ fn line_end_column<'a>(
 /// slots of its heads' columns, which its ends ride, and its heads' centres.
 type GlissandoLine = (Point, Point, (SpringSlotId, SpringSlotId), [Point; 2]);
 
+/// The registry id for a grace note's further primitives (X4d.2), synthesized
+/// from its event: its flag (key 1), stem where unpitched (2), slash (3), each
+/// further head (`0x100 + n`), accidental (`0x200 + n`), ledger line
+/// (`0x300 + n`) and beam (`0x400 + n`).
+const GRACE_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x4752_4143_454E_4F54); // "GRACENOT"
+
 /// The registry id for a line's further primitives (X4d.1), synthesized from
 /// the line: its sign or words (key 0), its end hook (1) and start hook (2),
 /// its continuation's run (3), a glissando's words (4).
@@ -10234,6 +10439,440 @@ fn fermata_glyph(fermata: &epiphany_core::Fermata, above: bool) -> &'static str 
 
 #[path = "marks.rs"]
 mod marks;
+
+/// What setting out the grace notes reads of a region (X4d.2): the heads,
+/// stems and rests of each staff's columns, with their accidentals placed,
+/// and the accidental each pitch shows by its measure.
+struct GraceInputs<'a> {
+    column_heads: &'a BTreeMap<(Option<StaffId>, ColumnKey), Vec<HeadRef>>,
+    pitch_heads: &'a BTreeMap<PitchId, Vec<Head>>,
+    unpitched_heads: &'a BTreeMap<EventId, Vec<Head>>,
+    event_stems: &'a BTreeMap<EventId, Vec<StemSeg>>,
+    event_rests: &'a BTreeMap<EventId, Vec<RestSeg>>,
+    shown: &'a BTreeMap<PitchId, Vec<&'static str>>,
+}
+
+/// A grace note set out before its principal (X4d.2): its principal's column,
+/// its parts across from that column's x at their heights, the pitches its
+/// heads draw, by index, and the beams its group draws, on the group's
+/// first grace.
+struct GracePlacing {
+    key: ColumnKey,
+    shape: graces::GraceShape,
+    pitches: Vec<PitchId>,
+    beams: Vec<(Point, Point)>,
+    beam_thickness: f32,
+}
+
+impl GracePlacing {
+    /// Its ink, every part's box across from its column's x.
+    fn ink(&self) -> Vec<graces::Ink> {
+        grace_ink(&self.shape)
+            .into_iter()
+            .chain(self.beams.iter().map(|(a, b)| {
+                let h = self.beam_thickness * 0.5;
+                [
+                    a.x.0.min(b.x.0),
+                    a.y.0.min(b.y.0) - h,
+                    a.x.0.max(b.x.0),
+                    a.y.0.max(b.y.0) + h,
+                ]
+            }))
+            .collect()
+    }
+}
+
+/// A grace's ink boxes: its heads, accidentals, stem, flag, ledger lines and
+/// slash.
+fn grace_ink(shape: &graces::GraceShape) -> Vec<graces::Ink> {
+    let k = graces::GRACE_MAG;
+    let glyph = |at: Point, name: &str| {
+        metrics(name).map(|m| {
+            let b = m.bounding_box();
+            [
+                at.x.0 + k * b.left.0,
+                at.y.0 + k * b.bottom.0,
+                at.x.0 + k * b.right.0,
+                at.y.0 + k * b.top.0,
+            ]
+        })
+    };
+    let line = |a: Point, b: Point, w: f32| {
+        let h = w * 0.5;
+        [
+            a.x.0.min(b.x.0) - h,
+            a.y.0.min(b.y.0) - h,
+            a.x.0.max(b.x.0) + h,
+            a.y.0.max(b.y.0) + h,
+        ]
+    };
+    let mut ink = Vec::new();
+    ink.extend(
+        shape
+            .heads
+            .iter()
+            .filter_map(|(at, name, _)| glyph(*at, name)),
+    );
+    ink.extend(
+        shape
+            .accidentals
+            .iter()
+            .filter_map(|(at, name, _)| glyph(*at, name)),
+    );
+    if let Some((x, a, b)) = shape.stem {
+        ink.push(line(Point::new(x, a), Point::new(x, b), STEM_THICKNESS * k));
+    }
+    if let Some((at, name)) = shape.flag {
+        ink.extend(glyph(at, name));
+    }
+    for (a, b) in &shape.ledgers {
+        ink.push(line(*a, *b, STAFF_LINE_THICKNESS * k));
+    }
+    if let Some((a, b)) = shape.slash {
+        ink.push(line(a, b, graces::SLASH_THICKNESS * k));
+    }
+    ink
+}
+
+/// Each grace note of a region set out before its principal (X4d.2): a
+/// voice's graces at one onset of a staff, in their order, right to left
+/// before the ink of the principal's column on that staff (its heads with
+/// their accidentals, ledger lines and dots, its stems and flags, its rests),
+/// as [`graces::place_group`] spaces them; a run of them one beam joins
+/// beamed. `frame` gives a staff's origin and its clef at a time.
+fn place_graces(
+    graces_in: &[(EventId, Option<StaffId>, &crate::logical::GraceContent)],
+    inputs: &GraceInputs<'_>,
+    frame: impl Fn(Option<StaffId>, &TimePoint) -> (f32, Clef),
+    diagnostics: &mut Vec<LayoutDiagnostic>,
+) -> BTreeMap<EventId, GracePlacing> {
+    let k = graces::GRACE_MAG;
+    let rank = |place: VoicePlace| match place {
+        VoicePlace::Alone => 0u8,
+        VoicePlace::Upper => 1,
+        VoicePlace::Lower => 2,
+    };
+    // Each voice's graces at one onset of a staff, in their order.
+    type Group<'g> = Vec<(EventId, &'g crate::logical::GraceContent)>;
+    let mut groups: BTreeMap<(Option<StaffId>, ColumnKey, u8), Group> = BTreeMap::new();
+    for (eid, staff, grace) in graces_in {
+        let key = ColumnKey::Timed(grace.position.clone(), ColumnRole::Note);
+        groups
+            .entry((*staff, key, rank(grace.voice)))
+            .or_default()
+            .push((*eid, grace));
+    }
+    let mut placed = BTreeMap::new();
+    for ((staff, key, _), mut members) in groups {
+        members.sort_by_key(|(eid, grace)| (grace.grace.order, *eid));
+        let ColumnKey::Timed(time, _) = &key else {
+            continue;
+        };
+        let (yo, clef) = frame(staff, time);
+        // The principal's column's ink on the staff, from the column's x.
+        let mut principal: Vec<graces::Ink> = Vec::new();
+        if let Some(refs) = inputs.column_heads.get(&(staff, key.clone())) {
+            let mut stems = BTreeSet::new();
+            for r in refs {
+                let head = r.get(inputs.pitch_heads, inputs.unpitched_heads);
+                principal.extend(
+                    column_ink_boxes(head, 0.0, yo)
+                        .into_iter()
+                        .map(|b| [b.left, b.bottom, b.right, b.top]),
+                );
+                if stems.insert((head.event, head.comp)) {
+                    if let Some(seg) = inputs
+                        .event_stems
+                        .get(&head.event)
+                        .and_then(|segs| segs.iter().find(|seg| seg.comp == head.comp))
+                    {
+                        principal.extend(
+                            stem_ink(seg, 0.0)
+                                .into_iter()
+                                .map(|b| [b.left, b.bottom, b.right, b.top]),
+                        );
+                    }
+                }
+            }
+        }
+        for rest in inputs.event_rests.values().flatten() {
+            if rest.key != key || rest.staff != staff || !rest.visible {
+                continue;
+            }
+            if let Some(b) = rest.name.and_then(metrics).map(|m| m.bounding_box()) {
+                principal.push([b.left.0, rest.y + b.bottom.0, b.right.0, rest.y + b.top.0]);
+            }
+        }
+        // Each grace about its own origin, its heads' left edge.
+        let mut shapes: Vec<graces::GraceShape> = Vec::new();
+        let mut pitches_of: Vec<Vec<PitchId>> = Vec::new();
+        for (eid, grace) in &members {
+            let value = grace.grace.value;
+            let name = notehead_glyph(value);
+            let hb = metrics(name)
+                .expect("notehead metrics are bundled")
+                .bounding_box();
+            let up = grace.voice != VoicePlace::Lower;
+            let mut heads: Vec<(f32, StaffStep, Option<usize>)> = Vec::new();
+            for (i, pitch) in grace.pitches.iter().enumerate() {
+                let (step, missing) = spelling_step(&pitch.spelling, &clef);
+                if missing {
+                    diagnostics.push(LayoutDiagnostic {
+                        source: TypedObjectId::Pitch(pitch.pitch),
+                        kind: LayoutDiagnosticKind::MissingSpelling,
+                    });
+                }
+                heads.push((step_to_y(yo, step), step, Some(i)));
+            }
+            if let Some(position) = grace.unpitched {
+                let step = StaffStep::from(position.0);
+                heads.push((step_to_y(yo, step), step, None));
+            }
+            if heads.is_empty() {
+                let _ = eid;
+                shapes.push(graces::GraceShape::default());
+                pitches_of.push(Vec::new());
+                continue;
+            }
+            heads.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let mut shape = graces::GraceShape {
+                up,
+                ..Default::default()
+            };
+            let origin_x = -k * hb.left.0;
+            for (y, step, i) in &heads {
+                shape.heads.push((Point::new(origin_x, *y), name, *i));
+                for ledger in ledger_steps(*step) {
+                    let ly = step_to_y(yo, ledger);
+                    shape.ledgers.push((
+                        Point::new(k * (hb.left.0 - LEDGER_LINE_EXTENSION) + origin_x, ly),
+                        Point::new(k * (hb.right.0 + LEDGER_LINE_EXTENSION) + origin_x, ly),
+                    ));
+                }
+                // Its accidentals, small, before its head.
+                if let Some(i) = i {
+                    let pitch = &grace.pitches[*i];
+                    let stack = match inputs.shown.get(&pitch.pitch) {
+                        Some(shown) => shown.clone(),
+                        None => pitch_accidentals(&pitch.spelling, pitch.pitch, diagnostics),
+                    };
+                    let mut right = -k * GRACE_ACCIDENTAL_GAP;
+                    for accidental in stack {
+                        let Some(ab) = metrics(accidental).map(|m| m.bounding_box()) else {
+                            continue;
+                        };
+                        let x = right - k * ab.right.0;
+                        shape.accidentals.push((Point::new(x, *y), accidental, *i));
+                        right = x + k * ab.left.0 - k * GRACE_ACCIDENTAL_GAP;
+                    }
+                }
+            }
+            if has_stem(value) {
+                let width = STEM_THICKNESS * k;
+                let x = if up {
+                    origin_x + k * hb.right.0 - width * 0.5
+                } else {
+                    origin_x + k * hb.left.0 + width * 0.5
+                };
+                let (attach, far) = if up {
+                    (heads[0].0, heads[heads.len() - 1].0 + graces::GRACE_STEM)
+                } else {
+                    (heads[heads.len() - 1].0, heads[0].0 - graces::GRACE_STEM)
+                };
+                shape.stem = Some((x, attach, far));
+            }
+            shapes.push(shape);
+            pitches_of.push(grace.pitches.iter().map(|p| p.pitch).collect());
+        }
+        // Runs of graces one beam joins.
+        let mut runs: Vec<std::ops::Range<usize>> = Vec::new();
+        let mut i = 0;
+        while i < members.len() {
+            let beam = members[i].1.beam;
+            let mut j = i + 1;
+            while beam.is_some() && j < members.len() && members[j].1.beam == beam {
+                j += 1;
+            }
+            runs.push(i..j);
+            i = j;
+        }
+        // An unbeamed grace's flag; set out before beams are known.
+        for run in &runs {
+            if run.len() > 1 {
+                continue;
+            }
+            let i = run.start;
+            let (Some((x, _, tip)), value) = (shapes[i].stem, members[i].1.grace.value) else {
+                continue;
+            };
+            let direction = if shapes[i].up {
+                epiphany_core::StemDirection::Up
+            } else {
+                epiphany_core::StemDirection::Down
+            };
+            if let Some(flag) = flag_glyph(value, direction) {
+                shapes[i].flag = Some((Point::new(x - STEM_THICKNESS * k * 0.5, tip), flag));
+            }
+        }
+        // Right to left before the principal.
+        let inks: Vec<Vec<graces::Ink>> = shapes.iter().map(grace_ink).collect();
+        let shifts = graces::place_group(&inks, &principal);
+        let mut shapes: Vec<graces::GraceShape> = shapes
+            .into_iter()
+            .zip(&shifts)
+            .map(|(shape, dx)| shape.moved(*dx))
+            .collect();
+        // A beamed run's beam from its first stem's tip to its last's, its
+        // slope held to a quarter space a space, every stem reaching it and
+        // at least its own length; then each slash.
+        let mut beams_of: BTreeMap<usize, (Vec<(Point, Point)>, f32)> = BTreeMap::new();
+        for run in &runs {
+            let stems: Vec<(usize, f32, f32, f32)> = run
+                .clone()
+                .filter_map(|i| shapes[i].stem.map(|(x, a, b)| (i, x, a, b)))
+                .collect();
+            let beamed = run.len() > 1 && stems.len() == run.len();
+            let mut slope = 0.0f32;
+            if beamed {
+                let up = shapes[run.start].up;
+                let toward = if up { 1.0 } else { -1.0 };
+                let (first, last) = (stems[0], stems[stems.len() - 1]);
+                slope = ((last.3 - first.3) / (last.1 - first.1).max(1e-3)).clamp(-0.25, 0.25);
+                let at = |base: f32, x: f32| base + slope * (x - first.1);
+                // The beam's height at the first stem: as far out as the
+                // stem of least reach needs.
+                let base = stems
+                    .iter()
+                    .map(|(_, x, attach, _)| {
+                        attach + toward * graces::GRACE_STEM - slope * (x - first.1)
+                    })
+                    .fold(
+                        if up { f32::NEG_INFINITY } else { f32::INFINITY },
+                        |m, b| {
+                            if up {
+                                m.max(b)
+                            } else {
+                                m.min(b)
+                            }
+                        },
+                    );
+                for (i, x, attach, _) in &stems {
+                    shapes[*i].stem = Some((*x, *attach, at(base, *x)));
+                }
+                let count = members[run.clone()]
+                    .iter()
+                    .map(|(_, g)| flag_count(g.grace.value))
+                    .min()
+                    .unwrap_or(1)
+                    .max(1);
+                let w = STEM_THICKNESS * k * 0.5;
+                let beams: Vec<(Point, Point)> = (0..count)
+                    .map(|n| {
+                        let dy =
+                            -toward * (k * BEAM_THICKNESS * 0.5 + f32::from(n) * k * BEAM_STEP);
+                        (
+                            Point::new(first.1 - w, at(base, first.1) + dy),
+                            Point::new(last.1 + w, at(base, last.1) + dy),
+                        )
+                    })
+                    .collect();
+                beams_of.insert(run.start, (beams, k * BEAM_THICKNESS));
+            }
+            // The slash: on an acciaccatura alone or first of its beam, kept
+            // off its ledger lines by lengthening its stem (Gould, p. 126).
+            let i = run.start;
+            if members[i].1.grace.kind != epiphany_core::GraceKind::Acciaccatura {
+                continue;
+            }
+            let Some((x, attach, tip)) = shapes[i].stem else {
+                continue;
+            };
+            let flag_right = shapes[i].flag.and_then(|(at, name)| {
+                metrics(name).map(|m| at.x.0 + k * m.bounding_box().right.0)
+            });
+            if flag_right.is_none() && !beamed {
+                continue;
+            }
+            let hb = metrics(shapes[i].heads[0].1)
+                .expect("notehead metrics are bundled")
+                .bounding_box();
+            let head_width = k * (hb.right.0 - hb.left.0);
+            let up = shapes[i].up;
+            let mut tip = tip;
+            let mut cut = graces::slash(
+                x,
+                STEM_THICKNESS * k,
+                tip,
+                up,
+                head_width,
+                flag_right,
+                slope,
+            );
+            // The slash's end nearest the head clears the ledger lines it
+            // would cross, a quarter space off the furthest from the staff.
+            let ledger_edge =
+                shapes[i]
+                    .ledgers
+                    .iter()
+                    .map(|(a, _)| a.y.0)
+                    .fold(None::<f32>, |m, y| {
+                        Some(match m {
+                            None => y,
+                            Some(m) if up => m.max(y),
+                            Some(m) => m.min(y),
+                        })
+                    });
+            if let Some(edge) = ledger_edge {
+                let low = if up {
+                    cut.0.y.0.min(cut.1.y.0)
+                } else {
+                    cut.0.y.0.max(cut.1.y.0)
+                };
+                let need = if up {
+                    edge + 0.25 - low
+                } else {
+                    low - (edge - 0.25)
+                };
+                if need > 0.0 {
+                    let toward = if up { 1.0 } else { -1.0 };
+                    tip += toward * need;
+                    shapes[i].stem = Some((x, attach, tip));
+                    if let Some((at, name)) = shapes[i].flag {
+                        shapes[i].flag = Some((Point::new(at.x.0, tip), name));
+                    }
+                    cut = graces::slash(
+                        x,
+                        STEM_THICKNESS * k,
+                        tip,
+                        up,
+                        head_width,
+                        flag_right,
+                        slope,
+                    );
+                }
+            }
+            shapes[i].slash = Some(cut);
+        }
+        for (i, ((eid, _), shape)) in members.iter().zip(shapes).enumerate() {
+            let (beams, beam_thickness) = beams_of.remove(&i).unwrap_or_default();
+            placed.insert(
+                *eid,
+                GracePlacing {
+                    key: key.clone(),
+                    shape,
+                    pitches: pitches_of[i].clone(),
+                    beams,
+                    beam_thickness,
+                },
+            );
+        }
+    }
+    placed
+}
+
+/// The gap between a grace's accidental and its head, and between two of its
+/// accidentals, at a note's size (scaled by the grace's).
+const GRACE_ACCIDENTAL_GAP: f32 = 0.25;
 
 #[cfg(test)]
 mod tests {

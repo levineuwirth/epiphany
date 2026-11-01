@@ -2768,3 +2768,42 @@ engraver's own placing reproduces it:
   (`a_gradual_tempo_change_stands_bold_over_the_staff`,
   `a_gradual_tempo_change_in_two_parts_is_drawn_once_over_the_system`,
   `a_gradual_tempo_change_drawn_once_for_two_parts_is_no_omission`).
+
+## ENGRAVER_VERSION 97 → 98: grace notes drawn small before their principals (X4d.2, 2026-11-01)
+
+- A grace note is drawn, replacing D65's rule that left it out: the logical
+  pass gives it its own content (`LayoutContent::Grace`), kept out of the
+  beams, slurs and ties drawn for notes and out of the decompositions, and
+  the projection sets each voice's graces at an onset right to left before
+  the ink of the principal's column on their staff (its heads with their
+  accidentals, ledger lines and dots, its stems and flags, its rests): the
+  group wholly left of it by 0.45 and each grace wholly left of the next by
+  0.3 (MuseScore's `graceToMainNoteDist`, `graceToGraceNoteDist`), as Gould
+  sets graces before the beat (*Behind Bars*, p. 127). Its heads,
+  accidentals and flag are Bravura's at 0.7 (`graceNoteMag`; Gould: smaller
+  than a cue note's three quarters, p. 125), set from Bravura Text as runs,
+  each head carrying its pitch's exact provenance; its stem, ledger lines,
+  slash and beams are strokes at 0.7 of a note's widths. Every part rides
+  the principal's slot, and the grace is one member of the family taking
+  room as an accidental does (D79's Q13), so the principal's column stands
+  further right where the space before it is short.
+- Its stem is 2¼ spaces from its head's centre (Gould, p. 125: ruled by the
+  owner on 2026-11-01 over MuseScore's and LilyPond's 3.5 scaled to about
+  2.45), up but in a lower part (p. 126). An unbeamed grace of an eighth or
+  shorter takes its flag; a run of graces one beam joins (MuseScore's
+  export, the model's beam) is beamed, its slope held to a quarter space a
+  space and its stems reaching the beam, at least their own length.
+- An acciaccatura's slash stands on an unbeamed grace or a beam's first
+  (`ChordLayout`; Gould: at the beginning of a group, p. 126), as MuseScore
+  sets it (`TLayout::layoutStemSlash`): at 40°, from half a head's width left
+  of the stem's right edge and 1.4 under the tip to the flag's right edge, or
+  two spaces along a beam from two thirds as far. Its stem is lengthened
+  until the slash stands a quarter space clear of the grace's ledger lines
+  (Gould, p. 126).
+- A grace joins its measure's accidental state before its principal, in its
+  order, as Gould holds accidentals good for grace and measured notes alike
+  (p. 84), so a grace's sharp holds for the note after it on its line.
+- A slur or tie naming a grace is still left out, and the corpus report
+  names it; the report counts a grace drawn small as drawn, one with a
+  full-size glyph as drawn as a plain note
+  (`a_grace_note_is_drawn_small_before_its_principal`, the `graces` suite).
