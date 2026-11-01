@@ -1114,18 +1114,15 @@ mod tests {
             systems,
             "one unit per system realizing the pair, not zero"
         );
-        for value in &u.inter_staff {
-            assert!(
-                *value < 1e-4,
-                "and the solve realizes the declared gap: {value}"
-            );
-        }
     }
 
     /// A gap band realized in several systems contributes one unit PER SYSTEM.
     /// The inter-staff solve sizes each system's gaps from that system's own
     /// content, so the realizations are independent measurements; the wrapping
-    /// fixture's systems sit at very different staff distances.
+    /// fixture's systems sit at very different staff distances. (Since the
+    /// staves are set by their outlines, X5d.2, no solve realizes the whole
+    /// extents' clearance this unit reads; the solve's own rule is read back by
+    /// `vertical::solve_tests`.)
     #[test]
     fn each_system_realizing_a_gap_band_contributes_its_own_unit() {
         let score = epiphany_testkit::fixtures::two_staff_wrapping_pressure(1);
@@ -1140,14 +1137,8 @@ mod tests {
         let u = units(&score);
         assert!(systems >= 2, "the fixture wraps");
         assert_eq!(u.inter_staff.len(), systems, "one realization a system");
-        for value in &u.inter_staff {
-            assert!(*value < 1e-4, "each solved to its declared gap: {value}");
-        }
         // Three staves in one system: two gap bands, one realization each.
         let u = units(&epiphany_testkit::fixtures::three_staff_close_content(1));
         assert_eq!(u.inter_staff.len(), 2, "two gap bands, one system");
-        for value in &u.inter_staff {
-            assert!(*value < 1e-4, "the cascade realizes both gaps: {value}");
-        }
     }
 }

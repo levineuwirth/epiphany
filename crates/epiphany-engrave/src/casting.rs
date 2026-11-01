@@ -82,8 +82,8 @@ use std::rc::Rc;
 
 use epiphany_core::{StaffId, TypedObjectId};
 use epiphany_layout_ir::{
-    continuation_instance_key, inter_staff_gap_id, is_barline_glyph, is_rigid_width_stroke,
-    metrics, synthesized_layout_id, tie_arc, BreakClass, BreakKind, ConstrainedLayoutIR, Curve,
+    continuation_instance_key, is_barline_glyph, is_rigid_width_stroke, metrics,
+    synthesized_layout_id, tie_arc, BreakClass, BreakKind, ConstrainedLayoutIR, Curve,
     DecisionSource, EngravingDecision, EngravingDecisionKind, EngravingOverrideId, FamilyLine,
     GlyphObject, GlyphObjectId, GlyphReference, GlyphStyle, GroupSign, GroupSpan, HairpinShape,
     LayoutConstraint, LayoutObjectId, LeadGlyph, Margins, MeasureMark, Point, PrimitiveIndices,
@@ -1301,6 +1301,9 @@ pub(crate) fn cast_off(
     let mut extents: Vec<Extent> = vec![Extent::empty(); systems.len()];
     let mut staff_ext: BTreeMap<(usize, StaffId), (f32, f32)> = BTreeMap::new();
     let mut staff_ref: BTreeMap<(usize, StaffId), f32> = BTreeMap::new();
+    // Each staff's outer lines in each system, their centres, bottom and top:
+    // the floor between two staves stands between their facing lines.
+    let mut staff_lines: BTreeMap<(usize, StaffId), (f32, f32)> = BTreeMap::new();
     let into_staff = |m: &mut BTreeMap<(usize, StaffId), (f32, f32)>,
                       s: usize,
                       staff: Option<StaffId>,
@@ -1387,6 +1390,14 @@ pub(crate) fn cast_off(
                         .entry((s, st))
                         .and_modify(|r| *r = r.max(hi_y))
                         .or_insert(hi_y);
+                    let y = from.y.0;
+                    staff_lines
+                        .entry((s, st))
+                        .and_modify(|(lo, hi)| {
+                            *lo = lo.min(y);
+                            *hi = hi.max(y);
+                        })
+                        .or_insert((y, y));
                 }
             }
         }
@@ -1646,9 +1657,14 @@ pub(crate) fn cast_off(
     let mut family_dy: BTreeMap<(usize, usize), f32> = BTreeMap::new();
     // The placed family's pieces and the ink each was placed against, kept
     // for centring a grand staff's once its staves are set.
-    let mut family_pieces: Vec<crate::family::Piece> = Vec::new();
-    let mut family_sky: BTreeMap<(usize, VerticalBandId), Vec<InkRect>> = BTreeMap::new();
-    if !(placed.glyphs.is_empty() && placed.strokes.is_empty() && placed.texts.is_empty()) {
+    // Every system's ink is gathered as rectangles by its declared band, in
+    // the system's placed frame across: the sky the family is placed
+    // against, and the outlines the staves of a system are set by.
+    let family_pieces: Vec<crate::family::Piece>;
+    let family_sky: BTreeMap<(usize, VerticalBandId), Vec<InkRect>>;
+    // The family's pieces where they are placed, each with its member.
+    let mut placed_boxes: Vec<(usize, usize, InkRect)> = Vec::new();
+    {
         let mut pieces: Vec<crate::family::Piece> = Vec::new();
         let mut piece_of: BTreeMap<(usize, usize), usize> = BTreeMap::new();
         let mut piece = |pieces: &mut Vec<crate::family::Piece>, family: usize, system: usize| {
@@ -1860,13 +1876,24 @@ pub(crate) fn cast_off(
                     }
                     None => extents[p.system].add_y(b.bottom + by, b.top + by),
                 }
+                placed_boxes.push((
+                    p.family,
+                    p.system,
+                    InkRect {
+                        bottom: b.bottom + by,
+                        top: b.top + by,
+                        ..*b
+                    },
+                ));
             }
         }
         family_pieces = pieces;
         family_sky = sky;
     }
 
-    // A later system's leads are its staves' content too.
+    // A later system's leads are its staves' content too, at the left
+    // margin where the bake draws them.
+    let mut lead_rects: Vec<(usize, StaffId, InkRect)> = Vec::new();
     for (s, leads) in system_leads.iter().enumerate() {
         for (lead, glyphs) in leads {
             for glyph in *glyphs {
@@ -1879,52 +1906,75 @@ pub(crate) fn cast_off(
                         glyph.y + b.bottom.0,
                         glyph.y + b.top.0,
                     );
+                    let x = geometry.margins.left.0 + glyph.x;
+                    lead_rects.push((
+                        s,
+                        lead.staff,
+                        InkRect {
+                            left: x + b.left.0,
+                            right: x + b.right.0,
+                            bottom: glyph.y + b.bottom.0,
+                            top: glyph.y + b.top.0,
+                        },
+                    ));
                 }
             }
         }
     }
 
-    // Solve each system's inter-staff gaps: order the staves top-to-bottom by
-    // their reference y (staff line, else content mid), keep that order fixed,
-    // and shift each staff so its INK CLEARANCE to the one above realizes the
-    // gap band's declared height. `staff_shift[(system, staff)]` is the downward
-    // shift (subtracted from y); the top staff's is 0.
-    //
-    // The renegotiation is TWO-SIDED. A pair whose content collides is pushed
-    // apart; a pair the constrained stage left slack is pulled together. The
-    // fixed `SYSTEM_STAFF_PITCH` that stage stacks by is therefore an initial
-    // arrangement, not a floor: the band model is the height model, and the solve
-    // realizes it. (Expanding only was the earlier behaviour, and it was
-    // measurably wrong — `vertical_density_penalty` scored honest sprawl on every
-    // relaxed multi-staff system, because a gap wider than preferred is sprawl
-    // exactly as a narrower one is crowding.)
-    //
-    // The target is the gap band's `preferred_height`, held at or above its
-    // `min_height` — the hardest squeeze permitted. Validation already brackets
-    // preferred by min and max, so the clamp is belt-and-braces rather than a
-    // second policy. The band is the one the REGION DECLARED, not the
-    // constructor's default, so the solve and `vertical_density_penalty` — which
-    // scores the realized clearance against that same band — read one number.
-    //
-    // Gap `g` separates the region's staves `g-1` and `g` (see `to_constrained`).
-    // Every staff of a region carries content in every system of that region —
-    // its staff lines are per-staff strokes, split into each system — so the
-    // staves present here are the region's full staff order and the window index
-    // is the gap index. A band that somehow does not exist falls back to the
-    // constructor's default rather than silently skipping the pair.
-    let fallback = VerticalBand::inter_staff_gap(VerticalBandId(0));
-    let mut staff_shift: BTreeMap<(usize, StaffId), f32> = BTreeMap::new();
-    for (s, plan) in systems.iter().enumerate() {
-        let region_layout_id = input.regions[plan.region].provenance.stable_id;
-        let target_gap = |gap_index: usize| -> f32 {
-            let id = inter_staff_gap_id(region_layout_id, gap_index);
-            let band = input
-                .vertical_bands
-                .iter()
-                .find(|band| band.id == id)
-                .unwrap_or(&fallback);
-            band.preferred_height.0.max(band.min_height.0)
+    // Each staff's ink in each system, as it faces the staff below and the
+    // staff above: everything its band owns, the family where it is placed
+    // and its lead. A verse keeps further from the next staff's ink, on the
+    // side it stands.
+    let mut staff_ink: BTreeMap<(usize, StaffId), (Vec<InkRect>, Vec<InkRect>)> = BTreeMap::new();
+    for ((s, band), rects) in &family_sky {
+        if let Some(st) = staff_of(*band) {
+            let entry = staff_ink.entry((*s, st)).or_default();
+            entry.0.extend(rects.iter().copied());
+            entry.1.extend(rects.iter().copied());
+        }
+    }
+    for (f, s, b) in &placed_boxes {
+        let mark = &input.family[*f];
+        let Some(st) = staff_of(mark.band) else {
+            continue;
         };
+        let lyric = mark
+            .placement
+            .filter(|p| p.order == epiphany_layout_ir::PlaceOrder::Lyric);
+        let entry = staff_ink.entry((*s, st)).or_default();
+        let mut down = *b;
+        let mut up = *b;
+        match lyric {
+            Some(p) if p.above => up.top += crate::vertical::LYRIC_PADDING,
+            Some(_) => down.bottom -= crate::vertical::LYRIC_PADDING,
+            None => {}
+        }
+        entry.0.push(down);
+        entry.1.push(up);
+    }
+    for (s, st, b) in &lead_rects {
+        let entry = staff_ink.entry((*s, *st)).or_default();
+        entry.0.push(*b);
+        entry.1.push(*b);
+    }
+
+    // Solve each system's staves (X5d.2): order them top to bottom by their
+    // reference y (staff line, else content mid), keep that order, and set
+    // each as high as it can stand while its top line keeps the floor below
+    // the bottom line of the staff above, its ink the clearance below the
+    // merged outline of every staff above where they meet across, and a beam
+    // joining it to a staff above its bound (`vertical::stack`).
+    // `staff_shift[(system, staff)]` is the downward shift (subtracted from
+    // y); the top staff's is 0. The shift is two-sided: the constrained
+    // stage's fixed `SYSTEM_STAFF_PITCH` is an initial arrangement, not a
+    // floor. The floor is Gould's stave height, compressed toward
+    // MuseScore's least only in a system that would otherwise stand taller
+    // than its page's content (D109 Q1, `vertical::stack_fitting`).
+    let content_height = geometry.content_height();
+    let mut staff_shift: BTreeMap<(usize, StaffId), f32> = BTreeMap::new();
+    let no_ink: (Vec<InkRect>, Vec<InkRect>) = (Vec::new(), Vec::new());
+    for (s, ext) in extents.iter().enumerate() {
         let mut staves: Vec<(StaffId, (f32, f32))> = staff_ext
             .iter()
             .filter(|((sys, _), _)| *sys == s)
@@ -1940,42 +1990,55 @@ pub(crate) fn cast_off(
             };
             key(b.0, b.1).total_cmp(&key(a.0, a.1)).then(a.0.cmp(&b.0))
         });
-        let mut shift = 0.0_f32;
-        for (g, w) in staves.windows(2).enumerate() {
-            let (upper, (upper_lo, _)) = w[0];
-            let (lower, (_, lower_hi)) = w[1];
-            staff_shift.insert((s, upper), shift);
-            // Both staves move, so solve the recurrence rather than guessing it.
-            // With `shift` the upper staff's cumulative shift, the realized
-            // clearance is `(upper_lo - shift_upper) - (lower_hi - shift_lower)`,
-            // and setting that equal to the target gives
-            //
-            //     shift_lower = shift_upper + target - (upper_lo - lower_hi)
-            //
-            // — the UNSHIFTED gap. Subtracting `shift_upper` from the gap here
-            // and adding it back through `shift +=` would count it twice, which
-            // over-separated every pair below the first by exactly the shift
-            // above it (invisible on two staves, where that shift is 0). The
-            // correction is signed: positive opens a crowded pair, negative
-            // closes a slack one, and it accumulates down the stack.
-            let gap = upper_lo - lower_hi;
-            shift += target_gap(g + 1) - gap;
-            // A beam across two staves keeps each stem reaching it from the
-            // lower staff its least length.
-            for (&(_, above, below), &floor) in floors
-                .range((s, StaffId::from_raw(0), StaffId::from_raw(0))..)
-                .take_while(|((sys, ..), _)| *sys == s)
-            {
-                if below == lower {
-                    if let Some(&above_shift) = staff_shift.get(&(s, above)) {
-                        shift = shift.max(above_shift + floor);
-                    }
+        let inks: Vec<crate::vertical::StaffInk> = staves
+            .iter()
+            .map(|&(st, (_, hi))| {
+                let (bottom, top) = staff_lines
+                    .get(&(s, st))
+                    .copied()
+                    .unwrap_or((hi - STAFF_SPAN, hi));
+                let (down, up) = staff_ink.get(&(s, st)).unwrap_or(&no_ink);
+                crate::vertical::StaffInk {
+                    top,
+                    bottom,
+                    down: down.clone(),
+                    up: up.clone(),
                 }
+            })
+            .collect();
+        let index: BTreeMap<StaffId, usize> = staves
+            .iter()
+            .enumerate()
+            .map(|(i, (st, _))| (*st, i))
+            .collect();
+        let beams: Vec<crate::vertical::BeamBound> = floors
+            .range((s, StaffId::from_raw(0), StaffId::from_raw(0))..)
+            .take_while(|((sys, ..), _)| *sys == s)
+            .filter_map(|(&(_, above, below), &least)| {
+                Some(crate::vertical::BeamBound {
+                    upper: *index.get(&above)?,
+                    lower: *index.get(&below)?,
+                    least,
+                })
+            })
+            .collect();
+        // The system's height with its staves so shifted: its staves' ink
+        // and the ink of no staff, as it is folded into its extent below.
+        let free = (ext.min_y, ext.max_y);
+        let fits = |shifts: &[f32]| {
+            if content_height <= 0.0 {
+                return true;
             }
-            staff_shift.insert((s, lower), shift);
-        }
-        if staves.len() == 1 {
-            staff_shift.insert((s, staves[0].0), 0.0);
+            let (mut lo, mut hi) = free;
+            for (&(_, (a, b)), sh) in staves.iter().zip(shifts) {
+                lo = lo.min(a - sh);
+                hi = hi.max(b - sh);
+            }
+            hi - lo <= content_height
+        };
+        let (_, shifts) = crate::vertical::stack_fitting(&inks, &beams, fits);
+        for (&(st, _), shift) in staves.iter().zip(shifts) {
+            staff_shift.insert((s, st), shift);
         }
     }
 

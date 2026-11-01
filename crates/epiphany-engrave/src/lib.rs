@@ -77,6 +77,7 @@ mod clearance;
 mod family;
 mod quality;
 mod spacing;
+mod vertical;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -360,7 +361,7 @@ pub struct Engraver {
 /// when the resolved layout began carrying shaped text runs, a fourth
 /// primitive each riding its slot and joining its staff's extent, whose count
 /// enters every layout's canonical bytes though no score yet draws one.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(94);
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(95);
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -2905,8 +2906,9 @@ mod tests {
     /// The solve sizes each system's gaps from that system's own content, so one
     /// region's systems end up at genuinely different staff distances: the system
     /// carrying the colliding first measure opens wide, the slack one after it is
-    /// pulled CLOSER than the constrained stage's fixed pitch. Two-sided
-    /// renegotiation is what makes the second half of that sentence true.
+    /// pulled CLOSER than the constrained stage's fixed pitch, to the floor.
+    /// Two-sided renegotiation is what makes the second half of that sentence
+    /// true.
     #[test]
     fn each_system_solves_its_own_staff_distance() {
         use epiphany_layout_ir::{to_constrained, to_logical};
@@ -2935,20 +2937,16 @@ mod tests {
         // The slack system is pulled to exactly what its own content needs:
         // its notes sit inside the staves, so its tallest ink is its lead's
         // treble clefs, reaching above the lower staff and below the upper,
-        // and the solve leaves the band's preferred gap between them, whether
-        // that is wider or narrower than the constrained stage's fixed pitch.
+        // and those keep the clearance at less than the floor, so the floor
+        // sets the staves, nearer than the constrained stage's fixed pitch.
         let clef = epiphany_layout_ir::metrics("gClef")
             .expect("bundled")
             .bounding_box();
-        let (above, below) = (1.0 + clef.top.0, -(1.0 + clef.bottom.0));
-        let gap = epiphany_layout_ir::VerticalBand::inter_staff_gap(
-            epiphany_layout_ir::VerticalBandId(0),
-        )
-        .preferred_height
-        .0;
+        let (above, below) = (1.0 + clef.top.0 - 4.0, -(1.0 + clef.bottom.0));
+        assert!(above + below + crate::vertical::INK_CLEARANCE < crate::vertical::STAFF_FLOOR);
         assert!(
-            (second - (above + below + gap)).abs() < 1e-3,
-            "the slack system realizes its own clefs' clearance: {second}"
+            (second - (4.0 + crate::vertical::STAFF_FLOOR)).abs() < 1e-3,
+            "the slack system stands its staves the floor apart: {second}"
         );
         assert_eq!(report.metric_vector.collision_penalty.0, 0.0);
     }
@@ -2969,40 +2967,19 @@ mod tests {
         let sys = &report.layout.pages[0].systems[0];
         assert_eq!(sys.staves.len(), 2, "two staves in the system");
         // Staff records are top-first; the gap between the two staves' staff-line
-        // boxes now exceeds the fixed inter-staff pitch (12 staff spaces), where
-        // under fixed stacking it is ~8 — the solve opened room for the colliding
-        // ledgers and slur (their content clears with margin to spare).
+        // boxes now exceeds the fixed inter-staff pitch's 8 and the floor, the
+        // solve having opened room for the colliding ledgers and slur in the
+        // column where they meet (`vertical::solve_tests` reads that column's
+        // clearance back).
         let (top, bottom) = (&sys.staves[0].bounding_box, &sys.staves[1].bounding_box);
         let gap = top.origin.y.0 - (bottom.origin.y.0 + bottom.size.height.0);
         assert!(
-            gap > 12.0,
+            gap > 8.0,
             "the colliding staves separate: staff-line gap {gap}"
         );
         assert_eq!(
             report.metric_vector.collision_penalty.0, 0.0,
             "the separated staves collide nowhere"
-        );
-        // A correctly separated system scores ~0 on the deviation-from-preferred
-        // axis: the solve expands each gap until the staves' CONTENT clears the
-        // declared `InterStaffGap` band's preferred height, and the metric reads
-        // that same declared band against the same content. It used to saturate
-        // at 1.0 here -- the metric measured the gap between the staves' *glyph*
-        // ink while the solve targeted their full content, so the ledger and slur
-        // ink the solve had correctly accounted for was rescored as crowding, and
-        // a Standard-tier floor warning fired on a correct layout.
-        let density = report.metric_vector.vertical_density_penalty.0;
-        assert!(
-            density < 1e-4,
-            "a correctly separated system deviates from its declared gap by ~0: {density}"
-        );
-        assert!(
-            !report.warnings.iter().any(|w| matches!(
-                w.kind,
-                epiphany_layout_ir::SolverWarningKind::QualityFloorApproached {
-                    metric: epiphany_layout_ir::QualityMetricKind::VerticalDensity
-                }
-            )),
-            "and earns no vertical-density floor warning"
         );
         // A no-pressure single-staff score has no inter-staff pair, so it is
         // untouched — its goldens stay byte-stable (see the render-svg suite).
@@ -3070,13 +3047,14 @@ mod tests {
             "the bottom staff inherits the shift above it: s1={s1} s2={s2}"
         );
 
-        // Every adjacent pair ends up clear of the fixed pitch, and nothing
-        // collides — the invariant a broken cascade destroys for the lower pair.
+        // Every adjacent pair ends up past the fixed pitch's 8, and nothing
+        // collides — the invariant a broken cascade destroys for the lower pair
+        // (`vertical::solve_tests` reads each pair's clearance back).
         for i in 0..2 {
             let (upper, lower) = (&sys.staves[i].bounding_box, &sys.staves[i + 1].bounding_box);
             let gap = upper.origin.y.0 - (lower.origin.y.0 + lower.size.height.0);
             assert!(
-                gap > 12.0,
+                gap > 8.0,
                 "staves {i}/{} separate: staff-line gap {gap}",
                 i + 1
             );
@@ -3112,10 +3090,12 @@ mod tests {
         // Its endpoints now hug the C6 noteheads, three ledger lines above that
         // staff's top line, so the gap to the staff-line box is a few spaces —
         // not the fixed 0.7 of a staff-relative endpoint. What matters is that it
-        // is an order nearer its own staff than the one above.
-        // The middle staff is more than a staff height (4 spaces) further away.
+        // is an order nearer its own staff than the one above. Set by their
+        // outlines (X5d.2), the staves stand nearer than their whole extents
+        // once set them, so the middle staff is two spaces further away, not
+        // a staff height.
         assert!(
-            gaps[1] > gaps[2] + 4.0,
+            gaps[1] > gaps[2] + 2.0,
             "and by a wide margin over the middle staff: {gaps:?}"
         );
     }

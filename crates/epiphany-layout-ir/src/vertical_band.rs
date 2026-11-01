@@ -43,11 +43,11 @@ pub fn inter_staff_gap_id(region: LayoutObjectId, gap_index: usize) -> VerticalB
 ///   is what the gap bands on either side measure from.
 /// - An **inter-staff gap** band's height is the ink clearance between two
 ///   adjacent staves of a system: from the lowest ink of the upper staff to
-///   the highest ink of the lower. The engraver's inter-staff solve sets every
-///   such clearance, in every system, to the band's `preferred_height`,
-///   opening a crowded pair and closing a slack one; the quality census
-///   (`req:qmc:vertical`) measures the realized clearance against the same
-///   number.
+///   the highest ink of the lower. The quality census (`req:qmc:vertical`)
+///   measures the realized clearance against its `preferred_height`. The
+///   engraver no longer realizes it: since X5d it sets staves column by
+///   column, by their outlines and a floor between their lines, and the
+///   measure is amended to match.
 /// - An **inter-system gap** band's height is the clearance between the
 ///   content of two consecutive systems on a page. Casting stacks systems at
 ///   its `preferred_height` and, on a page that is not the last, spreads them

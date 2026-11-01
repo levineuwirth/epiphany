@@ -505,16 +505,6 @@ fn a_beam_across_two_staves_joins_its_notes_between_them() {
         .glyphs
         .iter()
         .all(|g| !g.glyph.as_str().starts_with("flag")));
-    // The staves realize their band's preferred clearance, and the vertical
-    // metric, which leaves the beams' ink out of both staves as the solve
-    // does, measures no deviation.
-    use epiphany_layout_ir::ConstraintSolver;
-    let report = epiphany_engrave::Engraver::default().solve(
-        &epiphany_layout_ir::to_constrained(&epiphany_layout_ir::to_logical(&loaded.reduced.score)),
-        &epiphany_layout_ir::SolverConfig::default(),
-    );
-    let penalty = report.metric_vector.vertical_density_penalty.0;
-    assert!(penalty < 1e-3, "vertical density penalty {penalty}");
 
     // Two bass staves, whose ink stays within their lines, each beam joining
     // the lower staff's top line to the upper's bottom line: the staves
@@ -2949,11 +2939,10 @@ fn every_system_starts_with_its_clef_and_key() {
     }
 }
 
-/// A vertical band's height means what its kind says, and the solver realizes
-/// it on a full orchestral system: twenty-seven staves, their notes reaching
-/// above and below their staves by turns, each pair of adjacent staves set to
-/// the inter-staff band's ink clearance, which the quality census measures
-/// as realized everywhere.
+/// A full orchestral system: twenty-seven staves, their notes reaching above
+/// and below their staves by turns, each pair of adjacent staves set by its
+/// ink, never nearer than the floor, which, the system standing taller than
+/// its page, compresses toward its least (X5d.2).
 #[test]
 fn a_27_staff_system_realizes_every_inter_staff_clearance() {
     use epiphany_engrave::Engraver;
@@ -3004,20 +2993,19 @@ fn a_27_staff_system_realizes_every_inter_staff_clearance() {
     let systems: Vec<_> = report.layout.systems().collect();
     assert_eq!(systems.len(), 1, "three measures make one system");
     assert_eq!(systems[0].staves.len(), 27);
-    // The census's realized clearances against the bands' declared heights.
-    assert!(
-        report.metric_vector.vertical_density_penalty.0 < 1e-4,
-        "every inter-staff clearance is realized: {}",
-        report.metric_vector.vertical_density_penalty.0
-    );
     // The staves stand top to bottom in part order, the climbing and diving
-    // ones further apart than the plain ones.
+    // ones further apart than the plain ones, no pair nearer than the least
+    // floor, a staff's height and 3.5 between its box's bottom and the next's.
     let tops: Vec<f32> = systems[0]
         .staves
         .iter()
         .map(|s| s.bounding_box.origin.y.0)
         .collect();
     assert!(tops.windows(2).all(|w| w[0] > w[1]));
+    assert!(
+        tops.windows(2).all(|w| w[0] - w[1] >= 4.0 + 3.5 - 1e-3),
+        "{tops:?}"
+    );
     let pitches: Vec<f32> = tops.windows(2).map(|w| w[0] - w[1]).collect();
     let (least, most) = pitches
         .iter()
@@ -7869,4 +7857,190 @@ fn a_grace_note_is_not_drawn_as_a_member_of_its_principals_chord() {
     assert!(!found
         .unchecked
         .contains_key("note: duration not one notated value"));
+}
+
+/// A page of no height, so nothing breaks or spreads it: what the staff solve
+/// alone sets (X5d.2).
+fn unbounded_page() -> epiphany_engrave::PageGeometry {
+    let mut geometry = epiphany_engrave::PageGeometry::default();
+    geometry.size.height = epiphany_layout_ir::StaffSpace(0.0);
+    geometry
+}
+
+/// Engraves `xml` on `geometry`.
+fn engrave_on(
+    name: &str,
+    xml: &str,
+    geometry: epiphany_engrave::PageGeometry,
+) -> (epiphany_cli::Loaded, epiphany_layout_ir::ResolvedLayoutIR) {
+    use epiphany_layout_ir::{to_constrained, to_logical, ConstraintSolver, SolverConfig};
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = epiphany_engrave::Engraver::with_geometry(geometry)
+        .solve(
+            &to_constrained(&to_logical(&loaded.reduced.score)),
+            &SolverConfig::default(),
+        )
+        .layout;
+    (loaded, layout)
+}
+
+/// Each system's staves' lines, bottom and top, top staff first.
+fn staff_lines_by_system(layout: &epiphany_layout_ir::ResolvedLayoutIR) -> Vec<Vec<(f32, f32)>> {
+    use epiphany_core::TypedObjectId;
+    layout
+        .systems()
+        .map(|system| {
+            let mut lines: std::collections::BTreeMap<epiphany_core::StaffId, (f32, f32)> =
+                std::collections::BTreeMap::new();
+            for &i in &system.primitives.strokes {
+                let stroke = &layout.strokes[i as usize];
+                if let TypedObjectId::Staff(staff) = stroke.provenance.source {
+                    if stroke.from.y == stroke.to.y {
+                        let y = stroke.from.y.0;
+                        let entry = lines.entry(staff).or_insert((y, y));
+                        entry.0 = entry.0.min(y);
+                        entry.1 = entry.1.max(y);
+                    }
+                }
+            }
+            let mut order: Vec<(f32, f32)> = lines.into_values().collect();
+            order.sort_by(|a, b| b.1.total_cmp(&a.1));
+            order
+        })
+        .collect()
+}
+
+/// A score of `parts` parts, each `(clef, step, octave)` a whole note in
+/// every one of `measures` measures, the first part's carrying a syllable.
+fn whole_note_parts(parts: &[(&str, &str, u8)], measures: usize, lyric: bool) -> String {
+    let mut list = String::new();
+    let mut body = String::new();
+    for (p, (clef, step, octave)) in parts.iter().enumerate() {
+        list += &format!("<score-part id=\"P{p}\"><part-name>Part {p}</part-name></score-part>");
+        body += &format!("<part id=\"P{p}\">");
+        for m in 1..=measures {
+            body += &format!("<measure number=\"{m}\">");
+            if m == 1 {
+                body += &format!(
+                    "<attributes><divisions>1</divisions><time><beats>4</beats>\
+                     <beat-type>4</beat-type></time>{clef}</attributes>"
+                );
+            }
+            let words = if lyric && p == 0 {
+                "<lyric number=\"1\"><syllabic>single</syllabic><text>la</text></lyric>"
+            } else {
+                ""
+            };
+            body += &format!(
+                "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+                 <duration>4</duration><voice>1</voice><type>whole</type>{words}</note>\
+                 </measure>"
+            );
+        }
+        body += "</part>";
+    }
+    format!("<score-partwise version=\"4.0\"><part-list>{list}</part-list>{body}</score-partwise>")
+}
+
+const TREBLE: &str = "<clef><sign>G</sign><line>2</line></clef>";
+
+/// A syllable keeps 1.5 from the next staff's ink, as MuseScore pads a verse
+/// in its skyline and LilyPond keeps a lyric line from an unrelated staff,
+/// where other ink keeps 0.5.
+#[test]
+fn a_syllable_keeps_its_room_from_the_next_staffs_ink() {
+    let xml = whole_note_parts(&[(TREBLE, "C", 5), (TREBLE, "C", 7)], 1, true);
+    let (_, layout) = engrave_on("lyric_over_high_notes.musicxml", &xml, unbounded_page());
+    let syllable = layout
+        .texts
+        .iter()
+        .find(|t| t.text == "la")
+        .expect("the syllable is drawn");
+    let (l, r) = (
+        syllable.origin.x.0 + syllable.bounds.left.0,
+        syllable.origin.x.0 + syllable.bounds.right.0,
+    );
+    let bottom = syllable.origin.y.0 + syllable.bounds.bottom.0;
+    // The highest ink under it across: the lower staff's high note.
+    let meets = |a: f32, b: f32| b + 0.25 > l && a < r + 0.25;
+    let glyphs = layout.glyphs.iter().filter_map(|g| {
+        let (x, y, b) = (g.position.x.0, g.position.y.0, g.bounding_box);
+        (meets(x + b.left.0, x + b.right.0) && y + b.top.0 < bottom).then_some(y + b.top.0)
+    });
+    let strokes = layout.strokes.iter().filter_map(|s| {
+        let h = s.thickness.0 * 0.5;
+        let top = s.from.y.0.max(s.to.y.0) + h;
+        (meets(s.from.x.0.min(s.to.x.0) - h, s.from.x.0.max(s.to.x.0) + h) && top < bottom)
+            .then_some(top)
+    });
+    let under = glyphs.chain(strokes).fold(f32::NEG_INFINITY, f32::max);
+    let clearance = bottom - under;
+    assert!(
+        (clearance - 1.5).abs() < 0.01,
+        "the syllable stands {clearance} over the next staff's ink"
+    );
+}
+
+/// A later system's lead takes its room between its staves as the first
+/// system's clefs do: a treble clef an octave down over a treble clef reach
+/// further toward each other than the floor, and set both systems alike.
+#[test]
+fn a_later_systems_lead_sets_its_staves_apart() {
+    let tenor =
+        "<clef><sign>G</sign><line>2</line><clef-octave-change>-1</clef-octave-change></clef>";
+    let xml = whole_note_parts(&[(tenor, "B", 3), (TREBLE, "B", 4)], 40, false);
+    let (_, layout) = engrave_on("lead_clefs.musicxml", &xml, unbounded_page());
+    let systems = staff_lines_by_system(&layout);
+    assert!(systems.len() >= 2, "the score wraps");
+    let distance = |s: &[(f32, f32)]| s[0].0 - s[1].1;
+    let first = distance(&systems[0]);
+    assert!(
+        first > 4.0 + 0.01,
+        "the clefs set the first system: {first}"
+    );
+    for s in &systems[1..] {
+        let d = distance(s);
+        assert!(
+            (d - first).abs() < 1e-3,
+            "a later system's lead sets it alike: {d} against {first}"
+        );
+    }
+}
+
+/// The floor between staves is a stave's height, compressed toward 3.5 only
+/// as far as a system needs to stand within its page's content (D109 Q1).
+#[test]
+fn the_floor_compresses_only_as_far_as_the_system_needs() {
+    let xml = whole_note_parts(
+        &[(TREBLE, "B", 4), (TREBLE, "B", 4), (TREBLE, "B", 4)],
+        1,
+        false,
+    );
+    let (_, natural) = engrave_on("three_plain_parts.musicxml", &xml, unbounded_page());
+    let system = natural.systems().next().expect("a system");
+    let height = system.bounding_box.size.height.0;
+    let lines = &staff_lines_by_system(&natural)[0];
+    for w in lines.windows(2) {
+        assert!(
+            (w[0].0 - w[1].1 - 4.0).abs() < 1e-3,
+            "the full floor: {lines:?}"
+        );
+    }
+    // A page whose content holds the system half a space shorter: each of
+    // its two gaps gives a quarter.
+    let mut geometry = epiphany_engrave::PageGeometry::default();
+    geometry.size.height = epiphany_layout_ir::StaffSpace(
+        height - 0.5 + geometry.margins.top.0 + geometry.margins.bottom.0,
+    );
+    let (_, squeezed) = engrave_on("three_plain_parts_short.musicxml", &xml, geometry);
+    let lines = &staff_lines_by_system(&squeezed)[0];
+    for w in lines.windows(2) {
+        let d = w[0].0 - w[1].1;
+        assert!(
+            (d - 3.75).abs() < 0.005,
+            "compressed as far as it needs: {d}"
+        );
+    }
 }

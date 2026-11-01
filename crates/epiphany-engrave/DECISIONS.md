@@ -2679,3 +2679,47 @@ is set:
   (`a_lone_tie_takes_its_side_as_gould_sets_it`,
   `a_close_mark_leaves_its_notes_tie_room`). The engraver itself is
   unchanged.
+
+## ENGRAVER_VERSION 94 → 95: staves set by their outlines (X5d.2, 2026-11-01)
+
+- A system's staves are set column by column (`vertical::stack`), no
+  longer between whole extents: each staff stands as high as it can while
+  its top line keeps the floor below the bottom line of the staff above,
+  its ink 0.5 below the merged outline of every staff above it wherever
+  the two come within 0.25 across, and every beam joining it to a staff
+  above keeps its `rise_limit` (D109 Q1, Q2). Whole extents added a high
+  note in one bar to a low note in another, and fitted no orchestral
+  system on its paper. The outline keeps each rectangle at its own edges,
+  a curve in the 12 chords the family's sky already used; the family
+  placed off its staves, a later system's lead and every primitive of a
+  staff's band feed it, by declared band, and the ink of a beam across two
+  staves feeds neither.
+- The floor is Gould's: staves at least a stave's height apart, 4.0 line
+  to line (*Behind Bars*, p. 488; LilyPond's least between ungrouped
+  staves). It compresses toward MuseScore's `minStaffSpread`, 3.5, only in
+  a system whose ink would otherwise stand taller than its page's content,
+  as far as it needs and no further (`vertical::stack_fitting`). D63's
+  floors by score kind are withdrawn (D109 Q1): MuseScore's one floor with
+  its spread on is 3.5 between every pair, and its spread's cap inside a
+  brace is 6.5 (`maxAkkoladeDistance`).
+- The clearances are MuseScore's (`minVerticalDistance` 0.5,
+  `skylineMinHorizontalClearance` 0.25), Gould giving none (D99).
+  Departures named: LilyPond pads 1.0 between staves and nothing across;
+  MuseScore compares a staff with the one above it alone, where a staff
+  here clears every staff above it (LilyPond's `align-interface.cc`, D109
+  Q2), which matters only where ink passes a staff that draws no lines
+  there.
+- A syllable, and a verse's lines, keep 1.5 from the next staff's ink on
+  the side they stand, as MuseScore pads a verse in its skyline
+  (`LyricsLayout::addToSkyline`, `lyricsMinBottomDistance`) and LilyPond
+  keeps a lyric line from an unrelated staff; the two agree.
+- Tests: `vertical::tests` (the outline, the reach, the clearance, the
+  merged outline, the beam bound, the floor and its compression) and
+  `vertical::solve_tests`, which read every gap back from the baked output
+  pairwise; `a_syllable_keeps_its_room_from_the_next_staffs_ink`,
+  `a_later_systems_lead_sets_its_staves_apart` and
+  `the_floor_compresses_only_as_far_as_the_system_needs` in the CLI's
+  render tests. The quality census still reads the whole extents' unit,
+  which no solve now realizes, until X5d.4 amends `req:qmc:vertical`; the
+  tests that asserted it realized assert the rule instead. Four goldens
+  change, re-blessed with their renders before and after recorded (D10).
