@@ -71,6 +71,7 @@ pub mod engrave_theory;
 pub mod engraving;
 pub mod glyph;
 pub mod hittest;
+mod lines;
 pub mod logical;
 pub mod provenance;
 pub mod quality;
@@ -100,10 +101,11 @@ pub use constrained::{
     ConstrainedLayoutIR, ConstrainedLayoutRegion, ConstrainedValidationError, ConstraintParameters,
     ConstraintRegistryId, CrossStaffBeam, Curve, EndingStart, FamilyLine, FamilyMark, GlyphObject,
     GlyphObjectId, GlyphStyle, GroupSign, GroupSpan, HairpinShape, LayoutConstraint,
-    LayoutTransformError, LeadGlyph, MeasureMark, MeasureStart, NoteMarkPart, PlaceOrder, Room,
-    Row, SpanAnchor, SpringSlot, Stroke, SystemLead, BAR_NOTE_DISTANCE, CROSS_STEM_MIN,
-    HAIRPIN_CONT_HEIGHT, HAIRPIN_HEIGHT, HAIRPIN_MIN_LENGTH, LYRIC_DASH_MAX,
-    LYRIC_DASH_MAX_DISTANCE, LYRIC_DASH_MIN, LYRIC_MELISMA_MIN, TRILL_WIGGLE,
+    LayoutTransformError, LeadGlyph, LineDashes, LineText, LineTextRole, MeasureMark, MeasureStart,
+    NoteMarkPart, PlaceOrder, Room, Row, SpanAnchor, SpringSlot, Stroke, SystemLead,
+    BAR_NOTE_DISTANCE, CROSS_STEM_MIN, GLISSANDO_WIGGLE, HAIRPIN_CONT_HEIGHT, HAIRPIN_HEIGHT,
+    HAIRPIN_MIN_LENGTH, LYRIC_DASH_MAX, LYRIC_DASH_MAX_DISTANCE, LYRIC_DASH_MIN, LYRIC_MELISMA_MIN,
+    TRILL_WIGGLE,
 };
 pub use engrave_theory::{
     accidental_glyph, clef_glyph, clef_glyph_for, flag_count, flag_glyph, has_stem, key_signature,
@@ -162,10 +164,10 @@ pub use spatial::{
     BoundingBox, Margins, Point, Rect, ScaleContext, Size2D, StaffSpace, Transform2D,
 };
 pub use text::{
-    face_by_hash, shape_text, shaping_identity, symbol_run, AxisTag, CaretAffinity, CaretStop,
-    ClusterMap, FaceSynthesis, FeatureSetting, LanguageTag, PositionedGlyph, ResolvedText,
-    ScriptTag, ShapedSegment, ShaperId, ShapingGaps, Symbol, SymbolPlace, TextAlign, TextCluster,
-    TextDirection, TextFace, TextFaceIdentity, TextObject, TextShapingIdentity, Turn,
+    face_by_hash, rotated, shape_text, shaping_identity, symbol_run, AxisTag, CaretAffinity,
+    CaretStop, ClusterMap, FaceSynthesis, FeatureSetting, LanguageTag, PositionedGlyph,
+    ResolvedText, ScriptTag, ShapedSegment, ShaperId, ShapingGaps, Symbol, SymbolPlace, TextAlign,
+    TextCluster, TextDirection, TextFace, TextFaceIdentity, TextObject, TextShapingIdentity, Turn,
     UnicodeVersion,
 };
 pub use time_axis::{

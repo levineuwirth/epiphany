@@ -2694,3 +2694,57 @@ is set:
   note's written pitch apart from the shift it plays at (`Note::epitch`)
   (`the_notes_under_an_ottava_stand_at_their_written_place`).
 
+## ENGRAVER_VERSION 95 → 96: pedal lines, ottavas, text lines, brackets and glissandi (X4d.1, 2026-11-01)
+
+The projection draws the family's other lines, each a placed member a
+solver splits where a system break cuts it (`FamilyLine::Extension`,
+`FamilyLine::Glissando`), by MuseScore 4.7.5's defaults where Gould agrees
+or gives no figure (`epiphany-layout-ir`'s `lines.rs` cites each). A probe
+exported by MuseScore 4.7.5 itself (`x4d/probes/ms1/` in the private
+corpus cache) gives where each stands once autoplace clears it, and the
+engraver's own placing reproduces it:
+
+- A pedal line: the pedal sign half a space before its note, at least 2.5
+  under the staff; a solid line 0.11 wide from half a space after the sign,
+  its foot on the sign's baseline, to 0.75 before the column its release
+  falls in (the barline, where a measure starts there), or 1.25 before a
+  note where the staff's next pedal starts, where it rises 1.2. A pedal
+  drawn without its sign opens with that hook. Every pedal line of a staff
+  in a system stands at one height (`processLines`, `align`; Gould lets
+  consecutive signs align where there is room, p. 333). Over a system break
+  its next piece opens with "(Ped.)" (Gould's reminder, p. 332).
+- An ottava: its numeral at its first note, over the staff for an 8va or
+  15ma and under it for an 8vb, at least 2.0 off it; a dashed line from half
+  a space after the numeral, hanging from its top over the staff and on its
+  baseline under it (Gould, p. 28), to a corner 1.0 toward the staff a space
+  past its last note's ink, riding that note's column, never past the next
+  note once the system is set (`Ottava::linePos`; Gould, p. 30); its
+  numeral again at a new system. The numerals and the pedal sign are
+  Bravura's symbols at Bravura's size, as MuseScore sets a line's `<sym>`
+  text at its music font's.
+- A text line: over its staff at least 1.0 off it, its words upright and
+  its line through their middle, dashed as its style says, ending a space
+  before the column it ends at (`SLine::linePos`). One whose words open with
+  a dynamic term is a verbal crescendo, MuseScore's hairpin of the line
+  type: below by the hairpin rule (D79's Q11), italic on the line's
+  baseline, clear of a dynamic at either end and in its chain's row, its
+  next piece opening with "(cresc.)" or "(dim.)" (Gould, pp. 101 and 106).
+  A bracket draws its line alone, hooked 1.5 toward the staff at its end,
+  the model keeping no hook of its own.
+- Dashes are laid piece by piece as MuseScore distributes a dash pattern:
+  one more dash than the whole pairs of dash and gap a piece holds, its
+  first and last at its ends.
+- A glissando: on the line joining its heads' centres, from a quarter space
+  past its first note's ink at its head to a quarter space before its last
+  note's at the half its line comes from, so short of an accidental (Gould,
+  p. 141); between heads on one line a quarter space up or down at each end
+  the way it slides (p. 142); its heights read again on the line joining
+  its heads where the system sets them, and over a system break its
+  gradient kept across the pieces (p. 142); "gliss." in Edwin italic at 8
+  points centred along each piece it is shorter than, turned to its slope;
+  wavy, its pieces set as `wiggleGlissando`s. The model keeps no head for a
+  glissando: the `k`th of the glissandi joining two notes takes the `k`th
+  head of each chord from the top. A glissando whose notes stand on other
+  staves is left undrawn.
+- The corpus report names each of these lines the engraver leaves undrawn
+  (`the_lines_undrawn_are_counted`).

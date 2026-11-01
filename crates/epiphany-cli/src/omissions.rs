@@ -781,6 +781,12 @@ pub fn omissions(
         let class = match spanner.kind {
             SpannerKind::Hairpin(_) => "hairpin",
             SpannerKind::TrillExtension => "trill line",
+            // X4d.1's lines, each named where the engraver leaves it undrawn.
+            SpannerKind::PedalLine(_) | SpannerKind::PedalBracket(_) => "pedal line",
+            SpannerKind::OctaveLine(_) => "ottava",
+            SpannerKind::Glissando => "glissando",
+            SpannerKind::TextLine(_) => "text line",
+            SpannerKind::Bracket(_) => "bracket",
             _ => continue,
         };
         if !inked.contains(&TypedObjectId::Spanner(spanner.id)) {

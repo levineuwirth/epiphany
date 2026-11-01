@@ -27,6 +27,7 @@ use crate::engrave_theory::{
 };
 use crate::engraving::{EngravingDecision, OverrideKind, OverridePriority, OverrideTarget};
 use crate::glyph::{metrics, BravuraCatalog, GlyphCatalog, GlyphCatalogIdentity, GlyphReference};
+use crate::lines;
 use crate::logical::{
     apply_offset, BarlineKind, LayoutContent, LogicalLayoutIR, MarkerContent, MarkerPlace,
     PlacedClef, PlacedKeySignature, RepeatContent, RepeatPlacement, ScoreVersion, SlurContent,
@@ -218,6 +219,11 @@ pub struct ConstrainedLayoutIR {
     /// Each ending's start: a solver that breaks a system at the barline an
     /// ending opens after draws the whole ending on the next system.
     pub endings: Vec<EndingStart>,
+    /// The runs the family's lines draw piece by piece (X4d.1): a pedal
+    /// line's, an ottava's or a verbal crescendo's continuation at the start
+    /// of each piece a system break carries into a later system, and a
+    /// glissando's words along each piece.
+    pub line_texts: Vec<LineText>,
 }
 
 /// An ending's start (see [`ConstrainedLayoutIR::endings`]): the barline
@@ -278,6 +284,70 @@ pub enum FamilyLine {
     /// ([`TRILL_WIGGLE`], one in each of its advance, as many as the piece
     /// holds to the nearest: `LineSegment::symbolLine`).
     Trill,
+    /// A line drawn from after its sign to its end (X4d.1): a pedal line,
+    /// an ottava, a text line or a bracket. Its stroke is solid, or set as
+    /// dashes along each piece ([`LineDashes`]); a piece a system break
+    /// carries into a later system opens with the line's continuation, where
+    /// it has one ([`ConstrainedLayoutIR::line_texts`]). Where `before`
+    /// names a slot, the line's end and its hook stand no further right than
+    /// that slot's column once the system is set (an ottava's corner never
+    /// passes the next note, `Ottava::linePos`).
+    Extension {
+        dashes: Option<LineDashes>,
+        before: Option<SpringSlotId>,
+    },
+    /// A glissando from head to head (X4d.1). Split where a system break cuts
+    /// it, its pieces keep its slope, as MuseScore interpolates them across
+    /// the break and Gould keeps the gradient of the interval (*Behind Bars*,
+    /// p. 142); wavy, each piece is set as wiggles ([`GLISSANDO_WIGGLE`]); its
+    /// words stand along each piece they fit ([`ConstrainedLayoutIR::line_texts`]).
+    /// `heads` are its two heads' centres in the projection's frame: its ends
+    /// keep their distance across from them, and once the system is set its
+    /// heights are read again on the line joining them where the system sets
+    /// them, as MuseScore lays it out on the system as set.
+    Glissando {
+        wavy: bool,
+        heads: [Point; 2],
+    },
+}
+
+/// A dashed line's pattern (X4d.1), in staff spaces: each piece of it is set
+/// as dashes `dash` long, one more than the pairs of dash and `gap` its
+/// length holds whole, the gaps shared out evenly so its first and last dash
+/// stand at its ends, as MuseScore distributes a dash pattern over a line's
+/// length (`distributedDashPattern`).
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub struct LineDashes {
+    pub dash: f32,
+    pub gap: f32,
+}
+
+/// A glissando's wiggle, which a solver sets along a wavy glissando piece by
+/// piece, turned to its slope.
+pub const GLISSANDO_WIGGLE: char = '\u{EAAF}';
+
+/// A run a line of the family draws in each later piece or along each piece
+/// (X4d.1; see [`ConstrainedLayoutIR::line_texts`]).
+#[derive(Clone, PartialEq, Debug)]
+pub struct LineText {
+    /// The line's stroke.
+    pub line: GlyphObjectId,
+    /// The run, its origin where the projection would set it at the start of
+    /// the line's first piece, at the line's height.
+    pub run: crate::text::ResolvedText,
+    pub role: LineTextRole,
+}
+
+/// Where a line's run stands in a piece (see [`LineText`]).
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub enum LineTextRole {
+    /// At the start of each piece a system break carries into a later system,
+    /// the piece's line starting `gap` after its ink: a pedal line's
+    /// "(Ped.)", an ottava's numeral, a verbal crescendo's "(cresc.)".
+    Continuation { gap: f32 },
+    /// Centred along each piece it is shorter than, turned to the piece's
+    /// slope, its baseline `raise` over the line: a glissando's words.
+    Along { raise: f32 },
 }
 
 /// A trill line's wiggle, which a solver sets along its line piece by piece.
@@ -406,6 +476,13 @@ pub enum PlaceOrder {
     Trill,
     Fermata,
     Dynamic,
+    /// A text line or bracket (MuseScore's other spanners, after the
+    /// dynamics and hairpins).
+    TextLine,
+    /// An ottava, then a pedal line, every pedal line of a staff in a system
+    /// in one row (`processLines`, `align`).
+    Ottava,
+    Pedal,
     Lyric,
     StaffText,
     Tempo,
@@ -1309,6 +1386,7 @@ pub fn try_to_constrained(
     let mut constrained_regions = Vec::new();
     let mut span_anchors: Vec<SpanAnchor> = Vec::new();
     let mut endings: Vec<EndingStart> = Vec::new();
+    let mut line_texts: Vec<LineText> = Vec::new();
     let mut system_leads: Vec<SystemLead> = Vec::new();
     let mut staff_groups: Vec<GroupSpan> = Vec::new();
     let mut cross_staff_beams: Vec<CrossStaffBeam> = Vec::new();
@@ -3115,7 +3193,19 @@ pub fn try_to_constrained(
                     kind: SpannerKind::Hairpin(_),
                     start,
                     end,
+                    ..
                 })) => {
+                    for time in [place_time(start), place_time(end)].into_iter().flatten() {
+                        chain_ends.entry((st, note_at(time))).or_default().push(id);
+                    }
+                }
+                // A verbal crescendo is a hairpin of the line type (X4d.1).
+                Some(LayoutContent::Spanner(SpannerContent {
+                    kind: SpannerKind::TextLine(def),
+                    start,
+                    end,
+                    ..
+                })) if lines::dynamic_term(def.text.as_str()).is_some() => {
                     for time in [place_time(start), place_time(end)].into_iter().flatten() {
                         chain_ends.entry((st, note_at(time))).or_default().push(id);
                     }
@@ -3436,6 +3526,201 @@ pub fn try_to_constrained(
         let mut hairpin_anchors: Vec<(GlyphObjectId, SpringSlotId, SpringSlotId)> = Vec::new();
         // This region's first run and family member.
         let (text_start, family_start) = (texts.len(), family.len());
+
+        // The family's lines (X4d.1): each staff's pedal starts, by the
+        // column of their time, which a pedal released there ends further
+        // before; each glissando's rank among those joining its two notes,
+        // which pairs it with a head of each; and each note's pitches.
+        let mut pedal_starts: BTreeSet<(StaffId, ColumnKey)> = BTreeSet::new();
+        let mut gliss_pairs: BTreeMap<(EventId, EventId), Vec<u128>> = BTreeMap::new();
+        let mut note_pitches: BTreeMap<EventId, Vec<PitchId>> = BTreeMap::new();
+        for (provenance, staff, content) in &specs {
+            match (content, provenance.source) {
+                (Some(LayoutContent::Spanner(line)), _) => {
+                    match (&line.kind, &line.start, &line.end) {
+                        (SpannerKind::PedalLine(_) | SpannerKind::PedalBracket(_), start, _) => {
+                            if let (Some(st), Some(t0)) = (*staff, place_time(start)) {
+                                pedal_starts.insert((st, note_at(t0)));
+                            }
+                        }
+                        (
+                            SpannerKind::Glissando,
+                            MarkerPlace::Event { event: e0, .. },
+                            MarkerPlace::Event { event: e1, .. },
+                        ) => gliss_pairs
+                            .entry((*e0, *e1))
+                            .or_default()
+                            .push(provenance.stable_id.0),
+                        _ => {}
+                    }
+                }
+                (Some(LayoutContent::Note(note)), TypedObjectId::Event(e)) => {
+                    note_pitches.insert(e, note.pitches.iter().map(|p| p.pitch).collect());
+                }
+                _ => {}
+            }
+        }
+        let gliss_rank: BTreeMap<u128, (usize, usize)> = gliss_pairs
+            .values_mut()
+            .flat_map(|ids| {
+                ids.sort_unstable();
+                let n = ids.len();
+                ids.iter().enumerate().map(move |(k, id)| (*id, (k, n)))
+            })
+            .collect();
+        // The ink a staff's column holds: its heads with their ledger lines,
+        // dots and accidentals, their stems and flags, and its rests.
+        let staff_column_ink =
+            |st: StaffId, key: &ColumnKey, only: Option<EventId>| -> Vec<InkBox> {
+                let Some(info) = columns.get(key) else {
+                    return Vec::new();
+                };
+                let yo = y_origin(st);
+                let mut boxes = Vec::new();
+                if let Some(refs) = column_heads.get(&(Some(st), key.clone())) {
+                    let mut stems = BTreeSet::new();
+                    for r in refs {
+                        let head = r.get(&pitch_heads, &unpitched_heads);
+                        if only.is_some_and(|e| e != head.event) {
+                            continue;
+                        }
+                        boxes.extend(column_ink_boxes(head, info.x, yo));
+                        if stems.insert((head.event, head.comp)) {
+                            if let Some(seg) = event_stems
+                                .get(&head.event)
+                                .and_then(|segs| segs.iter().find(|seg| seg.comp == head.comp))
+                            {
+                                boxes.extend(stem_ink(seg, info.x));
+                            }
+                        }
+                    }
+                }
+                if only.is_none() {
+                    for rest in event_rests.values().flatten() {
+                        if rest.key != *key || rest.staff != Some(st) || !rest.visible {
+                            continue;
+                        }
+                        if let Some(b) = rest.name.and_then(metrics).map(|m| m.bounding_box()) {
+                            boxes.push(InkBox {
+                                left: info.x + b.left.0,
+                                right: info.x + b.right.0,
+                                bottom: rest.y + b.bottom.0,
+                                top: rest.y + b.top.0,
+                                behind: false,
+                            });
+                        }
+                    }
+                }
+                boxes
+            };
+        // The right edge of the ink of a staff's last note or rest from `t0`
+        // and before `t1`, in its column (`Ottava::linePos`: the end chord's
+        // staff shape), and that column's slot.
+        let last_ink_right =
+            |st: StaffId, t0: &TimePoint, t1: &TimePoint| -> Option<(f32, SpringSlotId)> {
+                columns
+                    .range(note_at(t0.clone())..ColumnKey::Timed(t1.clone(), ColumnRole::Breath))
+                    .rev()
+                    .filter(|(key, _)| matches!(key, ColumnKey::Timed(_, ColumnRole::Note)))
+                    .find_map(|(key, info)| {
+                        let right = staff_column_ink(st, key, None)
+                            .iter()
+                            .map(|b| b.right)
+                            .reduce(f32::max)?;
+                        Some((right, info.slot))
+                    })
+            };
+        // A glissando's line, from its first note's head to its last's, and
+        // the slots of the two heads' columns: the `k`th of `n` glissandi
+        // joining the notes takes the `k`th head of each chord from the top
+        // (the model keeps no head for a glissando), each end clear of its
+        // chord's ink at its head by a quarter space, the line kept on the
+        // one joining the heads' centres (`TLayout::layoutNoteAnchoredLine`).
+        // Both notes must stand on the line's staff.
+        let glissando_line = |(e0, e1): (EventId, EventId),
+                              (k, _n): (usize, usize),
+                              st: StaffId|
+         -> Option<GlissandoLine> {
+            if event_staff.get(&e0) != Some(&st) || event_staff.get(&e1) != Some(&st) {
+                return None;
+            }
+            let heads = |e: EventId, last: bool| -> Vec<&Head> {
+                let mut heads: Vec<&Head> = note_pitches
+                    .get(&e)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|p| {
+                        let heads = pitch_heads.get(p)?;
+                        if last {
+                            heads.last()
+                        } else {
+                            heads.first()
+                        }
+                    })
+                    .collect();
+                heads.sort_by(|a, b| b.y.total_cmp(&a.y));
+                heads
+            };
+            let (from, to) = (heads(e0, true), heads(e1, false));
+            let a = *from.get(k.min(from.len().checked_sub(1)?))?;
+            let b = *to.get(k.min(to.len().checked_sub(1)?))?;
+            let (ia, ib) = (columns.get(&a.key)?, columns.get(&b.key)?);
+            if ib.x <= ia.x {
+                return None;
+            }
+            let ba = metrics(a.name)?.bounding_box();
+            let bb = metrics(b.name)?.bounding_box();
+            let mut ca = Point::new(ia.x + a.dx + (ba.left.0 + ba.right.0) * 0.5, a.y);
+            let mut cb = Point::new(ib.x + b.dx + (bb.left.0 + bb.right.0) * 0.5, b.y);
+            // Which way it slides: by height, or between heads on one line
+            // by alteration, a quarter space that way at each end.
+            let up = match b.step.cmp(&a.step) {
+                Ordering::Greater => 1.0,
+                Ordering::Less => -1.0,
+                Ordering::Equal => {
+                    match b.alteration.unwrap_or(0).cmp(&a.alteration.unwrap_or(0)) {
+                        Ordering::Greater => 1.0,
+                        Ordering::Less => -1.0,
+                        Ordering::Equal => 0.0,
+                    }
+                }
+            };
+            // Each end a quarter space the way it slides: its start back
+            // from it, its end on toward it (y up).
+            if a.step == b.step {
+                ca = Point::new(ca.x.0, ca.y.0 - lines::GLISSANDO_SAME_LINE * up);
+                cb = Point::new(cb.x.0, cb.y.0 + lines::GLISSANDO_SAME_LINE * up);
+            }
+            // Clear of its first chord's ink at its head, and of its last
+            // chord's at the half of its head the line comes from.
+            let start = staff_column_ink(st, &a.key, Some(e0))
+                .iter()
+                .filter(|i| i.bottom < a.y + ba.top.0 && i.top > a.y + ba.bottom.0)
+                .map(|i| i.right)
+                .reduce(f32::max)?
+                + lines::GLISSANDO_CLEAR;
+            let middle = b.y + (bb.bottom.0 + bb.top.0) * 0.5;
+            let (low, high) = if up > 0.0 {
+                (b.y + bb.bottom.0, middle + lines::GLISSANDO_LEDGER)
+            } else if up < 0.0 {
+                (middle - lines::GLISSANDO_LEDGER, b.y + bb.top.0)
+            } else {
+                (b.y + bb.bottom.0, b.y + bb.top.0)
+            };
+            let end = staff_column_ink(st, &b.key, Some(e1))
+                .iter()
+                .filter(|i| i.bottom < high && i.top > low)
+                .map(|i| i.left)
+                .reduce(f32::min)?
+                - lines::GLISSANDO_CLEAR;
+            if end <= start {
+                return None;
+            }
+            let slope = (cb.y.0 - ca.y.0) / (cb.x.0 - ca.x.0);
+            let from = Point::new(start, ca.y.0 + (start - ca.x.0) * slope);
+            let to = Point::new(end, cb.y.0 - (cb.x.0 - end) * slope);
+            Some((from, to, (ia.slot, ib.slot), [ca, cb]))
+        };
 
         // Pass 2 — emit. Each logical object's exact provenance lands on exactly
         // one primitive; the extras a multi-component object owns are synthesized.
@@ -4839,6 +5124,7 @@ pub fn try_to_constrained(
                                 kind: SpannerKind::Hairpin(direction),
                                 start,
                                 end,
+                                ..
                             })),
                             Some(st),
                         ) => {
@@ -4937,6 +5223,7 @@ pub fn try_to_constrained(
                                 kind: SpannerKind::TrillExtension,
                                 start,
                                 end,
+                                ..
                             })),
                             Some(_),
                         ) => {
@@ -5070,6 +5357,463 @@ pub fn try_to_constrained(
                                         line: Some(FamilyLine::Trill),
                                     });
                                     emit.stroke(carrier);
+                                    true
+                                }
+                                None => false,
+                            }
+                        }
+                        (Some(LayoutContent::Spanner(line)), Some(st))
+                            if matches!(
+                                line.kind,
+                                SpannerKind::PedalLine(_)
+                                    | SpannerKind::PedalBracket(_)
+                                    | SpannerKind::OctaveLine(_)
+                                    | SpannerKind::TextLine(_)
+                                    | SpannerKind::Bracket(_)
+                            ) =>
+                        {
+                            // A line from after its sign or words to its end
+                            // (X4d.1), placed again by a solver once its system
+                            // is set: a pedal line under its staff, an ottava
+                            // over or under it, a text line over it, a verbal
+                            // crescendo by the hairpin rule.
+                            let band = band_of(staff);
+                            let start_time = place_time(&line.start);
+                            let end_time = match &line.end {
+                                MarkerPlace::Event { time, .. } | MarkerPlace::Time(time) => {
+                                    Some(time.clone())
+                                }
+                                MarkerPlace::Unresolved => None,
+                            };
+                            let drawn_line = start_time.zip(end_time).and_then(|(t0, t1)| {
+                                let first = first_column(&columns, &t0, true)?;
+                                let last = line_end_column(&columns, &t1)?;
+                                Some((t0, t1, first, last))
+                            });
+                            match drawn_line {
+                                Some((t0, t1, (_, first), (_, last))) => {
+                                    let synth = |k: u128| {
+                                        Provenance::synthesized(
+                                            provenance.source,
+                                            SynthesisKind::Registered(LINE_SYNTHESIS),
+                                            SynthesisInstanceKey(k),
+                                            provenance.dependencies.clone(),
+                                        )
+                                    };
+                                    // What each kind draws: its sign or words, its
+                                    // line's ends, height, width and dashes, its
+                                    // hooks, and how a solver places it.
+                                    let mut sign: Option<ResolvedText> = None;
+                                    let mut continuation: Option<ResolvedText> = None;
+                                    let (x0, mut x1, y, width, dashes);
+                                    let mut start_hook: Option<f32> = None;
+                                    let mut end_hook: Option<f32> = None;
+                                    // The slot its end rides, and one its end
+                                    // may not pass.
+                                    let mut end_slot = last.slot;
+                                    let mut before: Option<SpringSlotId> = None;
+                                    let placement: Autoplace;
+                                    match &line.kind {
+                                        SpannerKind::PedalLine(_)
+                                        | SpannerKind::PedalBracket(_) => {
+                                            let signed =
+                                                matches!(line.kind, SpannerKind::PedalLine(_));
+                                            let baseline = yo - lines::PEDAL_BELOW;
+                                            width = lines::PEDAL_LINE_WIDTH;
+                                            dashes = None;
+                                            y = baseline + width * 0.5;
+                                            if signed {
+                                                let run = lines::symbols(
+                                                    synth(0),
+                                                    &[lines::PEDAL_SIGN],
+                                                    Point::new(
+                                                        first.x - lines::PEDAL_SIGN_LEAD,
+                                                        baseline,
+                                                    ),
+                                                );
+                                                x0 = run.origin.x.0
+                                                    + run.bounds.right.0
+                                                    + lines::LINE_TEXT_GAP;
+                                                continuation = Some(lines::symbols(
+                                                    synth(3),
+                                                    &[
+                                                        lines::PEDAL_PARENS.0,
+                                                        lines::PEDAL_SIGN,
+                                                        lines::PEDAL_PARENS.1,
+                                                    ],
+                                                    Point::new(first.x, baseline),
+                                                ));
+                                                sign = Some(run);
+                                            } else {
+                                                x0 = first.x + width * 0.5;
+                                                start_hook = Some(lines::PEDAL_HOOK);
+                                            }
+                                            // Before the column its release falls in,
+                                            // further before a note where the next
+                                            // pedal of its staff starts.
+                                            let retaken = last.note_column
+                                                && pedal_starts
+                                                    .contains(&(st, note_at(t1.clone())));
+                                            x1 = last.x
+                                                - if retaken {
+                                                    lines::PEDAL_END_INSET_RETAKEN
+                                                } else {
+                                                    lines::PEDAL_END_INSET
+                                                };
+                                            end_hook = Some(lines::PEDAL_HOOK);
+                                            placement = Autoplace {
+                                                above: false,
+                                                order: PlaceOrder::Pedal,
+                                                min_distance: lines::PEDAL_MIN_DISTANCE,
+                                                row: Some(Row {
+                                                    id: st.as_u128(),
+                                                    centre: y,
+                                                }),
+                                                between: None,
+                                                across: None,
+                                            };
+                                        }
+                                        SpannerKind::OctaveLine(shift) => {
+                                            let above = shift.0 > 0;
+                                            let numeral = lines::ottava_numeral(shift.0);
+                                            width = lines::OTTAVA_LINE_WIDTH;
+                                            dashes = Some(lines::OTTAVA_DASHES);
+                                            // Over the staff the numeral's top and the
+                                            // line's on one height, the line hanging;
+                                            // under it, the numeral's baseline and the
+                                            // line's foot.
+                                            let at = |run: ResolvedText| {
+                                                let mut run = run;
+                                                let dy = if above {
+                                                    yo + STAFF_HEIGHT + lines::OTTAVA_POS
+                                                        - run.bounds.top.0
+                                                } else {
+                                                    yo - lines::OTTAVA_POS
+                                                };
+                                                run.origin = Point::new(run.origin.x.0, dy);
+                                                run
+                                            };
+                                            y = if above {
+                                                yo + STAFF_HEIGHT + lines::OTTAVA_POS - width * 0.5
+                                            } else {
+                                                yo - lines::OTTAVA_POS + width * 0.5
+                                            };
+                                            match numeral {
+                                                Some(numeral) => {
+                                                    let run = at(lines::symbols(
+                                                        synth(0),
+                                                        &[numeral],
+                                                        Point::new(first.x, 0.0),
+                                                    ));
+                                                    x0 = run.origin.x.0
+                                                        + run.bounds.right.0
+                                                        + lines::LINE_TEXT_GAP;
+                                                    continuation = Some(at(lines::symbols(
+                                                        synth(3),
+                                                        &[numeral],
+                                                        Point::new(first.x, 0.0),
+                                                    )));
+                                                    sign = Some(run);
+                                                }
+                                                None => x0 = first.x,
+                                            }
+                                            // A space past its last note's ink, riding
+                                            // that note's column, never past the next
+                                            // note once the system is set.
+                                            match last_ink_right(st, &t0, &t1) {
+                                                Some((right, slot)) => {
+                                                    x1 = right + lines::OTTAVA_END_PAST
+                                                        - width * 0.5;
+                                                    end_slot = slot;
+                                                    before = first_column(&columns, &t1, true)
+                                                        .map(|(_, c)| c.slot);
+                                                }
+                                                None => x1 = last.x - width * 0.5,
+                                            }
+                                            end_hook = Some(lines::OTTAVA_HOOK);
+                                            placement = Autoplace {
+                                                above,
+                                                order: PlaceOrder::Ottava,
+                                                min_distance: lines::OTTAVA_MIN_DISTANCE,
+                                                row: None,
+                                                between: None,
+                                                across: None,
+                                            };
+                                        }
+                                        SpannerKind::TextLine(_) | SpannerKind::Bracket(_) => {
+                                            let words = match &line.kind {
+                                                SpannerKind::TextLine(def) => def.text.as_str(),
+                                                _ => "",
+                                            };
+                                            match lines::dynamic_term(words) {
+                                                Some(crescendo) => {
+                                                    // A verbal crescendo, as a hairpin of
+                                                    // the line type: below, or above a
+                                                    // voice's staff, clear of a dynamic at
+                                                    // either end, in its chain's row.
+                                                    let above = vocal.contains(&st);
+                                                    let baseline = if above {
+                                                        yo + STAFF_HEIGHT
+                                                            + lines::VERBAL_HAIRPIN_ABOVE
+                                                    } else {
+                                                        yo - lines::VERBAL_HAIRPIN_BELOW
+                                                    };
+                                                    width = lines::VERBAL_HAIRPIN_WIDTH;
+                                                    dashes = Some(lines::VERBAL_HAIRPIN_DASHES);
+                                                    y = baseline + width * 0.5;
+                                                    let mut start = first.x;
+                                                    if let Some(&(_, right)) =
+                                                        dynamic_ink.get(&(st, note_at(t0.clone())))
+                                                    {
+                                                        start =
+                                                            start.max(right + HAIRPIN_DYNAMIC_GAP);
+                                                    }
+                                                    let (run, gaps) = shape_text(
+                                                        synth(0),
+                                                        words,
+                                                        TextFace::Italic,
+                                                        lines::TEXT_LINE_SIZE,
+                                                        TextAlign::Left,
+                                                        Point::new(start, baseline),
+                                                    );
+                                                    for d in
+                                                        text_diagnostics(provenance.source, &gaps)
+                                                    {
+                                                        emit.diag(d.source, d.kind);
+                                                    }
+                                                    x0 = run.origin.x.0
+                                                        + run.bounds.right.0
+                                                        + lines::LINE_TEXT_GAP;
+                                                    sign = Some(run);
+                                                    let (cont, _) = shape_text(
+                                                        synth(3),
+                                                        if crescendo {
+                                                            "(cresc.)"
+                                                        } else {
+                                                            "(dim.)"
+                                                        },
+                                                        TextFace::Italic,
+                                                        lines::TEXT_LINE_SIZE,
+                                                        TextAlign::Left,
+                                                        Point::new(first.x, baseline),
+                                                    );
+                                                    continuation = Some(cont);
+                                                    x1 = match dynamic_ink
+                                                        .get(&(st, note_at(t1.clone())))
+                                                    {
+                                                        Some(&(left, _)) => (last.x
+                                                            - HAIRPIN_END_INSET)
+                                                            .min(left - HAIRPIN_DYNAMIC_GAP),
+                                                        None => last.x - HAIRPIN_END_INSET,
+                                                    };
+                                                    placement = Autoplace {
+                                                        above,
+                                                        order: PlaceOrder::Dynamic,
+                                                        min_distance: HAIRPIN_MIN_DISTANCE,
+                                                        row: Some(Row {
+                                                            id: chain_of(
+                                                                &mut chains,
+                                                                provenance.stable_id.0,
+                                                            ),
+                                                            centre: y,
+                                                        }),
+                                                        between: grand_neighbour(&grand, st, above)
+                                                            .map(|n| band_of(Some(n))),
+                                                        across: None,
+                                                    };
+                                                }
+                                                None => {
+                                                    // A text line over its staff, the line
+                                                    // through its words' middle; a bracket,
+                                                    // its line alone, hooked toward the
+                                                    // staff at its end.
+                                                    y = yo + STAFF_HEIGHT + lines::TEXT_LINE_ABOVE;
+                                                    width = lines::TEXT_LINE_WIDTH;
+                                                    dashes = match line.line {
+                                                        LineStyle::Solid => None,
+                                                        _ => Some(lines::TEXT_LINE_DASHES),
+                                                    };
+                                                    if words.is_empty() {
+                                                        x0 = first.x;
+                                                    } else {
+                                                        let (mut run, gaps) = shape_text(
+                                                            synth(0),
+                                                            words,
+                                                            TextFace::Roman,
+                                                            lines::TEXT_LINE_SIZE,
+                                                            TextAlign::Left,
+                                                            Point::new(first.x, 0.0),
+                                                        );
+                                                        for d in text_diagnostics(
+                                                            provenance.source,
+                                                            &gaps,
+                                                        ) {
+                                                            emit.diag(d.source, d.kind);
+                                                        }
+                                                        let middle = (run.bounds.bottom.0
+                                                            + run.bounds.top.0)
+                                                            * 0.5;
+                                                        run.origin =
+                                                            Point::new(first.x, y - middle);
+                                                        x0 = run.origin.x.0
+                                                            + run.bounds.right.0
+                                                            + lines::LINE_TEXT_GAP;
+                                                        sign = Some(run);
+                                                    }
+                                                    if matches!(line.kind, SpannerKind::Bracket(_))
+                                                    {
+                                                        end_hook = Some(lines::TEXT_LINE_HOOK);
+                                                    }
+                                                    x1 = last.x - lines::TEXT_LINE_END_INSET;
+                                                    placement = Autoplace {
+                                                        above: true,
+                                                        order: PlaceOrder::TextLine,
+                                                        min_distance: lines::TEXT_LINE_MIN_DISTANCE,
+                                                        row: None,
+                                                        between: None,
+                                                        across: None,
+                                                    };
+                                                }
+                                            }
+                                        }
+                                        _ => unreachable!("matched above"),
+                                    }
+                                    // A line its words or sign leave no room for
+                                    // is its words or sign alone.
+                                    x1 = x1.max(x0);
+                                    let mut strokes = Vec::new();
+                                    let body = line_stroke(
+                                        provenance.clone(),
+                                        Point::new(x0, y),
+                                        // To the hook's outer edge, so the corner
+                                        // is filled.
+                                        Point::new(
+                                            x1 + if end_hook.is_some() { width * 0.5 } else { 0.0 },
+                                            y,
+                                        ),
+                                        width,
+                                        band,
+                                    );
+                                    hairpin_anchors.push((body.id(), first.slot, end_slot));
+                                    strokes.push(body);
+                                    // A hook rises toward the staff: up under it,
+                                    // down over it.
+                                    let toward = if placement.above { -1.0 } else { 1.0 };
+                                    for (k, at, hook, slot) in [
+                                        (1u128, x1, end_hook, end_slot),
+                                        (2u128, x0, start_hook, first.slot),
+                                    ] {
+                                        let Some(height) = hook else {
+                                            continue;
+                                        };
+                                        let stroke = line_stroke(
+                                            synth(k),
+                                            Point::new(at, y - toward * width * 0.5),
+                                            Point::new(at, y + toward * height),
+                                            width,
+                                            band,
+                                        );
+                                        hairpin_anchors.push((stroke.id(), slot, slot));
+                                        strokes.push(stroke);
+                                    }
+                                    let mut runs = Vec::new();
+                                    if let Some(run) = sign {
+                                        runs.push(run.id());
+                                        texts.push(TextObject {
+                                            text: run,
+                                            horizontal_slot: first.slot,
+                                            vertical_band: band,
+                                        });
+                                    }
+                                    if let Some(run) = continuation {
+                                        let gap = run.bounds.right.0 + lines::LINE_TEXT_GAP;
+                                        line_texts.push(LineText {
+                                            line: strokes[0].id(),
+                                            run,
+                                            role: LineTextRole::Continuation { gap },
+                                        });
+                                    }
+                                    family.push(FamilyMark {
+                                        band,
+                                        glyphs: Vec::new(),
+                                        strokes: strokes.iter().map(Stroke::id).collect(),
+                                        texts: runs,
+                                        room: Room::None,
+                                        placement: Some(placement),
+                                        line: Some(FamilyLine::Extension { dashes, before }),
+                                    });
+                                    for stroke in strokes {
+                                        emit.stroke(stroke);
+                                    }
+                                    true
+                                }
+                                None => false,
+                            }
+                        }
+                        (
+                            Some(LayoutContent::Spanner(SpannerContent {
+                                kind: SpannerKind::Glissando,
+                                start: MarkerPlace::Event { event: e0, .. },
+                                end: MarkerPlace::Event { event: e1, .. },
+                                line,
+                            })),
+                            Some(st),
+                        ) => {
+                            // A glissando from head to head (X4d.1), each end a
+                            // quarter space clear of its chord's ink at its head.
+                            match glissando_line(
+                                (*e0, *e1),
+                                gliss_rank
+                                    .get(&provenance.stable_id.0)
+                                    .copied()
+                                    .unwrap_or((0, 1)),
+                                st,
+                            ) {
+                                Some((from, to, (s0, s1), heads)) => {
+                                    let band = band_of(staff);
+                                    let stroke = line_stroke(
+                                        provenance.clone(),
+                                        from,
+                                        to,
+                                        lines::GLISSANDO_WIDTH,
+                                        band,
+                                    );
+                                    hairpin_anchors.push((stroke.id(), s0, s1));
+                                    let wavy = *line == LineStyle::Wavy;
+                                    let (words, _) = shape_text(
+                                        Provenance::synthesized(
+                                            provenance.source,
+                                            SynthesisKind::Registered(LINE_SYNTHESIS),
+                                            SynthesisInstanceKey(4),
+                                            provenance.dependencies.clone(),
+                                        ),
+                                        lines::GLISSANDO_WORDS,
+                                        TextFace::Italic,
+                                        lines::GLISSANDO_TEXT_SIZE,
+                                        TextAlign::Left,
+                                        from,
+                                    );
+                                    line_texts.push(LineText {
+                                        line: stroke.id(),
+                                        run: words,
+                                        role: LineTextRole::Along {
+                                            raise: if wavy {
+                                                lines::GLISSANDO_WAVY_TEXT_RAISE
+                                            } else {
+                                                lines::GLISSANDO_TEXT_RAISE
+                                            },
+                                        },
+                                    });
+                                    family.push(FamilyMark {
+                                        band,
+                                        glyphs: Vec::new(),
+                                        strokes: vec![stroke.id()],
+                                        texts: Vec::new(),
+                                        room: Room::None,
+                                        placement: None,
+                                        line: Some(FamilyLine::Glissando { wavy, heads }),
+                                    });
+                                    emit.stroke(stroke);
                                     true
                                 }
                                 None => false,
@@ -5614,6 +6358,7 @@ pub fn try_to_constrained(
         cross_staff_beams,
         family,
         endings,
+        line_texts,
     })
 }
 
@@ -9268,6 +10013,28 @@ fn first_column<'a>(
             ColumnKey::Lead => false,
         })
 }
+
+/// The column a line ending at `time` ends before: the barline there, where
+/// a measure starts at it, as MuseScore ends a pedal released at a measure's
+/// start at the barline ending the measure before (`Pedal::linePos`), or the
+/// first column at or after it.
+fn line_end_column<'a>(
+    columns: &'a BTreeMap<ColumnKey, ColumnInfo>,
+    time: &TimePoint,
+) -> Option<(&'a ColumnKey, &'a ColumnInfo)> {
+    columns
+        .get_key_value(&ColumnKey::Timed(time.clone(), ColumnRole::Barline))
+        .or_else(|| first_column(columns, time, false))
+}
+
+/// A glissando's line as the projection draws it (X4d.1): its two ends, the
+/// slots of its heads' columns, which its ends ride, and its heads' centres.
+type GlissandoLine = (Point, Point, (SpringSlotId, SpringSlotId), [Point; 2]);
+
+/// The registry id for a line's further primitives (X4d.1), synthesized from
+/// the line: its sign or words (key 0), its end hook (1) and start hook (2),
+/// its continuation's run (3), a glissando's words (4).
+const LINE_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x4C49_4E45_5349_474E); // "LINESIGN"
 
 /// The chain a dynamic or hairpin belongs to, by the least stable id of its
 /// members.

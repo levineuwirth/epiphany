@@ -109,6 +109,9 @@ pub struct SpannerContent {
     pub kind: epiphany_core::SpannerKind,
     pub start: MarkerPlace,
     pub end: MarkerPlace,
+    /// Its line's pattern: a text line's or bracket's dashes, a glissando's
+    /// wiggle (X4d.1).
+    pub line: LineStyle,
 }
 
 /// A point mark's content: its kind, and where it stands, resolved so the
@@ -1024,6 +1027,7 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
                         kind: spanner.kind.clone(),
                         start: marker_place(score, &spanner.start, &all_places),
                         end: marker_place(score, &spanner.end, &all_places),
+                        line: spanner.style.line,
                     })
                 })
                 .unwrap_or_default(),

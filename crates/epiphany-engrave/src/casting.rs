@@ -86,12 +86,13 @@ use epiphany_layout_ir::{
     metrics, synthesized_layout_id, tie_arc, BreakClass, BreakKind, ConstrainedLayoutIR, Curve,
     DecisionSource, EngravingDecision, EngravingDecisionKind, EngravingOverrideId, FamilyLine,
     GlyphObject, GlyphObjectId, GlyphReference, GlyphStyle, GroupSign, GroupSpan, HairpinShape,
-    LayoutConstraint, LayoutObjectId, LeadGlyph, Margins, MeasureMark, Point, PrimitiveIndices,
-    Provenance, Rect, ResolvedGlyph, ResolvedMeasure, ResolvedPage, ResolvedStaff, ResolvedSystem,
-    ResolvedText, Size2D, SpringSlotId, StaffSpace, Stroke, SynthesisInstanceKey, SynthesisKind,
-    SynthesisRegistryId, SystemLead, TimePoint, Transform2D, VerticalBand, VerticalBandId,
-    VerticalBandKind, BAR_NOTE_DISTANCE, HAIRPIN_CONT_HEIGHT, HAIRPIN_HEIGHT, HAIRPIN_MIN_LENGTH,
-    LYRIC_DASH_MAX, LYRIC_DASH_MAX_DISTANCE, LYRIC_DASH_MIN, LYRIC_MELISMA_MIN, TRILL_WIGGLE,
+    LayoutConstraint, LayoutObjectId, LeadGlyph, LineDashes, LineText, LineTextRole, Margins,
+    MeasureMark, Point, PrimitiveIndices, Provenance, Rect, ResolvedGlyph, ResolvedMeasure,
+    ResolvedPage, ResolvedStaff, ResolvedSystem, ResolvedText, Size2D, SpringSlotId, StaffSpace,
+    Stroke, SynthesisInstanceKey, SynthesisKind, SynthesisRegistryId, SystemLead, TimePoint,
+    Transform2D, VerticalBand, VerticalBandId, VerticalBandKind, BAR_NOTE_DISTANCE,
+    GLISSANDO_WIGGLE, HAIRPIN_CONT_HEIGHT, HAIRPIN_HEIGHT, HAIRPIN_MIN_LENGTH, LYRIC_DASH_MAX,
+    LYRIC_DASH_MAX_DISTANCE, LYRIC_DASH_MIN, LYRIC_MELISMA_MIN, TRILL_WIGGLE,
 };
 
 use crate::clearance::InkRect;
@@ -1500,6 +1501,73 @@ pub(crate) fn cast_off(
                 .map(move |id| (*id, mark.line.expect("a line")))
         })
         .collect();
+    // Each line's runs drawn piece by piece (X4d.1), by its stroke: a
+    // continuation, a glissando's words.
+    let mut line_texts: BTreeMap<GlyphObjectId, Vec<&LineText>> = BTreeMap::new();
+    for text in &input.line_texts {
+        line_texts.entry(text.line).or_default().push(text);
+    }
+    let continuation_of = |id: GlyphObjectId| -> Option<(&ResolvedText, f32)> {
+        line_texts.get(&id)?.iter().find_map(|t| match t.role {
+            LineTextRole::Continuation { gap } => Some((&t.run, gap)),
+            LineTextRole::Along { .. } => None,
+        })
+    };
+    let words_of = |id: GlyphObjectId| -> Option<(&ResolvedText, f32)> {
+        line_texts.get(&id)?.iter().find_map(|t| match t.role {
+            LineTextRole::Along { raise } => Some((&t.run, raise - t.run.bounds.bottom.0)),
+            LineTextRole::Continuation { .. } => None,
+        })
+    };
+    // The slot each extension line's strokes may not pass, and its ends held
+    // short of that slot's column where it stands in their system (X4d.1:
+    // an ottava's corner never passes the next note).
+    let line_before: BTreeMap<GlyphObjectId, SpringSlotId> = input
+        .family
+        .iter()
+        .filter_map(|mark| match mark.line {
+            Some(FamilyLine::Extension {
+                before: Some(slot), ..
+            }) => Some((&mark.strokes, slot)),
+            _ => None,
+        })
+        .flat_map(|(ids, slot)| ids.iter().map(move |id| (*id, slot)))
+        .collect();
+    let clamp_before = |id: GlyphObjectId,
+                        s: usize,
+                        p: &Placement,
+                        from: Point,
+                        to: Point,
+                        half: f32|
+     -> (Point, Point) {
+        let limit = line_before
+            .get(&id)
+            .filter(|slot| system_of_slot.get(slot) == Some(&s))
+            .and_then(|slot| slot_source_x.get(slot))
+            .map(|&sx| p.x(sx));
+        match limit {
+            // A hook stands half its width short of it, a line's end on it.
+            Some(limit) if from.x == to.x => {
+                let x = from.x.0.min(limit - half);
+                (Point::new(x, from.y.0), Point::new(x, to.y.0))
+            }
+            Some(limit) => {
+                let x = to.x.0.min(limit).max(from.x.0);
+                (from, Point::new(x, to.y.0))
+            }
+            None => (from, to),
+        }
+    };
+    // A glissando's pieces' heights where its system or systems set it.
+    let glissando_slope =
+        |source: &Stroke, _spaced: &Stroke, xs: &[(f32, f32)]| -> Option<Vec<(f32, f32)>> {
+            match family_lines.get(&source.id()) {
+                Some(FamilyLine::Glissando { heads, .. }) => {
+                    Some(glissando_heights(*heads, source, xs))
+                }
+                _ => None,
+            }
+        };
     // How far across each moved ending's start moves from where the spacing
     // set it, so its hook stands `BAR_NOTE_DISTANCE` before its system's
     // first note or rest, as MuseScore starts an ending opening a system
@@ -1726,26 +1794,64 @@ pub(crate) fn cast_off(
                         Some((_, shift)) => (spaced.from.x.0 + shift, spaced.to.x.0 + shift),
                         None => (p.from.x.0 + dx, p.to.x.0 + dx),
                     };
-                    vec![(
+                    let (from, to) = clamp_before(
+                        stroke.id(),
                         *s,
+                        &hplace[*s].0,
                         Point::new(from_x, p.from.y.0),
                         Point::new(to_x, p.to.y.0),
-                    )]
+                        half,
+                    );
+                    vec![(*s, from, to)]
                 }
                 StrokeFate::Rigid(None) => Vec::new(),
-                StrokeFate::Split(segments) => segments
-                    .iter()
-                    .enumerate()
-                    .map(|(k, (s, from, to))| {
-                        let p = &hplace[*s].0;
-                        let (mut fx, tx) =
-                            piece_x(stroke, k, segments.len(), *s, p, from.x.0, to.x.0);
-                        if let (0, Some((_, shift))) = (k, ending_shift(stroke.id())) {
-                            fx = spaced.from.x.0 + shift;
+                StrokeFate::Split(segments) => {
+                    let mut segs: Vec<(usize, Point, Point)> = segments
+                        .iter()
+                        .enumerate()
+                        .map(|(k, (s, from, to))| {
+                            let p = &hplace[*s].0;
+                            let (mut fx, tx) =
+                                piece_x(stroke, k, segments.len(), *s, p, from.x.0, to.x.0);
+                            if let (0, Some((_, shift))) = (k, ending_shift(stroke.id())) {
+                                fx = spaced.from.x.0 + shift;
+                            }
+                            // A later piece opens with the line's continuation
+                            // (X4d.1), its line after it.
+                            if let (true, Some((run, gap))) = (k > 0, continuation_of(stroke.id()))
+                            {
+                                let ink = rect(
+                                    fx + run.bounds.left.0,
+                                    fx + run.bounds.right.0,
+                                    run.origin.y.0 + run.bounds.bottom.0,
+                                    run.origin.y.0 + run.bounds.top.0,
+                                );
+                                match placed.strokes.get(&stroke.id()) {
+                                    Some(&f) => {
+                                        let i = piece(&mut pieces, f, *s);
+                                        pieces[i].boxes.push(ink);
+                                    }
+                                    None => {
+                                        sky.entry((*s, stroke.vertical_band)).or_default().push(ink)
+                                    }
+                                }
+                                fx = (fx + gap).min(tx);
+                            }
+                            (*s, Point::new(fx, from.y.0), Point::new(tx, to.y.0))
+                        })
+                        .collect();
+                    if let Some((s, a, b)) = segs.last_mut() {
+                        (*a, *b) = clamp_before(stroke.id(), *s, &hplace[*s].0, *a, *b, half);
+                    }
+                    let xs: Vec<(f32, f32)> = segs.iter().map(|(_, a, b)| (a.x.0, b.x.0)).collect();
+                    if let Some(ys) = glissando_slope(stroke, spaced, &xs) {
+                        for ((_, a, b), (ya, yb)) in segs.iter_mut().zip(ys) {
+                            *a = Point::new(a.x.0, ya);
+                            *b = Point::new(b.x.0, yb);
                         }
-                        (*s, Point::new(fx, from.y.0), Point::new(tx, to.y.0))
-                    })
-                    .collect(),
+                    }
+                    segs
+                }
             };
             for (s, from, to) in segments {
                 let ink = if family_lines.get(&stroke.id()) == Some(&FamilyLine::Trill) {
@@ -2305,6 +2411,9 @@ pub(crate) fn cast_off(
     // stroke carries no spring slot to look one up with).
     let mut stroke_system: Vec<Option<usize>> = Vec::with_capacity(spaced_strokes.len());
     let mut continuation_system: Vec<Option<usize>> = Vec::new();
+    // The runs the family's lines draw piece by piece (X4d.1), each with its
+    // system.
+    let mut line_runs: Vec<(ResolvedText, Option<usize>)> = Vec::new();
     for (si, ((source, spaced), fate)) in input
         .strokes
         .iter()
@@ -2337,6 +2446,14 @@ pub(crate) fn cast_off(
                         if hairpin_legs.contains_key(&source.id()) {
                             keep_hairpin_length(&mut stroke);
                         }
+                        (stroke.from, stroke.to) = clamp_before(
+                            source.id(),
+                            *s,
+                            &p,
+                            stroke.from,
+                            stroke.to,
+                            stroke.thickness.0 * 0.5,
+                        );
                         let dx = member_dx(placed.strokes.get(&source.id()));
                         stroke.from = Point::new(stroke.from.x.0 + dx, stroke.from.y.0);
                         stroke.to = Point::new(stroke.to.x.0 + dx, stroke.to.y.0);
@@ -2373,11 +2490,48 @@ pub(crate) fn cast_off(
                         appended_bands.push(stroke.vertical_band);
                     }
                 }
+                match family_lines.get(&source.id()) {
+                    Some(FamilyLine::Extension {
+                        dashes: Some(dashes),
+                        ..
+                    }) => {
+                        for (j, dash) in dash_line(&mut stroke, *dashes).into_iter().enumerate() {
+                            continuations.push(Stroke {
+                                provenance: extra_dash(spaced, 0, j),
+                                ..dash
+                            });
+                            continuation_system.push(*sys);
+                        }
+                    }
+                    Some(FamilyLine::Glissando { wavy, .. }) => {
+                        if let Some(ys) =
+                            glissando_slope(source, spaced, &[(stroke.from.x.0, stroke.to.x.0)])
+                        {
+                            let dy = stroke.from.y.0 - spaced.from.y.0;
+                            stroke.from = Point::new(stroke.from.x.0, ys[0].0 + dy);
+                            stroke.to = Point::new(stroke.to.x.0, ys[0].1 + dy);
+                        }
+                        for run in glissando_runs(&mut stroke, *wavy, words_of(source.id()), 0) {
+                            line_runs.push((run, *sys));
+                        }
+                    }
+                    _ => {}
+                }
                 strokes.push(stroke);
                 stroke_system.push(*sys);
             }
             StrokeFate::Split(segments) => {
                 let leg = hairpin_legs.get(&source.id());
+                // A glissando keeps its gradient across its pieces (X4d.1).
+                let xs: Vec<(f32, f32)> = segments
+                    .iter()
+                    .enumerate()
+                    .map(|(k, (s, from, to))| {
+                        let p = &placements[*s];
+                        piece_x(source, k, segments.len(), *s, p, from.x.0, to.x.0)
+                    })
+                    .collect();
+                let slope = glissando_slope(source, spaced, &xs);
                 for (k, (s, from, to)) in segments.iter().enumerate() {
                     // A split stroke spans systems — a staff line or volta
                     // bracket, a hairpin — so each segment stretches with its
@@ -2433,8 +2587,19 @@ pub(crate) fn cast_off(
                                 )
                             }
                         }
-                        None => (from.y.0, to.y.0),
+                        None => match &slope {
+                            Some(ys) => ys[k],
+                            None => (from.y.0, to.y.0),
+                        },
                     };
+                    // A later piece opens with the line's continuation
+                    // (X4d.1), its line after it.
+                    if let (true, Some((run, gap))) = (k > 0, continuation_of(source.id())) {
+                        let mut run = line_run(run, spaced, k, 1);
+                        run.origin = Point::new(from_x, run.origin.y.0 + p.dy);
+                        line_runs.push((run, Some(*s)));
+                        from_x = (from_x + gap).min(to_x);
+                    }
                     let mut stroke = Stroke {
                         provenance,
                         from: Point::new(from_x, from_y + p.dy),
@@ -2447,6 +2612,16 @@ pub(crate) fn cast_off(
                     end_staff_line(&mut stroke, staff_end[*s].map(|x| p.x(x)));
                     if leg.is_some() {
                         keep_hairpin_length(&mut stroke);
+                    }
+                    if k + 1 == segments.len() {
+                        (stroke.from, stroke.to) = clamp_before(
+                            source.id(),
+                            *s,
+                            &p,
+                            stroke.from,
+                            stroke.to,
+                            stroke.thickness.0 * 0.5,
+                        );
                     }
                     if let TypedObjectId::Staff(staff) = spaced.provenance.source {
                         mark_staff(&mut staff_marks, *s, staff, &stroke);
@@ -2467,6 +2642,28 @@ pub(crate) fn cast_off(
                             glyph_system.push(Some(*s));
                             appended_bands.push(stroke.vertical_band);
                         }
+                    }
+                    match family_lines.get(&source.id()) {
+                        Some(FamilyLine::Extension {
+                            dashes: Some(dashes),
+                            ..
+                        }) => {
+                            for (j, dash) in dash_line(&mut stroke, *dashes).into_iter().enumerate()
+                            {
+                                continuations.push(Stroke {
+                                    provenance: extra_dash(spaced, k, j),
+                                    ..dash
+                                });
+                                continuation_system.push(Some(*s));
+                            }
+                        }
+                        Some(FamilyLine::Glissando { wavy, .. }) => {
+                            for run in glissando_runs(&mut stroke, *wavy, words_of(source.id()), k)
+                            {
+                                line_runs.push((run, Some(*s)));
+                            }
+                        }
+                        _ => {}
                     }
                     if k == 0 {
                         strokes.push(stroke);
@@ -2664,6 +2861,12 @@ pub(crate) fn cast_off(
             }
         })
         .collect();
+    let mut texts = texts;
+    let mut text_system = text_system;
+    for (run, system) in line_runs {
+        texts.push(run);
+        text_system.push(system);
+    }
 
     // ---- Staff groups and the systemic barline ------------------------------
     // A system of two or more staves opens with a line joining them; each
@@ -3663,6 +3866,170 @@ fn lyric_line(line: &mut Stroke, kind: Option<&FamilyLine>, before: bool) -> Vec
     }
 }
 
+/// A dashed line's piece where the system sets it (X4d.1), as MuseScore
+/// distributes a dash pattern over a line (`distributedDashPattern`): as
+/// many pairs of a dash `dash` long and a gap `gap` long as its length holds
+/// whole, at least one, and one dash more, the gaps shared out evenly so its
+/// first and last dash stand at its ends; the first in `line`'s place and the
+/// rest returned. A piece shorter than two dashes is drawn solid.
+fn dash_line(line: &mut Stroke, dashes: LineDashes) -> Vec<Stroke> {
+    let (from, to) = (line.from, line.to);
+    let (dx, dy) = (to.x.0 - from.x.0, to.y.0 - from.y.0);
+    let length = (dx * dx + dy * dy).sqrt();
+    if length < 2.0 * dashes.dash {
+        return Vec::new();
+    }
+    let pairs = (length / (dashes.dash + dashes.gap)).floor().max(1.0);
+    let gap = (length - dashes.dash * (pairs + 1.0)) / pairs;
+    let at = |t: f32| Point::new(from.x.0 + dx * t / length, from.y.0 + dy * t / length);
+    let dash = |k: f32| {
+        let start = k * (dashes.dash + gap);
+        Stroke {
+            from: at(start),
+            to: at(start + dashes.dash),
+            ..line.clone()
+        }
+    };
+    let more = (1..=pairs as usize).map(|k| dash(k as f32)).collect();
+    *line = dash(0.0);
+    more
+}
+
+/// A glissando's pieces' heights where its systems set them (X4d.1): the
+/// line's two ends' heights `y0` and `y1`, and each piece's ends across, in
+/// order; each piece's ends' heights, the gradient kept over the pieces'
+/// whole length, as MuseScore interpolates a note-anchored line over a system
+/// break (`TLayout::layoutNoteAnchoredLine`) and Gould keeps the gradient of
+/// the interval (*Behind Bars*, p. 142).
+fn sloped(y0: f32, y1: f32, pieces: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    let total: f32 = pieces.iter().map(|(a, b)| (b - a).max(0.0)).sum();
+    let mut done = 0.0f32;
+    pieces
+        .iter()
+        .map(|(a, b)| {
+            let at = |d: f32| {
+                if total > 0.0 {
+                    y0 + (y1 - y0) * d / total
+                } else {
+                    y0
+                }
+            };
+            let from = at(done);
+            done += (b - a).max(0.0);
+            (from, at(done))
+        })
+        .collect()
+}
+
+/// A glissando's pieces' heights where its system or systems set it (X4d.1):
+/// `heads` its heads' centres and `line` its stroke in the projection's
+/// frame, `xs` each piece's ends across where they stand now, in order. Its
+/// ends keep their distance across from their heads, so the heads stand that
+/// far before its first piece's start and after its last piece's end; the
+/// line joining them, its gradient kept over the pieces between ([`sloped`]),
+/// gives each piece's heights.
+fn glissando_heights(heads: [Point; 2], line: &Stroke, xs: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    let (Some(first), Some(last)) = (xs.first(), xs.last()) else {
+        return Vec::new();
+    };
+    let lead = line.from.x.0 - heads[0].x.0;
+    let tail = heads[1].x.0 - line.to.x.0;
+    let mut whole: Vec<(f32, f32)> = xs.to_vec();
+    let n = whole.len();
+    whole[0].0 = first.0 - lead;
+    whole[n - 1].1 = last.1 + tail;
+    let mut ys = sloped(heads[0].y.0, heads[1].y.0, &whole);
+    let within = |(a, b): (f32, f32), (ya, yb): (f32, f32), x: f32| {
+        if b > a {
+            ya + (yb - ya) * (x - a) / (b - a)
+        } else {
+            ya
+        }
+    };
+    ys[0].0 = within(whole[0], ys[0], first.0);
+    ys[n - 1].1 = within(whole[n - 1], ys[n - 1], last.1);
+    ys
+}
+
+/// A run a line draws in its piece `piece` (X4d.1), synthesized from the
+/// line, keyed by the piece and the run's role there.
+fn line_run(template: &ResolvedText, line: &Stroke, piece: usize, role: u128) -> ResolvedText {
+    ResolvedText {
+        provenance: Provenance::synthesized(
+            line.provenance.source,
+            SynthesisKind::Registered(LINE_PIECE_SYNTHESIS),
+            SynthesisInstanceKey(((piece as u128) << 8) | role),
+            line.provenance.dependencies.clone(),
+        ),
+        ..template.clone()
+    }
+}
+
+/// The registry id for the runs a line draws piece by piece: its
+/// continuation (role 1), a glissando's words (2) and wiggles (3).
+const LINE_PIECE_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x4C49_4E45_5049_4543); // "LINEPIEC"
+
+/// A glissando piece's runs where its system sets it (X4d.1): wavy, its
+/// wiggles centred along it, as many as fit whole, turned to its slope, the
+/// stroke itself then drawing nothing; and its words centred along it where
+/// they are shorter than it, their baseline `raise` over it
+/// (`TDraw::draw(GlissandoSegment)`).
+fn glissando_runs(
+    line: &mut Stroke,
+    wavy: bool,
+    words: Option<(&ResolvedText, f32)>,
+    piece: usize,
+) -> Vec<ResolvedText> {
+    let (from, to) = (line.from, line.to);
+    let (dx, dy) = (to.x.0 - from.x.0, to.y.0 - from.y.0);
+    let length = (dx * dx + dy * dy).sqrt();
+    if length <= 0.0 {
+        return Vec::new();
+    }
+    let angle = dy.atan2(dx);
+    let (ux, uy) = (dx / length, dy / length);
+    let along =
+        |t: f32, up: f32| Point::new(from.x.0 + ux * t - uy * up, from.y.0 + uy * t + ux * up);
+    let mut runs = Vec::new();
+    if wavy {
+        let advance = 0.96f32;
+        let n = (length / advance).floor() as usize;
+        let start = (length - n as f32 * advance) * 0.5;
+        // The wiggle's box from 0 to 0.444 high: its middle on the line.
+        let symbols: Vec<epiphany_layout_ir::Symbol> = (0..n)
+            .map(|i| epiphany_layout_ir::Symbol {
+                codepoint: GLISSANDO_WIGGLE,
+                at: epiphany_layout_ir::SymbolPlace::Origin(Point::new(advance * i as f32, -0.222)),
+                scale: 1.0,
+                turn: epiphany_layout_ir::Turn::None,
+            })
+            .collect();
+        if n > 0 {
+            let run = epiphany_layout_ir::symbol_run(
+                Provenance::synthesized(
+                    line.provenance.source,
+                    SynthesisKind::Registered(LINE_PIECE_SYNTHESIS),
+                    SynthesisInstanceKey(((piece as u128) << 8) | 3),
+                    line.provenance.dependencies.clone(),
+                ),
+                &symbols,
+                along(start, 0.0),
+            );
+            runs.push(epiphany_layout_ir::rotated(run, angle));
+        }
+        line.to = line.from;
+    }
+    if let Some((template, raise)) = words {
+        let width = template.bounds.right.0 - template.bounds.left.0;
+        if width < length {
+            let mut run = line_run(template, line, piece, 2);
+            run.origin = along((length - width) * 0.5 - template.bounds.left.0, raise);
+            runs.push(epiphany_layout_ir::rotated(run, angle));
+        }
+    }
+    runs
+}
+
 /// A hyphen's further dash's provenance: synthesized from its first, keyed
 /// by the piece it stands in and its place there.
 fn extra_dash(spaced: &Stroke, piece: usize, k: usize) -> Provenance {
@@ -4300,6 +4667,93 @@ fn build_system(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn line(from: (f32, f32), to: (f32, f32)) -> Stroke {
+        Stroke {
+            provenance: Provenance::projected(
+                TypedObjectId::Staff(StaffId::from_raw(1)),
+                Vec::new(),
+            ),
+            from: Point::new(from.0, from.1),
+            to: Point::new(to.0, to.1),
+            thickness: StaffSpace(0.11),
+            layer: 0,
+            style: GlyphStyle { rgba: 0x0000_00ff },
+            vertical_band: VerticalBandId(1),
+        }
+    }
+
+    /// A dashed piece is laid as MuseScore distributes a dash pattern: one
+    /// more dash than the whole pairs of dash and gap its length holds, its
+    /// first dash at its start and its last at its end, the gaps even; one
+    /// shorter than two dashes is drawn solid (X4d.1).
+    #[test]
+    fn a_dashed_piece_spreads_its_dashes_to_its_ends() {
+        let dashes = LineDashes {
+            dash: 0.66,
+            gap: 0.66,
+        };
+        let mut piece = line((2.0, 1.0), (12.0, 1.0));
+        let more = dash_line(&mut piece, dashes);
+        // 10 holds 7 whole pairs of 1.32: 8 dashes, gaps of (10 - 8 * 0.66) / 7.
+        assert_eq!(more.len(), 7);
+        assert_eq!((piece.from.x.0, piece.to.x.0), (2.0, 2.66));
+        let last = more.last().expect("dashes");
+        assert!((last.to.x.0 - 12.0).abs() < 1e-4, "{last:?}");
+        let gap = (10.0 - 8.0 * 0.66) / 7.0;
+        assert!(
+            (more[0].from.x.0 - (2.66 + gap)).abs() < 1e-4,
+            "{:?}",
+            more[0]
+        );
+        let mut short = line((2.0, 1.0), (3.0, 1.0));
+        assert!(dash_line(&mut short, dashes).is_empty());
+        assert_eq!((short.from.x.0, short.to.x.0), (2.0, 3.0), "solid");
+    }
+
+    /// A glissando's words stand along a piece only where they are shorter
+    /// than it, centred, turned to its slope (X4d.1).
+    #[test]
+    fn a_glissandos_words_stand_only_where_they_fit() {
+        let (words, _) = epiphany_layout_ir::shape_text(
+            Provenance::projected(TypedObjectId::Staff(StaffId::from_raw(1)), Vec::new()),
+            "gliss.",
+            epiphany_layout_ir::TextFace::Italic,
+            1.613,
+            epiphany_layout_ir::TextAlign::Left,
+            Point::new(0.0, 0.0),
+        );
+        let width = words.bounds.right.0 - words.bounds.left.0;
+        let mut long = line((0.0, 0.0), (width + 2.0, 1.0));
+        let runs = glissando_runs(&mut long, false, Some((&words, 0.1)), 0);
+        assert_eq!(runs.len(), 1);
+        assert!(
+            runs[0].segments[0].glyphs[0].transform.is_some(),
+            "turned to its slope"
+        );
+        let mut short = line((0.0, 0.0), (width * 0.9, 0.0));
+        assert!(glissando_runs(&mut short, false, Some((&words, 0.1)), 0).is_empty());
+    }
+
+    /// A glissando's heights over pieces keep one gradient from its first
+    /// head's centre to its last's, its ends their distance across from the
+    /// heads (X4d.1).
+    #[test]
+    fn a_glissandos_heights_keep_one_gradient_across_its_pieces() {
+        let heads = [Point::new(0.0, 0.0), Point::new(10.0, 4.0)];
+        let stroke = line((1.0, 0.4), (9.0, 3.6));
+        // Two pieces, the first from 1 to 4, the second from 20 to 24 (5 to
+        // 9 spaced along the line): 3 + 4 across, 1 and 1 to the heads.
+        let ys = glissando_heights(heads, &stroke, &[(1.0, 4.0), (20.0, 24.0)]);
+        let rate = 4.0 / 9.0;
+        let want = [(rate, 4.0 * rate), (4.0 * rate, 8.0 * rate)];
+        for (got, want) in ys.iter().zip(want) {
+            assert!(
+                (got.0 - want.0).abs() < 1e-4 && (got.1 - want.1).abs() < 1e-4,
+                "{ys:?}"
+            );
+        }
+    }
 
     #[test]
     fn default_geometry_matches_the_documented_arithmetic() {

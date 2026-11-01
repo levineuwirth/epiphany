@@ -917,3 +917,78 @@ fn a_trill_line_and_its_trill_undrawn_are_counted() {
         ]
     );
 }
+
+/// X4d.1's lines the engraver draws (a pedal line, an ottava, a text line, a
+/// bracket and a glissando) are no omission; their ink taken away, each is
+/// counted by its class.
+#[test]
+fn the_lines_undrawn_are_counted() {
+    let direction =
+        |t: &str| format!("<direction><direction-type>{t}</direction-type></direction>");
+    let note = |pitch: &str, notations: &str| {
+        let (step, octave) = pitch.split_at(1);
+        format!(
+            "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+             <duration>2</duration><voice>1</voice><type>quarter</type>\
+             <notations>{notations}</notations></note>"
+        )
+    };
+    let measure = [
+        direction("<pedal type=\"start\" line=\"yes\" sign=\"yes\"/>"),
+        direction("<octave-shift type=\"down\" size=\"8\"/>"),
+        "<direction><direction-type><words>rit.</words></direction-type><direction-type>\
+         <dashes type=\"start\"/></direction-type></direction>"
+            .to_owned(),
+        direction("<bracket type=\"start\" line-end=\"none\" line-type=\"solid\"/>"),
+        note(
+            "C6",
+            "<slide type=\"start\" line-type=\"solid\" number=\"1\">gliss.</slide>",
+        ),
+        note("G6", "<slide type=\"stop\" number=\"1\"/>"),
+        direction("<pedal type=\"stop\" line=\"yes\" sign=\"no\"/>"),
+        direction("<octave-shift type=\"stop\" size=\"8\"/>"),
+        direction("<dashes type=\"stop\"/>"),
+        direction("<bracket type=\"stop\" line-end=\"down\"/>"),
+        note("C5", ""),
+        note("D5", ""),
+    ]
+    .concat();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
+         <attributes><divisions>2</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time><clef><sign>G</sign><line>2</line></clef></attributes>{measure}</measure>\
+         </part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("lines_omissions.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let score = &loaded.reduced.score;
+    let classes = ["pedal line", "ottava", "text line", "bracket", "glissando"];
+    let counted = |engraved: &Engraved| -> Vec<(String, usize)> {
+        let mut found: Vec<(String, usize)> =
+            omissions(score, &engraved.layout, &engraved.diagnostics)
+                .kinds
+                .into_iter()
+                .filter(|(kind, _)| classes.contains(&kind.as_str()))
+                .collect();
+        found.sort();
+        found
+    };
+    let mut engraved = engrave(score);
+    assert_eq!(counted(&engraved), vec![], "drawn");
+    let region = TypedObjectId::Region(score.canvas.regions[0].id);
+    for s in &mut engraved.layout.strokes {
+        if matches!(s.provenance.source, TypedObjectId::Spanner(_)) {
+            s.provenance.source = region;
+        }
+    }
+    for t in &mut engraved.layout.texts {
+        if matches!(t.provenance.source, TypedObjectId::Spanner(_)) {
+            t.provenance.source = region;
+        }
+    }
+    let mut want: Vec<(String, usize)> = classes.iter().map(|c| (c.to_string(), 1)).collect();
+    want.sort();
+    assert_eq!(counted(&engraved), want);
+}
