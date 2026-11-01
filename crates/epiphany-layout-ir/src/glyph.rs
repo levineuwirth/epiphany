@@ -228,6 +228,10 @@ pub const BRAVURA_METRICS: &[GlyphMetric] = &[
     GlyphMetric::new("restDoubleWhole", 516, [0, 0, 512, 1024]),
     GlyphMetric::new("restWhole", 1159, [0, -553, 1156, 37]),
     GlyphMetric::new("restHalf", 1159, [0, -9, 1156, 582]),
+    // X5d: a whole or half rest standing outside its staff, drawn with its
+    // ledger line.
+    GlyphMetric::new("restWholeLegerLine", 1155, [-480, -553, 1635, 82]),
+    GlyphMetric::new("restHalfLegerLine", 1155, [-480, -54, 1635, 582]),
     GlyphMetric::new("restQuarter", 1106, [4, -1536, 1106, 1528]),
     GlyphMetric::new("rest8th", 1024, [0, -1029, 1012, 713]),
     GlyphMetric::new("rest16th", 1311, [0, -2048, 1311, 734]),

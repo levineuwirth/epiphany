@@ -5893,12 +5893,18 @@ fn two_onsets_a_hair_apart_on_two_staves_stand_in_order() {
 /// filling a measure of 5/4, which the pre-pass writes as a whole and a
 /// quarter, asks the width five quarters ask, `5 · 5^log2(1.5)` spaces from
 /// its column to the barline, not a whole's width stretched over the quarter
-/// after it.
+/// after it. The lower staff's rest is hidden, so its traced anchor marks the
+/// column: a drawn one stands centred in the measure (X5d.5).
 #[test]
 fn a_rest_filling_its_measure_is_one_span() {
     let rest = |staff: u8| {
+        let hidden = if staff == 2 {
+            " print-object=\"no\""
+        } else {
+            ""
+        };
         format!(
-            "<note><rest measure=\"yes\"/><duration>10</duration><voice>{staff}</voice>\
+            "<note{hidden}><rest measure=\"yes\"/><duration>10</duration><voice>{staff}</voice>\
              <staff>{staff}</staff></note>"
         )
     };
@@ -5922,7 +5928,15 @@ fn a_rest_filling_its_measure_is_one_span() {
             .map(|g| g.position.x.0)
             .fold(f32::INFINITY, f32::min)
     };
-    let width = first("barlineSingle") - first("restWhole");
+    let column = layout
+        .strokes
+        .iter()
+        .filter(|s| {
+            s.from == s.to && matches!(s.provenance.source, epiphany_core::TypedObjectId::Event(_))
+        })
+        .map(|s| s.from.x.0)
+        .fold(f32::INFINITY, f32::min);
+    let width = first("barlineSingle") - column;
     let expected = 5.0 * 5.0f32.powf(1.5f32.log2());
     assert!(
         (width - expected).abs() < 0.01,
@@ -8378,4 +8392,269 @@ fn a_brackets_edge_takes_more_of_the_spread() {
     let (inside, edge) = (lines[0].0 - lines[1].1, lines[1].0 - lines[2].1);
     assert!((inside - 10.0).abs() < 0.01, "inside the bracket: {inside}");
     assert!((edge - 12.0).abs() < 0.01, "at the bracket's edge: {edge}");
+}
+
+/// A rest filling its measure stands centred in its staff's free space in
+/// the measure, as Gould sets a whole-bar rest (pp. 159-160): between the
+/// barline before it and the one after, or, where the measure opens with a
+/// time signature, between that signature and the barline (X5d.5).
+#[test]
+fn a_measure_rest_stands_centred_in_its_measure() {
+    let note = "<note><pitch><step>B</step><octave>4</octave></pitch><duration>4</duration>\
+                <voice>1</voice><type>whole</type></note>";
+    let rest = "<note><rest measure=\"yes\"/><duration>4</duration><voice>1</voice></note>";
+    for (signature, name) in [
+        ("", "plain"),
+        (
+            "<attributes><time><beats>4</beats><beat-type>4</beat-type></time></attributes>",
+            "signed",
+        ),
+    ] {
+        let xml = format!(
+            "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+             </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
+             <attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+             </time>{TREBLE}</attributes>{note}</measure><measure number=\"2\">{signature}{rest}\
+             </measure><measure number=\"3\">{note}</measure></part></score-partwise>"
+        );
+        let (_, layout) = engrave_on(
+            &format!("centred_rest_{name}.musicxml"),
+            &xml,
+            epiphany_engrave::PageGeometry::default(),
+        );
+        let ink = |g: &epiphany_layout_ir::ResolvedGlyph| {
+            (
+                g.position.x.0 + g.bounding_box.left.0,
+                g.position.x.0 + g.bounding_box.right.0,
+            )
+        };
+        let rest = layout
+            .glyphs
+            .iter()
+            .find(|g| g.glyph.as_str() == "restWhole")
+            .expect("the measure rest");
+        let (rl, rr) = ink(rest);
+        let mut barlines: Vec<(f32, f32)> = layout
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str().starts_with("barline"))
+            .map(ink)
+            .collect();
+        barlines.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let before = barlines
+            .iter()
+            .rev()
+            .find(|b| b.1 <= rl)
+            .expect("a barline before");
+        let after = barlines
+            .iter()
+            .find(|b| b.0 >= rr)
+            .expect("a barline after");
+        let signature = layout
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str().starts_with("timeSig"))
+            .map(ink)
+            .filter(|s| s.0 > before.1 && s.1 < rl)
+            .map(|s| s.1)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let left = before.1.max(signature);
+        assert_eq!(
+            name == "signed",
+            signature.is_finite(),
+            "{name}: the signature"
+        );
+        let centre = (rl + rr) * 0.5;
+        assert!(
+            (centre - (left + after.0) * 0.5).abs() < 0.01,
+            "{name}: the rest's centre {centre} between {left} and {}",
+            after.0
+        );
+    }
+}
+
+/// A whole or half rest moved outside its staff takes its ledger line, as
+/// Gould draws one (p. 37) and MuseScore and LilyPond do; inside, none.
+#[test]
+fn a_rest_outside_its_staff_takes_its_ledger_line() {
+    let voices =
+        |upper: &str, lower: &str| format!("{upper}<backup><duration>4</duration></backup>{lower}");
+    let rest = |kind: &str, d: u8| {
+        format!("<note><rest/><duration>{d}</duration><voice>1</voice><type>{kind}</type></note>")
+    };
+    let note = |step: &str, octave: u8, kind: &str, d: u8| {
+        format!(
+            "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+             <duration>{d}</duration><voice>2</voice><type>{kind}</type></note>"
+        )
+    };
+    let m1 = voices(&rest("whole", 4), &note("F", 5, "whole", 4));
+    let m2 = voices(
+        &format!("{}{}", rest("half", 2), rest("half", 2)),
+        &format!("{}{}", note("F", 5, "half", 2), note("B", 4, "half", 2)),
+    );
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
+         <attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time>{TREBLE}</attributes>{m1}</measure><measure number=\"2\">{m2}</measure></part>\
+         </score-partwise>"
+    );
+    let (_, layout) = engrave_on("ledgered_rests.musicxml", &xml, unbounded_page());
+    let lines = &staff_lines_by_system(&layout)[0][0];
+    let named = |name: &str| -> Vec<f32> {
+        layout
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str() == name)
+            .map(|g| g.position.y.0)
+            .collect()
+    };
+    let (whole, half, plain) = (
+        named("restWholeLegerLine"),
+        named("restHalfLegerLine"),
+        named("restHalf"),
+    );
+    assert_eq!(
+        whole.len(),
+        1,
+        "the whole rest over F5 stands above the staff"
+    );
+    assert!(whole[0] > lines.1 + 0.5, "{whole:?} above {lines:?}");
+    assert_eq!(half.len(), 1, "so does the half rest over F5");
+    assert!(half[0] > lines.1 + 0.5, "{half:?} above {lines:?}");
+    assert_eq!(plain.len(), 1, "the half rest over B4 stays in the staff");
+    assert!(plain[0] <= lines.1 + 1e-3, "{plain:?} within {lines:?}");
+    assert!(named("restWhole").is_empty());
+}
+
+/// A staff's rest met by voices visiting it from the staves above and below
+/// at once takes the side whose first clear place is nearer its staff's
+/// middle line (D109 Q8), where it was always turned down, past the lower
+/// visitor's stem.
+#[test]
+fn a_rest_between_visitors_from_both_sides_takes_the_nearer_side() {
+    let note = |step: &str, octave: u8, staff: u8, voice: u8, d: u8, kind: &str| {
+        format!(
+            "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+             <duration>{d}</duration><voice>{voice}</voice><type>{kind}</type>\
+             <staff>{staff}</staff></note>"
+        )
+    };
+    let measure = [
+        note("A", 4, 2, 1, 1, "quarter"),
+        note("C", 5, 1, 1, 1, "quarter"),
+        note("C", 5, 1, 1, 2, "half"),
+        "<backup><duration>4</duration></backup>".to_owned(),
+        "<note><rest/><duration>1</duration><voice>5</voice><type>quarter</type>\
+         <staff>2</staff></note>"
+            .to_owned(),
+        note("B", 4, 2, 5, 1, "quarter"),
+        note("B", 4, 2, 5, 2, "half"),
+        "<backup><duration>4</duration></backup>".to_owned(),
+        note("D", 4, 2, 9, 1, "quarter"),
+        note("C", 3, 3, 9, 1, "quarter"),
+        note("C", 3, 3, 9, 2, "half"),
+    ]
+    .concat();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>Organ\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
+         <attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time><staves>3</staves><clef number=\"1\"><sign>G</sign><line>2</line></clef>\
+         <clef number=\"2\"><sign>G</sign><line>2</line></clef><clef number=\"3\"><sign>F\
+         </sign><line>4</line></clef></attributes>{measure}</measure></part></score-partwise>"
+    );
+    let (_, layout) = engrave_on("rest_between_visitors.musicxml", &xml, unbounded_page());
+    let lines = &staff_lines_by_system(&layout)[0];
+    assert_eq!(lines.len(), 3);
+    let middle = (lines[1].0 + lines[1].1) * 0.5;
+    let rest = layout
+        .glyphs
+        .iter()
+        .find(|g| g.glyph.as_str() == "restQuarter")
+        .expect("the middle staff's rest");
+    assert!(
+        rest.position.y.0 > middle + 1.0,
+        "the rest turns up, nearer the middle line: {} against {middle}",
+        rest.position.y.0
+    );
+}
+
+/// A rest filling the measure that opens a later system stands centred
+/// between its staff's lead (clef and key) and the barline closing the
+/// measure (X5d.5).
+#[test]
+fn a_measure_rest_opening_a_system_centres_after_its_lead() {
+    use epiphany_core::TypedObjectId;
+    let note = "<note><pitch><step>B</step><octave>4</octave></pitch><duration>4</duration>\
+                <voice>1</voice><type>whole</type></note>";
+    let rest = "<note><rest measure=\"yes\"/><duration>4</duration><voice>1</voice></note>";
+    let measures: String = (1..=4)
+        .map(|m| {
+            let head = if m == 1 {
+                format!(
+                    "<attributes><divisions>1</divisions><key><fifths>-2</fifths></key>\
+                         <time><beats>4</beats><beat-type>4</beat-type></time>{TREBLE}\
+                         </attributes>"
+                )
+            } else if m == 3 {
+                "<print new-system=\"yes\"/>".to_owned()
+            } else {
+                String::new()
+            };
+            let body = if m == 3 { rest } else { note };
+            format!("<measure number=\"{m}\">{head}{body}</measure>")
+        })
+        .collect();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\">{measures}</part></score-partwise>"
+    );
+    let (_, layout) = engrave_on(
+        "rest_opening_a_system.musicxml",
+        &xml,
+        epiphany_engrave::PageGeometry::default(),
+    );
+    let system = layout
+        .systems()
+        .nth(1)
+        .expect("the file's break makes a second system");
+    let glyphs: Vec<_> = system
+        .primitives
+        .glyphs
+        .iter()
+        .map(|&i| &layout.glyphs[i as usize])
+        .collect();
+    let ink = |g: &epiphany_layout_ir::ResolvedGlyph| {
+        (
+            g.position.x.0 + g.bounding_box.left.0,
+            g.position.x.0 + g.bounding_box.right.0,
+        )
+    };
+    let rest = glyphs
+        .iter()
+        .find(|g| g.glyph.as_str() == "restWhole")
+        .expect("the measure rest opens the system");
+    let (rl, rr) = ink(rest);
+    let lead = glyphs
+        .iter()
+        .filter(|g| matches!(g.provenance.source, TypedObjectId::StaffInstance(_)))
+        .map(|g| ink(g).1)
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(
+        lead.is_finite() && lead < rl,
+        "the lead {lead} before the rest {rl}"
+    );
+    let barline = glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("barline"))
+        .map(|g| ink(g).0)
+        .filter(|&l| l >= rr)
+        .fold(f32::INFINITY, f32::min);
+    let centre = (rl + rr) * 0.5;
+    assert!(
+        (centre - (lead + barline) * 0.5).abs() < 0.01,
+        "the rest's centre {centre} between the lead {lead} and the barline {barline}"
+    );
 }

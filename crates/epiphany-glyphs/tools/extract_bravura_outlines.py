@@ -93,7 +93,9 @@ NAMES = ["noteheadBlack","noteheadHalf","noteheadWhole","noteheadDoubleWhole",
 "dynamicFF","dynamicFFF","dynamicFFFF","dynamicFFFFF","dynamicFFFFFF","dynamicFortePiano",
 "dynamicSforzando1","dynamicSforzato","dynamicSforzatoFF","dynamicSforzandoPiano",
 "dynamicSforzandoPianissimo","dynamicRinforzando1","dynamicRinforzando2","dynamicForzando",
-"dynamicNiente","wiggleTrill","segno","coda"]
+"dynamicNiente","wiggleTrill","segno","coda",
+# X5d: a whole or half rest outside its staff, with its ledger line.
+"restWholeLegerLine","restHalfLegerLine"]
 
 def verify(data, expected, what):
     actual = hashlib.sha256(data).hexdigest()

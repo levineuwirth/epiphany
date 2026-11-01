@@ -2816,3 +2816,42 @@ is set:
   where only the merged outline sees it),
   `vertical::tests::the_gap_bands_carry_the_solves_numbers`,
   and the CLI's beam, lyric and compression tests reading the measure.
+
+## ENGRAVER_VERSION 96 → 97: rests (X5d.5, 2026-11-01)
+
+- A rest filling its measure stands centred in its staff's free space in
+  the measure, as Gould sets a whole-bar rest (*Behind Bars*, pp. 159-160,
+  in the blank space where the bar holds a clef, key or time signature):
+  between the right edge of its staff's ink in the columns before it that
+  hold no note, back to the barline opening the measure (or the system's
+  lead where the measure opens the system), and the left edge of its
+  staff's ink in the first such column after it, as MuseScore takes them
+  (`MeasureLayout::getMeasureStartEndPos`) and LilyPond centres a measure
+  rest between its break-alignment groups. Casting sets it once the
+  system's map across is known; its column keeps its room. The constrained
+  stage names each such rest (`ConstrainedLayoutIR::measure_rests`). It had
+  stood at its measure's first column (D70).
+- A whole or half rest standing outside its staff, the line it hangs from
+  or sits on beyond the staff's lines, takes its ledgered glyph
+  (`restWholeLegerLine`, `restHalfLegerLine`, now bundled from the pinned
+  Bravura with their metrics), chosen on its final line after it has moved
+  clear, as Gould draws it (p. 37) and MuseScore (`Rest::getSymbol`) and
+  LilyPond (`rest.cc`) choose it (D73). A rest centred in its measure and
+  moved clear of another voice in its column keeps that height where it
+  stands; a visiting voice's ink elsewhere in the measure is not cleared,
+  named for X5d.7's sweep.
+- A staff's rest whose column holds voices visiting from the staves above
+  and below at once, their stems turning both ways, takes the side whose
+  first clear place stands nearer its staff's middle line, a tie keeping
+  the side it took before (D109 Q8); it had always turned down, past the
+  lower visitor's stem (X4b review 3's q4). Gould's principle is the same
+  (a rest's level follows the pitches around it, p. 37); neither engine
+  treats a cross-staff visitor so.
+- Tests: the CLI's `a_measure_rest_stands_centred_in_its_measure`,
+  `a_measure_rest_opening_a_system_centres_after_its_lead`,
+  `a_rest_outside_its_staff_takes_its_ledger_line` and
+  `a_rest_between_visitors_from_both_sides_takes_the_nearer_side`; the
+  constrained stage's `a_rest_between_visitors_level_both_ways_keeps_its_side`;
+  `a_rest_filling_its_measure_is_one_span` now reads its column through a
+  hidden rest's anchor, a drawn one standing centred. Two goldens change,
+  re-blessed with their renders before and after recorded (D10).

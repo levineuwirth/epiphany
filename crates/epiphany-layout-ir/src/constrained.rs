@@ -218,6 +218,11 @@ pub struct ConstrainedLayoutIR {
     /// Each ending's start: a solver that breaks a system at the barline an
     /// ending opens after draws the whole ending on the next system.
     pub endings: Vec<EndingStart>,
+    /// Each drawn rest filling its measure, by glyph: once its system is set
+    /// across, a solver centres it in its staff's free space in the measure,
+    /// as Gould sets a whole-bar rest (*Behind Bars*, pp. 159-160) and
+    /// MuseScore and LilyPond centre theirs; its column keeps its room.
+    pub measure_rests: Vec<GlyphObjectId>,
 }
 
 /// An ending's start (see [`ConstrainedLayoutIR::endings`]): the barline
@@ -1309,6 +1314,7 @@ pub fn try_to_constrained(
     let mut constrained_regions = Vec::new();
     let mut span_anchors: Vec<SpanAnchor> = Vec::new();
     let mut endings: Vec<EndingStart> = Vec::new();
+    let mut measure_rests: Vec<GlyphObjectId> = Vec::new();
     let mut system_leads: Vec<SystemLead> = Vec::new();
     let mut staff_groups: Vec<GroupSpan> = Vec::new();
     let mut cross_staff_beams: Vec<CrossStaffBeam> = Vec::new();
@@ -1682,6 +1688,8 @@ pub fn try_to_constrained(
                             staff,
                             start: time,
                             voice: rest.voice,
+                            whole_measure: rest.whole_measure,
+                            lines: (yo, yo + STAFF_HEIGHT),
                         });
                         if rest.whole_measure {
                             break;
@@ -3859,6 +3867,9 @@ pub fn try_to_constrained(
                                     band_of(staff),
                                 )),
                                 Some(name) => {
+                                    // On its final line, a whole or half rest
+                                    // outside its staff takes its ledger line.
+                                    let name = ledgered_rest(name, seg.y, seg.lines);
                                     emit.glyph(
                                         prov_ref,
                                         name,
@@ -3867,6 +3878,11 @@ pub fn try_to_constrained(
                                         staff,
                                         info.slot,
                                     );
+                                    if seg.whole_measure {
+                                        if let Some(glyph) = emit.glyphs.last() {
+                                            measure_rests.push(glyph.id());
+                                        }
+                                    }
                                     // Dots sit in the space above the middle line,
                                     // right of the rest, and move with a rest
                                     // moved clear of a visiting voice.
@@ -5614,6 +5630,7 @@ pub fn try_to_constrained(
         cross_staff_beams,
         family,
         endings,
+        measure_rests,
     })
 }
 
@@ -5750,6 +5767,23 @@ struct RestSeg {
     staff: Option<StaffId>,
     start: TimePoint,
     voice: VoicePlace,
+    /// Whether it fills its measure.
+    whole_measure: bool,
+    /// Its staff's bottom and top lines.
+    lines: (f32, f32),
+}
+
+/// The SMuFL name a whole or half rest standing at `y` takes: its ledgered
+/// form where the line it hangs from (a whole rest) or sits on (a half) lies
+/// outside its staff's lines, as Gould draws them (*Behind Bars*, p. 37),
+/// MuseScore (`Rest::getSymbol`) and LilyPond (`rest.cc`) alike.
+fn ledgered_rest(name: &'static str, y: f32, (bottom, top): (f32, f32)) -> &'static str {
+    let outside = y < bottom - 1e-3 || y > top + 1e-3;
+    match name {
+        "restWhole" if outside => "restWholeLegerLine",
+        "restHalf" if outside => "restHalfLegerLine",
+        other => other,
+    }
 }
 
 /// One component of a note or unpitched note, starting at `start` on
@@ -5823,9 +5857,12 @@ type ColumnOthers = BTreeMap<(Option<StaffId>, ColumnKey), Vec<(EventId, marks::
 /// ink in its column, as a rest beside another voice moves off its heads
 /// (`clear_rests`). A rest alone on its staff moves to the side away from the
 /// stems it meets, down from a visitor whose stem turns up, as the staff's
-/// voice would turn from a second voice there; a rest its own staff's voices
-/// have turned keeps its side. The visitor keeps the stem its home gives it.
-/// A rest moves no further than the column ink's vertical extent plus its own
+/// voice would turn from a second voice there, and, where its column holds
+/// visitors from both sides, to the side whose first clear place is nearer
+/// its staff's middle line; a rest its own staff's voices have turned keeps
+/// its side. The visitor
+/// keeps the stem its home gives it. A rest moves no further than the column
+/// ink's vertical extent plus its own
 /// height, and a debug build asserts it then stands clear, so a defect in the
 /// move fails instead of looping (X4b fix round 4: before it the loop had no
 /// bound).
@@ -5887,12 +5924,6 @@ fn clear_visitors(
             if stems_met.is_empty() {
                 continue;
             }
-            let up = match seg.voice {
-                VoicePlace::Upper => true,
-                VoicePlace::Lower => false,
-                VoicePlace::Alone => stems_met.iter().all(|up| !up),
-            };
-            let step = if up { 1.0 } else { -1.0 };
             let meets = |y: f32, dots_y: f32| {
                 own(y, dots_y).iter().any(|r| {
                     ink.iter().any(|(b, _)| {
@@ -5915,6 +5946,38 @@ fn clear_visitors(
             let (ink_lo, ink_hi) = extent(&mut ink.iter().map(|(b, _)| b));
             let (rest_lo, rest_hi) = extent(&mut own(seg.y, seg.dots_y).iter());
             let bound = (ink_hi - ink_lo) + (rest_hi - rest_lo) + 2.0 * REST_CLEARANCE + 1.0;
+            // A rest alone on its staff turns from the stems it meets; where
+            // its column holds visitors from both sides, their stems turning
+            // both ways, it takes the side whose first clear place stands
+            // nearer its staff's middle line, as a rest's level follows the
+            // pitches around it (Gould, p. 37), a tie keeping the side it
+            // took before (D109 Q8).
+            let first_clear = |step: f32| {
+                let (mut y, mut dots_y, mut moved) = (seg.y, seg.dots_y, 0.0);
+                while moved < bound && meets(y, dots_y) {
+                    y += step;
+                    dots_y += step;
+                    moved += 1.0;
+                }
+                y
+            };
+            let up = match seg.voice {
+                VoicePlace::Upper => true,
+                VoicePlace::Lower => false,
+                VoicePlace::Alone => {
+                    let ups = ink.iter().any(|(_, up)| *up);
+                    let downs = ink.iter().any(|(_, up)| !*up);
+                    if ups && downs {
+                        let centre = (bounds.bottom.0 + bounds.top.0) * 0.5;
+                        let middle = (seg.lines.0 + seg.lines.1) * 0.5;
+                        let off = |y: f32| (y + centre - middle).abs();
+                        off(first_clear(1.0)) < off(first_clear(-1.0))
+                    } else {
+                        stems_met.iter().all(|up| !up)
+                    }
+                }
+            };
+            let step = if up { 1.0 } else { -1.0 };
             let mut moved = 0.0;
             while moved < bound && meets(seg.y, seg.dots_y) {
                 seg.y += step;
@@ -9397,6 +9460,65 @@ mod marks;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A rest between visitors from both sides whose first clear places
+    /// stand equally far from its staff's middle line keeps the side it
+    /// always took, down (D109 Q8); one step nearer above, it turns up.
+    #[test]
+    fn a_rest_between_visitors_level_both_ways_keeps_its_side() {
+        let bounds = metrics("restQuarter").expect("bundled").bounding_box();
+        let centre = (bounds.bottom.0 + bounds.top.0) * 0.5;
+        let middle = 2.0;
+        let run = |raise: f32| -> f32 {
+            let seg = RestSeg {
+                name: Some("restQuarter"),
+                key: ColumnKey::Lead,
+                y: middle - centre,
+                comp: 0,
+                visible: true,
+                dots: 0,
+                dots_y: middle + 0.5,
+                staff: None,
+                start: TimePoint::WallClock(WallClockTime(0)),
+                voice: VoicePlace::Alone,
+                whole_measure: false,
+                lines: (0.0, 4.0),
+            };
+            let mut rests = BTreeMap::new();
+            rests.insert(EventId::from_raw(1), vec![seg]);
+            // Two visitors' heads over each other, one stem up and one down,
+            // symmetric about the middle line, the upper `raise` lower.
+            let head = |bottom: f32, top: f32| InkBox {
+                left: 0.0,
+                right: 1.2,
+                bottom,
+                top,
+                behind: false,
+            };
+            let mut ink = VisitorInk::new();
+            ink.insert(
+                (None, ColumnKey::Lead),
+                vec![
+                    (head(middle, middle + 1.2 - raise), true),
+                    (head(middle - 1.2, middle), false),
+                ],
+            );
+            let mut columns = BTreeMap::new();
+            columns.insert(
+                ColumnKey::Lead,
+                ColumnInfo {
+                    x: 0.0,
+                    slot: SpringSlotId(1),
+                    time: TimePoint::WallClock(WallClockTime(0)),
+                    note_column: true,
+                },
+            );
+            clear_visitors(&mut rests, &BTreeSet::new(), &ink, &columns);
+            rests[&EventId::from_raw(1)][0].y + centre - middle
+        };
+        assert!(run(0.0) < 0.0, "level both ways: down, {}", run(0.0));
+        assert!(run(1.0) > 0.0, "a space nearer above: up, {}", run(1.0));
+    }
 
     /// A break anchored to its music is placed where the music is (X5b.4,
     /// breaks keyed by their anchors): an event's onset plus the offset, a

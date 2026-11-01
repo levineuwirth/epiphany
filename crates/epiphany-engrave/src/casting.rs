@@ -2404,6 +2404,99 @@ pub(crate) fn cast_off(
     }
     decisions.extend(skipped);
 
+    // ---- Measure rests (X5d.5) ---------------------------------------------
+    // A rest filling its measure stands centred in its staff's free space in
+    // the measure, as Gould sets a whole-bar rest (pp. 159-160): between the
+    // right edge of its staff's ink in the columns before it that hold no
+    // note, back to the barline opening the measure (or the system's lead
+    // where the measure opens the system), and the left edge of its staff's
+    // ink in the first such column after it, a clef, key or time signature or
+    // the barline closing the measure, as MuseScore takes them
+    // (`MeasureLayout::getMeasureStartEndPos`). Its column keeps its room.
+    let mut rest_dx: BTreeMap<usize, f32> = BTreeMap::new();
+    {
+        let glyph_index: BTreeMap<GlyphObjectId, usize> = input
+            .glyphs
+            .iter()
+            .enumerate()
+            .map(|(i, g)| (g.id(), i))
+            .collect();
+        let final_x = |g: usize, s: usize| -> f32 {
+            let glyph = &input.glyphs[g];
+            let spaced = spaced_glyphs[g].position.x.0;
+            let sx = slot_source_x
+                .get(&glyph.horizontal_slot)
+                .copied()
+                .unwrap_or(spaced);
+            spaced + placements[s].slot_dx(sx) - shift_of(glyph.horizontal_slot)
+        };
+        for id in &input.measure_rests {
+            let Some(&g) = glyph_index.get(id) else {
+                continue;
+            };
+            let glyph = &input.glyphs[g];
+            let Some(&s) = system_of_slot.get(&glyph.horizontal_slot) else {
+                continue;
+            };
+            let plan = &systems[s];
+            let slots = &region_slots[plan.region];
+            let Some(k) = plan
+                .slots
+                .iter()
+                .position(|&i| slots[i].id == glyph.horizontal_slot)
+            else {
+                continue;
+            };
+            let band = glyph.vertical_band;
+            // A column holding no note: its ink on the rest's staff across.
+            let furniture = |i: usize| -> Option<(f32, f32)> {
+                if slots[i].note {
+                    return None;
+                }
+                slots[i]
+                    .members
+                    .iter()
+                    .filter(|&&m| {
+                        input.glyphs[m].vertical_band == band
+                            && !family.contains(&input.glyphs[m].id())
+                    })
+                    .map(|&m| {
+                        let (x, b) = (final_x(m, s), input.glyphs[m].bounding_box);
+                        (x + b.left.0, x + b.right.0)
+                    })
+                    .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)))
+            };
+            let mut left: Option<f32> = None;
+            let mut opened = false;
+            for &i in plan.slots[..k].iter().rev() {
+                if let Some((_, r)) = furniture(i) {
+                    left = Some(left.map_or(r, |l| l.max(r)));
+                }
+                if slots[i].barline {
+                    opened = true;
+                    break;
+                }
+            }
+            if !opened {
+                let lead = geometry.margins.left.0 + lead_ink[s].unwrap_or(0.0);
+                left = Some(left.map_or(lead, |l| l.max(lead)));
+            }
+            let right = plan.slots[k + 1..]
+                .iter()
+                .find_map(|&i| furniture(i))
+                .map(|(l, _)| l);
+            let (Some(left), Some(right)) = (left, right) else {
+                continue;
+            };
+            let b = glyph.bounding_box;
+            let x = final_x(g, s);
+            let centre = (left + right) * 0.5;
+            if right - left > b.right.0 - b.left.0 {
+                rest_dx.insert(g, centre - (b.left.0 + b.right.0) * 0.5 - x);
+            }
+        }
+    }
+
     // ---- Bake the world frame ----------------------------------------------
     // A primitive's additional downward shift from the inter-staff solve.
     let staff_dy = |s: usize, staff: Option<StaffId>| -> f32 {
@@ -2444,7 +2537,8 @@ pub(crate) fn cast_off(
                         .copied()
                         .unwrap_or(0.0);
                     (
-                        placements[s].slot_dx(sx) - shift_of(glyph.horizontal_slot),
+                        placements[s].slot_dx(sx) - shift_of(glyph.horizontal_slot)
+                            + rest_dx.get(&gi).copied().unwrap_or(0.0),
                         placements[s].dy - staff_dy(s, glyph_staff_of[gi]) + lift,
                     )
                 }
