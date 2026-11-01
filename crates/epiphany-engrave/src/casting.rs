@@ -38,14 +38,16 @@
 //!    (`compress_system`); where even the floor overflows, the search breaks
 //!    it as any other, and each system it adds there is named
 //!    (`AddedSystem`).
-//! 2. **Vertical stacking.** Each system's height is its real content extent
-//!    (glyph boxes plus stroke extents — the vertical spring solve that would
-//!    renegotiate band heights is deferred, so the constrained `y` geometry is
-//!    authoritative); consecutive systems are separated by the vertical-band
-//!    model's **inter-system gap** ([`VerticalBand::inter_system_gap`], the
-//!    preferred height — genuinely read from the band constructor so the two
-//!    cannot drift). Systems that no longer fit the page content height start
-//!    the next page.
+//! 2. **Vertical stacking.** A system's staves are set column by column by
+//!    their outlines and a floor between their lines (`vertical::stack`, X5d.2);
+//!    consecutive systems stand at least `vertical::SYSTEM_FLOOR` apart line to
+//!    line, the whole system above's ink clear of the whole system below's. A
+//!    page's first staff stands `vertical::PAGE_BORDER` below its top margin, or
+//!    lower where its ink needs, and a further system goes on the page only
+//!    where its last staff keeps that border above the bottom margin; then the
+//!    page is spread by MuseScore's rule (`vertical::spread`, X5d.3). A system
+//!    taller than a page stays alone on it, risen as far as its top border
+//!    allows, and is named where its paper cannot hold it.
 //! 3. **Page assignment and the world frame.** Pages stack **vertically in one
 //!    world**: page *n*'s top edge sits [`INTER_PAGE_GAP`] staff spaces below
 //!    page *n−1*'s bottom edge, page 1's top-left corner at the origin (world
@@ -89,9 +91,9 @@ use epiphany_layout_ir::{
     LayoutConstraint, LayoutObjectId, LeadGlyph, Margins, MeasureMark, Point, PrimitiveIndices,
     Provenance, Rect, ResolvedGlyph, ResolvedMeasure, ResolvedPage, ResolvedStaff, ResolvedSystem,
     ResolvedText, Size2D, SpringSlotId, StaffSpace, Stroke, SynthesisInstanceKey, SynthesisKind,
-    SynthesisRegistryId, SystemLead, TimePoint, Transform2D, VerticalBand, VerticalBandId,
-    VerticalBandKind, BAR_NOTE_DISTANCE, HAIRPIN_CONT_HEIGHT, HAIRPIN_HEIGHT, HAIRPIN_MIN_LENGTH,
-    LYRIC_DASH_MAX, LYRIC_DASH_MAX_DISTANCE, LYRIC_DASH_MIN, LYRIC_MELISMA_MIN, TRILL_WIGGLE,
+    SynthesisRegistryId, SystemLead, TimePoint, Transform2D, VerticalBandId, VerticalBandKind,
+    BAR_NOTE_DISTANCE, HAIRPIN_CONT_HEIGHT, HAIRPIN_HEIGHT, HAIRPIN_MIN_LENGTH, LYRIC_DASH_MAX,
+    LYRIC_DASH_MAX_DISTANCE, LYRIC_DASH_MIN, LYRIC_MELISMA_MIN, TRILL_WIGGLE,
 };
 
 use crate::clearance::InkRect;
@@ -111,6 +113,14 @@ pub(crate) struct Respacing<'a> {
 /// spaces, and the measure it opens with.
 pub(crate) struct AddedSystem {
     pub overflow: f32,
+    pub opens: Option<TypedObjectId>,
+}
+
+/// A system whose ink its paper cannot hold, named rather than squeezed
+/// (D109 Q5): how far its ink passes the paper, in staff spaces, and the
+/// measure it opens with.
+pub(crate) struct OverfullSystem {
+    pub past: f32,
     pub opens: Option<TypedObjectId>,
 }
 
@@ -332,6 +342,8 @@ pub(crate) struct CastLayout {
     /// Each system the search added among a region's breaks where even the
     /// floor overflows.
     pub added: Vec<AddedSystem>,
+    /// Each system whose ink passes its paper.
+    pub overfull: Vec<OverfullSystem>,
 }
 
 /// One realized spring slot in spaced (pre-casting) coordinates, with the
@@ -1927,16 +1939,24 @@ pub(crate) fn cast_off(
     // and its lead. A verse keeps further from the next staff's ink, on the
     // side it stands.
     let mut staff_ink: BTreeMap<(usize, StaffId), (Vec<InkRect>, Vec<InkRect>)> = BTreeMap::new();
+    // The ink of no staff, which only the gap between systems reads.
+    let mut free_ink: BTreeMap<usize, Vec<InkRect>> = BTreeMap::new();
     for ((s, band), rects) in &family_sky {
         if let Some(st) = staff_of(*band) {
             let entry = staff_ink.entry((*s, st)).or_default();
             entry.0.extend(rects.iter().copied());
             entry.1.extend(rects.iter().copied());
+        } else {
+            free_ink
+                .entry(*s)
+                .or_default()
+                .extend(rects.iter().copied());
         }
     }
     for (f, s, b) in &placed_boxes {
         let mark = &input.family[*f];
         let Some(st) = staff_of(mark.band) else {
+            free_ink.entry(*s).or_default().push(*b);
             continue;
         };
         let lyric = mark
@@ -1974,6 +1994,8 @@ pub(crate) fn cast_off(
     let content_height = geometry.content_height();
     let mut staff_shift: BTreeMap<(usize, StaffId), f32> = BTreeMap::new();
     let no_ink: (Vec<InkRect>, Vec<InkRect>) = (Vec::new(), Vec::new());
+    // Each system's staves top first, with their bottom and top lines.
+    let mut system_staves: Vec<Vec<(StaffId, f32, f32)>> = Vec::with_capacity(systems.len());
     for (s, ext) in extents.iter().enumerate() {
         let mut staves: Vec<(StaffId, (f32, f32))> = staff_ext
             .iter()
@@ -2040,11 +2062,201 @@ pub(crate) fn cast_off(
         for (&(st, _), shift) in staves.iter().zip(shifts) {
             staff_shift.insert((s, st), shift);
         }
+        system_staves.push(
+            staves
+                .iter()
+                .zip(&inks)
+                .map(|(&(st, _), ink)| (st, ink.bottom, ink.top))
+                .collect(),
+        );
+    }
+
+    // ---- Between systems and the page (X5d.3) -----------------------------
+    // Each system's ink, up and down, with its staves where the solve set
+    // them: its staves' extents and the ink of no staff.
+    type Shifts = BTreeMap<(usize, StaffId), f32>;
+    let ink_y = |s: usize, shifts: &Shifts| -> (f32, f32) {
+        let (mut lo, mut hi) = (extents[s].min_y, extents[s].max_y);
+        for &(st, _, _) in &system_staves[s] {
+            if let Some(&(a, b)) = staff_ext.get(&(s, st)) {
+                let sh = shifts.get(&(s, st)).copied().unwrap_or(0.0);
+                lo = lo.min(a - sh);
+                hi = hi.max(b - sh);
+            }
+        }
+        if lo > hi {
+            (0.0, 0.0)
+        } else {
+            (lo, hi)
+        }
+    };
+    // Each system's top line and bottom line, where the solve set them.
+    let lines_of = |s: usize, shifts: &Shifts| -> (f32, f32) {
+        let staves = &system_staves[s];
+        let shift = |st: StaffId| shifts.get(&(s, st)).copied().unwrap_or(0.0);
+        match (staves.first(), staves.last()) {
+            (Some(&(first, _, top)), Some(&(last, bottom, _))) => {
+                (top - shift(first), bottom - shift(last))
+            }
+            _ => {
+                let (lo, hi) = ink_y(s, shifts);
+                (hi, lo)
+            }
+        }
+    };
+    // How far apart two consecutive systems stand, the bottom line of the
+    // one above to the top line of the one below, as `dy` of the upper
+    // less `dy` of the lower: at least the floor between systems, and the
+    // whole system above's ink the clearance from the whole system below's
+    // wherever they meet across (D109 Q3's gap between systems, Q2's
+    // merged outline).
+    // A system's ink as it faces the system below (`down`) or above, its
+    // staves where the solve set them, with the ink of no staff.
+    let system_rects = |s: usize, shifts: &Shifts, down: bool| -> Vec<InkRect> {
+        let mut rects: Vec<InkRect> = free_ink.get(&s).cloned().unwrap_or_default();
+        for &(st, _, _) in &system_staves[s] {
+            let sh = shifts.get(&(s, st)).copied().unwrap_or(0.0);
+            let (d, u) = staff_ink.get(&(s, st)).unwrap_or(&no_ink);
+            rects.extend((if down { d } else { u }).iter().map(|r| InkRect {
+                bottom: r.bottom - sh,
+                top: r.top - sh,
+                ..*r
+            }));
+        }
+        rects
+    };
+    let system_gap = |upper: usize, lower: usize, shifts: &Shifts| -> f32 {
+        let (_, bottom) = lines_of(upper, shifts);
+        let (top, _) = lines_of(lower, shifts);
+        let outline = crate::vertical::Outline::below(
+            &system_rects(upper, shifts, true),
+            crate::vertical::INK_REACH,
+        );
+        let by_ink = crate::vertical::need_below(&outline, &system_rects(lower, shifts, false));
+        (crate::vertical::SYSTEM_FLOOR + top - bottom).max(by_ink)
+    };
+
+    // ---- Vertical stacking and page assignment ----------------------------
+    // A page's first system stands with its first staff's top line
+    // `PAGE_BORDER` below the top margin, or lower where its ink needs; each
+    // further system stands its gap below the one above, and goes on the
+    // page only where its last staff's bottom line then keeps `PAGE_BORDER`
+    // above the bottom margin, or its ink does where it reaches further
+    // (MuseScore's `staffUpperBorder` and `staffLowerBorder`, D109 Q4). A
+    // system taller than a page stays alone on the page it opens.
+    let content_height = geometry.content_height();
+    let bounded = content_height > 0.0;
+    let border = crate::vertical::PAGE_BORDER;
+    let mut placements: Vec<Placement> = Vec::with_capacity(systems.len());
+    // Whether each system is compressed, its curves then passed again.
+    let mut compressed: Vec<bool> = Vec::with_capacity(systems.len());
+    let mut page_systems: Vec<Vec<usize>> = Vec::new();
+    let mut page_floor = 0.0_f32;
+    for (s, plan) in systems.iter().enumerate() {
+        let (lo, hi) = ink_y(s, &staff_shift);
+        let (top, bottom) = lines_of(s, &staff_shift);
+        // Where it would stand after the system above on this page.
+        let after = page_systems
+            .last()
+            .and_then(|page| page.last())
+            .map(|&u: &usize| placements[u].dy - system_gap(u, s, &staff_shift));
+        let fits = |dy: f32| bottom + dy - (bottom - lo).max(border) >= page_floor;
+        let dy = match after {
+            Some(dy) if !plan.page_forced && (!bounded || fits(dy)) => dy,
+            _ => {
+                let p = page_systems.len();
+                let page_top = page_top_content(p, geometry);
+                page_floor = page_top - content_height.max(0.0);
+                page_systems.push(Vec::new());
+                page_top - (hi - top).max(border) - top
+            }
+        };
+        // The system's map across, set before the family was placed; its
+        // height now.
+        let (mut placement, squeezed) = hplace[s].clone();
+        placement.dy = dy;
+        compressed.push(squeezed);
+        placements.push(placement);
+        page_systems
+            .last_mut()
+            .expect("a page was opened above")
+            .push(s);
+    }
+
+    // ---- Vertical justification -------------------------------------------
+    // A page whose system passes its bottom margin (one alone, taller than
+    // the page) rises as far as its top border lets it, its ink no higher
+    // than the top margin: the borders are aims, which cost a system no fit
+    // (D109 Q4). Every other page, the last included, is spread by
+    // MuseScore's rule until its last staff's bottom line stands
+    // `PAGE_BORDER` above its bottom margin or its ink reaches the margin
+    // (D109 Q3): a gap between systems first raised to the widest gap
+    // between staves of a system beside it (Gould, p. 488), then the
+    // smallest gaps raised level and the rest shared by weight
+    // (`vertical::spread`).
+    let mut overfull: Vec<OverfullSystem> = Vec::new();
+    if bounded {
+        for (p, page) in page_systems.iter().enumerate() {
+            let page_top = page_top_content(p, geometry);
+            let floor = page_top - content_height;
+            let (first, last) = (page[0], *page.last().expect("a page holds a system"));
+            let lowest = ink_y(last, &staff_shift).0 + placements[last].dy;
+            if lowest < floor {
+                let (_, hi) = ink_y(first, &staff_shift);
+                let (top, _) = lines_of(first, &staff_shift);
+                let room = (hi - top).max(border) - (hi - top);
+                let rise = (floor - lowest).min(room);
+                for &s in page {
+                    placements[s].dy += rise;
+                }
+                continue;
+            }
+            let bottom_line = lines_of(last, &staff_shift).1 + placements[last].dy;
+            let space = (lowest - floor).min(bottom_line - border - floor);
+            if space <= 0.0 {
+                continue;
+            }
+            spread_page(
+                page,
+                space,
+                input,
+                &systems,
+                &system_staves,
+                &mut staff_shift,
+                &mut placements,
+            );
+        }
+        // A system whose ink its paper cannot hold is named, not squeezed
+        // (D109 Q5).
+        for (p, page) in page_systems.iter().enumerate() {
+            let frame = geometry.page_frame(p);
+            let (paper_bottom, paper_top) =
+                (frame.origin.y.0, frame.origin.y.0 + frame.size.height.0);
+            for &s in page {
+                let (lo, hi) = ink_y(s, &staff_shift);
+                let past =
+                    (paper_bottom - (lo + placements[s].dy)).max(hi + placements[s].dy - paper_top);
+                if past > 0.0 {
+                    let plan = &systems[s];
+                    let slots = &region_slots[plan.region];
+                    overfull.push(OverfullSystem {
+                        past,
+                        opens: plan
+                            .slots
+                            .iter()
+                            .find_map(|&i| slots[i].measure_barline)
+                            .map(|g| input.glyphs[g].provenance.source),
+                    });
+                }
+            }
+        }
     }
 
     // A dynamic or hairpin of a grand staff stands centred between its two
-    // staves once they are set, as far as the ink between them lets it, the
-    // members of a row together (`AlignmentLayout::alignStaffCenteredItems`).
+    // staves once they are set and spread, as far as the ink between them
+    // lets it, the members of a row together
+    // (`AlignmentLayout::alignStaffCenteredItems`, which MuseScore runs once
+    // a page is spread).
     let mut centred: BTreeMap<(usize, u128), Vec<usize>> = BTreeMap::new();
     for (i, p) in family_pieces.iter().enumerate() {
         let Some(place) = input.family[p.family].placement else {
@@ -2145,76 +2357,6 @@ pub(crate) fn cast_off(
         extents[*s].add_y(lo - sh, hi - sh);
     }
     let extents: Vec<Extent> = extents.into_iter().map(Extent::normalized).collect();
-
-    // ---- Vertical stacking and page assignment ----------------------------
-    // The inter-system spacing comes from the vertical-band model's own
-    // constructor, so the casting-off gap and the band spring cannot drift.
-    let gap = VerticalBand::inter_system_gap(VerticalBandId(0))
-        .preferred_height
-        .0;
-    let content_height = geometry.content_height();
-    let bounded = content_height > 0.0;
-    let mut placements: Vec<Placement> = Vec::with_capacity(systems.len());
-    // Whether each system is compressed, its curves then passed again.
-    let mut compressed: Vec<bool> = Vec::with_capacity(systems.len());
-    let mut page_systems: Vec<Vec<usize>> = Vec::new();
-    let mut cursor = 0.0_f32;
-    let mut page_floor = 0.0_f32;
-    for (s, plan) in systems.iter().enumerate() {
-        let ext = &extents[s];
-        let height = ext.max_y - ext.min_y;
-        // Every opened page immediately receives a system, so an overflow test
-        // against a non-empty page list never opens an empty page — a system
-        // taller than a whole page stays (overfull) on the page it opens.
-        let overflow = bounded && !page_systems.is_empty() && cursor - height < page_floor;
-        if page_systems.is_empty() || plan.page_forced || overflow {
-            let p = page_systems.len();
-            cursor = page_top_content(p, geometry);
-            page_floor = cursor - content_height.max(0.0);
-            page_systems.push(Vec::new());
-        }
-        // The system's map across, set before the family was placed; its
-        // height now.
-        let (mut placement, squeezed) = hplace[s].clone();
-        placement.dy = cursor - ext.max_y;
-        compressed.push(squeezed);
-        placements.push(placement);
-        page_systems
-            .last_mut()
-            .expect("a page was opened above")
-            .push(s);
-        cursor -= height + gap;
-    }
-
-    // ---- Vertical justification -------------------------------------------
-    // Spread the systems of every NON-FINAL page so the last system's bottom
-    // reaches the content bottom, filling the page height — the vertical analog
-    // of per-system horizontal justification, distributing the slack evenly
-    // across the inter-system gaps. The last page stays ragged-bottom
-    // (top-aligned), as engraving convention wants; a page with a single system
-    // has no gap to grow, and an already-full (or overfull) page is left alone.
-    if bounded {
-        let last_page = page_systems.len().saturating_sub(1);
-        for (p, page) in page_systems.iter().enumerate() {
-            if p == last_page || page.len() < 2 {
-                continue;
-            }
-            let content_bottom = page_top_content(p, geometry) - content_height;
-            let last = *page.last().expect("a page carries at least one system");
-            let natural_bottom = placements[last].dy + extents[last].min_y;
-            let slack = natural_bottom - content_bottom;
-            if slack <= 0.0 {
-                continue;
-            }
-            // System i (0-based on the page) sinks by i/(n-1) of the slack, so
-            // the first stays at the content top and the last lands on the
-            // content bottom (y-down is decreasing y in this world frame).
-            let step = slack / (page.len() - 1) as f32;
-            for (i, &s) in page.iter().enumerate() {
-                placements[s].dy -= i as f32 * step;
-            }
-        }
-    }
 
     // ---- Break structure and decisions -------------------------------------
     let mut system_start_slots = BTreeSet::new();
@@ -3021,6 +3163,144 @@ pub(crate) fn cast_off(
         region_of_system: systems.iter().map(|plan| plan.region).collect(),
         unowned,
         added: added_systems,
+        overfull,
+    }
+}
+
+/// Spreads one page by `space` (D109 Q3): each of its gaps, the page's top
+/// border fixed, a gap between systems weighing `SPREAD_SYSTEM` and capped at
+/// `MAX_SYSTEM_SPREAD`, a gap at a bracket's or a brace's edge weighing
+/// `SPREAD_BRACKET` or `SPREAD_BRACE`, one inside a brace capped at
+/// `MAX_BRACE_SPREAD`, as MuseScore classes them (`distributeStaves`,
+/// `VerticalGapData`); a gap between systems first raised toward the widest
+/// gap between staves of either system beside it (Gould, p. 488), as far as
+/// the space allows, then `vertical::spread`. Each staff below a gap that
+/// grows sinks with it, and each system below.
+fn spread_page(
+    page: &[usize],
+    space: f32,
+    input: &ConstrainedLayoutIR,
+    systems: &[SystemPlan],
+    system_staves: &[Vec<(StaffId, f32, f32)>],
+    staff_shift: &mut BTreeMap<(usize, StaffId), f32>,
+    placements: &mut [Placement],
+) {
+    use crate::vertical::{
+        spread, SpreadGap, MAX_BRACE_SPREAD, MAX_STAFF_SPREAD, MAX_SYSTEM_SPREAD, PAGE_BORDER,
+        SPREAD_BRACE, SPREAD_BRACKET, SPREAD_SYSTEM,
+    };
+    use epiphany_layout_ir::GroupSign;
+    let shift = |s: usize, st: StaffId| staff_shift.get(&(s, st)).copied().unwrap_or(0.0);
+    let mut gaps = vec![SpreadGap {
+        distance: PAGE_BORDER,
+        factor: 1.0,
+        cap: MAX_STAFF_SPREAD,
+        fixed: true,
+    }];
+    // Each gap between systems, by its index in `gaps`, and the widest gap
+    // between staves of each system.
+    let mut between: Vec<(usize, usize, usize)> = Vec::new();
+    let mut widest: BTreeMap<usize, f32> = BTreeMap::new();
+    for (i, &s) in page.iter().enumerate() {
+        let staves = &system_staves[s];
+        if i > 0 {
+            let u = page[i - 1];
+            let (Some(&(last, bottom, _)), Some(&(first, _, top))) =
+                (system_staves[u].last(), staves.first())
+            else {
+                continue;
+            };
+            let distance = (bottom - shift(u, last) + placements[u].dy)
+                - (top - shift(s, first) + placements[s].dy);
+            between.push((gaps.len(), u, s));
+            gaps.push(SpreadGap {
+                distance,
+                factor: SPREAD_SYSTEM,
+                cap: MAX_SYSTEM_SPREAD / SPREAD_SYSTEM,
+                fixed: false,
+            });
+        }
+        let groups: Vec<_> = input
+            .staff_groups
+            .iter()
+            .filter(|g| g.region == systems[s].region)
+            .collect();
+        for w in staves.windows(2) {
+            let ((upper, bottom, _), (lower, _, top)) = (w[0], w[1]);
+            let distance = (bottom - shift(s, upper)) - (top - shift(s, lower));
+            let edge = |kind: GroupSign| {
+                groups.iter().any(|g| {
+                    g.kind == kind && g.staves.contains(&upper) != g.staves.contains(&lower)
+                })
+            };
+            let inside_brace = groups.iter().any(|g| {
+                g.kind == GroupSign::Brace && g.staves.contains(&upper) && g.staves.contains(&lower)
+            });
+            let mut factor = 1.0_f32;
+            if edge(GroupSign::Bracket) {
+                factor = factor.max(SPREAD_BRACKET);
+            }
+            if edge(GroupSign::Brace) {
+                factor = factor.max(SPREAD_BRACE);
+            }
+            let cap = if inside_brace && !edge(GroupSign::Brace) {
+                MAX_BRACE_SPREAD / factor
+            } else {
+                MAX_STAFF_SPREAD
+            };
+            let entry = widest.entry(s).or_insert(f32::NEG_INFINITY);
+            *entry = entry.max(distance);
+            gaps.push(SpreadGap {
+                distance,
+                factor,
+                cap,
+                fixed: false,
+            });
+        }
+    }
+    // Gould first: a gap between systems wider than the widest gap between
+    // staves beside it, as far as the space allows, each short of it raised
+    // by the same share of what it lacks.
+    let lack: Vec<f32> = between
+        .iter()
+        .map(|&(g, u, s)| {
+            let beside = widest
+                .get(&u)
+                .copied()
+                .unwrap_or(f32::NEG_INFINITY)
+                .max(widest.get(&s).copied().unwrap_or(f32::NEG_INFINITY))
+                .min(MAX_SYSTEM_SPREAD);
+            (beside - gaps[g].distance).max(0.0)
+        })
+        .collect();
+    let total: f32 = lack.iter().sum();
+    let share = if total > 0.0 {
+        (space / total).min(1.0)
+    } else {
+        0.0
+    };
+    let original: Vec<f32> = gaps.iter().map(|g| g.distance).collect();
+    for (&(g, _, _), &l) in between.iter().zip(&lack) {
+        gaps[g].distance += l * share;
+    }
+    let spread = spread(&gaps, space - total * share);
+    let added: Vec<f32> = spread.iter().zip(&original).map(|(d, o)| d - o).collect();
+    // Each staff below a gap that grew sinks with it, and each system below.
+    let mut k = 1;
+    let mut above = 0.0_f32;
+    for (i, &s) in page.iter().enumerate() {
+        if i > 0 && between.iter().any(|&(_, _, lower)| lower == s) {
+            above += added[k];
+            k += 1;
+        }
+        placements[s].dy -= above;
+        let mut within = 0.0_f32;
+        for &(st, _, _) in system_staves[s].iter().skip(1) {
+            within += added[k];
+            k += 1;
+            *staff_shift.entry((s, st)).or_insert(0.0) += within;
+        }
+        above += within;
     }
 }
 

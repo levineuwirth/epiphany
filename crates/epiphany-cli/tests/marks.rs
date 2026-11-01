@@ -3815,6 +3815,20 @@ fn a_mark_past_a_beam_across_two_staves_stands_past_it() {
     near(bow[1], beam_top + 0.4, "the up-bow's bottom, past the beam");
 }
 
+/// A page of no height, which nothing spreads, so the staves stand where the
+/// staff solve sets them (X5d.3 spreads every page).
+fn engrave_unspread(score: &epiphany_core::Score) -> epiphany_layout_ir::ResolvedLayoutIR {
+    use epiphany_layout_ir::{to_constrained, to_logical, ConstraintSolver, SolverConfig};
+    let mut geometry = epiphany_engrave::PageGeometry::default();
+    geometry.size.height = epiphany_layout_ir::StaffSpace(0.0);
+    epiphany_engrave::Engraver::with_geometry(geometry)
+        .solve(
+            &to_constrained(&to_logical(score)),
+            &SolverConfig::default(),
+        )
+        .layout
+}
+
 /// A fermata over a note above the lower staff of two is its staff's ink:
 /// the staves stand apart so that it clears the upper staff's.
 #[test]
@@ -3828,7 +3842,7 @@ fn a_fermata_between_two_staves_holds_them_apart() {
         .concat()
     };
     let gap = |loaded: &Loaded| {
-        let layout = engrave(&loaded.reduced.score).layout;
+        let layout = engrave_unspread(&loaded.reduced.score);
         let lines = staff_lines(&layout);
         (lines[0].0 - lines[1].1, layout)
     };

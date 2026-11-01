@@ -1004,20 +1004,6 @@ mod tests {
     }
 
     #[test]
-    fn realized_inter_system_gaps_measure_the_band_models_preferred_height() {
-        // The casting pass stacks systems at the vertical-band constructor's
-        // preferred inter-system gap, so the vertical-density axis measures
-        // realized == preferred (raw 0.0) on the wrapping fixture — the honest
-        // near-zero the catalog's rationale describes, *measured* from the
-        // resolved page tree rather than assumed.
-        let report = Engraver::default().solve(&ten_measure(), &SolverConfig::default());
-        // Zero to the f32 precision the baked positions carry: the fixture's
-        // tie arcs below the first system, so its extent is no longer a whole
-        // number of staff spaces.
-        assert!(report.metric_vector.vertical_density_penalty.0.abs() < 1e-6);
-    }
-
-    #[test]
     fn vertical_justification_trades_page_fill_for_inter_system_density() {
         use crate::PageGeometry;
         use epiphany_layout_ir::{Margins, Size2D, StaffSpace};
@@ -1034,7 +1020,7 @@ mod tests {
         let geometry = PageGeometry {
             size: Size2D {
                 width: StaffSpace(40.0),
-                height: StaffSpace(34.0),
+                height: StaffSpace(60.0),
             },
             margins: Margins {
                 top: StaffSpace(5.0),
@@ -1049,9 +1035,10 @@ mod tests {
             report.layout.pages.len() >= 2,
             "the small page forces multiple pages"
         );
-        // Justification fills the non-final pages…
+        // Justification fills the non-final pages, to the borders its first
+        // and last staves keep from the margins (X5d.3)…
         assert!(
-            report.metric_vector.page_fill_efficiency.0 < 0.1,
+            report.metric_vector.page_fill_efficiency.0 < 0.3,
             "non-final pages fill: {}",
             report.metric_vector.page_fill_efficiency.0
         );

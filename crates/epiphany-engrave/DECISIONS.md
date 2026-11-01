@@ -2723,3 +2723,59 @@ is set:
   which no solve now realizes, until X5d.4 amends `req:qmc:vertical`; the
   tests that asserted it realized assert the rule instead. Four goldens
   change, re-blessed with their renders before and after recorded (D10).
+
+## ENGRAVER_VERSION 95 → 96: between systems and the page (X5d.3, 2026-11-01)
+
+- Two systems stand at least 8.5 apart line to line (MuseScore's
+  `minSystemSpread`, its floor with its spread on), the whole system
+  above's ink 0.5 from the whole system below's where they come within
+  0.25 across (`SystemLayout::minDistance` reads the last staff above and
+  the first below; with staff lines across every system the two agree).
+  LilyPond keeps 4 at least and 8 by default; MuseScore's is nearer
+  Gould's p. 488 (D109 Q3).
+- A page's first staff's top line stands 7 below its top margin, or lower
+  where its ink needs (`staffUpperBorder`), and a further system goes on
+  the page only where its last staff's bottom line keeps 7 above the
+  bottom margin, or its ink does where it reaches further
+  (`staffLowerBorder`), as MuseScore collects a page (D109 Q4). A system
+  taller than its page stays alone on it; there the top border yields, the
+  system rising until its ink stands at the top margin, so the borders are
+  aims that cost no system its fit, as Q4's figures assume (MuseScore keeps
+  the top border even then); one whose ink its paper still cannot hold is
+  named in a warning, not squeezed (D109 Q5).
+- Every page, the last included, is spread by MuseScore's rule
+  (`PageLayout::distributeStaves`, `VerticalGapData`), its numbers its
+  style defaults: the gaps between staves and between systems, in units of
+  their weights (2.5 between systems, 1.2 at a bracket's edge, 1.1 at a
+  brace's), the smallest raised level first, then the rest shared by
+  weight, at most 6 a gap and 6 for each gap of the page in all; caps 20
+  between staves, 6.5 inside a brace, 32 between systems; until the last
+  staff's bottom line stands 7 above the bottom margin or its ink reaches
+  it. Before it, a gap between systems is raised toward the widest gap
+  between staves of a system beside it, as far as the page allows (Gould,
+  p. 488). Departures named:
+  the levelling is solved exactly, where MuseScore's loop stops after
+  twenty passes and treats spacings of one integer ceiling as level, a
+  loop's bounds rather than a rule; Gould's more room above the strings
+  (p. 520) is met only where the score brackets its sections; the old
+  justification spread only non-final pages, only between systems.
+- A grand staff's centred dynamics are centred once the page is spread, as
+  MuseScore centres them after `distributeStaves`.
+- The spread's chosen sprawl is what `req:qmc:vertical` reads as
+  deviation, so a sparse page reads near 1.0 on that axis; the Reference
+  Suite's RS-1 and RS-2, each one sparse A4 page, carry it as a measured
+  Minimal miss (the owner's ruling at X5d.3), and the tier test claims its
+  thresholds on a page nothing spreads.
+- Tests: `vertical::tests` (the spread's levelling, weights, caps and
+  fill, and that it spends no more than it is given),
+  `vertical::solve_tests::systems_stand_their_floor_or_their_inks_clearance_apart`,
+  `the_spread_fills_every_page_to_its_border` and
+  `a_hard_page_break_starts_a_new_page` here; the CLI's
+  `systems_clear_each_others_ink`,
+  `a_system_taller_than_its_page_rises_and_is_named`,
+  `a_brace_keeps_its_staves_within_its_cap`,
+  `a_brackets_edge_takes_more_of_the_spread`,
+  `a_gap_between_systems_is_raised_first_and_a_system_keeps_the_border` and
+  the marks suite's `a_grand_staffs_dynamic_stands_between_its_staves`. The
+  goldens it changes are re-blessed with their renders before and after
+  recorded (D10).

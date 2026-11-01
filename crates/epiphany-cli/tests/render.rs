@@ -8044,3 +8044,297 @@ fn the_floor_compresses_only_as_far_as_the_system_needs() {
         );
     }
 }
+
+/// Each system's ink rectangles and its top and bottom staff lines.
+fn system_inks(layout: &epiphany_layout_ir::ResolvedLayoutIR) -> Vec<(Vec<[f32; 4]>, f32, f32)> {
+    use epiphany_core::TypedObjectId;
+    layout
+        .systems()
+        .map(|system| {
+            let mut rects = Vec::new();
+            let (mut top, mut bottom) = (f32::NEG_INFINITY, f32::INFINITY);
+            for &i in &system.primitives.glyphs {
+                let g = &layout.glyphs[i as usize];
+                let (x, y, b) = (g.position.x.0, g.position.y.0, g.bounding_box);
+                if g.transform.is_none() {
+                    rects.push([x + b.left.0, y + b.bottom.0, x + b.right.0, y + b.top.0]);
+                }
+            }
+            for &i in &system.primitives.strokes {
+                let s = &layout.strokes[i as usize];
+                let h = s.thickness.0 * 0.5;
+                rects.push([
+                    s.from.x.0.min(s.to.x.0) - h,
+                    s.from.y.0.min(s.to.y.0) - h,
+                    s.from.x.0.max(s.to.x.0) + h,
+                    s.from.y.0.max(s.to.y.0) + h,
+                ]);
+                if matches!(s.provenance.source, TypedObjectId::Staff(_)) && s.from.y == s.to.y {
+                    top = top.max(s.from.y.0);
+                    bottom = bottom.min(s.from.y.0);
+                }
+            }
+            (rects, top, bottom)
+        })
+        .collect()
+}
+
+/// The least clearance between two sets of ink rectangles where they come
+/// within 0.25 across.
+fn least_clearance(upper: &[[f32; 4]], lower: &[[f32; 4]]) -> f32 {
+    let mut least = f32::INFINITY;
+    for a in upper {
+        for b in lower {
+            let meets = a[2] > a[0]
+                && b[2] > b[0]
+                && a[3] > a[1]
+                && b[3] > b[1]
+                && a[2] + 0.25 > b[0]
+                && a[0] < b[2] + 0.25;
+            if meets {
+                least = least.min(a[1] - b[3]);
+            }
+        }
+    }
+    least
+}
+
+/// Two systems stand at least 8.5 apart line to line, MuseScore's least
+/// between systems with its spread on, and their inks 0.5 apart where they
+/// meet across (D109 Q3).
+#[test]
+fn systems_clear_each_others_ink() {
+    let chord = "<note><pitch><step>C</step><octave>3</octave></pitch><duration>4</duration>\
+                 <voice>1</voice><type>whole</type></note><note><chord/><pitch><step>C</step>\
+                 <octave>7</octave></pitch><duration>4</duration><voice>1</voice>\
+                 <type>whole</type></note>";
+    let measures: String = (1..=40)
+        .map(|m| {
+            let attributes = if m == 1 {
+                format!(
+                    "<attributes><divisions>1</divisions><time><beats>4</beats>\
+                         <beat-type>4</beat-type></time>{TREBLE}</attributes>"
+                )
+            } else {
+                String::new()
+            };
+            format!("<measure number=\"{m}\">{attributes}{chord}</measure>")
+        })
+        .collect();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A</part-name>\
+         </score-part></part-list><part id=\"P1\">{measures}</part></score-partwise>"
+    );
+    let (_, layout) = engrave_on("low_and_high_chords.musicxml", &xml, unbounded_page());
+    let systems = system_inks(&layout);
+    assert!(systems.len() >= 3, "the score wraps");
+    let mut bound = 0;
+    for w in systems.windows(2) {
+        let distance = w[0].2 - w[1].1;
+        let clearance = least_clearance(&w[0].0, &w[1].0);
+        assert!(distance >= 8.5 - 1e-3, "{distance}");
+        assert!(clearance >= 0.5 - 2e-3, "{clearance}");
+        if (clearance - 0.5).abs() < 2e-3 && distance > 8.5 {
+            bound += 1;
+        } else {
+            assert!((distance - 8.5).abs() < 1e-3, "{distance} {clearance}");
+        }
+    }
+    assert!(bound > 0, "the inks set some pair of systems apart");
+}
+
+/// A system taller than its page stays alone on it, rises as far as its top
+/// border allows, its ink at the top margin, and is named, not squeezed
+/// (D109 Q4, Q5).
+#[test]
+fn a_system_taller_than_its_page_rises_and_is_named() {
+    use epiphany_layout_ir::{to_constrained, to_logical, ConstraintSolver, SolverConfig};
+    let parts: Vec<(&str, &str, u8)> = (0..27).map(|_| (TREBLE, "B", 4)).collect();
+    let xml = whole_note_parts(&parts, 1, false);
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("twenty_seven_plain.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let geometry = epiphany_engrave::PageGeometry::default();
+    let report = epiphany_engrave::Engraver::with_geometry(geometry).solve(
+        &to_constrained(&to_logical(&loaded.reduced.score)),
+        &SolverConfig::default(),
+    );
+    let system = report.layout.systems().next().expect("a system");
+    let top = system.bounding_box.origin.y.0 + system.bounding_box.size.height.0;
+    assert!(
+        (top - -geometry.margins.top.0).abs() < 1e-3,
+        "its ink stands at the top margin: {top}"
+    );
+    let past = system.bounding_box.origin.y.0 - -geometry.size.height.0;
+    assert!(past < 0.0, "it passes its paper");
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.message == "system taller than its page"),
+        "and is named: {:?}",
+        report.warnings
+    );
+}
+
+/// A part's two staves under a brace spread no further apart than 6.5, as
+/// MuseScore caps a gap inside a brace (`maxAkkoladeDistance`); the gap at
+/// the brace's edge weighs 1.1 and takes its whole fill, 6 in the spread's
+/// units (D109 Q3).
+#[test]
+fn a_brace_keeps_its_staves_within_its_cap() {
+    let measure = |m: usize| {
+        let attributes = if m == 1 {
+            "<attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+             </time><staves>2</staves><clef number=\"1\"><sign>G</sign><line>2</line></clef>\
+             <clef number=\"2\"><sign>F</sign><line>4</line></clef></attributes>"
+        } else {
+            ""
+        };
+        format!(
+            "<measure number=\"{m}\">{attributes}<note><pitch><step>B</step><octave>4</octave>\
+             </pitch><duration>4</duration><voice>1</voice><type>whole</type><staff>1</staff>\
+             </note><backup><duration>4</duration></backup><note><pitch><step>D</step>\
+             <octave>3</octave></pitch><duration>4</duration><voice>5</voice><type>whole</type>\
+             <staff>2</staff></note></measure>"
+        )
+    };
+    let flute = |m: usize| {
+        let attributes = if m == 1 {
+            format!(
+                "<attributes><divisions>1</divisions><time><beats>4</beats>\
+                     <beat-type>4</beat-type></time>{TREBLE}</attributes>"
+            )
+        } else {
+            String::new()
+        };
+        format!(
+            "<measure number=\"{m}\">{attributes}<note><pitch><step>B</step><octave>4</octave>\
+             </pitch><duration>4</duration><voice>1</voice><type>whole</type></note></measure>"
+        )
+    };
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>Flute\
+         </part-name></score-part><score-part id=\"P2\"><part-name>Piano</part-name>\
+         </score-part></part-list><part id=\"P1\">{}</part><part id=\"P2\">{}</part>\
+         </score-partwise>",
+        flute(1),
+        measure(1)
+    );
+    let (_, layout) = engrave_on(
+        "flute_and_piano.musicxml",
+        &xml,
+        epiphany_engrave::PageGeometry::default(),
+    );
+    let lines = &staff_lines_by_system(&layout)[0];
+    assert_eq!(lines.len(), 3);
+    let (edge, inside) = (lines[0].0 - lines[1].1, lines[1].0 - lines[2].1);
+    assert!((inside - 6.5).abs() < 0.01, "inside the brace: {inside}");
+    assert!((edge - 11.0).abs() < 0.01, "at the brace's edge: {edge}");
+}
+
+/// Two systems on a page, the first's staves set wide apart by their ink,
+/// the second's at the floor: a gap between systems is first raised toward
+/// the widest gap between staves beside it, as Gould asks (p. 488), before
+/// the spread shares what is left; and a system goes on a page only where its
+/// last staff keeps the page's border above the bottom margin (D109 Q3, Q4).
+#[test]
+fn a_gap_between_systems_is_raised_first_and_a_system_keeps_the_border() {
+    let part = |notes: [(&str, u8); 2], new_system: bool| -> String {
+        (1..=4)
+            .map(|m| {
+                let attributes = if m == 1 {
+                    format!(
+                        "<attributes><divisions>1</divisions><time><beats>4</beats>\
+                             <beat-type>4</beat-type></time>{TREBLE}</attributes>"
+                    )
+                } else {
+                    String::new()
+                };
+                let print = if new_system && m == 3 {
+                    "<print new-system=\"yes\"/>"
+                } else {
+                    ""
+                };
+                let (step, octave) = notes[usize::from(m > 2)];
+                format!(
+                    "<measure number=\"{m}\">{print}{attributes}<note><pitch><step>{step}\
+                     </step><octave>{octave}</octave></pitch><duration>4</duration>\
+                     <voice>1</voice><type>whole</type></note></measure>"
+                )
+            })
+            .collect()
+    };
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part><score-part id=\"P2\"><part-name>B</part-name>\
+         </score-part></part-list><part id=\"P1\">{}</part><part id=\"P2\">{}</part>\
+         </score-partwise>",
+        part([("C", 3), ("B", 4)], true),
+        part([("C", 7), ("B", 4)], false)
+    );
+    let (_, natural) = engrave_on("raised_gap.musicxml", &xml, unbounded_page());
+    let lines = staff_lines_by_system(&natural);
+    assert_eq!(lines.len(), 2, "the file's break makes two systems");
+    let wide = lines[0][0].0 - lines[0][1].1;
+    let floor = lines[1][0].0 - lines[1][1].1;
+    let between = lines[0][1].0 - lines[1][0].1;
+    // The gap between systems lacks more than the page has to spread.
+    assert!(wide > between + 2.5, "{wide} {between}");
+    assert!((floor - 4.0).abs() < 1e-3);
+    let span = lines[0][0].1 - lines[1][1].0;
+    // A page whose content holds both systems with two spaces to spread.
+    let page = |spare: f32| {
+        let mut geometry = epiphany_engrave::PageGeometry::default();
+        geometry.size.height = epiphany_layout_ir::StaffSpace(
+            7.0 + span + 7.0 + spare + geometry.margins.top.0 + geometry.margins.bottom.0,
+        );
+        geometry
+    };
+    let (_, spread) = engrave_on("raised_gap_page.musicxml", &xml, page(2.0));
+    assert_eq!(spread.pages.len(), 1);
+    let lines = staff_lines_by_system(&spread);
+    let raised = lines[0][1].0 - lines[1][0].1;
+    assert!(
+        (raised - (between + 2.0)).abs() < 0.01,
+        "the gap between systems takes the two spaces first: {between} to {raised}"
+    );
+    assert!((lines[1][0].0 - lines[1][1].1 - 4.0).abs() < 0.01);
+    // Half a space less than the borders ask: the second system goes over.
+    let (_, short) = engrave_on("raised_gap_short.musicxml", &xml, page(-0.5));
+    assert_eq!(short.pages.len(), 2, "the second system keeps the border");
+}
+
+/// A gap at a bracket's edge weighs 1.2 in the spread, so it takes more of
+/// the fill than a gap inside the bracket (D109 Q3, `spreadSquareBracket`).
+#[test]
+fn a_brackets_edge_takes_more_of_the_spread() {
+    let part = |p: usize| {
+        format!(
+            "<part id=\"P{p}\"><measure number=\"1\"><attributes><divisions>1</divisions>\
+             <time><beats>4</beats><beat-type>4</beat-type></time>{TREBLE}</attributes>\
+             <note><pitch><step>B</step><octave>4</octave></pitch><duration>4</duration>\
+             <voice>1</voice><type>whole</type></note></measure></part>"
+        )
+    };
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><part-group type=\"start\" number=\"1\">\
+         <group-symbol>bracket</group-symbol></part-group><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part><score-part id=\"P2\"><part-name>B</part-name></score-part>\
+         <part-group type=\"stop\" number=\"1\"/><score-part id=\"P3\"><part-name>C\
+         </part-name></score-part></part-list>{}{}{}</score-partwise>",
+        part(1),
+        part(2),
+        part(3)
+    );
+    let (_, layout) = engrave_on(
+        "bracketed_pair.musicxml",
+        &xml,
+        epiphany_engrave::PageGeometry::default(),
+    );
+    let lines = &staff_lines_by_system(&layout)[0];
+    assert_eq!(lines.len(), 3);
+    let (inside, edge) = (lines[0].0 - lines[1].1, lines[1].0 - lines[2].1);
+    assert!((inside - 10.0).abs() < 0.01, "inside the bracket: {inside}");
+    assert!((edge - 12.0).abs() < 0.01, "at the bracket's edge: {edge}");
+}

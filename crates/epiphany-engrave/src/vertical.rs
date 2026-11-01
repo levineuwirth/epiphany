@@ -301,6 +301,141 @@ pub(crate) fn stack_fitting(
     best
 }
 
+/// The least distance between two systems, from the bottom line of the one
+/// above to the top line of the one below: MuseScore's `minSystemSpread`,
+/// its floor with its vertical spread on (D109 Q3, X5d.3).
+pub(crate) const SYSTEM_FLOOR: f32 = 8.5;
+
+/// How far below its page's top margin a page's first staff's top line
+/// stands at least, and how far above its bottom margin the last staff's
+/// bottom line aims: MuseScore's `staffUpperBorder` and `staffLowerBorder`
+/// (D109 Q4).
+pub(crate) const PAGE_BORDER: f32 = 7.0;
+
+/// The spread's weights: a gap between systems, a gap at a bracket's edge
+/// and at a brace's (MuseScore's `spreadSystem`, `spreadSquareBracket`,
+/// `spreadCurlyBracket`).
+pub(crate) const SPREAD_SYSTEM: f32 = 2.5;
+pub(crate) const SPREAD_BRACKET: f32 = 1.2;
+pub(crate) const SPREAD_BRACE: f32 = 1.1;
+
+/// The spread's caps, each a gap's whole line distance: between staves,
+/// inside a brace and between systems (MuseScore's `maxStaffSpread`,
+/// `maxAkkoladeDistance` and `maxSystemSpread`), and the most the spread's
+/// second pass adds to a gap (`maxPageFillSpread`).
+pub(crate) const MAX_STAFF_SPREAD: f32 = 20.0;
+pub(crate) const MAX_BRACE_SPREAD: f32 = 6.5;
+pub(crate) const MAX_SYSTEM_SPREAD: f32 = 32.0;
+pub(crate) const MAX_PAGE_FILL: f32 = 6.0;
+
+/// One gap of a page as the spread reads it.
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct SpreadGap {
+    /// Its line distance before the spread.
+    pub distance: f32,
+    /// Its weight, 1.0 for a plain gap between staves.
+    pub factor: f32,
+    /// The most its line distance may come to, in the spread's units: the
+    /// cap divided by the weight, as MuseScore keeps it (`m_maxActualSpacing`).
+    pub cap: f32,
+    /// A gap the spread leaves: the page's top border.
+    pub fixed: bool,
+}
+
+/// Raises each value from `base` toward its cap, never past `limit`, to one
+/// common level, at a cost of its weight per unit, until `space` is spent or
+/// every value stands at the level `limit` or its cap: the level found
+/// exactly over the piecewise linear cost. Returns the new values and the
+/// space spent.
+fn level(base: &[f32], caps: &[f32], weights: &[f32], limit: f32, space: f32) -> (Vec<f32>, f32) {
+    let cost = |l: f32| -> f32 {
+        base.iter()
+            .zip(caps)
+            .zip(weights)
+            .map(|((&b, &c), &w)| w * (l.min(c).max(b) - b))
+            .sum()
+    };
+    let raise = |l: f32| -> Vec<f32> {
+        base.iter()
+            .zip(caps)
+            .map(|(&b, &c)| l.min(c).max(b))
+            .collect()
+    };
+    if space <= 0.0 || base.is_empty() {
+        return (base.to_vec(), 0.0);
+    }
+    let full = cost(limit);
+    if full <= space {
+        return (raise(limit), full);
+    }
+    // The cost's breakpoints below `limit`, ascending; between two, it is
+    // linear in the level.
+    let mut points: Vec<f32> = base
+        .iter()
+        .chain(caps)
+        .copied()
+        .filter(|&p| p < limit)
+        .collect();
+    points.push(limit);
+    points.sort_by(f32::total_cmp);
+    points.dedup();
+    let mut lo = points[0];
+    for &hi in &points[1..] {
+        let (c_lo, c_hi) = (cost(lo), cost(hi));
+        if c_hi >= space {
+            let l = if c_hi > c_lo {
+                lo + (space - c_lo) / (c_hi - c_lo) * (hi - lo)
+            } else {
+                hi
+            };
+            return (raise(l), space);
+        }
+        lo = hi;
+    }
+    (raise(limit), full)
+}
+
+/// The line distance each gap of a page takes once the page is spread by
+/// `space`, MuseScore's spread (`PageLayout::distributeStaves`) done exactly:
+/// in its units (a gap's distance over its weight), the smallest gaps raised
+/// level first, as far as the widest gap, each no further than its cap;
+/// then what space is left, no more than [`MAX_PAGE_FILL`] for each gap of
+/// the page, shared by weight, each gap taking at most [`MAX_PAGE_FILL`] in
+/// those units, and none past its cap. Its loop's twenty-pass safeguard and
+/// its grouping of near values by their ceiling are not ported: they bound
+/// a loop, they are no rule.
+pub(crate) fn spread(gaps: &[SpreadGap], space: f32) -> Vec<f32> {
+    let open: Vec<usize> = (0..gaps.len())
+        .filter(|&i| !gaps[i].fixed && gaps[i].distance / gaps[i].factor < gaps[i].cap)
+        .collect();
+    let mut units: Vec<f32> = gaps.iter().map(|g| g.distance / g.factor).collect();
+    if space <= 0.0 || open.is_empty() {
+        return gaps.iter().map(|g| g.distance).collect();
+    }
+    let base: Vec<f32> = open.iter().map(|&i| units[i]).collect();
+    let caps: Vec<f32> = open.iter().map(|&i| gaps[i].cap).collect();
+    let weights: Vec<f32> = open.iter().map(|&i| gaps[i].factor).collect();
+    let widest = base.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let (levelled, spent) = level(&base, &caps, &weights, widest, space);
+    // The fill: at most MAX_PAGE_FILL a gap, for every gap of the page.
+    let left = (space - spent).min(MAX_PAGE_FILL * gaps.len() as f32);
+    let room: Vec<f32> = levelled
+        .iter()
+        .zip(&caps)
+        .map(|(&v, &c)| (c - v).max(0.0))
+        .collect();
+    let zero = vec![0.0; room.len()];
+    let (fill, _) = level(&zero, &room, &weights, MAX_PAGE_FILL, left);
+    for (k, &i) in open.iter().enumerate() {
+        units[i] = levelled[k] + fill[k];
+    }
+    units
+        .iter()
+        .zip(gaps)
+        .map(|(&u, g)| if g.fixed { g.distance } else { u * g.factor })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,6 +467,104 @@ mod tests {
             bottom: top - 4.0,
             down: ink.clone(),
             up: ink,
+        }
+    }
+
+    fn gap(distance: f32, factor: f32, cap: f32) -> SpreadGap {
+        SpreadGap {
+            distance,
+            factor,
+            cap: cap / factor,
+            fixed: false,
+        }
+    }
+
+    #[test]
+    fn the_spread_raises_the_smallest_gaps_level_first() {
+        let gaps = [
+            gap(4.0, 1.0, 20.0),
+            gap(6.0, 1.0, 20.0),
+            gap(5.0, 1.0, 20.0),
+        ];
+        // 1.5 brings 4 and 5 level at 5.25, short of 6.
+        let d = spread(&gaps, 1.5);
+        assert!(
+            (d[0] - 5.25).abs() < 1e-5 && (d[2] - 5.25).abs() < 1e-5,
+            "{d:?}"
+        );
+        assert_eq!(d[1], 6.0);
+        // 3.0 levels all three at 6, then shares the last 0.0.
+        let d = spread(&gaps, 3.0);
+        assert!(d.iter().all(|&v| (v - 6.0).abs() < 1e-5), "{d:?}");
+        // 6.0 levels them, then fills each by a third of 3.0.
+        let d = spread(&gaps, 6.0);
+        assert!(d.iter().all(|&v| (v - 7.0).abs() < 1e-5), "{d:?}");
+    }
+
+    #[test]
+    fn the_spread_weighs_a_gap_by_its_kind() {
+        // A gap between systems weighs 2.5: in the spread's units it stands
+        // at its distance over its weight, and takes 2.5 for each unit.
+        let gaps = [
+            gap(10.0, SPREAD_SYSTEM, MAX_SYSTEM_SPREAD),
+            gap(4.0, 1.0, 20.0),
+        ];
+        // Units 4 and 4: level, so 3.5 shared by weight, 1 a unit.
+        let d = spread(&gaps, 3.5);
+        assert!(
+            (d[0] - 12.5).abs() < 1e-4 && (d[1] - 5.0).abs() < 1e-4,
+            "{d:?}"
+        );
+    }
+
+    #[test]
+    fn the_spread_keeps_each_gap_under_its_cap_and_its_fill() {
+        // Inside a brace no gap passes 6.5; the fill adds at most 6 a gap.
+        let gaps = [
+            gap(4.0, 1.0, MAX_BRACE_SPREAD),
+            gap(4.0, 1.0, MAX_STAFF_SPREAD),
+        ];
+        let d = spread(&gaps, 100.0);
+        assert!((d[0] - MAX_BRACE_SPREAD).abs() < 1e-5, "{d:?}");
+        assert!((d[1] - (4.0 + MAX_PAGE_FILL)).abs() < 1e-5, "{d:?}");
+        // A fixed gap, the page's top border, takes nothing.
+        let mut top = gap(7.0, 1.0, 20.0);
+        top.fixed = true;
+        let d = spread(&[top, gap(4.0, 1.0, 20.0)], 3.0);
+        assert_eq!(d[0], 7.0);
+        assert!((d[1] - 7.0).abs() < 1e-5, "{d:?}");
+    }
+
+    #[test]
+    fn the_spread_fills_a_page_no_more_than_six_a_gap_in_all() {
+        // Three gaps between systems and the page's fixed top border: the
+        // fill shares at most 6 for each of the four, 24, though each gap
+        // could take 6 in its units, 15.
+        let mut top = gap(7.0, 1.0, 20.0);
+        top.fixed = true;
+        let gaps = [
+            top,
+            gap(8.5, SPREAD_SYSTEM, MAX_SYSTEM_SPREAD),
+            gap(8.5, SPREAD_SYSTEM, MAX_SYSTEM_SPREAD),
+            gap(8.5, SPREAD_SYSTEM, MAX_SYSTEM_SPREAD),
+        ];
+        let d = spread(&gaps, 100.0);
+        assert!(d[1..].iter().all(|&v| (v - 16.5).abs() < 1e-4), "{d:?}");
+    }
+
+    #[test]
+    fn the_spread_spends_no_more_than_it_is_given() {
+        let gaps = [
+            gap(4.0, 1.2, 20.0),
+            gap(9.0, 2.5, 32.0),
+            gap(5.5, 1.0, 20.0),
+            gap(4.0, 1.1, 6.5),
+        ];
+        for space in [0.0, 0.3, 2.0, 7.0, 15.0] {
+            let d = spread(&gaps, space);
+            let spent: f32 = d.iter().zip(&gaps).map(|(v, g)| v - g.distance).sum();
+            assert!(spent <= space + 1e-4, "{space}: {spent}");
+            assert!(d.iter().zip(&gaps).all(|(v, g)| *v >= g.distance - 1e-6));
         }
     }
 
@@ -513,7 +746,16 @@ mod solve_tests {
         pub clearance: f32,
     }
 
-    pub(crate) fn gaps(input: &ConstrainedLayoutIR, cast: &CastLayout) -> Vec<Gap> {
+    /// Each system's staves' ink as baked, each rectangle with its lyric
+    /// padding below and above; each staff's lines; each system's page.
+    type Ink = Vec<(InkRect, f32, f32)>;
+    struct Baked {
+        ink: BTreeMap<(usize, StaffId), Ink>,
+        lines: BTreeMap<(usize, StaffId), (f32, f32)>,
+        page: Vec<usize>,
+    }
+
+    fn baked(input: &ConstrainedLayoutIR, cast: &CastLayout) -> Baked {
         let staff_of: BTreeMap<VerticalBandId, StaffId> = input
             .vertical_bands
             .iter()
@@ -536,9 +778,6 @@ mod solve_tests {
                 }
             }
         }
-        // Each system's staves' rectangles, each with its lyric padding below
-        // and above.
-        type Ink = Vec<(InkRect, f32, f32)>;
         let mut ink: BTreeMap<(usize, StaffId), Ink> = BTreeMap::new();
         let mut put = |s: usize, band: VerticalBandId, id: GlyphObjectId, r: InkRect| {
             if between.contains(&id) {
@@ -649,41 +888,90 @@ mod solve_tests {
                 );
             }
         }
-        let meets = |a: &InkRect, b: &InkRect| {
-            a.right > a.left
-                && b.right > b.left
-                && a.top > a.bottom
-                && b.top > b.bottom
-                && a.right + INK_REACH > b.left
-                && a.left < b.right + INK_REACH
-        };
-        let mut out = Vec::new();
-        for s in 0..systems.len() {
-            let mut staves: Vec<(StaffId, (f32, f32))> = lines
-                .iter()
-                .filter(|((sys, _), _)| *sys == s)
-                .map(|((_, st), l)| (*st, *l))
-                .collect();
-            staves.sort_by(|a, b| b.1 .1.total_cmp(&a.1 .1));
-            for k in 1..staves.len() {
-                let lower = ink.get(&(s, staves[k].0)).cloned().unwrap_or_default();
-                let mut clearance = f32::INFINITY;
-                for upper in &staves[..k] {
-                    for (a, below, _) in ink.get(&(s, upper.0)).into_iter().flatten() {
-                        for (b, _, above) in &lower {
-                            if meets(a, b) {
-                                clearance = clearance.min((a.bottom - below) - (b.top + above));
-                            }
-                        }
-                    }
+        let page = cast
+            .pages
+            .iter()
+            .enumerate()
+            .flat_map(|(p, page)| page.systems.iter().map(move |_| p))
+            .collect();
+        Baked { ink, lines, page }
+    }
+
+    fn meets(a: &InkRect, b: &InkRect) -> bool {
+        a.right > a.left
+            && b.right > b.left
+            && a.top > a.bottom
+            && b.top > b.bottom
+            && a.right + INK_REACH > b.left
+            && a.left < b.right + INK_REACH
+    }
+
+    /// Each system's staves top first, with their lines.
+    fn staves_of(baked: &Baked, s: usize) -> Vec<(StaffId, (f32, f32))> {
+        let mut staves: Vec<(StaffId, (f32, f32))> = baked
+            .lines
+            .iter()
+            .filter(|((sys, _), _)| *sys == s)
+            .map(|((_, st), l)| (*st, *l))
+            .collect();
+        staves.sort_by(|a, b| b.1 .1.total_cmp(&a.1 .1));
+        staves
+    }
+
+    /// The least clearance between any ink of `upper` and any of `lower`
+    /// that meet across, each lyric's padding taken off.
+    fn clearance(upper: &[&Ink], lower: &[&Ink]) -> f32 {
+        let mut least = f32::INFINITY;
+        for (a, below, _) in upper.iter().copied().flatten() {
+            for (b, _, above) in lower.iter().copied().flatten() {
+                if meets(a, b) {
+                    least = least.min((a.bottom - below) - (b.top + above));
                 }
+            }
+        }
+        least
+    }
+
+    pub(crate) fn gaps(input: &ConstrainedLayoutIR, cast: &CastLayout) -> Vec<Gap> {
+        let baked = baked(input, cast);
+        let none = Ink::new();
+        let ink = |s: usize, st: StaffId| baked.ink.get(&(s, st)).unwrap_or(&none);
+        let mut out = Vec::new();
+        for s in 0..baked.page.len() {
+            let staves = staves_of(&baked, s);
+            for k in 1..staves.len() {
+                let upper: Vec<&Ink> = staves[..k].iter().map(|u| ink(s, u.0)).collect();
                 out.push(Gap {
                     distance: staves[k - 1].1 .0 - staves[k].1 .1,
-                    clearance,
+                    clearance: clearance(&upper, &[ink(s, staves[k].0)]),
                 });
             }
         }
         out
+    }
+
+    /// Each pair of consecutive systems on one page as drawn: the bottom
+    /// line of the one above to the top line of the one below, and the least
+    /// clearance between their inks.
+    pub(crate) fn system_gaps(input: &ConstrainedLayoutIR, cast: &CastLayout) -> Vec<Gap> {
+        let baked = baked(input, cast);
+        let none = Ink::new();
+        let all = |s: usize| -> Vec<&Ink> {
+            staves_of(&baked, s)
+                .iter()
+                .map(|(st, _)| baked.ink.get(&(s, *st)).unwrap_or(&none))
+                .collect()
+        };
+        (1..baked.page.len())
+            .filter(|&s| baked.page[s] == baked.page[s - 1])
+            .map(|s| {
+                let (above, below) = (staves_of(&baked, s - 1), staves_of(&baked, s));
+                Gap {
+                    distance: above.last().expect("a staff").1 .0 - below[0].1 .1,
+                    clearance: clearance(&all(s - 1), &all(s)),
+                }
+            })
+            .collect()
     }
 
     /// Every gap as the rule sets it: no meeting inks nearer than the
@@ -756,6 +1044,29 @@ mod solve_tests {
                 .iter()
                 .any(|g| (g.distance - STAFF_FLOOR).abs() < 2e-3),
             "a slack system closes to the floor: {gaps:?}"
+        );
+    }
+
+    #[test]
+    fn systems_stand_their_floor_or_their_inks_clearance_apart() {
+        for score in [
+            epiphany_testkit::fixtures::ten_measure_single_staff(1),
+            epiphany_testkit::fixtures::two_staff_wrapping_pressure(1),
+            epiphany_testkit::fixtures::ten_measure_with_slurs(1),
+        ] {
+            let (input, cast) = solved(&score);
+            let gaps = system_gaps(&input, &cast);
+            assert!(!gaps.is_empty(), "the fixture wraps");
+            assert_set_by_the_rule(&gaps, super::SYSTEM_FLOOR);
+        }
+        // MuseScore's least between systems, with its spread on.
+        assert_eq!(super::SYSTEM_FLOOR, 8.5);
+        let (input, cast) = solved(&epiphany_testkit::fixtures::ten_measure_single_staff(1));
+        assert!(
+            system_gaps(&input, &cast)
+                .iter()
+                .any(|g| (g.distance - 8.5).abs() < 1e-3),
+            "a plain single staff's systems stand the floor apart"
         );
     }
 
