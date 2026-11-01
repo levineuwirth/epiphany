@@ -7975,17 +7975,22 @@ fn note_stem(
 /// The least length, from the head nearest its end, of a stem carrying the
 /// one-note tremolo `glyph`, as MuseScore's `StemLayout::calcMinStemLength`
 /// counts it in quarter spaces: the tremolo's height, the 0.5 it keeps from
-/// the stem's end (`tremoloOutSidePadding`) and the 1.25 from that head
-/// (`tremoloNoteSidePadding`), or `outside` quarters where the head stands
-/// outside the staff on the stem's side ([`tremolo_outside`]); past a
+/// the stem's end (`tremoloOutSidePadding`) and its distance from that head,
+/// or `outside` quarters where the head stands outside the staff on the
+/// stem's side ([`tremolo_outside`]). Two strokes or more stand a space
+/// clear of the head's ink, 1.5 from its centre, the stem lengthened past
+/// the outermost stroke (Gould, *Behind Bars*, pp. 221 and 222; D102), where
+/// MuseScore keeps 1.25 (`tremoloNoteSidePadding`), about 0.75 from the
+/// ink; one stroke, which Gould sets across a staff line, keeps 1.25; past a
 /// `flag`, the flag's height less two quarters and the cutout its curl
 /// leaves (`hookOffset`, at most 11, less 5 up or 7 down, 2 less again for
 /// two flags or more), so the tremolo stands clear of the flag as
 /// `TremoloLayout::layoutOneNoteTremolo` sets it; in a beam of `beams`
-/// levels, the beams' height on top (3 quarters each, less 1). MuseScore
-/// keeps a beamed stem at least an inner length besides (10 quarters for one
-/// beam, 7 for three or more), which never binds here: Bravura's single
-/// stroke and paddings alone make 10.
+/// levels, the beams' height on top (3 quarters each, less 1), and for two
+/// strokes or more the stem's thickness its end stands inside the beam's
+/// outer edge. MuseScore keeps a beamed stem at least an inner length
+/// besides (10 quarters for one beam, 7 for three or more), which never
+/// binds here: Bravura's single stroke and paddings alone make 10.
 fn tremolo_stem_min(
     glyph: &str,
     up: bool,
@@ -8000,7 +8005,12 @@ fn tremolo_stem_min(
             b.top.0 - b.bottom.0
         })
     };
-    let mut quarters = (height(glyph) * 4.0).ceil() as i32 + 2 + outside.max(5);
+    let head_side = if glyph == "tremolo1" {
+        TREMOLO_HEAD_SIDE
+    } else {
+        TREMOLO_HEAD_SIDE_GOULD
+    };
+    let mut quarters = (height(glyph) * 4.0).ceil() as i32 + 2 + outside.max(head_side);
     if let Some(flag) = flag.filter(|_| !beamed) {
         let hook = ((height(flag) * 4.0).floor() as i32 - 2).min(11);
         let cutout = if up { 5 } else { 7 } - if beams >= 2 { 2 } else { 0 };
@@ -8009,8 +8019,22 @@ fn tremolo_stem_min(
     if beamed {
         quarters += i32::from(beams) * 3 - 1;
     }
-    quarters as f32 / 4.0
+    // A beamed stem ends a stem's thickness inside the beam's outer edge,
+    // which the count reaches: Gould's space is kept past it.
+    let inside = if beamed && head_side == TREMOLO_HEAD_SIDE_GOULD {
+        STEM_THICKNESS
+    } else {
+        0.0
+    };
+    quarters as f32 / 4.0 + inside
 }
+
+/// A one-note tremolo's distance from the centre of the head nearest its
+/// stem's end, in quarter spaces: one stroke's, MuseScore's
+/// `tremoloNoteSidePadding`; two or more strokes', a space clear of a
+/// head's ink half a space high (Gould, *Behind Bars*, p. 221).
+const TREMOLO_HEAD_SIDE: i32 = 5;
+const TREMOLO_HEAD_SIDE_GOULD: i32 = 6;
 
 /// How far, in quarter spaces, the head nearest a stem's end, at `y`,
 /// stands outside its staff on the stem's side, as

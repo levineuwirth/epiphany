@@ -2213,16 +2213,20 @@ fn a_stemless_notes_tremolo_stands_on_its_stems_side() {
 }
 
 /// A stem carrying a one-note tremolo is as long as it must be to hold it,
-/// as MuseScore's `StemLayout::calcMinStemLength` counts it in quarter
-/// spaces from the head nearest its end: the strokes' height, half a space
-/// at the stem's end and 1.25 at the head. Three strokes (Bravura's 2.23
-/// tall, nine quarters, as MuseScore's own three) take a quarter's stem from
-/// 3.5 to 4.0 and four (twelve quarters) to 4.75, while two leave it; a head
-/// two spaces outside the staff on the stem's side keeps its strokes two
-/// spaces from it, its stem 4.75; a flag adds its height less its curl's
-/// cutout, six quarters up and four down for one flag, eight up for two;
-/// and a beamed eighth asks the beam to stand 4.5 out, its strokes inside
-/// the beam.
+/// counted as MuseScore's `StemLayout::calcMinStemLength` counts it in
+/// quarter spaces from the head nearest its end: the strokes' height, half
+/// a space at the stem's end, and at the head, for two strokes or more,
+/// Gould's space clear of its ink, 1.5 from its centre (pp. 221 and 222;
+/// D102), where MuseScore keeps 1.25. Three strokes (Bravura's 2.23 tall,
+/// nine quarters, as MuseScore's own three) take a quarter's stem from 3.5
+/// to 4.25 and four (twelve quarters) to 5.0, while two (1.25 tall) fit it,
+/// just; a head two spaces outside the staff on the stem's side keeps its
+/// strokes two spaces from it, its stem 4.75; a flag adds its height less
+/// its curl's cutout, six quarters up and four down for one flag, eight up
+/// for two; and a beamed eighth asks the beam to stand 4.75 and a stem's
+/// thickness out, its strokes inside the beam. Every set of strokes stands
+/// a space or more clear of its head's ink; one stroke past an eighth's
+/// flag keeps MuseScore's distance, its stem 4.0.
 #[test]
 fn a_one_note_tremolo_lengthens_its_stem() {
     let trem = |n: u8| format!("<ornaments><tremolo type=\"single\">{n}</tremolo></ornaments>");
@@ -2255,7 +2259,9 @@ fn a_one_note_tremolo_lengthens_its_stem() {
         note("rest", 2, "eighth", 1, 1, ""),
         note("B4", 2, "eighth", 1, 1, &trem(3)),
         note("rest", 2, "eighth", 1, 1, ""),
-        note("rest", 8, "half", 1, 1, ""),
+        note("G4", 2, "eighth", 1, 1, &trem(1)),
+        note("rest", 2, "eighth", 1, 1, ""),
+        note("rest", 4, "quarter", 1, 1, ""),
     ]
     .concat();
     let loaded = part_in("one_note_tremolos.musicxml", 1, 4, &[first, second, third]);
@@ -2270,28 +2276,36 @@ fn a_one_note_tremolo_lengthens_its_stem() {
     };
     near(length(e[0]), 3.5, "a quarter's stem");
     near(length(e[1]), 3.5, "two strokes fit it");
-    near(length(e[2]), 4.0, "three strokes lengthen it");
-    near(length(e[3]), 4.75, "four strokes more");
+    near(length(e[2]), 4.25, "three strokes lengthen it");
+    near(length(e[3]), 5.0, "four strokes more");
     near(length(e[4]), 4.75, "two spaces under the staff");
-    near(length(e[5]), 5.5, "past an eighth's flag");
+    near(length(e[5]), 5.75, "past an eighth's flag");
     // A beamed stem ends a stem's thickness inside the beam's outer edge.
-    near(length(e[7]), 4.5 - 0.12, "a beam stands out for it");
-    near(length(e[8]), 4.5 - 0.12, "and its fellow reaches it");
+    near(length(e[7]), 4.75, "a beam stands out for it");
+    near(length(e[8]), 4.75, "and its fellow reaches it");
     near(length(e[9]), 4.75, "two spaces over the staff");
-    near(length(e[10]), 6.0, "past a sixteenth's flags");
-    near(length(e[13]), 5.0, "past an eighth's flag turned down");
-    // The strokes stand clear of their heads by 1.25 or more.
-    for event in [e[2], e[5], e[10]] {
-        let strokes = the_glyph(&layout, event, "tremolo3");
+    near(length(e[10]), 6.25, "past a sixteenth's flags");
+    near(length(e[13]), 5.25, "past an eighth's flag turned down");
+    // One stroke, which Gould sets across a staff line and gives no
+    // distance, keeps MuseScore's 1.25 from the head's centre.
+    near(length(e[15]), 4.0, "one stroke past an eighth's flag");
+    // The strokes stand a space or more clear of their heads' ink, over an
+    // up stem's head and under a down stem's.
+    for (event, glyph) in [
+        (e[1], "tremolo2"),
+        (e[2], "tremolo3"),
+        (e[3], "tremolo4"),
+        (e[5], "tremolo3"),
+        (e[7], "tremolo3"),
+        (e[10], "tremolo3"),
+    ] {
+        let strokes = the_glyph(&layout, event, glyph);
         let h = head(&loaded, &layout, event);
-        assert!(
-            strokes[1] >= (h[1] + h[3]) * 0.5 + 1.25 - 0.01,
-            "{strokes:?} over {h:?}"
-        );
+        assert!(strokes[1] >= h[3] + 1.0 - 0.01, "{strokes:?} over {h:?}");
     }
-    let strokes = the_glyph(&layout, e[3], "tremolo4");
-    let h = head(&loaded, &layout, e[3]);
-    assert!(strokes[1] >= (h[1] + h[3]) * 0.5 + 1.25 - 0.01);
+    let strokes = the_glyph(&layout, e[13], "tremolo3");
+    let h = head(&loaded, &layout, e[13]);
+    assert!(strokes[3] <= h[1] - 1.0 + 0.01, "{strokes:?} under {h:?}");
 }
 
 /// The strokes a two-note tremolo `event` starts, each `(from, to)` as

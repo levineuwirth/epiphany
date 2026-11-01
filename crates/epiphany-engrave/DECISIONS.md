@@ -2862,3 +2862,22 @@ engraver's own placing reproduces it:
   alone (a hand-written probe); MuseScore's export of the same file lifts
   it clear. The owner's ruling D85 named MuseScore's rule
   (`an_accent_stands_clear_of_another_voices_ink_in_its_column`).
+
+## ENGRAVER_VERSION 101 → 102: a stemmed tremolo a space clear of its head (X4d.5, D102, 2026-11-01)
+
+- A stemmed one-note tremolo of two strokes or more stands a space clear of
+  its head's ink, its stem lengthened past the outermost stroke, as Gould
+  sets it (*Behind Bars*, p. 221: with two strokes or more a space is kept
+  from the head, which they would otherwise hide; p. 222: the stem runs on
+  past the last stroke, the strokes clear of a flag or beam). The stem's
+  least length is counted as MuseScore counts it
+  (`StemLayout::calcMinStemLength`) with 1.5 spaces from the centre of the
+  head nearest its end where MuseScore
+  keeps 1.25 (`tremoloNoteSidePadding`, about 0.75 from the ink), and in a
+  beam a stem's thickness more, the stem ending that far inside the beam's
+  outer edge. One stroke, which Gould sets across a staff line and gives no
+  distance, keeps MuseScore's. LilyPond 2.26.0 keeps its strokes about 0.22
+  from the head (the coordinator's probe at D102). The owner ruled Gould's
+  rule over both engines (D102). `a_one_note_tremolo_lengthens_its_stem`
+  is rewritten to it: three strokes take a quarter's stem to 4.25, four to
+  5.0, a beamed eighth's beam 4.75 and a stem's thickness out.
