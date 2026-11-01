@@ -3533,6 +3533,8 @@ pub fn try_to_constrained(
         // which pairs it with a head of each; and each note's pitches.
         let mut pedal_starts: BTreeSet<(StaffId, ColumnKey)> = BTreeSet::new();
         let mut gliss_pairs: BTreeMap<(EventId, EventId), Vec<u128>> = BTreeMap::new();
+        // The gradual tempo changes drawn, by their words and times.
+        let mut tempo_changes: Vec<(String, TimePoint, TimePoint)> = Vec::new();
         let mut note_pitches: BTreeMap<EventId, Vec<PitchId>> = BTreeMap::new();
         for (provenance, staff, content) in &specs {
             match (content, provenance.source) {
@@ -5377,7 +5379,7 @@ pub fn try_to_constrained(
                             // is set: a pedal line under its staff, an ottava
                             // over or under it, a text line over it, a verbal
                             // crescendo by the hairpin rule.
-                            let band = band_of(staff);
+                            let mut band = band_of(staff);
                             let start_time = place_time(&line.start);
                             let end_time = match &line.end {
                                 MarkerPlace::Event { time, .. } | MarkerPlace::Time(time) => {
@@ -5385,11 +5387,42 @@ pub fn try_to_constrained(
                                 }
                                 MarkerPlace::Unresolved => None,
                             };
-                            let drawn_line = start_time.zip(end_time).and_then(|(t0, t1)| {
-                                let first = first_column(&columns, &t0, true)?;
-                                let last = line_end_column(&columns, &t1)?;
-                                Some((t0, t1, first, last))
-                            });
+                            // A gradual tempo change is a system object: one
+                            // repeating another's words and times from another
+                            // part is drawn once.
+                            let tempo_words = match &line.kind {
+                                SpannerKind::TextLine(def)
+                                    if lines::tempo_term(def.text.as_str()) =>
+                                {
+                                    Some(def.text.as_str())
+                                }
+                                _ => None,
+                            };
+                            let drawn_line = start_time
+                                .zip(end_time)
+                                .and_then(|(t0, t1)| {
+                                    let first = first_column(&columns, &t0, true)?;
+                                    let last = line_end_column(&columns, &t1)?;
+                                    Some((t0, t1, first, last))
+                                })
+                                .filter(|(t0, t1, ..)| {
+                                    let Some(words) = tempo_words else {
+                                        return true;
+                                    };
+                                    let twin = tempo_changes.iter().any(|(w, a, b)| {
+                                        w == words
+                                            && time_total(a, t0) == Ordering::Equal
+                                            && time_total(b, t1) == Ordering::Equal
+                                    });
+                                    if !twin {
+                                        tempo_changes.push((
+                                            words.to_owned(),
+                                            t0.clone(),
+                                            t1.clone(),
+                                        ));
+                                    }
+                                    !twin
+                                });
                             match drawn_line {
                                 Some((t0, t1, (_, first), (_, last))) => {
                                     let synth = |k: u128| {
@@ -5619,6 +5652,47 @@ pub fn try_to_constrained(
                                                         }),
                                                         between: grand_neighbour(&grand, st, above)
                                                             .map(|n| band_of(Some(n))),
+                                                        across: None,
+                                                    };
+                                                }
+                                                None if tempo_words.is_some() => {
+                                                    // A gradual tempo change over the
+                                                    // system's top staff, bold, its line
+                                                    // on its words' baseline.
+                                                    let top =
+                                                        staff_order.first().copied().unwrap_or(st);
+                                                    band = band_of(Some(top));
+                                                    let baseline = y_origin(top)
+                                                        + STAFF_HEIGHT
+                                                        + lines::TEMPO_CHANGE_ABOVE;
+                                                    width = lines::TEMPO_CHANGE_WIDTH;
+                                                    dashes = Some(lines::TEMPO_CHANGE_DASHES);
+                                                    y = baseline + width * 0.5;
+                                                    let (run, gaps) = shape_text(
+                                                        synth(0),
+                                                        words,
+                                                        TextFace::Bold,
+                                                        lines::TEMPO_CHANGE_SIZE,
+                                                        TextAlign::Left,
+                                                        Point::new(first.x, baseline),
+                                                    );
+                                                    for d in
+                                                        text_diagnostics(provenance.source, &gaps)
+                                                    {
+                                                        emit.diag(d.source, d.kind);
+                                                    }
+                                                    x0 = run.origin.x.0
+                                                        + run.bounds.right.0
+                                                        + lines::LINE_TEXT_GAP;
+                                                    sign = Some(run);
+                                                    x1 = last.x - lines::TEXT_LINE_END_INSET;
+                                                    placement = Autoplace {
+                                                        above: true,
+                                                        order: PlaceOrder::Tempo,
+                                                        min_distance:
+                                                            lines::TEMPO_CHANGE_MIN_DISTANCE,
+                                                        row: None,
+                                                        between: None,
                                                         across: None,
                                                     };
                                                 }

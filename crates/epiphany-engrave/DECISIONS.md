@@ -2748,3 +2748,23 @@ engraver's own placing reproduces it:
   staves is left undrawn.
 - The corpus report names each of these lines the engraver leaves undrawn
   (`the_lines_undrawn_are_counted`).
+
+## ENGRAVER_VERSION 96 → 97: a gradual tempo change drawn once over its system, bold (X4d.1, 2026-11-01)
+
+- A text line whose words open with a term of gradual tempo change (rit.,
+  rall., accel., allargando and the like, `epiphany_layout_ir::tempo_term`)
+  is drawn as MuseScore draws its gradual tempo change: a system object over
+  the system's top staff, drawn once for the parts that repeat its words and
+  times, its words in Edwin bold at 12 points on the line's baseline, at
+  least 2.0 over the staff and half a space clear of the ink under it, the
+  line 0.15 wide in dashes 0.9 long spread with gaps of 1.35, no hook and no
+  continuation. MuseScore's export writes each of these as words and dashes
+  (`system="only-top"`), and its own page sets them bold at 12, as Gould sets
+  a gradual tempo change as a tempo indication, bold roman above the top
+  staff, a continuing change shown by its dashes (*Behind Bars*, pp. 182 and
+  185). They had been drawn as plain text lines, upright at 10 points over
+  their own staves. The corpus report counts a part's copy of one drawn
+  for another as drawn
+  (`a_gradual_tempo_change_stands_bold_over_the_staff`,
+  `a_gradual_tempo_change_in_two_parts_is_drawn_once_over_the_system`,
+  `a_gradual_tempo_change_drawn_once_for_two_parts_is_no_omission`).

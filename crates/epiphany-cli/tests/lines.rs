@@ -757,7 +757,7 @@ fn a_text_line_stands_over_its_staff_through_its_words() {
         "text_line.musicxml",
         &[format!(
             "{}{}{}{}{}{}",
-            text_line("rit.", false),
+            text_line("sul pont.", false),
             q("C5"),
             q("D5"),
             text_line_stop(),
@@ -768,7 +768,7 @@ fn a_text_line_stands_over_its_staff_through_its_words() {
     let layout = engrave_loaded(&loaded).layout;
     let e = events(&loaded);
     let (_, top) = staves(&layout)[0];
-    let words = runs(&layout, "rit.");
+    let words = runs(&layout, "sul pont.");
     assert_eq!(words.len(), 1);
     let words = text_box(words[0]);
     let y = (words[1] + words[3]) * 0.5;
@@ -797,6 +797,91 @@ fn a_text_line_stands_over_its_staff_through_its_words() {
     }
     spread(&dashes, 0.6, 0.6, "the text line");
     assert_eq!(strokes[0].thickness.0, 0.15);
+}
+
+/// A text line opening with a term of gradual tempo change is drawn as
+/// MuseScore draws its gradual tempo change and Gould a tempo indication
+/// (p. 182): its words in Edwin bold at 12 points, at least 2.0 over the
+/// staff, on the line's baseline; the line 0.15 wide in dashes 0.9 long
+/// spread with gaps of 1.35 (p. 185), to a space before the note it ends at.
+#[test]
+fn a_gradual_tempo_change_stands_bold_over_the_staff() {
+    let loaded = part(
+        "tempo_change.musicxml",
+        &[format!(
+            "{}{}{}{}{}{}{}{}",
+            text_line("rit.", false),
+            q("C5"),
+            q("D5"),
+            q("C5"),
+            q("D5"),
+            text_line_stop(),
+            q("E5"),
+            q("F5"),
+        )],
+    );
+    let layout = engrave_loaded(&loaded).layout;
+    let e = events(&loaded);
+    let (_, top) = staves(&layout)[0];
+    let words = runs(&layout, "rit.");
+    assert_eq!(words.len(), 1);
+    let face = format!("{:?}", words[0].shaping.faces[0].family);
+    assert!(face.contains("Bold"), "bold: {face}");
+    assert!(
+        (words[0].segments[0].size.0 - 2.419).abs() < 1e-3,
+        "at 12 points"
+    );
+    let baseline = words[0].origin.y.0;
+    assert!(baseline >= top + 2.0 - 1e-3, "at least 2.0 over the staff");
+    let strokes = line_strokes(&loaded, &layout, |k| matches!(k, SpannerKind::TextLine(_)));
+    let (dashes, hooks) = split(&strokes);
+    assert!(hooks.is_empty());
+    for d in &dashes {
+        near(d.2, baseline + 0.075, "the line on the baseline");
+        near(d.1 - d.0, 0.9, "a dash 0.9 long");
+    }
+    spread(&dashes, 0.9, 1.35, "the tempo change");
+    near(
+        dashes[0].0,
+        text_box(words[0])[2] + 0.5,
+        "the line half a space after the words",
+    );
+    near(
+        dashes.last().expect("dashes").1,
+        head(&loaded, &layout, e[4])[0] - 1.0,
+        "a space before E5",
+    );
+}
+
+/// A gradual tempo change is a system object: two parts holding the same one
+/// at one time draw it once, over the system's top staff.
+#[test]
+fn a_gradual_tempo_change_in_two_parts_is_drawn_once_over_the_system() {
+    let measure = format!(
+        "<attributes><divisions>2</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time><clef><sign>G</sign><line>2</line></clef></attributes>{}{}{}{}{}{}",
+        text_line("rit.", false),
+        q("C5"),
+        q("D5"),
+        text_line_stop(),
+        q("E5"),
+        q("F5"),
+    );
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part><score-part id=\"P2\"><part-name>B</part-name>\
+         </score-part></part-list><part id=\"P1\"><measure number=\"1\">{measure}</measure>\
+         </part><part id=\"P2\"><measure number=\"1\">{measure}</measure></part>\
+         </score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("tempo_change_twice.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = engrave_loaded(&loaded).layout;
+    let staves = staves(&layout);
+    let words = runs(&layout, "rit.");
+    assert_eq!(words.len(), 1, "drawn once");
+    assert!(words[0].origin.y.0 > staves[0].1, "over the top staff");
 }
 
 /// A text line opening with a dynamic term is a verbal crescendo, as

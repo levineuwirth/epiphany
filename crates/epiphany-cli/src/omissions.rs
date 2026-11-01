@@ -47,7 +47,7 @@ use epiphany_core::{
     SpannerKind, StaffId, StaffInstanceId, TimeAnchor, TypedObjectId,
 };
 use epiphany_layout_ir::constrained::{LayoutDiagnostic, LayoutDiagnosticKind};
-use epiphany_layout_ir::{is_beam_stroke, NoteMarkPart, ResolvedLayoutIR};
+use epiphany_layout_ir::{is_beam_stroke, tempo_term, NoteMarkPart, ResolvedLayoutIR};
 
 /// Engraving omissions by kind, with counts; and what was not checked.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
@@ -777,7 +777,28 @@ pub fn omissions(
             out.add("lyric");
         }
     }
+    // A gradual tempo change is drawn once over the system, whichever part
+    // holds it, so one repeating an inked one's words and times from another
+    // part is drawn too.
+    let tempo_change = |s: &epiphany_core::Spanner| match &s.kind {
+        SpannerKind::TextLine(def) if tempo_term(def.text.as_str()) => Some((
+            def.text.as_str().to_owned(),
+            onset(score, &s.start),
+            onset(score, &s.end),
+        )),
+        _ => None,
+    };
+    let inked_tempo_changes: Vec<_> = score
+        .cross_cutting
+        .spanners
+        .iter()
+        .filter(|s| inked.contains(&TypedObjectId::Spanner(s.id)))
+        .filter_map(tempo_change)
+        .collect();
     for spanner in &score.cross_cutting.spanners {
+        if tempo_change(spanner).is_some_and(|t| inked_tempo_changes.contains(&t)) {
+            continue;
+        }
         let class = match spanner.kind {
             SpannerKind::Hairpin(_) => "hairpin",
             SpannerKind::TrillExtension => "trill line",

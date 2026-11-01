@@ -95,6 +95,25 @@ pub(crate) const VERBAL_HAIRPIN_DASHES: LineDashes = LineDashes {
     gap: 9.0 * VERBAL_HAIRPIN_WIDTH,
 };
 
+/// A gradual tempo change (`GradualTempoChange`), a system object drawn once
+/// over the system's top staff (`tempoChangeSystemFlag`): its words in Edwin
+/// bold at 12 points (`tempoChangeFontStyle`, `tempoChangeFontSize`) on the
+/// line's baseline (`tempoChangeAlign`), at least 2.0 over the staff
+/// (`tempoChangePosAbove`) and half a space clear of the ink under it
+/// (`tempoChangeMinDistance`); the line 0.15 wide (`tempoChangeLineWidth`) in
+/// dashes of 6 widths and gaps of 9 (`tempoChangeDashLineLen`,
+/// `tempoChangeDashGapLen`), with no hook and no continuation. Gould sets a
+/// gradual tempo change as a tempo indication, bold roman above the top
+/// staff (p. 182), its continuing change shown by horizontal dashes (p. 185).
+pub(crate) const TEMPO_CHANGE_ABOVE: f32 = 2.0;
+pub(crate) const TEMPO_CHANGE_SIZE: f32 = 2.419;
+pub(crate) const TEMPO_CHANGE_WIDTH: f32 = 0.15;
+pub(crate) const TEMPO_CHANGE_DASHES: LineDashes = LineDashes {
+    dash: 6.0 * TEMPO_CHANGE_WIDTH,
+    gap: 9.0 * TEMPO_CHANGE_WIDTH,
+};
+pub(crate) const TEMPO_CHANGE_MIN_DISTANCE: f32 = 0.5;
+
 /// The gap between a line's words or sign and the line
 /// (`TextLineBase`'s `gapBetweenTextAndLine`).
 pub(crate) const LINE_TEXT_GAP: f32 = 0.5;
@@ -147,6 +166,38 @@ pub(crate) fn dynamic_term(words: &str) -> Option<bool> {
     } else {
         None
     }
+}
+
+/// Whether a text line's words open with a term of gradual tempo change
+/// (rit., rall., accel., allargando and the like, after a "poco" or "molto"):
+/// MuseScore's export writes its gradual tempo changes so, every one a system
+/// object (`system="only-top"`), and draws them as bold words at 12
+/// points over the system.
+pub fn tempo_term(words: &str) -> bool {
+    let mut word = words
+        .trim_start()
+        .trim_start_matches('(')
+        .trim_start()
+        .to_lowercase();
+    for qualifier in [
+        "poco a poco ",
+        "un poco ",
+        "poco ",
+        "molto ",
+        "sempre ",
+        "più ",
+        "piu ",
+    ] {
+        if let Some(rest) = word.strip_prefix(qualifier) {
+            word = rest.trim_start().to_owned();
+        }
+    }
+    [
+        "rit.", "ritard", "riten", "rall", "accel", "allarg", "string", "slarg", "slent",
+        "calando", "smorz", "morendo", "stretto", "a tempo",
+    ]
+    .iter()
+    .any(|term| word.starts_with(term))
 }
 
 /// SMuFL symbols set side by side at their music size from `origin`, each
@@ -306,6 +357,24 @@ mod tests {
             run.bounds
         );
         assert!((run.bounds.top.0 - 2.22).abs() < 0.02, "{:?}", run.bounds);
+    }
+
+    #[test]
+    fn a_tempo_term_opens_a_gradual_tempo_change() {
+        for words in [
+            "rit.",
+            "rall.",
+            "accel.",
+            "poco rit.",
+            "molto rall.",
+            "allarg.",
+            "(rit.)",
+        ] {
+            assert!(tempo_term(words), "{words}");
+        }
+        for words in ["sul pont.", "cresc.", "dolce", "ritmico"] {
+            assert!(!tempo_term(words), "{words}");
+        }
     }
 
     #[test]

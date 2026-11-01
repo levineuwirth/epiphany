@@ -992,3 +992,46 @@ fn the_lines_undrawn_are_counted() {
     want.sort();
     assert_eq!(counted(&engraved), want);
 }
+
+/// A gradual tempo change two parts hold at one time is drawn once over the
+/// system, and the other part's is no omission.
+#[test]
+fn a_gradual_tempo_change_drawn_once_for_two_parts_is_no_omission() {
+    let measure = "<attributes><divisions>2</divisions><time><beats>4</beats><beat-type>4\
+         </beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>\
+         <direction><direction-type><words>rit.</words></direction-type><direction-type>\
+         <dashes type=\"start\"/></direction-type></direction>\
+         <note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration>\
+         <voice>1</voice><type>half</type></note><direction><direction-type>\
+         <dashes type=\"stop\"/></direction-type></direction><note><pitch><step>D</step>\
+         <octave>5</octave></pitch><duration>4</duration><voice>1</voice><type>half</type>\
+         </note>";
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part><score-part id=\"P2\"><part-name>B</part-name>\
+         </score-part></part-list><part id=\"P1\"><measure number=\"1\">{measure}</measure>\
+         </part><part id=\"P2\"><measure number=\"1\">{measure}</measure></part>\
+         </score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("tempo_change_omissions.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let score = &loaded.reduced.score;
+    let engraved = engrave(score);
+    assert_eq!(
+        engraved
+            .layout
+            .texts
+            .iter()
+            .filter(|t| t.text == "rit.")
+            .count(),
+        1,
+        "drawn once"
+    );
+    let found: Vec<_> = omissions(score, &engraved.layout, &engraved.diagnostics)
+        .kinds
+        .into_iter()
+        .filter(|(kind, _)| kind == "text line")
+        .collect();
+    assert_eq!(found, vec![]);
+}

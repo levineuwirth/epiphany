@@ -72,6 +72,7 @@ pub mod engraving;
 pub mod glyph;
 pub mod hittest;
 mod lines;
+pub use lines::tempo_term;
 pub mod logical;
 pub mod provenance;
 pub mod quality;
