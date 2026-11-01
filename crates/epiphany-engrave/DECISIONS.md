@@ -2822,3 +2822,20 @@ engraver's own placing reproduces it:
   (`dynamics_are_placed_before_the_hairpins`). Gould asks only that a
   sequence of dynamics and hairpins keep one horizontal plane where it can
   (*Behind Bars*, p. 105), which the chains' alignment keeps.
+
+## ENGRAVER_VERSION 99 → 100: a dynamic clear of a barline through the staves (X4d.3, 2026-11-01)
+
+- A dynamic no one moved stands a quarter space clear of a barline that
+  runs through the staves at it, as MuseScore moves one
+  (`DynamicsLayout::manageBarlineCollisions`, 0.25 spaces): under its staff,
+  its own staff's barline where that runs on to the next staff of a joined
+  group; over it, the barline of the staff above. It moves left of the
+  barline after it, then right of the one before it, which wins. Gould keeps
+  barlines whole where a marking can move before or after one, moving an
+  initial dynamic right of its barline and breaking the barline only for
+  one that cannot move (*Behind Bars*, p. 103). LilyPond 2.26.0 reaches the
+  same page another way: a dynamic takes room in the horizontal spacing, so
+  the measure widens rather than the dynamic moving, while its plain text
+  scripts cross a span bar (a hand-written probe). On one staff, or where
+  the barline stops at its staff, nothing moves
+  (`a_dynamic_stands_clear_of_a_barline_through_the_staves`).

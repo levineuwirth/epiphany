@@ -1710,6 +1710,145 @@ pub(crate) fn cast_off(
         };
         family_dx.insert(f, target - (l + r) * 0.5);
     }
+    // A dynamic moved across a quarter space clear of a barline that runs
+    // through the staves at it, as MuseScore moves a dynamic no one moved
+    // (`DynamicsLayout::manageBarlineCollisions`; X4d.3): under its staff,
+    // its own staff's barline where it runs on to the next staff; over it,
+    // the barline of the staff above where that one runs on to it. Away from
+    // the barline after it, then from the one before it; Gould keeps barlines
+    // whole by moving a dynamic off them, an initial one to the barline's
+    // right (*Behind Bars*, p. 103).
+    // Each staff whose barline runs on to the next staff of a joined group,
+    // and the staff above each other staff of one.
+    let joined_down: BTreeSet<StaffId> = input
+        .staff_groups
+        .iter()
+        .filter(|g| g.joined)
+        .flat_map(|g| g.staves.iter().rev().skip(1).copied())
+        .collect();
+    let staff_above: BTreeMap<StaffId, StaffId> = input
+        .staff_groups
+        .iter()
+        .filter(|g| g.joined)
+        .flat_map(|g| {
+            g.staves
+                .windows(2)
+                .map(|w| (w[1], w[0]))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let staff_band: BTreeMap<StaffId, VerticalBandId> = band_to_staff
+        .iter()
+        .map(|(band, staff)| (*staff, *band))
+        .collect();
+    for (f, mark) in input.family.iter().enumerate() {
+        let Some(p) = mark.placement else {
+            continue;
+        };
+        if p.order != epiphany_layout_ir::PlaceOrder::Dynamic
+            || mark.line.is_some()
+            || family_dx.contains_key(&f)
+        {
+            continue;
+        }
+        let Some(staff) = staff_of(mark.band) else {
+            continue;
+        };
+        let barline_staff = if p.above {
+            staff_above.get(&staff).copied()
+        } else {
+            Some(staff)
+        };
+        let Some(barline_staff) = barline_staff.filter(|s| joined_down.contains(s)) else {
+            continue;
+        };
+        let barline_band = staff_band.get(&barline_staff).copied();
+        // Its ink across where its system sets it, its slot, and its system.
+        let mut ink: Option<(usize, SpringSlotId, f32, f32)> = None;
+        let mut take = |s: usize, slot: SpringSlotId, l: f32, r: f32| {
+            ink = Some(match ink {
+                Some((s0, slot0, a, b)) => (s0, slot0, a.min(l), b.max(r)),
+                None => (s, slot, l, r),
+            });
+        };
+        for (glyph, spaced) in input.glyphs.iter().zip(spaced_glyphs) {
+            if !mark.glyphs.contains(&glyph.id()) {
+                continue;
+            }
+            let Some(&s) = system_of_slot.get(&glyph.horizontal_slot) else {
+                continue;
+            };
+            let sx = slot_source_x
+                .get(&glyph.horizontal_slot)
+                .copied()
+                .unwrap_or(spaced.position.x.0);
+            let x = spaced.position.x.0 + hplace[s].0.slot_dx(sx) - shift_of(glyph.horizontal_slot);
+            take(
+                s,
+                glyph.horizontal_slot,
+                x + glyph.bounding_box.left.0,
+                x + glyph.bounding_box.right.0,
+            );
+        }
+        for i in mark.texts.iter().filter_map(|id| text_at.get(id)) {
+            let (text, spaced) = (&input.texts[*i], &spaced_texts[*i]);
+            let Some(s) = text_system[*i] else {
+                continue;
+            };
+            let slot = text.horizontal_slot;
+            let sx = slot_source_x
+                .get(&slot)
+                .copied()
+                .unwrap_or(spaced.origin.x.0);
+            let x = spaced.origin.x.0 + hplace[s].0.slot_dx(sx) - shift_of(slot);
+            take(s, slot, x + spaced.bounds.left.0, x + spaced.bounds.right.0);
+        }
+        let Some((s, slot, left, right)) = ink else {
+            continue;
+        };
+        let own = slot_source_x.get(&slot).copied().unwrap_or(left);
+        // The barlines of the staff in this system: each one's ink across
+        // and its slot's source x.
+        let barlines: Vec<(f32, f32, f32)> = input
+            .glyphs
+            .iter()
+            .zip(spaced_glyphs)
+            .filter(|(g, _)| {
+                is_barline_glyph(g.glyph.as_str())
+                    && Some(g.vertical_band) == barline_band
+                    && system_of_slot.get(&g.horizontal_slot) == Some(&s)
+            })
+            .filter_map(|(g, spaced)| {
+                let sx = *slot_source_x.get(&g.horizontal_slot)?;
+                let x = spaced.position.x.0 + hplace[s].0.slot_dx(sx) - shift_of(g.horizontal_slot);
+                Some((sx, x + g.bounding_box.left.0, x + g.bounding_box.right.0))
+            })
+            .collect();
+        let mut dx = 0.0f32;
+        if let Some(&(_, bar_left, _)) = barlines
+            .iter()
+            .filter(|(sx, ..)| *sx > own)
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+        {
+            let margin = bar_left - right - DYNAMIC_BARLINE_CLEARANCE;
+            if margin < 0.0 {
+                dx += margin;
+            }
+        }
+        if let Some(&(_, _, bar_right)) = barlines
+            .iter()
+            .filter(|(sx, ..)| *sx <= own)
+            .max_by(|a, b| a.0.total_cmp(&b.0))
+        {
+            let margin = left + dx - bar_right - DYNAMIC_BARLINE_CLEARANCE;
+            if margin < 0.0 {
+                dx -= margin;
+            }
+        }
+        if dx != 0.0 {
+            family_dx.insert(f, dx);
+        }
+    }
     let member_dx = |f: Option<&usize>| f.and_then(|f| family_dx.get(f)).copied().unwrap_or(0.0);
     let mut family_dy: BTreeMap<(usize, usize), f32> = BTreeMap::new();
     // The placed family's pieces and the ink each was placed against, kept
@@ -3964,6 +4103,10 @@ fn line_run(template: &ResolvedText, line: &Stroke, piece: usize, role: u128) ->
         ..template.clone()
     }
 }
+
+/// How far a dynamic stands clear of a barline running through the staves
+/// at it (`DynamicsLayout::manageBarlineCollisions`).
+const DYNAMIC_BARLINE_CLEARANCE: f32 = 0.25;
 
 /// The registry id for the runs a line draws piece by piece: its
 /// continuation (role 1), a glissando's words (2) and wiggles (3).
