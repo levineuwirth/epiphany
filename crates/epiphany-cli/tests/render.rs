@@ -532,9 +532,20 @@ fn a_beam_across_two_staves_joins_its_notes_between_them() {
          {notes}</measure></part></score-partwise>"
     );
     let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("close_cross_staff.musicxml");
-    std::fs::write(&path, xml).expect("written");
+    std::fs::write(&path, &xml).expect("written");
     let loaded = load(&path).expect("loads");
     let layout = engrave(&loaded.reduced.score).layout;
+    // Unspread, the staves stand at the distance the beam asks, which the
+    // vertical measure reads as no deviation (`req:qmc:vertical`'s `b`).
+    {
+        use epiphany_layout_ir::{to_constrained, to_logical, ConstraintSolver, SolverConfig};
+        let report = epiphany_engrave::Engraver::with_geometry(unbounded_page()).solve(
+            &to_constrained(&to_logical(&loaded.reduced.score)),
+            &SolverConfig::default(),
+        );
+        let penalty = report.metric_vector.vertical_density_penalty.0;
+        assert!(penalty < 1e-3, "vertical density penalty {penalty}");
+    }
     let (crossing, shortest, gap) = check_cross_staff_beams(&loaded.reduced.score, &layout);
     assert_eq!(crossing, 4);
     assert!(
@@ -7886,6 +7897,23 @@ fn engrave_on(
     (loaded, layout)
 }
 
+/// The vertical measure (`req:qmc:vertical`) of `xml` engraved on
+/// `geometry`.
+fn vertical_density_on(name: &str, xml: &str, geometry: epiphany_engrave::PageGeometry) -> f64 {
+    use epiphany_layout_ir::{to_constrained, to_logical, ConstraintSolver, SolverConfig};
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    epiphany_engrave::Engraver::with_geometry(geometry)
+        .solve(
+            &to_constrained(&to_logical(&loaded.reduced.score)),
+            &SolverConfig::default(),
+        )
+        .metric_vector
+        .vertical_density_penalty
+        .0
+}
+
 /// Each system's staves' lines, bottom and top, top staff first.
 fn staff_lines_by_system(layout: &epiphany_layout_ir::ResolvedLayoutIR) -> Vec<Vec<(f32, f32)>> {
     use epiphany_core::TypedObjectId;
@@ -7981,6 +8009,13 @@ fn a_syllable_keeps_its_room_from_the_next_staffs_ink() {
         (clearance - 1.5).abs() < 0.01,
         "the syllable stands {clearance} over the next staff's ink"
     );
+    // The vertical measure reads the syllable's room as asked, not sprawl.
+    let density = vertical_density_on(
+        "lyric_over_high_notes_measured.musicxml",
+        &xml,
+        unbounded_page(),
+    );
+    assert!(density < 1e-3, "{density}");
 }
 
 /// A later system's lead takes its room between its staves as the first
@@ -8043,6 +8078,12 @@ fn the_floor_compresses_only_as_far_as_the_system_needs() {
             "compressed as far as it needs: {d}"
         );
     }
+    // The vertical measure reads each gap's quarter as crowding against the
+    // floor, 0.25 of 4.0; unspread at the full floor, none.
+    let crowded = vertical_density_on("three_plain_parts_crowded.musicxml", &xml, geometry);
+    assert!((crowded - 0.0625).abs() < 0.002, "{crowded}");
+    let natural = vertical_density_on("three_plain_parts_natural.musicxml", &xml, unbounded_page());
+    assert!(natural < 1e-3, "{natural}");
 }
 
 /// Each system's ink rectangles and its top and bottom staff lines.

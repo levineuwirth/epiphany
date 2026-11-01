@@ -568,6 +568,23 @@ mod tests {
         }
     }
 
+    /// The gap bands the quality measure reads carry the solve's numbers:
+    /// the floors, the caps and the weight between systems cannot drift.
+    #[test]
+    fn the_gap_bands_carry_the_solves_numbers() {
+        use epiphany_layout_ir::{VerticalBand, VerticalBandId};
+        let staff = VerticalBand::inter_staff_gap(VerticalBandId(0));
+        assert_eq!(staff.min_height.0, STAFF_FLOOR);
+        assert_eq!(staff.preferred_height.0, STAFF_FLOOR);
+        assert_eq!(staff.max_height.map(|h| h.0), Some(MAX_STAFF_SPREAD));
+        assert_eq!(staff.stretch_factor, 1.0);
+        let system = VerticalBand::inter_system_gap(VerticalBandId(0));
+        assert_eq!(system.min_height.0, SYSTEM_FLOOR);
+        assert_eq!(system.preferred_height.0, SYSTEM_FLOOR);
+        assert_eq!(system.max_height.map(|h| h.0), Some(MAX_SYSTEM_SPREAD));
+        assert_eq!(system.stretch_factor, SPREAD_SYSTEM);
+    }
+
     #[test]
     fn an_outline_keeps_each_rectangle_at_its_own_edges() {
         let o = Outline::below(

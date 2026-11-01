@@ -231,7 +231,7 @@
   {\Large\scshape\color{epiphanyslate}Quality Metric Catalog}\\[6pt]
   {\large\itshape\color{epiphanyslate}A companion to the Core Specification}\\[14pt]
   {\color{epiphanygold}\rule{3in}{0.8pt}}\\[24pt]
-  {\normalsize\color{epiphanyink}Version 0.3.0 --- Phase 3 (the normative metric set: formal definitions, normalization, weights, tier thresholds, profile registry; \texttt{spacing\_distortion} scoped to rhythmic columns; \texttt{vertical\_density\_penalty} counted per realization)}\\[4pt]
+  {\normalsize\color{epiphanyink}Version 0.4.0 --- Phase 3 (the normative metric set: formal definitions, normalization, weights, tier thresholds, profile registry; \texttt{spacing\_distortion} scoped to rhythmic columns; \texttt{vertical\_density\_penalty} counted per realization and measured column by column)}\\[4pt]
   {\small\color{epiphanyslate}Normative for the metrics and thresholds it defines}
   \vfill
 \end{titlepage}
@@ -251,7 +251,7 @@ deliver ``per-metric normalization functions mapping raw measurements to
 metric thresholds, and the formal definition of each quality metric in the
 normative metric set.''
 
-This companion (v0.3.0) delivers all four chartered items, plus two small
+This companion (v0.4.0) delivers all four chartered items, plus two small
 registries the core specification names but defers here:
 
 \begin{itemize}
@@ -868,88 +868,93 @@ geometry, so the axis evaluates to $0.0$ under the vacuous-geometry rule.
 \section{\texttt{vertical\_density\_penalty}}
 \label{sec:metrics:vertical}
 
-\textbf{Phenomenon.} Vertical crowding or sprawl: inter-staff and
-inter-system gaps realized far from the spacing the band model asked for.
+\textbf{Phenomenon.} Vertical crowding or sprawl: staves and systems set
+nearer than their ink allows, or further apart than their ink and the floor
+ask.
 
 \begin{requirement}
 \label{req:qmc:vertical}
 \textbf{Contributing units:} each \emph{realization} in $L$ of a vertical
-band of $C$ of kind \texttt{InterStaffGap} or \texttt{InterSystemGap} with
-preferred height $p > 0$ (a band is realized wherever the adjacent content
-it separates was laid out). A band realized in several systems contributes
-\textbf{one unit per system}, not one per band: a vertical solve sizes each
-system's gaps from that system's own content, so one band's realized height
-genuinely differs from system to system. This matches how the realized
-inter-system gaps are already counted --- one unit per adjacent system pair
-on a page.
+band of $C$ of kind \texttt{InterStaffGap} or \texttt{InterSystemGap} (a band
+is realized wherever the two staves it separates are laid out in one system,
+or, for an \texttt{InterSystemGap}, wherever two systems stand consecutively
+on one page). A band realized in several systems contributes \textbf{one unit
+per system}.
 
-\textbf{Raw measurement:} per unit, with $r \ge 0$ the realized vertical
-separation between the adjacent content extents the band separates
-(measured in resolved coordinates),
+\textbf{Raw measurement:} per unit, with $d$ the realized \emph{line
+distance} --- from the lowest staff line above the gap to the highest staff
+line below it, in resolved coordinates --- and $d^{*}$ the distance the gap
+asks at that realization,
 \[
-  \mathit{raw}_u \;=\; \frac{|r - p|}{p};
+  d^{*} \;=\; \max\bigl(f,\; s + c,\; b\bigr),
+  \qquad
+  \mathit{raw}_u \;=\; \frac{|d - d^{*}|}{d^{*}},
 \]
-the axis raw value is the arithmetic mean over contributing units.
-
-\textbf{Content extent} means \emph{every} primitive the adjacent band
-owns --- glyphs, strokes, and curves alike, each attributed by its declared
-\texttt{vertical\_band} (core spec
-\sectionsc{ConstrainedLayoutIR}, primitive band ownership) --- and not the
-band's glyph \texttt{members} alone. A staff's outermost ink is usually not
-a glyph: ledger lines, stems, and slurs reach past every notehead. A solver
-separates staves until their content clears the gap, so scoring it against
-its noteheads alone would charge it for the very ink it made room for.
+where:
+\begin{itemize}
+  \item $f$ is the band's floor, its \texttt{min\_height}, a line distance;
+  \item $s$ is the \emph{skyline separation}: the greatest, over every pair
+    of a primitive above the gap and a primitive below it whose horizontal
+    extents, the upper's widened by $h$ on either side, overlap (each extent
+    of positive width and height), of the depth the upper primitive reaches
+    below the lowest staff line above the gap plus the height the lower
+    primitive reaches above the highest staff line below it ($-\infty$ when
+    no pair overlaps);
+  \item $c$ and $h$ are the vertical and horizontal clearances, $0.5$ and
+    $0.25$ staff spaces;
+  \item $b$ is the least line distance a beam joining the two staves needs
+    for every stem reaching it to keep its least length ($-\infty$ where no
+    such beam stands).
+\end{itemize}
+A primitive's extent is its ink box: a glyph's or a text run's bounds, a
+stroke's box widened by half its thickness, and a curve read as the boxes of
+twelve chords of equal parameter step. A syllable of a lyric, and a line of
+its verse, reach $1.0$ staff space further on the side of its staff it stands,
+so that it keeps $1.5$ from the next staff's ink. The primitives above an
+\texttt{InterStaffGap} are every primitive owned by a staff above it in the
+system, and below it every primitive owned by the staff below it, each
+attributed by its declared \texttt{vertical\_band} (core spec
+\sectionsc{ConstrainedLayoutIR}, primitive band ownership); for an
+\texttt{InterSystemGap}, every staff-owned primitive of the system above and
+of the system below. A primitive that stands between two staves by
+declaration --- the ink of a beam joining them --- is content of neither and
+enters $d^{*}$ through $b$ alone. The axis raw value is the arithmetic mean
+over contributing units.
 
 \textbf{Normalization:} $R_{\mathrm{worst}} = 1.0$;
 $n = \min(1, \mathit{raw})$.
 \end{requirement}
 
 \begin{rationale}
-A gap off by its own preferred size --- staves twice as far apart as asked,
-or fully collapsed --- is unambiguous vertical failure; proportional
-deviation makes one anchor serve both tight inter-staff gaps and wide
-inter-system gaps.
+The measure reads, column by column, what the gap must hold: two staves need
+only stand far enough apart that no column's ink comes within the clearance,
+and no nearer than the floor. Through version 0.3.0 the realized gap was the
+clearance between the two sides' \emph{whole} content extents, the lowest ink
+of the upper staff anywhere in the system against the highest of the lower.
+A solver that realized that unit exactly could not fit an orchestral system
+on its paper: a high note in one bar and a low note in another added up as if
+they stood one above the other. A solver that sets staves by their skylines,
+as engraving practice and the reference engines do, realizes far smaller
+whole-extent clearances, which the old unit read as saturated crowding.
 
-The v0.1 reference pipeline preserved constrained $y$ verbatim, so realized
-gaps equalled preferred gaps wherever bands were realized and the axis
-reported its honest near-zero. The vertical spring solve has since landed
-(inter-staff gap renegotiation and inter-system vertical justification), and
-the axis now measures what it was defined to measure. The
-\textbf{content extent} clarification above is the lesson from that landing:
-the reference implementation read ``content extents'' as the band's glyph
-\texttt{members}, because until primitive band ownership was ratified a band
-listed no strokes or curves to own. A correctly separated two-staff system
-then scored a saturated $1.0$ and tripped the \textsc{Standard} floor
-warning --- the metric charging the solver for the ledger and slur ink it had
-correctly cleared. The formula, units, anchor, and normalization are
-unchanged; only a non-conforming measurement was.
+$d < d^{*}$ is crowding: ink nearer than the clearance, or staves nearer than
+the floor, as where a solver compresses a system's floor to fit it on its
+page. $d > d^{*}$ is sprawl, and on a page that is spread to fill its height
+(vertical justification) it is chosen: the axis is then traded against
+\texttt{page\_fill\_efficiency}, as the inter-system half always was. Both
+axes are reported; neither is wrong. A sparse page spread to its caps reads
+near the axis's worst.
 
-The inter-system half of the axis is a genuine trade-off, not a defect: the
-vertical justification pass deliberately stretches inter-system gaps past
-preferred to fill a non-final page, trading this axis against
-\texttt{page\_fill\_efficiency}. Both axes are reported; neither is wrong.
+The census reads every primitive back from the resolved output, as before:
+the solver's own record of what it asked is not consulted, so a shift the
+bake failed to apply surfaces here as a deviation. The clearances $c$ and $h$
+are fixed here because the measure must not depend on the solver it judges.
+Where a solver realizes every gap's $d^{*}$ exactly and spreads nothing, the
+axis reads its honest zero and serves as a self-check on the solve and the
+bake.
 
-\textbf{Per-realization units} (0.3.0) followed from the same landing. While
-the reference pipeline preserved constrained $y$ verbatim, a band had exactly
-one realized height and the distinction was moot. Once the inter-staff solve
-began sizing each system's gaps from that system's own content, a band's
-realized height became per-system, and counting one unit per band would let a
-well-solved system average away a badly spaced one. The axis is deliberately
-symmetric: a gap wider than preferred is sprawl exactly as a narrower one is
-crowding. A solver that only ever \emph{expands} a fixed stacking --- never
-compressing an over-wide gap back toward preferred --- will therefore report
-honest sprawl on its slack systems. That is the axis working, not
-mis-measuring, and it is how the reference implementation's expand-only solve
-was found: it now renegotiates in both directions.
-
-Where a solver realizes each band's declared height exactly, the inter-staff
-half of this axis reads its honest zero and serves as a \emph{self-check} on the
-solve rather than a judgement on the score. A conforming implementation should
-therefore measure the realized separation back from the geometry it produced,
-not from the target it aimed at: the two agree only if the solve and the bake
-both did what they claimed. The reference implementation reads it back from the
-baked output, and that is how a defect in its multi-staff cascade --- one that
-over-separated every pair below the first --- was caught.
+\textbf{Per-realization units} (0.3.0) are kept: each system's gaps are sized
+from that system's own ink.
 \end{rationale}
 
 \section{\texttt{system\_break\_penalty}}
@@ -1414,6 +1419,18 @@ than inventing a parallel one.
   orientation, range, thresholds, and the eight other axes are unchanged. The
   reference implementation's non-conforming glyph-only measurement is fixed
   alongside. \\
+  \midrule
+  \today & \hyperref[sec:metrics:vertical]{\texttt{vertical\_density\_penalty}}
+  & 0.4.0 --- Measure each gap's realized \textbf{line distance} against what
+  it asks, $\max(f, s + c, b)$: the band's floor, the \emph{skyline
+  separation} of the inks either side read column by column (every staff
+  above an inter-staff gap, a lyric reaching further on its side, a curve by
+  twelve chords) plus a clearance of $0.5$ with inks meeting within $0.25$
+  across, and the least distance a beam across the two staves needs. The
+  0.3.0 unit, the clearance between whole content extents, could not be
+  realized by a solve that fits an orchestral system on its paper, and read
+  a skyline solve as saturated crowding. Units, normalization anchor,
+  orientation, range, thresholds and the eight other axes are unchanged. \\
 \bottomrule
 \end{longtable}
 

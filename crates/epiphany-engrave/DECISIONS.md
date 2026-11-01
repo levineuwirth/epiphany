@@ -2779,3 +2779,40 @@ is set:
   the marks suite's `a_grand_staffs_dynamic_stands_between_its_staves`. The
   goldens it changes are re-blessed with their renders before and after
   recorded (D10).
+
+## The vertical measure reads what a gap asks (X5d.4, 2026-11-01; ENGRAVER_VERSION stays 96)
+
+- `req:qmc:vertical` is amended to the catalog's 0.4.0, as X5d.1 drafted it
+  (D109 Q7): each realized gap's line distance `d`, read from the baked
+  staff lines, against `d* = max(f, s + c, b)`: the band's floor, the
+  skyline separation of the inks either side read column by column (every
+  staff above an inter-staff gap; the whole systems either side of an
+  inter-system one) with `c` 0.5 and inks meeting within `h` 0.25 across,
+  and a beam across the two staves' least distance. Crowding and sprawl
+  both deviate. Three things the draft left unsaid are stated: the axis
+  is still the mean over its units, as every axis's is; a curve is read
+  as twelve chords and a box of positive extent only; a syllable and its
+  verse's lines reach 1.0 further on their side, as the solve keeps them
+  (X5d.2), so a lyric's room reads as asked, not as sprawl.
+- The gap bands become line distances carrying the solve's numbers
+  (`VerticalBand::inter_staff_gap`: floor 4.0 as both `min_height` and
+  `preferred_height`, cap 20, weight 1.0; `inter_system_gap`: floor 8.5,
+  cap 32, weight 2.5), as X5d.1's note set the band. The floor the measure
+  reads is Gould's 4.0, so a system casting compresses toward 3.5 to fit its
+  page reads the crowding it is (0.25 in 4.0 a gap), and a plain gap at the
+  floor reads none.
+- The census reads the baked output with code of its own (`separation`,
+  step functions over the boxes' edges, merged staff by staff down a
+  system), sharing none with the solve's outline: unspread, it reads no
+  deviation on every fixture the solve sets, which makes it a check on the
+  solve and the bake together.
+- The engraver's ink is unchanged, so `ENGRAVER_VERSION` stays 96; the
+  metric vector changes.
+- Tests: `quality::tests::an_unspread_solve_realizes_what_every_gap_asks`,
+  `a_staff_the_bake_left_behind_reads_as_crowding`,
+  `the_separation_is_the_greatest_over_meeting_pairs` (against every pair,
+  on boxes drawn at random), `inks_meet_across_within_a_quarter_space`,
+  `a_gap_reads_every_staff_above_it` (ink planted past the lines' end,
+  where only the merged outline sees it),
+  `vertical::tests::the_gap_bands_carry_the_solves_numbers`,
+  and the CLI's beam, lyric and compression tests reading the measure.
