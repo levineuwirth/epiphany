@@ -91,6 +91,11 @@ pub(super) struct Chord<'a> {
     /// (`ChordLayout::leaveSpaceForTie`).
     pub tie_above: bool,
     pub tie_below: bool,
+    /// The ink of the other chords of its staff's column, whatever their
+    /// voice, each `[left, bottom, right, top]`, `x` from the column: their
+    /// heads, ledger lines, dots and accidentals, stems and flags. An
+    /// outside mark stands clear of it as of its own chord's accidentals.
+    pub column: Vec<[f32; 4]>,
 }
 
 /// Another chord's ink in a chord's column that its arpeggio stands clear of:
@@ -608,11 +613,17 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
         let at_stem_end = m.above == seg.up && stem.is_some();
         let x = centred(m.name, centre_x(chord, stem_side));
         // MuseScore's autoplace then lifts the mark clear of what stands
-        // under it across its width, its chord's own accidentals among them,
-        // by `articulationMinDistance` (`Autoplace::autoplaceSegmentElement`).
+        // under it across its width on its staff, by
+        // `articulationMinDistance` (`Autoplace::autoplaceSegmentElement`):
+        // its chord's own accidentals, and the ink of every other chord of
+        // its column, another voice's included (X4d.3). Another chord's
+        // marks are not among it: MuseScore's autoplace lets an articulation
+        // pass another (`itemsShouldIgnoreEachOther`), and a close mark it
+        // does not autoplace at all.
         let across = chord
             .accidental_ink
             .iter()
+            .chain(&chord.column)
             .filter(|a| a[0] < x + b.right.0 && a[2] > x + b.left.0);
         // An ornament's accidentals, at 0.6 of their size, centred over and
         // under it with 0.35 between.

@@ -2981,6 +2981,34 @@ pub fn try_to_constrained(
                 }
             }
         }
+        // Each staff column's ink of its chords, with the event drawing it:
+        // their heads, ledger lines, dots and accidentals, stems and flags,
+        // `x` from the column. An outside mark at another chord of the
+        // column stands clear of it, as MuseScore's autoplace keeps an
+        // articulation clear of its staff's skyline, every voice's chords
+        // in it (X4d.3).
+        let mut column_chords: ColumnChords = BTreeMap::new();
+        for (at, refs) in &column_heads {
+            let boxes = column_chords.entry(at.clone()).or_default();
+            let yo = at.0.map(&y_origin).unwrap_or(0.0);
+            let mut stems = BTreeSet::new();
+            for r in refs {
+                let head = r.get(&pitch_heads, &unpitched_heads);
+                let mut ink = column_ink_boxes(head, 0.0, yo);
+                if stems.insert((head.event, head.comp)) {
+                    if let Some(seg) = event_stems
+                        .get(&head.event)
+                        .and_then(|segs| segs.iter().find(|seg| seg.comp == head.comp))
+                    {
+                        ink.extend(stem_ink(seg, 0.0));
+                    }
+                }
+                boxes.extend(
+                    ink.into_iter()
+                        .map(|b| (head.event, [b.left, b.bottom, b.right, b.top])),
+                );
+            }
+        }
         for (eid, (event_marks_of, ornaments)) in &mark_sources {
             let (Some(seg), Some(&staff), Some(heads)) = (
                 event_stems
@@ -3046,6 +3074,15 @@ pub fn try_to_constrained(
                 accidental_ink,
                 tie_above: outer_tie(seg.hi, true),
                 tie_below: outer_tie(seg.lo, false),
+                column: heads
+                    .first()
+                    .and_then(|h| column_chords.get(&(Some(staff), h.key.clone())))
+                    .map_or_else(Vec::new, |ink| {
+                        ink.iter()
+                            .filter(|(event, _)| event != eid)
+                            .map(|(_, ink)| *ink)
+                            .collect()
+                    }),
             };
             let ornaments: Vec<Ornament> = ornaments
                 .iter()
@@ -6837,6 +6874,11 @@ fn clear_rests(rests: &mut BTreeMap<EventId, Vec<RestSeg>>, sounding: &[Sounding
 /// Each staff column's ink of the voices visiting its staff, each box with
 /// the stem direction of the component it belongs to.
 type VisitorInk = BTreeMap<(Option<StaffId>, ColumnKey), Vec<(InkBox, bool)>>;
+
+/// Each staff column's chords' ink, `[left, bottom, right, top]` from the
+/// column, with the event drawing it, which another chord's outside marks
+/// stand clear of.
+type ColumnChords = BTreeMap<(Option<StaffId>, ColumnKey), Vec<(EventId, [f32; 4])>>;
 
 /// Each staff column's accidentals and ledger lines, each with the event
 /// whose head draws it, which another chord's arpeggio stands clear of.

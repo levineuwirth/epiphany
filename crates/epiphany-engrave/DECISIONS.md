@@ -2839,3 +2839,26 @@ engraver's own placing reproduces it:
   scripts cross a span bar (a hand-written probe). On one staff, or where
   the barline stops at its staff, nothing moves
   (`a_dynamic_stands_clear_of_a_barline_through_the_staves`).
+
+## ENGRAVER_VERSION 100 → 101: a mark at a note clear of its column's other chords (X4d.3, 2026-11-01)
+
+- A mark set outside a chord's close marks stands `articulationMinDistance`
+  (0.4) clear of the ink of every other chord in its staff's column, another
+  voice's and a visiting chord's included: their heads, ledger lines, dots
+  and accidentals, stems and flags, wherever they meet it across its width.
+  MuseScore autoplaces such a mark against its staff's skyline, every
+  voice's chords in it (`ChordLayout::layoutArticulations2`,
+  `Autoplace::autoplaceSegmentElement`); it had stood clear of its own
+  chord's ink alone, so an upper voice's accent could stand on the head of
+  a lower voice crossing above it. As in MuseScore, a close mark (a staccato
+  or tenuto set near its note) does not move, and one chord's marks pass
+  another's (`itemsShouldIgnoreEachOther` lets an articulation ignore
+  another); another voice's rests and beams, in MuseScore's skyline, are not
+  yet in the column's ink here. Gould gives no figure; she sets each part's
+  marks at its own stem's end in double-stemmed writing so that it is clear
+  which note each belongs to (*Behind Bars*, pp. 117-118), which a mark on
+  another part's head defeats. LilyPond 2.26.0 draws an accent over the
+  crossing head, its accent placed against its own voice and the staff
+  alone (a hand-written probe); MuseScore's export of the same file lifts
+  it clear. The owner's ruling D85 named MuseScore's rule
+  (`an_accent_stands_clear_of_another_voices_ink_in_its_column`).

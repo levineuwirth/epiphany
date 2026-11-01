@@ -7,7 +7,8 @@
 use std::path::Path;
 
 use epiphany_cli::{engrave_loaded, load, Loaded};
-use epiphany_layout_ir::{ResolvedLayoutIR, ResolvedText};
+use epiphany_core::TypedObjectId;
+use epiphany_layout_ir::{ResolvedGlyph, ResolvedLayoutIR, ResolvedText};
 
 /// A part of `staves` staves (a treble and, with two, a bass), in 4/4 with
 /// an eighth per division, its measures as written.
@@ -66,6 +67,20 @@ fn words(text: &str, staff: u8) -> String {
     format!(
         "<direction placement=\"below\"><direction-type><dynamics><other-dynamics>{text}\
          </other-dynamics></dynamics></direction-type><staff>{staff}</staff></direction>"
+    )
+}
+
+/// A note of voice `voice` on the first staff.
+fn voiced(pitch: &str, duration: u8, kind: &str, voice: u8, notations: &str) -> String {
+    note(pitch, duration, kind, 1, notations)
+        .replace("<voice>1</voice>", &format!("<voice>{voice}</voice>"))
+}
+
+/// A rest of voice `voice` on the first staff.
+fn rest(duration: u8, kind: &str, voice: u8) -> String {
+    format!(
+        "<note><rest/><duration>{duration}</duration><voice>{voice}</voice><type>{kind}</type>\
+         <staff>1</staff></note>"
     )
 }
 
@@ -208,5 +223,193 @@ fn a_dynamic_stands_clear_of_a_barline_through_the_staves() {
     assert!(
         last[2] > after.0 - 0.25,
         "on one staff the last words reach the barline"
+    );
+}
+
+fn glyph_box(glyph: &ResolvedGlyph) -> [f32; 4] {
+    let (x, y, b) = (glyph.position.x.0, glyph.position.y.0, &glyph.bounding_box);
+    [x + b.left.0, y + b.bottom.0, x + b.right.0, y + b.top.0]
+}
+
+/// The one glyph named `name`.
+fn only(layout: &ResolvedLayoutIR, name: &str) -> [f32; 4] {
+    let found: Vec<[f32; 4]> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str() == name)
+        .map(glyph_box)
+        .collect();
+    assert_eq!(found.len(), 1, "{name}");
+    found[0]
+}
+
+/// The top and bottom lines of the page's one staff.
+fn staff_lines(layout: &ResolvedLayoutIR) -> (f32, f32) {
+    let ys: Vec<f32> = layout
+        .strokes
+        .iter()
+        .filter(|s| matches!(s.provenance.source, TypedObjectId::Staff(_)))
+        .map(|s| s.from.y.0)
+        .collect();
+    let top = ys.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let bottom = ys.iter().copied().fold(f32::INFINITY, f32::min);
+    near(top - bottom, 4.0, "one staff");
+    (top, bottom)
+}
+
+/// The heads on the page, `pick` choosing one by its box.
+fn head_by(layout: &ResolvedLayoutIR, pick: impl Fn(&[f32; 4], &[f32; 4]) -> bool) -> [f32; 4] {
+    layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("notehead"))
+        .map(glyph_box)
+        .reduce(|a, b| if pick(&b, &a) { b } else { a })
+        .expect("a head")
+}
+
+/// An accent outside the staff at a note stands clear of another voice's
+/// ink in its column, as of its own chord's, by `articulationMinDistance`:
+/// an upper voice's accent over the head of a lower voice crossing above
+/// it, a lower voice's under the head of an upper voice crossing below.
+/// With a rest there instead, each stands where its own chord sets it.
+#[test]
+fn an_accent_stands_clear_of_another_voices_ink_in_its_column() {
+    let accent = "<articulations><accent/></articulations>";
+    for (name, above) in [
+        ("accent_column_above", true),
+        ("accent_column_below", false),
+    ] {
+        let file = |crossing: bool| {
+            let (own, other) = if above { ("E4", "A5") } else { ("G4", "F3") };
+            let (marked_voice, other_voice) = if above { (1, 2) } else { (2, 1) };
+            let marked = format!(
+                "{}{}{}{}",
+                voiced(own, 2, "quarter", marked_voice, accent),
+                voiced(own, 2, "quarter", marked_voice, ""),
+                voiced(own, 2, "quarter", marked_voice, ""),
+                voiced(own, 2, "quarter", marked_voice, ""),
+            );
+            let first = if crossing {
+                voiced(other, 2, "quarter", other_voice, "")
+            } else {
+                rest(2, "quarter", other_voice)
+            };
+            let other = format!(
+                "{first}{}{}",
+                rest(4, "half", other_voice),
+                rest(2, "quarter", other_voice)
+            );
+            let measure = if above {
+                format!("{marked}{}{other}", backup(8))
+            } else {
+                format!("{other}{}{marked}", backup(8))
+            };
+            let suffix = if crossing { "" } else { "_alone" };
+            part(&format!("{name}{suffix}.musicxml"), 1, &[measure])
+        };
+        let glyph = if above {
+            "articAccentAbove"
+        } else {
+            "articAccentBelow"
+        };
+        let layout = engrave_loaded(&file(true)).layout;
+        let mark = only(&layout, glyph);
+        if above {
+            let crossing = head_by(&layout, |a, b| a[3] > b[3]);
+            assert!(
+                mark[0] < crossing[2] && mark[2] > crossing[0],
+                "{name}: across"
+            );
+            near(
+                mark[1],
+                crossing[3] + 0.4,
+                &format!("{name}: over the head"),
+            );
+        } else {
+            let crossing = head_by(&layout, |a, b| a[1] < b[1]);
+            assert!(
+                mark[0] < crossing[2] && mark[2] > crossing[0],
+                "{name}: across"
+            );
+            near(
+                mark[3],
+                crossing[1] - 0.4,
+                &format!("{name}: under the head"),
+            );
+        }
+        // From the staff: the staff stands lower on its page under the
+        // crossing head's ink.
+        let (top, bottom) = staff_lines(&layout);
+        let alone_layout = engrave_loaded(&file(false)).layout;
+        let alone = only(&alone_layout, glyph);
+        let (alone_top, alone_bottom) = staff_lines(&alone_layout);
+        if above {
+            assert!(
+                alone[1] - alone_top < mark[1] - top - 0.5,
+                "{name}: alone it stands nearer"
+            );
+        } else {
+            assert!(
+                alone[3] - alone_bottom > mark[3] - bottom + 0.5,
+                "{name}: alone it stands nearer"
+            );
+        }
+    }
+}
+
+/// The stem of another voice stemmed the same way is ink of the column too:
+/// a third voice's note above the first, its stem up beside the first's,
+/// lifts the first voice's accent over its stem's end. With a rest there
+/// instead, the accent stands over the staff.
+#[test]
+fn an_accent_stands_clear_of_another_voices_stem() {
+    let accent = "<articulations><accent/></articulations>";
+    let file = |third: bool| {
+        let first = format!(
+            "{}{}{}{}",
+            voiced("E4", 2, "quarter", 1, accent),
+            voiced("E4", 2, "quarter", 1, ""),
+            voiced("E4", 2, "quarter", 1, ""),
+            voiced("E4", 2, "quarter", 1, ""),
+        );
+        let opening = if third {
+            voiced("C5", 2, "quarter", 3, "")
+        } else {
+            rest(2, "quarter", 3)
+        };
+        let measure = format!(
+            "{first}{}{opening}{}{}{}{}",
+            backup(8),
+            rest(4, "half", 3),
+            rest(2, "quarter", 3),
+            backup(8),
+            rest(8, "whole", 2),
+        );
+        let suffix = if third { "" } else { "_alone" };
+        part(
+            &format!("accent_column_stem{suffix}.musicxml"),
+            1,
+            &[measure],
+        )
+    };
+    let layout = engrave_loaded(&file(true)).layout;
+    let mark = only(&layout, "articAccentAbove");
+    let (top, _) = staff_lines(&layout);
+    // The highest stroke end across the accent: the third voice's stem.
+    let stem_top = layout
+        .strokes
+        .iter()
+        .filter(|s| s.from.x.0 > mark[0] && s.from.x.0 < mark[2])
+        .map(|s| s.from.y.0.max(s.to.y.0))
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(stem_top > top + 1.5, "a stem rises over the staff");
+    near(mark[1], stem_top + 0.4, "over the stem's end");
+    let alone_layout = engrave_loaded(&file(false)).layout;
+    let alone = only(&alone_layout, "articAccentAbove");
+    let (alone_top, _) = staff_lines(&alone_layout);
+    assert!(
+        alone[1] - alone_top < mark[1] - top - 0.5,
+        "alone it stands nearer"
     );
 }
