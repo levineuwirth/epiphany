@@ -2941,3 +2941,18 @@ engraver's own placing reproduces it:
   `a_dynamic_moved_off_a_barline_stands_clear_of_the_ink_it_moves_to`).
   X4d.4's sweep of every page found it: a glyph dynamic within a quarter
   space of a barline's line through the gap it stands in.
+
+## ENGRAVER_VERSION 105 → 106: a glissando's later piece after its system's lead (X4d.1, 2026-11-01)
+
+- A glissando's piece in a later system opens a quarter space after the
+  ink of the system's lead, and ends, as before, a quarter space before
+  its chord's ink at its end. It had opened at the system's first column,
+  which for the end note is that note's own, so the piece ran back over
+  the note's accidental; MuseScore opens a later segment before the first
+  column's leading ink (`System::firstNoteRestSegmentX`). Where the
+  chord's ink leaves no room the piece draws nothing; with the lead's gap
+  of 0.8 that leaves 0.3 at least, so the guard binds on no reachable state
+  and its lone mutation survives
+  (`a_glissando_continued_into_a_system_stands_between_its_lead_and_its_chord`).
+  X4d.4's sweep of every page found it: every glissando end standing
+  nearer a head than a quarter space was such a piece.

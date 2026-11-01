@@ -1609,9 +1609,19 @@ pub(crate) fn cast_off(
     };
     // Where a split stroke's piece stands across in its system, in the
     // family's placing as in its drawing.
+    // A later piece of a family line opens at its system's first column; a
+    // glissando's, which ends at its chord's ink, a quarter space after the
+    // ink of the system's lead, as MuseScore opens a glissando's later
+    // segment before the first column's leading ink
+    // (`System::firstNoteRestSegmentX`), and draws nothing where its chord's
+    // ink leaves it no room.
     let piece_x =
         |source: &Stroke, k: usize, n: usize, s: usize, p: &Placement, from: f32, to: f32| {
-            split_piece_x(
+            let glissando = matches!(
+                family_lines.get(&source.id()),
+                Some(FamilyLine::Glissando { .. })
+            );
+            let (a, b) = split_piece_x(
                 k,
                 n,
                 (from, to),
@@ -1619,6 +1629,14 @@ pub(crate) fn cast_off(
                 anchors.get(&source.id()),
                 &slot_source_x,
                 family_lines.contains_key(&source.id()).then(|| {
+                    if glissando {
+                        let lead = if lead_w[s] > 0.0 {
+                            geometry.margins.left.0 + lead_w[s] - LEAD_GAP
+                        } else {
+                            geometry.margins.left.0
+                        };
+                        return lead + GLISSANDO_LEAD_GAP;
+                    }
                     let plan = &systems[s];
                     plan.slots
                         .first()
@@ -1627,7 +1645,12 @@ pub(crate) fn cast_off(
                             x + p.slot_dx(x)
                         })
                 }),
-            )
+            );
+            if glissando && k > 0 {
+                (a, b.max(a))
+            } else {
+                (a, b)
+            }
         };
     // Each member standing at its measure's start, set across once its
     // system is: centred on its barline's ink there, on its right edge for a
@@ -4125,6 +4148,10 @@ fn line_run(template: &ResolvedText, line: &Stroke, piece: usize, role: u128) ->
         ..template.clone()
     }
 }
+
+/// How far after the ink of its system's lead a glissando's later piece
+/// opens: as far as its ends stand from its chords' ink.
+const GLISSANDO_LEAD_GAP: f32 = 0.25;
 
 /// How far a dynamic stands clear of a barline running through the staves
 /// at it (`DynamicsLayout::manageBarlineCollisions`).

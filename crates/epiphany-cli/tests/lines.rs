@@ -1191,3 +1191,58 @@ fn a_glissando_over_a_system_break_keeps_its_gradient() {
     near(slope(pieces[0]), slope(pieces[1]), "one gradient");
     assert!(slope(pieces[0]) > 0.0, "rising");
 }
+
+/// A glissando's piece in the system its end note opens starts a quarter
+/// space after the ink of the system's lead and ends a quarter space before
+/// its chord's ink, an accidental's included, as MuseScore opens a later
+/// segment before the first column's leading ink; it had started at the
+/// column itself, running back over the accidental.
+#[test]
+fn a_glissando_continued_into_a_system_stands_between_its_lead_and_its_chord() {
+    let loaded = part(
+        "glissando_break_flat.musicxml",
+        &[
+            note(
+                "C5",
+                8,
+                "whole",
+                "<slide type=\"start\" line-type=\"solid\" number=\"1\">gliss.</slide>",
+            ),
+            format!(
+                "<print new-system=\"yes\"/>{}",
+                note("Bb4", 8, "whole", "<slide type=\"stop\" number=\"1\"/>"),
+            ),
+            note("C5", 8, "whole", ""),
+        ],
+    );
+    let layout = engrave_loaded(&loaded).layout;
+    let pieces = line_strokes(&loaded, &layout, |k| matches!(k, SpannerKind::Glissando));
+    assert_eq!(pieces.len(), 2, "{pieces:?}");
+    let later = pieces
+        .iter()
+        .max_by(|a, b| a.from.y.0.total_cmp(&b.from.y.0).reverse())
+        .expect("the later piece, in the lower system");
+    let flat = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str() == "accidentalFlat")
+        .map(glyph_box)
+        .next()
+        .expect("the flat");
+    let clef = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("gClef"))
+        .map(glyph_box)
+        .find(|c| c[1] < flat[3] && c[3] > flat[1])
+        .expect("the lower system's clef");
+    let (from, to) = (
+        later.from.x.0.min(later.to.x.0),
+        later.from.x.0.max(later.to.x.0),
+    );
+    assert!(
+        from >= clef[2] + 0.25 - 0.01,
+        "after the lead: {from} {clef:?}"
+    );
+    near(to, flat[0] - 0.25, "a quarter space before the flat");
+}
