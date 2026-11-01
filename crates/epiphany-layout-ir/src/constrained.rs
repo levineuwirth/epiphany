@@ -483,6 +483,11 @@ pub enum PlaceOrder {
     Dynamic,
     Expression,
     Hairpin,
+    /// Expression text at a note a hairpin starts at, placed once the
+    /// dynamics and hairpins stand, so outside them: Gould's place for it
+    /// where a hairpin follows a dynamic (*Behind Bars*, p. 495), and the
+    /// owner's where none does (X4d.6).
+    OuterExpression,
     /// A text line or bracket (MuseScore's other spanners, after the
     /// dynamics and hairpins).
     TextLine,
@@ -508,14 +513,15 @@ impl PlaceOrder {
             PlaceOrder::Trill => 0,
             PlaceOrder::Fermata => 1,
             PlaceOrder::Dynamic | PlaceOrder::Expression | PlaceOrder::Hairpin => 2,
-            PlaceOrder::TextLine => 3,
-            PlaceOrder::Ottava => 4,
-            PlaceOrder::Pedal => 5,
-            PlaceOrder::Lyric => 6,
-            PlaceOrder::StaffText => 7,
-            PlaceOrder::Tempo => 8,
-            PlaceOrder::Rehearsal => 9,
-            PlaceOrder::Marker => 10,
+            PlaceOrder::OuterExpression => 3,
+            PlaceOrder::TextLine => 4,
+            PlaceOrder::Ottava => 5,
+            PlaceOrder::Pedal => 6,
+            PlaceOrder::Lyric => 7,
+            PlaceOrder::StaffText => 8,
+            PlaceOrder::Tempo => 9,
+            PlaceOrder::Rehearsal => 10,
+            PlaceOrder::Marker => 11,
         }
     }
 }
@@ -1924,7 +1930,7 @@ pub fn try_to_constrained(
                 (TypedObjectId::Marker(_), LayoutContent::Marker(marker)) if staff.is_some() => {
                     // A dynamic or staff text where no note of its staff starts
                     // stands in the note column of its time, made for it where
-                    // none is; so does expression text, drawn as staff text.
+                    // none is; so does expression text.
                     if let (
                         MarkerKind::Dynamic(_)
                         | MarkerKind::Text(_)
@@ -3223,6 +3229,11 @@ pub fn try_to_constrained(
         // Keyed by staff and the note column of a time.
         let note_at = |time: TimePoint| ColumnKey::Timed(time, ColumnRole::Note);
         let mut dynamic_ink: BTreeMap<(StaffId, ColumnKey), (f32, f32)> = BTreeMap::new();
+        // Each staff's dynamic at a note: its id, its baseline, and whether
+        // it ends in a forte, which expression text after it stands nearer
+        // (X4d.6); and each note a hairpin starts at, verbal ones included.
+        let mut dynamic_at: BTreeMap<(StaffId, ColumnKey), (u128, f32, bool)> = BTreeMap::new();
+        let mut hairpin_starts: BTreeSet<(StaffId, ColumnKey)> = BTreeSet::new();
         let mut chains: BTreeMap<u128, u128> = BTreeMap::new();
         let mut chain_ends: BTreeMap<(StaffId, ColumnKey), Vec<u128>> = BTreeMap::new();
         for (provenance, staff, content) in &specs {
@@ -3281,6 +3292,10 @@ pub fn try_to_constrained(
                         }
                     };
                     dynamic_ink.insert((st, note_at(time.clone())), (left, right));
+                    dynamic_at.insert(
+                        (st, note_at(time.clone())),
+                        (id, baseline, ends_in_forte(dynamic)),
+                    );
                     chain_ends.entry((st, note_at(time))).or_default().push(id);
                     dynamics.insert(
                         id,
@@ -3298,6 +3313,9 @@ pub fn try_to_constrained(
                     end,
                     ..
                 })) => {
+                    if let Some(time) = place_time(start) {
+                        hairpin_starts.insert((st, note_at(time)));
+                    }
                     for time in [place_time(start), place_time(end)].into_iter().flatten() {
                         chain_ends.entry((st, note_at(time))).or_default().push(id);
                     }
@@ -3309,6 +3327,9 @@ pub fn try_to_constrained(
                     end,
                     ..
                 })) if lines::dynamic_term(def.text.as_str()).is_some() => {
+                    if let Some(time) = place_time(start) {
+                        hairpin_starts.insert((st, note_at(time)));
+                    }
                     for time in [place_time(start), place_time(end)].into_iter().flatten() {
                         chain_ends.entry((st, note_at(time))).or_default().push(id);
                     }
@@ -3458,13 +3479,87 @@ pub fn try_to_constrained(
                 run
             };
             let placing = match &marker.kind {
+                // Expression text (X4d.6, D79 Q9): italic, under its staff, or
+                // over a voice's staff, which takes its dynamics over it (D79
+                // Q10), as Gould sets expression marks (*Behind Bars*, pp. 489,
+                // 495 and 434) and MuseScore's expression style does
+                // (`expressionFontStyle`, `expressionPlacement`,
+                // `expressionPosBelow`, `expressionPosAbove`). Where a dynamic
+                // stands at its note it follows it on its baseline, in its
+                // row, `EXPRESSION_AFTER_DYNAMIC` after it, less after a forte
+                // (`Expression::computeDynamicExpressionDistance`); where a
+                // hairpin starts there it stands outside the dynamics and
+                // hairpins, under the dynamic where there is one (Gould,
+                // p. 495; the owner's rulings, X4d.6). Each line a run, the
+                // first on the baseline and each further one a line lower.
+                MarkerKind::ExpressionText(words) => {
+                    let above = vocal.contains(&st);
+                    let yo = y_origin(st);
+                    let at = (st, note.clone());
+                    let dynamic = dynamic_at.get(&at).copied();
+                    let outer = hairpin_starts.contains(&at);
+                    let mut x = left;
+                    let mut baseline = if above {
+                        top + EXPRESSION_ABOVE
+                    } else {
+                        yo - EXPRESSION_BELOW
+                    };
+                    let mut row = None;
+                    if let (Some((id, dynamic_baseline, forte)), Some(&(ink_left, ink_right))) =
+                        (dynamic, dynamic_ink.get(&at))
+                    {
+                        if outer {
+                            x = ink_left;
+                        } else {
+                            x = ink_right
+                                + if forte {
+                                    EXPRESSION_AFTER_FORTE
+                                } else {
+                                    EXPRESSION_AFTER_DYNAMIC
+                                };
+                            baseline = dynamic_baseline;
+                            row = Some(Row {
+                                id: chain_of(&mut chains, id),
+                                centre: dynamic_baseline + DYNAMIC_CENTRE,
+                            });
+                        }
+                    }
+                    TextMarkPlacing {
+                        key: note,
+                        staff: st,
+                        runs: words
+                            .as_str()
+                            .split('\n')
+                            .enumerate()
+                            .filter(|(_, line)| !line.is_empty())
+                            .map(|(i, line)| {
+                                shape(
+                                    line,
+                                    TextFace::Italic,
+                                    STAFF_TEXT_SIZE,
+                                    Point::new(
+                                        x,
+                                        baseline - i as f32 * TEXT_LINE * STAFF_TEXT_SIZE,
+                                    ),
+                                    i as u128,
+                                )
+                            })
+                            .collect(),
+                        frame: None,
+                        order: if outer {
+                            PlaceOrder::OuterExpression
+                        } else {
+                            PlaceOrder::Expression
+                        },
+                        across: None,
+                        above,
+                        row,
+                        between: true,
+                    }
+                }
                 // Each line of the text a run, the first on the baseline and
                 // each further one a line lower (`TextLayout`, `BASELINE`).
-                // Expression text, which the model holds apart since X5b, is
-                // drawn as staff text until it is drawn italic and below
-                // (roadmap D79 Q9), as it was while the import wrote it as
-                // staff text.
-                MarkerKind::Text(words) | MarkerKind::ExpressionText(words) => TextMarkPlacing {
+                MarkerKind::Text(words) => TextMarkPlacing {
                     key: note,
                     staff: st,
                     runs: words
@@ -3487,6 +3582,9 @@ pub fn try_to_constrained(
                     frame: None,
                     order: PlaceOrder::StaffText,
                     across: None,
+                    above: true,
+                    row: None,
+                    between: false,
                 },
                 MarkerKind::Tempo(tempo) => {
                     // Over the time signature its measure opens with, if one
@@ -3560,6 +3658,9 @@ pub fn try_to_constrained(
                         frame: None,
                         order: PlaceOrder::Tempo,
                         across: None,
+                        above: true,
+                        row: None,
+                        between: false,
                     }
                 }
                 MarkerKind::Rehearsal(words) => {
@@ -3589,6 +3690,9 @@ pub fn try_to_constrained(
                         frame: Some([l - pad, b - pad, r + pad, t + pad]),
                         order: PlaceOrder::Rehearsal,
                         across: measure.map(|_| (barline.clone(), MeasureMark::Rehearsal)),
+                        above: true,
+                        row: None,
+                        between: false,
                     }
                 }
                 MarkerKind::Segno | MarkerKind::Coda => {
@@ -3613,6 +3717,9 @@ pub fn try_to_constrained(
                         frame: None,
                         order: PlaceOrder::Marker,
                         across: measure.map(|_| (barline.clone(), MeasureMark::Repeat)),
+                        above: true,
+                        row: None,
+                        between: false,
                     }
                 }
                 _ => continue,
@@ -5050,11 +5157,15 @@ pub fn try_to_constrained(
                                 texts: runs,
                                 room: Room::None,
                                 placement: Some(Autoplace {
-                                    above: true,
+                                    above: mark.above,
                                     order: mark.order,
                                     min_distance: TEXT_MIN_DISTANCE,
-                                    row: None,
-                                    between: None,
+                                    row: mark.row,
+                                    between: mark
+                                        .between
+                                        .then(|| grand_neighbour(&grand, mark.staff, mark.above))
+                                        .flatten()
+                                        .map(|n| band_of(Some(n))),
                                     across,
                                 }),
                                 line: None,
@@ -10180,6 +10291,17 @@ const REHEARSAL_ABOVE: f32 = 2.0;
 const REPEAT_SYMBOL_SIZE: f32 = 3.629;
 const REPEAT_ABOVE: f32 = 2.0;
 const TEXT_MIN_DISTANCE: f32 = 0.5;
+/// Expression text (X4d.6), in Edwin italic at staff text's size, as
+/// MuseScore's expression style sets it at 10 points: its baseline 2.5
+/// under its staff (`expressionPosBelow`) or 1.5 over it
+/// (`expressionPosAbove`), a half space clear of the ink it meets
+/// (`expressionMinDistance`, as [`TEXT_MIN_DISTANCE`]); after a dynamic at its
+/// note, 0.5 after its ink, or 0.2 after a forte, whose letter's open right
+/// side it kerns into (`Expression::computeDynamicExpressionDistance`).
+const EXPRESSION_BELOW: f32 = 2.5;
+const EXPRESSION_ABOVE: f32 = 1.5;
+const EXPRESSION_AFTER_DYNAMIC: f32 = 0.5;
+const EXPRESSION_AFTER_FORTE: f32 = 0.2;
 
 /// The registry ids for a staff text's further lines (key `i` for its `i`th
 /// line), a tempo mark's further runs (each next key in turn: its words'
@@ -10200,6 +10322,12 @@ struct TextMarkPlacing {
     frame: Option<[f32; 4]>,
     order: PlaceOrder,
     across: Option<(Option<ColumnKey>, MeasureMark)>,
+    /// Over its staff, not under it; the row it stands in, if any; and
+    /// whether on a grand staff it stands between the staves where it
+    /// stands on their side, as a dynamic does.
+    above: bool,
+    row: Option<Row>,
+    between: bool,
 }
 
 /// A metronome mark's beat as Bravura Text sets it: the note, then a space
@@ -10303,6 +10431,14 @@ fn dynamic_glyph(dynamic: &epiphany_core::Dynamic) -> Option<&'static str> {
         Niente => "dynamicNiente",
         Other(_) => return None,
     })
+}
+
+/// Whether a dynamic's last letter is a forte (mf, f to ffffff, sf, rf),
+/// which expression text after it stands nearer
+/// (`Expression::computeDynamicExpressionDistance`).
+fn ends_in_forte(dynamic: &epiphany_core::Dynamic) -> bool {
+    use epiphany_core::Dynamic::*;
+    matches!(dynamic, Mf | F | Ff | Fff | Ffff | Fffff | Ffffff | Sf | Rf)
 }
 
 /// A dynamic glyph's optical centre across, from its origin, in staff

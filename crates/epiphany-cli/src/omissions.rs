@@ -31,8 +31,8 @@
 //!   its sign; a mark of a staff anchored at a region offset stands on no
 //!   staff, so it is named as drawn nowhere, while a tempo or rehearsal mark,
 //!   segno or coda stands over the system, drawn once where parts repeat it;
-//!   expression text is drawn as staff text until it is drawn italic and
-//!   below (roadmap D79 Q9), and counted by its own class where it has no ink;
+//!   expression text, drawn italic under its staff (X4d.6), is counted by its
+//!   own class where it has no ink;
 //! - each diagnostic the projection raised, by kind.
 //!
 //! Not checked, and counted as such: whether an accidental is the one the

@@ -781,12 +781,12 @@ fn text_marks_undrawn_are_counted_by_class() {
     );
 }
 
-/// Italic words import as expression text, which the engraver draws as staff
-/// text until it is drawn italic and below (roadmap D79 Q9): drawn, it is no
-/// omission, and with its ink taken away it is counted by its own class, the
-/// upright words beside it staff text drawn and not counted.
+/// Italic words import as expression text, which the engraver draws italic
+/// under its staff (X4d.6): drawn, it is no omission, and with its ink taken
+/// away it is counted by its own class, the upright words beside it staff
+/// text drawn and not counted.
 #[test]
-fn expression_text_is_drawn_as_staff_text_and_counted_undrawn() {
+fn expression_text_is_drawn_and_counted_undrawn() {
     use epiphany_core::MarkerKind;
 
     let direction = |content: &str| {
@@ -843,7 +843,7 @@ fn expression_text_is_drawn_as_staff_text_and_counted_undrawn() {
     assert_eq!(
         drawn(&engraved, "espressivo"),
         1,
-        "the expression text is drawn as staff text"
+        "the expression text is drawn"
     );
     let counted = |engraved: &Engraved| {
         omissions(score, &engraved.layout, &engraved.diagnostics)

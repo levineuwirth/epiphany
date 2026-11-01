@@ -2897,3 +2897,35 @@ engraver's own placing reproduces it:
   keeps right of a barline too, keeps the band rule here
   (`an_arpeggio_stands_right_of_its_measures_barline`,
   `a_compressed_systems_arpeggios_stand_right_of_their_barlines`).
+
+## ENGRAVER_VERSION 103 → 104: expression text italic under its staff (X4d.6, D79 Q9, 2026-11-01)
+
+- Expression text, the marker kind X5b appended, is drawn in Edwin italic
+  at staff text's size under its staff, its baseline 2.5 under it, or over
+  a voice's staff (D79 Q10), 1.5 over it, a half space clear of the ink it
+  meets; it had been drawn as staff text, upright and over (D105). Gould
+  keeps italic for expression marks, roman for instructions and bold for
+  tempi (*Behind Bars*, p. 489), sets them under the stave after the
+  dynamics (p. 495) and over it in vocal music (p. 434); MuseScore's
+  expression style agrees (`expressionFontStyle`, `expressionPlacement`,
+  `expressionPosBelow`, `expressionPosAbove`, `expressionMinDistance`);
+  LilyPond 2.26.0 sets a text script under its staff by default, upright
+  unless its markup is italic (`TextScript`).
+- After a dynamic at its note it stands on the dynamic's baseline, in its
+  row, half a space after the dynamic's ink, or 0.2 after one ending in a
+  forte (`Expression::computeDynamicExpressionDistance`), as Gould and
+  MuseScore place it, where LilyPond stacks it outside the dynamics' line.
+  Where a hairpin starts at its note it stands outside the dynamics and
+  hairpins, placed once they stand (`PlaceOrder::OuterExpression`), from
+  the dynamic's left where one stands there: Gould aligns a hairpin with
+  the dynamic it follows and sets the expression mark under them (p. 495),
+  as LilyPond's stacking does, where MuseScore sets the dynamic, the words
+  and the hairpin in one row. The owner ruled Gould's place, and the same
+  where a hairpin starts with no dynamic, which Gould does not cover
+  (2026-11-01). A dynamic moved off a barline (X4d.3) takes the expression
+  after it along.
+- The tests: `expression_text_stands_italic_under_its_staff_after_its_dynamic`,
+  `expression_text_stands_over_a_voices_staff`,
+  `expression_text_moves_with_its_dynamic_off_a_barline`,
+  `expression_text_stands_outside_a_verbal_crescendo_starting_with_it`; the
+  staff text test reads its italic words under the lower staff.

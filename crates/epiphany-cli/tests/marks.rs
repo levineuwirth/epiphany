@@ -5252,9 +5252,9 @@ fn pen(run: &ResolvedText) -> (f32, f32) {
 
 /// Staff text stands over its staff, upright, its baseline a space over
 /// the staff, its pen from its note's head; words MuseScore writes as
-/// expression text, which the model holds as their own kind, stand the same
-/// until they are drawn italic and below (D79's Q9); and a note over the
-/// staff lifts the text a half space clear of it.
+/// expression text, which the model holds as their own kind, stand italic
+/// under their staff, their baseline 2.5 under it (D79's Q9, X4d.6); and a
+/// note over the staff lifts the text a half space clear of it.
 #[test]
 fn staff_text_stands_over_its_staff_from_its_note() {
     let measure = [
@@ -5282,8 +5282,8 @@ fn staff_text_stands_over_its_staff_from_its_note() {
         "from the head",
     );
     let sotto = runs(&layout, "sotto voce")[0];
-    assert_eq!(face(sotto), "Edwin Roman");
-    near(sotto.origin.y.0, lines[1].1 + 1.0, "over the lower staff");
+    assert_eq!(face(sotto), "Edwin Italic");
+    near(sotto.origin.y.0, lines[1].0 - 2.5, "under the lower staff");
     near(
         pen(sotto).0,
         head(&loaded, &layout, e[3])[0],
@@ -5769,8 +5769,8 @@ fn a_text_where_no_note_starts_stands_at_its_time() {
     near(right, ink[2] + grow + 0.58, "the frame's right");
 }
 
-/// Expression text, drawn as staff text until it is drawn italic and below
-/// (D79's Q9), where no note starts stands at its time as staff text does,
+/// Expression text, drawn italic under its staff (X4d.6), where no note
+/// starts stands at its time as staff text does,
 /// in a column made for it: italic words anchored an eighth into their
 /// measure, after the first note's head and before the second's.
 #[test]

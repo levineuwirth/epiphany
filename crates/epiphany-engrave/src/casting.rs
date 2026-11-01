@@ -1847,6 +1847,24 @@ pub(crate) fn cast_off(
         }
         if dx != 0.0 {
             family_dx.insert(f, dx);
+            // Expression text set after it in its row, at its note, moves
+            // with it, as MuseScore lays out an expression from its
+            // dynamic's moved place (`TLayout::layoutExpression`; X4d.6).
+            if let Some(row) = p.row {
+                for (g, other) in input.family.iter().enumerate() {
+                    let follows = other.placement.is_some_and(|q| {
+                        q.order == epiphany_layout_ir::PlaceOrder::Expression
+                            && q.row.map(|r| r.id) == Some(row.id)
+                    }) && other
+                        .texts
+                        .iter()
+                        .filter_map(|id| text_at.get(id))
+                        .any(|i| input.texts[*i].horizontal_slot == slot);
+                    if follows {
+                        family_dx.entry(g).or_insert(dx);
+                    }
+                }
+            }
         }
     }
     let member_dx = |f: Option<&usize>| f.and_then(|f| family_dx.get(f)).copied().unwrap_or(0.0);
