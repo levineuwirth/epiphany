@@ -8658,3 +8658,127 @@ fn a_measure_rest_opening_a_system_centres_after_its_lead() {
         "the rest's centre {centre} between the lead {lead} and the barline {barline}"
     );
 }
+
+/// A staff of one line draws that line alone (X5d.6): its unpitched notes
+/// on the line the file gives, a note on it stemmed down and a roll's
+/// strokes under it, as the line is its middle (D97); a whole rest hanging
+/// from it (Gould, p. 38); the staff boxed two spaces either side of its line
+/// for the floor between staves, as MuseScore boxes it; and the vertical
+/// measure reading that room as asked.
+#[test]
+fn a_staff_of_one_line_draws_its_line_and_stands_about_it() {
+    let note = |kind: &str, d: u8, extra: &str| {
+        format!(
+            "<note><unpitched><display-step>E</display-step><display-octave>4</display-octave>\
+             </unpitched><duration>{d}</duration><voice>1</voice><type>{kind}</type>{extra}</note>"
+        )
+    };
+    let roll = "<notations><ornaments><tremolo type=\"single\">3</tremolo></ornaments></notations>";
+    let percussion = format!(
+        "<measure number=\"1\"><attributes><divisions>1</divisions><time><beats>4</beats>\
+         <beat-type>4</beat-type></time><clef><sign>percussion</sign></clef><staff-details>\
+         <staff-lines>1</staff-lines></staff-details></attributes>{}{}{}</measure>\
+         <measure number=\"2\">{}</measure><measure number=\"3\"><note><rest measure=\"yes\"/>\
+         <duration>4</duration><voice>1</voice></note></measure><measure number=\"4\">\
+         <note><unpitched><display-step>C</display-step><display-octave>4</display-octave>\
+         </unpitched><duration>4</duration><voice>1</voice><type>whole</type></note></measure>",
+        note("quarter", 1, ""),
+        note("quarter", 1, ""),
+        note("half", 2, ""),
+        note("whole", 4, roll)
+    );
+    let treble: String = (1..=4)
+        .map(|m| {
+            let head = if m == 1 {
+                format!(
+                    "<attributes><divisions>1</divisions><time><beats>4</beats>\
+                         <beat-type>4</beat-type></time>{TREBLE}</attributes>"
+                )
+            } else {
+                String::new()
+            };
+            format!(
+                "<measure number=\"{m}\">{head}<note><pitch><step>B</step><octave>4</octave>\
+                 </pitch><duration>4</duration><voice>1</voice><type>whole</type></note></measure>"
+            )
+        })
+        .collect();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part><score-part id=\"P2\"><part-name>Perc</part-name>\
+         </score-part></part-list><part id=\"P1\">{treble}</part><part id=\"P2\">{percussion}\
+         </part></score-partwise>"
+    );
+    let (_, layout) = engrave_on("one_line_staff.musicxml", &xml, unbounded_page());
+    let lines = &staff_lines_by_system(&layout)[0];
+    assert_eq!(lines.len(), 2);
+    let (bottom, top) = lines[1];
+    assert!((top - bottom).abs() < 1e-4, "one line: {lines:?}");
+    let line = top;
+    // The box's room: the floor from the line two spaces up.
+    assert!(
+        (lines[0].0 - line - 6.0).abs() < 1e-3,
+        "the floor from the box: {}",
+        lines[0].0 - line
+    );
+    let heads: Vec<_> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("notehead") && g.position.y.0 < line + 1.0)
+        .collect();
+    assert_eq!(heads.len(), 5, "the staff's five notes");
+    let (on, off): (Vec<&epiphany_layout_ir::ResolvedGlyph>, Vec<_>) = heads
+        .iter()
+        .copied()
+        .partition(|h| (h.position.y.0 - line).abs() < 1e-3);
+    assert_eq!(on.len(), 4, "four on the line");
+    // C4, a space below the line, on a ledger line there.
+    assert!(
+        (off[0].position.y.0 - (line - 1.0)).abs() < 1e-3,
+        "C4 a space below"
+    );
+    let ledgers = layout
+        .strokes
+        .iter()
+        .filter(|s| {
+            s.from.y == s.to.y
+                && s.from.x != s.to.x
+                && (s.from.y.0 - (line - 1.0)).abs() < 1e-3
+                && !matches!(s.provenance.source, epiphany_core::TypedObjectId::Staff(_))
+        })
+        .count();
+    assert_eq!(ledgers, 1, "C4's ledger line");
+    let stems: Vec<_> = layout
+        .strokes
+        .iter()
+        .filter(|s| {
+            matches!(s.provenance.source, epiphany_core::TypedObjectId::Event(_))
+                && s.from.x == s.to.x
+                && s.from.y != s.to.y
+                && s.from.y.0.max(s.to.y.0) < line + 1.0
+        })
+        .collect();
+    assert_eq!(stems.len(), 3, "the quarters' and the half's");
+    assert!(stems.iter().all(|s| s.to.y.0 < s.from.y.0), "stemmed down");
+    let tremolo = layout
+        .glyphs
+        .iter()
+        .find(|g| g.glyph.as_str() == "tremolo3")
+        .expect("the roll's strokes");
+    assert!(
+        tremolo.position.y.0 < line,
+        "under the head: {}",
+        tremolo.position.y.0
+    );
+    let rest = layout
+        .glyphs
+        .iter()
+        .find(|g| g.glyph.as_str() == "restWhole")
+        .expect("the measure rest, ledgerless on its line");
+    assert!(
+        (rest.position.y.0 - line).abs() < 1e-3,
+        "hanging from the line"
+    );
+    let density = vertical_density_on("one_line_staff_measured.musicxml", &xml, unbounded_page());
+    assert!(density < 1e-3, "{density}");
+}

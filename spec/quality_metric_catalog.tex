@@ -906,9 +906,10 @@ where:
     for every stem reaching it to keep its least length ($-\infty$ where no
     such beam stands).
 \end{itemize}
-A primitive's extent is its ink box: a glyph's or a text run's bounds, a
-stroke's box widened by half its thickness, and a curve read as the boxes of
-twelve chords of equal parameter step. A syllable of a lyric, and a line of
+A staff of one line counts its lowest and highest staff line two staff spaces
+below and above it. A primitive's extent is its ink box: a glyph's or a text
+run's bounds, a stroke's box widened by half its thickness, and a curve read as
+the boxes of twelve chords of equal parameter step. A syllable of a lyric, and a line of
 its verse, reach $1.0$ staff space further on the side of its staff it stands,
 so that it keeps $1.5$ from the next staff's ink. The primitives above an
 \texttt{InterStaffGap} are every primitive owned by a staff above it in the

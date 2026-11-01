@@ -662,9 +662,19 @@ fn vertical_units(
     }
     // Each system's staves, top first by their highest line.
     let staves_of = |system: usize| -> Vec<(VerticalBandId, (f64, f64))> {
+        // A staff of one line counts its lines two spaces either side of it.
         let mut staves: Vec<(VerticalBandId, (f64, f64))> = lines
             .range((system, VerticalBandId(0))..=(system, VerticalBandId(u128::MAX)))
-            .map(|(&(_, band), &l)| (band, l))
+            .map(|(&(_, band), &(lo, hi))| {
+                (
+                    band,
+                    if hi - lo < 1e-3 {
+                        (lo - 2.0, hi + 2.0)
+                    } else {
+                        (lo, hi)
+                    },
+                )
+            })
             .collect();
         staves.sort_by(|a, b| b.1 .1.total_cmp(&a.1 .1).then(a.0.cmp(&b.0)));
         staves

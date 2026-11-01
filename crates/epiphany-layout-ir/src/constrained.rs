@@ -1363,6 +1363,7 @@ pub fn try_to_constrained(
         // ones. An empty sequence falls back to the staff's own `default_clef`.
         let mut clef_seq_of: BTreeMap<StaffId, Vec<PlacedClef>> = BTreeMap::new();
         let mut clef_default_of: BTreeMap<StaffId, Clef> = BTreeMap::new();
+        let mut one_line: BTreeSet<StaffId> = BTreeSet::new();
         for object in &region.objects {
             if let (Some(staff), LayoutContent::Staff(content)) = (object.staff(), object.content())
             {
@@ -1370,8 +1371,32 @@ pub fn try_to_constrained(
                     .entry(staff)
                     .or_insert_with(|| content.clefs.clone());
                 clef_default_of.entry(staff).or_insert(content.default_clef);
+                if content.lines == 1 {
+                    one_line.insert(staff);
+                }
             }
         }
+        // A staff of one line draws it where a five-line staff draws its
+        // middle line, so its clef, signatures, barlines and the stems and
+        // rests the middle line decides stand about it, and its unpitched
+        // notes, which the file places from that line as a five-line staff's
+        // bottom line (E4: MusicXML, and MuseScore's export), move up by the
+        // two spaces between (X5d.6). Its frame, the steps of its outer
+        // lines, is that line's alone.
+        let line_shift = |staff: Option<StaffId>| -> StaffStep {
+            if staff.is_some_and(|s| one_line.contains(&s)) {
+                4
+            } else {
+                0
+            }
+        };
+        let frame_of = |staff: Option<StaffId>| -> (StaffStep, StaffStep) {
+            if staff.is_some_and(|s| one_line.contains(&s)) {
+                (4, 4)
+            } else {
+                (0, 8)
+            }
+        };
         let clef_seq = |staff: Option<StaffId>| -> &[PlacedClef] {
             staff
                 .and_then(|s| clef_seq_of.get(&s))
@@ -1528,6 +1553,7 @@ pub fn try_to_constrained(
                                 key: key.clone(),
                                 y: step_to_y(yo, step),
                                 step,
+                                frame: (0, 8),
                                 comp,
                                 accidentals,
                                 accidental_x: Vec::new(),
@@ -1577,7 +1603,7 @@ pub fn try_to_constrained(
                         unpitched.duration.as_ref(),
                     ));
                     let mut stems = Vec::new();
-                    let step = StaffStep::from(unpitched.staff_position.0);
+                    let step = StaffStep::from(unpitched.staff_position.0) + line_shift(staff);
                     for (comp, (offset, value, dots, tied)) in
                         components_of(&unpitched.components).enumerate()
                     {
@@ -1606,6 +1632,7 @@ pub fn try_to_constrained(
                             key: key.clone(),
                             y: step_to_y(yo, step),
                             step,
+                            frame: frame_of(staff),
                             comp,
                             accidentals: Vec::new(),
                             accidental_x: Vec::new(),
@@ -1667,9 +1694,12 @@ pub fn try_to_constrained(
                         } else {
                             (rest_glyph(value), dots)
                         };
-                        let y = if name == Some("restWhole") {
+                        let (lo, hi) = frame_of(staff);
+                        let y = if name == Some("restWhole") && lo != hi {
                             yo + STAFF_HEIGHT * 0.75
                         } else {
+                            // On the middle line, or, a whole rest on a staff
+                            // of one line, hanging from it (Gould, p. 38).
                             yo + STAFF_HEIGHT / 2.0
                         };
                         let y = match rest.voice {
@@ -1689,7 +1719,7 @@ pub fn try_to_constrained(
                             start: time,
                             voice: rest.voice,
                             whole_measure: rest.whole_measure,
-                            lines: (yo, yo + STAFF_HEIGHT),
+                            lines: (step_to_y(yo, lo), step_to_y(yo, hi)),
                         });
                         if rest.whole_measure {
                             break;
@@ -2833,7 +2863,7 @@ pub fn try_to_constrained(
                     let b = m.bounding_box();
                     (b.left.0, b.right.0)
                 });
-                for step in ledger_steps(head.step) {
+                for step in ledger_steps(head.step, head.frame) {
                     others.push((
                         head.event,
                         marks::OtherInk::Ledger {
@@ -3456,9 +3486,11 @@ pub fn try_to_constrained(
                     // keyed on the manifestation and line index).
                     let manifestation =
                         manifestation_layout_id(&TypedObjectId::Staff(s), region_id);
-                    for line in 0..5u32 {
+                    // A staff of one line draws it alone, at its frame's middle.
+                    let drawn = if one_line.contains(&s) { 2..3 } else { 0..5u32 };
+                    for line in drawn.clone() {
                         let y = yo + line as f32;
-                        let provenance = if line == 0 {
+                        let provenance = if line == drawn.start {
                             provenance.clone()
                         } else {
                             Provenance::synthesized(
@@ -3487,6 +3519,7 @@ pub fn try_to_constrained(
                         Some(LayoutContent::Staff(c)) => c,
                         _ => {
                             default_content = StaffContent {
+                                lines: 5,
                                 clefs: Vec::new(),
                                 keys: Vec::new(),
                                 default_clef: Clef::default(),
@@ -5642,6 +5675,9 @@ struct Head {
     y: f32,
     /// The note's diatonic staff position, for ledger-line emission.
     step: StaffStep,
+    /// The steps of its staff's outer lines (`0` and `8` for five lines),
+    /// beyond which it takes ledger lines.
+    frame: (StaffStep, StaffStep),
     comp: usize,
     /// The spelling's accidental stack (innermost — nearest the notehead — first),
     /// each drawn left of the notehead. Present only on the first component (a tie
@@ -7827,7 +7863,7 @@ fn column_ink_boxes(head: &Head, x: f32, yo: f32) -> Vec<InkBox> {
     let head_box = metrics(head.name).map(|m| m.bounding_box());
     let left = head_box.map_or(0.0, |b| b.left.0);
     let right = head_box.map_or(NOTEHEAD_STEM_X, |b| b.right.0);
-    for step in ledger_steps(head.step) {
+    for step in ledger_steps(head.step, head.frame) {
         let y = step_to_y(yo, step);
         boxes.push(InkBox {
             left: hx + left - LEDGER_LINE_EXTENSION,
@@ -8187,7 +8223,7 @@ fn place_heads(
                     let [l, bottom, r, top] = ink(heads[j]);
                     let (bl, br) = (dx[j] + l, dx[j] + r);
                     let mut obstacles = vec![(bl, br, heads[j].y + bottom, heads[j].y + top)];
-                    for step in ledger_steps(heads[j].step) {
+                    for step in ledger_steps(heads[j].step, heads[j].frame) {
                         let y = heads[j].y + (step - heads[j].step) as f32 * 0.5;
                         obstacles.push((
                             bl - LEDGER_LINE_EXTENSION,
@@ -8635,7 +8671,7 @@ fn stack_accidentals(
         let head = heads[i];
         let left = dx[i] + metrics(head.name).map_or(0.0, |m| m.bounding_box().left.0);
         heads_left = heads_left.min(left);
-        for step in ledger_steps(head.step) {
+        for step in ledger_steps(head.step, head.frame) {
             let y = head.y + (step - head.step) as f32 * 0.5;
             ledgers.push((left - LEDGER_LINE_EXTENSION, y));
         }
@@ -8745,7 +8781,7 @@ fn emit_head(
     let head_box = metrics(head.name).map(|m| m.bounding_box());
     let head_left = head_box.map_or(0.0, |b| b.left.0);
     let head_right = head_box.map_or(NOTEHEAD_STEM_X, |b| b.right.0);
-    for ledger_step in ledger_steps(head.step) {
+    for ledger_step in ledger_steps(head.step, head.frame) {
         let y = step_to_y(yo, ledger_step);
         let ledger_provenance = Provenance::synthesized(
             provenance.source,
@@ -8871,18 +8907,19 @@ fn step_to_y(y_origin: f32, step: StaffStep) -> f32 {
 }
 
 /// The staff steps at which a note at `step` needs ledger lines: the even steps
-/// strictly outside the five-line staff (whose lines are the even steps `0..=8`),
-/// from the staff out to the note. Empty when the note is on or within the staff,
-/// or one space just outside it (an odd step at `±1` from the nearest line). At
-/// most one of the two loops runs, since a step cannot be both above and below.
-fn ledger_steps(step: StaffStep) -> Vec<StaffStep> {
+/// strictly outside its staff's lines (`frame`, the steps of its outer lines:
+/// `0` and `8` for five lines, the line's alone for one), from the staff out
+/// to the note. Empty when the note is on or within the staff, or one space
+/// just outside it (an odd step at `±1` from the nearest line). At most one of
+/// the two loops runs, since a step cannot be both above and below.
+fn ledger_steps(step: StaffStep, (bottom, top): (StaffStep, StaffStep)) -> Vec<StaffStep> {
     let mut steps = Vec::new();
-    let mut above = 10;
+    let mut above = top + 2;
     while above <= step {
         steps.push(above);
         above += 2;
     }
-    let mut below = -2;
+    let mut below = bottom - 2;
     while below >= step {
         steps.push(below);
         below -= 2;
@@ -9903,17 +9940,32 @@ mod tests {
     #[test]
     fn ledger_steps_cover_only_lines_outside_the_staff() {
         // Within the five-line staff (steps 0..=8) and one space just outside: none.
+        let five = (0, 8);
         for step in [-1, 0, 4, 8, 9] {
-            assert!(ledger_steps(step).is_empty(), "no ledger at step {step}");
+            assert!(
+                ledger_steps(step, five).is_empty(),
+                "no ledger at step {step}"
+            );
         }
         // First ledger above (step 10) and below (-2): exactly one line, on the note.
-        assert_eq!(ledger_steps(10), vec![10]);
-        assert_eq!(ledger_steps(-2), vec![-2]);
+        assert_eq!(ledger_steps(10, five), vec![10]);
+        assert_eq!(ledger_steps(-2, five), vec![-2]);
         // A note in the space above the first ledger still needs just that line.
-        assert_eq!(ledger_steps(11), vec![10]);
+        assert_eq!(ledger_steps(11, five), vec![10]);
         // Two lines above / below, in order from the staff outward.
-        assert_eq!(ledger_steps(12), vec![10, 12]);
-        assert_eq!(ledger_steps(-4), vec![-2, -4]);
+        assert_eq!(ledger_steps(12, five), vec![10, 12]);
+        assert_eq!(ledger_steps(-4, five), vec![-2, -4]);
+        // A staff of one line (at step 4): a note a space off it takes a
+        // ledger line, one on it or touching it none.
+        let one = (4, 4);
+        for step in [3, 4, 5] {
+            assert!(
+                ledger_steps(step, one).is_empty(),
+                "no ledger at step {step}"
+            );
+        }
+        assert_eq!(ledger_steps(6, one), vec![6]);
+        assert_eq!(ledger_steps(1, one), vec![2]);
     }
 
     #[test]
@@ -10696,6 +10748,7 @@ mod tests {
         let instance = StaffInstanceId::from_raw(1);
         // D major (two sharps), default treble clef.
         let content = LayoutContent::Staff(StaffContent {
+            lines: 5,
             default_clef: Clef::default(),
             clefs: vec![],
             keys: vec![PlacedKeySignature {
@@ -11027,6 +11080,7 @@ mod tests {
         let staff = StaffId::from_raw(10);
         let at = |n, d| TimePoint::Musical(MusicalPosition(RationalTime::new(n, d).unwrap()));
         let content = LayoutContent::Staff(StaffContent {
+            lines: 5,
             default_clef: Clef::default(),
             // Authored out of order: bass at time 1, treble at time 0.
             clefs: vec![
@@ -11412,6 +11466,7 @@ mod tests {
                     TypedObjectId::StaffInstance(StaffInstanceId::from_raw(si)),
                     staff,
                     LayoutContent::Staff(StaffContent {
+                        lines: 5,
                         default_clef: Clef::default(),
                         clefs: vec![],
                         keys: vec![],

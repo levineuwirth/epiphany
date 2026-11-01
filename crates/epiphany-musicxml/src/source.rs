@@ -3783,6 +3783,17 @@ impl<'d, 'i> Reader<'d, 'i> {
                             place.clone(),
                         );
                     }
+                    // A staff the file hides from here (MuseScore hides an
+                    // empty staff so where its style asks) is drawn regardless,
+                    // the model holding no such choice: recorded, never
+                    // dropped silently (D109 Q6).
+                    if item.attribute("print-object") == Some("no") {
+                        self.features.record(
+                            FeatureClass::Presentation,
+                            "hidden staff",
+                            place.clone(),
+                        );
+                    }
                 }
                 "transpose" => {
                     let interval = read_interval(item);

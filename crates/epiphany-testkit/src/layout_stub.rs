@@ -226,6 +226,7 @@ pub fn gen_layout_content(rng: &mut Rng) -> LayoutContent {
             marks: Vec::new(),
         }),
         1 => LayoutContent::Staff(StaffContent {
+            lines: 5,
             default_clef: epiphany_core::Clef::default(),
             clefs: clefs(rng),
             keys: keys(rng),

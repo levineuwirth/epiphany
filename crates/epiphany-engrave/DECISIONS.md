@@ -2855,3 +2855,34 @@ is set:
   `a_rest_filling_its_measure_is_one_span` now reads its column through a
   hidden rest's anchor, a drawn one standing centred. Two goldens change,
   re-blessed with their renders before and after recorded (D10).
+
+## ENGRAVER_VERSION 97 → 98: a staff of one line (X5d.6, 2026-11-01)
+
+- A staff whose line count is one (the importer reads it from the file's
+  `staff-lines`) draws that line alone, where a five-line staff draws its
+  middle line, so its clef, time signature and barlines stand about it, the
+  stems, beams and rests its middle line decides turn by it, and a roll on a
+  note there takes its strokes on the side that line gives (D97: the roll
+  MuseScore sets under its head). Its unpitched notes, which MusicXML and
+  MuseScore's export place from the line as a five-line staff's bottom line
+  (E4), move up by the two spaces between, so they stand on the line the
+  file gives. A note a space or more off the line takes ledger lines from
+  it, as MuseScore's one-line staff shows them; a whole rest hangs from the
+  line (Gould, *Behind Bars*, p. 38). Gould sets a single line for
+  instruments of indefinite pitch (p. 5); LilyPond's reference for a staff
+  of one line is its line; MuseScore's lines follow its staff type's count.
+- For the floor between staves a staff of one line is boxed two spaces
+  either side of its line, as MuseScore boxes it, so it keeps a five-line
+  staff's room; `req:qmc:vertical` counts it so (its catalog text says so,
+  the PDF rebuilt).
+- Not changed, on the owner's ruling at X5d.6: a three-line staff keeps
+  five lines, to the decide-list. MuseScore can draw such a staff with its
+  lines two spaces apart and its notes a space per step, which an export
+  records only by its `staff-size` and its two-step shift of the unpitched
+  notes.
+- The importer records a staff the file hides in a system
+  (`<staff-details print-object="no"/>`) as the feature "hidden staff",
+  drawing it regardless, where it dropped it silently (D109 Q6).
+- Tests: the CLI's `a_staff_of_one_line_draws_its_line_and_stands_about_it`;
+  `ledger_steps_cover_only_lines_outside_the_staff` for a one-line frame;
+  the importer's `a_hidden_staff_is_recorded_not_dropped`.
