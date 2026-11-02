@@ -609,3 +609,150 @@ fn a_grace_off_the_staff_at_a_bars_first_beat_stands_after_its_barline() {
         assert!(left < h[0], "the graces before their principal");
     }
 }
+
+/// A grace's mark run, by the id its part of the event's marks carries.
+fn mark_run(
+    layout: &ResolvedLayoutIR,
+    event: EventId,
+    mark: epiphany_core::EventMark,
+) -> Option<&ResolvedText> {
+    let id = epiphany_layout_ir::NoteMarkPart::Glyph(mark.tag()).id(event);
+    let found: Vec<&ResolvedText> = layout
+        .texts
+        .iter()
+        .filter(|t| t.provenance.stable_id == id)
+        .collect();
+    assert!(found.len() <= 1, "one run of {mark:?}");
+    found.first().copied()
+}
+
+/// The staff's top and bottom lines.
+fn staff_lines(layout: &ResolvedLayoutIR) -> (f32, f32) {
+    let ys: Vec<f32> = layout
+        .strokes
+        .iter()
+        .filter(|s| matches!(s.provenance.source, TypedObjectId::Staff(_)))
+        .map(|s| s.from.y.0)
+        .collect();
+    let top = ys.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    (top, top - 4.0)
+}
+
+/// Marks on grace notes are drawn, at the grace's size and outside the
+/// staff, where Gould sets them as the most conspicuous place (*Behind
+/// Bars*, p. 130), on the side nearer the grace: a staccato on a grace high
+/// on the staff, its stem up, over the staff beyond its stem's end; one on
+/// a grace low on it under the staff; an accent on a grace under the staff,
+/// under its head; a staccato on each of a beamed pair over the staff, over
+/// its beam. Each run carries its part's id, as a note's mark does.
+#[test]
+fn a_graces_marks_stand_small_outside_the_staff() {
+    use epiphany_core::EventMark;
+    let marked = |g: String, notation: &str| {
+        g.replace(
+            "</note>",
+            &format!("<notations><articulations>{notation}</articulations></notations></note>"),
+        )
+    };
+    let loaded = part(
+        "grace_marks.musicxml",
+        2,
+        &[format!(
+            "{}{}{}{}{}{}{}{}{}{}{}{}{}",
+            marked(grace("E5", true, "eighth", None, 1), "<staccato/>"),
+            note("F5", 1, "eighth", 1),
+            marked(grace("G4", true, "eighth", None, 1), "<staccato/>"),
+            note("A4", 1, "eighth", 1),
+            marked(grace("A3", true, "eighth", None, 1), "<accent/>"),
+            note("C4", 2, "quarter", 1),
+            marked(grace("A5", false, "16th", Some("begin"), 1), "<staccato/>"),
+            marked(grace("C6", false, "16th", Some("end"), 1), "<staccato/>"),
+            note("B5", 2, "quarter", 1),
+            marked(grace("D5", false, "16th", Some("begin"), 1), "<staccato/>"),
+            marked(
+                grace("F4", false, "16th", Some("continue"), 1),
+                "<staccato/>"
+            ),
+            marked(grace("D4", false, "16th", Some("end"), 1), "<staccato/>"),
+            note("C4", 2, "quarter", 1),
+        )],
+    );
+    let layout = engrave_loaded(&loaded).layout;
+    let e = events(&loaded);
+    let (top, bottom) = staff_lines(&layout);
+    let full = |name: &str| {
+        let m = epiphany_layout_ir::glyph::metrics(name).expect(name);
+        let b = m.bounding_box();
+        b.top.0 - b.bottom.0
+    };
+    // The staccato over the staff, beyond its grace's stem.
+    let dot = text_box(mark_run(&layout, e[0], EventMark::Staccato).expect("the staccato drawn"));
+    let (_, _, tip) = stem(&layout, e[0]);
+    near(
+        dot[3] - dot[1],
+        0.7 * full("articStaccatoAbove"),
+        "a staccato at 0.7",
+    );
+    assert!(
+        dot[1] >= top + 0.4 - 0.01,
+        "over the staff: {dot:?}, top line {top}"
+    );
+    assert!(
+        dot[1] >= tip + 0.4 - 0.01,
+        "beyond its stem: {dot:?}, the tip {tip}"
+    );
+    // On the stem's side, midway between the head's centre and the stem.
+    let h0 = grace_head(&loaded, &layout, e[0]);
+    let (x0, _, _) = stem(&layout, e[0]);
+    near(
+        (dot[0] + dot[2]) * 0.5,
+        ((h0[0] + h0[2]) * 0.5 + x0) * 0.5,
+        "midway between head and stem",
+    );
+    // The low grace's staccato under the staff, nearer its head.
+    let low = text_box(mark_run(&layout, e[2], EventMark::Staccato).expect("drawn"));
+    assert!(low[3] <= bottom - 0.4 + 0.01, "under the staff: {low:?}");
+    // The accent under the low grace's head and ledger lines.
+    let accent = text_box(mark_run(&layout, e[4], EventMark::Accent).expect("the accent drawn"));
+    let h = grace_head(&loaded, &layout, e[4]);
+    near(
+        accent[3] - accent[1],
+        0.7 * full("articAccentBelow"),
+        "an accent at 0.7",
+    );
+    assert!(
+        accent[3] <= bottom - 0.4 + 0.01,
+        "under the staff: {accent:?}"
+    );
+    assert!(
+        accent[3] <= h[1] - 0.4 + 0.01,
+        "under its head: {accent:?}, {h:?}"
+    );
+    let centre = (h[0] + h[2]) * 0.5;
+    near((accent[0] + accent[2]) * 0.5, centre, "centred on its head");
+    // The beamed pair's staccatos over the beam, where each stands.
+    let beam = strokes(&layout, e[6])
+        .into_iter()
+        .filter(|s| s.thickness.0 > 0.3)
+        .max_by(|a, b| a.from.y.0.total_cmp(&b.from.y.0))
+        .expect("the pair's beam");
+    let beam_top = |x: f32| {
+        let t = (x - beam.from.x.0) / (beam.to.x.0 - beam.from.x.0);
+        beam.from.y.0 + t.clamp(0.0, 1.0) * (beam.to.y.0 - beam.from.y.0) + beam.thickness.0 * 0.5
+    };
+    for g in [e[6], e[7]] {
+        let dot = text_box(mark_run(&layout, g, EventMark::Staccato).expect("drawn"));
+        let at = beam_top((dot[0] + dot[2]) * 0.5);
+        assert!(
+            dot[1] >= at + 0.4 - 0.01,
+            "over the beam: {dot:?}, the beam's top {at}"
+        );
+        assert!(dot[1] >= top + 0.4 - 0.01, "over the staff: {dot:?}");
+    }
+    // A run one beam joins takes its marks on one side, the run's: falling
+    // from high on the staff to under it, under the staff.
+    for g in [e[9], e[10], e[11]] {
+        let dot = text_box(mark_run(&layout, g, EventMark::Staccato).expect("drawn"));
+        assert!(dot[3] <= bottom - 0.4 + 0.01, "under the staff: {dot:?}");
+    }
+}

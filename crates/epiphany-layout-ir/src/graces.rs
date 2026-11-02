@@ -159,8 +159,176 @@ pub(crate) fn slash(
     }
 }
 
+/// How far a grace note's mark stands from its staff and its grace's ink, and
+/// from the ink of its column it meets and the mark before it on its side:
+/// MuseScore's `propertyDistance` and `articulationMinDistance`, at a note's
+/// size, as MuseScore keeps a grace's (Gould gives no figure).
+pub(crate) const GRACE_MARK_DISTANCE: f32 = 0.4;
+
+/// A grace note's mark placed (X4d fix round 1): its tag among its event's
+/// marks, its glyph, and its origin, in the frame the grace is set out in.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct GraceMark {
+    pub tag: u8,
+    pub name: &'static str,
+    pub origin: Point,
+}
+
+/// Which side of the staff a run of graces (a lone grace, or graces one beam
+/// joins) takes its marks on (X4d fix round 1): outside the staff where
+/// Gould puts them, the most conspicuous place, since a small mark is hard
+/// to see on the staff (*Behind Bars*, p. 130). Read from her examples, that
+/// is the side on which a mark set outside the staff and the run's ink
+/// stands nearer the run's heads: under heads standing under the staff,
+/// over a beam over it, over the staff beyond the stem of a grace high on
+/// it. Where both stand as near, the stem's side. Beside another voice, a
+/// caller takes the stem's side, as MuseScore does and as Gould sets each
+/// part's marks at its own stem (pp. 117 and 118).
+pub(crate) fn marks_above(run: &[&GraceShape], yo: f32) -> bool {
+    let k = GRACE_MAG;
+    let (top_line, bottom_line) = (yo + 4.0, yo);
+    let mut centres: Vec<f32> = Vec::new();
+    let (mut top, mut bottom) = (top_line, bottom_line);
+    for shape in run {
+        for (at, name, _) in &shape.heads {
+            if let Some(hb) = metrics(name).map(|m| m.bounding_box()) {
+                centres.push(at.y.0 + k * (hb.bottom.0 + hb.top.0) * 0.5);
+            }
+        }
+        for b in grace_boxes(shape) {
+            top = top.max(b[3]);
+            bottom = bottom.min(b[1]);
+        }
+    }
+    let up = run.first().is_none_or(|shape| shape.up);
+    if centres.is_empty() {
+        return up;
+    }
+    let centre = centres.iter().sum::<f32>() / centres.len() as f32;
+    let over = top + GRACE_MARK_DISTANCE - centre;
+    let under = centre - (bottom - GRACE_MARK_DISTANCE);
+    if (over - under).abs() < 1e-3 {
+        up
+    } else {
+        over < under
+    }
+}
+
+/// A grace note's marks, at its size, on the side `above` gives
+/// ([`marks_above`]; a marcato or a string, brass or snap-pizzicato sign
+/// above always): each `GRACE_MARK_DISTANCE` off the staff and the grace's
+/// own ink, centred on its head, or on the stem's side midway between the
+/// head and the stem (MuseScore's `articulationStemHAlign`), the next on its
+/// side as far past it; and, as X4d.3's column rule sets a note's outside
+/// marks, as far clear of the ink of its column it meets across its width
+/// (`column`: the principal's, and every grace's of the column, their beams
+/// with them). `marks` are each mark's tag, its glyph above and below, and
+/// whether it stands above always; `yo` is the staff's bottom line.
+pub(crate) fn place_marks(
+    shape: &GraceShape,
+    marks: &[(u8, &'static str, &'static str, bool)],
+    yo: f32,
+    above: bool,
+    column: &[Ink],
+) -> Vec<GraceMark> {
+    let k = GRACE_MAG;
+    let Some(&(first, head_name, _)) = shape.heads.first() else {
+        return Vec::new();
+    };
+    let Some(hb) = metrics(head_name).map(|m| m.bounding_box()) else {
+        return Vec::new();
+    };
+    let (top_line, bottom_line) = (yo + 4.0, yo);
+    let own = grace_boxes(shape);
+    let own_top = own.iter().map(|b| b[3]).fold(top_line, f32::max);
+    let own_bottom = own.iter().map(|b| b[1]).fold(bottom_line, f32::min);
+    let head_centre = first.x.0 + k * (hb.left.0 + hb.right.0) * 0.5;
+    let mut next_above = own_top + GRACE_MARK_DISTANCE;
+    let mut next_below = own_bottom - GRACE_MARK_DISTANCE;
+    let mut placed = Vec::new();
+    for &(tag, above_name, below_name, always_above) in marks {
+        let up = always_above || above;
+        let name = if up { above_name } else { below_name };
+        let Some(b) = metrics(name).map(|m| m.bounding_box()) else {
+            continue;
+        };
+        let stem_side = up == shape.up && shape.stem.is_some();
+        let centre = match shape.stem {
+            Some((x, _, _)) if stem_side => (head_centre + x) * 0.5,
+            _ => head_centre,
+        };
+        let left = centre - k * (b.right.0 - b.left.0) * 0.5;
+        let right = centre + k * (b.right.0 - b.left.0) * 0.5;
+        let across = column.iter().filter(|c| c[0] < right && c[2] > left);
+        let x = left - k * b.left.0;
+        if up {
+            let bottom = across
+                .map(|c| c[3] + GRACE_MARK_DISTANCE)
+                .fold(next_above, f32::max);
+            placed.push(GraceMark {
+                tag,
+                name,
+                origin: Point::new(x, bottom - k * b.bottom.0),
+            });
+            next_above = bottom + k * (b.top.0 - b.bottom.0) + GRACE_MARK_DISTANCE;
+        } else {
+            let top = across
+                .map(|c| c[1] - GRACE_MARK_DISTANCE)
+                .fold(next_below, f32::min);
+            placed.push(GraceMark {
+                tag,
+                name,
+                origin: Point::new(x, top - k * b.top.0),
+            });
+            next_below = top - k * (b.top.0 - b.bottom.0) - GRACE_MARK_DISTANCE;
+        }
+    }
+    placed
+}
+
+/// A grace's own ink boxes for its marks: its heads, accidentals, stem, flag,
+/// ledger lines and slash.
+fn grace_boxes(shape: &GraceShape) -> Vec<Ink> {
+    let k = GRACE_MAG;
+    let glyph = |at: Point, name: &str| {
+        metrics(name).map(|m| {
+            let b = m.bounding_box();
+            [
+                at.x.0 + k * b.left.0,
+                at.y.0 + k * b.bottom.0,
+                at.x.0 + k * b.right.0,
+                at.y.0 + k * b.top.0,
+            ]
+        })
+    };
+    let mut ink: Vec<Ink> = Vec::new();
+    ink.extend(shape.heads.iter().filter_map(|(at, n, _)| glyph(*at, n)));
+    ink.extend(
+        shape
+            .accidentals
+            .iter()
+            .filter_map(|(at, n, _)| glyph(*at, n)),
+    );
+    if let Some((at, name)) = shape.flag {
+        ink.extend(glyph(at, name));
+    }
+    if let Some((x, a, b)) = shape.stem {
+        ink.push([x, a.min(b), x, a.max(b)]);
+    }
+    for (a, b) in shape.ledgers.iter().chain(shape.slash.iter()) {
+        ink.push([
+            a.x.0.min(b.x.0),
+            a.y.0.min(b.y.0),
+            a.x.0.max(b.x.0),
+            a.y.0.max(b.y.0),
+        ]);
+    }
+    ink
+}
+
 /// The SMuFL codepoint of a glyph a grace note draws: a notehead, a flag, an
-/// accidental or a dot (Bravura 1.392, as `epiphany-glyphs` bundles them).
+/// accidental, a dot or a mark (Bravura 1.392, as `epiphany-glyphs` bundles
+/// them).
 pub(crate) fn codepoint(name: &str) -> Option<char> {
     Some(match name {
         "accidentalDoubleFlat" => '\u{E264}',
@@ -182,7 +350,27 @@ pub(crate) fn codepoint(name: &str) -> Option<char> {
         "accidentalThreeQuarterTonesSharpArrowDown" => '\u{E277}',
         "accidentalThreeQuarterTonesSharpArrowUp" => '\u{E274}',
         "accidentalThreeQuarterTonesSharpStein" => '\u{E283}',
+        "articAccentAbove" => '\u{E4A0}',
+        "articAccentBelow" => '\u{E4A1}',
+        "articMarcatoAbove" => '\u{E4AC}',
+        "articMarcatoBelow" => '\u{E4AD}',
+        "articStaccatissimoAbove" => '\u{E4A6}',
+        "articStaccatissimoBelow" => '\u{E4A7}',
+        "articStaccatissimoStrokeAbove" => '\u{E4AA}',
+        "articStaccatissimoStrokeBelow" => '\u{E4AB}',
+        "articStaccatoAbove" => '\u{E4A2}',
+        "articStaccatoBelow" => '\u{E4A3}',
+        "articStressAbove" => '\u{E4B6}',
+        "articStressBelow" => '\u{E4B7}',
+        "articTenutoAbove" => '\u{E4A4}',
+        "articTenutoBelow" => '\u{E4A5}',
+        "articTenutoStaccatoAbove" => '\u{E4B2}',
+        "articTenutoStaccatoBelow" => '\u{E4B3}',
+        "articUnstressAbove" => '\u{E4B8}',
+        "articUnstressBelow" => '\u{E4B9}',
         "augmentationDot" => '\u{E1E7}',
+        "brassMuteClosed" => '\u{E5E5}',
+        "brassMuteOpen" => '\u{E5E7}',
         "flag16thDown" => '\u{E243}',
         "flag16thUp" => '\u{E242}',
         "flag32ndDown" => '\u{E245}',
@@ -195,6 +383,11 @@ pub(crate) fn codepoint(name: &str) -> Option<char> {
         "noteheadDoubleWhole" => '\u{E0A0}',
         "noteheadHalf" => '\u{E0A3}',
         "noteheadWhole" => '\u{E0A2}',
+        "pluckedSnapPizzicatoAbove" => '\u{E631}',
+        "pluckedSnapPizzicatoBelow" => '\u{E630}',
+        "stringsDownBow" => '\u{E610}',
+        "stringsHarmonic" => '\u{E614}',
+        "stringsUpBow" => '\u{E612}',
         _ => return None,
     })
 }
@@ -268,6 +461,69 @@ mod tests {
             (shifts[0] - (shifts[1] - 0.3 - 1.0)).abs() < 1e-5,
             "{shifts:?}"
         );
+    }
+
+    /// A grace of `steps` (half spaces up from the staff's bottom line, at
+    /// 0) set out about x 0, its stem up 2¼ from its highest head.
+    fn shape_at(steps: &[i32]) -> GraceShape {
+        let k = GRACE_MAG;
+        let hb = metrics("noteheadBlack").expect("bundled").bounding_box();
+        let ys: Vec<f32> = steps.iter().map(|s| *s as f32 * 0.5).collect();
+        let x = k * hb.right.0;
+        GraceShape {
+            heads: ys
+                .iter()
+                .map(|y| (Point::new(0.0, *y), "noteheadBlack", Some(0)))
+                .collect(),
+            stem: Some((x, ys[0], ys[ys.len() - 1] + GRACE_STEM)),
+            up: true,
+            ..Default::default()
+        }
+    }
+
+    /// The side Gould's examples give (*Behind Bars*, p. 130): under the
+    /// staff for a grace under it and for one low on it, its stem up; over
+    /// the staff for one high on it and for a pair over it.
+    #[test]
+    fn a_graces_marks_take_the_side_nearer_its_heads_outside_the_staff() {
+        let side = |steps: &[&[i32]]| {
+            let shapes: Vec<GraceShape> = steps.iter().map(|s| shape_at(s)).collect();
+            marks_above(&shapes.iter().collect::<Vec<_>>(), 0.0)
+        };
+        assert!(!side(&[&[-4]]), "under the staff: under");
+        assert!(!side(&[&[2]]), "low on the staff: under");
+        assert!(side(&[&[7]]), "high on the staff: over");
+        assert!(side(&[&[10], &[12]]), "a pair over the staff: over");
+        assert!(
+            !side(&[&[-4], &[-3], &[-2]]),
+            "a run under the staff: under"
+        );
+    }
+
+    /// A grace's mark stands clear of its staff and its own ink by 0.4, and
+    /// of the ink of its column it meets across its width by 0.4 more, as
+    /// X4d.3's column rule sets a note's outside marks.
+    #[test]
+    fn a_graces_mark_stands_clear_of_its_columns_ink() {
+        let shape = shape_at(&[10]);
+        let mark = [(1, "articStaccatoAbove", "articStaccatoBelow", false)];
+        let alone = place_marks(&shape, &mark, 0.0, true, &[]);
+        let b = metrics("articStaccatoAbove")
+            .expect("bundled")
+            .bounding_box();
+        let bottom = |m: &GraceMark| m.origin.y.0 + GRACE_MAG * b.bottom.0;
+        let tip = 5.0 + GRACE_STEM;
+        assert!((bottom(&alone[0]) - (tip + 0.4)).abs() < 1e-4, "{alone:?}");
+        // Another voice's ink across it, a space over its stem's tip.
+        let other = [[-1.0, tip + 0.5, 2.0, tip + 1.0]];
+        let lifted = place_marks(&shape, &mark, 0.0, true, &other);
+        assert!(
+            (bottom(&lifted[0]) - (tip + 1.4)).abs() < 1e-4,
+            "{lifted:?}"
+        );
+        // Ink beside it, not across, leaves it.
+        let beside = [[3.0, tip + 0.5, 4.0, tip + 1.0]];
+        assert_eq!(place_marks(&shape, &mark, 0.0, true, &beside), alone);
     }
 
     /// A single grace's slash rises at 40° across its stem from 1.4 under an

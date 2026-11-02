@@ -2998,3 +2998,37 @@ engraver's own placing reproduces it:
   room, `Room::Grace`, which otherwise takes room as `Room::Ink` does
   (`a_grace_off_the_staff_at_a_bars_first_beat_stands_after_its_barline`,
   `a_compressed_systems_graces_stand_right_of_their_barlines`).
+
+## ENGRAVER_VERSION 108 → 109: a grace note's marks drawn outside the staff (X4d fix round 1, 2026-11-02)
+
+- A grace note's articulations and techniques are drawn, at the grace's
+  size (0.7), where Gould puts them: outside the staff, the most
+  conspicuous place, since small marks are hard to see on it (*Behind
+  Bars*, p. 130). Read from her examples there, a run of graces (a lone
+  grace, or graces one beam joins) takes its marks on the side where a
+  mark set outside the staff and the run's ink stands nearer its heads:
+  under heads under the staff and under a grace low on it, over a beam
+  over it and over the staff beyond the stem of a grace high on it; where
+  both stand as near, on the stem's side. Beside another voice they stand
+  at the stem, as MuseScore sets them and as Gould sets each part's marks
+  at its own stem (pp. 117 and 118); a marcato, and a string, brass or
+  snap-pizzicato sign, stand above, as a note's do. Each stands 0.4 off the
+  staff and its grace's ink (`propertyDistance`), centred on its head, or
+  on the stem's side midway between the head and the stem
+  (`articulationStemHAlign`), the next on its side 0.4 past it, and, as
+  X4d.3's column rule sets a note's outside marks, 0.4 clear of the ink of
+  its column it meets across its width, the principal's and every grace's
+  (`articulationMinDistance`). Each run carries its part's id, as a note's
+  mark does; it takes no room. They had been drawn nowhere, the logical
+  pass giving a grace no marks. MuseScore lays a grace's marks out as a
+  note's at its size, a staccato at its head, on the staff where the head
+  stands; LilyPond 2.26.0 sets a grace's staccato at its head too (C4d
+  review 1's hand-written probe). The owner ruled Gould's place (D116).
+  An ornament, a tremolo or an arpeggio on a grace is not drawn.
+- The corpus report checks a grace's marks as a note's, so a mark on a
+  grace drawn nowhere is named; the check had skipped graces, written while
+  a grace was left out with its marks
+  (`a_graces_marks_stand_small_outside_the_staff`,
+  `a_graces_marks_take_the_side_nearer_its_heads_outside_the_staff`,
+  `a_graces_mark_stands_clear_of_its_columns_ink`,
+  `a_graces_marks_are_drawn_and_counted_undrawn`).

@@ -688,7 +688,8 @@ pub fn omissions(
             _ => None,
         })
         .collect();
-    for event in score.events.iter().filter(|e| !graces.contains(&e.id())) {
+    // A grace note's marks are drawn as a note's (X4d fix round 1).
+    for event in score.events.iter() {
         let (marks, ornaments) = match event {
             Event::Pitched(n) => (&n.marks, n.ornaments.as_slice()),
             Event::Unpitched(u) => (&u.marks, &[][..]),

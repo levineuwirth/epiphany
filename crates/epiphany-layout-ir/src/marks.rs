@@ -236,6 +236,15 @@ enum Kind {
     Ornament,
 }
 
+/// A grace note's mark (X4d fix round 1): its glyph above and below, and
+/// whether it stands above whatever the grace's place, as a marcato does
+/// (Gould's strong accent, p. 117) and a string, brass or snap-pizzicato
+/// sign; `None` for a mark that is not an articulation or a technique.
+pub(super) fn grace_mark(mark: &EventMark) -> Option<(&'static str, &'static str, bool)> {
+    let (above, below, kind, _) = articulation(mark)?;
+    Some((above, below, matches!(kind, Kind::Marcato | Kind::Top)))
+}
+
 /// A mark's glyph by side, its kind, and whether it is one of the basic
 /// articulations MuseScore aligns with the stem on the stem's side
 /// (`Articulation::isBasicArticulation`, a stress mark among them).

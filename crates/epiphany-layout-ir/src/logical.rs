@@ -88,8 +88,8 @@ pub enum LayoutContent {
 
 /// A grace note's content (X4d.2): where it stands (its principal's onset),
 /// its notation, its spelled pitches or, unpitched, its staff position, its
-/// voice's place among its staff's, and the beam joining it to the other
-/// graces of its group, if any.
+/// voice's place among its staff's, the beam joining it to the other graces
+/// of its group, if any, and its marks (X4d fix round 1).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct GraceContent {
     pub position: TimePoint,
@@ -98,6 +98,7 @@ pub struct GraceContent {
     pub unpitched: Option<epiphany_core::StaffPosition>,
     pub voice: VoicePlace,
     pub beam: Option<BeamId>,
+    pub marks: Vec<epiphany_core::EventMark>,
 }
 
 /// A syllable's content, resolved so the constrained pass can draw it, its
@@ -1720,7 +1721,7 @@ fn event_content(
     };
     let voice = places.get(&event).copied().unwrap_or(VoicePlace::Alone);
     if let Some(grace) = graph_event.grace() {
-        let (pitches, unpitched) = match graph_event {
+        let (pitches, unpitched, grace_marks) = match graph_event {
             Event::Pitched(pitched) => (
                 pitched
                     .pitches
@@ -1734,8 +1735,13 @@ fn event_content(
                     })
                     .collect(),
                 None,
+                pitched.marks.clone(),
             ),
-            Event::Unpitched(unpitched) => (Vec::new(), Some(unpitched.staff_position)),
+            Event::Unpitched(unpitched) => (
+                Vec::new(),
+                Some(unpitched.staff_position),
+                unpitched.marks.clone(),
+            ),
             _ => return LayoutContent::Structural,
         };
         return LayoutContent::Grace(GraceContent {
@@ -1745,6 +1751,7 @@ fn event_content(
             unpitched,
             voice,
             beam: grace_beams.get(&event).copied(),
+            marks: grace_marks,
         });
     }
     let components = placed_components(score, components_of(annotations, event));

@@ -4141,6 +4141,24 @@ pub fn try_to_constrained(
                                 if let Some((origin, name)) = shape.flag {
                                     runs.extend(graces::small_glyph(synth(1), name, at(origin)));
                                 }
+                                // Its marks (X4d fix round 1), small, each
+                                // carrying its part's id as a note's does.
+                                let mark_runs: Vec<ResolvedText> = placing
+                                    .marks
+                                    .iter()
+                                    .filter_map(|m| {
+                                        graces::small_glyph(
+                                            Provenance::synthesized(
+                                                provenance.source,
+                                                SynthesisKind::Registered(MARK_SYNTHESIS),
+                                                NoteMarkPart::Glyph(m.tag).key(),
+                                                provenance.dependencies.clone(),
+                                            ),
+                                            m.name,
+                                            at(m.origin),
+                                        )
+                                    })
+                                    .collect();
                                 let mut strokes: Vec<Stroke> = Vec::new();
                                 if let Some((x, a, b)) = shape.stem {
                                     let prov = if unpitched {
@@ -4205,6 +4223,25 @@ pub fn try_to_constrained(
                                         horizontal_slot: info.slot,
                                         vertical_band: band,
                                     });
+                                }
+                                // Its marks take no room, as a note's do.
+                                if !mark_runs.is_empty() {
+                                    family.push(FamilyMark {
+                                        band,
+                                        glyphs: Vec::new(),
+                                        strokes: Vec::new(),
+                                        texts: mark_runs.iter().map(ResolvedText::id).collect(),
+                                        room: Room::None,
+                                        placement: None,
+                                        line: None,
+                                    });
+                                    for run in mark_runs {
+                                        texts.push(TextObject {
+                                            text: run,
+                                            horizontal_slot: info.slot,
+                                            vertical_band: band,
+                                        });
+                                    }
                                 }
                                 for stroke in strokes {
                                     emit.stroke(stroke);
@@ -10689,13 +10726,19 @@ struct GraceInputs<'a> {
 /// A grace note set out before its principal (X4d.2): its principal's column,
 /// its parts across from that column's x at their heights, the pitches its
 /// heads draw, by index, and the beams its group draws, on the group's
-/// first grace.
+/// first grace; and its marks (X4d fix round 1), with what places them: its
+/// staff, that staff's bottom line, and the side its run takes them on.
 struct GracePlacing {
     key: ColumnKey,
     shape: graces::GraceShape,
     pitches: Vec<PitchId>,
     beams: Vec<(Point, Point)>,
     beam_thickness: f32,
+    staff: Option<StaffId>,
+    yo: f32,
+    marks_above: bool,
+    mark_specs: Vec<(u8, &'static str, &'static str, bool)>,
+    marks: Vec<graces::GraceMark>,
 }
 
 impl GracePlacing {
@@ -10797,6 +10840,7 @@ fn place_graces(
             .push((*eid, grace));
     }
     let mut placed = BTreeMap::new();
+    let mut principals: BTreeMap<(Option<StaffId>, ColumnKey), Vec<graces::Ink>> = BTreeMap::new();
     for ((staff, key, _), mut members) in groups {
         members.sort_by_key(|(eid, grace)| (grace.grace.order, *eid));
         let ColumnKey::Timed(time, _) = &key else {
@@ -10837,6 +10881,9 @@ fn place_graces(
                 principal.push([b.left.0, rest.y + b.bottom.0, b.right.0, rest.y + b.top.0]);
             }
         }
+        principals
+            .entry((staff, key.clone()))
+            .or_insert_with(|| principal.clone());
         // Each grace about its own origin, its heads' left edge.
         let mut shapes: Vec<graces::GraceShape> = Vec::new();
         let mut pitches_of: Vec<Vec<PitchId>> = Vec::new();
@@ -11087,7 +11134,21 @@ fn place_graces(
             }
             shapes[i].slash = Some(cut);
         }
-        for (i, ((eid, _), shape)) in members.iter().zip(shapes).enumerate() {
+        // The side each run takes its marks on: beside another voice its
+        // stem's, else Gould's (`graces::marks_above`).
+        let mut run_above = vec![true; members.len()];
+        for run in &runs {
+            let above = match members[run.start].1.voice {
+                VoicePlace::Alone => {
+                    graces::marks_above(&shapes[run.clone()].iter().collect::<Vec<_>>(), yo)
+                }
+                _ => shapes[run.start].up,
+            };
+            for i in run.clone() {
+                run_above[i] = above;
+            }
+        }
+        for (i, ((eid, grace), shape)) in members.iter().zip(shapes).enumerate() {
             let (beams, beam_thickness) = beams_of.remove(&i).unwrap_or_default();
             placed.insert(
                 *eid,
@@ -11097,9 +11158,46 @@ fn place_graces(
                     pitches: pitches_of[i].clone(),
                     beams,
                     beam_thickness,
+                    staff,
+                    yo,
+                    marks_above: run_above[i],
+                    mark_specs: grace
+                        .marks
+                        .iter()
+                        .filter_map(|mark| {
+                            let (above, below, always) = marks::grace_mark(mark)?;
+                            Some((mark.tag(), above, below, always))
+                        })
+                        .collect(),
+                    marks: Vec::new(),
                 },
             );
         }
+    }
+    // Each grace's marks (X4d fix round 1), once every grace of its column
+    // stands: outside the staff as Gould sets them, clear of the ink of the
+    // column they meet, the principal's and every grace's.
+    let mut column_ink = principals;
+    for placing in placed.values() {
+        column_ink
+            .entry((placing.staff, placing.key.clone()))
+            .or_default()
+            .extend(placing.ink());
+    }
+    for placing in placed.values_mut() {
+        if placing.mark_specs.is_empty() {
+            continue;
+        }
+        let ink = column_ink
+            .get(&(placing.staff, placing.key.clone()))
+            .map_or(&[][..], Vec::as_slice);
+        placing.marks = graces::place_marks(
+            &placing.shape,
+            &placing.mark_specs,
+            placing.yo,
+            placing.marks_above,
+            ink,
+        );
     }
     placed
 }

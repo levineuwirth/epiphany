@@ -1035,3 +1035,70 @@ fn a_gradual_tempo_change_drawn_once_for_two_parts_is_no_omission() {
         .collect();
     assert_eq!(found, vec![]);
 }
+
+/// A mark on a grace note is checked as a note's is (X4d fix round 1): the
+/// staccato and the accent on two graces are drawn, so the report names
+/// neither; with their runs drawn as other ink, it names each, where a check
+/// that skipped graces named nothing.
+#[test]
+fn a_graces_marks_are_drawn_and_counted_undrawn() {
+    use epiphany_core::EventMark;
+    use epiphany_layout_ir::NoteMarkPart;
+
+    let grace = |step: &str, octave: u8, mark: &str| {
+        format!(
+            "<note><grace slash=\"yes\"/><pitch><step>{step}</step><octave>{octave}</octave>\
+             </pitch><voice>1</voice><type>eighth</type><notations><articulations>{mark}\
+             </articulations></notations></note>"
+        )
+    };
+    let note = |step: &str, octave: u8| {
+        format!(
+            "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+             <duration>4</duration><voice>1</voice><type>half</type></note>"
+        )
+    };
+    let measure = [
+        grace("G", 4, "<staccato/>"),
+        note("A", 4),
+        grace("D", 5, "<accent/>"),
+        note("C", 5),
+    ]
+    .concat();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
+         <attributes><divisions>2</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time><clef><sign>G</sign><line>2</line></clef></attributes>{measure}</measure>\
+         </part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("grace_mark_omissions.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let mut engraved = engrave(&loaded.reduced.score);
+    let events = &loaded.import.ids.events[0];
+    assert!(loaded
+        .reduced
+        .score
+        .events
+        .get(events[0])
+        .is_some_and(|e| e.grace().is_some()));
+    assert_eq!(count(&loaded, &engraved, "note mark: staccato"), 0);
+    assert_eq!(count(&loaded, &engraved, "note mark: accent"), 0);
+    let ids = [
+        NoteMarkPart::Glyph(EventMark::Staccato.tag()).id(events[0]),
+        NoteMarkPart::Glyph(EventMark::Accent.tag()).id(events[2]),
+    ];
+    // Re-attributed rather than removed, so the systems' indices stay valid.
+    let elsewhere = NoteMarkPart::Arpeggio.id(events[1]);
+    let mut taken = 0;
+    for t in &mut engraved.layout.texts {
+        if ids.contains(&t.provenance.stable_id) {
+            t.provenance.stable_id = elsewhere;
+            taken += 1;
+        }
+    }
+    assert_eq!(taken, 2, "both marks were drawn");
+    assert_eq!(count(&loaded, &engraved, "note mark: staccato"), 1);
+    assert_eq!(count(&loaded, &engraved, "note mark: accent"), 1);
+}
