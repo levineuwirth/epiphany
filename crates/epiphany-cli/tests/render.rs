@@ -8041,3 +8041,94 @@ fn a_compressed_systems_graces_stand_right_of_their_barlines() {
     assert!(held > 10, "pages down to the floor held the file's systems");
     assert!(checked > 100, "{checked} graces after a barline");
 }
+
+/// A compressed system's graces keep clear of the marks before them: in
+/// systems the file breaks, a beamed pair of graces over the staff after a
+/// sixteenth whose marcato stands over the staff keeps the slot gap (0.3)
+/// from the marcato on every page down to the narrowest whose line the
+/// systems' floor fits, as the spacing pass keeps it.
+#[test]
+fn a_compressed_systems_graces_keep_clear_of_the_marks_before_them() {
+    let measure = "<note><pitch><step>E</step><octave>5</octave></pitch><duration>1</duration>\
+                   <voice>1</voice><type>16th</type><notations><articulations><strong-accent \
+                   type=\"up\"/></articulations></notations></note><note><grace/><pitch><step>A\
+                   </step><octave>5</octave></pitch><voice>1</voice><type>16th</type><beam \
+                   number=\"1\">begin</beam></note><note><grace/><pitch><step>C</step><octave>6\
+                   </octave></pitch><voice>1</voice><type>16th</type><beam number=\"1\">end</beam>\
+                   </note><note><pitch><step>B</step><octave>5</octave></pitch><duration>1\
+                   </duration><voice>1</voice><type>16th</type></note><note><rest/><duration>14\
+                   </duration><voice>1</voice><type>half</type><dot/><dot/></note>"
+        .to_string();
+    let measures = vec![measure; 12];
+    let attributes = "<time><beats>4</beats><beat-type>4</beat-type></time>\
+                      <clef><sign>G</sign><line>2</line></clef>";
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("compressed_grace_marks.musicxml");
+    let (mut held, mut checked) = (0, 0);
+    for tenth in (300..=1500).rev().step_by(5) {
+        let width = tenth as f32 / 10.0;
+        std::fs::write(&path, broken_part(width, attributes, &measures, &[7])).expect("written");
+        let loaded = load(&path).expect("loads");
+        let report = solve_loaded(&loaded);
+        if !added_systems(&report).is_empty() {
+            break;
+        }
+        let layout = &report.layout;
+        let score = &loaded.reduced.score;
+        let events = &loaded.import.ids.events[0];
+        let marcatos: Vec<[f32; 4]> = layout
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str().starts_with("articMarcato"))
+            .map(glyph_box)
+            .collect();
+        for k in (0..events.len()).step_by(5) {
+            let group: Vec<epiphany_core::TypedObjectId> = events[k + 1..k + 3]
+                .iter()
+                .flat_map(|&g| {
+                    let mut out = vec![epiphany_core::TypedObjectId::Event(g)];
+                    if let Some(epiphany_core::Event::Pitched(p)) = score.events.get(g) {
+                        out.extend(
+                            p.pitches
+                                .iter()
+                                .map(|ip| epiphany_core::TypedObjectId::Pitch(ip.id)),
+                        );
+                    }
+                    out
+                })
+                .collect();
+            let ink: Vec<[f32; 4]> = layout
+                .texts
+                .iter()
+                .filter(|t| group.contains(&t.provenance.source))
+                .map(|t| {
+                    let (x, y, b) = (t.origin.x.0, t.origin.y.0, &t.bounds);
+                    [x + b.left.0, y + b.bottom.0, x + b.right.0, y + b.top.0]
+                })
+                .collect();
+            let Some(first) = ink.first().copied() else {
+                continue;
+            };
+            // The marcato before it: the nearest left of its first run.
+            let Some(mark) = marcatos
+                .iter()
+                .filter(|m| m[2] <= first[2] && (m[1] - first[1]).abs() < 4.0)
+                .max_by(|a, b| a[2].total_cmp(&b[2]))
+            else {
+                continue;
+            };
+            for b in ink
+                .iter()
+                .filter(|b| b[1] < mark[3] + 0.2 && b[3] > mark[1] - 0.2)
+            {
+                assert!(
+                    b[0] >= mark[2] + 0.3 - 0.01,
+                    "at width {width} a grace's run {b:?} under the marcato {mark:?}"
+                );
+            }
+            checked += 1;
+        }
+        held += 1;
+    }
+    assert!(held > 10, "pages down to the floor held the file's systems");
+    assert!(checked > 100, "{checked} grace groups after a marcato");
+}

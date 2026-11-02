@@ -322,6 +322,11 @@ struct FloorSlot {
     /// Its grace notes' leftmost ink, which keeps a barline's clearance at
     /// any height.
     grace: Option<f32>,
+    /// Its grace notes' leftmost ink by band, which keeps the slot gap from
+    /// an earlier slot's note marks there; and its own note marks' rightmost
+    /// ink by band.
+    grace_bands: Vec<(i32, f32)>,
+    marks: Vec<(i32, f32)>,
 }
 
 /// Every glyph-bearing slot's ink by kind, in source order, to space a run
@@ -369,6 +374,9 @@ impl Skyline {
         let mut verse_edge = vec![f32::NEG_INFINITY; self.verses];
         // The last barline's right edge with its clearance, at any height.
         let mut barline_edge = f32::NEG_INFINITY;
+        // The rightmost note mark set so far, by band, which a grace note
+        // keeps clear of.
+        let mut mark_edge: BTreeMap<i32, f32> = BTreeMap::new();
         let mut placed: Vec<(usize, f32)> = Vec::with_capacity(ids.len());
         let mut out = Vec::with_capacity(ids.len());
         let mut previous: Option<(f32, f32)> = None;
@@ -410,6 +418,15 @@ impl Skyline {
             }
             if let Some(grace_left) = slot.grace {
                 target = target.max(barline_edge - grace_left);
+            }
+            for &(band, left) in &slot.grace_bands {
+                if let Some(&edge) = mark_edge.get(&band) {
+                    target = target.max(edge + SLOT_GAP - left);
+                }
+            }
+            for &(band, right) in &slot.marks {
+                let edge = mark_edge.entry(band).or_insert(f32::NEG_INFINITY);
+                *edge = edge.max(target + right);
             }
             for &(verse, _, right, gap) in &slot.verses {
                 verse_edge[verse] = target + right + gap;
@@ -485,6 +502,11 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
         /// The leftmost edge of its grace notes' ink, their runs and strokes,
         /// which keeps a barline's clearance at any height too.
         grace: Option<f32>,
+        /// Its grace notes' leftmost ink by band, which keeps the slot gap
+        /// from an earlier slot's note marks there (X4d fix round 1); and
+        /// its note marks' rightmost ink by band, which take no room.
+        grace_bands: BTreeMap<i32, f32>,
+        marks: BTreeMap<i32, f32>,
     }
 
     let preferred_of: BTreeMap<SpringSlotId, (f32, bool)> = input
@@ -571,8 +593,18 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
             verses: BTreeMap::new(),
             arpeggio: None,
             grace: None,
+            grace_bands: BTreeMap::new(),
+            marks: BTreeMap::new(),
         });
         if roomless.contains(&glyph.id()) {
+            // A note's mark takes no room, but a later grace note keeps clear
+            // of it (X4d fix round 1).
+            if matches!(glyph.provenance.source, TypedObjectId::Event(_)) {
+                for band in bands_of((y + b.bottom.0, y + b.top.0)) {
+                    let edge = extent.marks.entry(band).or_insert(f32::NEG_INFINITY);
+                    *edge = edge.max(x + b.right.0);
+                }
+            }
             continue;
         }
         let name = glyph.glyph.as_str();
@@ -674,6 +706,13 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
         if grace_strokes.contains(&stroke.id()) {
             let grace_left = stroke.from.x.0.min(stroke.to.x.0) - half;
             extent.grace = Some(extent.grace.map_or(grace_left, |l| l.min(grace_left)));
+            for band in bands_of((
+                stroke.from.y.0.min(stroke.to.y.0) - half,
+                stroke.from.y.0.max(stroke.to.y.0) + half,
+            )) {
+                let edge = extent.grace_bands.entry(band).or_insert(f32::INFINITY);
+                *edge = edge.min(grace_left);
+            }
         }
         widen(
             extent,
@@ -715,6 +754,10 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
         if room == Room::Grace {
             let grace_left = x + b.left.0;
             extent.grace = Some(extent.grace.map_or(grace_left, |l| l.min(grace_left)));
+            for band in bands_of((y + b.bottom.0, y + b.top.0)) {
+                let edge = extent.grace_bands.entry(band).or_insert(f32::INFINITY);
+                *edge = edge.min(grace_left);
+            }
         }
         let is_arpeggio = match text.text.provenance.source {
             TypedObjectId::Event(event) => {
@@ -850,6 +893,9 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
     // The last barline's right edge with its clearance, at any height: an
     // arpeggio and a grace note keep clear of it.
     let mut barline_edge = f32::NEG_INFINITY;
+    // Each band's rightmost note mark so far: a grace note keeps the slot
+    // gap from it there.
+    let mut mark_frontier: BTreeMap<i32, f32> = BTreeMap::new();
     // The previous slot's target and spring.
     let mut previous: Option<(f32, f32)> = None;
     for (id, extent) in &slots {
@@ -882,6 +928,11 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
         if let Some(grace_left) = extent.grace {
             target = target.max(barline_edge + (extent.source - grace_left));
         }
+        for (band, left) in &extent.grace_bands {
+            if let Some(&edge) = mark_frontier.get(band) {
+                target = target.max(edge + SLOT_GAP + (extent.source - left));
+            }
+        }
         for (verse, (left, _, _)) in &extent.verses {
             if let Some(&edge) = verse_edge.get(verse) {
                 target = target.max(edge + (extent.source - left));
@@ -889,6 +940,10 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
         }
         for (verse, (_, right, gap)) in &extent.verses {
             verse_edge.insert(*verse, target + (right - extent.source) + gap);
+        }
+        for (band, right) in &extent.marks {
+            let edge = mark_frontier.entry(*band).or_insert(f32::NEG_INFINITY);
+            *edge = edge.max(target + (right - extent.source));
         }
         let clearance = clearance_of(extent);
         if extent.fixed && extent.barline {
@@ -979,6 +1034,12 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
                         .collect(),
                     arpeggio: extent.arpeggio.map(|l| l - s),
                     grace: extent.grace.map(|l| l - s),
+                    grace_bands: extent
+                        .grace_bands
+                        .iter()
+                        .map(|(b, l)| (*b, l - s))
+                        .collect(),
+                    marks: extent.marks.iter().map(|(b, r)| (*b, r - s)).collect(),
                 }
             })
             .collect(),

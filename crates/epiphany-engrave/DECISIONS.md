@@ -3141,3 +3141,22 @@ engraver's own placing reproduces it:
   the arpeggio before the chord (*Behind Bars*, p. 131) and the graces
   before the beat (p. 127), so the graces stand before the arpeggio
   (`a_grace_before_a_rolled_chord_stands_clear_of_its_arpeggio`).
+
+## ENGRAVER_VERSION 112 → 113: a grace note clear of an earlier mark and of a beam (X4d fix round 1, 2026-11-02)
+
+- A grace note's ink keeps the slot gap (0.3) from an earlier column's note
+  marks where their heights meet, in the spacing pass and at the floor, as
+  MuseScore's skyline holds a chord's articulations; a note's marks still
+  take no room against other ink. A beamed pair over the staff after a
+  sixteenth with a marcato had stood under the marcato
+  (`a_grace_keeps_clear_of_the_mark_before_it`,
+  `a_compressed_systems_graces_keep_clear_of_the_marks_before_them`).
+- A grace standing under or over a beam of its staff, one joining its
+  principal to the note before it, moves left once its system is set,
+  its marks with it, until its own ink stands a quarter space clear of the
+  beam, by tenths of a space and three spaces at most; Gould keeps one
+  symbol from cutting through another (*Behind Bars*, p. 29, of the octave
+  line). A beam over two notes rises a space at most, so moving clears only
+  a grace that meets the beam a little; one deeper under it stands where
+  it was, and so does a grace's mark over its stem's end under such a beam
+  (`a_grace_under_a_beam_stands_clear_of_it`).

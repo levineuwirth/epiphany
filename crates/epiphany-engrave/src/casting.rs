@@ -1934,6 +1934,117 @@ pub(crate) fn cast_off(
         )
     };
     let member_dx = |f: Option<&usize>| f.and_then(|f| family_dx.get(f)).copied().unwrap_or(0.0);
+    // A grace note under or over a beam of its staff, a beam joining its
+    // principal to the note before, moves left, its marks with it, until it
+    // stands `GRACE_BEAM_GAP` clear of the beam where the beam rises away
+    // from it, by tenths of a space and three spaces at most, the system as
+    // set; one it cannot clear so stands where it was (X4d fix round 1).
+    let grace_dx: BTreeMap<GlyphObjectId, f32> = {
+        let stroke_at: BTreeMap<GlyphObjectId, usize> = input
+            .strokes
+            .iter()
+            .enumerate()
+            .map(|(i, stroke)| (stroke.id(), i))
+            .collect();
+        let placed_stroke = |i: usize| -> Option<(usize, Stroke)> {
+            let StrokeFate::Rigid(Some(s)) = fates[i] else {
+                return None;
+            };
+            let (stroke, spaced) = (&input.strokes[i], &spaced_strokes[i]);
+            Some((
+                s,
+                place_stroke(
+                    stroke,
+                    spaced,
+                    &hplace[s].0,
+                    &slot_source_x,
+                    &input.glyphs,
+                    anchors.get(&stroke.id()),
+                ),
+            ))
+        };
+        let mut beams: BTreeMap<(usize, VerticalBandId), Vec<Stroke>> = BTreeMap::new();
+        for (i, stroke) in input.strokes.iter().enumerate() {
+            if !epiphany_layout_ir::is_beam_stroke(stroke) {
+                continue;
+            }
+            if let Some((s, placed)) = placed_stroke(i) {
+                beams
+                    .entry((s, stroke.vertical_band))
+                    .or_default()
+                    .push(placed);
+            }
+        }
+        let mut out: BTreeMap<GlyphObjectId, f32> = BTreeMap::new();
+        for mark in input
+            .family
+            .iter()
+            .filter(|m| m.room == epiphany_layout_ir::Room::Grace)
+        {
+            let mut ink: Vec<[f32; 4]> = Vec::new();
+            let mut system = None;
+            let mut source = None;
+            for i in mark.texts.iter().filter_map(|id| text_at.get(id)) {
+                let (text, spaced) = (&input.texts[*i], &spaced_texts[*i]);
+                let Some(s) = text_system[*i] else {
+                    continue;
+                };
+                let sx = slot_source_x
+                    .get(&text.horizontal_slot)
+                    .copied()
+                    .unwrap_or(spaced.origin.x.0);
+                let x =
+                    spaced.origin.x.0 + hplace[s].0.slot_dx(sx) - shift_of(text.horizontal_slot);
+                let (y, b) = (spaced.origin.y.0, &spaced.bounds);
+                ink.push([x + b.left.0, y + b.bottom.0, x + b.right.0, y + b.top.0]);
+                system = Some(s);
+            }
+            for i in mark.strokes.iter().filter_map(|id| stroke_at.get(id)) {
+                let Some((s, placed)) = placed_stroke(*i) else {
+                    continue;
+                };
+                let half = placed.thickness.0 * 0.5;
+                ink.push([
+                    placed.from.x.0.min(placed.to.x.0) - half,
+                    placed.from.y.0.min(placed.to.y.0) - half,
+                    placed.from.x.0.max(placed.to.x.0) + half,
+                    placed.from.y.0.max(placed.to.y.0) + half,
+                ]);
+                system = Some(s);
+                source = Some(input.strokes[*i].provenance.source);
+            }
+            let Some(beams) = system.and_then(|s| beams.get(&(s, mark.band))) else {
+                continue;
+            };
+            let meets = |dx: f32| {
+                ink.iter().any(|b| {
+                    beams
+                        .iter()
+                        .any(|beam| meets_beam([b[0] + dx, b[1], b[2] + dx, b[3]], beam))
+                })
+            };
+            if !meets(0.0) {
+                continue;
+            }
+            let Some(dx) = (1..=30).map(|i| -0.1 * i as f32).find(|dx| !meets(*dx)) else {
+                continue;
+            };
+            out.extend(mark.texts.iter().chain(&mark.strokes).map(|id| (*id, dx)));
+            // Its marks, drawn by another member of its event.
+            for other in &input.family {
+                for id in &other.texts {
+                    let of_grace = text_at
+                        .get(id)
+                        .is_some_and(|i| Some(input.texts[*i].text.provenance.source) == source);
+                    if of_grace && other.room == epiphany_layout_ir::Room::None {
+                        out.insert(*id, dx);
+                    }
+                }
+            }
+        }
+        out
+    };
+    let grace_shift = |id: GlyphObjectId| grace_dx.get(&id).copied().unwrap_or(0.0);
     let mut family_dy: BTreeMap<(usize, usize), f32> = BTreeMap::new();
     // The placed family's pieces and the ink each was placed against, kept
     // for centring a grand staff's once its staves are set.
@@ -2692,7 +2803,8 @@ pub(crate) fn cast_off(
                             stroke.to,
                             stroke.thickness.0 * 0.5,
                         );
-                        let dx = member_dx(placed.strokes.get(&source.id()));
+                        let dx =
+                            member_dx(placed.strokes.get(&source.id())) + grace_shift(source.id());
                         stroke.from = Point::new(stroke.from.x.0 + dx, stroke.from.y.0);
                         stroke.to = Point::new(stroke.to.x.0 + dx, stroke.to.y.0);
                         // A moved ending's hook stands where its start does.
@@ -3097,7 +3209,8 @@ pub(crate) fn cast_off(
                         .unwrap_or(0.0);
                     (
                         placements[s].slot_dx(sx) - shift_of(text.horizontal_slot)
-                            + member_dx(placed.texts.get(&text.id())),
+                            + member_dx(placed.texts.get(&text.id()))
+                            + grace_shift(text.id()),
                         placements[s].dy - staff_dy(s, text_staff_of[ti]) + lift,
                     )
                 }
@@ -4216,6 +4329,32 @@ fn line_run(template: &ResolvedText, line: &Stroke, piece: usize, role: u128) ->
 /// How far after the ink of its system's lead a glissando's later piece
 /// opens: as far as its ends stand from its chords' ink.
 const GLISSANDO_LEAD_GAP: f32 = 0.25;
+
+/// How far a grace note's ink stands clear of a beam over or under it
+/// (X4d fix round 1; Gould keeps one symbol from cutting through another).
+const GRACE_BEAM_GAP: f32 = 0.25;
+
+/// Whether an ink box `[left, bottom, right, top]` meets a beam's stroke,
+/// `GRACE_BEAM_GAP` about it, where they overlap across.
+fn meets_beam(ink: [f32; 4], beam: &Stroke) -> bool {
+    let (from, to) = (beam.from, beam.to);
+    let (x0, x1) = (from.x.0.min(to.x.0), from.x.0.max(to.x.0));
+    let (l, r) = (ink[0].max(x0), ink[2].min(x1));
+    if l >= r {
+        return false;
+    }
+    let dx = to.x.0 - from.x.0;
+    let y_at = |x: f32| {
+        if dx.abs() < 1e-6 {
+            from.y.0
+        } else {
+            from.y.0 + (to.y.0 - from.y.0) * (x - from.x.0) / dx
+        }
+    };
+    let half = beam.thickness.0 * 0.5;
+    let (ya, yb) = (y_at(l), y_at(r));
+    ink[1] < ya.max(yb) + half + GRACE_BEAM_GAP && ink[3] > ya.min(yb) - half - GRACE_BEAM_GAP
+}
 
 /// How far a dynamic stands clear of a barline running through the staves
 /// at it (`DynamicsLayout::manageBarlineCollisions`).
