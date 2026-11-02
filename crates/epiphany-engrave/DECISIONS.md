@@ -3173,3 +3173,24 @@ engraver's own placing reproduces it:
   Gould keeps a dynamic and the words of a gradual change after it in one
   plane (*Behind Bars*, pp. 101 and 105)
   (`a_verbal_crescendo_moves_its_start_with_its_dynamic_off_a_barline`).
+
+## ENGRAVER_VERSION 114 → 115: a glissando's words off other ink, its start read again (X4d fix round 1, 2026-11-02)
+
+- A glissando's words are kept off barlines and other ink: where, centred
+  along their piece, they meet other ink of their system (a glyph, a stroke
+  but a staff line, a run, another glissando's words), they slide along the
+  piece by quarter spaces and then stand further off it, up to a space, to
+  the first place clear of it, and where none is they stay centred. Gould
+  sets the words close to the line, legible, and lets them stand on the
+  staff only so (*Behind Bars*, pp. 140 and 141); MuseScore centres them
+  along the line whatever they meet. The words are read as turned to the
+  line, not as the box that holds them turned
+  (`a_glissandos_words_stand_off_the_barline_it_crosses`,
+  `a_glissandos_words_clear_of_ink_stay_centred_on_it`).
+- A glissando's start is read again where its line, begun past its own
+  note's ink at its head, would cross other ink of its first column, a
+  stem or a head of another voice set beside it: past each box of it the
+  line meets, a quarter space on. It had read its own note's ink alone and
+  so could run through a head beside its own, which Gould's line between
+  the notes never does (p. 141)
+  (`a_glissando_starts_past_a_head_its_line_would_cross`).

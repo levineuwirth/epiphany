@@ -2780,6 +2780,9 @@ pub(crate) fn cast_off(
     // The runs the family's lines draw piece by piece (X4d.1), each with its
     // system.
     let mut line_runs: Vec<(ResolvedText, Option<usize>)> = Vec::new();
+    // Each glissando's words among them, with its piece's ends, its source,
+    // and the words' width and height before they were turned to the line.
+    let mut gliss_words: Vec<(usize, Point, Point, TypedObjectId, [f32; 2])> = Vec::new();
     for (si, ((source, spaced), fate)) in input
         .strokes
         .iter()
@@ -2880,7 +2883,19 @@ pub(crate) fn cast_off(
                             stroke.from = Point::new(stroke.from.x.0, ys[0].0 + dy);
                             stroke.to = Point::new(stroke.to.x.0, ys[0].1 + dy);
                         }
+                        let (from, to, words_id) =
+                            (stroke.from, stroke.to, line_run_id(&stroke, 0, 2));
+                        let size = words_extent(words_of(source.id()));
                         for run in glissando_runs(&mut stroke, *wavy, words_of(source.id()), 0) {
+                            if run.provenance.stable_id == words_id {
+                                gliss_words.push((
+                                    line_runs.len(),
+                                    from,
+                                    to,
+                                    source.provenance.source,
+                                    size,
+                                ));
+                            }
                             line_runs.push((run, *sys));
                         }
                     }
@@ -3037,8 +3052,20 @@ pub(crate) fn cast_off(
                             }
                         }
                         Some(FamilyLine::Glissando { wavy, .. }) => {
+                            let (from, to, words_id) =
+                                (stroke.from, stroke.to, line_run_id(&stroke, k, 2));
+                            let size = words_extent(words_of(source.id()));
                             for run in glissando_runs(&mut stroke, *wavy, words_of(source.id()), k)
                             {
+                                if run.provenance.stable_id == words_id {
+                                    gliss_words.push((
+                                        line_runs.len(),
+                                        from,
+                                        to,
+                                        source.provenance.source,
+                                        size,
+                                    ));
+                                }
                                 line_runs.push((run, Some(*s)));
                             }
                         }
@@ -3244,6 +3271,137 @@ pub(crate) fn cast_off(
         .collect();
     let mut texts = texts;
     let mut text_system = text_system;
+    // A glissando's words kept off barlines and other ink (X4d fix round 1):
+    // where, centred along their piece, they meet other ink of their system,
+    // they slide along the piece and then stand further off it, by quarter
+    // spaces, to the first place clear of it; where none is, they stay.
+    if !gliss_words.is_empty() {
+        let rect = |x: f32, y: f32, b: &epiphany_layout_ir::BoundingBox| {
+            [x + b.left.0, y + b.bottom.0, x + b.right.0, y + b.top.0]
+        };
+        let mut ink: BTreeMap<usize, Vec<(TypedObjectId, [f32; 4])>> = BTreeMap::new();
+        for (g, s) in glyphs.iter().zip(&glyph_system) {
+            if let Some(s) = s {
+                ink.entry(*s).or_default().push((
+                    g.provenance.source,
+                    rect(g.position.x.0, g.position.y.0, &g.bounding_box),
+                ));
+            }
+        }
+        for (stroke, s) in strokes.iter().zip(&stroke_system) {
+            let Some(s) = s else {
+                continue;
+            };
+            if stroke.from == stroke.to
+                || matches!(stroke.provenance.source, TypedObjectId::Staff(_))
+            {
+                continue;
+            }
+            let half = stroke.thickness.0 * 0.5;
+            ink.entry(*s).or_default().push((
+                stroke.provenance.source,
+                [
+                    stroke.from.x.0.min(stroke.to.x.0) - half,
+                    stroke.from.y.0.min(stroke.to.y.0) - half,
+                    stroke.from.x.0.max(stroke.to.x.0) + half,
+                    stroke.from.y.0.max(stroke.to.y.0) + half,
+                ],
+            ));
+        }
+        for (text, s) in texts.iter().zip(&text_system) {
+            if let Some(s) = s {
+                ink.entry(*s).or_default().push((
+                    text.provenance.source,
+                    rect(text.origin.x.0, text.origin.y.0, &text.bounds),
+                ));
+            }
+        }
+        for (i, ..) in &gliss_words {
+            if let Some(s) = line_runs[*i].1 {
+                let run = &line_runs[*i].0;
+                ink.entry(s).or_default().push((
+                    run.provenance.source,
+                    rect(run.origin.x.0, run.origin.y.0, &run.bounds),
+                ));
+            }
+        }
+        for &(i, from, to, source, [w, h]) in &gliss_words {
+            let Some(s) = line_runs[i].1 else {
+                continue;
+            };
+            let (dx, dy) = (to.x.0 - from.x.0, to.y.0 - from.y.0);
+            let length = (dx * dx + dy * dy).sqrt();
+            if length <= 0.0 {
+                continue;
+            }
+            let (ux, uy) = (dx / length, dy / length);
+            let ink = ink.get(&s).map_or(&[][..], Vec::as_slice);
+            let run = &line_runs[i].0;
+            let at = |dx: f32, dy: f32| rect(run.origin.x.0 + dx, run.origin.y.0 + dy, &run.bounds);
+            // The words as turned to the line: a box `w` along it and `h`
+            // across, centred where their run's box is, meeting an ink box
+            // unless one of the four axes parts them.
+            let meets = |b: [f32; 4]| {
+                let (cx, cy) = ((b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5);
+                ink.iter().any(|(src, i)| {
+                    *src != source
+                        && [(1.0, 0.0), (0.0, 1.0), (ux, uy), (-uy, ux)].iter().all(
+                            |&(ax, ay): &(f32, f32)| {
+                                let c = cx * ax + cy * ay;
+                                let r = 0.5 * w * (ux * ax + uy * ay).abs()
+                                    + 0.5 * h * (-uy * ax + ux * ay).abs();
+                                let corners = [
+                                    i[0] * ax + i[1] * ay,
+                                    i[0] * ax + i[3] * ay,
+                                    i[2] * ax + i[1] * ay,
+                                    i[2] * ax + i[3] * ay,
+                                ];
+                                let lo = corners.iter().copied().fold(f32::INFINITY, f32::min);
+                                let hi = corners.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                                c - r < hi && lo < c + r
+                            },
+                        )
+                })
+            };
+            if !meets(at(0.0, 0.0)) {
+                continue;
+            }
+            // Which side of the line the words stand on, and how far along.
+            let b = at(0.0, 0.0);
+            let (cx, cy) = ((b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5);
+            let side = if (cx - from.x.0) * -uy + (cy - from.y.0) * ux >= 0.0 {
+                1.0
+            } else {
+                -1.0
+            };
+            let along = (cx - from.x.0) * ux + (cy - from.y.0) * uy;
+            let half = w * 0.5;
+            let within =
+                |t: f32| length <= 2.0 * half || (t - half >= -1e-3 && t + half <= length + 1e-3);
+            let place = (0..=4)
+                .flat_map(|m| {
+                    (0..=16).map(move |k| {
+                        let step =
+                            0.25 * ((k + 1) / 2) as f32 * if k % 2 == 1 { 1.0 } else { -1.0 };
+                        (0.25 * m as f32, if k == 0 { 0.0 } else { step })
+                    })
+                })
+                .find(|&(off, slide)| {
+                    within(along + slide)
+                        && !meets(at(
+                            ux * slide - uy * off * side,
+                            uy * slide + ux * off * side,
+                        ))
+                });
+            if let Some((off, slide)) = place {
+                let run = &mut line_runs[i].0;
+                run.origin = Point::new(
+                    run.origin.x.0 + ux * slide - uy * off * side,
+                    run.origin.y.0 + uy * slide + ux * off * side,
+                );
+            }
+        }
+    }
     for (run, system) in line_runs {
         texts.push(run);
         text_system.push(system);
@@ -4330,6 +4488,27 @@ fn glissando_heights(heads: [Point; 2], line: &Stroke, xs: &[(f32, f32)]) -> Vec
     ys[0].0 = within(whole[0], ys[0], first.0);
     ys[n - 1].1 = within(whole[n - 1], ys[n - 1], last.1);
     ys
+}
+
+/// A line's words' width and height before they are turned to it.
+fn words_extent(words: Option<(&ResolvedText, f32)>) -> [f32; 2] {
+    words.map_or([0.0, 0.0], |(t, _)| {
+        [
+            t.bounds.right.0 - t.bounds.left.0,
+            t.bounds.top.0 - t.bounds.bottom.0,
+        ]
+    })
+}
+
+/// The stable id of the run a line draws in its piece `piece` in a role.
+fn line_run_id(line: &Stroke, piece: usize, role: u128) -> LayoutObjectId {
+    Provenance::synthesized(
+        line.provenance.source,
+        SynthesisKind::Registered(LINE_PIECE_SYNTHESIS),
+        SynthesisInstanceKey(((piece as u128) << 8) | role),
+        line.provenance.dependencies.clone(),
+    )
+    .stable_id
 }
 
 /// A run a line draws in its piece `piece` (X4d.1), synthesized from the

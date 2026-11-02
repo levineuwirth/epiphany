@@ -3982,6 +3982,30 @@ pub fn try_to_constrained(
                 .map(|i| i.left)
                 .reduce(f32::min)?
                 - lines::GLISSANDO_CLEAR;
+            // Its start read again where the line so begun would cross the
+            // first column's other ink, a stem or another head, any voice's:
+            // past each box of it the line meets, a quarter space on (X4d fix
+            // round 1).
+            let column = staff_column_ink(st, &a.key, None);
+            let rise = (cb.y.0 - ca.y.0) / (cb.x.0 - ca.x.0);
+            let height = |x: f32| ca.y.0 + (x - ca.x.0) * rise;
+            let mut start = start;
+            for _ in 0..4 {
+                let past = column
+                    .iter()
+                    .filter(|i| {
+                        let (l, r) = (i.left.max(start), i.right.min(end));
+                        l < r
+                            && height(l).min(height(r)) < i.top
+                            && height(l).max(height(r)) > i.bottom
+                    })
+                    .map(|i| i.right + lines::GLISSANDO_CLEAR)
+                    .fold(start, f32::max);
+                if past <= start + 1e-4 {
+                    break;
+                }
+                start = past;
+            }
             if end <= start {
                 gliss_short.set(true);
                 return None;

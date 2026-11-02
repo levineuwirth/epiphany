@@ -1597,3 +1597,142 @@ fn parallel_glissandi_take_one_gliss() {
         "along the upper line: {w:?} {upper:?}"
     );
 }
+
+/// A glissando's words are kept off barlines and other ink (X4d fix round
+/// 1): along a line nearly level from a measure's last note over the
+/// barline and a new time signature to the next measure's first, "gliss.",
+/// which centred along it stands on the barline, slides along the line or
+/// off it until it meets no ink, as Gould sets the words close to the line
+/// and legible (*Behind Bars*, p. 141).
+#[test]
+fn a_glissandos_words_stand_off_the_barline_it_crosses() {
+    let sixteenths =
+        |pitches: &[&str]| -> String { pitches.iter().map(|p| note(p, 1, "16th", "")).collect() };
+    let loaded = part_in(
+        "glissando_words_barline.musicxml",
+        4,
+        &[
+            format!(
+                "{}{}",
+                sixteenths(&["C5", "D5", "E5", "F5", "G5", "A5", "B5", "C6", "B5", "A5", "G5", "F5"]),
+                note(
+                    "C5",
+                    4,
+                    "quarter",
+                    "<slide type=\"start\" line-type=\"solid\" number=\"1\">gliss.</slide>"
+                ),
+            ),
+            format!(
+                "<attributes><time><beats>3</beats><beat-type>4</beat-type></time></attributes>{}{}",
+                note("D5", 4, "quarter", "<slide type=\"stop\" number=\"1\"/>"),
+                sixteenths(&["F5", "G5", "A5", "B5", "C6", "B5", "A5", "G5"]),
+            ),
+        ],
+    );
+    let layout = engrave_loaded(&loaded).layout;
+    let words = runs(&layout, "gliss.");
+    assert_eq!(words.len(), 1, "its words");
+    let w = text_box(words[0]);
+    for g in layout
+        .glyphs
+        .iter()
+        .filter(|g| !g.glyph.as_str().starts_with("noteheadNull"))
+    {
+        let b = glyph_box(g);
+        let meets = w[0] < b[2] && b[0] < w[2] && w[1] < b[3] && b[1] < w[3];
+        assert!(!meets, "the words {w:?} on {} {b:?}", g.glyph.as_str());
+    }
+    let pieces = line_strokes(&loaded, &layout, |k| matches!(k, SpannerKind::Glissando));
+    assert_eq!(pieces.len(), 1);
+    let line = pieces[0];
+    let (cx, cy) = ((w[0] + w[2]) * 0.5, (w[1] + w[3]) * 0.5);
+    assert!(
+        cx > line.from.x.0 && cx < line.to.x.0,
+        "the words along their line: {w:?} {line:?}"
+    );
+    let at = line.from.y.0
+        + (line.to.y.0 - line.from.y.0) * (cx - line.from.x.0) / (line.to.x.0 - line.from.x.0);
+    assert!(cy > at, "over it: {w:?} {line:?}");
+}
+
+/// A glissando's start is read again where its line would cross its first
+/// column's other ink, any voice's (X4d fix round 1): from the upper of two
+/// voices a second apart, the lower voice's head set beside it, the line
+/// falling from it starts a quarter space past that head rather than running
+/// through it; it had read its own note's ink alone.
+#[test]
+fn a_glissando_starts_past_a_head_its_line_would_cross() {
+    let voiced = |pitch: &str, voice: u8, stem: &str, notations: &str| {
+        note(pitch, 4, "half", notations)
+            .replace("<voice>1</voice>", &format!("<voice>{voice}</voice>"))
+            .replace("</type>", &format!("</type><stem>{stem}</stem>"))
+    };
+    let loaded = part(
+        "glissando_beside_a_voice.musicxml",
+        &[
+            format!(
+                "{}{}<backup><duration>8</duration></backup>{}{}",
+                voiced(
+                    "G5",
+                    1,
+                    "up",
+                    "<slide type=\"start\" line-type=\"solid\" number=\"1\">gliss.</slide>"
+                ),
+                voiced("C5", 1, "up", "<slide type=\"stop\" number=\"1\"/>"),
+                voiced("F5", 2, "down", ""),
+                voiced("D5", 2, "down", ""),
+            ),
+            note("C5", 8, "whole", ""),
+        ],
+    );
+    let layout = engrave_loaded(&loaded).layout;
+    let e = events(&loaded);
+    let own = head(&loaded, &layout, e[0]);
+    let other = head(&loaded, &layout, e[2]);
+    assert!(
+        (other[0] - own[0]).abs() > 0.5,
+        "the voices' heads side by side: {other:?} {own:?}"
+    );
+    let lines = line_strokes(&loaded, &layout, |k| matches!(k, SpannerKind::Glissando));
+    assert_eq!(lines.len(), 1);
+    let line = lines[0];
+    let y = |x: f32| {
+        line.from.y.0
+            + (line.to.y.0 - line.from.y.0) * (x - line.from.x.0) / (line.to.x.0 - line.from.x.0)
+    };
+    let (l, r) = (other[0].max(line.from.x.0), other[2].min(line.to.x.0));
+    let crosses = l < r && y(l).min(y(r)) < other[3] && y(l).max(y(r)) > other[1];
+    assert!(
+        !crosses,
+        "the line through the other voice's head: {line:?} {other:?}"
+    );
+}
+
+/// A glissando's words with no other ink in their way stay centred along
+/// their line, their own line never one they keep off.
+#[test]
+fn a_glissandos_words_clear_of_ink_stay_centred_on_it() {
+    let loaded = part(
+        "glissando_words_free.musicxml",
+        &[format!(
+            "{}{}{}",
+            note(
+                "C4",
+                4,
+                "half",
+                "<slide type=\"start\" line-type=\"solid\" number=\"1\">gliss.</slide>"
+            ),
+            note("C6", 2, "quarter", "<slide type=\"stop\" number=\"1\"/>"),
+            q("B5"),
+        )],
+    );
+    let layout = engrave_loaded(&loaded).layout;
+    let w = text_box(runs(&layout, "gliss.")[0]);
+    let line = line_strokes(&loaded, &layout, |k| matches!(k, SpannerKind::Glissando))[0];
+    // Their middle, read along the line, at its middle.
+    let (dx, dy) = (line.to.x.0 - line.from.x.0, line.to.y.0 - line.from.y.0);
+    let length = (dx * dx + dy * dy).sqrt();
+    let (cx, cy) = ((w[0] + w[2]) * 0.5, (w[1] + w[3]) * 0.5);
+    let along = ((cx - line.from.x.0) * dx + (cy - line.from.y.0) * dy) / length;
+    near(along, length * 0.5, "centred along it");
+}
