@@ -756,3 +756,58 @@ fn a_graces_marks_stand_small_outside_the_staff() {
         assert!(dot[3] <= bottom - 0.4 + 0.01, "under the staff: {dot:?}");
     }
 }
+
+/// A grace group's reach widens its principal's column in the projection's
+/// frame, as an accidental's does (D79's Q13), so that frame, in which the
+/// curves and beams are first shaped before the spacing sets the page,
+/// holds no grace over the note before: before a principal that follows
+/// sixteenths closely, the group's leftmost ink in it stands right of the
+/// previous note's head.
+#[test]
+fn a_grace_groups_reach_widens_its_columns_place_in_the_projection() {
+    use epiphany_layout_ir::{to_constrained, to_logical};
+    let sixteenths: String = (0..4).map(|_| note("C5", 1, "16th", 1)).collect();
+    let graced = part(
+        "grace_overhang.musicxml",
+        4,
+        &[format!(
+            "{sixteenths}{}{}{}{}{}{}",
+            grace("C5", true, "16th", Some("begin"), 1),
+            grace("D5", true, "16th", Some("continue"), 1),
+            grace("E5", true, "16th", Some("end"), 1),
+            note("A4", 4, "quarter", 1),
+            note("B4", 4, "quarter", 1),
+            note("C5", 4, "quarter", 1),
+        )],
+    );
+    let e = events(&graced);
+    let constrained = to_constrained(&to_logical(&graced.reduced.score));
+    let before = sources(&graced, e[3]);
+    let previous = constrained
+        .glyphs
+        .iter()
+        .filter(|g| {
+            before.contains(&g.provenance.source) && g.glyph.as_str().starts_with("notehead")
+        })
+        .map(|g| g.baseline.x.0 + g.bounding_box.right.0)
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(previous.is_finite(), "the previous note's head");
+    let group: Vec<TypedObjectId> = e[4..7].iter().flat_map(|&g| sources(&graced, g)).collect();
+    let left = constrained
+        .texts
+        .iter()
+        .filter(|t| group.contains(&t.text.provenance.source))
+        .map(|t| t.text.origin.x.0 + t.text.bounds.left.0)
+        .chain(
+            constrained
+                .strokes
+                .iter()
+                .filter(|s| group.contains(&s.provenance.source) && s.from != s.to)
+                .map(|s| s.from.x.0.min(s.to.x.0) - s.thickness.0 * 0.5),
+        )
+        .fold(f32::INFINITY, f32::min);
+    assert!(
+        left >= previous,
+        "the group at {left}, the previous head's right edge at {previous}"
+    );
+}

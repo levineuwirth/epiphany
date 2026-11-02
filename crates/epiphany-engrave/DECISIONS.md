@@ -2951,9 +2951,12 @@ engraver's own placing reproduces it:
   the note's accidental; MuseScore opens a later segment before the first
   column's leading ink (`System::firstNoteRestSegmentX`). Where the
   chord's ink leaves no room the piece draws nothing; with the lead's gap
-  of 0.8 that leaves 0.3 at least, so the guard binds on no reachable state
-  and its lone mutation survives
-  (`a_glissando_continued_into_a_system_stands_between_its_lead_and_its_chord`).
+  of 0.8 that leaves 0.3 at least, so the guard binds on no state the
+  importer reaches today: every lead it builds draws a clef. A lead holding
+  nothing, as one would once a clef marked hidden is honoured, reaches it,
+  and a test on such a lead built by hand pins it (X4d fix round 1;
+  `a_glissando_piece_after_an_empty_lead_never_runs_back`,
+  `a_glissando_continued_into_a_system_stands_between_its_lead_and_its_chord`).
   X4d.4's sweep of every page found it: every glissando end standing
   nearer a head than a quarter space was such a piece.
 
@@ -3035,3 +3038,47 @@ engraver's own placing reproduces it:
   `a_graces_marks_take_the_side_nearer_its_heads_outside_the_staff`,
   `a_graces_mark_stands_clear_of_its_columns_ink`,
   `a_graces_marks_are_drawn_and_counted_undrawn`).
+
+## X4d fix round 1: the barline, hairpin, grace and glissando clauses pinned (2026-11-02, no version change)
+
+- C4d's review named clauses of X4d's rules that no test pinned. Each now
+  has one, seen failing with the clause's mutation: of the barline rule, a
+  dynamic over its staff judged by the staff above's barline
+  (`words_over_the_top_staff_stay_at_their_note`), a group's bottom staff
+  running on to none (`words_under_a_groups_bottom_staff_stay_at_their_note`),
+  the barline before winning over the one after
+  (`words_wider_than_their_measure_stand_right_of_the_barline_before`), its
+  own system's barlines alone
+  (`a_dynamic_at_a_systems_first_note_is_judged_by_its_systems_barlines`); a
+  hairpin moved only with its own row's dynamic
+  (`a_hairpin_of_another_row_keeps_its_start`), and placed over its drawn
+  span (version 107); expression text moved only with its own dynamic
+  (`expression_text_moves_only_with_its_own_dynamic`) and held between a
+  grand staff's staves with its dynamic's row
+  (`expression_text_between_a_grand_staffs_staves_stays_on_its_dynamics_baseline`);
+  a grace group's reach widening its principal's column in the projection's
+  frame, where the curves and beams are first shaped
+  (`a_grace_groups_reach_widens_its_columns_place_in_the_projection`); the
+  `k`th glissando between chords taking each chord's `k`th head from the top
+  (`parallel_glissandi_between_chords_join_heads_of_one_rank`).
+- Four clauses the review found changing no corpus page. A mark at a note
+  is set from its own chord by that chord's rules and kept clear of the
+  column's other chords: its own column ink is left out, and is reachable,
+  a wide ornament over a dotted note at the staff's top line or above
+  meeting its own dot
+  (`an_outside_mark_is_set_from_its_own_chord_its_dot_left_out`). A line
+  released at a measure's start ends before the barline there even where a
+  clef change or a breath mark stands before the barline at that time
+  (`a_pedal_released_at_a_clef_change_ends_before_the_barline`). The barline
+  rule leaves a member the rule for a measure's start has set: no dynamic
+  takes a measure-start place today, only rehearsal marks, a segno and a
+  coda, so the guard binds on no state the projection builds; a test giving
+  a dynamic one by hand pins it
+  (`a_member_set_at_its_measures_start_is_not_moved_off_its_barline_again`).
+  A glissando's guard that both its notes stand on its staff is removed: it
+  is equivalent on every state, since the logical pass gives a line
+  anchored to two staves no staff, the projection draws no glissando
+  without one, and each end's ink is read on the line's staff, which holds
+  no other staff's heads (`a_glissando_between_two_staves_is_left_undrawn`).
+- A glissando's later piece after a lead holding nothing is pinned with
+  version 106's guard, above.

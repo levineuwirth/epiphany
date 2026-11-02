@@ -938,3 +938,494 @@ fn a_moved_hairpin_is_placed_over_its_drawn_span() {
     near(d2, d1, "the ppp's distance under its staff");
     near(h2, h1, "the hairpin's distance under its staff");
 }
+
+/// A note with a syllable under it.
+fn lyric_note(pitch: &str, duration: u8, kind: &str, staff: u8) -> String {
+    note(pitch, duration, kind, staff, "").replace(
+        "</note>",
+        "<lyric number=\"1\"><syllabic>single</syllabic><text>la</text></lyric></note>",
+    )
+}
+
+/// A direction of `staff` holding `content`, placed above or below.
+fn dir(content: &str, staff: u8, placement: &str) -> String {
+    format!(
+        "<direction placement=\"{placement}\"><direction-type>{content}</direction-type>\
+         <staff>{staff}</staff></direction>"
+    )
+}
+
+/// The barline before `ink` on its staff: the rightmost whose right edge
+/// stands left of the ink's middle.
+fn before_bar(layout: &ResolvedLayoutIR, ink: [f32; 4]) -> (f32, f32) {
+    barlines(layout, ink[3])
+        .into_iter()
+        .filter(|b| b.1 < (ink[0] + ink[2]) * 0.5)
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .expect("the barline before")
+}
+
+/// Words under a grand staff's lower staff, whose barline stops at it, stay
+/// at their note over the barline's line (MuseScore's `barLineSpan`; Gould
+/// moves a marking off a barline only where the barline runs through it,
+/// *Behind Bars*, p. 103): a group's bottom staff runs on to no staff.
+#[test]
+fn words_under_a_groups_bottom_staff_stay_at_their_note() {
+    let measure = |first: &str| {
+        format!(
+            "{}{}{}{}{}{}{}",
+            note("C5", 8, "whole", 1, ""),
+            backup(8),
+            words(first, 2),
+            note("C3", 2, "quarter", 2, ""),
+            note("D3", 2, "quarter", 2, ""),
+            note("E3", 2, "quarter", 2, ""),
+            note("F3", 2, "quarter", 2, ""),
+        )
+    };
+    let grand = part(
+        "pin_bottom_staff.musicxml",
+        2,
+        &[measure(""), measure("molto espressivo"), measure("")],
+    );
+    let layout = engrave_loaded(&grand).layout;
+    let first = text_box(run(&layout, "molto espressivo"));
+    let before = before_bar(&layout, first);
+    assert!(
+        first[0] < before.1,
+        "unmoved, over the barline's line: {first:?} {before:?}"
+    );
+}
+
+/// Words over a voice's staff at the top of a grand staff, with no staff
+/// above, stay at their note: a dynamic over its staff is judged by the
+/// barline of the staff above, and none reaches above this one
+/// (`manageBarlineCollisions` returns at the first staff; Gould, p. 103).
+#[test]
+fn words_over_the_top_staff_stay_at_their_note() {
+    let measure = |first: &str| {
+        let open = if first.is_empty() {
+            String::new()
+        } else {
+            dir(
+                &format!("<dynamics><other-dynamics>{first}</other-dynamics></dynamics>"),
+                1,
+                "above",
+            )
+        };
+        format!(
+            "{open}{}{}{}{}{}{}",
+            lyric_note("C5", 2, "quarter", 1),
+            lyric_note("D5", 2, "quarter", 1),
+            lyric_note("E5", 2, "quarter", 1),
+            lyric_note("F5", 2, "quarter", 1),
+            backup(8),
+            note("C3", 8, "whole", 2, ""),
+        )
+    };
+    let grand = part(
+        "pin_top_staff.musicxml",
+        2,
+        &[measure(""), measure("molto espressivo"), measure("")],
+    );
+    let layout = engrave_loaded(&grand).layout;
+    let first = text_box(run(&layout, "molto espressivo"));
+    let (top, _) = upper(&layout);
+    assert!(first[1] > top, "over the staff: {first:?} {top}");
+    // The barline glyphs: their x is every staff's.
+    let before = barlines(&layout, -1.0e9)
+        .into_iter()
+        .filter(|b| b.1 < (first[0] + first[2]) * 0.5)
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .expect("the barline before");
+    assert!(first[0] < before.1, "unmoved: {first:?} {before:?}");
+}
+
+/// A hairpin of the lower staff starting at a note where words of the upper
+/// staff move off a barline keeps its start: it is in another row
+/// (`DynamicsLayout` moves only the dynamic's own snapping chain; Gould
+/// times a hairpin by its own notes and the dynamics at its ends, p. 104).
+#[test]
+fn a_hairpin_of_another_row_keeps_its_start() {
+    let measure = |marked: bool, hairpin: bool| {
+        let lower = if hairpin {
+            format!(
+                "{}{}{}",
+                dir("<wedge type=\"crescendo\"/>", 2, "below"),
+                note("C3", 8, "whole", 2, ""),
+                dir("<wedge type=\"stop\"/>", 2, "below"),
+            )
+        } else {
+            note("C3", 8, "whole", 2, "")
+        };
+        format!(
+            "{}{}{}{}{}{}{lower}",
+            if marked {
+                words("molto espressivo", 1)
+            } else {
+                String::new()
+            },
+            note("C5", 2, "quarter", 1, ""),
+            note("D5", 2, "quarter", 1, ""),
+            note("E5", 2, "quarter", 1, ""),
+            note("F5", 2, "quarter", 1, ""),
+            backup(8),
+        )
+    };
+    let start = |marked: bool| {
+        let loaded = part(
+            if marked {
+                "pin_rows_marked.musicxml"
+            } else {
+                "pin_rows_plain.musicxml"
+            },
+            2,
+            &[
+                measure(false, false),
+                measure(marked, true),
+                measure(false, false),
+            ],
+        );
+        let layout = engrave_loaded(&loaded).layout;
+        let legs = hairpin_legs(&loaded, &layout, 0);
+        assert_eq!(legs.len(), 2, "two legs");
+        let heads: Vec<f32> = layout
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str().starts_with("noteheadWhole"))
+            .map(|g| g.position.x.0)
+            .collect();
+        (legs[0][0], heads)
+    };
+    let (marked, heads_m) = start(true);
+    let (plain, heads_p) = start(false);
+    // The same columns either way: the words take no room here.
+    assert_eq!(heads_m.len(), heads_p.len());
+    let head_m = heads_m[1];
+    let head_p = heads_p[1];
+    near(
+        marked - head_m,
+        plain - head_p,
+        "the lower hairpin's start from its note",
+    );
+}
+
+/// Expression text after a dynamic at a later note of a chain whose first
+/// dynamic moves off a barline stays after its own dynamic, 0.2 after a
+/// forte (MuseScore lays an expression out from its own dynamic's place).
+#[test]
+fn expression_text_moves_only_with_its_own_dynamic() {
+    let measure = |marked: bool| {
+        if !marked {
+            return format!(
+                "{}{}{}{}{}{}",
+                note("C5", 2, "quarter", 1, ""),
+                note("D5", 2, "quarter", 1, ""),
+                note("E5", 2, "quarter", 1, ""),
+                note("F5", 2, "quarter", 1, ""),
+                backup(8),
+                note("C3", 8, "whole", 2, ""),
+            );
+        }
+        format!(
+            "{}{}{}{}{}{}{}{}{}{}{}{}",
+            words("molto espressivo", 1),
+            dir("<wedge type=\"crescendo\"/>", 1, "below"),
+            note("C5", 2, "quarter", 1, ""),
+            note("D5", 2, "quarter", 1, ""),
+            dir("<wedge type=\"stop\"/>", 1, "below"),
+            dir("<dynamics><f/></dynamics>", 1, "below"),
+            dir("<words font-style=\"italic\">espress.</words>", 1, "below"),
+            note("E5", 2, "quarter", 1, ""),
+            note("F5", 2, "quarter", 1, ""),
+            backup(8),
+            note("C3", 8, "whole", 2, ""),
+            String::new(),
+        )
+    };
+    let loaded = part(
+        "pin_expr_chain.musicxml",
+        2,
+        &[measure(false), measure(true), measure(false)],
+    );
+    let layout = engrave_loaded(&loaded).layout;
+    let first = text_box(run(&layout, "molto espressivo"));
+    let before = before_bar(&layout, first);
+    near(
+        first[0],
+        before.1 + 0.25,
+        "the first words moved right of the barline",
+    );
+    let forte = only(&layout, "dynamicForte");
+    let expr = text_box(run(&layout, "espress."));
+    assert!(
+        (expr[0] - (forte[2] + 0.2)).abs() < 0.05,
+        "after its own forte, 0.2: {expr:?} {forte:?}"
+    );
+}
+
+/// Words wider than their measure at its first note stand right of the
+/// barline before them, which wins (Gould: an initial dynamic to the
+/// barline's right, p. 103; MuseScore checks the barline after, then the one
+/// before).
+#[test]
+fn words_wider_than_their_measure_stand_right_of_the_barline_before() {
+    let measure = |first: &str| {
+        format!(
+            "{}{}{}{}",
+            words(first, 1),
+            note("C5", 8, "whole", 1, ""),
+            backup(8),
+            note("C3", 8, "whole", 2, ""),
+        )
+    };
+    let wide = "pianissimo e dolcissimo sempre molto legato";
+    let grand = part(
+        "pin_too_wide.musicxml",
+        2,
+        &[measure(""), measure(wide), measure(""), measure("")],
+    );
+    let layout = engrave_loaded(&grand).layout;
+    let first = text_box(run(&layout, wide));
+    let bars = barlines(&layout, first[3]);
+    let before = before_bar(&layout, first);
+    let after = bars
+        .iter()
+        .filter(|b| b.0 > before.1 + 0.01)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .copied()
+        .expect("the barline after");
+    assert!(
+        first[2] - first[0] > after.0 - before.1 - 0.5,
+        "the words wider than their measure's room: {first:?} {before:?} {after:?}"
+    );
+    near(first[0], before.1 + 0.25, "right of the barline before");
+}
+
+/// Two parts a bracket joins, their barlines through both, each of
+/// `measures` given as the upper part's content and the lower's.
+fn joined(name: &str, measures: &[(String, String)]) -> Loaded {
+    let attributes = "<attributes><divisions>2</divisions><time><beats>4</beats>\
+                      <beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line>\
+                      </clef></attributes>";
+    let part_of = |pick: &dyn Fn(&(String, String)) -> String| -> String {
+        measures
+            .iter()
+            .enumerate()
+            .map(|(m, content)| {
+                format!(
+                    "<measure number=\"{}\">{}{}</measure>",
+                    m + 1,
+                    if m == 0 { attributes } else { "" },
+                    pick(content)
+                )
+            })
+            .collect()
+    };
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><part-group type=\"start\" number=\"1\">\
+         <group-symbol>bracket</group-symbol><group-barline>yes</group-barline></part-group>\
+         <score-part id=\"P1\"><part-name>A</part-name></score-part><score-part id=\"P2\">\
+         <part-name>B</part-name></score-part><part-group type=\"stop\" number=\"1\"/>\
+         </part-list><part id=\"P1\">{}</part><part id=\"P2\">{}</part></score-partwise>",
+        part_of(&|m| m.0.clone()),
+        part_of(&|m| m.1.clone()),
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    assert!(loaded.fidelity.passed(), "{:#?}", loaded.fidelity.failures);
+    loaded
+}
+
+/// A dynamic at a system's first note is judged by its own system's
+/// barlines alone (X4d.3): words under the upper of two joined parts at the
+/// first note of each of two systems stand as far from their notes in the
+/// second as in the first, where no barline stands before them. The barline
+/// ending the system before, judged with them, had moved them off it.
+#[test]
+fn a_dynamic_at_a_systems_first_note_is_judged_by_its_systems_barlines() {
+    let upper = |words: bool, break_: bool| {
+        format!(
+            "{}{}{}{}{}{}",
+            if break_ {
+                "<print new-system=\"yes\"/>"
+            } else {
+                ""
+            },
+            if words {
+                dir(
+                    "<dynamics><other-dynamics>molto espressivo</other-dynamics></dynamics>",
+                    1,
+                    "below",
+                )
+            } else {
+                String::new()
+            },
+            note("C5", 2, "quarter", 1, ""),
+            note("D5", 2, "quarter", 1, ""),
+            note("E5", 2, "quarter", 1, ""),
+            note("F5", 2, "quarter", 1, ""),
+        )
+    };
+    let lower = "<note><pitch><step>C</step><octave>4</octave></pitch><duration>8</duration>\
+                 <voice>1</voice><type>whole</type></note>"
+        .to_string();
+    let loaded = joined(
+        "systems_first_note.musicxml",
+        &[
+            (upper(true, false), lower.clone()),
+            (upper(false, false), lower.clone()),
+            (upper(true, true), lower.clone()),
+            (upper(false, false), lower),
+        ],
+    );
+    let layout = engrave_loaded(&loaded).layout;
+    let mut found: Vec<&ResolvedText> = layout
+        .texts
+        .iter()
+        .filter(|t| t.text == "molto espressivo")
+        .collect();
+    found.sort_by(|a, b| b.origin.y.0.total_cmp(&a.origin.y.0));
+    assert_eq!(found.len(), 2, "the words at each system's first note");
+    let offset = |t: &ResolvedText| {
+        let words = text_box(t);
+        let head = layout
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str() == "noteheadBlack")
+            .map(glyph_box)
+            .filter(|h| h[1] > words[3] && h[1] - words[3] < 8.0)
+            .min_by(|a, b| a[0].total_cmp(&b[0]))
+            .expect("the first note over the words");
+        words[0] - head[0]
+    };
+    near(
+        offset(found[1]),
+        offset(found[0]),
+        "as far from their note in both systems",
+    );
+}
+
+/// Expression text after a dynamic between a grand staff's staves stands on
+/// the dynamic's baseline once its row is centred between them (X4d.6): a
+/// p and "espress." after it under the upper staff, the p's row centred as
+/// MuseScore centres a grand staff's dynamics
+/// (`dynamicsHairpinsAutoCenterOnGrandStaff`), the words with it.
+#[test]
+fn expression_text_between_a_grand_staffs_staves_stays_on_its_dynamics_baseline() {
+    let measure = |marked: bool| {
+        format!(
+            "{}{}{}{}{}{}{}",
+            if marked {
+                dir("<dynamics><p/></dynamics>", 1, "below")
+            } else {
+                String::new()
+            },
+            if marked {
+                dir("<words font-style=\"italic\">espress.</words>", 1, "below")
+            } else {
+                String::new()
+            },
+            note("C5", 2, "quarter", 1, ""),
+            note("D5", 2, "quarter", 1, ""),
+            note("E5", 2, "quarter", 1, ""),
+            note("F5", 2, "quarter", 1, ""),
+            backup(8) + &note("C3", 8, "whole", 2, ""),
+        )
+    };
+    let grand = part(
+        "grand_expression.musicxml",
+        2,
+        &[measure(false), measure(true), measure(false)],
+    );
+    let layout = engrave_loaded(&grand).layout;
+    let p = layout
+        .glyphs
+        .iter()
+        .find(|g| g.glyph.as_str() == "dynamicPiano")
+        .expect("the p");
+    let words = run(&layout, "espress.");
+    near(words.origin.y.0, p.position.y.0, "on the p's baseline");
+}
+
+/// A member the rule for marks at a measure's start has set stands where it
+/// set it: the barline rule does not move it off its barline again (X4d.3).
+/// No dynamic stands at its measure's start today, so the state is built by
+/// hand: words under the upper of two joined parts at the second measure's
+/// first note, given a rehearsal mark's place, centred on the barline's
+/// right edge, stay so.
+#[test]
+fn a_member_set_at_its_measures_start_is_not_moved_off_its_barline_again() {
+    use epiphany_layout_ir::{
+        is_barline_glyph, to_constrained, to_logical, ConstraintSolver, MeasureMark, MeasureStart,
+        SolverConfig,
+    };
+    let upper = |words: bool| {
+        format!(
+            "{}{}{}{}{}",
+            if words {
+                dir(
+                    "<dynamics><other-dynamics>molto espressivo</other-dynamics></dynamics>",
+                    1,
+                    "below",
+                )
+            } else {
+                String::new()
+            },
+            note("C5", 2, "quarter", 1, ""),
+            note("D5", 2, "quarter", 1, ""),
+            note("E5", 2, "quarter", 1, ""),
+            note("F5", 2, "quarter", 1, ""),
+        )
+    };
+    let lower = "<note><pitch><step>C</step><octave>4</octave></pitch><duration>8</duration>\
+                 <voice>1</voice><type>whole</type></note>"
+        .to_string();
+    let loaded = joined(
+        "measure_start_kept.musicxml",
+        &[
+            (upper(false), lower.clone()),
+            (upper(true), lower.clone()),
+            (upper(false), lower),
+        ],
+    );
+    let score = &loaded.reduced.score;
+    let mut constrained = to_constrained(&to_logical(score));
+    let words = constrained
+        .texts
+        .iter()
+        .find(|t| t.text.text == "molto espressivo")
+        .expect("the words")
+        .clone();
+    let barline = constrained
+        .glyphs
+        .iter()
+        .filter(|g| {
+            is_barline_glyph(g.glyph.as_str())
+                && g.vertical_band == words.vertical_band
+                && g.baseline.x.0 < words.text.origin.x.0
+        })
+        .max_by(|a, b| a.baseline.x.0.total_cmp(&b.baseline.x.0))
+        .expect("the barline before")
+        .horizontal_slot;
+    let member = constrained
+        .family
+        .iter_mut()
+        .find(|m| m.texts.contains(&words.id()))
+        .expect("the words' member");
+    let placement = member.placement.as_mut().expect("placed");
+    placement.across = Some(MeasureStart {
+        barline: Some(barline),
+        kind: MeasureMark::Rehearsal,
+    });
+    let layout = epiphany_engrave::Engraver::with_geometry(epiphany_cli::page_of(score))
+        .solve(&constrained, &SolverConfig::default())
+        .layout;
+    let drawn = text_box(run(&layout, "molto espressivo"));
+    let centre = (drawn[0] + drawn[2]) * 0.5;
+    // The barline whose right edge is the nearest left of half a space past
+    // the words' centre.
+    let before = before_bar(&layout, [centre + 0.5, drawn[1], centre + 0.5, drawn[3]]);
+    near(centre, before.1, "centred on the barline's right edge");
+}

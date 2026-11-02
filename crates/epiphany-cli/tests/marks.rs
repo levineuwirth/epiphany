@@ -6185,3 +6185,52 @@ fn a_line_to_the_end_runs_to_a_space_before_the_final_barline() {
     let advance = 971.0 / 1024.0;
     assert_eq!(line.len() - 1, ((end - from) / advance).round() as usize);
 }
+
+/// A mark set outside its chord stands clear of the other chords of its
+/// column (X4d.3) and is set from its own chord by that chord's rules alone,
+/// its own column ink left out: a trill over a dotted F5, whose dot stands in
+/// the space over the top line beside its head, within the trill's width,
+/// stands where it stands over the same note undotted.
+#[test]
+fn an_outside_mark_is_set_from_its_own_chord_its_dot_left_out() {
+    let trill = "<ornaments><trill-mark/></ornaments>";
+    let dotted = part(
+        "trill_dotted.musicxml",
+        1,
+        &[format!(
+            "{}{}",
+            note("F5", 6, "half", 1, 1, trill)
+                .replace("<type>half</type>", "<type>half</type><dot/>"),
+            note("C5", 2, "quarter", 1, 1, ""),
+        )],
+    );
+    let plain = part(
+        "trill_undotted.musicxml",
+        1,
+        &[format!(
+            "{}{}",
+            note("F5", 4, "half", 1, 1, trill),
+            note("C5", 4, "half", 1, 1, ""),
+        )],
+    );
+    let place = |loaded: &Loaded| {
+        let layout = engrave(&loaded.reduced.score).layout;
+        let top = staff_lines(&layout)[0].1;
+        let trills = named(&layout, "ornamentTrill");
+        assert_eq!(trills.len(), 1, "one trill");
+        (trills[0], top, named(&layout, "augmentationDot"))
+    };
+    let (dotted_trill, dotted_top, dots) = place(&dotted);
+    let (plain_trill, plain_top, _) = place(&plain);
+    assert_eq!(dots.len(), 1, "the dot");
+    let dot = dots[0];
+    assert!(
+        dot[0] < dotted_trill[2] && dot[3] > dotted_top,
+        "the dot within the trill's width, over the top line: {dot:?} {dotted_trill:?}"
+    );
+    near(
+        dotted_trill[1] - dotted_top,
+        plain_trill[1] - plain_top,
+        "the trill as high over its staff",
+    );
+}

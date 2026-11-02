@@ -1246,3 +1246,189 @@ fn a_glissando_continued_into_a_system_stands_between_its_lead_and_its_chord() {
     );
     near(to, flat[0] - 0.25, "a quarter space before the flat");
 }
+
+/// Two glissandi between two-note chords join heads of one rank, the upper
+/// line the upper heads and the lower the lower, as the `k`th of them takes
+/// the `k`th head of each chord from the top (the model keeps no head): they
+/// run side by side and never cross.
+#[test]
+fn parallel_glissandi_between_chords_join_heads_of_one_rank() {
+    let chord = |low: &str, high: &str, start: bool| {
+        let slide = |n: u8| {
+            if start {
+                format!("<slide type=\"start\" line-type=\"solid\" number=\"{n}\">gliss.</slide>")
+            } else {
+                format!("<slide type=\"stop\" number=\"{n}\"/>")
+            }
+        };
+        format!(
+            "{}{}",
+            note(low, 4, "half", &slide(1)),
+            note(high, 4, "half", &slide(2)).replace("<note>", "<note><chord/>"),
+        )
+    };
+    let loaded = part(
+        "glissandi_parallel.musicxml",
+        &[
+            format!("{}{}", chord("C4", "E4", true), chord("G5", "B5", false)),
+            format!(
+                "{}{}",
+                q("C5"),
+                note("C5", 6, "half", "").replace("<type>half</type>", "<type>half</type><dot/>")
+            ),
+        ],
+    );
+    let layout = engrave_loaded(&loaded).layout;
+    let mut lines = line_strokes(&loaded, &layout, |k| matches!(k, SpannerKind::Glissando));
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    lines.sort_by(|a, b| a.from.y.0.total_cmp(&b.from.y.0));
+    let (lower, upper) = (lines[0], lines[1]);
+    assert!(
+        upper.to.y.0 > lower.to.y.0,
+        "the upper line ends on the upper head: {upper:?} {lower:?}"
+    );
+    let rise = |s: &Stroke| (s.to.y.0 - s.from.y.0) / (s.to.x.0 - s.from.x.0);
+    near(rise(upper), rise(lower), "side by side");
+}
+
+/// A pedal released at a measure's start ends 0.75 before the barline there
+/// (`Pedal::linePos`), even where a clef change stands before the barline at
+/// that time: its line does not stop short at the clef.
+#[test]
+fn a_pedal_released_at_a_clef_change_ends_before_the_barline() {
+    let loaded = part(
+        "pedal_clef_change.musicxml",
+        &[
+            format!(
+                "{}{}{}{}{}",
+                pedal("start", true),
+                q("G4"),
+                q("A4"),
+                q("B4"),
+                q("C5")
+            ),
+            format!(
+                "<attributes><clef><sign>F</sign><line>4</line></clef></attributes>{}{}{}{}{}",
+                pedal("stop", false),
+                q("C3"),
+                q("D3"),
+                q("E3"),
+                q("F3"),
+            ),
+        ],
+    );
+    let layout = engrave_loaded(&loaded).layout;
+    let (_, hooks) = split(&line_strokes(&loaded, &layout, is_pedal));
+    assert_eq!(hooks.len(), 1, "{hooks:?}");
+    let barline = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("barline"))
+        .map(|g| g.position.x.0)
+        .fold(f32::INFINITY, f32::min);
+    let clef = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("fClef"))
+        .map(glyph_box)
+        .next()
+        .expect("the clef change");
+    assert!(
+        clef[2] <= barline + 1e-3,
+        "the clef before the barline: {clef:?} {barline}"
+    );
+    near(
+        hooks[0].0,
+        barline - 0.75,
+        "the hook 0.75 before the barline",
+    );
+}
+
+/// A glissando's piece in a later system never runs back: on a system
+/// whose lead holds nothing, as one would once a clef marked hidden is
+/// honoured (the importer draws every clef today, so the state is built by
+/// hand), the piece's chord leaves it no room after the lead, and it draws
+/// nothing rather than a line from its end back to its start.
+#[test]
+fn a_glissando_piece_after_an_empty_lead_never_runs_back() {
+    use epiphany_layout_ir::{to_constrained, to_logical, ConstraintSolver, SolverConfig};
+    let loaded = part(
+        "glissando_empty_lead.musicxml",
+        &[
+            note(
+                "C5",
+                8,
+                "whole",
+                "<slide type=\"start\" line-type=\"solid\" number=\"1\">gliss.</slide>",
+            ),
+            format!(
+                "<print new-system=\"yes\"/>{}",
+                note("Bb4", 8, "whole", "<slide type=\"stop\" number=\"1\"/>"),
+            ),
+            note("C5", 8, "whole", ""),
+        ],
+    );
+    let score = &loaded.reduced.score;
+    let mut constrained = to_constrained(&to_logical(score));
+    for lead in &mut constrained.system_leads {
+        for (_, glyphs) in &mut lead.entries {
+            glyphs.clear();
+        }
+    }
+    let layout = epiphany_engrave::Engraver::with_geometry(epiphany_cli::page_of(score))
+        .solve(&constrained, &SolverConfig::default())
+        .layout;
+    let clefs = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("gClef"))
+        .count();
+    assert_eq!(clefs, 1, "the later system's lead holds nothing");
+    let pieces = line_strokes(&loaded, &layout, |k| matches!(k, SpannerKind::Glissando));
+    assert!(!pieces.is_empty(), "the first piece");
+    for piece in pieces {
+        assert!(
+            piece.to.x.0 >= piece.from.x.0,
+            "a piece running back: {piece:?}"
+        );
+    }
+}
+
+/// A glissando whose notes stand on two staves is left undrawn: each end's
+/// ink is read on the line's own staff, which holds no head of the other
+/// staff's note.
+#[test]
+fn a_glissando_between_two_staves_is_left_undrawn() {
+    let xml = "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>\
+         A</part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
+         <attributes><divisions>2</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time><staves>2</staves><clef number=\"1\"><sign>G</sign><line>2</line></clef>\
+         <clef number=\"2\"><sign>F</sign><line>4</line></clef></attributes><note><pitch>\
+         <step>C</step><octave>5</octave></pitch><duration>4</duration><voice>1</voice>\
+         <type>half</type><staff>1</staff><notations><slide type=\"start\" line-type=\"solid\" \
+         number=\"1\">gliss.</slide></notations></note><note><rest/><duration>4</duration>\
+         <voice>1</voice><type>half</type><staff>1</staff></note><backup><duration>8\
+         </duration></backup><note><rest/><duration>4</duration><voice>5</voice><type>half\
+         </type><staff>2</staff></note><note><pitch><step>C</step><octave>3</octave></pitch>\
+         <duration>4</duration><voice>5</voice><type>half</type><staff>2</staff><notations>\
+         <slide type=\"stop\" number=\"1\"/></notations></note></measure></part>\
+         </score-partwise>";
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("glissando_two_staves.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    assert_eq!(
+        loaded
+            .reduced
+            .score
+            .cross_cutting
+            .spanners
+            .iter()
+            .filter(|s| matches!(s.kind, SpannerKind::Glissando))
+            .count(),
+        1,
+        "the glissando imported"
+    );
+    let layout = engrave_loaded(&loaded).layout;
+    let drawn = line_strokes(&loaded, &layout, |k| matches!(k, SpannerKind::Glissando));
+    assert!(drawn.is_empty(), "{drawn:?}");
+}

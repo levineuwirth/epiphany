@@ -3853,14 +3853,13 @@ pub fn try_to_constrained(
         // (the model keeps no head for a glissando), each end clear of its
         // chord's ink at its head by a quarter space, the line kept on the
         // one joining the heads' centres (`TLayout::layoutNoteAnchoredLine`).
-        // Both notes must stand on the line's staff.
+        // Both notes must stand on the line's staff: each end's ink is read
+        // on it, and an event's heads are its own staff's ink alone, so a
+        // note on another staff gives no end and the line none.
         let glissando_line = |(e0, e1): (EventId, EventId),
                               (k, _n): (usize, usize),
                               st: StaffId|
          -> Option<GlissandoLine> {
-            if event_staff.get(&e0) != Some(&st) || event_staff.get(&e1) != Some(&st) {
-                return None;
-            }
             let heads = |e: EventId, last: bool| -> Vec<&Head> {
                 let mut heads: Vec<&Head> = note_pitches
                     .get(&e)
