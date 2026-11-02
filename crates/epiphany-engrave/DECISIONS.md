@@ -2966,11 +2966,14 @@ engraver's own placing reproduces it:
   to after they move (`DynamicsLayout::manageBarlineCollisions` runs in the
   dynamic's layout, before the hairpins). The hairpin had stayed where the
   unmoved dynamic left it, its opening on the moved dynamic's ink. A moved
-  hairpin is placed off its staff over its moved span; that span lies within
-  the unmoved one, the part left out under its own dynamic, placed first in
-  the same row and aligned with it, so the placement's half of the rule
-  survives its mutation without a reachable page to tell it
-  (`a_hairpin_moves_its_ends_with_dynamics_moved_off_barlines`,
+  hairpin is placed off its staff over its moved span. Placed over its
+  unmoved span instead, it is set against ink only that span meets, the
+  notes under a dynamic moved off its barline, and its row stands farther
+  off the staff with it: the placement's half is reachable, where this
+  entry first said its mutation survived for want of a page to tell it
+  (corrected in X4d fix round 1, whose test pins it,
+  `a_moved_hairpin_is_placed_over_its_drawn_span`;
+  `a_hairpin_moves_its_ends_with_dynamics_moved_off_barlines`,
   `a_hairpin_over_a_system_break_moves_its_ends_with_its_dynamics`). X4d.4's
   sweep of every page found the hairpins meeting their dynamics' ink once
   dynamic glyphs moved (version 105).

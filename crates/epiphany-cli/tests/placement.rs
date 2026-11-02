@@ -792,3 +792,149 @@ fn a_hairpin_over_a_system_break_moves_its_ends_with_its_dynamics() {
         );
     }
 }
+
+/// The staff highest on the page: its top line, and its bottom four spaces
+/// under it.
+fn upper(layout: &ResolvedLayoutIR) -> (f32, f32) {
+    let top = layout
+        .strokes
+        .iter()
+        .filter(|s| matches!(s.provenance.source, TypedObjectId::Staff(_)))
+        .map(|s| s.from.y.0)
+        .fold(f32::NEG_INFINITY, f32::max);
+    (top, top - 4.0)
+}
+
+/// The legs of the `k`th hairpin of the score, each stroke's box.
+fn hairpin_legs(loaded: &Loaded, layout: &ResolvedLayoutIR, k: usize) -> Vec<[f32; 4]> {
+    let ids: Vec<_> = loaded
+        .reduced
+        .score
+        .cross_cutting
+        .spanners
+        .iter()
+        .filter(|s| matches!(s.kind, epiphany_core::SpannerKind::Hairpin(_)))
+        .map(|s| s.id)
+        .collect();
+    let id = ids[k];
+    layout
+        .strokes
+        .iter()
+        .filter(|s| s.provenance.source == TypedObjectId::Spanner(id) && s.from != s.to)
+        .map(|s| {
+            [
+                s.from.x.0.min(s.to.x.0),
+                s.from.y.0.min(s.to.y.0),
+                s.from.x.0.max(s.to.x.0),
+                s.from.y.0.max(s.to.y.0),
+            ]
+        })
+        .collect()
+}
+
+/// A hairpin moved with dynamics moved off their barlines is placed over
+/// the span it is drawn over (X4d fix round 1): a crescendo from a ppp to a
+/// pp at measures' first notes, in the upper of two parts a bracket joins,
+/// each dynamic moved right of its barline, stands as near its staff as the
+/// same part's alone, where nothing moves. Placed over its unmoved span it
+/// is set against notes the drawn hairpin does not reach, and its row,
+/// dynamics with it, stands farther off. Gould keeps a hairpin and its
+/// dynamics in one plane as near the notes as they go (*Behind Bars*,
+/// p. 105); MuseScore lays a hairpin out from the dynamics it snaps to once
+/// they move (`DynamicsLayout::manageBarlineCollisions`).
+#[test]
+fn a_moved_hairpin_is_placed_over_its_drawn_span() {
+    let dynamic = |d: &str| {
+        format!(
+            "<direction placement=\"below\"><direction-type><dynamics><{d}/></dynamics>\
+             </direction-type></direction>"
+        )
+    };
+    let wedge = |t: &str| {
+        format!(
+            "<direction placement=\"below\"><direction-type><wedge type=\"{t}\"/>\
+             </direction-type></direction>"
+        )
+    };
+    let upper_part = |m: usize| {
+        let mut s = String::new();
+        if m == 1 {
+            s += &dynamic("ppp");
+            s += &wedge("crescendo");
+        }
+        if m == 2 {
+            s += &wedge("stop");
+            s += &dynamic("pp");
+        }
+        s += "<note><pitch><step>F</step><octave>5</octave></pitch><duration>6</duration>\
+              <voice>1</voice><type>half</type><dot/></note>";
+        s += "<note><rest/><duration>2</duration><voice>1</voice><type>quarter</type></note>";
+        s
+    };
+    let lower = "<note><pitch><step>C</step><octave>4</octave></pitch><duration>8</duration>\
+                 <voice>1</voice><type>whole</type></note>";
+    let attributes = "<attributes><divisions>2</divisions><time><beats>4</beats>\
+                      <beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line>\
+                      </clef></attributes>";
+    let measures = |content: &dyn Fn(usize) -> String| -> String {
+        (0..4)
+            .map(|m| {
+                format!(
+                    "<measure number=\"{}\">{}{}</measure>",
+                    m + 1,
+                    if m == 0 { attributes } else { "" },
+                    content(m)
+                )
+            })
+            .collect()
+    };
+    let write = |name: &str, xml: String| {
+        let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+        std::fs::write(&path, xml).expect("written");
+        let loaded = load(&path).expect("loads");
+        assert!(loaded.fidelity.passed(), "{:#?}", loaded.fidelity.failures);
+        loaded
+    };
+    let joined = write(
+        "hairpin_placed_joined.musicxml",
+        format!(
+            "<score-partwise version=\"4.0\"><part-list><part-group type=\"start\" number=\"1\">\
+             <group-symbol>bracket</group-symbol><group-barline>yes</group-barline></part-group>\
+             <score-part id=\"P1\"><part-name>A</part-name></score-part><score-part id=\"P2\">\
+             <part-name>B</part-name></score-part><part-group type=\"stop\" number=\"1\"/>\
+             </part-list><part id=\"P1\">{}</part><part id=\"P2\">{}</part></score-partwise>",
+            measures(&upper_part),
+            measures(&|_| lower.to_string()),
+        ),
+    );
+    let alone = write(
+        "hairpin_placed_alone.musicxml",
+        format!(
+            "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+             </part-name></score-part></part-list><part id=\"P1\">{}</part></score-partwise>",
+            measures(&upper_part),
+        ),
+    );
+    let row = |loaded: &Loaded| {
+        let layout = engrave_loaded(loaded).layout;
+        let soft = only(&layout, "dynamicPPP");
+        let legs = hairpin_legs(loaded, &layout, 0);
+        let (_, bottom) = upper(&layout);
+        let low = legs.iter().map(|l| l[1]).fold(f32::INFINITY, f32::min);
+        (bottom - soft[3], bottom - low, soft, layout)
+    };
+    let (d2, h2, soft2, layout2) = row(&joined);
+    let (d1, h1, _, _) = row(&alone);
+    let before = barlines(&layout2, soft2[3])
+        .into_iter()
+        .filter(|b| b.1 < (soft2[0] + soft2[2]) * 0.5)
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .expect("the barline before");
+    near(
+        soft2[0],
+        before.1 + 0.25,
+        "the ppp moved right of its barline",
+    );
+    near(d2, d1, "the ppp's distance under its staff");
+    near(h2, h1, "the hairpin's distance under its staff");
+}
