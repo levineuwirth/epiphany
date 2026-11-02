@@ -649,6 +649,10 @@ pub enum LayoutDiagnosticKind {
     /// A text run with characters that read right to left, which the
     /// engraver shapes left to right only: it is drawn, but not as it reads.
     RightToLeftText,
+    /// A glissando whose notes' ink leaves its line no room between them
+    /// (X4d fix round 1): it is left undrawn, where Gould sets such a line
+    /// above or below the notes with its words (*Behind Bars*, p. 141).
+    GlissandoTooShort,
 }
 
 /// What shaping a text run left to report, as diagnostics against its source
@@ -3853,9 +3857,12 @@ pub fn try_to_constrained(
         // (the model keeps no head for a glissando), each end clear of its
         // chord's ink at its head by a quarter space, the line kept on the
         // one joining the heads' centres (`TLayout::layoutNoteAnchoredLine`).
+        // Where the notes' ink leaves it no room it is left undrawn, and
+        // `gliss_short` says so (X4d fix round 1).
         // Both notes must stand on the line's staff: each end's ink is read
         // on it, and an event's heads are its own staff's ink alone, so a
         // note on another staff gives no end and the line none.
+        let gliss_short = std::cell::Cell::new(false);
         let glissando_line = |(e0, e1): (EventId, EventId),
                               (k, _n): (usize, usize),
                               st: StaffId|
@@ -3930,6 +3937,7 @@ pub fn try_to_constrained(
                 .reduce(f32::min)?
                 - lines::GLISSANDO_CLEAR;
             if end <= start {
+                gliss_short.set(true);
                 return None;
             }
             let slope = (cb.y.0 - ca.y.0) / (cb.x.0 - ca.x.0);
@@ -6318,7 +6326,15 @@ pub fn try_to_constrained(
                                     emit.stroke(stroke);
                                     true
                                 }
-                                None => false,
+                                None => {
+                                    if gliss_short.replace(false) {
+                                        emit.diag(
+                                            provenance.source,
+                                            LayoutDiagnosticKind::GlissandoTooShort,
+                                        );
+                                    }
+                                    false
+                                }
                             }
                         }
                         _ => false,

@@ -802,6 +802,47 @@ pub fn omissions(
         .filter(|s| inked.contains(&TypedObjectId::Spanner(s.id)))
         .filter_map(tempo_change)
         .collect();
+    // An undrawn glissando named by why (X4d fix round 1): between two
+    // staves, from or to an unpitched note, with notes leaving its line no
+    // room (the projection's diagnostic), or else plainly.
+    let event_staff: BTreeMap<epiphany_core::EventId, epiphany_core::StaffId> = instances
+        .iter()
+        .flat_map(|instance| {
+            instance
+                .voices
+                .iter()
+                .flat_map(|voice| voice.events.iter().map(|event| (*event, instance.staff)))
+        })
+        .collect();
+    let too_short: BTreeSet<TypedObjectId> = diagnostics
+        .iter()
+        .filter(|d| d.kind == LayoutDiagnosticKind::GlissandoTooShort)
+        .map(|d| d.source)
+        .collect();
+    let glissando_class = |spanner: &epiphany_core::Spanner| {
+        let event = |anchor: &TimeAnchor| match anchor {
+            TimeAnchor::Event { id, .. } => Some(*id),
+            _ => None,
+        };
+        let ends = [event(&spanner.start), event(&spanner.end)];
+        let staves: Vec<_> = ends
+            .iter()
+            .map(|e| e.and_then(|e| event_staff.get(&e).copied()))
+            .collect();
+        if too_short.contains(&TypedObjectId::Spanner(spanner.id)) {
+            "glissando too short for its notes"
+        } else if staves.iter().all(Option::is_some) && staves[0] != staves[1] {
+            "glissando between staves"
+        } else if ends
+            .iter()
+            .flatten()
+            .any(|e| matches!(score.events.get(*e), Some(Event::Unpitched(_))))
+        {
+            "glissando of unpitched notes"
+        } else {
+            "glissando"
+        }
+    };
     for spanner in &score.cross_cutting.spanners {
         if tempo_change(spanner).is_some_and(|t| inked_tempo_changes.contains(&t)) {
             continue;
@@ -818,7 +859,11 @@ pub fn omissions(
             _ => continue,
         };
         if !inked.contains(&TypedObjectId::Spanner(spanner.id)) {
-            out.add(class);
+            out.add(if spanner.kind == SpannerKind::Glissando {
+                glissando_class(spanner)
+            } else {
+                class
+            });
             continue;
         }
         // The model keeps no head for a glissando, so one drawn from or to
@@ -850,6 +895,8 @@ pub fn omissions(
             LayoutDiagnosticKind::RightToLeftText => {
                 String::from("diagnostic: right-to-left text shaped left to right")
             }
+            // Named with its glissando, above.
+            LayoutDiagnosticKind::GlissandoTooShort => continue,
         };
         out.add(&kind);
     }

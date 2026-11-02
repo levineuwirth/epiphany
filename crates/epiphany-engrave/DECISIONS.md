@@ -3112,3 +3112,16 @@ engraver's own placing reproduces it:
   follow the pitches exactly (p. 141). The corpus report names each such
   glissando as drawn with its head guessed, until the model keeps the head
   (`a_glissando_at_a_chord_is_named_as_drawn_with_its_head_guessed`).
+
+## X4d fix round 1: an undrawn glissando named by why (2026-11-02, no version change)
+
+- A glissando whose notes' ink leaves its line no room between them is
+  still left undrawn, and the projection now says so with a diagnostic
+  (`LayoutDiagnosticKind::GlissandoTooShort`). Gould sets such a line above
+  or below the notes, away from the stems, parallel to them, with "gliss."
+  close by (*Behind Bars*, p. 141); the room is judged here in the
+  projection's frame, before the spacing sets the page, so drawing her
+  line needs a solver to choose between the two lines once the system
+  stands, which is left for later. The corpus report names an undrawn
+  glissando by why: between staves, of unpitched notes, too short for its
+  notes, or else plainly (`an_undrawn_glissando_is_named_by_why`).

@@ -1151,3 +1151,86 @@ fn a_glissando_at_a_chord_is_named_as_drawn_with_its_head_guessed() {
         1
     );
 }
+
+/// An undrawn glissando is named by why it is undrawn (X4d fix round 1):
+/// between the two staves of a grand staff, between unpitched notes, and
+/// between two thirty-seconds whose ink leaves its line no room, where
+/// Gould sets such a line above or below the notes (*Behind Bars*,
+/// p. 141); one with room is drawn and named nothing.
+#[test]
+fn an_undrawn_glissando_is_named_by_why() {
+    let start = "<notations><slide type=\"start\" line-type=\"solid\" number=\"1\">gliss.\
+                 </slide></notations>";
+    let stop = "<notations><slide type=\"stop\" number=\"1\"/></notations>";
+    let pitched = |step: &str, alter: i8, octave: u8, d: u8, kind: &str, staff: u8, n: &str| {
+        let alter = if alter == 0 {
+            String::new()
+        } else {
+            format!("<alter>{alter}</alter>")
+        };
+        let accidental = if alter.is_empty() {
+            ""
+        } else {
+            "<accidental>flat</accidental>"
+        };
+        format!(
+            "<note><pitch><step>{step}</step>{alter}<octave>{octave}</octave></pitch>\
+             <duration>{d}</duration><voice>{staff}</voice><type>{kind}</type>{accidental}\
+             <staff>{staff}</staff>{n}</note>"
+        )
+    };
+    let upper = [
+        pitched("D", 0, 5, 1, "32nd", 1, start),
+        pitched("E", -1, 5, 1, "32nd", 1, stop),
+        pitched("C", 0, 5, 2, "16th", 1, ""),
+        pitched("C", 0, 5, 4, "eighth", 1, start),
+        pitched("G", 0, 5, 8, "quarter", 1, stop),
+        pitched("C", 0, 5, 16, "half", 1, start),
+    ]
+    .concat();
+    let lower = [
+        "<note><rest/><duration>16</duration><voice>2</voice><type>half</type><staff>2</staff>\
+         </note>"
+            .to_string(),
+        pitched("C", 0, 3, 16, "half", 2, stop),
+    ]
+    .concat();
+    let drum = |n: &str| {
+        format!(
+            "<note><unpitched><display-step>C</display-step><display-octave>5</display-octave>\
+             </unpitched><duration>16</duration><voice>1</voice><type>half</type>{n}</note>"
+        )
+    };
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part><score-part id=\"P2\"><part-name>B</part-name></score-part>\
+         </part-list><part id=\"P1\"><measure number=\"1\"><attributes><divisions>8\
+         </divisions><time><beats>4</beats><beat-type>4</beat-type></time><staves>2</staves>\
+         <clef number=\"1\"><sign>G</sign><line>2</line></clef><clef number=\"2\"><sign>F\
+         </sign><line>4</line></clef></attributes>{upper}<backup><duration>32</duration>\
+         </backup>{lower}</measure></part><part id=\"P2\"><measure number=\"1\"><attributes>\
+         <divisions>8</divisions><time><beats>4</beats><beat-type>4</beat-type></time><clef>\
+         <sign>percussion</sign></clef></attributes>{}{}</measure></part></score-partwise>",
+        drum(start),
+        drum(stop),
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("glissandi_undrawn.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    assert!(loaded.fidelity.passed(), "{:#?}", loaded.fidelity.failures);
+    let glissandi = loaded
+        .reduced
+        .score
+        .cross_cutting
+        .spanners
+        .iter()
+        .filter(|s| s.kind == epiphany_core::SpannerKind::Glissando)
+        .count();
+    assert_eq!(glissandi, 4, "four glissandi imported");
+    let engraved = engrave(&loaded.reduced.score);
+    let named = |kind: &str| count(&loaded, &engraved, kind);
+    assert_eq!(named("glissando between staves"), 1);
+    assert_eq!(named("glissando of unpitched notes"), 1);
+    assert_eq!(named("glissando too short for its notes"), 1);
+    assert_eq!(named("glissando"), 0, "the one with room drawn");
+}
