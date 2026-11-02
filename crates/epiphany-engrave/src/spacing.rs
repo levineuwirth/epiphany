@@ -65,7 +65,9 @@ const HYPHENED_GAP: f32 = 0.4 + 2.0 * 0.05;
 /// staff as on it, as MuseScore never kerns ink past a barline and pads an
 /// arpeggio after one by 0.65 (`HorizontalSpacing::doComputeKerningType`,
 /// `PaddingTable`), and as Gould sets the sign after the barline (*Behind
-/// Bars*, p. 131; X4d.5).
+/// Bars*, p. 131; X4d.5); so does a grace note before its principal, set
+/// after the barline as Gould sets graces before a bar's first beat (p. 127),
+/// MuseScore kerning no grace past a barline either (X4d fix round 1).
 const BARLINE_CLEARANCE: f32 = 0.65;
 
 /// The height of one band of the skyline, in staff spaces.
@@ -301,8 +303,8 @@ fn staff_gap(earlier: Ink, later: Ink) -> Option<f32> {
 struct FloorSlot {
     preferred: f32,
     fixed: bool,
-    /// It holds barlines alone: an arpeggio after it keeps its clearance at
-    /// any height.
+    /// It holds barlines alone: an arpeggio or a grace note after it keeps
+    /// its clearance at any height.
     barline: bool,
     clearance: f32,
     bands: Vec<(i32, f32, f32)>,
@@ -317,6 +319,9 @@ struct FloorSlot {
     verses: Vec<(usize, f32, f32, f32)>,
     /// An arpeggio's left edge in it.
     arpeggio: Option<f32>,
+    /// Its grace notes' leftmost ink, which keeps a barline's clearance at
+    /// any height.
+    grace: Option<f32>,
 }
 
 /// Every glyph-bearing slot's ink by kind, in source order, to space a run
@@ -403,6 +408,9 @@ impl Skyline {
             if let Some(left) = slot.arpeggio {
                 target = target.max(barline_edge - left);
             }
+            if let Some(grace_left) = slot.grace {
+                target = target.max(barline_edge - grace_left);
+            }
             for &(verse, _, right, gap) in &slot.verses {
                 verse_edge[verse] = target + right + gap;
             }
@@ -474,6 +482,9 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
         /// The leftmost edge of an arpeggio's run in it, which keeps a
         /// barline's clearance at any height.
         arpeggio: Option<f32>,
+        /// The leftmost edge of its grace notes' ink, their runs and strokes,
+        /// which keeps a barline's clearance at any height too.
+        grace: Option<f32>,
     }
 
     let preferred_of: BTreeMap<SpringSlotId, (f32, bool)> = input
@@ -559,6 +570,7 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
             staff: BTreeMap::new(),
             verses: BTreeMap::new(),
             arpeggio: None,
+            grace: None,
         });
         if roomless.contains(&glyph.id()) {
             continue;
@@ -633,6 +645,7 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
     // cleared where it reaches. The family's strokes take no room (a
     // rehearsal mark's frame rides its measure's first slot at both ends).
     let roomless_strokes = crate::family::roomless_strokes(input);
+    let grace_strokes = crate::family::grace_strokes(input);
     for stroke in input
         .strokes
         .iter()
@@ -658,6 +671,10 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
             Ink::Other
         };
         let half = stroke.thickness.0 * 0.5;
+        if grace_strokes.contains(&stroke.id()) {
+            let grace_left = stroke.from.x.0.min(stroke.to.x.0) - half;
+            extent.grace = Some(extent.grace.map_or(grace_left, |l| l.min(grace_left)));
+        }
         widen(
             extent,
             ink,
@@ -692,8 +709,12 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
                 .or_insert((x + b.left.0, x + b.right.0, gap));
             continue;
         }
-        if room != Room::Ink {
+        if room != Room::Ink && room != Room::Grace {
             continue;
+        }
+        if room == Room::Grace {
+            let grace_left = x + b.left.0;
+            extent.grace = Some(extent.grace.map_or(grace_left, |l| l.min(grace_left)));
         }
         let is_arpeggio = match text.text.provenance.source {
             TypedObjectId::Event(event) => {
@@ -827,7 +848,7 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
     // Each staff's verse's last syllable's right edge, with its gap.
     let mut verse_edge: BTreeMap<(VerticalBandId, u16), f32> = BTreeMap::new();
     // The last barline's right edge with its clearance, at any height: an
-    // arpeggio keeps clear of it.
+    // arpeggio and a grace note keep clear of it.
     let mut barline_edge = f32::NEG_INFINITY;
     // The previous slot's target and spring.
     let mut previous: Option<(f32, f32)> = None;
@@ -857,6 +878,9 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
         }
         if let Some(left) = extent.arpeggio {
             target = target.max(barline_edge + (extent.source - left));
+        }
+        if let Some(grace_left) = extent.grace {
+            target = target.max(barline_edge + (extent.source - grace_left));
         }
         for (verse, (left, _, _)) in &extent.verses {
             if let Some(&edge) = verse_edge.get(verse) {
@@ -954,6 +978,7 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
                         .map(|(verse, (l, r, gap))| (verse_index[verse], l - s, r - s, *gap))
                         .collect(),
                     arpeggio: extent.arpeggio.map(|l| l - s),
+                    grace: extent.grace.map(|l| l - s),
                 }
             })
             .collect(),

@@ -411,6 +411,11 @@ pub enum Room {
     /// As any ink of its column: an arpeggio left of its chord, a one-note
     /// tremolo on its stem, a chord line beside its head.
     Ink,
+    /// A grace note's (X4d.2): as any ink of its column, and, at any height,
+    /// a barline's clearance after the barline before its principal, as
+    /// Gould sets graces before a bar's first beat after its barline
+    /// (*Behind Bars*, p. 127).
+    Grace,
     /// A syllable's: clear of the earlier syllables of its staff and verse
     /// at any height, by more where a hyphen follows it, and of no other ink.
     Verse { verse: u16, hyphen: bool },
@@ -4190,7 +4195,7 @@ pub fn try_to_constrained(
                                     glyphs: Vec::new(),
                                     strokes: strokes.iter().map(Stroke::id).collect(),
                                     texts: runs.iter().map(ResolvedText::id).collect(),
-                                    room: Room::Ink,
+                                    room: Room::Grace,
                                     placement: None,
                                     line: None,
                                 });

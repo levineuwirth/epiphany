@@ -516,3 +516,96 @@ fn a_graces_slash_clears_its_ledger_lines() {
         "a quarter above its ledger lines",
     );
 }
+
+/// The leftmost ink of a group of graces: their runs, their stems and
+/// ledger lines, their slashes and beams.
+fn group_left(loaded: &Loaded, layout: &ResolvedLayoutIR, group: &[EventId]) -> f32 {
+    group
+        .iter()
+        .flat_map(|&event| {
+            grace_runs(loaded, layout, event)
+                .into_iter()
+                .map(|t| text_box(t)[0])
+                .chain(
+                    strokes(layout, event)
+                        .into_iter()
+                        .map(|s| s.from.x.0.min(s.to.x.0) - s.thickness.0 * 0.5),
+                )
+                .collect::<Vec<f32>>()
+        })
+        .fold(f32::INFINITY, f32::min)
+}
+
+/// The right edge of the barline glyph nearest before `x` whose staff holds
+/// the height `y`.
+fn barline_before(layout: &ResolvedLayoutIR, x: f32, y: f32) -> f32 {
+    layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("barline"))
+        .map(|g| {
+            let (gx, gy, b) = (g.position.x.0, g.position.y.0, &g.bounding_box);
+            [gx + b.left.0, gy + b.bottom.0, gx + b.right.0, gy + b.top.0]
+        })
+        .filter(|bar| bar[2] <= x + 0.01 && bar[1] - 3.0 < y && y < bar[3] + 3.0)
+        .map(|bar| bar[2])
+        .fold(f32::NEG_INFINITY, f32::max)
+}
+
+/// A grace at a bar's first beat stands after the barline before it at any
+/// height, as Gould sets graces before the first beat of a bar (*Behind
+/// Bars*, p. 127) and as MuseScore and LilyPond do: a slashed grace with
+/// its flat on ledger lines over the staff, two under it, and a beamed pair
+/// high over it, each group's leftmost ink (its accidental, ledger lines and
+/// beam included) the barline's clearance, 0.65, right of the barline. Their ink, meeting
+/// no barline ink at its height, had passed the barline into the bar before.
+#[test]
+fn a_grace_off_the_staff_at_a_bars_first_beat_stands_after_its_barline() {
+    let eighths =
+        |pitches: &[&str]| -> String { pitches.iter().map(|p| note(p, 1, "eighth", 1)).collect() };
+    let loaded = part(
+        "grace_after_barline.musicxml",
+        2,
+        &[
+            eighths(&["C5", "D5", "E5", "F5", "G5", "A5", "B5", "C6"]),
+            format!(
+                "{}{}{}{}{}",
+                grace("Eb7", true, "eighth", None, 1),
+                note("C6", 2, "quarter", 1),
+                note("B5", 2, "quarter", 1),
+                note("A5", 2, "quarter", 1),
+                note("G5", 2, "quarter", 1),
+            ),
+            eighths(&["C6", "B5", "A5", "G5", "F5", "E5", "D5", "C5"]),
+            format!(
+                "{}{}{}{}{}{}",
+                grace("F3", true, "eighth", None, 1),
+                grace("A3", true, "eighth", None, 1),
+                note("C4", 2, "quarter", 1),
+                note("D4", 2, "quarter", 1),
+                note("E4", 2, "quarter", 1),
+                note("F4", 2, "quarter", 1),
+            ),
+            format!(
+                "{}{}{}",
+                grace("A7", true, "16th", Some("begin"), 1),
+                grace("B7", true, "16th", Some("end"), 1),
+                note("C6", 8, "whole", 1),
+            ),
+            note("C5", 8, "whole", 1),
+        ],
+    );
+    let layout = engrave_loaded(&loaded).layout;
+    let e = events(&loaded);
+    for (group, principal) in [(&e[8..9], e[9]), (&e[21..23], e[23]), (&e[27..29], e[29])] {
+        let h = head(&loaded, &layout, principal);
+        let bar = barline_before(&layout, h[0], (h[1] + h[3]) * 0.5);
+        assert!(bar.is_finite(), "a barline before {principal:?}");
+        let left = group_left(&loaded, &layout, group);
+        assert!(
+            left >= bar + 0.65 - 0.005,
+            "graces {group:?} at {left}, the barline's right edge at {bar}"
+        );
+        assert!(left < h[0], "the graces before their principal");
+    }
+}

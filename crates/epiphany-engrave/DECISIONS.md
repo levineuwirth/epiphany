@@ -2974,3 +2974,27 @@ engraver's own placing reproduces it:
   `a_hairpin_over_a_system_break_moves_its_ends_with_its_dynamics`). X4d.4's
   sweep of every page found the hairpins meeting their dynamics' ink once
   dynamic glyphs moved (version 105).
+
+## ENGRAVER_VERSION 107 → 108: a grace note after the barline before its principal at any height (X4d fix round 1, 2026-11-02)
+
+- A grace note's ink, its heads, accidentals and flag, its stem, ledger
+  lines, slash and beam, keeps a barline's clearance (0.65) after the
+  barline before its principal at any height, over or under the staff as
+  on it, in the spacing pass and at the compression floor alike, as an
+  arpeggio does (version 103). A barline's clearance had held only where
+  its own ink's height met the grace's, so a grace standing off the staff
+  at a bar's first beat, on ledger lines over it or a beamed pair high
+  over it, stood over or before the barline, where it reads as the end of
+  the bar before. Gould places grace notes before a bar's first beat after
+  its barline, and always so for graces sounding on the beat, a group of
+  three or more sounding before it being free to stand before the barline
+  so the beat is not pushed far from it (*Behind Bars*, p. 127); the model
+  keeps no such timing, so every group stands after. MuseScore never kerns
+  ink past a barline (`HorizontalSpacing::doComputeKerningType`) and sets
+  them after it; LilyPond 2.26.0 sets a high grace and a high beamed pair
+  after theirs (C4d review 1's hand-written probe). A trill's finishing
+  notes, which Gould sets before the barline (p. 127), would need graces
+  the model keeps after their note; it holds none. A grace is told by its
+  room, `Room::Grace`, which otherwise takes room as `Room::Ink` does
+  (`a_grace_off_the_staff_at_a_bars_first_beat_stands_after_its_barline`,
+  `a_compressed_systems_graces_stand_right_of_their_barlines`).

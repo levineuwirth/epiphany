@@ -55,6 +55,18 @@ pub(crate) fn roomless_strokes(input: &ConstrainedLayoutIR) -> BTreeSet<GlyphObj
         .collect()
 }
 
+/// The strokes of the family's grace notes (their stems, ledger lines,
+/// slashes and beams), which keep a barline's clearance at any height as
+/// their runs do (`Room::Grace`).
+pub(crate) fn grace_strokes(input: &ConstrainedLayoutIR) -> BTreeSet<GlyphObjectId> {
+    input
+        .family
+        .iter()
+        .filter(|mark| mark.room == Room::Grace)
+        .flat_map(|mark| mark.strokes.iter().copied())
+        .collect()
+}
+
 /// Each text run of the family with the room it takes.
 pub(crate) fn texts_with_room(input: &ConstrainedLayoutIR) -> Vec<(&TextObject, Room)> {
     let room: BTreeMap<GlyphObjectId, Room> = input

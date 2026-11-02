@@ -7945,3 +7945,99 @@ fn a_grace_note_is_drawn_small_before_its_principal() {
         .unchecked
         .contains_key("note: duration not one notated value"));
 }
+
+/// A compressed system's graces stand right of their barlines at any
+/// height: a slashed grace on three ledger lines over the staff at every
+/// bar's first beat, in systems the file breaks, keeps the barline's
+/// clearance (0.65) after the barline before its principal on every page
+/// down to the narrowest whose line the systems' floor fits, as the
+/// spacing pass keeps it (Gould, *Behind Bars*, p. 127).
+#[test]
+fn a_compressed_systems_graces_stand_right_of_their_barlines() {
+    let measure = "<note><grace slash=\"yes\"/><pitch><step>E</step><octave>7</octave></pitch>\
+                   <voice>1</voice><type>eighth</type></note><note><pitch><step>C</step>\
+                   <octave>6</octave></pitch><duration>8</duration><voice>1</voice>\
+                   <type>half</type></note><note><rest/><duration>8</duration><voice>1</voice>\
+                   <type>half</type></note>"
+        .to_string();
+    let measures = vec![measure; 12];
+    let attributes = "<time><beats>4</beats><beat-type>4</beat-type></time>\
+                      <clef><sign>G</sign><line>2</line></clef>";
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("compressed_graces.musicxml");
+    let (mut held, mut checked) = (0, 0);
+    for tenth in (300..=1500).rev().step_by(5) {
+        let width = tenth as f32 / 10.0;
+        std::fs::write(&path, broken_part(width, attributes, &measures, &[7])).expect("written");
+        let loaded = load(&path).expect("loads");
+        let report = solve_loaded(&loaded);
+        if !added_systems(&report).is_empty() {
+            break;
+        }
+        let layout = &report.layout;
+        let score = &loaded.reduced.score;
+        let events = &loaded.import.ids.events[0];
+        let barlines: Vec<[f32; 4]> = layout
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str().starts_with("barline"))
+            .map(glyph_box)
+            .collect();
+        for k in (0..events.len()).step_by(3) {
+            let (grace, principal) = (events[k], events[k + 1]);
+            let pitches = |event| match score.events.get(event) {
+                Some(epiphany_core::Event::Pitched(p)) => p
+                    .pitches
+                    .iter()
+                    .map(|ip| epiphany_core::TypedObjectId::Pitch(ip.id))
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let principal_pitches: Vec<_> = pitches(principal);
+            let Some(head) = layout
+                .glyphs
+                .iter()
+                .filter(|g| {
+                    principal_pitches.contains(&g.provenance.source)
+                        && g.glyph.as_str().starts_with("notehead")
+                })
+                .map(glyph_box)
+                .next()
+            else {
+                continue;
+            };
+            let mut grace_sources = pitches(grace);
+            grace_sources.push(epiphany_core::TypedObjectId::Event(grace));
+            let left = layout
+                .texts
+                .iter()
+                .filter(|t| grace_sources.contains(&t.provenance.source))
+                .map(|t| t.origin.x.0 + t.bounds.left.0)
+                .chain(
+                    layout
+                        .strokes
+                        .iter()
+                        .filter(|s| grace_sources.contains(&s.provenance.source) && s.from != s.to)
+                        .map(|s| s.from.x.0.min(s.to.x.0) - s.thickness.0 * 0.5),
+                )
+                .fold(f32::INFINITY, f32::min);
+            let y = (head[1] + head[3]) * 0.5;
+            // The barline before its principal on its staff, but at a
+            // system's start.
+            let Some(bar) = barlines
+                .iter()
+                .filter(|bar| bar[2] <= head[0] + 0.01 && bar[1] - 3.0 < y && y < bar[3] + 3.0)
+                .max_by(|a, b| a[2].total_cmp(&b[2]))
+            else {
+                continue;
+            };
+            assert!(
+                left >= bar[2] + 0.65 - 0.01,
+                "at width {width} a grace at {left} passes its barline {bar:?}"
+            );
+            checked += 1;
+        }
+        held += 1;
+    }
+    assert!(held > 10, "pages down to the floor held the file's systems");
+    assert!(checked > 100, "{checked} graces after a barline");
+}
