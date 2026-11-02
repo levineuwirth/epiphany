@@ -1734,8 +1734,9 @@ pub(crate) fn cast_off(
         family_dx.insert(f, target - (l + r) * 0.5);
     }
     // A dynamic moved across a quarter space clear of a barline that runs
-    // through the staves at it, as MuseScore moves a dynamic no one moved
-    // (`DynamicsLayout::manageBarlineCollisions`; X4d.3): under its staff,
+    // through the staves at it, as MuseScore moves one whose offset no user
+    // changed (`DynamicsLayout::manageBarlineCollisions`; X4d.3), every
+    // dynamic here, the model keeping no author's offset: under its staff,
     // its own staff's barline where it runs on to the next staff; over it,
     // the barline of the staff above where that one runs on to it. Away from
     // the barline after it, then from the one before it; Gould keeps barlines
