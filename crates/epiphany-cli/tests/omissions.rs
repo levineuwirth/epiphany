@@ -1102,3 +1102,52 @@ fn a_graces_marks_are_drawn_and_counted_undrawn() {
     assert_eq!(count(&loaded, &engraved, "note mark: staccato"), 1);
     assert_eq!(count(&loaded, &engraved, "note mark: accent"), 1);
 }
+
+/// A glissando drawn from or to a chord is named as drawn with its head
+/// guessed (X4d fix round 1): the model keeps no head for it, so the line
+/// takes its chord's head by its rank among the glissandi between the same
+/// notes. One between single notes is not named.
+#[test]
+fn a_glissando_at_a_chord_is_named_as_drawn_with_its_head_guessed() {
+    let note = |pitch: &str, chord: bool, notations: &str| {
+        let (step, octave) = pitch.split_at(1);
+        format!(
+            "<note>{}<pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+             <duration>4</duration><voice>1</voice><type>half</type>\
+             <notations>{notations}</notations></note>",
+            if chord { "<chord/>" } else { "" }
+        )
+    };
+    let start = "<slide type=\"start\" line-type=\"solid\" number=\"1\">gliss.</slide>";
+    let stop = "<slide type=\"stop\" number=\"1\"/>";
+    let measure = [
+        note("C4", false, start),
+        note("E4", true, ""),
+        note("G5", false, stop),
+        note("C5", false, start),
+        note("G5", false, stop),
+    ]
+    .concat();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
+         <attributes><divisions>2</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time><clef><sign>G</sign><line>2</line></clef></attributes>{}</measure>\
+         <measure number=\"2\">{}</measure></part></score-partwise>",
+        &measure[..measure
+            .find("<note><pitch><step>C</step><octave>5")
+            .expect("the second")],
+        &measure[measure
+            .find("<note><pitch><step>C</step><octave>5")
+            .expect("the second")..],
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("glissando_guessed.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let engraved = engrave(&loaded.reduced.score);
+    assert_eq!(count(&loaded, &engraved, "glissando"), 0, "both drawn");
+    assert_eq!(
+        count(&loaded, &engraved, "glissando drawn with its head guessed"),
+        1
+    );
+}

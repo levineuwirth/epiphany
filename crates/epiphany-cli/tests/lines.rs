@@ -1551,3 +1551,49 @@ fn only_a_grace_opening_an_ottava_on_its_staff_moves_its_numeral() {
         "the other staff's grace leaves the numeral at its note",
     );
 }
+
+/// Glissandi between the same two chords take one "gliss.", as Gould gives a
+/// set of parallel lines one instruction whatever the number of notes
+/// (*Behind Bars*, p. 143), where MuseScore draws one on each: two lines,
+/// their words along the upper alone.
+#[test]
+fn parallel_glissandi_take_one_gliss() {
+    let chord = |low: &str, high: &str, start: bool| {
+        let slide = |n: u8| {
+            if start {
+                format!("<slide type=\"start\" line-type=\"solid\" number=\"{n}\">gliss.</slide>")
+            } else {
+                format!("<slide type=\"stop\" number=\"{n}\"/>")
+            }
+        };
+        format!(
+            "{}{}",
+            note(low, 4, "half", &slide(1)),
+            note(high, 4, "half", &slide(2)).replace("<note>", "<note><chord/>"),
+        )
+    };
+    let loaded = part(
+        "glissandi_one_word.musicxml",
+        &[
+            format!("{}{}", chord("C4", "E4", true), chord("G5", "B5", false)),
+            note("C5", 8, "whole", ""),
+        ],
+    );
+    let layout = engrave_loaded(&loaded).layout;
+    let mut lines = line_strokes(&loaded, &layout, |k| matches!(k, SpannerKind::Glissando));
+    assert_eq!(lines.len(), 2);
+    lines.sort_by(|a, b| a.from.y.0.total_cmp(&b.from.y.0));
+    let words = runs(&layout, "gliss.");
+    assert_eq!(words.len(), 1, "one instruction");
+    let w = text_box(words[0]);
+    let upper = lines[1];
+    let at = |x: f32| {
+        upper.from.y.0
+            + (upper.to.y.0 - upper.from.y.0) * (x - upper.from.x.0)
+                / (upper.to.x.0 - upper.from.x.0)
+    };
+    assert!(
+        w[1] >= at(w[0]) - 0.3,
+        "along the upper line: {w:?} {upper:?}"
+    );
+}

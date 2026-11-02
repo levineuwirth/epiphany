@@ -6259,14 +6259,11 @@ pub fn try_to_constrained(
                         ) => {
                             // A glissando from head to head (X4d.1), each end a
                             // quarter space clear of its chord's ink at its head.
-                            match glissando_line(
-                                (*e0, *e1),
-                                gliss_rank
-                                    .get(&provenance.stable_id.0)
-                                    .copied()
-                                    .unwrap_or((0, 1)),
-                                st,
-                            ) {
+                            let rank = gliss_rank
+                                .get(&provenance.stable_id.0)
+                                .copied()
+                                .unwrap_or((0, 1));
+                            match glissando_line((*e0, *e1), rank, st) {
                                 Some((from, to, (s0, s1), heads)) => {
                                     let band = band_of(staff);
                                     let stroke = line_stroke(
@@ -6291,17 +6288,24 @@ pub fn try_to_constrained(
                                         TextAlign::Left,
                                         from,
                                     );
-                                    line_texts.push(LineText {
-                                        line: stroke.id(),
-                                        run: words,
-                                        role: LineTextRole::Along {
-                                            raise: if wavy {
-                                                lines::GLISSANDO_WAVY_TEXT_RAISE
-                                            } else {
-                                                lines::GLISSANDO_TEXT_RAISE
-                                            },
-                                        },
-                                    });
+                                    // One "gliss." for glissandi between the
+                                    // same notes, on the one from their top
+                                    // heads, as Gould gives a set of parallel
+                                    // lines one instruction (p. 143), where
+                                    // MuseScore draws one on each (X4d fix
+                                    // round 1).
+                                    let raise = if wavy {
+                                        lines::GLISSANDO_WAVY_TEXT_RAISE
+                                    } else {
+                                        lines::GLISSANDO_TEXT_RAISE
+                                    };
+                                    if rank.0 == 0 {
+                                        line_texts.push(LineText {
+                                            line: stroke.id(),
+                                            run: words,
+                                            role: LineTextRole::Along { raise },
+                                        });
+                                    }
                                     family.push(FamilyMark {
                                         band,
                                         glyphs: Vec::new(),

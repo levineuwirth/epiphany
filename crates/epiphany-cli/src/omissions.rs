@@ -819,6 +819,22 @@ pub fn omissions(
         };
         if !inked.contains(&TypedObjectId::Spanner(spanner.id)) {
             out.add(class);
+            continue;
+        }
+        // The model keeps no head for a glissando, so one drawn from or to
+        // a chord takes its head by its rank among the glissandi between
+        // the same notes (X4d.1): named, since the head may not be the
+        // file's (X4d fix round 1).
+        let chord_at = |anchor: &TimeAnchor| match anchor {
+            TimeAnchor::Event { id, .. } => {
+                matches!(score.events.get(*id), Some(Event::Pitched(p)) if p.pitches.len() > 1)
+            }
+            _ => false,
+        };
+        if spanner.kind == SpannerKind::Glissando
+            && (chord_at(&spanner.start) || chord_at(&spanner.end))
+        {
+            out.add("glissando drawn with its head guessed");
         }
     }
 

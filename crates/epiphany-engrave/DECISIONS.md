@@ -3097,3 +3097,18 @@ engraver's own placing reproduces it:
   numeral at the first note
   (`an_ottava_starting_at_a_grace_sets_its_numeral_at_the_grace`,
   `only_a_grace_opening_an_ottava_on_its_staff_moves_its_numeral`).
+
+## ENGRAVER_VERSION 110 → 111: one "gliss." for parallel glissandi, and a guessed head named (X4d fix round 1, 2026-11-02)
+
+- Glissandi between the same two notes take one "gliss.", on the line from
+  their top heads, as Gould gives a set of parallel lines one instruction
+  whatever the number of notes (*Behind Bars*, p. 143), her example's word
+  over the top line; each had drawn its own, as MuseScore draws one on each
+  line: a departure from it, which the owner ruled (D116)
+  (`parallel_glissandi_take_one_gliss`).
+- The model keeps no head for a glissando, so one drawn from or to a chord
+  takes the chord's head by its rank among the glissandi between the same
+  notes (version 96), which may not be the file's; Gould has the line
+  follow the pitches exactly (p. 141). The corpus report names each such
+  glissando as drawn with its head guessed, until the model keeps the head
+  (`a_glissando_at_a_chord_is_named_as_drawn_with_its_head_guessed`).
