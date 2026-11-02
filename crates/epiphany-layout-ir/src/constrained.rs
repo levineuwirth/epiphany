@@ -3985,10 +3985,13 @@ pub fn try_to_constrained(
             // Its start read again where the line so begun would cross the
             // first column's other ink, a stem or another head, any voice's:
             // past each box of it the line meets, a quarter space on (X4d fix
-            // round 1).
+            // round 1). The line meets a box it passes nearer than its half
+            // width and the quarter space it keeps from its chords' ink, so
+            // one grazing a head beside its own starts past it too.
             let column = staff_column_ink(st, &a.key, None);
             let rise = (cb.y.0 - ca.y.0) / (cb.x.0 - ca.x.0);
             let height = |x: f32| ca.y.0 + (x - ca.x.0) * rise;
+            let reach = lines::GLISSANDO_CLEAR + lines::GLISSANDO_WIDTH * 0.5;
             let mut start = start;
             for _ in 0..4 {
                 let past = column
@@ -3996,8 +3999,8 @@ pub fn try_to_constrained(
                     .filter(|i| {
                         let (l, r) = (i.left.max(start), i.right.min(end));
                         l < r
-                            && height(l).min(height(r)) < i.top
-                            && height(l).max(height(r)) > i.bottom
+                            && height(l).min(height(r)) < i.top + reach
+                            && height(l).max(height(r)) > i.bottom - reach
                     })
                     .map(|i| i.right + lines::GLISSANDO_CLEAR)
                     .fold(start, f32::max);

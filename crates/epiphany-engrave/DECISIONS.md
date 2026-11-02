@@ -3194,3 +3194,18 @@ engraver's own placing reproduces it:
   so could run through a head beside its own, which Gould's line between
   the notes never does (p. 141)
   (`a_glissando_starts_past_a_head_its_line_would_cross`).
+
+## ENGRAVER_VERSION 115 → 116: a glissando's start clear of a head it would graze (X4d fix round 1, 2026-11-02)
+
+- Version 115 reads a glissando's start again past ink of its first column
+  that its line would cross; the line now also starts past a box it would
+  pass nearer than its half width and a quarter space, the room it keeps
+  from its own chords' ink (version 96). Where the upper of two voices a
+  second apart stands right of the lower, its dots after its own head
+  (version 89), a line falling from the lower head had run just under the
+  upper's, its ink touching that head without crossing its box, and so
+  started where it had. Gould's line runs between the notes it joins, clear
+  of the others (*Behind Bars*, p. 141); MuseScore starts it past its own
+  chord's shape at the head's height alone
+  (`TLayout::layoutNoteAnchoredLine`), whatever another voice sets beside it
+  (`a_glissando_starts_past_a_head_it_would_graze`).

@@ -1708,6 +1708,85 @@ fn a_glissando_starts_past_a_head_its_line_would_cross() {
     );
 }
 
+/// A glissando's start keeps the quarter space it keeps from its chords' ink
+/// from a head beside its own too (X4d fix round 1), on either side of the
+/// line: from the lower of two voices a second apart, the upper's dotted head
+/// set right of it, the line falling from just under that head; and from the
+/// upper, the lower's head set right of it, the line rising from just over
+/// that head; and a line falling further, which would begin nearer that head
+/// than the quarter space though clear of it by its width. Each starts past
+/// the head beside its own rather than grazing it.
+#[test]
+fn a_glissando_starts_past_a_head_it_would_graze() {
+    let voiced = |pitch: &str, duration: u8, kind: &str, voice: u8, stem: &str, notations: &str| {
+        note(pitch, duration, kind, notations)
+            .replace("<voice>1</voice>", &format!("<voice>{voice}</voice>"))
+            .replace("</type>", &format!("</type><stem>{stem}</stem>"))
+    };
+    let start = "<slide type=\"start\" line-type=\"solid\" number=\"1\">gliss.</slide>";
+    let stop = "<slide type=\"stop\" number=\"1\"/>";
+    // (the measure, the index of the glissando's first note, of the head
+    // beside it)
+    let cases = [
+        (
+            format!(
+                "{}{}<backup><duration>8</duration></backup>{}{}",
+                voiced("A5", 6, "half", 1, "up", "").replace("</type>", "</type><dot/>"),
+                voiced("C6", 2, "quarter", 1, "up", ""),
+                voiced("G5", 4, "half", 2, "down", start),
+                voiced("F5", 4, "half", 2, "down", stop),
+            ),
+            2,
+            0,
+        ),
+        // Falling further, the line stands a little under that head where it
+        // would begin, nearer than the quarter space but clear of its width.
+        (
+            format!(
+                "{}{}<backup><duration>8</duration></backup>{}{}",
+                voiced("A5", 6, "half", 1, "up", "").replace("</type>", "</type><dot/>"),
+                voiced("C6", 2, "quarter", 1, "up", ""),
+                voiced("G5", 4, "half", 2, "down", start),
+                voiced("D5", 4, "half", 2, "down", stop),
+            ),
+            2,
+            0,
+        ),
+        (
+            format!(
+                "{}{}<backup><duration>8</duration></backup>{}{}",
+                voiced("G5", 4, "half", 1, "up", start),
+                voiced("A5", 4, "half", 1, "up", stop),
+                voiced("F5", 4, "half", 2, "down", ""),
+                voiced("D5", 4, "half", 2, "down", ""),
+            ),
+            0,
+            2,
+        ),
+    ];
+    for (measure, own, other) in cases {
+        let loaded = part(
+            "glissando_grazing_a_voice.musicxml",
+            &[measure, note("C5", 8, "whole", "")],
+        );
+        let layout = engrave_loaded(&loaded).layout;
+        let e = events(&loaded);
+        let other = head(&loaded, &layout, e[other]);
+        let own = head(&loaded, &layout, e[own]);
+        assert!(
+            other[0] > own[0] + 0.5,
+            "the other voice's head set right of the glissando's: {other:?} {own:?}"
+        );
+        let lines = line_strokes(&loaded, &layout, |k| matches!(k, SpannerKind::Glissando));
+        assert_eq!(lines.len(), 1);
+        let line = lines[0];
+        assert!(
+            line.from.x.0 >= other[2] + 0.2,
+            "the line starts past the head beside its own: {line:?} {other:?}"
+        );
+    }
+}
+
 /// A glissando's words with no other ink in their way stay centred along
 /// their line, their own line never one they keep off.
 #[test]
