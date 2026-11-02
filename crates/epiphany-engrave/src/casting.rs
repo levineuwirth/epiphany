@@ -658,8 +658,9 @@ pub(crate) fn cast_off(
             (info.lo, info.hi) = (info.x, info.x);
         }
     }
-    // A run of the family that takes room, an arpeggio or a syllable, widens
-    // its slot as the spacing pass lets it.
+    // A run of the family that takes room, an arpeggio, a syllable or a
+    // grace's mark kept off a barline, widens its slot as the spacing pass
+    // lets it.
     let room: BTreeSet<GlyphObjectId> = crate::family::texts_with_room(input)
         .into_iter()
         .filter(|(_, room)| *room != epiphany_layout_ir::Room::None)
@@ -2055,7 +2056,7 @@ pub(crate) fn cast_off(
                     let of_grace = text_at
                         .get(id)
                         .is_some_and(|i| Some(input.texts[*i].text.provenance.source) == source);
-                    if of_grace && other.room == epiphany_layout_ir::Room::None {
+                    if of_grace && other.room == epiphany_layout_ir::Room::GraceMark {
                         out.insert(*id, dx);
                     }
                 }

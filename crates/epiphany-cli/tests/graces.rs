@@ -610,6 +610,56 @@ fn a_grace_off_the_staff_at_a_bars_first_beat_stands_after_its_barline() {
     }
 }
 
+/// A grace's mark keeps the barline's clearance its grace keeps (X4d fix
+/// round 1): a tenuto under a grace at a bar's first beat, wider than the
+/// grace's head, stands 0.65 right of the barline before it as the head
+/// does, though it takes no room against other ink. It had stood nearer
+/// the barline by what it reaches left of the head.
+#[test]
+fn a_graces_mark_keeps_the_barlines_clearance() {
+    use epiphany_core::EventMark;
+    let eighths =
+        |pitches: &[&str]| -> String { pitches.iter().map(|p| note(p, 1, "eighth", 1)).collect() };
+    let marked = |g: String, notation: &str| {
+        g.replace(
+            "</note>",
+            &format!("<notations><articulations>{notation}</articulations></notations></note>"),
+        )
+    };
+    let loaded = part(
+        "grace_mark_after_barline.musicxml",
+        2,
+        &[
+            eighths(&["C5", "D5", "E5", "F5", "G5", "A5", "B5", "C6"]),
+            format!(
+                "{}{}{}{}{}",
+                marked(grace("G4", false, "eighth", None, 1), "<tenuto/>"),
+                note("A4", 2, "quarter", 1),
+                note("B4", 2, "quarter", 1),
+                note("C5", 2, "quarter", 1),
+                note("D5", 2, "quarter", 1),
+            ),
+            note("C5", 8, "whole", 1),
+        ],
+    );
+    let layout = engrave_loaded(&loaded).layout;
+    let e = events(&loaded);
+    let h = head(&loaded, &layout, e[9]);
+    let bar = barline_before(&layout, h[0], (h[1] + h[3]) * 0.5);
+    assert!(bar.is_finite(), "a barline before the principal");
+    let tenuto = text_box(mark_run(&layout, e[8], EventMark::Tenuto).expect("the tenuto drawn"));
+    let g = grace_head(&loaded, &layout, e[8]);
+    assert!(
+        tenuto[0] < g[0] - 0.01,
+        "the tenuto reaches left of its head: {tenuto:?} {g:?}"
+    );
+    assert!(
+        tenuto[0] >= bar + 0.65 - 0.005,
+        "the tenuto at {}, the barline's right edge at {bar}",
+        tenuto[0]
+    );
+}
+
 /// A grace's mark run, by the id its part of the event's marks carries.
 fn mark_run(
     layout: &ResolvedLayoutIR,

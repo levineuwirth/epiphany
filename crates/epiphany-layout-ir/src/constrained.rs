@@ -416,6 +416,11 @@ pub enum Room {
     /// Gould sets graces before a bar's first beat after its barline
     /// (*Behind Bars*, p. 127).
     Grace,
+    /// A grace note's mark (X4d fix round 1): it meets other ink freely, as a
+    /// note's marks do, but keeps the barline's clearance a grace keeps at
+    /// any height, its ink the grace's as MuseScore's grace chord's shape
+    /// holds its articulations, and its column widens by it as by that room.
+    GraceMark,
     /// A syllable's: clear of the earlier syllables of its staff and verse
     /// at any height, by more where a hyphen follows it, and of no other ink.
     Verse { verse: u16, hyphen: bool },
@@ -4304,14 +4309,16 @@ pub fn try_to_constrained(
                                         vertical_band: band,
                                     });
                                 }
-                                // Its marks take no room, as a note's do.
+                                // Its marks take no room against other ink,
+                                // as a note's do, but keep the barline's
+                                // clearance the grace keeps.
                                 if !mark_runs.is_empty() {
                                     family.push(FamilyMark {
                                         band,
                                         glyphs: Vec::new(),
                                         strokes: Vec::new(),
                                         texts: mark_runs.iter().map(ResolvedText::id).collect(),
-                                        room: Room::None,
+                                        room: Room::GraceMark,
                                         placement: None,
                                         line: None,
                                     });

@@ -3209,3 +3209,16 @@ engraver's own placing reproduces it:
   chord's shape at the head's height alone
   (`TLayout::layoutNoteAnchoredLine`), whatever another voice sets beside it
   (`a_glissando_starts_past_a_head_it_would_graze`).
+
+## ENGRAVER_VERSION 116 → 117: a grace's marks clear of the barline as the grace is (X4d fix round 1, 2026-11-02)
+
+- A grace note's marks (version 109) keep the barline's clearance (0.65)
+  that its other ink keeps at any height after the barline before its
+  principal (version 108), in the spacing pass and at the compression
+  floor, a measure widening by them as by that room; against other ink
+  they still take none, as a note's marks take none (`Room::GraceMark`).
+  A tenuto or an accent reaches a little left of its grace's head, and so
+  had stood nearer the barline than the head by that reach. MuseScore's
+  grace chord's shape holds its articulations, and Gould sets the grace,
+  marks and all, after the barline (*Behind Bars*, pp. 127 and 130)
+  (`a_graces_mark_keeps_the_barlines_clearance`).

@@ -748,6 +748,13 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
                 .or_insert((x + b.left.0, x + b.right.0, gap));
             continue;
         }
+        // A grace's mark keeps the barline's clearance its grace keeps, and
+        // takes no room against other ink.
+        if room == Room::GraceMark {
+            let grace_left = x + b.left.0;
+            extent.grace = Some(extent.grace.map_or(grace_left, |l| l.min(grace_left)));
+            continue;
+        }
         if room != Room::Ink && room != Room::Grace {
             continue;
         }
