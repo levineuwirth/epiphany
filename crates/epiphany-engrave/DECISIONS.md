@@ -3160,3 +3160,16 @@ engraver's own placing reproduces it:
   a grace that meets the beam a little; one deeper under it stands where
   it was, and so does a grace's mark over its stem's end under such a beam
   (`a_grace_under_a_beam_stands_clear_of_it`).
+
+## ENGRAVER_VERSION 113 → 114: a verbal crescendo moved with a dynamic moved off a barline (X4d fix round 1, 2026-11-02)
+
+- A verbal crescendo of a dynamic's row moves with the dynamic moved off a
+  barline as a hairpin does (version 107): starting at its note, its words
+  and the start of its dashes as far right, and ending there, its end as far
+  left, whole or cut by a system break. It had stayed where the unmoved
+  dynamic left it, its words on the moved dynamic's ink. MuseScore lays a
+  line of the hairpin type out from the dynamics it snaps to once they move
+  (`DynamicsLayout::manageBarlineCollisions` runs before the hairpins), and
+  Gould keeps a dynamic and the words of a gradual change after it in one
+  plane (*Behind Bars*, pp. 101 and 105)
+  (`a_verbal_crescendo_moves_its_start_with_its_dynamic_off_a_barline`).

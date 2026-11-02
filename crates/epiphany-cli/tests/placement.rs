@@ -1429,3 +1429,112 @@ fn a_member_set_at_its_measures_start_is_not_moved_off_its_barline_again() {
     let before = before_bar(&layout, [centre + 0.5, drawn[1], centre + 0.5, drawn[3]]);
     near(centre, before.1, "centred on the barline's right edge");
 }
+
+/// A verbal crescendo starting at a dynamic moved off a barline moves with
+/// it, as a hairpin does (X4d fix round 1): on a grand staff, "cresc." and
+/// its dashes from a wide pppppp at a measure's first note, the pppppp moved
+/// right of the barline before it, start as far after it as at a dynamic
+/// left in place.
+#[test]
+fn a_verbal_crescendo_moves_its_start_with_its_dynamic_off_a_barline() {
+    let direction = |content: &str| {
+        format!(
+            "<direction placement=\"below\"><direction-type>{content}</direction-type>\
+             <staff>1</staff></direction>"
+        )
+    };
+    let measure = |open: String, close: String| {
+        format!(
+            "{open}{}{}{}{close}{}{}{}",
+            note("C5", 2, "quarter", 1, ""),
+            note("D5", 2, "quarter", 1, ""),
+            note("E5", 2, "quarter", 1, ""),
+            note("F5", 2, "quarter", 1, ""),
+            backup(8),
+            note("C3", 8, "whole", 2, ""),
+        )
+    };
+    let start = |dynamic: &str| {
+        format!(
+            "{}<direction placement=\"below\"><direction-type><words>cresc.</words>\
+             </direction-type><direction-type><dashes type=\"start\"/></direction-type>\
+             <staff>1</staff></direction>",
+            direction(&format!("<dynamics><{dynamic}/></dynamics>"))
+        )
+    };
+    let stop = direction("<dashes type=\"stop\"/>");
+    let loaded = part(
+        "verbal_moved.musicxml",
+        2,
+        &[
+            measure(String::new(), String::new()),
+            measure(start("pppppp"), stop.clone()),
+            measure(String::new(), String::new()),
+        ],
+    );
+    let layout = engrave_loaded(&loaded).layout;
+    let soft = only(&layout, "dynamicPPPPPP");
+    let before = barlines(&layout, soft[3])
+        .into_iter()
+        .filter(|b| b.1 < (soft[0] + soft[2]) * 0.5)
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .expect("the barline before the pppppp");
+    near(
+        soft[0],
+        before.1 + 0.25,
+        "the pppppp moved right of its barline",
+    );
+    let words = text_box(run(&layout, "cresc."));
+    // At a p a measure's second note, where nothing moves, the words stand
+    // as far after it.
+    let still = part(
+        "verbal_still.musicxml",
+        2,
+        &[
+            measure(String::new(), String::new()),
+            format!(
+                "{}{}{}{}{}{}{}{}",
+                note("C5", 2, "quarter", 1, ""),
+                start("pppppp"),
+                note("D5", 2, "quarter", 1, ""),
+                note("E5", 2, "quarter", 1, ""),
+                stop,
+                note("F5", 2, "quarter", 1, ""),
+                backup(8),
+                note("C3", 8, "whole", 2, ""),
+            ),
+            measure(String::new(), String::new()),
+        ],
+    );
+    let still_layout = engrave_loaded(&still).layout;
+    let still_soft = only(&still_layout, "dynamicPPPPPP");
+    let still_words = text_box(run(&still_layout, "cresc."));
+    near(
+        words[0] - soft[2],
+        still_words[0] - still_soft[2],
+        "the words as far after the moved pppppp",
+    );
+    // Its dashes from as far after its words.
+    let dashes_from = |loaded: &Loaded, layout: &ResolvedLayoutIR| {
+        let ids: Vec<TypedObjectId> = loaded
+            .reduced
+            .score
+            .cross_cutting
+            .spanners
+            .iter()
+            .filter(|s| matches!(s.kind, epiphany_core::SpannerKind::TextLine(_)))
+            .map(|s| TypedObjectId::Spanner(s.id))
+            .collect();
+        layout
+            .strokes
+            .iter()
+            .filter(|s| ids.contains(&s.provenance.source) && s.from != s.to)
+            .map(|s| s.from.x.0.min(s.to.x.0))
+            .fold(f32::INFINITY, f32::min)
+    };
+    near(
+        dashes_from(&loaded, &layout) - words[2],
+        dashes_from(&still, &still_layout) - still_words[2],
+        "the dashes as far after the words",
+    );
+}

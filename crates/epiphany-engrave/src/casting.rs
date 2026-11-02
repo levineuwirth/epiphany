@@ -1768,6 +1768,8 @@ pub(crate) fn cast_off(
     // Each hairpin leg whose start or end moves with a dynamic moved off a
     // barline: by its stroke, the move of its start and of its end.
     let mut hairpin_ends: BTreeMap<GlyphObjectId, (f32, f32)> = BTreeMap::new();
+    // Each verbal crescendo's words moved with its start (X4d fix round 1).
+    let mut verbal_words_dx: BTreeMap<GlyphObjectId, f32> = BTreeMap::new();
     for (f, mark) in input.family.iter().enumerate() {
         let Some(p) = mark.placement else {
             continue;
@@ -1898,8 +1900,25 @@ pub(crate) fn cast_off(
                         && other
                             .placement
                             .is_some_and(|q| q.row.map(|r| r.id) == Some(row.id));
-                    if !hairpin {
+                    // So does a verbal crescendo of its row, its words with
+                    // its start (X4d fix round 1).
+                    let verbal = matches!(other.line, Some(FamilyLine::Extension { .. }))
+                        && other.placement.is_some_and(|q| {
+                            q.order == epiphany_layout_ir::PlaceOrder::Hairpin
+                                && q.row.map(|r| r.id) == Some(row.id)
+                        });
+                    if !hairpin && !verbal {
                         continue;
+                    }
+                    let starts_here = other
+                        .strokes
+                        .iter()
+                        .any(|id| anchors.get(id).is_some_and(|&(start, _)| start == slot));
+                    if verbal && starts_here && dx > 0.0 {
+                        for id in &other.texts {
+                            let e = verbal_words_dx.entry(*id).or_insert(0.0);
+                            *e = e.max(dx);
+                        }
                     }
                     for id in &other.strokes {
                         let Some(&(start, end)) = anchors.get(id) else {
@@ -3210,7 +3229,8 @@ pub(crate) fn cast_off(
                     (
                         placements[s].slot_dx(sx) - shift_of(text.horizontal_slot)
                             + member_dx(placed.texts.get(&text.id()))
-                            + grace_shift(text.id()),
+                            + grace_shift(text.id())
+                            + verbal_words_dx.get(&text.id()).copied().unwrap_or(0.0),
                         placements[s].dy - staff_dy(s, text_staff_of[ti]) + lift,
                     )
                 }
