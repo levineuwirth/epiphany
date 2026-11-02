@@ -5928,12 +5928,39 @@ pub fn try_to_constrained(
                                             } else {
                                                 yo - lines::OTTAVA_POS + width * 0.5
                                             };
+                                            // Its numeral just left of the first
+                                            // note it applies to (Gould, p. 28):
+                                            // where graces open it on its staff,
+                                            // the first grace, as LilyPond starts
+                                            // it (X4d fix round 1).
+                                            let first_key = first_column(&columns, &t0, true)
+                                                .map(|(key, _)| key.clone());
+                                            let grace_left = grace_placings
+                                                .values()
+                                                .filter(|g| {
+                                                    g.staff == Some(st)
+                                                        && Some(&g.key) == first_key.as_ref()
+                                                })
+                                                .flat_map(|g| {
+                                                    g.shape.heads.iter().filter_map(
+                                                        |(at, name, _)| {
+                                                            metrics(name).map(|m| {
+                                                                at.x.0
+                                                                    + graces::GRACE_MAG
+                                                                        * m.bounding_box().left.0
+                                                            })
+                                                        },
+                                                    )
+                                                })
+                                                .reduce(f32::min);
+                                            let numeral_x =
+                                                first.x + grace_left.map_or(0.0, |l| l.min(0.0));
                                             match numeral {
                                                 Some(numeral) => {
                                                     let run = at(lines::symbols(
                                                         synth(0),
                                                         &[numeral],
-                                                        Point::new(first.x, 0.0),
+                                                        Point::new(numeral_x, 0.0),
                                                     ));
                                                     x0 = run.origin.x.0
                                                         + run.bounds.right.0

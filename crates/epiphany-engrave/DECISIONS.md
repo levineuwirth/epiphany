@@ -3082,3 +3082,18 @@ engraver's own placing reproduces it:
   no other staff's heads (`a_glissando_between_two_staves_is_left_undrawn`).
 - A glissando's later piece after a lead holding nothing is pinned with
   version 106's guard, above.
+
+## ENGRAVER_VERSION 109 → 110: an ottava starting at a grace numbered at the grace (X4d fix round 1, 2026-11-02)
+
+- An ottava whose first note on its staff is opened by grace notes sets its
+  numeral at the first grace's head, and its line from half a space after
+  it, where it had stood at the principal, the graces outside it. Gould
+  places the numeral just left of the first note it applies to (*Behind
+  Bars*, p. 28), which is the grace, drawn under the sign at its written
+  place (version 95); LilyPond 2.26.0 starts its "8" at the grace (C4d
+  review 1's hand-written probe). MuseScore starts the line at the
+  principal: a departure from it, which the owner ruled (D116). A grace
+  later under the ottava, or one at its start on another staff, leaves the
+  numeral at the first note
+  (`an_ottava_starting_at_a_grace_sets_its_numeral_at_the_grace`,
+  `only_a_grace_opening_an_ottava_on_its_staff_moves_its_numeral`).

@@ -1432,3 +1432,122 @@ fn a_glissando_between_two_staves_is_left_undrawn() {
     let drawn = line_strokes(&loaded, &layout, |k| matches!(k, SpannerKind::Glissando));
     assert!(drawn.is_empty(), "{drawn:?}");
 }
+
+/// An ottava starting at a grace note sets its numeral just left of the
+/// grace, the first note it applies to (Gould, *Behind Bars*, p. 28, as
+/// LilyPond 2.26.0 starts it), and runs its line from there, where MuseScore
+/// starts it at the principal: the numeral's ink at the grace's head, before
+/// the principal's, the line from half a space after the numeral, and the
+/// grace drawn an octave nearer the staff with the notes it opens.
+#[test]
+fn an_ottava_starting_at_a_grace_sets_its_numeral_at_the_grace() {
+    let loaded = part(
+        "ottava_grace.musicxml",
+        &[format!(
+            "{}{}{}{}{}{}",
+            octave_shift("down", 8),
+            "<note><grace slash=\"yes\"/><pitch><step>D</step><octave>6</octave></pitch>\
+             <voice>1</voice><type>eighth</type></note>",
+            note("C6", 2, "quarter", ""),
+            note("E6", 2, "quarter", ""),
+            note("G6", 4, "half", ""),
+            octave_shift("stop", 8),
+        )],
+    );
+    let layout = engrave_loaded(&loaded).layout;
+    let e = events(&loaded);
+    let Some(Event::Pitched(g)) = loaded.reduced.score.events.get(e[0]) else {
+        panic!("the grace");
+    };
+    let grace_head = layout
+        .texts
+        .iter()
+        .filter(|t| matches!(t.provenance.source, TypedObjectId::Pitch(p) if g.pitches.iter().any(|q| q.id == p)))
+        .map(text_box)
+        .next()
+        .expect("the grace's head");
+    let (_, top) = staves(&layout)[0];
+    // D6 under an 8va, written D5: on the staff's fourth line.
+    near(
+        (grace_head[1] + grace_head[3]) * 0.5,
+        top - 1.0,
+        "the grace at its written place",
+    );
+    let numeral = runs(&layout, OTTAVA);
+    assert_eq!(numeral.len(), 1);
+    let numeral = text_box(numeral[0]);
+    let principal = head(&loaded, &layout, e[1]);
+    near(numeral[0], grace_head[0], "the numeral at the grace's head");
+    assert!(
+        numeral[0] < principal[0] - 0.5,
+        "before the principal: {numeral:?} {principal:?}"
+    );
+    let strokes = line_strokes(&loaded, &layout, |k| {
+        matches!(k, SpannerKind::OctaveLine(_))
+    });
+    let (dashes, _) = split(&strokes);
+    let start = dashes.iter().map(|d| d.0).fold(f32::INFINITY, f32::min);
+    near(
+        start,
+        numeral[2] + 0.5,
+        "the line from half a space after the numeral",
+    );
+}
+
+/// Only a grace that opens an ottava on its own staff moves its numeral: an
+/// ottava whose first note has no grace, though a later note under it has,
+/// and one whose start holds a grace on the other staff of a grand staff,
+/// each set the numeral at their first note's head.
+#[test]
+fn only_a_grace_opening_an_ottava_on_its_staff_moves_its_numeral() {
+    let grace = "<note><grace slash=\"yes\"/><pitch><step>D</step><octave>6</octave></pitch>\
+                 <voice>1</voice><type>eighth</type></note>";
+    let later = part(
+        "ottava_later_grace.musicxml",
+        &[format!(
+            "{}{}{}{}{}{}",
+            octave_shift("down", 8),
+            note("C6", 2, "quarter", ""),
+            grace,
+            note("E6", 2, "quarter", ""),
+            note("G6", 4, "half", ""),
+            octave_shift("stop", 8),
+        )],
+    );
+    let layout = engrave_loaded(&later).layout;
+    let numeral = text_box(runs(&layout, OTTAVA)[0]);
+    let first = head(&later, &layout, events(&later)[0]);
+    near(
+        numeral[0],
+        first[0],
+        "a later grace leaves the numeral at its note",
+    );
+
+    let xml = "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
+         <attributes><divisions>2</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time><staves>2</staves><clef number=\"1\"><sign>G</sign><line>2</line></clef>\
+         <clef number=\"2\"><sign>F</sign><line>4</line></clef></attributes>\
+         <direction placement=\"above\"><direction-type><octave-shift type=\"down\" size=\"8\"/>\
+         </direction-type><staff>1</staff></direction>\
+         <note><pitch><step>C</step><octave>6</octave></pitch><duration>8</duration>\
+         <voice>1</voice><type>whole</type><staff>1</staff></note>\
+         <direction><direction-type><octave-shift type=\"stop\" size=\"8\"/></direction-type>\
+         <staff>1</staff></direction><backup><duration>8</duration></backup>\
+         <note><grace slash=\"yes\"/><pitch><step>D</step><octave>3</octave></pitch>\
+         <voice>5</voice><type>eighth</type><staff>2</staff></note>\
+         <note><pitch><step>C</step><octave>3</octave></pitch><duration>8</duration>\
+         <voice>5</voice><type>whole</type><staff>2</staff></note></measure></part>\
+         </score-partwise>";
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("ottava_other_staff_grace.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let grand = load(&path).expect("loads");
+    let layout = engrave_loaded(&grand).layout;
+    let numeral = text_box(runs(&layout, OTTAVA)[0]);
+    let first = head(&grand, &layout, events(&grand)[0]);
+    near(
+        numeral[0],
+        first[0],
+        "the other staff's grace leaves the numeral at its note",
+    );
+}
