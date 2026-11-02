@@ -811,3 +811,51 @@ fn a_grace_groups_reach_widens_its_columns_place_in_the_projection() {
         "the group at {left}, the previous head's right edge at {previous}"
     );
 }
+
+/// A grace group stands clear of what its principal's column places that
+/// takes room as its chords' ink, by the 0.45 it keeps from the principal
+/// (MuseScore's `graceToMainNoteDist`): before a rolled chord, the grace's
+/// ink ends 0.45 left of the arpeggio's, where it had been set against the
+/// chord's heads alone and stood on the arpeggio.
+#[test]
+fn a_grace_before_a_rolled_chord_stands_clear_of_its_arpeggio() {
+    let rolled = |p: &str, chord: bool| {
+        note(p, 4, "half", 1)
+            .replace("</note>", "<notations><arpeggiate/></notations></note>")
+            .replacen("<note>", if chord { "<note><chord/>" } else { "<note>" }, 1)
+    };
+    let loaded = part(
+        "grace_arpeggio.musicxml",
+        2,
+        &[format!(
+            "{}{}{}{}{}",
+            note("C5", 4, "half", 1),
+            grace("D4", true, "eighth", None, 1),
+            rolled("E4", false),
+            rolled("G4", true),
+            rolled("C5", true),
+        )],
+    );
+    let layout = engrave_loaded(&loaded).layout;
+    let e = events(&loaded);
+    let arpeggio = layout
+        .texts
+        .iter()
+        .find(|t| t.provenance.stable_id == epiphany_layout_ir::NoteMarkPart::Arpeggio.id(e[2]))
+        .map(text_box)
+        .expect("the arpeggio");
+    let right = grace_runs(&loaded, &layout, e[1])
+        .iter()
+        .map(|t| text_box(t)[2])
+        .chain(
+            strokes(&layout, e[1])
+                .iter()
+                .map(|s| s.from.x.0.max(s.to.x.0) + s.thickness.0 * 0.5),
+        )
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(
+        right <= arpeggio[0] - 0.45 + 0.01,
+        "the grace's ink to {right}, the arpeggio from {}",
+        arpeggio[0]
+    );
+}

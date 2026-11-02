@@ -2077,7 +2077,7 @@ pub fn try_to_constrained(
         // graces at one onset set out right to left before the ink of the
         // principal's column on their staff, their reach widening the
         // column's overhang as accidentals do.
-        let grace_placings = place_graces(
+        let mut grace_placings = place_graces(
             &graces,
             &GraceInputs {
                 column_heads: &column_heads,
@@ -3109,6 +3109,52 @@ pub fn try_to_constrained(
                 marks::into_ink(ink, &placed);
             }
             event_marks.insert(*eid, placed);
+        }
+
+        // Each group of graces stands clear of what its principal's column
+        // places that takes room as its chords' ink, an arpeggio above all,
+        // by `graces::GRACE_TO_MAIN` (X4d fix round 1): the group, set before
+        // those marks were, moves left as far as they reach past it.
+        let mut room_left: BTreeMap<(Option<StaffId>, ColumnKey), f32> = BTreeMap::new();
+        for (eid, placed) in &event_marks {
+            let (Some(seg), Some(&staff)) = (
+                event_stems
+                    .get(eid)
+                    .and_then(|segs| segs.iter().find(|seg| seg.comp == 0)),
+                event_staff.get(eid),
+            ) else {
+                continue;
+            };
+            for ink in marks::room_ink(placed) {
+                let left = room_left
+                    .entry((Some(staff), seg.key.clone()))
+                    .or_insert(f32::INFINITY);
+                *left = left.min(ink[0]);
+            }
+        }
+        let mut group_right: BTreeMap<(Option<StaffId>, ColumnKey, u8), f32> = BTreeMap::new();
+        for placing in grace_placings.values() {
+            let right = placing
+                .ink()
+                .iter()
+                .map(|b| b[2])
+                .fold(f32::NEG_INFINITY, f32::max);
+            let entry = group_right
+                .entry((placing.staff, placing.key.clone(), placing.group))
+                .or_insert(f32::NEG_INFINITY);
+            *entry = entry.max(right);
+        }
+        for placing in grace_placings.values_mut() {
+            let (Some(&left), Some(&right)) = (
+                room_left.get(&(placing.staff, placing.key.clone())),
+                group_right.get(&(placing.staff, placing.key.clone(), placing.group)),
+            ) else {
+                continue;
+            };
+            let over = right + graces::GRACE_TO_MAIN - left;
+            if over > 0.0 {
+                placing.shifted(-over);
+            }
         }
 
         // Regroup the note-column ink by staff: a slur's obstacle field is its own
@@ -10785,9 +10831,23 @@ struct GracePlacing {
     marks_above: bool,
     mark_specs: Vec<(u8, &'static str, &'static str, bool)>,
     marks: Vec<graces::GraceMark>,
+    /// Its group among its column's: its voice's place there.
+    group: u8,
 }
 
 impl GracePlacing {
+    /// The grace, its beams and its marks moved `dx` across.
+    fn shifted(&mut self, dx: f32) {
+        self.shape = std::mem::take(&mut self.shape).moved(dx);
+        let m = |p: Point| Point::new(p.x.0 + dx, p.y.0);
+        for (a, b) in &mut self.beams {
+            (*a, *b) = (m(*a), m(*b));
+        }
+        for mark in &mut self.marks {
+            mark.origin = m(mark.origin);
+        }
+    }
+
     /// Its ink, every part's box across from its column's x.
     fn ink(&self) -> Vec<graces::Ink> {
         grace_ink(&self.shape)
@@ -10887,7 +10947,7 @@ fn place_graces(
     }
     let mut placed = BTreeMap::new();
     let mut principals: BTreeMap<(Option<StaffId>, ColumnKey), Vec<graces::Ink>> = BTreeMap::new();
-    for ((staff, key, _), mut members) in groups {
+    for ((staff, key, group), mut members) in groups {
         members.sort_by_key(|(eid, grace)| (grace.grace.order, *eid));
         let ColumnKey::Timed(time, _) = &key else {
             continue;
@@ -11207,6 +11267,7 @@ fn place_graces(
                     staff,
                     yo,
                     marks_above: run_above[i],
+                    group,
                     mark_specs: grace
                         .marks
                         .iter()

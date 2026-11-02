@@ -885,6 +885,36 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
     placed
 }
 
+/// The ink of what a chord's marks place that takes room across as the
+/// chord's own ink does, each `[left, bottom, right, top]`, `x` from the
+/// column: its arpeggio, and its tremolo strokes, chord lines and jazz marks
+/// (X4d fix round 1: a grace group before the chord stands clear of it).
+pub(super) fn room_ink(placed: &Placed) -> Vec<[f32; 4]> {
+    let mut ink: Vec<[f32; 4]> = placed
+        .glyphs
+        .iter()
+        .filter(|g| g.room)
+        .filter_map(|g| {
+            let b = metrics(g.name)?.bounding_box();
+            Some([
+                g.x + b.left.0,
+                g.y + b.bottom.0,
+                g.x + b.right.0,
+                g.y + b.top.0,
+            ])
+        })
+        .collect();
+    if let Some(arpeggio) = &placed.arpeggio {
+        ink.push([
+            arpeggio.right - arpeggio_width(arpeggio),
+            arpeggio.bottom,
+            arpeggio.right,
+            arpeggio.top,
+        ]);
+    }
+    ink
+}
+
 /// An arpeggio's width: the ink across of its symbols turned upright, as the
 /// run drawing them at five spaces to the em bounds it (`symbol_run`).
 fn arpeggio_width(arpeggio: &Arpeggio) -> f32 {

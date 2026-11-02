@@ -3127,3 +3127,17 @@ engraver's own placing reproduces it:
   stands, which is left for later. The corpus report names an undrawn
   glissando by why: between staves, of unpitched notes, too short for its
   notes, or else plainly (`an_undrawn_glissando_is_named_by_why`).
+
+## ENGRAVER_VERSION 111 → 112: a grace group clear of its principal's arpeggio (X4d fix round 1, 2026-11-02)
+
+- A group of graces stands its 0.45 (`graceToMainNoteDist`) clear of what
+  its principal's column places that takes room as its chords' ink, an
+  arpeggio above all, and a tremolo, a chord line or a jazz mark left of a
+  head. The group is set out before its column's marks are, against the
+  chords' heads, accidentals, ledger lines, dots, stems, flags and rests,
+  so it had stood on an arpeggio drawn as a run before the chord; it now
+  moves left as far as that ink reaches past it, as MuseScore keeps a
+  grace clear of its chord's shape, which takes the arpeggio in. Gould sets
+  the arpeggio before the chord (*Behind Bars*, p. 131) and the graces
+  before the beat (p. 127), so the graces stand before the arpeggio
+  (`a_grace_before_a_rolled_chord_stands_clear_of_its_arpeggio`).
