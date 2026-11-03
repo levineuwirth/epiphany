@@ -8197,6 +8197,103 @@ fn a_compressed_systems_graces_and_arpeggios_stand_clear_of_their_signatures() {
     );
 }
 
+/// A glissando a compressed system leaves too short for its notes is left
+/// undrawn and named (X4d fix round 2), where it had drawn a speck or a
+/// stroke backward: in systems the file breaks, a glissando from a B4
+/// eighth to the B flat after it in every measure. On every page down to
+/// the narrowest whose line the systems' floor fits, each glissando is drawn
+/// forward and at least as long as its line is thick, or drawn nowhere and
+/// named "glissando too short for its notes"; the widest page draws every
+/// one, and a narrower page leaves one undrawn.
+#[test]
+fn a_compressed_systems_glissando_too_short_for_its_notes_is_named_undrawn() {
+    let measure = "<note><pitch><step>B</step><octave>4</octave></pitch><duration>2</duration>\
+                   <voice>1</voice><type>eighth</type><notations><slide type=\"start\" \
+                   line-type=\"solid\" number=\"1\">gliss.</slide></notations></note><note>\
+                   <pitch><step>B</step><alter>-1</alter><octave>4</octave></pitch><duration>2\
+                   </duration><voice>1</voice><type>eighth</type><accidental>flat</accidental>\
+                   <notations><slide type=\"stop\" number=\"1\"/></notations></note><note>\
+                   <pitch><step>C</step><octave>5</octave></pitch><duration>4</duration>\
+                   <voice>1</voice><type>quarter</type></note><note><rest/><duration>8\
+                   </duration><voice>1</voice><type>half</type></note>"
+        .to_string();
+    let measures = vec![measure; 12];
+    let attributes = "<time><beats>4</beats><beat-type>4</beat-type></time>\
+                      <clef><sign>G</sign><line>2</line></clef>";
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("compressed_glissandi.musicxml");
+    let (mut held, mut widest_drawn, mut undrawn_seen) = (0, None, 0);
+    for tenth in (300..=1500).rev().step_by(5) {
+        let width = tenth as f32 / 10.0;
+        std::fs::write(&path, broken_part(width, attributes, &measures, &[7])).expect("written");
+        let loaded = load(&path).expect("loads");
+        if !added_systems(&solve_loaded(&loaded)).is_empty() {
+            break;
+        }
+        let engraved = epiphany_cli::engrave_loaded(&loaded);
+        let layout = &engraved.layout;
+        let glissandi: Vec<epiphany_core::TypedObjectId> = loaded
+            .reduced
+            .score
+            .cross_cutting
+            .spanners
+            .iter()
+            .filter(|s| s.kind == epiphany_core::SpannerKind::Glissando)
+            .map(|s| epiphany_core::TypedObjectId::Spanner(s.id))
+            .collect();
+        assert_eq!(glissandi.len(), 12);
+        let mut undrawn = 0;
+        for g in &glissandi {
+            let drawn: Vec<&epiphany_layout_ir::Stroke> = layout
+                .strokes
+                .iter()
+                .filter(|s| s.provenance.source == *g && s.from != s.to)
+                .collect();
+            for s in &drawn {
+                let (dx, dy) = (s.to.x.0 - s.from.x.0, s.to.y.0 - s.from.y.0);
+                assert!(
+                    dx > 0.0 && (dx * dx + dy * dy).sqrt() >= s.thickness.0,
+                    "at width {width} a glissando drawn {:?} to {:?}",
+                    s.from,
+                    s.to
+                );
+            }
+            if drawn.is_empty() {
+                undrawn += 1;
+            }
+        }
+        let named = omissions(&loaded.reduced.score, layout, &engraved.diagnostics)
+            .kinds
+            .get("glissando too short for its notes")
+            .copied()
+            .unwrap_or(0);
+        // The projection leaves each its room: the cast page alone takes it.
+        let projected = epiphany_layout_ir::to_constrained(&epiphany_layout_ir::to_logical(
+            &loaded.reduced.score,
+        ))
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.kind == epiphany_layout_ir::constrained::LayoutDiagnosticKind::GlissandoTooShort
+        })
+        .count();
+        assert_eq!(projected, 0, "at width {width} the projection's room");
+        assert_eq!(
+            named, undrawn,
+            "at width {width} each undrawn glissando named"
+        );
+        widest_drawn.get_or_insert(undrawn == 0);
+        undrawn_seen += undrawn;
+        held += 1;
+    }
+    assert!(held > 10, "pages down to the floor held the file's systems");
+    assert_eq!(
+        widest_drawn,
+        Some(true),
+        "the widest page draws every glissando"
+    );
+    assert!(undrawn_seen > 0, "a compressed page leaves one too short");
+}
+
 /// A compressed system's graces keep clear of the marks before them: in
 /// systems the file breaks, a beamed pair of graces over the staff after a
 /// sixteenth whose marcato stands over the staff keeps the slot gap (0.3)

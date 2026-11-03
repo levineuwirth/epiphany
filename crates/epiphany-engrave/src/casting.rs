@@ -333,6 +333,10 @@ pub(crate) struct CastLayout {
     /// Each system the search added among a region's breaks where even the
     /// floor overflows.
     pub added: Vec<AddedSystem>,
+    /// Each glissando of one piece the cast page leaves too short for its
+    /// notes, shorter than its line is thick or turned back, and so left
+    /// undrawn (X4d fix round 2).
+    pub short_glissandi: BTreeSet<TypedObjectId>,
 }
 
 /// One realized spring slot in spaced (pre-casting) coordinates, with the
@@ -2681,6 +2685,8 @@ pub(crate) fn cast_off(
     // the words' width and height before they were turned to the line, and
     // its parallel set, rank and piece.
     let mut gliss_words: Vec<GlissWords> = Vec::new();
+    // Each glissando of one piece the cast page leaves no room.
+    let mut short_glissandi: BTreeSet<TypedObjectId> = BTreeSet::new();
     for (si, ((source, spaced), fate)) in input
         .strokes
         .iter()
@@ -2780,22 +2786,30 @@ pub(crate) fn cast_off(
                             stroke.from = Point::new(stroke.from.x.0, ys[0].0 + dy);
                             stroke.to = Point::new(stroke.to.x.0, ys[0].1 + dy);
                         }
-                        let (from, to, words_id) =
-                            (stroke.from, stroke.to, line_run_id(&stroke, 0, 2));
-                        let size = words_extent(words_of(source.id()));
-                        let set = words_set(source.id()).map(|(set, rank)| (set, rank, 0));
-                        for run in glissando_runs(&mut stroke, *wavy, words_of(source.id()), 0) {
-                            if run.provenance.stable_id == words_id {
-                                gliss_words.push((
-                                    line_runs.len(),
-                                    from,
-                                    to,
-                                    source.provenance.source,
-                                    size,
-                                    set,
-                                ));
+                        // A piece the system leaves too short for its notes
+                        // is left undrawn and named (X4d fix round 2).
+                        if too_short(&stroke) {
+                            stroke.to = stroke.from;
+                            short_glissandi.insert(source.provenance.source);
+                        } else {
+                            let (from, to, words_id) =
+                                (stroke.from, stroke.to, line_run_id(&stroke, 0, 2));
+                            let size = words_extent(words_of(source.id()));
+                            let set = words_set(source.id()).map(|(set, rank)| (set, rank, 0));
+                            for run in glissando_runs(&mut stroke, *wavy, words_of(source.id()), 0)
+                            {
+                                if run.provenance.stable_id == words_id {
+                                    gliss_words.push((
+                                        line_runs.len(),
+                                        from,
+                                        to,
+                                        source.provenance.source,
+                                        size,
+                                        set,
+                                    ));
+                                }
+                                line_runs.push((run, *sys));
                             }
-                            line_runs.push((run, *sys));
                         }
                     }
                     _ => {}
@@ -3621,6 +3635,7 @@ pub(crate) fn cast_off(
         region_of_system: systems.iter().map(|plan| plan.region).collect(),
         unowned,
         added: added_systems,
+        short_glissandi,
     }
 }
 
@@ -4444,6 +4459,15 @@ fn line_run(template: &ResolvedText, line: &Stroke, piece: usize, role: u128) ->
         ),
         ..template.clone()
     }
+}
+
+/// Whether a glissando's piece, as its system sets it, is too short for its
+/// notes (X4d fix round 2): shorter than its line is thick, or turned back,
+/// its end before its start. Such a piece is left undrawn and its glissando
+/// named, where it had drawn a speck or a stroke backward.
+fn too_short(piece: &Stroke) -> bool {
+    let (dx, dy) = (piece.to.x.0 - piece.from.x.0, piece.to.y.0 - piece.from.y.0);
+    dx <= 0.0 || (dx * dx + dy * dy).sqrt() < piece.thickness.0
 }
 
 /// A glissando's words drawn in a piece: their index among the line runs,

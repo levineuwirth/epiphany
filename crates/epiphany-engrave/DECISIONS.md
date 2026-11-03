@@ -3326,3 +3326,23 @@ engraver's own placing reproduces it:
   note's accidental and lost the words version 119 gives it
   (`a_glissando_ends_before_a_head_beside_its_own`).
 
+## ENGRAVER_VERSION 121 → 122: a glissando its system leaves too short for its notes left undrawn and named (X4d fix round 2, 2026-11-03)
+
+- A glissando of one piece whose line, as its system sets it, is shorter
+  than it is thick or turns back, its end before its start, is left
+  undrawn: its stroke is a traced anchor, its words and wiggles none. The
+  engraver reports each such glissando (`GLISSANDO_TOO_SHORT`, an unusual
+  layout decision naming it), and `epiphany-cli` names it as the projection
+  names one its notes leave no room (version 111's `GlissandoTooShort`), so
+  the corpus report counts it "glissando too short for its notes" with
+  those. The projection judges room in its own frame, and the spacing and
+  casting then set the page, so a line it gave room could be drawn as a
+  speck, or backward, between a note and an accidental the next note
+  carries, where it read as an augmentation dot. Gould sets a line too
+  short for its notes over or under them with its words (*Behind Bars*,
+  p. 141), which waits on the follow-ups with fix round 1's attempt; until
+  then it is named, not drawn. A glissando split over a system break keeps
+  its pieces as version 106 sets them, a later piece opening after its
+  system's lead
+  (`a_compressed_systems_glissando_too_short_for_its_notes_is_named_undrawn`).
+

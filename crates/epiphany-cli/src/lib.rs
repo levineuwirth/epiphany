@@ -11,8 +11,9 @@ use epiphany_core::{check_invariants, Score, WellFormednessViolation};
 use epiphany_editor_core::{DocumentError, EditorDocument};
 use epiphany_engrave::{Engraver, PageGeometry};
 use epiphany_layout_ir::{
-    constrained::LayoutDiagnostic, to_constrained, to_logical, written_view, ConstraintSolver,
-    Margins, ResolvedLayoutIR, Size2D, SolverConfig, StaffSpace,
+    constrained::{LayoutDiagnostic, LayoutDiagnosticKind},
+    to_constrained, to_logical, written_view, ConstraintSolver, Margins, ResolvedLayoutIR, Size2D,
+    SolverConfig, SolverWarningKind, StaffSpace,
 };
 use epiphany_musicxml::fidelity::{self, Fidelity};
 use epiphany_musicxml::outcome::{self, Reduced};
@@ -187,8 +188,27 @@ pub fn engrave_on(score: &Score, geometry: PageGeometry) -> Engraved {
     let constrained = to_constrained(&to_logical(score));
     let report = Engraver::with_geometry(geometry).solve(&constrained, &SolverConfig::default());
     let time = start.elapsed();
+    // A glissando its system leaves too short for its notes, which the
+    // engraver leaves undrawn, is named as one the projection leaves no room
+    // (X4d fix round 2).
+    let mut diagnostics = constrained.diagnostics.clone();
+    for warning in &report.warnings {
+        if matches!(&warning.kind, SolverWarningKind::UnusualLayoutDecision(text)
+            if text == epiphany_engrave::GLISSANDO_TOO_SHORT)
+        {
+            diagnostics.extend(
+                warning
+                    .affected_objects
+                    .iter()
+                    .map(|source| LayoutDiagnostic {
+                        source: *source,
+                        kind: LayoutDiagnosticKind::GlissandoTooShort,
+                    }),
+            );
+        }
+    }
     Engraved {
-        diagnostics: constrained.diagnostics.clone(),
+        diagnostics,
         layout: report.layout,
         geometry,
         staff_space_mm: None,

@@ -804,7 +804,8 @@ pub fn omissions(
         .collect();
     // An undrawn glissando named by why (X4d fix round 1): between two
     // staves, from or to an unpitched note, with notes leaving its line no
-    // room (the projection's diagnostic), or else plainly.
+    // room (the projection's diagnostic, or, since X4d fix round 2, the
+    // engraver's where its system leaves it none), or else plainly.
     let event_staff: BTreeMap<epiphany_core::EventId, epiphany_core::StaffId> = instances
         .iter()
         .flat_map(|instance| {
