@@ -3591,3 +3591,25 @@ engraver's own placing reproduces it:
   (`SegmentLayout`, `layoutDrumset`), and LilyPond's drum note engraver
   sets every head's staff position from its drum's entry, a grace's too;
   no departure (`an_unpitched_grace_on_a_staff_of_one_line_stands_as_its_notes_do`).
+
+## ENGRAVER_VERSION 127 → 128: a hairpin over a break sets the staves by its pieces as drawn (X5d.7, 2026-11-03)
+
+- A hairpin over a system break is drawn a piece to a system, each opening
+  from its axis as MuseScore draws it (entry 59's pieces; now
+  `hairpin_piece_ys`, which the bake and the outline share): a crescendo's
+  first piece from its tip to its full mouth, a diminuendo's last from its
+  full mouth to its tip. The family places each piece by the stroke as cut
+  at the break, flat at the leg's one end, and the outlines that set the
+  staves (entry 123) and a system's extent read that cut: the drawn mouth
+  stood up to its half height (0.575) nearer the next staff's ink than the
+  outline held, across the clearance where that ink set the distance.
+  X5d.7's sweep found it (every staff's ink against the merged ink above
+  it, drawn). Each such piece now feeds the outline and the system's
+  extent as drawn, lifted as its piece is; where the family places it is
+  unchanged. MuseScore adds each spanner segment's shape, a hairpin's piece
+  among them, to its staff's skyline once the segment is laid out
+  (`SystemLayout`), so its skyline holds each piece as drawn;
+  LilyPond takes a hairpin's skylines from its printed stencil, each
+  broken piece's own (`Hairpin`'s `vertical-skylines`); Gould lets no
+  characters collide (*Behind Bars*, p. 41)
+  (`a_hairpin_over_a_break_sets_the_staff_below_by_its_mouth`).

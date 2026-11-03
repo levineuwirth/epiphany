@@ -2002,6 +2002,23 @@ pub(crate) fn cast_off(
     let family_sky: BTreeMap<(usize, VerticalBandId), Vec<InkRect>>;
     // The family's pieces where they are placed, each with its member.
     let mut placed_boxes: Vec<(usize, usize, InkRect)> = Vec::new();
+    // Each hairpin leg, by its stroke: its hairpin's shape, and which leg,
+    // up 1 and down -1.
+    let hairpin_legs: BTreeMap<GlyphObjectId, (HairpinShape, f32)> = input
+        .family
+        .iter()
+        .filter_map(|mark| match mark.line {
+            Some(FamilyLine::Hairpin(shape)) => Some((shape, &mark.strokes)),
+            _ => None,
+        })
+        .filter(|(_, legs)| legs.len() == 2)
+        .flat_map(|(shape, legs)| [(legs[0], (shape, 1.0)), (legs[1], (shape, -1.0))])
+        .collect();
+    // Each piece of a placed hairpin over a system break as the bake draws
+    // it (`hairpin_piece_ys`), with its member and system: the piece is
+    // placed by its flat cut, but the staves and the system are set by the
+    // ink drawn (X5d.7).
+    let mut drawn_legs: Vec<(usize, usize, InkRect)> = Vec::new();
     {
         let mut pieces: Vec<crate::family::Piece> = Vec::new();
         let mut piece_of: BTreeMap<(usize, usize), usize> = BTreeMap::new();
@@ -2151,7 +2168,25 @@ pub(crate) fn cast_off(
                     segs
                 }
             };
-            for (s, from, to) in segments {
+            let pieces_n = segments.len();
+            for (k, (s, from, to)) in segments.into_iter().enumerate() {
+                if let (true, Some(&f), Some(&(shape, sign))) = (
+                    pieces_n > 1,
+                    placed.strokes.get(&stroke.id()),
+                    hairpin_legs.get(&stroke.id()),
+                ) {
+                    let (fy, ty) = hairpin_piece_ys(shape, sign, k, pieces_n);
+                    drawn_legs.push((
+                        f,
+                        s,
+                        rect(
+                            from.x.0 - half,
+                            to.x.0 + half,
+                            fy.min(ty) - half,
+                            fy.max(ty) + half,
+                        ),
+                    ));
+                }
                 let ink = if family_lines.get(&stroke.id()) == Some(&FamilyLine::Trill) {
                     // A trill line's ink is its wiggles' along it.
                     let w = metrics(TRILL_WIGGLE)
@@ -2274,6 +2309,23 @@ pub(crate) fn cast_off(
                     },
                 ));
             }
+        }
+        for (f, s, b) in drawn_legs {
+            let by = family_dy.get(&(f, s)).copied().unwrap_or(0.0);
+            let staff = staff_of(input.family[f].band);
+            match staff {
+                Some(_) => into_staff(&mut staff_ext, s, staff, b.bottom + by, b.top + by),
+                None => extents[s].add_y(b.bottom + by, b.top + by),
+            }
+            placed_boxes.push((
+                f,
+                s,
+                InkRect {
+                    bottom: b.bottom + by,
+                    top: b.top + by,
+                    ..b
+                },
+            ));
         }
         family_pieces = pieces;
         family_sky = sky;
@@ -2968,18 +3020,6 @@ pub(crate) fn cast_off(
         }
     }
 
-    // Each hairpin leg, by its stroke: its hairpin's shape, and which leg,
-    // up 1 and down -1.
-    let hairpin_legs: BTreeMap<GlyphObjectId, (HairpinShape, f32)> = input
-        .family
-        .iter()
-        .filter_map(|mark| match mark.line {
-            Some(FamilyLine::Hairpin(shape)) => Some((shape, &mark.strokes)),
-            _ => None,
-        })
-        .filter(|(_, legs)| legs.len() == 2)
-        .flat_map(|(shape, legs)| [(legs[0], (shape, 1.0)), (legs[1], (shape, -1.0))])
-        .collect();
     // Per-system staff-line marks, for the resolved staff records below.
     let mut staff_marks: BTreeMap<(usize, StaffId), StaffAgg> = BTreeMap::new();
     let mut strokes: Vec<Stroke> = Vec::with_capacity(spaced_strokes.len());
@@ -3193,21 +3233,7 @@ pub(crate) fn cast_off(
                     // opening at its wide end, and to its continuation's at a
                     // narrow end the break leaves open.
                     let (from_y, to_y) = match leg {
-                        Some(&(shape, sign)) => {
-                            let (full, cont) = (HAIRPIN_HEIGHT * 0.5, HAIRPIN_CONT_HEIGHT * 0.5);
-                            let (open, last) = (k > 0, k + 1 < segments.len());
-                            if shape.crescendo {
-                                (
-                                    shape.axis + sign * if open { cont } else { 0.0 },
-                                    shape.axis + sign * full,
-                                )
-                            } else {
-                                (
-                                    shape.axis + sign * full,
-                                    shape.axis + sign * if last { cont } else { 0.0 },
-                                )
-                            }
-                        }
+                        Some(&(shape, sign)) => hairpin_piece_ys(shape, sign, k, segments.len()),
                         None => match &slope {
                             Some(ys) => ys[k],
                             None => (from.y.0, to.y.0),
@@ -5025,6 +5051,27 @@ fn extra_dash(spaced: &Stroke, piece: usize, k: usize) -> Provenance {
         ),
         spaced.provenance.dependencies.clone(),
     )
+}
+
+/// The heights at which piece `k` of `n` of a hairpin's leg (`sign` 1 for
+/// the upper leg, -1 for the lower) starts and ends over a system break, in
+/// the frame of its shape's axis, as MuseScore draws each piece: to its full
+/// opening at its wide end, and to its continuation's at a narrow end the
+/// break leaves open.
+fn hairpin_piece_ys(shape: HairpinShape, sign: f32, k: usize, n: usize) -> (f32, f32) {
+    let (full, cont) = (HAIRPIN_HEIGHT * 0.5, HAIRPIN_CONT_HEIGHT * 0.5);
+    let (open, last) = (k > 0, k + 1 < n);
+    if shape.crescendo {
+        (
+            shape.axis + sign * if open { cont } else { 0.0 },
+            shape.axis + sign * full,
+        )
+    } else {
+        (
+            shape.axis + sign * full,
+            shape.axis + sign * if last { cont } else { 0.0 },
+        )
+    }
 }
 
 /// A hairpin's piece stands at least its least length, its end moved out

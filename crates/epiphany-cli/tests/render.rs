@@ -8278,6 +8278,99 @@ fn ink_of_no_staff_counts_toward_a_systems_fit() {
     }
 }
 
+/// A hairpin over a system break sets the staff below by its pieces as
+/// drawn (X5d.7): a crescendo under the upper of two staves, from the first
+/// system into the next, its first piece opening from its tip to its full
+/// mouth at the system's end, over a C6 the lower staff holds under it. The
+/// lower staff keeps its ink the clearance (0.5) below the piece's box,
+/// mouth included, as the outline reads a stroke; the piece's cut at its
+/// tip, flat, would leave the C6 inside it.
+#[test]
+fn a_hairpin_over_a_break_sets_the_staff_below_by_its_mouth() {
+    let wedge = |kind: &str| {
+        format!(
+            "<direction placement=\"below\"><direction-type><wedge type=\"{kind}\"/>\
+             </direction-type><staff>1</staff></direction>"
+        )
+    };
+    let note = |step: &str, octave: u8, duration: u8, kind: &str| {
+        format!(
+            "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+             <duration>{duration}</duration><voice>1</voice><type>{kind}</type></note>"
+        )
+    };
+    let head = format!(
+        "<attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time>{TREBLE}</attributes>"
+    );
+    let upper = format!(
+        "<measure number=\"1\">{head}{}{}</measure><measure number=\"2\"><print new-system=\"yes\"/>\
+         {}{}{}</measure>",
+        wedge("crescendo"),
+        note("B", 4, 4, "whole"),
+        note("B", 4, 2, "half"),
+        wedge("stop"),
+        note("B", 4, 2, "half"),
+    );
+    let lower = format!(
+        "<measure number=\"1\">{head}{}{}{}{}</measure><measure number=\"2\">\
+         <print new-system=\"yes\"/>{}</measure>",
+        note("E", 4, 1, "quarter"),
+        note("E", 4, 1, "quarter"),
+        note("E", 4, 1, "quarter"),
+        note("C", 6, 1, "quarter"),
+        note("E", 4, 4, "whole"),
+    );
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part><score-part id=\"P2\"><part-name>B</part-name>\
+         </score-part></part-list><part id=\"P1\">{upper}</part><part id=\"P2\">{lower}</part>\
+         </score-partwise>"
+    );
+    let (_, layout) = engrave_on("hairpin_over_a_break.musicxml", &xml, unbounded_page());
+    let system = layout.systems().next().expect("a first system");
+    let lines = &staff_lines_by_system(&layout)[0];
+    assert_eq!(lines.len(), 2, "two staves: {lines:?}");
+    let upper_bottom = lines[0].0;
+    let (mut legs, mut below) = (Vec::new(), Vec::new());
+    for &i in &system.primitives.strokes {
+        let s = &layout.strokes[i as usize];
+        let h = s.thickness.0 * 0.5;
+        let r = [
+            s.from.x.0.min(s.to.x.0) - h,
+            s.from.y.0.min(s.to.y.0) - h,
+            s.from.x.0.max(s.to.x.0) + h,
+            s.from.y.0.max(s.to.y.0) + h,
+        ];
+        if matches!(
+            s.provenance.source,
+            epiphany_core::TypedObjectId::Spanner(_)
+        ) {
+            legs.push(r);
+        } else if r[3] < upper_bottom - 0.5 {
+            below.push(r);
+        }
+    }
+    for &i in &system.primitives.glyphs {
+        let g = &layout.glyphs[i as usize];
+        let (x, y, b) = (g.position.x.0, g.position.y.0, g.bounding_box);
+        if y + b.top.0 < upper_bottom - 0.5 {
+            below.push([x + b.left.0, y + b.bottom.0, x + b.right.0, y + b.top.0]);
+        }
+    }
+    assert_eq!(legs.len(), 2, "the first piece's two legs");
+    let mouth = legs
+        .iter()
+        .map(|r| r[3] - r[1])
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(mouth > 0.5, "the piece opens: {legs:?}");
+    let clearance = least_clearance(&legs, &below);
+    assert!(
+        (clearance - 0.5).abs() < 2e-3,
+        "the piece's mouth sets the staff below the clearance off: {clearance}"
+    );
+}
+
 /// Each system's ink rectangles and its top and bottom staff lines.
 fn system_inks(layout: &epiphany_layout_ir::ResolvedLayoutIR) -> Vec<(Vec<[f32; 4]>, f32, f32)> {
     use epiphany_core::TypedObjectId;
