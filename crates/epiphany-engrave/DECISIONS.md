@@ -3147,7 +3147,7 @@ engraver's own placing reproduces it:
   before the beat (p. 127), so the graces stand before the arpeggio
   (`a_grace_before_a_rolled_chord_stands_clear_of_its_arpeggio`).
 
-## ENGRAVER_VERSION 112 → 113: a grace note clear of an earlier mark and of a beam (X4d fix round 1, 2026-11-02)
+## ENGRAVER_VERSION 112 → 113: a grace note clear of an earlier mark and of a beam (X4d fix round 1, 2026-11-02; the beam's half removed at version 118)
 
 - A grace note's ink keeps the slot gap (0.3) from an earlier column's note
   marks where their heights meet, in the spacing pass and at the floor, as
@@ -3345,4 +3345,3 @@ engraver's own placing reproduces it:
   its pieces as version 106 sets them, a later piece opening after its
   system's lead
   (`a_compressed_systems_glissando_too_short_for_its_notes_is_named_undrawn`).
-
