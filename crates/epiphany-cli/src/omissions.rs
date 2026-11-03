@@ -7,9 +7,9 @@
 //! for an object it does not engrave, and does not count as ink. The checks:
 //!
 //! - an event, pitch, tie or slur with no primitive at all;
-//! - a grace note, which the layout leaves out until grace notes are drawn
-//!   (X4c), named as left undrawn, with a slur or tie on one; and named as
-//!   drawn as a plain note should any ink trace to it;
+//! - a grace note, drawn small before its principal (X4d.2): named as left
+//!   undrawn where no ink traces to it, and as drawn as a plain note where a
+//!   full-size glyph does; a slur or tie on one, which the layout leaves out;
 //! - a tuplet whose number is shown with nothing drawn for it, or with its
 //!   bracket and no number;
 //! - a notehead or rest drawn at a value other than its duration's, a flag or
@@ -31,8 +31,8 @@
 //!   its sign; a mark of a staff anchored at a region offset stands on no
 //!   staff, so it is named as drawn nowhere, while a tempo or rehearsal mark,
 //!   segno or coda stands over the system, drawn once where parts repeat it;
-//!   expression text is drawn as staff text until it is drawn italic and
-//!   below (roadmap D79 Q9), and counted by its own class where it has no ink;
+//!   expression text, drawn italic under its staff (X4d.6), is counted by its
+//!   own class where it has no ink;
 //! - each diagnostic the projection raised, by kind.
 //!
 //! Not checked, and counted as such: whether an accidental is the one the
@@ -47,7 +47,7 @@ use epiphany_core::{
     SpannerKind, StaffId, StaffInstanceId, TimeAnchor, TypedObjectId,
 };
 use epiphany_layout_ir::constrained::{LayoutDiagnostic, LayoutDiagnosticKind};
-use epiphany_layout_ir::{is_beam_stroke, NoteMarkPart, ResolvedLayoutIR};
+use epiphany_layout_ir::{is_beam_stroke, tempo_term, NoteMarkPart, ResolvedLayoutIR};
 
 /// Engraving omissions by kind, with counts; and what was not checked.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
@@ -197,8 +197,11 @@ pub fn omissions(
     for c in &layout.curves {
         inked.insert(c.provenance.source);
     }
+    // The sources a run draws: a grace note's small head among them (X4d.2).
+    let mut run_sources: BTreeSet<TypedObjectId> = BTreeSet::new();
     for t in &layout.texts {
         inked.insert(t.provenance.source);
+        run_sources.insert(t.provenance.source);
     }
     // The notes a beam joins, named among its dependencies.
     let beamed: BTreeSet<TypedObjectId> = layout
@@ -209,7 +212,7 @@ pub fn omissions(
         .collect();
     let names = |source: TypedObjectId| glyphs.get(&source).cloned().unwrap_or_default();
 
-    // The grace notes, which the layout leaves out until they are drawn.
+    // The grace notes, drawn small before their principals (X4d.2).
     let graces: BTreeSet<epiphany_core::EventId> = score
         .events
         .iter()
@@ -372,12 +375,15 @@ pub fn omissions(
                     Event::Rest(r) if !r.visible => continue,
                     _ => {}
                 }
+                // A grace note is drawn small, its head a run: drawn as a
+                // full-size glyph it is a plain note, and with no ink it is
+                // left undrawn.
                 if graces.contains(id) {
-                    out.add(if sources.iter().any(|s| inked.contains(s)) {
-                        "grace note drawn as a plain note"
-                    } else {
-                        "grace note left undrawn"
-                    });
+                    if sources.iter().any(|s| glyphs.contains_key(s)) {
+                        out.add("grace note drawn as a plain note");
+                    } else if !sources.iter().any(|s| run_sources.contains(s)) {
+                        out.add("grace note left undrawn");
+                    }
                     continue;
                 }
                 if !sources.iter().any(|s| inked.contains(s)) {
@@ -682,7 +688,8 @@ pub fn omissions(
             _ => None,
         })
         .collect();
-    for event in score.events.iter().filter(|e| !graces.contains(&e.id())) {
+    // A grace note's marks are drawn as a note's (X4d fix round 1).
+    for event in score.events.iter() {
         let (marks, ornaments) = match event {
             Event::Pitched(n) => (&n.marks, n.ornaments.as_slice()),
             Event::Unpitched(u) => (&u.marks, &[][..]),
@@ -777,14 +784,103 @@ pub fn omissions(
             out.add("lyric");
         }
     }
+    // A gradual tempo change is drawn once over the system, whichever part
+    // holds it, so one repeating an inked one's words and times from another
+    // part is drawn too.
+    let tempo_change = |s: &epiphany_core::Spanner| match &s.kind {
+        SpannerKind::TextLine(def) if tempo_term(def.text.as_str()) => Some((
+            def.text.as_str().to_owned(),
+            onset(score, &s.start),
+            onset(score, &s.end),
+        )),
+        _ => None,
+    };
+    let inked_tempo_changes: Vec<_> = score
+        .cross_cutting
+        .spanners
+        .iter()
+        .filter(|s| inked.contains(&TypedObjectId::Spanner(s.id)))
+        .filter_map(tempo_change)
+        .collect();
+    // An undrawn glissando named by why (X4d fix round 1): between two
+    // staves, from or to an unpitched note, with notes leaving its line no
+    // room (the projection's diagnostic, or, since X4d fix round 2, the
+    // engraver's where its system leaves it none), or else plainly.
+    let event_staff: BTreeMap<epiphany_core::EventId, epiphany_core::StaffId> = instances
+        .iter()
+        .flat_map(|instance| {
+            instance
+                .voices
+                .iter()
+                .flat_map(|voice| voice.events.iter().map(|event| (*event, instance.staff)))
+        })
+        .collect();
+    let too_short: BTreeSet<TypedObjectId> = diagnostics
+        .iter()
+        .filter(|d| d.kind == LayoutDiagnosticKind::GlissandoTooShort)
+        .map(|d| d.source)
+        .collect();
+    let glissando_class = |spanner: &epiphany_core::Spanner| {
+        let event = |anchor: &TimeAnchor| match anchor {
+            TimeAnchor::Event { id, .. } => Some(*id),
+            _ => None,
+        };
+        let ends = [event(&spanner.start), event(&spanner.end)];
+        let staves: Vec<_> = ends
+            .iter()
+            .map(|e| e.and_then(|e| event_staff.get(&e).copied()))
+            .collect();
+        if too_short.contains(&TypedObjectId::Spanner(spanner.id)) {
+            "glissando too short for its notes"
+        } else if staves.iter().all(Option::is_some) && staves[0] != staves[1] {
+            "glissando between staves"
+        } else if ends
+            .iter()
+            .flatten()
+            .any(|e| matches!(score.events.get(*e), Some(Event::Unpitched(_))))
+        {
+            "glissando of unpitched notes"
+        } else {
+            "glissando"
+        }
+    };
     for spanner in &score.cross_cutting.spanners {
+        if tempo_change(spanner).is_some_and(|t| inked_tempo_changes.contains(&t)) {
+            continue;
+        }
         let class = match spanner.kind {
             SpannerKind::Hairpin(_) => "hairpin",
             SpannerKind::TrillExtension => "trill line",
+            // X4d.1's lines, each named where the engraver leaves it undrawn.
+            SpannerKind::PedalLine(_) | SpannerKind::PedalBracket(_) => "pedal line",
+            SpannerKind::OctaveLine(_) => "ottava",
+            SpannerKind::Glissando => "glissando",
+            SpannerKind::TextLine(_) => "text line",
+            SpannerKind::Bracket(_) => "bracket",
             _ => continue,
         };
         if !inked.contains(&TypedObjectId::Spanner(spanner.id)) {
-            out.add(class);
+            out.add(if spanner.kind == SpannerKind::Glissando {
+                glissando_class(spanner)
+            } else {
+                class
+            });
+            continue;
+        }
+        // The model keeps no head for a glissando, so one drawn from or to
+        // a chord takes its head by its rank among the glissandi between
+        // the same notes (X4d.1): named, since the head may not be the
+        // file's (X4d fix round 1).
+        let chord_at = |anchor: &TimeAnchor| match anchor {
+            TimeAnchor::Event { id, .. } => {
+                matches!(score.events.get(*id), Some(Event::Pitched(p)) if p.pitches.len() > 1)
+            }
+            _ => false,
+        };
+        if spanner.kind == SpannerKind::Glissando
+            && (chord_at(&spanner.start) || chord_at(&spanner.end))
+        {
+            out.add("glissando drawn with its head guessed");
         }
     }
 
@@ -800,6 +896,8 @@ pub fn omissions(
             LayoutDiagnosticKind::RightToLeftText => {
                 String::from("diagnostic: right-to-left text shaped left to right")
             }
+            // Named with its glissando, above.
+            LayoutDiagnosticKind::GlissandoTooShort => continue,
         };
         out.add(&kind);
     }

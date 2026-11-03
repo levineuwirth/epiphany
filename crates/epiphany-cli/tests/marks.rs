@@ -877,6 +877,73 @@ fn a_lone_tie_takes_its_side_as_gould_sets_it() {
     assert!(!above(29), "a chord's one tie: opposite its stem, below");
 }
 
+/// A lone note tied, stems opposite, into a chord keeps the side the
+/// engraver's `tie_above` gives it, opposite its own stem, where Gould's
+/// rule for ties between single notes turned opposite ways (away from the
+/// middle line, *Behind Bars*, p. 64) does not reach: a G4 a beam turns
+/// down, tied into a chord of C4 and G4 turned up, above, where that rule
+/// would set it below (`lone_tie_side`'s `end_single`, D102).
+#[test]
+fn a_lone_note_tied_into_a_chord_turned_the_other_way_keeps_its_stems_side() {
+    let tie = |n: String, kind: &str| {
+        n.replacen(
+            "</duration>",
+            &format!("</duration><tie type=\"{kind}\"/>"),
+            1,
+        )
+    };
+    let beam = |n: String, kind: &str| {
+        n.replacen(
+            "</type>",
+            &format!("</type><beam number=\"1\">{kind}</beam>"),
+            1,
+        )
+    };
+    let measure = [
+        beam(note("E5", 1, "eighth", 1, 1, ""), "begin"),
+        beam(
+            tie(
+                note("G4", 1, "eighth", 1, 1, "<tied type=\"start\"/>"),
+                "start",
+            ),
+            "end",
+        ),
+        tie(
+            note("G4", 2, "quarter", 1, 1, "<tied type=\"stop\"/>"),
+            "stop",
+        ),
+        chord("C4", 2, "quarter", 1, 1, ""),
+        note("rest", 4, "half", 1, 1, ""),
+    ]
+    .concat();
+    let loaded = part("lone_tie_into_chord.musicxml", 1, &[measure]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    assert!(
+        stem(&layout, e[1]).1 < head(&loaded, &layout, e[1])[1] - 1.0,
+        "the beamed G4 turned down"
+    );
+    assert!(
+        stem(&layout, e[2]).2 > head(&loaded, &layout, e[1])[3] + 1.0,
+        "the chord turned up, past its G4"
+    );
+    let tie = loaded
+        .reduced
+        .score
+        .cross_cutting
+        .ties
+        .iter()
+        .find(|t| t.start_event == e[1])
+        .expect("a tie from the G4");
+    let curve = layout
+        .curves
+        .iter()
+        .find(|c| c.provenance.source == TypedObjectId::Tie(tie.id))
+        .expect("its curve");
+    let cp = curve.control_points();
+    assert!(cp[1].y.0 > cp[0].y.0, "above, opposite its own stem");
+}
+
 /// An ornament's accidentals stand 0.35 off it, above and below, at 0.6 of
 /// their size (`TLayout::layoutOrnament`), over a note and under a lower
 /// voice's; and a one-note tremolo on a note that draws no stem stands as
@@ -2087,6 +2154,101 @@ fn an_arpeggio_stands_its_accidental_distance_off_an_accidental() {
     );
 }
 
+/// An arpeggio stands right of its measure's barline at any height, its
+/// barline's clearance (0.65) clear of it, as MuseScore never kerns ink past
+/// a barline and pads an arpeggio after one so, and as Gould sets the sign
+/// after the barline (*Behind Bars*, p. 131): on a chord over the staff,
+/// whose flat and arpeggio had tucked left of the barline where neither
+/// meets its height, as on a chord in the staff.
+#[test]
+fn an_arpeggio_stands_right_of_its_measures_barline() {
+    let rolled = |pitches: [&str; 3]| {
+        [
+            note(pitches[0], 4, "half", 1, 1, "<arpeggiate/>"),
+            chord(pitches[1], 4, "half", 1, 1, "<arpeggiate/>"),
+            chord(pitches[2], 4, "half", 1, 1, "<arpeggiate/>"),
+            note("rest", 4, "half", 1, 1, ""),
+        ]
+        .concat()
+    };
+    let measures = [
+        [
+            note("C5", 4, "half", 1, 1, ""),
+            note("rest", 4, "half", 1, 1, ""),
+        ]
+        .concat(),
+        rolled(["A5", "C6", "Eb6"]),
+        rolled(["A4", "C5", "Eb5"]),
+    ];
+    let loaded = part("arpeggio_barline.musicxml", 1, &measures);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let barlines = named(&layout, "barlineSingle");
+    for (event, what) in [(e[2], "over the staff"), (e[4], "in the staff")] {
+        let run = layout
+            .texts
+            .iter()
+            .find(|t| t.provenance.source == TypedObjectId::Event(event))
+            .map(text_box)
+            .expect("an arpeggio");
+        let barline = barlines
+            .iter()
+            .filter(|b| b[0] < run[2])
+            .max_by(|a, b| a[0].total_cmp(&b[0]))
+            .expect("the barline before");
+        assert!(
+            run[0] >= barline[2] + 0.65 - 0.01,
+            "{what}: {run:?} after {barline:?}"
+        );
+    }
+}
+
+/// An arpeggio keeps its barline's clearance at any height after a time
+/// signature as after a barline (X4d fix round 2), MuseScore never kerning
+/// past either (`HorizontalSpacing::isNeverKernable`): on a chord over the
+/// staff after a mid-system change to 3/4, whose arpeggio had stood over the
+/// signature where their heights do not meet.
+#[test]
+fn an_arpeggio_stands_clear_of_a_time_signature_before_it() {
+    let measures = [
+        [
+            note("C5", 4, "half", 1, 1, ""),
+            note("rest", 4, "half", 1, 1, ""),
+        ]
+        .concat(),
+        [
+            "<attributes><time><beats>3</beats><beat-type>4</beat-type></time></attributes>",
+            &note("A5", 4, "half", 1, 1, "<arpeggiate/>"),
+            &chord("C6", 4, "half", 1, 1, "<arpeggiate/>"),
+            &chord("Eb6", 4, "half", 1, 1, "<arpeggiate/>"),
+            &note("rest", 2, "quarter", 1, 1, ""),
+        ]
+        .concat(),
+    ];
+    let loaded = part("arpeggio_time_signature.musicxml", 1, &measures);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let run = layout
+        .texts
+        .iter()
+        .find(|t| t.provenance.source == TypedObjectId::Event(e[2]))
+        .map(text_box)
+        .expect("an arpeggio");
+    let sig = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("timeSig"))
+        .map(glyph_box)
+        .filter(|b| b[0] < run[2])
+        .map(|b| b[2])
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(sig.is_finite(), "the 3/4 before it");
+    assert!(
+        run[0] >= sig + 0.65 - 0.01,
+        "the arpeggio {run:?} after the signature to {sig}"
+    );
+}
+
 /// A one-note tremolo's strokes stand on its stem between head and tip.
 #[test]
 fn tremolo_strokes_stand_on_their_stems() {
@@ -2213,16 +2375,20 @@ fn a_stemless_notes_tremolo_stands_on_its_stems_side() {
 }
 
 /// A stem carrying a one-note tremolo is as long as it must be to hold it,
-/// as MuseScore's `StemLayout::calcMinStemLength` counts it in quarter
-/// spaces from the head nearest its end: the strokes' height, half a space
-/// at the stem's end and 1.25 at the head. Three strokes (Bravura's 2.23
-/// tall, nine quarters, as MuseScore's own three) take a quarter's stem from
-/// 3.5 to 4.0 and four (twelve quarters) to 4.75, while two leave it; a head
-/// two spaces outside the staff on the stem's side keeps its strokes two
-/// spaces from it, its stem 4.75; a flag adds its height less its curl's
-/// cutout, six quarters up and four down for one flag, eight up for two;
-/// and a beamed eighth asks the beam to stand 4.5 out, its strokes inside
-/// the beam.
+/// counted as MuseScore's `StemLayout::calcMinStemLength` counts it in
+/// quarter spaces from the head nearest its end: the strokes' height, half
+/// a space at the stem's end, and at the head, for two strokes or more,
+/// Gould's space clear of its ink, 1.5 from its centre (pp. 221 and 222;
+/// D102), where MuseScore keeps 1.25. Three strokes (Bravura's 2.23 tall,
+/// nine quarters, as MuseScore's own three) take a quarter's stem from 3.5
+/// to 4.25 and four (twelve quarters) to 5.0, while two (1.25 tall) fit it,
+/// just; a head two spaces outside the staff on the stem's side keeps its
+/// strokes two spaces from it, its stem 4.75; a flag adds its height less
+/// its curl's cutout, six quarters up and four down for one flag, eight up
+/// for two; and a beamed eighth asks the beam to stand 4.75 and a stem's
+/// thickness out, its strokes inside the beam. Every set of strokes stands
+/// a space or more clear of its head's ink; one stroke past an eighth's
+/// flag keeps MuseScore's distance, its stem 4.0.
 #[test]
 fn a_one_note_tremolo_lengthens_its_stem() {
     let trem = |n: u8| format!("<ornaments><tremolo type=\"single\">{n}</tremolo></ornaments>");
@@ -2255,7 +2421,9 @@ fn a_one_note_tremolo_lengthens_its_stem() {
         note("rest", 2, "eighth", 1, 1, ""),
         note("B4", 2, "eighth", 1, 1, &trem(3)),
         note("rest", 2, "eighth", 1, 1, ""),
-        note("rest", 8, "half", 1, 1, ""),
+        note("G4", 2, "eighth", 1, 1, &trem(1)),
+        note("rest", 2, "eighth", 1, 1, ""),
+        note("rest", 4, "quarter", 1, 1, ""),
     ]
     .concat();
     let loaded = part_in("one_note_tremolos.musicxml", 1, 4, &[first, second, third]);
@@ -2270,28 +2438,36 @@ fn a_one_note_tremolo_lengthens_its_stem() {
     };
     near(length(e[0]), 3.5, "a quarter's stem");
     near(length(e[1]), 3.5, "two strokes fit it");
-    near(length(e[2]), 4.0, "three strokes lengthen it");
-    near(length(e[3]), 4.75, "four strokes more");
+    near(length(e[2]), 4.25, "three strokes lengthen it");
+    near(length(e[3]), 5.0, "four strokes more");
     near(length(e[4]), 4.75, "two spaces under the staff");
-    near(length(e[5]), 5.5, "past an eighth's flag");
+    near(length(e[5]), 5.75, "past an eighth's flag");
     // A beamed stem ends a stem's thickness inside the beam's outer edge.
-    near(length(e[7]), 4.5 - 0.12, "a beam stands out for it");
-    near(length(e[8]), 4.5 - 0.12, "and its fellow reaches it");
+    near(length(e[7]), 4.75, "a beam stands out for it");
+    near(length(e[8]), 4.75, "and its fellow reaches it");
     near(length(e[9]), 4.75, "two spaces over the staff");
-    near(length(e[10]), 6.0, "past a sixteenth's flags");
-    near(length(e[13]), 5.0, "past an eighth's flag turned down");
-    // The strokes stand clear of their heads by 1.25 or more.
-    for event in [e[2], e[5], e[10]] {
-        let strokes = the_glyph(&layout, event, "tremolo3");
+    near(length(e[10]), 6.25, "past a sixteenth's flags");
+    near(length(e[13]), 5.25, "past an eighth's flag turned down");
+    // One stroke, which Gould sets across a staff line and gives no
+    // distance, keeps MuseScore's 1.25 from the head's centre.
+    near(length(e[15]), 4.0, "one stroke past an eighth's flag");
+    // The strokes stand a space or more clear of their heads' ink, over an
+    // up stem's head and under a down stem's.
+    for (event, glyph) in [
+        (e[1], "tremolo2"),
+        (e[2], "tremolo3"),
+        (e[3], "tremolo4"),
+        (e[5], "tremolo3"),
+        (e[7], "tremolo3"),
+        (e[10], "tremolo3"),
+    ] {
+        let strokes = the_glyph(&layout, event, glyph);
         let h = head(&loaded, &layout, event);
-        assert!(
-            strokes[1] >= (h[1] + h[3]) * 0.5 + 1.25 - 0.01,
-            "{strokes:?} over {h:?}"
-        );
+        assert!(strokes[1] >= h[3] + 1.0 - 0.01, "{strokes:?} over {h:?}");
     }
-    let strokes = the_glyph(&layout, e[3], "tremolo4");
-    let h = head(&loaded, &layout, e[3]);
-    assert!(strokes[1] >= (h[1] + h[3]) * 0.5 + 1.25 - 0.01);
+    let strokes = the_glyph(&layout, e[13], "tremolo3");
+    let h = head(&loaded, &layout, e[13]);
+    assert!(strokes[3] <= h[1] - 1.0 + 0.01, "{strokes:?} under {h:?}");
 }
 
 /// The strokes a two-note tremolo `event` starts, each `(from, to)` as
@@ -5122,9 +5298,9 @@ fn pen(run: &ResolvedText) -> (f32, f32) {
 
 /// Staff text stands over its staff, upright, its baseline a space over
 /// the staff, its pen from its note's head; words MuseScore writes as
-/// expression text, which the model holds as their own kind, stand the same
-/// until they are drawn italic and below (D79's Q9); and a note over the
-/// staff lifts the text a half space clear of it.
+/// expression text, which the model holds as their own kind, stand italic
+/// under their staff, their baseline 2.5 under it (D79's Q9, X4d.6); and a
+/// note over the staff lifts the text a half space clear of it.
 #[test]
 fn staff_text_stands_over_its_staff_from_its_note() {
     let measure = [
@@ -5152,8 +5328,8 @@ fn staff_text_stands_over_its_staff_from_its_note() {
         "from the head",
     );
     let sotto = runs(&layout, "sotto voce")[0];
-    assert_eq!(face(sotto), "Edwin Roman");
-    near(sotto.origin.y.0, lines[1].1 + 1.0, "over the lower staff");
+    assert_eq!(face(sotto), "Edwin Italic");
+    near(sotto.origin.y.0, lines[1].0 - 2.5, "under the lower staff");
     near(
         pen(sotto).0,
         head(&loaded, &layout, e[3])[0],
@@ -5639,8 +5815,8 @@ fn a_text_where_no_note_starts_stands_at_its_time() {
     near(right, ink[2] + grow + 0.58, "the frame's right");
 }
 
-/// Expression text, drawn as staff text until it is drawn italic and below
-/// (D79's Q9), where no note starts stands at its time as staff text does,
+/// Expression text, drawn italic under its staff (X4d.6), where no note
+/// starts stands at its time as staff text does,
 /// in a column made for it: italic words anchored an eighth into their
 /// measure, after the first note's head and before the second's.
 #[test]
@@ -6054,4 +6230,53 @@ fn a_line_to_the_end_runs_to_a_space_before_the_final_barline() {
     let from = line[0].position.x.0 + 2134.0 / 1024.0;
     let advance = 971.0 / 1024.0;
     assert_eq!(line.len() - 1, ((end - from) / advance).round() as usize);
+}
+
+/// A mark set outside its chord stands clear of the other chords of its
+/// column (X4d.3) and is set from its own chord by that chord's rules alone,
+/// its own column ink left out: a trill over a dotted F5, whose dot stands in
+/// the space over the top line beside its head, within the trill's width,
+/// stands where it stands over the same note undotted.
+#[test]
+fn an_outside_mark_is_set_from_its_own_chord_its_dot_left_out() {
+    let trill = "<ornaments><trill-mark/></ornaments>";
+    let dotted = part(
+        "trill_dotted.musicxml",
+        1,
+        &[format!(
+            "{}{}",
+            note("F5", 6, "half", 1, 1, trill)
+                .replace("<type>half</type>", "<type>half</type><dot/>"),
+            note("C5", 2, "quarter", 1, 1, ""),
+        )],
+    );
+    let plain = part(
+        "trill_undotted.musicxml",
+        1,
+        &[format!(
+            "{}{}",
+            note("F5", 4, "half", 1, 1, trill),
+            note("C5", 4, "half", 1, 1, ""),
+        )],
+    );
+    let place = |loaded: &Loaded| {
+        let layout = engrave(&loaded.reduced.score).layout;
+        let top = staff_lines(&layout)[0].1;
+        let trills = named(&layout, "ornamentTrill");
+        assert_eq!(trills.len(), 1, "one trill");
+        (trills[0], top, named(&layout, "augmentationDot"))
+    };
+    let (dotted_trill, dotted_top, dots) = place(&dotted);
+    let (plain_trill, plain_top, _) = place(&plain);
+    assert_eq!(dots.len(), 1, "the dot");
+    let dot = dots[0];
+    assert!(
+        dot[0] < dotted_trill[2] && dot[3] > dotted_top,
+        "the dot within the trill's width, over the top line: {dot:?} {dotted_trill:?}"
+    );
+    near(
+        dotted_trill[1] - dotted_top,
+        plain_trill[1] - plain_top,
+        "the trill as high over its staff",
+    );
 }

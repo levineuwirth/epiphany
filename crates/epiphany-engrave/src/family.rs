@@ -55,6 +55,18 @@ pub(crate) fn roomless_strokes(input: &ConstrainedLayoutIR) -> BTreeSet<GlyphObj
         .collect()
 }
 
+/// The strokes of the family's grace notes (their stems, ledger lines,
+/// slashes and beams), which keep a barline's clearance at any height as
+/// their runs do (`Room::Grace`).
+pub(crate) fn grace_strokes(input: &ConstrainedLayoutIR) -> BTreeSet<GlyphObjectId> {
+    input
+        .family
+        .iter()
+        .filter(|mark| mark.room == Room::Grace)
+        .flat_map(|mark| mark.strokes.iter().copied())
+        .collect()
+}
+
 /// Each text run of the family with the room it takes.
 pub(crate) fn texts_with_room(input: &ConstrainedLayoutIR) -> Vec<(&TextObject, Room)> {
     let room: BTreeMap<GlyphObjectId, Room> = input
@@ -153,7 +165,11 @@ pub(crate) fn place(
                 .then(pieces[a].family.cmp(&pieces[b].family))
         });
         let mut sky: Vec<InkRect> = ink.get(&key).cloned().unwrap_or_default();
-        for same in members.chunk_by(|&a, &b| placement(a).order == placement(b).order) {
+        // Each stage whole (the dynamics, expression text and hairpins one
+        // stage, in that order within it), then its rows aligned.
+        for same in
+            members.chunk_by(|&a, &b| placement(a).order.stage() == placement(b).order.stage())
+        {
             // A verse is placed against the ink under it, not against the
             // other verses, which keep their lines from it
             // (`LyricsLayout::checkCollisionsWithStaffElements`).
@@ -183,7 +199,7 @@ pub(crate) fn place(
                 }));
                 joined.push((i, from..sky.len()));
             }
-            // Each row of this order, aligned at its outermost centre.
+            // Each row of this stage, aligned at its outermost centre.
             let mut rows: BTreeMap<u128, Vec<(usize, std::ops::Range<usize>)>> = BTreeMap::new();
             for (i, at) in joined {
                 if let Some(row) = placement(i).row {
@@ -398,6 +414,31 @@ mod tests {
         assert!(
             (shift[3] - (dynamic_bottom - 0.5 - -2.0)).abs() < 1e-5,
             "{shift:?}"
+        );
+    }
+
+    /// The dynamics are placed before the hairpins (X4d.3,
+    /// `layoutDynamicExpressionAndHairpins`): a hairpin of another chain
+    /// starting left of a dynamic it runs over moves out of the dynamic's
+    /// way, where placing them left to right had moved the dynamic.
+    #[test]
+    fn dynamics_are_placed_before_the_hairpins() {
+        let family = [
+            // A hairpin under the staff, axis at -1.75, from 0 to 8.
+            member(false, PlaceOrder::Hairpin, None),
+            // A dynamic of another chain at 6, baseline at -2.0.
+            member(false, PlaceOrder::Dynamic, None),
+        ];
+        let pieces = [
+            piece(0, vec![rect(0.0, 8.0, -2.325, -1.175)]),
+            piece(1, vec![rect(6.0, 7.5, -2.4, -0.9)]),
+        ];
+        let ink = sky(vec![rect(0.0, 10.0, 0.0, 4.0)]);
+        let shift = place(&family, &pieces, &ink);
+        assert_eq!(shift[1], 0.0, "the dynamic first, clear already");
+        assert!(
+            (shift[0] - (-2.4 - 0.5 - -1.175)).abs() < 1e-5,
+            "the hairpin under it: {shift:?}"
         );
     }
 

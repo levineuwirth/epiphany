@@ -602,6 +602,69 @@ pub fn symbol_run(provenance: Provenance, symbols: &[Symbol], origin: Point) -> 
     run
 }
 
+/// `run` turned `angle` radians anticlockwise about its origin (X4d.1: a
+/// glissando's words and wiggles along its slope): each glyph's offset turned,
+/// its glyph turned with it, and its ink and reserved boxes the boxes the
+/// turned corners of the old ones span.
+pub fn rotated(mut run: ResolvedText, angle: f32) -> ResolvedText {
+    let (sin, cos) = angle.sin_cos();
+    let turn = |x: f32, y: f32| (x * cos - y * sin, x * sin + y * cos);
+    for segment in &mut run.segments {
+        for glyph in &mut segment.glyphs {
+            let (x, y) = turn(glyph.offset.x.0, glyph.offset.y.0);
+            glyph.offset = Point::new(x, y);
+            let r = [[cos, -sin], [sin, cos]];
+            let m = match &glyph.transform {
+                Some(t) => {
+                    let [a, b] = [t.matrix[0], t.matrix[1]];
+                    [
+                        [
+                            r[0][0] * a[0] + r[0][1] * b[0],
+                            r[0][0] * a[1] + r[0][1] * b[1],
+                        ],
+                        [
+                            r[1][0] * a[0] + r[1][1] * b[0],
+                            r[1][0] * a[1] + r[1][1] * b[1],
+                        ],
+                    ]
+                }
+                None => r,
+            };
+            glyph.transform = Some(Transform2D {
+                matrix: [
+                    [m[0][0], m[0][1], 0.0],
+                    [m[1][0], m[1][1], 0.0],
+                    [0.0, 0.0, 1.0],
+                ],
+            });
+        }
+    }
+    let span = |b: BoundingBox| {
+        let corners = [
+            turn(b.left.0, b.bottom.0),
+            turn(b.left.0, b.top.0),
+            turn(b.right.0, b.bottom.0),
+            turn(b.right.0, b.top.0),
+        ];
+        let (mut l, mut bo, mut r, mut t) = (
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        );
+        for (x, y) in corners {
+            l = l.min(x);
+            r = r.max(x);
+            bo = bo.min(y);
+            t = t.max(y);
+        }
+        BoundingBox::new(l, bo, r, t)
+    };
+    run.bounds = span(run.bounds);
+    run.reserved_box = span(run.reserved_box);
+    run
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
