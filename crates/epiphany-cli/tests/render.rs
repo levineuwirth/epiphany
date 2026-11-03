@@ -8042,6 +8042,161 @@ fn a_compressed_systems_graces_stand_right_of_their_barlines() {
     assert!(checked > 100, "{checked} graces after a barline");
 }
 
+/// A compressed system's graces and arpeggios stand clear of a time
+/// signature before them at any height: in systems the file breaks, each
+/// measure changing its time signature, a slashed grace on three ledger
+/// lines over the staff opens the 3/4 measures and a rolled chord over the
+/// staff the 4/4 ones; each keeps a barline's clearance (0.65) after its
+/// signature on every page down to the narrowest whose line the systems'
+/// floor fits, as the spacing pass keeps it (X4d fix round 2).
+#[test]
+fn a_compressed_systems_graces_and_arpeggios_stand_clear_of_their_signatures() {
+    let time = |beats: u8| {
+        format!(
+            "<attributes><time><beats>{beats}</beats><beat-type>4</beat-type></time></attributes>"
+        )
+    };
+    let three = format!(
+        "{}<note><grace slash=\"yes\"/><pitch><step>E</step><octave>7</octave></pitch>\
+         <voice>1</voice><type>eighth</type></note><note><pitch><step>C</step>\
+         <octave>6</octave></pitch><duration>8</duration><voice>1</voice>\
+         <type>half</type></note><note><rest/><duration>4</duration><voice>1</voice>\
+         <type>quarter</type></note>",
+        time(3)
+    );
+    let four = format!(
+        "{}{}<note><rest/><duration>8</duration><voice>1</voice><type>half</type></note>",
+        time(4),
+        ["A5", "C6", "E6"]
+            .iter()
+            .enumerate()
+            .map(|(k, p)| {
+                let (step, octave) = p.split_at(1);
+                format!(
+                    "<note>{}<pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+                     <duration>8</duration><voice>1</voice><type>half</type><notations>\
+                     <arpeggiate/></notations></note>",
+                    if k > 0 { "<chord/>" } else { "" }
+                )
+            })
+            .collect::<String>()
+    );
+    // The first measure's 3/4 is the file's opening attributes'.
+    let measures: Vec<String> = (0..12)
+        .map(|m| match m {
+            0 => three.replace(&time(3), ""),
+            _ if m % 2 == 0 => three.clone(),
+            _ => four.clone(),
+        })
+        .collect();
+    let attributes = "<time><beats>3</beats><beat-type>4</beat-type></time>\
+                      <clef><sign>G</sign><line>2</line></clef>";
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("compressed_signatures.musicxml");
+    let (mut held, mut graces, mut arpeggios) = (0, 0, 0);
+    for tenth in (300..=1500).rev().step_by(5) {
+        let width = tenth as f32 / 10.0;
+        std::fs::write(&path, broken_part(width, attributes, &measures, &[7])).expect("written");
+        let loaded = load(&path).expect("loads");
+        let report = solve_loaded(&loaded);
+        if !added_systems(&report).is_empty() {
+            break;
+        }
+        let layout = &report.layout;
+        let signatures: Vec<[f32; 4]> = layout
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str().starts_with("timeSig"))
+            .map(glyph_box)
+            .collect();
+        // The ink a grace or an arpeggio draws, by its event: its runs and
+        // strokes, their left edge and their lowest.
+        let score = &loaded.reduced.score;
+        for &event in &loaded.import.ids.events[0] {
+            let Some(epiphany_core::Event::Pitched(p)) = score.events.get(event) else {
+                continue;
+            };
+            let mut sources: Vec<_> = p
+                .pitches
+                .iter()
+                .map(|ip| epiphany_core::TypedObjectId::Pitch(ip.id))
+                .collect();
+            sources.push(epiphany_core::TypedObjectId::Event(event));
+            let (kind, ink): (&str, Vec<(f32, f32)>) = if p.grace.is_some() {
+                let ink = layout
+                    .texts
+                    .iter()
+                    .filter(|t| sources.contains(&t.provenance.source))
+                    .map(|t| {
+                        (
+                            t.origin.x.0 + t.bounds.left.0,
+                            t.origin.y.0 + t.bounds.bottom.0,
+                        )
+                    })
+                    .chain(
+                        layout
+                            .strokes
+                            .iter()
+                            .filter(|s| sources.contains(&s.provenance.source) && s.from != s.to)
+                            .map(|s| {
+                                (
+                                    s.from.x.0.min(s.to.x.0) - s.thickness.0 * 0.5,
+                                    s.from.y.0.min(s.to.y.0) - s.thickness.0 * 0.5,
+                                )
+                            }),
+                    )
+                    .collect();
+                ("grace", ink)
+            } else {
+                let Some(run) = layout.texts.iter().find(|t| {
+                    t.provenance.stable_id == epiphany_layout_ir::NoteMarkPart::Arpeggio.id(event)
+                }) else {
+                    continue;
+                };
+                (
+                    "arpeggio",
+                    vec![(
+                        run.origin.x.0 + run.bounds.left.0,
+                        run.origin.y.0 + run.bounds.bottom.0,
+                    )],
+                )
+            };
+            let left = ink.iter().map(|i| i.0).fold(f32::INFINITY, f32::min);
+            let low = ink.iter().map(|i| i.1).fold(f32::INFINITY, f32::min);
+            if !left.is_finite() {
+                continue;
+            }
+            // The signature before it on its staff: the nearest to its left
+            // within a few spaces, in its system.
+            let Some(sig) = signatures
+                .iter()
+                .filter(|b| {
+                    b[2] <= left + 2.0
+                        && b[2] > left - 6.0
+                        && ((b[1] + b[3]) * 0.5 - low).abs() < 8.0
+                })
+                .max_by(|a, b| a[2].total_cmp(&b[2]))
+            else {
+                continue;
+            };
+            assert!(
+                left >= sig[2] + 0.65 - 0.01,
+                "at width {width} a {kind} at {left} passes its signature {sig:?}"
+            );
+            if kind == "grace" {
+                graces += 1;
+            } else {
+                arpeggios += 1;
+            }
+        }
+        held += 1;
+    }
+    assert!(held > 10, "pages down to the floor held the file's systems");
+    assert!(
+        graces > 100 && arpeggios > 100,
+        "{graces} graces and {arpeggios} arpeggios after a signature"
+    );
+}
+
 /// A compressed system's graces keep clear of the marks before them: in
 /// systems the file breaks, a beamed pair of graces over the staff after a
 /// sixteenth whose marcato stands over the staff keeps the slot gap (0.3)

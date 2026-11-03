@@ -2203,6 +2203,52 @@ fn an_arpeggio_stands_right_of_its_measures_barline() {
     }
 }
 
+/// An arpeggio keeps its barline's clearance at any height after a time
+/// signature as after a barline (X4d fix round 2), MuseScore never kerning
+/// past either (`HorizontalSpacing::isNeverKernable`): on a chord over the
+/// staff after a mid-system change to 3/4, whose arpeggio had stood over the
+/// signature where their heights do not meet.
+#[test]
+fn an_arpeggio_stands_clear_of_a_time_signature_before_it() {
+    let measures = [
+        [
+            note("C5", 4, "half", 1, 1, ""),
+            note("rest", 4, "half", 1, 1, ""),
+        ]
+        .concat(),
+        [
+            "<attributes><time><beats>3</beats><beat-type>4</beat-type></time></attributes>",
+            &note("A5", 4, "half", 1, 1, "<arpeggiate/>"),
+            &chord("C6", 4, "half", 1, 1, "<arpeggiate/>"),
+            &chord("Eb6", 4, "half", 1, 1, "<arpeggiate/>"),
+            &note("rest", 2, "quarter", 1, 1, ""),
+        ]
+        .concat(),
+    ];
+    let loaded = part("arpeggio_time_signature.musicxml", 1, &measures);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let e = events(&loaded);
+    let run = layout
+        .texts
+        .iter()
+        .find(|t| t.provenance.source == TypedObjectId::Event(e[2]))
+        .map(text_box)
+        .expect("an arpeggio");
+    let sig = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("timeSig"))
+        .map(glyph_box)
+        .filter(|b| b[0] < run[2])
+        .map(|b| b[2])
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(sig.is_finite(), "the 3/4 before it");
+    assert!(
+        run[0] >= sig + 0.65 - 0.01,
+        "the arpeggio {run:?} after the signature to {sig}"
+    );
+}
+
 /// A one-note tremolo's strokes stand on its stem between head and tip.
 #[test]
 fn tremolo_strokes_stand_on_their_stems() {

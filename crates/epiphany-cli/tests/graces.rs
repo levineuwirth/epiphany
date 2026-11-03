@@ -660,6 +660,115 @@ fn a_graces_mark_keeps_the_barlines_clearance() {
     );
 }
 
+/// The rightmost edge of the signature glyphs (a time signature's, or a key
+/// signature's accidentals, drawn from no pitch) standing before `x` on the
+/// staff at height `y`, within a few spaces.
+fn signature_right(layout: &ResolvedLayoutIR, x: f32, y: f32) -> f32 {
+    layout
+        .glyphs
+        .iter()
+        .filter(|g| {
+            let name = g.glyph.as_str();
+            name.starts_with("timeSig")
+                || (name.starts_with("accidental")
+                    && !matches!(g.provenance.source, TypedObjectId::Pitch(_)))
+        })
+        .map(|g| {
+            let (gx, gy, b) = (g.position.x.0, g.position.y.0, &g.bounding_box);
+            (gx + b.left.0, gx + b.right.0, gy)
+        })
+        .filter(|&(left, right, gy)| right <= x + 0.01 && left >= x - 8.0 && (gy - y).abs() < 6.0)
+        .map(|(_, right, _)| right)
+        .fold(f32::NEG_INFINITY, f32::max)
+}
+
+/// A grace's ink and its marks keep a barline's clearance (0.65) at any
+/// height after a key or time signature, as after a barline, MuseScore never
+/// kerning past either (`HorizontalSpacing::isNeverKernable`), Gould giving
+/// the most room before a bar's first note, about two spaces after a
+/// signature in mid-system (*Behind Bars*, p. 42), and setting graces after
+/// the barline (p. 127). C4d review 2's `q_grace_lead`: a beamed pair high
+/// over a mid-system 3/4; a grace high over a system's opening 2/4, an
+/// accent over it; a grace high after a key change to three sharps.
+#[test]
+fn a_grace_off_the_staff_after_a_signature_keeps_the_barlines_clearance() {
+    let accent = |g: String| {
+        g.replace(
+            "</note>",
+            "<notations><articulations><accent/></articulations></notations></note>",
+        )
+    };
+    let loaded = part(
+        "grace_after_signature.musicxml",
+        2,
+        &[
+            format!(
+                "{}{}{}{}",
+                note("C5", 2, "quarter", 1),
+                note("D5", 2, "quarter", 1),
+                note("E5", 2, "quarter", 1),
+                note("F5", 2, "quarter", 1),
+            ),
+            format!(
+                "<attributes><time><beats>3</beats><beat-type>4</beat-type></time></attributes>\
+                 {}{}{}{}{}",
+                grace("F6", false, "16th", Some("begin"), 1),
+                grace("G6", false, "16th", Some("end"), 1),
+                note("B4", 2, "quarter", 1),
+                note("C5", 2, "quarter", 1),
+                note("D5", 2, "quarter", 1),
+            ),
+            format!(
+                "<print new-system=\"yes\"/><attributes><time><beats>2</beats>\
+                 <beat-type>4</beat-type></time></attributes>{}{}{}",
+                accent(grace("D6", true, "eighth", None, 1)),
+                note("D5", 2, "quarter", 1),
+                note("E5", 2, "quarter", 1),
+            ),
+            format!(
+                "<attributes><key><fifths>3</fifths></key></attributes>{}{}{}",
+                grace("E6", true, "eighth", None, 1),
+                note("G#4", 2, "quarter", 1).replace("<accidental>sharp</accidental>", ""),
+                note("A4", 2, "quarter", 1),
+            ),
+            format!(
+                "<attributes><time><beats>4</beats><beat-type>4</beat-type></time></attributes>{}",
+                note("C#5", 8, "whole", 1).replace("<accidental>sharp</accidental>", ""),
+            ),
+        ],
+    );
+    let layout = engrave_loaded(&loaded).layout;
+    let e = events(&loaded);
+    // Each grace group, its principal, and what precedes it.
+    for (group, principal, what) in [
+        (&e[4..6], e[6], "the beamed pair after the 3/4"),
+        (&e[9..10], e[10], "the grace after the system's opening 2/4"),
+        (&e[12..13], e[13], "the grace after the key change"),
+    ] {
+        let h = head(&loaded, &layout, principal);
+        let sig = signature_right(&layout, h[0], (h[1] + h[3]) * 0.5);
+        assert!(sig.is_finite(), "{what}: its signature");
+        let left = group
+            .iter()
+            .flat_map(|&g| {
+                grace_runs(&loaded, &layout, g)
+                    .into_iter()
+                    .map(|t| text_box(t)[0])
+                    .chain(
+                        strokes(&layout, g)
+                            .into_iter()
+                            .map(|s| s.from.x.0.min(s.to.x.0) - s.thickness.0 * 0.5),
+                    )
+                    .collect::<Vec<f32>>()
+            })
+            .fold(f32::INFINITY, f32::min);
+        assert!(
+            left >= sig + 0.65 - 0.005,
+            "{what}: its ink from {left}, the signature to {sig}"
+        );
+    }
+}
+
 /// A grace's mark run, by the id its part of the event's marks carries.
 fn mark_run(
     layout: &ResolvedLayoutIR,

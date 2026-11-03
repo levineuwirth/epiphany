@@ -2893,7 +2893,9 @@ engraver's own placing reproduces it:
   over the staff, and the flat after it, tucked left of the barline. Gould
   sets the arpeggio sign after the barline (*Behind Bars*, p. 131);
   MuseScore never kerns ink past a barline and pads an arpeggio after one
-  by 0.65 (`HorizontalSpacing::doComputeKerningType`, `PaddingTable`);
+  by 0.65 (`HorizontalSpacing::computeKerning`, by `isNeverKernable`, and
+  `PaddingTable`; this entry first cited `doComputeKerningType`, corrected
+  in X4d fix round 2);
   LilyPond 2.26.0 sets the same chord's arpeggio right of the barline (a
   hand-written probe). Other ink over or under the staff, which MuseScore
   keeps right of a barline too, keeps the band rule here
@@ -2998,7 +3000,10 @@ engraver's own placing reproduces it:
   three or more sounding before it being free to stand before the barline
   so the beat is not pushed far from it (*Behind Bars*, p. 127); the model
   keeps no such timing, so every group stands after. MuseScore never kerns
-  ink past a barline (`HorizontalSpacing::doComputeKerningType`) and sets
+  ink past a barline (`HorizontalSpacing::computeKerning`, by
+  `isNeverKernable`, which holds key and time signatures and a clef but a
+  mid-measure one too; this entry first cited `doComputeKerningType`,
+  corrected in X4d fix round 2, version 120 taking the signatures) and sets
   them after it; LilyPond 2.26.0 sets a high grace and a high beamed pair
   after theirs (C4d review 1's hand-written probe). A trill's finishing
   notes, which Gould sets before the barline (p. 127), would need graces
@@ -3275,4 +3280,31 @@ engraver's own placing reproduces it:
   (`a_graces_mark_widens_its_slot_at_a_systems_opening`). A first voice's
   grace counts as beside another voice only while that voice holds a note
   through it (`voice_places`), so the test sets one there.
+
+## ENGRAVER_VERSION 119 → 120: a grace note and an arpeggio clear of a key or time signature at any height (X4d fix round 2, 2026-11-03)
+
+- A grace note's ink and its marks, and an arpeggio, keep a barline's
+  clearance (0.65) at any height after a key signature or a time signature
+  as after a barline (versions 103, 108 and 117), in the spacing pass and
+  at the compression floor alike. A signature held them only where its own
+  ink's height met theirs, so a beamed pair high over a mid-system change
+  of time, a grace high over a system's opening time signature, and an
+  arpeggio on a chord over the staff after a change of time stood over the
+  signature; after a key change, which shares its barline's column, the
+  barline's clearance at any height had not held either, a grace standing
+  as near the key signature as the band rule let it. MuseScore never kerns
+  past a barline, a key or time signature, or a clef but a mid-measure one
+  (`HorizontalSpacing::computeKerning`, by `isNeverKernable`); Gould lets no
+  characters collide, keeps at least half a space between them (*Behind
+  Bars*, p. 41) and allows about two spaces after a time or key signature
+  in mid-system (p. 42), and sets graces before a bar's first beat after
+  the barline (p. 127); LilyPond 2.26.0 sets graces after a mid-system key
+  and time change and after a system's opening time signature (C4d review
+  2's hand-written probe). A clef changing at a measure's start stands
+  before its barline, whose clearance then holds after it; one changing
+  inside a measure is kerned past, as MuseScore kerns it. A slot is told by
+  the key or time signature it holds (`Extent::signature`)
+  (`a_grace_off_the_staff_after_a_signature_keeps_the_barlines_clearance`,
+  `an_arpeggio_stands_clear_of_a_time_signature_before_it`,
+  `a_compressed_systems_graces_and_arpeggios_stand_clear_of_their_signatures`).
 

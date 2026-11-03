@@ -63,11 +63,15 @@ const HYPHENED_GAP: f32 = 0.4 + 2.0 * 0.05;
 /// accidental (0.65 spaces). The note itself stands further, by the
 /// barline's spring. An arpeggio keeps it at any height, over or under the
 /// staff as on it, as MuseScore never kerns ink past a barline and pads an
-/// arpeggio after one by 0.65 (`HorizontalSpacing::doComputeKerningType`,
-/// `PaddingTable`), and as Gould sets the sign after the barline (*Behind
-/// Bars*, p. 131; X4d.5); so does a grace note before its principal, set
-/// after the barline as Gould sets graces before a bar's first beat (p. 127),
-/// MuseScore kerning no grace past a barline either (X4d fix round 1).
+/// arpeggio after one by 0.65 (`HorizontalSpacing::computeKerning`, by
+/// `isNeverKernable`, and `PaddingTable`), and as Gould sets the sign after
+/// the barline (*Behind Bars*, p. 131; X4d.5); so does a grace note before
+/// its principal, set after the barline as Gould sets graces before a bar's
+/// first beat (p. 127), MuseScore kerning no grace past a barline either
+/// (X4d fix round 1). Both keep it at any height after a key or time
+/// signature too, which MuseScore never kerns past either, Gould giving the
+/// most room before a bar's first note, about two spaces after a signature
+/// in mid-system (p. 42; X4d fix round 2).
 const BARLINE_CLEARANCE: f32 = 0.65;
 
 /// The height of one band of the skyline, in staff spaces.
@@ -306,6 +310,9 @@ struct FloorSlot {
     /// It holds barlines alone: an arpeggio or a grace note after it keeps
     /// its clearance at any height.
     barline: bool,
+    /// It holds a key or time signature: an arpeggio or a grace note after
+    /// it keeps a barline's clearance at any height.
+    signature: bool,
     clearance: f32,
     bands: Vec<(i32, f32, f32)>,
     floor: Vec<(i32, Ink, f32, f32)>,
@@ -441,6 +448,11 @@ impl Skyline {
                         barline_edge = barline_edge.max(target + right + slot.clearance);
                     }
                 }
+                if slot.signature {
+                    if let Some(right) = slot.bands.iter().map(|b| b.2).reduce(f32::max) {
+                        barline_edge = barline_edge.max(target + right + BARLINE_CLEARANCE);
+                    }
+                }
             } else {
                 for &(band, kind, _, right) in &slot.floor {
                     let edge = &mut band_edge[at(band) * INKS + kind as usize];
@@ -488,6 +500,13 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
         fixed: bool,
         /// Whether every member is a barline or a repeat sign.
         barline: bool,
+        /// Whether it holds a key or time signature, which MuseScore never
+        /// kerns past (`HorizontalSpacing::isNeverKernable`): an arpeggio
+        /// and a grace note after it keep a barline's clearance at any height
+        /// (X4d fix round 2). A clef changing at a measure's start stands
+        /// before its barline, whose clearance holds after it; one changing
+        /// inside a measure is kerned past, as MuseScore kerns it.
+        signature: bool,
         /// Each band's leftmost and rightmost edge of each kind of ink.
         floor: BTreeMap<(i32, Ink), (f32, f32)>,
         /// Each staff's leftmost and rightmost edge of each kind of ink, at
@@ -588,6 +607,7 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
             preferred,
             fixed,
             barline: true,
+            signature: false,
             floor: BTreeMap::new(),
             staff: BTreeMap::new(),
             verses: BTreeMap::new(),
@@ -609,9 +629,11 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
         }
         let name = glyph.glyph.as_str();
         extent.barline &= name.starts_with("barline") || name.starts_with("repeat");
+        let ink = Ink::of_glyph(name, fixed);
+        extent.signature |= fixed && matches!(ink, Ink::KeySig | Ink::TimeSig);
         widen(
             extent,
-            Ink::of_glyph(name, fixed),
+            ink,
             Some(glyph.vertical_band),
             (x + b.left.0, x + b.right.0),
             (y + b.bottom.0, y + b.top.0),
@@ -958,6 +980,15 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
                 barline_edge = barline_edge.max(target + (right - extent.source) + clearance);
             }
         }
+        // A key or time signature is never kerned past either (X4d fix round
+        // 2): an arpeggio or a grace note after it keeps a barline's
+        // clearance at any height.
+        if extent.fixed && extent.signature {
+            if let Some(right) = extent.bands.values().map(|(_, r)| *r).reduce(f32::max) {
+                barline_edge =
+                    barline_edge.max(target + (right - extent.source) + BARLINE_CLEARANCE);
+            }
+        }
         for (band, (_, right)) in &extent.bands {
             let edge = target + (right - extent.source) + clearance;
             frontier
@@ -1011,6 +1042,7 @@ pub(crate) fn space_slots(input: &ConstrainedLayoutIR) -> SpacedSlots {
                     preferred: extent.preferred,
                     fixed: extent.fixed,
                     barline: extent.barline,
+                    signature: extent.signature,
                     clearance: clearance_of(extent),
                     bands: extent
                         .bands
