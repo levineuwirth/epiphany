@@ -959,109 +959,111 @@ fn a_grace_keeps_clear_of_the_mark_before_it() {
     );
 }
 
-/// A grace standing under a beam that joins its principal to the note
-/// before moves left until it stands a quarter space clear of it, where the
-/// beam rises away from it there (X4d fix round 1): between two beamed
-/// eighths stemmed up among sixteenths, a high note and a low one, a slashed
-/// grace before the low one clears the beam over it, where its flag had run
-/// into it, its staccato moving with it.
+/// A grace between two beamed notes stands between them: after the earlier
+/// note's ink, the slot gap (0.3) clear of its head and stem, and before its
+/// principal (Gould, *Behind Bars*, p. 127, a grace before the beat it
+/// belongs to; p. 29, no symbol through another). C4d review 2's `q_beam`
+/// at the page's own spacing: pairs stemmed up, the first note higher, a
+/// slashed grace over the second, as eighths and as sixteenths; the grace's
+/// flag meets the beam, as MuseScore draws it. Moving the grace left to
+/// clear the beam had set it over the earlier note.
 #[test]
-fn a_grace_under_a_beam_stands_clear_of_it() {
+fn a_grace_between_two_beamed_notes_stands_after_the_earlier_note() {
     let up = |n: String, beam: &str| {
         n.replace("</type>", "</type><stem>up</stem>").replace(
             "</note>",
             &format!("<beam number=\"1\">{beam}</beam></note>"),
         )
     };
-    let rest: String = (0..12).map(|_| note("C5", 1, "16th", 1)).collect();
+    let pair = |(first, g, second): (&str, &str, &str), duration: u8, kind: &str| {
+        format!(
+            "{}{}{}",
+            up(note(first, duration, kind, 1), "begin"),
+            grace(g, true, "eighth", None, 1),
+            up(note(second, duration, kind, 1), "end"),
+        )
+    };
+    let first: String = [
+        ("G4", "C5", "E4"),
+        ("A4", "D5", "E4"),
+        ("B4", "E5", "D4"),
+        ("C5", "F5", "D4"),
+    ]
+    .into_iter()
+    .map(|p| pair(p, 2, "eighth"))
+    .collect();
+    let second = format!(
+        "{}{}{}{}{}",
+        pair(("G4", "C5", "E4"), 1, "16th"),
+        pair(("A4", "E5", "D4"), 1, "16th"),
+        pair(("C5", "A5", "C4"), 2, "eighth"),
+        pair(("B4", "A#5", "C4"), 2, "eighth"),
+        note("G4", 4, "quarter", 1),
+    );
     let loaded = part(
-        "grace_under_beam.musicxml",
+        "grace_between_beamed_notes.musicxml",
         4,
-        &[format!(
-            "{}{}{}{rest}",
-            up(note("D5", 2, "eighth", 1), "begin"),
-            grace("D5", true, "eighth", None, 1).replace(
-                "</note>",
-                "<notations><articulations><staccato/></articulations></notations></note>"
-            ),
-            up(note("E4", 2, "eighth", 1), "end"),
-        )],
+        &[first, second, note("C5", 16, "whole", 1)],
     );
     let layout = engrave_loaded(&loaded).layout;
     let e = events(&loaded);
-    let beams: Vec<&Stroke> = layout
-        .strokes
-        .iter()
-        .filter(|s| {
-            epiphany_layout_ir::is_beam_stroke(s)
-                && s.provenance
-                    .dependencies
-                    .contains(&TypedObjectId::Event(e[2]))
-        })
-        .collect();
-    assert!(!beams.is_empty(), "the eighths' beam");
-    let meets = |b: Ink| {
-        beams.iter().any(|beam| {
-            let (x0, x1) = (
-                beam.from.x.0.min(beam.to.x.0),
-                beam.from.x.0.max(beam.to.x.0),
-            );
-            let (l, r) = (b[0].max(x0), b[2].min(x1));
-            if l >= r {
-                return false;
-            }
-            let y = |x: f32| {
-                beam.from.y.0
-                    + (beam.to.y.0 - beam.from.y.0) * (x - beam.from.x.0)
-                        / (beam.to.x.0 - beam.from.x.0)
-            };
-            let half = beam.thickness.0 * 0.5;
-            b[1] < y(l).max(y(r)) + half + 0.25 - 0.01 && b[3] > y(l).min(y(r)) - half - 0.25 + 0.01
-        })
+    let ink = |runs: Vec<&ResolvedText>, lines: Vec<&Stroke>| -> Vec<Ink> {
+        runs.into_iter()
+            .map(text_box)
+            .chain(lines.into_iter().map(|s| {
+                let half = s.thickness.0 * 0.5;
+                [
+                    s.from.x.0.min(s.to.x.0) - half,
+                    s.from.y.0.min(s.to.y.0) - half,
+                    s.from.x.0.max(s.to.x.0) + half,
+                    s.from.y.0.max(s.to.y.0) + half,
+                ]
+            }))
+            .collect()
     };
-    let runs = grace_runs(&loaded, &layout, e[1]);
-    let flag = runs
-        .iter()
-        .find(|t| t.text == "\u{E240}")
-        .map(|t| text_box(t))
-        .expect("the grace's flag");
-    let (_, _, tip) = stem(&layout, e[1]);
-    assert!(flag[3] > tip - 0.01, "the flag at the stem's tip");
-    let staccato =
-        epiphany_layout_ir::NoteMarkPart::Glyph(epiphany_core::EventMark::Staccato.tag()).id(e[1]);
-    for t in runs.iter().filter(|t| t.provenance.stable_id != staccato) {
+    // Each grace and the notes either side of it: four pairs of the first
+    // measure, four of the second.
+    let triples: Vec<usize> = (0..4)
+        .map(|k| 3 * k)
+        .chain((0..4).map(|k| 12 + 3 * k))
+        .collect();
+    for (k, i) in triples.into_iter().enumerate() {
+        let (before, g, principal) = (e[i], e[i + 1], e[i + 2]);
+        // The earlier note's head and stem, the beam left out: it spans the
+        // grace.
+        let earlier: Vec<Ink> = ink(
+            Vec::new(),
+            strokes(&layout, before)
+                .into_iter()
+                .filter(|s| s.from.x == s.to.x)
+                .collect(),
+        )
+        .into_iter()
+        .chain([head(&loaded, &layout, before)])
+        .collect();
+        let earlier_right = earlier
+            .iter()
+            .map(|b| b[2])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let grace_ink = ink(grace_runs(&loaded, &layout, g), strokes(&layout, g));
         assert!(
-            !meets(text_box(t)),
-            "a run of the grace into a beam: {:?}",
-            text_box(t)
+            grace_ink.len() >= 3,
+            "grace {k}: its head, flag and strokes"
+        );
+        let left = grace_ink.iter().map(|b| b[0]).fold(f32::INFINITY, f32::min);
+        let right = grace_ink
+            .iter()
+            .map(|b| b[2])
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            left >= earlier_right + 0.3 - 0.01,
+            "grace {k}: from {left}, the earlier note's head and stem to {earlier_right}"
+        );
+        let principal = head(&loaded, &layout, principal);
+        assert!(
+            right <= principal[0] + 0.01,
+            "grace {k}: to {right}, its principal from {}",
+            principal[0]
         );
     }
-    for s in strokes(&layout, e[1]) {
-        let half = s.thickness.0 * 0.5;
-        let b = [
-            s.from.x.0.min(s.to.x.0) - half,
-            s.from.y.0.min(s.to.y.0) - half,
-            s.from.x.0.max(s.to.x.0) + half,
-            s.from.y.0.max(s.to.y.0) + half,
-        ];
-        assert!(!meets(b), "a stroke of the grace into a beam: {b:?}");
-    }
-    // Its staccato moves with it, midway between its head and its stem.
-    let dot = layout
-        .texts
-        .iter()
-        .find(|t| {
-            t.provenance.stable_id
-                == epiphany_layout_ir::NoteMarkPart::Glyph(epiphany_core::EventMark::Staccato.tag())
-                    .id(e[1])
-        })
-        .map(text_box)
-        .expect("its staccato");
-    let h = grace_head(&loaded, &layout, e[1]);
-    let (x, _, _) = stem(&layout, e[1]);
-    near(
-        (dot[0] + dot[2]) * 0.5,
-        ((h[0] + h[2]) * 0.5 + x) * 0.5,
-        "its staccato by its head and stem",
-    );
 }

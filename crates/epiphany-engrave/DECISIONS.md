@@ -3151,15 +3151,16 @@ engraver's own placing reproduces it:
   sixteenth with a marcato had stood under the marcato
   (`a_grace_keeps_clear_of_the_mark_before_it`,
   `a_compressed_systems_graces_keep_clear_of_the_marks_before_them`).
-- A grace standing under or over a beam of its staff, one joining its
-  principal to the note before it, moves left once its system is set,
-  its marks with it, until its own ink stands a quarter space clear of the
-  beam, by tenths of a space and three spaces at most; Gould keeps one
-  symbol from cutting through another (*Behind Bars*, p. 29, of the octave
-  line). A beam over two notes rises a space at most, so moving clears only
-  a grace that meets the beam a little; one deeper under it stands where
-  it was, and so does a grace's mark over its stem's end under such a beam
-  (`a_grace_under_a_beam_stands_clear_of_it`).
+- (Removed at version 118.) A grace standing under or over a beam of its
+  staff, one joining its principal to the note before it, moved left once
+  its system was set, its marks with it, until its own ink stood a quarter
+  space clear of the beam, by tenths of a space and three spaces at most.
+  This entry said that, a beam over two notes rising a space at most,
+  moving cleared only a grace that met the beam a little. That held of the
+  beam and not of what the moved grace then met: the move read the beam
+  alone, so in plain beamed eighths at their own spacing it set the grace
+  over the note before it, which C4d review 2 found (its L1). The owner
+  ruled the move removed (D119).
 
 ## ENGRAVER_VERSION 113 → 114: a verbal crescendo moved with a dynamic moved off a barline (X4d fix round 1, 2026-11-02)
 
@@ -3222,3 +3223,19 @@ engraver's own placing reproduces it:
   grace chord's shape holds its articulations, and Gould sets the grace,
   marks and all, after the barline (*Behind Bars*, pp. 127 and 130)
   (`a_graces_mark_keeps_the_barlines_clearance`).
+
+## ENGRAVER_VERSION 117 → 118: the grace beam move removed (X4d fix round 2, 2026-11-03)
+
+- A grace under or over a beam of its staff stands where the spacing sets
+  it, before its principal and after the note before, its flag meeting the
+  beam where they cross, as MuseScore draws it; version 113's move left
+  is removed. Moving the grace to clear the beam took no account of the
+  note before it, so between two beamed eighths stemmed up, the first
+  higher, the grace stood over the first note's head beside its stem,
+  where it reads as that note's ornament or a chord. Gould sets a grace
+  before the beat it belongs to (*Behind Bars*, p. 127) and lets no symbol
+  cut through another (p. 29); LilyPond 2.26.0 keeps the grace between the
+  notes and lifts the beam over it, which waits on the decide-list (D119).
+  Version 113's other half stands: a grace's ink keeps the slot gap from an
+  earlier column's note marks
+  (`a_grace_between_two_beamed_notes_stands_after_the_earlier_note`).
