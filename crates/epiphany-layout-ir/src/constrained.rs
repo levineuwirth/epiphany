@@ -4024,6 +4024,35 @@ pub fn try_to_constrained(
                 }
                 start = past;
             }
+            // Its end read again so, before the ink of the last column's
+            // other voices the line would cross or graze, a head of another
+            // voice set before its own (X4d fix round 2). Its own chord's ink
+            // it clears at its head alone, as before.
+            let own = staff_column_ink(st, &b.key, Some(e1));
+            let same = |i: &InkBox, o: &InkBox| {
+                (i.left, i.right, i.bottom, i.top) == (o.left, o.right, o.bottom, o.top)
+            };
+            let column: Vec<InkBox> = staff_column_ink(st, &b.key, None)
+                .into_iter()
+                .filter(|i| !own.iter().any(|o| same(i, o)))
+                .collect();
+            let mut end = end;
+            for _ in 0..4 {
+                let before = column
+                    .iter()
+                    .filter(|i| {
+                        let (l, r) = (i.left.max(start), i.right.min(end));
+                        l < r
+                            && height(l).min(height(r)) < i.top + reach
+                            && height(l).max(height(r)) > i.bottom - reach
+                    })
+                    .map(|i| i.left - lines::GLISSANDO_CLEAR)
+                    .fold(end, f32::min);
+                if before >= end - 1e-4 {
+                    break;
+                }
+                end = before;
+            }
             if end <= start {
                 gliss_short.set(true);
                 return None;

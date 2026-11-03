@@ -3308,3 +3308,21 @@ engraver's own placing reproduces it:
   `an_arpeggio_stands_clear_of_a_time_signature_before_it`,
   `a_compressed_systems_graces_and_arpeggios_stand_clear_of_their_signatures`).
 
+## ENGRAVER_VERSION 120 → 121: a glissando's end clear of a head it would cross or graze (X4d fix round 2, 2026-11-03)
+
+- A glissando's end is read again as its start is (versions 115 and 116):
+  before each box of the ink of its last column's other voices that its
+  line would cross or pass nearer than its half width and a quarter space,
+  a quarter space short of it. Where the upper of two voices a second apart
+  is dotted and the lower not, the upper is set right of the lower (version
+  89), so a line rising or falling to the upper's head passed the lower's
+  first, running into it or grazing it. Gould keeps the line between the
+  notes it joins (*Behind Bars*, p. 141); MuseScore ends it by its own
+  chord's shape alone (`TLayout::layoutNoteAnchoredLine`), and LilyPond
+  2.26.0 runs it through the other voice's head in this shape (C4d review
+  2's hand-written probe): a departure from both, which the owner ruled
+  (D119). The end's own chord is cleared at its head alone, as before: read
+  against it too, a parallel set's lower line stopped short of its upper
+  note's accidental and lost the words version 119 gives it
+  (`a_glissando_ends_before_a_head_beside_its_own`).
+

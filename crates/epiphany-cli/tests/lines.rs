@@ -1882,6 +1882,58 @@ fn a_glissando_starts_past_a_head_it_would_graze() {
     }
 }
 
+/// A glissando's end keeps the quarter space it keeps from its chords' ink
+/// from another voice's head beside its own too (X4d fix round 2), as its
+/// start does: a line from a quarter to a dotted half in the upper voice,
+/// the lower voice's undotted half a second under it set left of it (version
+/// 89), rising or falling to it (C4d review 2's `q_gliss_end2`). Each ends
+/// before the other voice's head rather than in it or grazing it; Gould keeps
+/// the line between the notes it joins (*Behind Bars*, p. 141).
+#[test]
+fn a_glissando_ends_before_a_head_beside_its_own() {
+    let voiced = |pitch: &str, duration: u8, kind: &str, voice: u8, stem: &str, notations: &str| {
+        note(pitch, duration, kind, notations)
+            .replace("<voice>1</voice>", &format!("<voice>{voice}</voice>"))
+            .replace("</type>", &format!("</type><stem>{stem}</stem>"))
+    };
+    let rest = "<note><rest/><duration>2</duration><voice>2</voice><type>quarter</type></note>";
+    let start = "<slide type=\"start\" line-type=\"solid\" number=\"1\">gliss.</slide>";
+    let stop = "<slide type=\"stop\" number=\"1\"/>";
+    for (from, to, low) in [
+        ("C5", "F5", "E5"),
+        ("A4", "E5", "D5"),
+        ("D4", "A4", "G4"),
+        ("G5", "C5", "B4"),
+        ("B5", "F5", "E5"),
+    ] {
+        let measure = format!(
+            "{}{}<backup><duration>8</duration></backup>{rest}{}{rest}",
+            voiced(from, 2, "quarter", 1, "up", start),
+            voiced(to, 6, "half", 1, "up", stop).replace("</type>", "</type><dot/>"),
+            voiced(low, 4, "half", 2, "down", ""),
+        );
+        let loaded = part(
+            "glissando_end_beside_a_voice.musicxml",
+            &[measure, note("C5", 8, "whole", "")],
+        );
+        let layout = engrave_loaded(&loaded).layout;
+        let e = events(&loaded);
+        let own = head(&loaded, &layout, e[1]);
+        let other = head(&loaded, &layout, e[3]);
+        assert!(
+            other[2] < own[0] + 0.5 && other[0] < own[0] - 0.5,
+            "{from} to {to}: the other voice's head set left of the end's: {other:?} {own:?}"
+        );
+        let lines = line_strokes(&loaded, &layout, |k| matches!(k, SpannerKind::Glissando));
+        assert_eq!(lines.len(), 1, "{from} to {to}");
+        let line = lines[0];
+        assert!(
+            line.to.x.0 <= other[0] - 0.2,
+            "{from} to {to}: the line ends before the head beside its own: {line:?} {other:?}"
+        );
+    }
+}
+
 /// A glissando's words with no other ink in their way stay centred along
 /// their line, their own line never one they keep off.
 #[test]
