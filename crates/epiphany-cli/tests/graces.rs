@@ -807,6 +807,137 @@ fn a_graces_marks_stand_small_outside_the_staff() {
     }
 }
 
+/// A marcato on a grace stands above whatever side its grace's other marks
+/// take (X4d fix round 1, entry 109), as a note's does (Gould's strong
+/// accent, *Behind Bars*, p. 117): on a grace low on the staff, its stem up,
+/// the staccato stands under the staff, nearer the head, and the marcato
+/// over it, beyond the stem's end.
+#[test]
+fn a_graces_marcato_stands_above_whatever_side_its_marks_take() {
+    use epiphany_core::EventMark;
+    let loaded = part(
+        "grace_marcato_above.musicxml",
+        2,
+        &[format!(
+            "{}{}",
+            grace("F4", true, "eighth", None, 1).replace(
+                "</note>",
+                "<notations><articulations><staccato/><strong-accent type=\"up\"/>\
+                 </articulations></notations></note>"
+            ),
+            note("G4", 8, "whole", 1),
+        )],
+    );
+    let layout = engrave_loaded(&loaded).layout;
+    let e = events(&loaded);
+    let (top, bottom) = staff_lines(&layout);
+    let dot = text_box(mark_run(&layout, e[0], EventMark::Staccato).expect("the staccato drawn"));
+    assert!(
+        dot[3] <= bottom - 0.4 + 0.01,
+        "the staccato under the staff: {dot:?}"
+    );
+    let marcato = text_box(mark_run(&layout, e[0], EventMark::Marcato).expect("the marcato drawn"));
+    let (_, _, tip) = stem(&layout, e[0]);
+    assert!(
+        marcato[1] >= top.max(tip) + 0.4 - 0.01,
+        "the marcato over the staff and the stem's end: {marcato:?}, top line {top}, tip {tip}"
+    );
+}
+
+/// Beside another voice a grace's marks stand at its stem, as MuseScore sets
+/// them and as Gould sets each part's marks at its own stem (*Behind Bars*,
+/// pp. 117 and 118), where alone they would take the side nearer the grace's
+/// heads (entry 109): the upper voice's grace low on the staff, its stem up,
+/// while the lower voice holds a whole note, takes its staccato over the
+/// staff; the lower voice's grace high on it, its stem down, under it.
+#[test]
+fn a_graces_marks_beside_another_voice_stand_at_its_stem() {
+    use epiphany_core::EventMark;
+    let staccato = |g: String| {
+        g.replace(
+            "</note>",
+            "<notations><articulations><staccato/></articulations></notations></note>",
+        )
+    };
+    let loaded = part(
+        "grace_marks_beside_a_voice.musicxml",
+        2,
+        &[
+            format!(
+                "{}{}{}<backup><duration>8</duration></backup>{}",
+                note("G4", 4, "half", 1),
+                staccato(grace("F4", true, "eighth", None, 1)),
+                note("G4", 4, "half", 1),
+                note("C4", 8, "whole", 2),
+            ),
+            format!(
+                "{}<backup><duration>8</duration></backup>{}{}",
+                note("A5", 8, "whole", 1),
+                staccato(grace("D5", true, "eighth", None, 2)),
+                note("C5", 8, "whole", 2),
+            ),
+        ],
+    );
+    let layout = engrave_loaded(&loaded).layout;
+    let e = events(&loaded);
+    let (top, bottom) = staff_lines(&layout);
+    let upper = text_box(mark_run(&layout, e[1], EventMark::Staccato).expect("drawn"));
+    let (_, _, tip) = stem(&layout, e[1]);
+    assert!(
+        upper[1] >= top.max(tip) + 0.4 - 0.01,
+        "the upper voice's staccato over the staff: {upper:?}, top line {top}"
+    );
+    let lower_grace = e
+        .iter()
+        .copied()
+        .find(|&g| mark_run(&layout, g, EventMark::Staccato).is_some() && g != e[1])
+        .expect("the lower voice's grace");
+    let lower = text_box(mark_run(&layout, lower_grace, EventMark::Staccato).expect("drawn"));
+    let (_, end, _) = stem(&layout, lower_grace);
+    assert!(
+        lower[3] <= bottom.min(end) - 0.4 + 0.01,
+        "the lower voice's staccato under the staff: {lower:?}, bottom line {bottom}"
+    );
+}
+
+/// A grace's marks widen the slot they stand in (X4d fix round 1, entry 117):
+/// at a later system's opening, where a slot's leftmost ink stands at the
+/// measure's start after the system's lead, a tenuto under a grace, wider
+/// than its head, opens the measure, its grace set right of it by its
+/// reach, as the grace's own ink would be.
+#[test]
+fn a_graces_mark_widens_its_slot_at_a_systems_opening() {
+    use epiphany_core::EventMark;
+    let tenuto = grace("G4", false, "eighth", None, 1).replace(
+        "</note>",
+        "<notations><articulations><tenuto/></articulations></notations></note>",
+    );
+    let loaded = part(
+        "grace_mark_opening.musicxml",
+        2,
+        &[
+            note("C5", 8, "whole", 1),
+            format!(
+                "<print new-system=\"yes\"/>{tenuto}{}",
+                note("C5", 8, "whole", 1)
+            ),
+            note("C5", 8, "whole", 1),
+        ],
+    );
+    let layout = engrave_loaded(&loaded).layout;
+    let e = events(&loaded);
+    let systems = &layout.pages[0].systems;
+    assert_eq!(systems.len(), 2, "the file's system break");
+    let opening = systems[1].measures[0].bounding_box.origin.x.0;
+    let mark = text_box(mark_run(&layout, e[1], EventMark::Tenuto).expect("the tenuto drawn"));
+    let head = grace_head(&loaded, &layout, e[1]);
+    assert!(
+        mark[0] < head[0] - 0.02,
+        "the tenuto reaching left of the head: {mark:?} {head:?}"
+    );
+    near(mark[0], opening, "the measure opening at the tenuto");
+}
+
 /// A grace group's reach widens its principal's column in the projection's
 /// frame, as an accidental's does (D79's Q13), so that frame, in which the
 /// curves and beams are first shaped before the spacing sets the page,

@@ -3257,3 +3257,22 @@ engraver's own placing reproduces it:
   (`a_parallel_sets_gliss_stands_on_its_topmost_line_long_enough`,
   `parallel_glissandi_take_one_gliss`).
 
+## X4d fix round 2: four clauses of entries 109 and 117 pinned (2026-11-03, no version change)
+
+- C4d review 2 found four clauses surviving their mutations (its L3), each
+  now held by a hand-built test that fails with its mutation alone:
+  a marcato on a grace above whatever side the grace's other marks take
+  (entry 109; `a_graces_marcato_stands_above_whatever_side_its_marks_take`);
+  a run whose marks would stand as near its heads either way taking its
+  stem's side (entry 109; a unit test on shapes built so,
+  `a_runs_marks_take_its_stems_side_where_both_stand_as_near`); a grace's
+  marks beside another voice at its stem, not on Gould's side for a grace
+  alone (entry 109; `a_graces_marks_beside_another_voice_stand_at_its_stem`);
+  and a grace's marks widening the slot they stand in, the clause fix round
+  1 kept by removing casting's exclusion of them (entry 117): at a later
+  system's opening the measure starts at a tenuto reaching left of its
+  grace's head, the grace set right by that reach
+  (`a_graces_mark_widens_its_slot_at_a_systems_opening`). A first voice's
+  grace counts as beside another voice only while that voice holds a note
+  through it (`voice_places`), so the test sets one there.
+

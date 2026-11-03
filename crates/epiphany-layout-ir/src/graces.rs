@@ -500,6 +500,31 @@ mod tests {
         );
     }
 
+    /// Where a mark set over and under a run stands as near its heads either
+    /// way, the run takes its marks on its stem's side (entry 109): a grace
+    /// whose head stands 2¼ spaces off the staff's bottom line, its stem up
+    /// 2¼ past it, has its ink from the bottom line to its stem's end, its
+    /// head midway, and takes them over; the same grace turned down, its head
+    /// 1¾ up and its stem's end ½ under the staff, under. The shapes are
+    /// built by hand so that the two distances are equal.
+    #[test]
+    fn a_runs_marks_take_its_stems_side_where_both_stand_as_near() {
+        let up = GraceShape {
+            heads: vec![(Point::new(0.0, 2.25), "noteheadBlack", Some(0))],
+            stem: Some((0.6, 2.25, 4.5)),
+            up: true,
+            ..Default::default()
+        };
+        assert!(marks_above(&[&up], 0.0), "stem up: over");
+        let down = GraceShape {
+            heads: vec![(Point::new(0.0, 1.75), "noteheadBlack", Some(0))],
+            stem: Some((0.0, 1.75, -0.5)),
+            up: false,
+            ..Default::default()
+        };
+        assert!(!marks_above(&[&down], 0.0), "stem down: under");
+    }
+
     /// A grace's mark stands clear of its staff and its own ink by 0.4, and
     /// of the ink of its column it meets across its width by 0.4 more, as
     /// X4d.3's column rule sets a note's outside marks.
