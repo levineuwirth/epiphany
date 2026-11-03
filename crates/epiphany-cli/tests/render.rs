@@ -8175,6 +8175,109 @@ fn the_floor_compresses_only_as_far_as_the_system_needs() {
     assert!(natural < 1e-3, "{natural}");
 }
 
+/// Ink of no staff counts toward a system's fit as its staves' ink does
+/// (X5d.2, D109 Q1): the three plain parts with the one primitive their
+/// margin band holds, the region's traced anchor, lifted three spaces over
+/// the top staff's top line, on a page whose content holds the system so
+/// drawn half a space short. Each of its two gaps gives a quarter, as where
+/// the staves alone stand half a space too tall; with the anchor where the
+/// constrained stage sets it, inside the staves' range, the same page holds
+/// the system at the full floor.
+#[test]
+fn ink_of_no_staff_counts_toward_a_systems_fit() {
+    use epiphany_core::TypedObjectId;
+    use epiphany_layout_ir::{
+        to_constrained, to_logical, ConstrainedLayoutIR, ConstraintSolver, Point, SolverConfig,
+        VerticalBandKind,
+    };
+    let xml = whole_note_parts(
+        &[(TREBLE, "B", 4), (TREBLE, "B", 4), (TREBLE, "B", 4)],
+        1,
+        false,
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("three_plain_parts_free_ink.musicxml");
+    std::fs::write(&path, &xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let placed = to_constrained(&to_logical(&loaded.reduced.score));
+    let margin: Vec<_> = placed
+        .vertical_bands
+        .iter()
+        .filter(|b| b.kind == VerticalBandKind::MarginBand)
+        .map(|b| b.id)
+        .collect();
+    assert!(placed
+        .glyphs
+        .iter()
+        .all(|g| !margin.contains(&g.vertical_band)));
+    assert!(placed
+        .curves
+        .iter()
+        .all(|c| !margin.contains(&c.vertical_band)));
+    assert!(placed
+        .texts
+        .iter()
+        .all(|t| !margin.contains(&t.vertical_band)));
+    let free: Vec<usize> = (0..placed.strokes.len())
+        .filter(|&i| margin.contains(&placed.strokes[i].vertical_band))
+        .collect();
+    assert_eq!(
+        free.len(),
+        1,
+        "the margin band holds the region's anchor alone"
+    );
+    let top_line = placed
+        .strokes
+        .iter()
+        .filter(|s| matches!(s.provenance.source, TypedObjectId::Staff(_)) && s.from.y == s.to.y)
+        .map(|s| s.from.y.0)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let mut lifted = placed.clone();
+    let anchor = &mut lifted.strokes[free[0]];
+    anchor.from = Point::new(anchor.from.x.0, top_line + 3.0);
+    anchor.to = Point::new(anchor.to.x.0, top_line + 3.0);
+    let solve = |input: &ConstrainedLayoutIR, geometry: epiphany_engrave::PageGeometry| {
+        epiphany_engrave::Engraver::with_geometry(geometry)
+            .solve(input, &SolverConfig::default())
+            .layout
+    };
+    let gaps = |layout: &epiphany_layout_ir::ResolvedLayoutIR| -> Vec<f32> {
+        staff_lines_by_system(layout)[0]
+            .windows(2)
+            .map(|w| w[0].0 - w[1].1)
+            .collect()
+    };
+    let natural = solve(&lifted, unbounded_page());
+    let system = natural.systems().next().expect("a system");
+    let (bottom, height) = (
+        system.bounding_box.origin.y.0,
+        system.bounding_box.size.height.0,
+    );
+    let lines = &staff_lines_by_system(&natural)[0];
+    assert!(
+        bottom + height >= lines[0].1 + 3.0 - 1e-3,
+        "the lifted anchor stands in its system: {bottom} {height} {lines:?}"
+    );
+    for d in gaps(&natural) {
+        assert!((d - 4.0).abs() < 1e-3, "the full floor: {d}");
+    }
+    let mut geometry = epiphany_engrave::PageGeometry::default();
+    geometry.size.height = epiphany_layout_ir::StaffSpace(
+        height - 0.5 + geometry.margins.top.0 + geometry.margins.bottom.0,
+    );
+    for d in gaps(&solve(&lifted, geometry)) {
+        assert!(
+            (d - 3.75).abs() < 0.005,
+            "compressed by the ink of no staff: {d}"
+        );
+    }
+    for d in gaps(&solve(&placed, geometry)) {
+        assert!(
+            (d - 4.0).abs() < 1e-3,
+            "the anchor inside the staves asks nothing: {d}"
+        );
+    }
+}
+
 /// Each system's ink rectangles and its top and bottom staff lines.
 fn system_inks(layout: &epiphany_layout_ir::ResolvedLayoutIR) -> Vec<(Vec<[f32; 4]>, f32, f32)> {
     use epiphany_core::TypedObjectId;

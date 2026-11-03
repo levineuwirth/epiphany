@@ -3566,3 +3566,14 @@ engraver's own placing reproduces it:
   page holding a line's runs failed (X4d's line tests).
 - A grace note's ledger lines stand outside a five-line staff's outer
   lines, as X4d drew them; `ledger_steps` now takes the staff's frame.
+
+## X5d.7: a system's fit reads its ink of no staff, pinned (2026-11-03, no version change)
+
+- The fit that decides whether a system's floor compresses (entry 123)
+  reads the ink of no staff with its staves' ink. No test held that: the
+  margin band of every score drawn holds only ink inside its staves' range,
+  so the fit read the same without it. Pinned by a hand-built test that
+  lifts the region's traced anchor, the one primitive its margin band holds,
+  three spaces over the top staff, on a page that then holds the system half
+  a space short; the floor compresses by that half
+  (`ink_of_no_staff_counts_toward_a_systems_fit`).
