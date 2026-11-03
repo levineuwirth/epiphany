@@ -361,7 +361,13 @@ pub struct Engraver {
 /// when the resolved layout began carrying shaped text runs, a fourth
 /// primitive each riding its slot and joining its staff's extent, whose count
 /// enters every layout's canonical bytes though no score yet draws one.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(98);
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(126);
+
+/// The decision a solver reports for each glissando its system sets too
+/// short for its notes, shorter than its line is thick or turned back, which
+/// it leaves undrawn (X4d fix round 2): its words, an
+/// [`SolverWarningKind::UnusualLayoutDecision`] naming the glissando.
+pub const GLISSANDO_TOO_SHORT: &str = "a glissando too short for its notes on its system, undrawn";
 
 impl Engraver {
     /// An engraver casting off against the given page geometry.
@@ -520,6 +526,15 @@ impl Engraver {
                 )),
                 affected_objects: overfull.opens.into_iter().collect(),
                 message: "system taller than its page".to_owned(),
+            });
+        }
+        // Each glissando the cast page leaves too short for its notes, left
+        // undrawn (X4d fix round 2).
+        for source in cast.iter().flat_map(|cast| &cast.short_glissandi) {
+            warnings.push(SolverWarning {
+                kind: SolverWarningKind::UnusualLayoutDecision(GLISSANDO_TOO_SHORT.to_owned()),
+                affected_objects: vec![*source],
+                message: "glissando left undrawn".to_owned(),
             });
         }
         if structural_valid && catalog_valid && !unsatisfied_constraints.is_empty() {

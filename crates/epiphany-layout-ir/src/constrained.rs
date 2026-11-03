@@ -27,6 +27,8 @@ use crate::engrave_theory::{
 };
 use crate::engraving::{EngravingDecision, OverrideKind, OverridePriority, OverrideTarget};
 use crate::glyph::{metrics, BravuraCatalog, GlyphCatalog, GlyphCatalogIdentity, GlyphReference};
+use crate::graces;
+use crate::lines;
 use crate::logical::{
     apply_offset, BarlineKind, LayoutContent, LogicalLayoutIR, MarkerContent, MarkerPlace,
     PlacedClef, PlacedKeySignature, RepeatContent, RepeatPlacement, ScoreVersion, SlurContent,
@@ -223,6 +225,11 @@ pub struct ConstrainedLayoutIR {
     /// as Gould sets a whole-bar rest (*Behind Bars*, pp. 159-160) and
     /// MuseScore and LilyPond centre theirs; its column keeps its room.
     pub measure_rests: Vec<GlyphObjectId>,
+    /// The runs the family's lines draw piece by piece (X4d.1): a pedal
+    /// line's, an ottava's or a verbal crescendo's continuation at the start
+    /// of each piece a system break carries into a later system, and a
+    /// glissando's words along each piece.
+    pub line_texts: Vec<LineText>,
 }
 
 /// An ending's start (see [`ConstrainedLayoutIR::endings`]): the barline
@@ -283,6 +290,76 @@ pub enum FamilyLine {
     /// ([`TRILL_WIGGLE`], one in each of its advance, as many as the piece
     /// holds to the nearest: `LineSegment::symbolLine`).
     Trill,
+    /// A line drawn from after its sign to its end (X4d.1): a pedal line,
+    /// an ottava, a text line or a bracket. Its stroke is solid, or set as
+    /// dashes along each piece ([`LineDashes`]); a piece a system break
+    /// carries into a later system opens with the line's continuation, where
+    /// it has one ([`ConstrainedLayoutIR::line_texts`]). Where `before`
+    /// names a slot, the line's end and its hook stand no further right than
+    /// that slot's column once the system is set (an ottava's corner never
+    /// passes the next note, `Ottava::linePos`).
+    Extension {
+        dashes: Option<LineDashes>,
+        before: Option<SpringSlotId>,
+    },
+    /// A glissando from head to head (X4d.1). Split where a system break cuts
+    /// it, its pieces keep its slope, as MuseScore interpolates them across
+    /// the break and Gould keeps the gradient of the interval (*Behind Bars*,
+    /// p. 142); wavy, each piece is set as wiggles ([`GLISSANDO_WIGGLE`]); its
+    /// words stand along each piece they fit ([`ConstrainedLayoutIR::line_texts`]).
+    /// `heads` are its two heads' centres in the projection's frame: its ends
+    /// keep their distance across from them, and once the system is set its
+    /// heights are read again on the line joining them where the system sets
+    /// them, as MuseScore lays it out on the system as set.
+    Glissando {
+        wavy: bool,
+        heads: [Point; 2],
+    },
+}
+
+/// A dashed line's pattern (X4d.1), in staff spaces: each piece of it is set
+/// as dashes `dash` long, one more than the pairs of dash and `gap` its
+/// length holds whole, the gaps shared out evenly so its first and last dash
+/// stand at its ends, as MuseScore distributes a dash pattern over a line's
+/// length (`distributedDashPattern`).
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub struct LineDashes {
+    pub dash: f32,
+    pub gap: f32,
+}
+
+/// A glissando's wiggle, which a solver sets along a wavy glissando piece by
+/// piece, turned to its slope.
+pub const GLISSANDO_WIGGLE: char = '\u{EAAF}';
+
+/// A run a line of the family draws in each later piece or along each piece
+/// (X4d.1; see [`ConstrainedLayoutIR::line_texts`]).
+#[derive(Clone, PartialEq, Debug)]
+pub struct LineText {
+    /// The line's stroke.
+    pub line: GlyphObjectId,
+    /// The run, its origin where the projection would set it at the start of
+    /// the line's first piece, at the line's height.
+    pub run: crate::text::ResolvedText,
+    pub role: LineTextRole,
+}
+
+/// Where a line's run stands in a piece (see [`LineText`]).
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub enum LineTextRole {
+    /// At the start of each piece a system break carries into a later system,
+    /// the piece's line starting `gap` after its ink: a pedal line's
+    /// "(Ped.)", an ottava's numeral, a verbal crescendo's "(cresc.)".
+    Continuation { gap: f32 },
+    /// Centred along each piece it is shorter than, turned to the piece's
+    /// slope, its baseline `raise` over the line: a glissando's words.
+    /// Glissandi between the same two notes share `set`, and `rank` is a
+    /// line's place among them from the top heads (0 the topmost): in each
+    /// piece the set's words stand on the line of least rank whose piece
+    /// holds them, as Gould gives a set of parallel lines one instruction
+    /// (*Behind Bars*, p. 143), on the topmost line long enough for it (X4d
+    /// fix round 2).
+    Along { raise: f32, set: u128, rank: usize },
 }
 
 /// A trill line's wiggle, which a solver sets along its line piece by piece.
@@ -345,6 +422,16 @@ pub enum Room {
     /// As any ink of its column: an arpeggio left of its chord, a one-note
     /// tremolo on its stem, a chord line beside its head.
     Ink,
+    /// A grace note's (X4d.2): as any ink of its column, and, at any height,
+    /// a barline's clearance after the barline before its principal, as
+    /// Gould sets graces before a bar's first beat after its barline
+    /// (*Behind Bars*, p. 127).
+    Grace,
+    /// A grace note's mark (X4d fix round 1): it meets other ink freely, as a
+    /// note's marks do, but keeps the barline's clearance a grace keeps at
+    /// any height, its ink the grace's as MuseScore's grace chord's shape
+    /// holds its articulations, and its column widens by it as by that room.
+    GraceMark,
     /// A syllable's: clear of the earlier syllables of its staff and verse
     /// at any height, by more where a hyphen follows it, and of no other ink.
     Verse { verse: u16, hyphen: bool },
@@ -410,7 +497,25 @@ pub struct Row {
 pub enum PlaceOrder {
     Trill,
     Fermata,
+    /// The dynamics, then the expression text, then the hairpins, verbal ones
+    /// included, each order placed whole before the next and every chain of
+    /// them aligned once all three are (`layoutDynamicExpressionAndHairpins`;
+    /// X4d.3).
     Dynamic,
+    Expression,
+    Hairpin,
+    /// Expression text at a note a hairpin starts at, placed once the
+    /// dynamics and hairpins stand, so outside them: Gould's place for it
+    /// where a hairpin follows a dynamic (*Behind Bars*, p. 495), and the
+    /// owner's where none does (X4d.6).
+    OuterExpression,
+    /// A text line or bracket (MuseScore's other spanners, after the
+    /// dynamics and hairpins).
+    TextLine,
+    /// An ottava, then a pedal line, every pedal line of a staff in a system
+    /// in one row (`processLines`, `align`).
+    Ottava,
+    Pedal,
     Lyric,
     StaffText,
     Tempo,
@@ -418,6 +523,28 @@ pub enum PlaceOrder {
     Rehearsal,
     /// A segno or coda (`markersAndJumps`).
     Marker,
+}
+
+impl PlaceOrder {
+    /// The stage it is placed in: the dynamics, expression text and hairpins
+    /// are one stage, whose rows a solver aligns once the stage is placed;
+    /// every other order is its own.
+    pub fn stage(self) -> u8 {
+        match self {
+            PlaceOrder::Trill => 0,
+            PlaceOrder::Fermata => 1,
+            PlaceOrder::Dynamic | PlaceOrder::Expression | PlaceOrder::Hairpin => 2,
+            PlaceOrder::OuterExpression => 3,
+            PlaceOrder::TextLine => 4,
+            PlaceOrder::Ottava => 5,
+            PlaceOrder::Pedal => 6,
+            PlaceOrder::Lyric => 7,
+            PlaceOrder::StaffText => 8,
+            PlaceOrder::Tempo => 9,
+            PlaceOrder::Rehearsal => 10,
+            PlaceOrder::Marker => 11,
+        }
+    }
 }
 
 /// A beam joining notes on two staves of a region (see
@@ -538,6 +665,10 @@ pub enum LayoutDiagnosticKind {
     /// A text run with characters that read right to left, which the
     /// engraver shapes left to right only: it is drawn, but not as it reads.
     RightToLeftText,
+    /// A glissando whose notes' ink leaves its line no room between them
+    /// (X4d fix round 1): it is left undrawn, where Gould sets such a line
+    /// above or below the notes with its words (*Behind Bars*, p. 141).
+    GlissandoTooShort,
 }
 
 /// What shaping a text run left to report, as diagnostics against its source
@@ -1315,6 +1446,7 @@ pub fn try_to_constrained(
     let mut span_anchors: Vec<SpanAnchor> = Vec::new();
     let mut endings: Vec<EndingStart> = Vec::new();
     let mut measure_rests: Vec<GlyphObjectId> = Vec::new();
+    let mut line_texts: Vec<LineText> = Vec::new();
     let mut system_leads: Vec<SystemLead> = Vec::new();
     let mut staff_groups: Vec<GroupSpan> = Vec::new();
     let mut cross_staff_beams: Vec<CrossStaffBeam> = Vec::new();
@@ -1425,6 +1557,9 @@ pub fn try_to_constrained(
         // component, each at `position + component.offset`.
         let mut pitch_heads: BTreeMap<PitchId, Vec<Head>> = BTreeMap::new();
         let mut unpitched_heads: BTreeMap<EventId, Vec<Head>> = BTreeMap::new();
+        // The region's grace notes (X4d.2), each set out before its principal
+        // once the columns' accidentals are placed.
+        let mut graces: Vec<(EventId, Option<StaffId>, &crate::logical::GraceContent)> = Vec::new();
         // Every head of each staff's column, whatever its voice: what an
         // accidental beside one of them must clear.
         let mut column_heads: BTreeMap<(Option<StaffId>, ColumnKey), Vec<HeadRef>> =
@@ -1478,6 +1613,11 @@ pub fn try_to_constrained(
             let staff = object.staff();
             let yo = staff.map(&y_origin).unwrap_or(0.0);
             match (object.provenance().source, object.content()) {
+                (TypedObjectId::Event(eid), LayoutContent::Grace(grace)) => {
+                    event_staff.extend(staff.map(|st| (eid, st)));
+                    event_voices.insert(eid, grace.voice);
+                    graces.push((eid, staff, grace));
+                }
                 (TypedObjectId::Event(eid), LayoutContent::Note(note)) => {
                     if !note.marks.is_empty() || !note.ornaments.is_empty() {
                         mark_sources.insert(eid, (note.marks.clone(), note.ornaments.clone()));
@@ -1848,7 +1988,7 @@ pub fn try_to_constrained(
                 (TypedObjectId::Marker(_), LayoutContent::Marker(marker)) if staff.is_some() => {
                     // A dynamic or staff text where no note of its staff starts
                     // stands in the note column of its time, made for it where
-                    // none is; so does expression text, drawn as staff text.
+                    // none is; so does expression text.
                     if let (
                         MarkerKind::Dynamic(_)
                         | MarkerKind::Text(_)
@@ -1978,6 +2118,36 @@ pub fn try_to_constrained(
             }
             if leftmost < 0.0 {
                 let entry = column_overhang.entry(key.clone()).or_insert(0.0);
+                *entry = entry.max(-leftmost);
+            }
+        }
+
+        // Each staff's grace notes before their principal (X4d.2): a voice's
+        // graces at one onset set out right to left before the ink of the
+        // principal's column on their staff, their reach widening the
+        // column's overhang as accidentals do.
+        let mut grace_placings = place_graces(
+            &graces,
+            &GraceInputs {
+                column_heads: &column_heads,
+                pitch_heads: &pitch_heads,
+                unpitched_heads: &unpitched_heads,
+                event_stems: &event_stems,
+                event_rests: &event_rests,
+                shown: &shown_accidentals,
+            },
+            |staff: Option<StaffId>, time: &TimePoint| {
+                (
+                    staff.map(&y_origin).unwrap_or(0.0),
+                    active_clef_or(clef_seq(staff), time, clef_default(staff)),
+                )
+            },
+            &mut diagnostics,
+        );
+        for placing in grace_placings.values() {
+            let leftmost = placing.ink().iter().map(|b| b[0]).fold(0.0f32, f32::min);
+            if leftmost < 0.0 {
+                let entry = column_overhang.entry(placing.key.clone()).or_insert(0.0);
                 *entry = entry.max(-leftmost);
             }
         }
@@ -2875,6 +3045,34 @@ pub fn try_to_constrained(
                 }
             }
         }
+        // Each staff column's ink of its chords, with the event drawing it:
+        // their heads, ledger lines, dots and accidentals, stems and flags,
+        // `x` from the column. An outside mark at another chord of the
+        // column stands clear of it, as MuseScore's autoplace keeps an
+        // articulation clear of its staff's skyline, every voice's chords
+        // in it (X4d.3).
+        let mut column_chords: ColumnChords = BTreeMap::new();
+        for (at, refs) in &column_heads {
+            let boxes = column_chords.entry(at.clone()).or_default();
+            let yo = at.0.map(&y_origin).unwrap_or(0.0);
+            let mut stems = BTreeSet::new();
+            for r in refs {
+                let head = r.get(&pitch_heads, &unpitched_heads);
+                let mut ink = column_ink_boxes(head, 0.0, yo);
+                if stems.insert((head.event, head.comp)) {
+                    if let Some(seg) = event_stems
+                        .get(&head.event)
+                        .and_then(|segs| segs.iter().find(|seg| seg.comp == head.comp))
+                    {
+                        ink.extend(stem_ink(seg, 0.0));
+                    }
+                }
+                boxes.extend(
+                    ink.into_iter()
+                        .map(|b| (head.event, [b.left, b.bottom, b.right, b.top])),
+                );
+            }
+        }
         for (eid, (event_marks_of, ornaments)) in &mark_sources {
             let (Some(seg), Some(&staff), Some(heads)) = (
                 event_stems
@@ -2940,6 +3138,15 @@ pub fn try_to_constrained(
                 accidental_ink,
                 tie_above: outer_tie(seg.hi, true),
                 tie_below: outer_tie(seg.lo, false),
+                column: heads
+                    .first()
+                    .and_then(|h| column_chords.get(&(Some(staff), h.key.clone())))
+                    .map_or_else(Vec::new, |ink| {
+                        ink.iter()
+                            .filter(|(event, _)| event != eid)
+                            .map(|(_, ink)| *ink)
+                            .collect()
+                    }),
             };
             let ornaments: Vec<Ornament> = ornaments
                 .iter()
@@ -2951,6 +3158,52 @@ pub fn try_to_constrained(
                 marks::into_ink(ink, &placed);
             }
             event_marks.insert(*eid, placed);
+        }
+
+        // Each group of graces stands clear of what its principal's column
+        // places that takes room as its chords' ink, an arpeggio above all,
+        // by `graces::GRACE_TO_MAIN` (X4d fix round 1): the group, set before
+        // those marks were, moves left as far as they reach past it.
+        let mut room_left: BTreeMap<(Option<StaffId>, ColumnKey), f32> = BTreeMap::new();
+        for (eid, placed) in &event_marks {
+            let (Some(seg), Some(&staff)) = (
+                event_stems
+                    .get(eid)
+                    .and_then(|segs| segs.iter().find(|seg| seg.comp == 0)),
+                event_staff.get(eid),
+            ) else {
+                continue;
+            };
+            for ink in marks::room_ink(placed) {
+                let left = room_left
+                    .entry((Some(staff), seg.key.clone()))
+                    .or_insert(f32::INFINITY);
+                *left = left.min(ink[0]);
+            }
+        }
+        let mut group_right: BTreeMap<(Option<StaffId>, ColumnKey, u8), f32> = BTreeMap::new();
+        for placing in grace_placings.values() {
+            let right = placing
+                .ink()
+                .iter()
+                .map(|b| b[2])
+                .fold(f32::NEG_INFINITY, f32::max);
+            let entry = group_right
+                .entry((placing.staff, placing.key.clone(), placing.group))
+                .or_insert(f32::NEG_INFINITY);
+            *entry = entry.max(right);
+        }
+        for placing in grace_placings.values_mut() {
+            let (Some(&left), Some(&right)) = (
+                room_left.get(&(placing.staff, placing.key.clone())),
+                group_right.get(&(placing.staff, placing.key.clone(), placing.group)),
+            ) else {
+                continue;
+            };
+            let over = right + graces::GRACE_TO_MAIN - left;
+            if over > 0.0 {
+                placing.shifted(-over);
+            }
         }
 
         // Regroup the note-column ink by staff: a slur's obstacle field is its own
@@ -3080,6 +3333,11 @@ pub fn try_to_constrained(
         // Keyed by staff and the note column of a time.
         let note_at = |time: TimePoint| ColumnKey::Timed(time, ColumnRole::Note);
         let mut dynamic_ink: BTreeMap<(StaffId, ColumnKey), (f32, f32)> = BTreeMap::new();
+        // Each staff's dynamic at a note: its id, its baseline, and whether
+        // it ends in a forte, which expression text after it stands nearer
+        // (X4d.6); and each note a hairpin starts at, verbal ones included.
+        let mut dynamic_at: BTreeMap<(StaffId, ColumnKey), (u128, f32, bool)> = BTreeMap::new();
+        let mut hairpin_starts: BTreeSet<(StaffId, ColumnKey)> = BTreeSet::new();
         let mut chains: BTreeMap<u128, u128> = BTreeMap::new();
         let mut chain_ends: BTreeMap<(StaffId, ColumnKey), Vec<u128>> = BTreeMap::new();
         for (provenance, staff, content) in &specs {
@@ -3138,6 +3396,10 @@ pub fn try_to_constrained(
                         }
                     };
                     dynamic_ink.insert((st, note_at(time.clone())), (left, right));
+                    dynamic_at.insert(
+                        (st, note_at(time.clone())),
+                        (id, baseline, ends_in_forte(dynamic)),
+                    );
                     chain_ends.entry((st, note_at(time))).or_default().push(id);
                     dynamics.insert(
                         id,
@@ -3153,7 +3415,25 @@ pub fn try_to_constrained(
                     kind: SpannerKind::Hairpin(_),
                     start,
                     end,
+                    ..
                 })) => {
+                    if let Some(time) = place_time(start) {
+                        hairpin_starts.insert((st, note_at(time)));
+                    }
+                    for time in [place_time(start), place_time(end)].into_iter().flatten() {
+                        chain_ends.entry((st, note_at(time))).or_default().push(id);
+                    }
+                }
+                // A verbal crescendo is a hairpin of the line type (X4d.1).
+                Some(LayoutContent::Spanner(SpannerContent {
+                    kind: SpannerKind::TextLine(def),
+                    start,
+                    end,
+                    ..
+                })) if lines::dynamic_term(def.text.as_str()).is_some() => {
+                    if let Some(time) = place_time(start) {
+                        hairpin_starts.insert((st, note_at(time)));
+                    }
                     for time in [place_time(start), place_time(end)].into_iter().flatten() {
                         chain_ends.entry((st, note_at(time))).or_default().push(id);
                     }
@@ -3303,13 +3583,87 @@ pub fn try_to_constrained(
                 run
             };
             let placing = match &marker.kind {
+                // Expression text (X4d.6, D79 Q9): italic, under its staff, or
+                // over a voice's staff, which takes its dynamics over it (D79
+                // Q10), as Gould sets expression marks (*Behind Bars*, pp. 489,
+                // 495 and 434) and MuseScore's expression style does
+                // (`expressionFontStyle`, `expressionPlacement`,
+                // `expressionPosBelow`, `expressionPosAbove`). Where a dynamic
+                // stands at its note it follows it on its baseline, in its
+                // row, `EXPRESSION_AFTER_DYNAMIC` after it, less after a forte
+                // (`Expression::computeDynamicExpressionDistance`); where a
+                // hairpin starts there it stands outside the dynamics and
+                // hairpins, under the dynamic where there is one (Gould,
+                // p. 495; the owner's rulings, X4d.6). Each line a run, the
+                // first on the baseline and each further one a line lower.
+                MarkerKind::ExpressionText(words) => {
+                    let above = vocal.contains(&st);
+                    let yo = y_origin(st);
+                    let at = (st, note.clone());
+                    let dynamic = dynamic_at.get(&at).copied();
+                    let outer = hairpin_starts.contains(&at);
+                    let mut x = left;
+                    let mut baseline = if above {
+                        top + EXPRESSION_ABOVE
+                    } else {
+                        yo - EXPRESSION_BELOW
+                    };
+                    let mut row = None;
+                    if let (Some((id, dynamic_baseline, forte)), Some(&(ink_left, ink_right))) =
+                        (dynamic, dynamic_ink.get(&at))
+                    {
+                        if outer {
+                            x = ink_left;
+                        } else {
+                            x = ink_right
+                                + if forte {
+                                    EXPRESSION_AFTER_FORTE
+                                } else {
+                                    EXPRESSION_AFTER_DYNAMIC
+                                };
+                            baseline = dynamic_baseline;
+                            row = Some(Row {
+                                id: chain_of(&mut chains, id),
+                                centre: dynamic_baseline + DYNAMIC_CENTRE,
+                            });
+                        }
+                    }
+                    TextMarkPlacing {
+                        key: note,
+                        staff: st,
+                        runs: words
+                            .as_str()
+                            .split('\n')
+                            .enumerate()
+                            .filter(|(_, line)| !line.is_empty())
+                            .map(|(i, line)| {
+                                shape(
+                                    line,
+                                    TextFace::Italic,
+                                    STAFF_TEXT_SIZE,
+                                    Point::new(
+                                        x,
+                                        baseline - i as f32 * TEXT_LINE * STAFF_TEXT_SIZE,
+                                    ),
+                                    i as u128,
+                                )
+                            })
+                            .collect(),
+                        frame: None,
+                        order: if outer {
+                            PlaceOrder::OuterExpression
+                        } else {
+                            PlaceOrder::Expression
+                        },
+                        across: None,
+                        above,
+                        row,
+                        between: true,
+                    }
+                }
                 // Each line of the text a run, the first on the baseline and
                 // each further one a line lower (`TextLayout`, `BASELINE`).
-                // Expression text, which the model holds apart since X5b, is
-                // drawn as staff text until it is drawn italic and below
-                // (roadmap D79 Q9), as it was while the import wrote it as
-                // staff text.
-                MarkerKind::Text(words) | MarkerKind::ExpressionText(words) => TextMarkPlacing {
+                MarkerKind::Text(words) => TextMarkPlacing {
                     key: note,
                     staff: st,
                     runs: words
@@ -3332,6 +3686,9 @@ pub fn try_to_constrained(
                     frame: None,
                     order: PlaceOrder::StaffText,
                     across: None,
+                    above: true,
+                    row: None,
+                    between: false,
                 },
                 MarkerKind::Tempo(tempo) => {
                     // Over the time signature its measure opens with, if one
@@ -3405,6 +3762,9 @@ pub fn try_to_constrained(
                         frame: None,
                         order: PlaceOrder::Tempo,
                         across: None,
+                        above: true,
+                        row: None,
+                        between: false,
                     }
                 }
                 MarkerKind::Rehearsal(words) => {
@@ -3434,6 +3794,9 @@ pub fn try_to_constrained(
                         frame: Some([l - pad, b - pad, r + pad, t + pad]),
                         order: PlaceOrder::Rehearsal,
                         across: measure.map(|_| (barline.clone(), MeasureMark::Rehearsal)),
+                        above: true,
+                        row: None,
+                        between: false,
                     }
                 }
                 MarkerKind::Segno | MarkerKind::Coda => {
@@ -3458,6 +3821,9 @@ pub fn try_to_constrained(
                         frame: None,
                         order: PlaceOrder::Marker,
                         across: measure.map(|_| (barline.clone(), MeasureMark::Repeat)),
+                        above: true,
+                        row: None,
+                        between: false,
                     }
                 }
                 _ => continue,
@@ -3474,6 +3840,282 @@ pub fn try_to_constrained(
         let mut hairpin_anchors: Vec<(GlyphObjectId, SpringSlotId, SpringSlotId)> = Vec::new();
         // This region's first run and family member.
         let (text_start, family_start) = (texts.len(), family.len());
+
+        // The family's lines (X4d.1): each staff's pedal starts, by the
+        // column of their time, which a pedal released there ends further
+        // before; each glissando's rank among those joining its two notes,
+        // which pairs it with a head of each; and each note's pitches.
+        let mut pedal_starts: BTreeSet<(StaffId, ColumnKey)> = BTreeSet::new();
+        let mut gliss_pairs: BTreeMap<(EventId, EventId), Vec<u128>> = BTreeMap::new();
+        // The gradual tempo changes drawn, by their words and times.
+        let mut tempo_changes: Vec<(String, TimePoint, TimePoint)> = Vec::new();
+        let mut note_pitches: BTreeMap<EventId, Vec<PitchId>> = BTreeMap::new();
+        for (provenance, staff, content) in &specs {
+            match (content, provenance.source) {
+                (Some(LayoutContent::Spanner(line)), _) => {
+                    match (&line.kind, &line.start, &line.end) {
+                        (SpannerKind::PedalLine(_) | SpannerKind::PedalBracket(_), start, _) => {
+                            if let (Some(st), Some(t0)) = (*staff, place_time(start)) {
+                                pedal_starts.insert((st, note_at(t0)));
+                            }
+                        }
+                        (
+                            SpannerKind::Glissando,
+                            MarkerPlace::Event { event: e0, .. },
+                            MarkerPlace::Event { event: e1, .. },
+                        ) => gliss_pairs
+                            .entry((*e0, *e1))
+                            .or_default()
+                            .push(provenance.stable_id.0),
+                        _ => {}
+                    }
+                }
+                (Some(LayoutContent::Note(note)), TypedObjectId::Event(e)) => {
+                    note_pitches.insert(e, note.pitches.iter().map(|p| p.pitch).collect());
+                }
+                _ => {}
+            }
+        }
+        // Each glissando's rank among those between the same notes, their
+        // count, and the set's key, its first line's id.
+        let gliss_rank: BTreeMap<u128, ((usize, usize), u128)> = gliss_pairs
+            .values_mut()
+            .flat_map(|ids| {
+                ids.sort_unstable();
+                let (n, set) = (ids.len(), ids[0]);
+                ids.iter()
+                    .enumerate()
+                    .map(move |(k, id)| (*id, ((k, n), set)))
+            })
+            .collect();
+        // The ink a staff's column holds: its heads with their ledger lines,
+        // dots and accidentals, their stems and flags, and its rests.
+        let staff_column_ink =
+            |st: StaffId, key: &ColumnKey, only: Option<EventId>| -> Vec<InkBox> {
+                let Some(info) = columns.get(key) else {
+                    return Vec::new();
+                };
+                let yo = y_origin(st);
+                let mut boxes = Vec::new();
+                if let Some(refs) = column_heads.get(&(Some(st), key.clone())) {
+                    let mut stems = BTreeSet::new();
+                    for r in refs {
+                        let head = r.get(&pitch_heads, &unpitched_heads);
+                        if only.is_some_and(|e| e != head.event) {
+                            continue;
+                        }
+                        boxes.extend(column_ink_boxes(head, info.x, yo));
+                        if stems.insert((head.event, head.comp)) {
+                            if let Some(seg) = event_stems
+                                .get(&head.event)
+                                .and_then(|segs| segs.iter().find(|seg| seg.comp == head.comp))
+                            {
+                                boxes.extend(stem_ink(seg, info.x));
+                            }
+                        }
+                    }
+                }
+                if only.is_none() {
+                    for rest in event_rests.values().flatten() {
+                        if rest.key != *key || rest.staff != Some(st) || !rest.visible {
+                            continue;
+                        }
+                        if let Some(b) = rest.name.and_then(metrics).map(|m| m.bounding_box()) {
+                            boxes.push(InkBox {
+                                left: info.x + b.left.0,
+                                right: info.x + b.right.0,
+                                bottom: rest.y + b.bottom.0,
+                                top: rest.y + b.top.0,
+                                behind: false,
+                            });
+                        }
+                    }
+                }
+                boxes
+            };
+        // The right edge of the ink of a staff's last note or rest from `t0`
+        // and before `t1`, in its column (`Ottava::linePos`: the end chord's
+        // staff shape), and that column's slot.
+        let last_ink_right =
+            |st: StaffId, t0: &TimePoint, t1: &TimePoint| -> Option<(f32, SpringSlotId)> {
+                columns
+                    .range(note_at(t0.clone())..ColumnKey::Timed(t1.clone(), ColumnRole::Breath))
+                    .rev()
+                    .filter(|(key, _)| matches!(key, ColumnKey::Timed(_, ColumnRole::Note)))
+                    .find_map(|(key, info)| {
+                        let right = staff_column_ink(st, key, None)
+                            .iter()
+                            .map(|b| b.right)
+                            .reduce(f32::max)?;
+                        Some((right, info.slot))
+                    })
+            };
+        // A glissando's line, from its first note's head to its last's, and
+        // the slots of the two heads' columns: the `k`th of `n` glissandi
+        // joining the notes takes the `k`th head of each chord from the top
+        // (the model keeps no head for a glissando), each end clear of its
+        // chord's ink at its head by a quarter space, the line kept on the
+        // one joining the heads' centres (`TLayout::layoutNoteAnchoredLine`).
+        // Where the notes' ink leaves it no room it is left undrawn, and
+        // `gliss_short` says so (X4d fix round 1).
+        // Both notes must stand on the line's staff: each end's ink is read
+        // on it, and an event's heads are its own staff's ink alone, so a
+        // note on another staff gives no end and the line none.
+        let gliss_short = std::cell::Cell::new(false);
+        let glissando_line = |(e0, e1): (EventId, EventId),
+                              (k, _n): (usize, usize),
+                              st: StaffId|
+         -> Option<GlissandoLine> {
+            let heads = |e: EventId, last: bool| -> Vec<&Head> {
+                let mut heads: Vec<&Head> = note_pitches
+                    .get(&e)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|p| {
+                        let heads = pitch_heads.get(p)?;
+                        if last {
+                            heads.last()
+                        } else {
+                            heads.first()
+                        }
+                    })
+                    .collect();
+                heads.sort_by(|a, b| b.y.total_cmp(&a.y));
+                heads
+            };
+            let (from, to) = (heads(e0, true), heads(e1, false));
+            let a = *from.get(k.min(from.len().checked_sub(1)?))?;
+            let b = *to.get(k.min(to.len().checked_sub(1)?))?;
+            let (ia, ib) = (columns.get(&a.key)?, columns.get(&b.key)?);
+            if ib.x <= ia.x {
+                return None;
+            }
+            let ba = metrics(a.name)?.bounding_box();
+            let bb = metrics(b.name)?.bounding_box();
+            let mut ca = Point::new(ia.x + a.dx + (ba.left.0 + ba.right.0) * 0.5, a.y);
+            let mut cb = Point::new(ib.x + b.dx + (bb.left.0 + bb.right.0) * 0.5, b.y);
+            // Which way it slides: by height, or between heads on one line
+            // by alteration, a quarter space that way at each end.
+            let up = match b.step.cmp(&a.step) {
+                Ordering::Greater => 1.0,
+                Ordering::Less => -1.0,
+                Ordering::Equal => {
+                    match b.alteration.unwrap_or(0).cmp(&a.alteration.unwrap_or(0)) {
+                        Ordering::Greater => 1.0,
+                        Ordering::Less => -1.0,
+                        Ordering::Equal => 0.0,
+                    }
+                }
+            };
+            // Each end a quarter space the way it slides: its start back
+            // from it, its end on toward it (y up).
+            if a.step == b.step {
+                ca = Point::new(ca.x.0, ca.y.0 - lines::GLISSANDO_SAME_LINE * up);
+                cb = Point::new(cb.x.0, cb.y.0 + lines::GLISSANDO_SAME_LINE * up);
+            }
+            // Clear of its first chord's ink at its head, and of its last
+            // chord's at the half of its head the line comes from.
+            let start = staff_column_ink(st, &a.key, Some(e0))
+                .iter()
+                .filter(|i| i.bottom < a.y + ba.top.0 && i.top > a.y + ba.bottom.0)
+                .map(|i| i.right)
+                .reduce(f32::max)?
+                + lines::GLISSANDO_CLEAR;
+            let middle = b.y + (bb.bottom.0 + bb.top.0) * 0.5;
+            let (low, high) = if up > 0.0 {
+                (b.y + bb.bottom.0, middle + lines::GLISSANDO_LEDGER)
+            } else if up < 0.0 {
+                (middle - lines::GLISSANDO_LEDGER, b.y + bb.top.0)
+            } else {
+                (b.y + bb.bottom.0, b.y + bb.top.0)
+            };
+            let end = staff_column_ink(st, &b.key, Some(e1))
+                .iter()
+                .filter(|i| i.bottom < high && i.top > low)
+                .map(|i| i.left)
+                .reduce(f32::min)?
+                - lines::GLISSANDO_CLEAR;
+            // Its start read again where the line so begun would cross the
+            // first column's other ink, a stem or another head, any voice's:
+            // past each box of it the line meets, a quarter space on (X4d fix
+            // round 1). The line meets a box it passes nearer than its half
+            // width and the quarter space it keeps from its chords' ink, so
+            // one grazing a head beside its own starts past it too.
+            let column = staff_column_ink(st, &a.key, None);
+            let rise = (cb.y.0 - ca.y.0) / (cb.x.0 - ca.x.0);
+            let height = |x: f32| ca.y.0 + (x - ca.x.0) * rise;
+            let reach = lines::GLISSANDO_CLEAR + lines::GLISSANDO_WIDTH * 0.5;
+            let mut start = start;
+            for _ in 0..4 {
+                let past = column
+                    .iter()
+                    .filter(|i| {
+                        let (l, r) = (i.left.max(start), i.right.min(end));
+                        l < r
+                            && height(l).min(height(r)) < i.top + reach
+                            && height(l).max(height(r)) > i.bottom - reach
+                    })
+                    .map(|i| i.right + lines::GLISSANDO_CLEAR)
+                    .fold(start, f32::max);
+                if past <= start + 1e-4 {
+                    break;
+                }
+                start = past;
+            }
+            // Its end read again so, before the ink of the last column's
+            // other voices the line would cross or graze, a head of another
+            // voice set before its own (X4d fix round 2). Its own chord's ink
+            // it clears at its head alone, as before.
+            let own = staff_column_ink(st, &b.key, Some(e1));
+            let same = |i: &InkBox, o: &InkBox| {
+                (i.left, i.right, i.bottom, i.top) == (o.left, o.right, o.bottom, o.top)
+            };
+            let column: Vec<InkBox> = staff_column_ink(st, &b.key, None)
+                .into_iter()
+                .filter(|i| !own.iter().any(|o| same(i, o)))
+                .collect();
+            let mut end = end;
+            for _ in 0..4 {
+                let before = column
+                    .iter()
+                    .filter(|i| {
+                        let (l, r) = (i.left.max(start), i.right.min(end));
+                        l < r
+                            && height(l).min(height(r)) < i.top + reach
+                            && height(l).max(height(r)) > i.bottom - reach
+                    })
+                    .map(|i| i.left - lines::GLISSANDO_CLEAR)
+                    .fold(end, f32::min);
+                if before >= end - 1e-4 {
+                    break;
+                }
+                end = before;
+            }
+            if end <= start {
+                gliss_short.set(true);
+                return None;
+            }
+            let slope = (cb.y.0 - ca.y.0) / (cb.x.0 - ca.x.0);
+            let from = Point::new(start, ca.y.0 + (start - ca.x.0) * slope);
+            let to = Point::new(end, cb.y.0 - (cb.x.0 - end) * slope);
+            Some((from, to, (ia.slot, ib.slot), [ca, cb]))
+        };
+
+        // Each grace note's pitches' provenance (X4d.2): a head drawn with its
+        // event carries its pitch's.
+        let grace_pitches: BTreeSet<PitchId> = graces
+            .iter()
+            .flat_map(|(_, _, grace)| grace.pitches.iter().map(|p| p.pitch))
+            .collect();
+        let grace_pitch_provenance: BTreeMap<PitchId, &Provenance> = specs
+            .iter()
+            .filter_map(|(provenance, _, _)| match provenance.source {
+                TypedObjectId::Pitch(pid) if grace_pitches.contains(&pid) => {
+                    Some((pid, *provenance))
+                }
+                _ => None,
+            })
+            .collect();
 
         // Pass 2 — emit. Each logical object's exact provenance lands on exactly
         // one primitive; the extras a multi-component object owns are synthesized.
@@ -3616,6 +4258,169 @@ pub fn try_to_constrained(
                     }
                 }
                 TypedObjectId::Event(eid) => match content {
+                    Some(LayoutContent::Grace(_)) => {
+                        // A grace note, small before its principal (X4d.2):
+                        // each head carrying its pitch's exact provenance (an
+                        // unpitched one its event's), its stem the event's,
+                        // every part riding the principal's slot, all one
+                        // member of the family taking room as an accidental
+                        // does.
+                        let drawn = grace_placings
+                            .get(&eid)
+                            .filter(|placing| !placing.shape.heads.is_empty())
+                            .and_then(|placing| Some((placing, columns.get(&placing.key)?)));
+                        match drawn {
+                            Some((placing, info)) => {
+                                let k = graces::GRACE_MAG;
+                                let band = band_of(staff);
+                                let at = |p: Point| Point::new(p.x.0 + info.x, p.y.0);
+                                let synth = |n: u128| {
+                                    Provenance::synthesized(
+                                        provenance.source,
+                                        SynthesisKind::Registered(GRACE_SYNTHESIS),
+                                        SynthesisInstanceKey(n),
+                                        provenance.dependencies.clone(),
+                                    )
+                                };
+                                let unpitched = placing.pitches.is_empty();
+                                let shape = &placing.shape;
+                                let mut runs: Vec<ResolvedText> = Vec::new();
+                                for (n, (origin, name, index)) in shape.heads.iter().enumerate() {
+                                    let prov = match index {
+                                        Some(i) => grace_pitch_provenance
+                                            .get(&placing.pitches[*i])
+                                            .map(|p| (*p).clone())
+                                            .unwrap_or_else(|| synth(0x100 + n as u128)),
+                                        None if n == 0 => provenance.clone(),
+                                        None => synth(0x100 + n as u128),
+                                    };
+                                    runs.extend(graces::small_glyph(prov, name, at(*origin)));
+                                }
+                                for (n, (origin, name, _)) in shape.accidentals.iter().enumerate() {
+                                    runs.extend(graces::small_glyph(
+                                        synth(0x200 + n as u128),
+                                        name,
+                                        at(*origin),
+                                    ));
+                                }
+                                if let Some((origin, name)) = shape.flag {
+                                    runs.extend(graces::small_glyph(synth(1), name, at(origin)));
+                                }
+                                // Its marks (X4d fix round 1), small, each
+                                // carrying its part's id as a note's does.
+                                let mark_runs: Vec<ResolvedText> = placing
+                                    .marks
+                                    .iter()
+                                    .filter_map(|m| {
+                                        graces::small_glyph(
+                                            Provenance::synthesized(
+                                                provenance.source,
+                                                SynthesisKind::Registered(MARK_SYNTHESIS),
+                                                NoteMarkPart::Glyph(m.tag).key(),
+                                                provenance.dependencies.clone(),
+                                            ),
+                                            m.name,
+                                            at(m.origin),
+                                        )
+                                    })
+                                    .collect();
+                                let mut strokes: Vec<Stroke> = Vec::new();
+                                if let Some((x, a, b)) = shape.stem {
+                                    let prov = if unpitched {
+                                        synth(2)
+                                    } else {
+                                        provenance.clone()
+                                    };
+                                    strokes.push(line_stroke(
+                                        prov,
+                                        Point::new(x + info.x, a),
+                                        Point::new(x + info.x, b),
+                                        STEM_THICKNESS * k,
+                                        band,
+                                    ));
+                                }
+                                for (n, (a, b)) in shape.ledgers.iter().enumerate() {
+                                    strokes.push(line_stroke(
+                                        synth(0x300 + n as u128),
+                                        at(*a),
+                                        at(*b),
+                                        STAFF_LINE_THICKNESS * k,
+                                        band,
+                                    ));
+                                }
+                                if let Some((a, b)) = shape.slash {
+                                    strokes.push(line_stroke(
+                                        synth(3),
+                                        at(a),
+                                        at(b),
+                                        graces::SLASH_THICKNESS * k,
+                                        band,
+                                    ));
+                                }
+                                for (n, (a, b)) in placing.beams.iter().enumerate() {
+                                    strokes.push(line_stroke(
+                                        synth(0x400 + n as u128),
+                                        at(*a),
+                                        at(*b),
+                                        placing.beam_thickness,
+                                        band,
+                                    ));
+                                }
+                                for stroke in &strokes {
+                                    span_anchors.push(SpanAnchor {
+                                        primitive: stroke.id(),
+                                        start: info.slot,
+                                        end: info.slot,
+                                    });
+                                }
+                                family.push(FamilyMark {
+                                    band,
+                                    glyphs: Vec::new(),
+                                    strokes: strokes.iter().map(Stroke::id).collect(),
+                                    texts: runs.iter().map(ResolvedText::id).collect(),
+                                    room: Room::Grace,
+                                    placement: None,
+                                    line: None,
+                                });
+                                for run in runs {
+                                    texts.push(TextObject {
+                                        text: run,
+                                        horizontal_slot: info.slot,
+                                        vertical_band: band,
+                                    });
+                                }
+                                // Its marks take no room against other ink,
+                                // as a note's do, but keep the barline's
+                                // clearance the grace keeps.
+                                if !mark_runs.is_empty() {
+                                    family.push(FamilyMark {
+                                        band,
+                                        glyphs: Vec::new(),
+                                        strokes: Vec::new(),
+                                        texts: mark_runs.iter().map(ResolvedText::id).collect(),
+                                        room: Room::GraceMark,
+                                        placement: None,
+                                        line: None,
+                                    });
+                                    for run in mark_runs {
+                                        texts.push(TextObject {
+                                            text: run,
+                                            horizontal_slot: info.slot,
+                                            vertical_band: band,
+                                        });
+                                    }
+                                }
+                                for stroke in strokes {
+                                    emit.stroke(stroke);
+                                }
+                            }
+                            None => emit.stroke(anchor(
+                                provenance,
+                                Point::new(default_x, yo),
+                                band_of(staff),
+                            )),
+                        }
+                    }
                     Some(LayoutContent::Note(_)) | Some(LayoutContent::Unpitched(_)) => {
                         let unpitched = matches!(content, Some(LayoutContent::Unpitched(_)));
                         let segs = event_stems.get(&eid).map(Vec::as_slice).unwrap_or(&[]);
@@ -3969,6 +4774,8 @@ pub fn try_to_constrained(
                         band_of(staff),
                     )),
                 },
+                // A grace note's pitch: its head is drawn with its event.
+                TypedObjectId::Pitch(pid) if grace_pitch_provenance.contains_key(&pid) => {}
                 TypedObjectId::Pitch(pid) => match pitch_heads.get(&pid) {
                     Some(heads) => {
                         for head in heads {
@@ -4567,11 +5374,15 @@ pub fn try_to_constrained(
                                 texts: runs,
                                 room: Room::None,
                                 placement: Some(Autoplace {
-                                    above: true,
+                                    above: mark.above,
                                     order: mark.order,
                                     min_distance: TEXT_MIN_DISTANCE,
-                                    row: None,
-                                    between: None,
+                                    row: mark.row,
+                                    between: mark
+                                        .between
+                                        .then(|| grand_neighbour(&grand, mark.staff, mark.above))
+                                        .flatten()
+                                        .map(|n| band_of(Some(n))),
                                     across,
                                 }),
                                 line: None,
@@ -4888,6 +5699,7 @@ pub fn try_to_constrained(
                                 kind: SpannerKind::Hairpin(direction),
                                 start,
                                 end,
+                                ..
                             })),
                             Some(st),
                         ) => {
@@ -4958,7 +5770,7 @@ pub fn try_to_constrained(
                                         room: Room::None,
                                         placement: Some(Autoplace {
                                             above,
-                                            order: PlaceOrder::Dynamic,
+                                            order: PlaceOrder::Hairpin,
                                             min_distance: HAIRPIN_MIN_DISTANCE,
                                             row: Some(Row {
                                                 id: chain_of(&mut chains, provenance.stable_id.0),
@@ -4986,6 +5798,7 @@ pub fn try_to_constrained(
                                 kind: SpannerKind::TrillExtension,
                                 start,
                                 end,
+                                ..
                             })),
                             Some(_),
                         ) => {
@@ -5122,6 +5935,577 @@ pub fn try_to_constrained(
                                     true
                                 }
                                 None => false,
+                            }
+                        }
+                        (Some(LayoutContent::Spanner(line)), Some(st))
+                            if matches!(
+                                line.kind,
+                                SpannerKind::PedalLine(_)
+                                    | SpannerKind::PedalBracket(_)
+                                    | SpannerKind::OctaveLine(_)
+                                    | SpannerKind::TextLine(_)
+                                    | SpannerKind::Bracket(_)
+                            ) =>
+                        {
+                            // A line from after its sign or words to its end
+                            // (X4d.1), placed again by a solver once its system
+                            // is set: a pedal line under its staff, an ottava
+                            // over or under it, a text line over it, a verbal
+                            // crescendo by the hairpin rule.
+                            let mut band = band_of(staff);
+                            let start_time = place_time(&line.start);
+                            let end_time = match &line.end {
+                                MarkerPlace::Event { time, .. } | MarkerPlace::Time(time) => {
+                                    Some(time.clone())
+                                }
+                                MarkerPlace::Unresolved => None,
+                            };
+                            // A gradual tempo change is a system object: one
+                            // repeating another's words and times from another
+                            // part is drawn once.
+                            let tempo_words = match &line.kind {
+                                SpannerKind::TextLine(def)
+                                    if lines::tempo_term(def.text.as_str()) =>
+                                {
+                                    Some(def.text.as_str())
+                                }
+                                _ => None,
+                            };
+                            let drawn_line = start_time
+                                .zip(end_time)
+                                .and_then(|(t0, t1)| {
+                                    let first = first_column(&columns, &t0, true)?;
+                                    let last = line_end_column(&columns, &t1)?;
+                                    Some((t0, t1, first, last))
+                                })
+                                .filter(|(t0, t1, ..)| {
+                                    let Some(words) = tempo_words else {
+                                        return true;
+                                    };
+                                    let twin = tempo_changes.iter().any(|(w, a, b)| {
+                                        w == words
+                                            && time_total(a, t0) == Ordering::Equal
+                                            && time_total(b, t1) == Ordering::Equal
+                                    });
+                                    if !twin {
+                                        tempo_changes.push((
+                                            words.to_owned(),
+                                            t0.clone(),
+                                            t1.clone(),
+                                        ));
+                                    }
+                                    !twin
+                                });
+                            match drawn_line {
+                                Some((t0, t1, (_, first), (_, last))) => {
+                                    let synth = |k: u128| {
+                                        Provenance::synthesized(
+                                            provenance.source,
+                                            SynthesisKind::Registered(LINE_SYNTHESIS),
+                                            SynthesisInstanceKey(k),
+                                            provenance.dependencies.clone(),
+                                        )
+                                    };
+                                    // What each kind draws: its sign or words, its
+                                    // line's ends, height, width and dashes, its
+                                    // hooks, and how a solver places it.
+                                    let mut sign: Option<ResolvedText> = None;
+                                    let mut continuation: Option<ResolvedText> = None;
+                                    let (x0, mut x1, y, width, dashes);
+                                    let mut start_hook: Option<f32> = None;
+                                    let mut end_hook: Option<f32> = None;
+                                    // The slot its end rides, and one its end
+                                    // may not pass.
+                                    let mut end_slot = last.slot;
+                                    let mut before: Option<SpringSlotId> = None;
+                                    let placement: Autoplace;
+                                    match &line.kind {
+                                        SpannerKind::PedalLine(_)
+                                        | SpannerKind::PedalBracket(_) => {
+                                            let signed =
+                                                matches!(line.kind, SpannerKind::PedalLine(_));
+                                            let baseline = yo - lines::PEDAL_BELOW;
+                                            width = lines::PEDAL_LINE_WIDTH;
+                                            dashes = None;
+                                            y = baseline + width * 0.5;
+                                            if signed {
+                                                let run = lines::symbols(
+                                                    synth(0),
+                                                    &[lines::PEDAL_SIGN],
+                                                    Point::new(
+                                                        first.x - lines::PEDAL_SIGN_LEAD,
+                                                        baseline,
+                                                    ),
+                                                );
+                                                x0 = run.origin.x.0
+                                                    + run.bounds.right.0
+                                                    + lines::LINE_TEXT_GAP;
+                                                continuation = Some(lines::symbols(
+                                                    synth(3),
+                                                    &[
+                                                        lines::PEDAL_PARENS.0,
+                                                        lines::PEDAL_SIGN,
+                                                        lines::PEDAL_PARENS.1,
+                                                    ],
+                                                    Point::new(first.x, baseline),
+                                                ));
+                                                sign = Some(run);
+                                            } else {
+                                                x0 = first.x + width * 0.5;
+                                                start_hook = Some(lines::PEDAL_HOOK);
+                                            }
+                                            // Before the column its release falls in,
+                                            // further before a note where the next
+                                            // pedal of its staff starts.
+                                            let retaken = last.note_column
+                                                && pedal_starts
+                                                    .contains(&(st, note_at(t1.clone())));
+                                            x1 = last.x
+                                                - if retaken {
+                                                    lines::PEDAL_END_INSET_RETAKEN
+                                                } else {
+                                                    lines::PEDAL_END_INSET
+                                                };
+                                            end_hook = Some(lines::PEDAL_HOOK);
+                                            placement = Autoplace {
+                                                above: false,
+                                                order: PlaceOrder::Pedal,
+                                                min_distance: lines::PEDAL_MIN_DISTANCE,
+                                                row: Some(Row {
+                                                    id: st.as_u128(),
+                                                    centre: y,
+                                                }),
+                                                between: None,
+                                                across: None,
+                                            };
+                                        }
+                                        SpannerKind::OctaveLine(shift) => {
+                                            let above = shift.0 > 0;
+                                            let numeral = lines::ottava_numeral(shift.0);
+                                            width = lines::OTTAVA_LINE_WIDTH;
+                                            dashes = Some(lines::OTTAVA_DASHES);
+                                            // Over the staff the numeral's top and the
+                                            // line's on one height, the line hanging;
+                                            // under it, the numeral's baseline and the
+                                            // line's foot.
+                                            let at = |run: ResolvedText| {
+                                                let mut run = run;
+                                                let dy = if above {
+                                                    yo + STAFF_HEIGHT + lines::OTTAVA_POS
+                                                        - run.bounds.top.0
+                                                } else {
+                                                    yo - lines::OTTAVA_POS
+                                                };
+                                                run.origin = Point::new(run.origin.x.0, dy);
+                                                run
+                                            };
+                                            y = if above {
+                                                yo + STAFF_HEIGHT + lines::OTTAVA_POS - width * 0.5
+                                            } else {
+                                                yo - lines::OTTAVA_POS + width * 0.5
+                                            };
+                                            // Its numeral just left of the first
+                                            // note it applies to (Gould, p. 28):
+                                            // where graces open it on its staff,
+                                            // the first grace, as LilyPond starts
+                                            // it (X4d fix round 1).
+                                            let first_key = first_column(&columns, &t0, true)
+                                                .map(|(key, _)| key.clone());
+                                            let grace_left = grace_placings
+                                                .values()
+                                                .filter(|g| {
+                                                    g.staff == Some(st)
+                                                        && Some(&g.key) == first_key.as_ref()
+                                                })
+                                                .flat_map(|g| {
+                                                    g.shape.heads.iter().filter_map(
+                                                        |(at, name, _)| {
+                                                            metrics(name).map(|m| {
+                                                                at.x.0
+                                                                    + graces::GRACE_MAG
+                                                                        * m.bounding_box().left.0
+                                                            })
+                                                        },
+                                                    )
+                                                })
+                                                .reduce(f32::min);
+                                            let numeral_x =
+                                                first.x + grace_left.map_or(0.0, |l| l.min(0.0));
+                                            match numeral {
+                                                Some(numeral) => {
+                                                    let run = at(lines::symbols(
+                                                        synth(0),
+                                                        &[numeral],
+                                                        Point::new(numeral_x, 0.0),
+                                                    ));
+                                                    x0 = run.origin.x.0
+                                                        + run.bounds.right.0
+                                                        + lines::LINE_TEXT_GAP;
+                                                    continuation = Some(at(lines::symbols(
+                                                        synth(3),
+                                                        &[numeral],
+                                                        Point::new(first.x, 0.0),
+                                                    )));
+                                                    sign = Some(run);
+                                                }
+                                                None => x0 = first.x,
+                                            }
+                                            // A space past its last note's ink, riding
+                                            // that note's column, never past the next
+                                            // note once the system is set.
+                                            match last_ink_right(st, &t0, &t1) {
+                                                Some((right, slot)) => {
+                                                    x1 = right + lines::OTTAVA_END_PAST
+                                                        - width * 0.5;
+                                                    end_slot = slot;
+                                                    before = first_column(&columns, &t1, true)
+                                                        .map(|(_, c)| c.slot);
+                                                }
+                                                None => x1 = last.x - width * 0.5,
+                                            }
+                                            end_hook = Some(lines::OTTAVA_HOOK);
+                                            placement = Autoplace {
+                                                above,
+                                                order: PlaceOrder::Ottava,
+                                                min_distance: lines::OTTAVA_MIN_DISTANCE,
+                                                row: None,
+                                                between: None,
+                                                across: None,
+                                            };
+                                        }
+                                        SpannerKind::TextLine(_) | SpannerKind::Bracket(_) => {
+                                            let words = match &line.kind {
+                                                SpannerKind::TextLine(def) => def.text.as_str(),
+                                                _ => "",
+                                            };
+                                            match lines::dynamic_term(words) {
+                                                Some(crescendo) => {
+                                                    // A verbal crescendo, as a hairpin of
+                                                    // the line type: below, or above a
+                                                    // voice's staff, clear of a dynamic at
+                                                    // either end, in its chain's row.
+                                                    let above = vocal.contains(&st);
+                                                    let baseline = if above {
+                                                        yo + STAFF_HEIGHT
+                                                            + lines::VERBAL_HAIRPIN_ABOVE
+                                                    } else {
+                                                        yo - lines::VERBAL_HAIRPIN_BELOW
+                                                    };
+                                                    width = lines::VERBAL_HAIRPIN_WIDTH;
+                                                    dashes = Some(lines::VERBAL_HAIRPIN_DASHES);
+                                                    y = baseline + width * 0.5;
+                                                    let mut start = first.x;
+                                                    if let Some(&(_, right)) =
+                                                        dynamic_ink.get(&(st, note_at(t0.clone())))
+                                                    {
+                                                        start =
+                                                            start.max(right + HAIRPIN_DYNAMIC_GAP);
+                                                    }
+                                                    let (run, gaps) = shape_text(
+                                                        synth(0),
+                                                        words,
+                                                        TextFace::Italic,
+                                                        lines::TEXT_LINE_SIZE,
+                                                        TextAlign::Left,
+                                                        Point::new(start, baseline),
+                                                    );
+                                                    for d in
+                                                        text_diagnostics(provenance.source, &gaps)
+                                                    {
+                                                        emit.diag(d.source, d.kind);
+                                                    }
+                                                    x0 = run.origin.x.0
+                                                        + run.bounds.right.0
+                                                        + lines::LINE_TEXT_GAP;
+                                                    sign = Some(run);
+                                                    let (cont, _) = shape_text(
+                                                        synth(3),
+                                                        if crescendo {
+                                                            "(cresc.)"
+                                                        } else {
+                                                            "(dim.)"
+                                                        },
+                                                        TextFace::Italic,
+                                                        lines::TEXT_LINE_SIZE,
+                                                        TextAlign::Left,
+                                                        Point::new(first.x, baseline),
+                                                    );
+                                                    continuation = Some(cont);
+                                                    x1 = match dynamic_ink
+                                                        .get(&(st, note_at(t1.clone())))
+                                                    {
+                                                        Some(&(left, _)) => (last.x
+                                                            - HAIRPIN_END_INSET)
+                                                            .min(left - HAIRPIN_DYNAMIC_GAP),
+                                                        None => last.x - HAIRPIN_END_INSET,
+                                                    };
+                                                    placement = Autoplace {
+                                                        above,
+                                                        order: PlaceOrder::Hairpin,
+                                                        min_distance: HAIRPIN_MIN_DISTANCE,
+                                                        row: Some(Row {
+                                                            id: chain_of(
+                                                                &mut chains,
+                                                                provenance.stable_id.0,
+                                                            ),
+                                                            centre: y,
+                                                        }),
+                                                        between: grand_neighbour(&grand, st, above)
+                                                            .map(|n| band_of(Some(n))),
+                                                        across: None,
+                                                    };
+                                                }
+                                                None if tempo_words.is_some() => {
+                                                    // A gradual tempo change over the
+                                                    // system's top staff, bold, its line
+                                                    // on its words' baseline.
+                                                    let top =
+                                                        staff_order.first().copied().unwrap_or(st);
+                                                    band = band_of(Some(top));
+                                                    let baseline = y_origin(top)
+                                                        + STAFF_HEIGHT
+                                                        + lines::TEMPO_CHANGE_ABOVE;
+                                                    width = lines::TEMPO_CHANGE_WIDTH;
+                                                    dashes = Some(lines::TEMPO_CHANGE_DASHES);
+                                                    y = baseline + width * 0.5;
+                                                    let (run, gaps) = shape_text(
+                                                        synth(0),
+                                                        words,
+                                                        TextFace::Bold,
+                                                        lines::TEMPO_CHANGE_SIZE,
+                                                        TextAlign::Left,
+                                                        Point::new(first.x, baseline),
+                                                    );
+                                                    for d in
+                                                        text_diagnostics(provenance.source, &gaps)
+                                                    {
+                                                        emit.diag(d.source, d.kind);
+                                                    }
+                                                    x0 = run.origin.x.0
+                                                        + run.bounds.right.0
+                                                        + lines::LINE_TEXT_GAP;
+                                                    sign = Some(run);
+                                                    x1 = last.x - lines::TEXT_LINE_END_INSET;
+                                                    placement = Autoplace {
+                                                        above: true,
+                                                        order: PlaceOrder::Tempo,
+                                                        min_distance:
+                                                            lines::TEMPO_CHANGE_MIN_DISTANCE,
+                                                        row: None,
+                                                        between: None,
+                                                        across: None,
+                                                    };
+                                                }
+                                                None => {
+                                                    // A text line over its staff, the line
+                                                    // through its words' middle; a bracket,
+                                                    // its line alone, hooked toward the
+                                                    // staff at its end.
+                                                    y = yo + STAFF_HEIGHT + lines::TEXT_LINE_ABOVE;
+                                                    width = lines::TEXT_LINE_WIDTH;
+                                                    dashes = match line.line {
+                                                        LineStyle::Solid => None,
+                                                        _ => Some(lines::TEXT_LINE_DASHES),
+                                                    };
+                                                    if words.is_empty() {
+                                                        x0 = first.x;
+                                                    } else {
+                                                        let (mut run, gaps) = shape_text(
+                                                            synth(0),
+                                                            words,
+                                                            TextFace::Roman,
+                                                            lines::TEXT_LINE_SIZE,
+                                                            TextAlign::Left,
+                                                            Point::new(first.x, 0.0),
+                                                        );
+                                                        for d in text_diagnostics(
+                                                            provenance.source,
+                                                            &gaps,
+                                                        ) {
+                                                            emit.diag(d.source, d.kind);
+                                                        }
+                                                        let middle = (run.bounds.bottom.0
+                                                            + run.bounds.top.0)
+                                                            * 0.5;
+                                                        run.origin =
+                                                            Point::new(first.x, y - middle);
+                                                        x0 = run.origin.x.0
+                                                            + run.bounds.right.0
+                                                            + lines::LINE_TEXT_GAP;
+                                                        sign = Some(run);
+                                                    }
+                                                    if matches!(line.kind, SpannerKind::Bracket(_))
+                                                    {
+                                                        end_hook = Some(lines::TEXT_LINE_HOOK);
+                                                    }
+                                                    x1 = last.x - lines::TEXT_LINE_END_INSET;
+                                                    placement = Autoplace {
+                                                        above: true,
+                                                        order: PlaceOrder::TextLine,
+                                                        min_distance: lines::TEXT_LINE_MIN_DISTANCE,
+                                                        row: None,
+                                                        between: None,
+                                                        across: None,
+                                                    };
+                                                }
+                                            }
+                                        }
+                                        _ => unreachable!("matched above"),
+                                    }
+                                    // A line its words or sign leave no room for
+                                    // is its words or sign alone.
+                                    x1 = x1.max(x0);
+                                    let mut strokes = Vec::new();
+                                    let body = line_stroke(
+                                        provenance.clone(),
+                                        Point::new(x0, y),
+                                        // To the hook's outer edge, so the corner
+                                        // is filled.
+                                        Point::new(
+                                            x1 + if end_hook.is_some() { width * 0.5 } else { 0.0 },
+                                            y,
+                                        ),
+                                        width,
+                                        band,
+                                    );
+                                    hairpin_anchors.push((body.id(), first.slot, end_slot));
+                                    strokes.push(body);
+                                    // A hook rises toward the staff: up under it,
+                                    // down over it.
+                                    let toward = if placement.above { -1.0 } else { 1.0 };
+                                    for (k, at, hook, slot) in [
+                                        (1u128, x1, end_hook, end_slot),
+                                        (2u128, x0, start_hook, first.slot),
+                                    ] {
+                                        let Some(height) = hook else {
+                                            continue;
+                                        };
+                                        let stroke = line_stroke(
+                                            synth(k),
+                                            Point::new(at, y - toward * width * 0.5),
+                                            Point::new(at, y + toward * height),
+                                            width,
+                                            band,
+                                        );
+                                        hairpin_anchors.push((stroke.id(), slot, slot));
+                                        strokes.push(stroke);
+                                    }
+                                    let mut runs = Vec::new();
+                                    if let Some(run) = sign {
+                                        runs.push(run.id());
+                                        texts.push(TextObject {
+                                            text: run,
+                                            horizontal_slot: first.slot,
+                                            vertical_band: band,
+                                        });
+                                    }
+                                    if let Some(run) = continuation {
+                                        let gap = run.bounds.right.0 + lines::LINE_TEXT_GAP;
+                                        line_texts.push(LineText {
+                                            line: strokes[0].id(),
+                                            run,
+                                            role: LineTextRole::Continuation { gap },
+                                        });
+                                    }
+                                    family.push(FamilyMark {
+                                        band,
+                                        glyphs: Vec::new(),
+                                        strokes: strokes.iter().map(Stroke::id).collect(),
+                                        texts: runs,
+                                        room: Room::None,
+                                        placement: Some(placement),
+                                        line: Some(FamilyLine::Extension { dashes, before }),
+                                    });
+                                    for stroke in strokes {
+                                        emit.stroke(stroke);
+                                    }
+                                    true
+                                }
+                                None => false,
+                            }
+                        }
+                        (
+                            Some(LayoutContent::Spanner(SpannerContent {
+                                kind: SpannerKind::Glissando,
+                                start: MarkerPlace::Event { event: e0, .. },
+                                end: MarkerPlace::Event { event: e1, .. },
+                                line,
+                            })),
+                            Some(st),
+                        ) => {
+                            // A glissando from head to head (X4d.1), each end a
+                            // quarter space clear of its chord's ink at its head.
+                            let (rank, set) = gliss_rank
+                                .get(&provenance.stable_id.0)
+                                .copied()
+                                .unwrap_or(((0, 1), provenance.stable_id.0));
+                            match glissando_line((*e0, *e1), rank, st) {
+                                Some((from, to, (s0, s1), heads)) => {
+                                    let band = band_of(staff);
+                                    let stroke = line_stroke(
+                                        provenance.clone(),
+                                        from,
+                                        to,
+                                        lines::GLISSANDO_WIDTH,
+                                        band,
+                                    );
+                                    hairpin_anchors.push((stroke.id(), s0, s1));
+                                    let wavy = *line == LineStyle::Wavy;
+                                    let (words, _) = shape_text(
+                                        Provenance::synthesized(
+                                            provenance.source,
+                                            SynthesisKind::Registered(LINE_SYNTHESIS),
+                                            SynthesisInstanceKey(4),
+                                            provenance.dependencies.clone(),
+                                        ),
+                                        lines::GLISSANDO_WORDS,
+                                        TextFace::Italic,
+                                        lines::GLISSANDO_TEXT_SIZE,
+                                        TextAlign::Left,
+                                        from,
+                                    );
+                                    // One "gliss." for glissandi between the
+                                    // same notes, on the topmost line long
+                                    // enough for it once its system is set,
+                                    // as Gould gives a set of parallel lines
+                                    // one instruction (p. 143), where
+                                    // MuseScore draws one on each (X4d fix
+                                    // rounds 1 and 2): each line offers it.
+                                    let raise = if wavy {
+                                        lines::GLISSANDO_WAVY_TEXT_RAISE
+                                    } else {
+                                        lines::GLISSANDO_TEXT_RAISE
+                                    };
+                                    line_texts.push(LineText {
+                                        line: stroke.id(),
+                                        run: words,
+                                        role: LineTextRole::Along {
+                                            raise,
+                                            set,
+                                            rank: rank.0,
+                                        },
+                                    });
+                                    family.push(FamilyMark {
+                                        band,
+                                        glyphs: Vec::new(),
+                                        strokes: vec![stroke.id()],
+                                        texts: Vec::new(),
+                                        room: Room::None,
+                                        placement: None,
+                                        line: Some(FamilyLine::Glissando { wavy, heads }),
+                                    });
+                                    emit.stroke(stroke);
+                                    true
+                                }
+                                None => {
+                                    if gliss_short.replace(false) {
+                                        emit.diag(
+                                            provenance.source,
+                                            LayoutDiagnosticKind::GlissandoTooShort,
+                                        );
+                                    }
+                                    false
+                                }
                             }
                         }
                         _ => false,
@@ -5664,6 +7048,7 @@ pub fn try_to_constrained(
         family,
         endings,
         measure_rests,
+        line_texts,
     })
 }
 
@@ -5880,6 +7265,11 @@ fn clear_rests(rests: &mut BTreeMap<EventId, Vec<RestSeg>>, sounding: &[Sounding
 /// Each staff column's ink of the voices visiting its staff, each box with
 /// the stem direction of the component it belongs to.
 type VisitorInk = BTreeMap<(Option<StaffId>, ColumnKey), Vec<(InkBox, bool)>>;
+
+/// Each staff column's chords' ink, `[left, bottom, right, top]` from the
+/// column, with the event drawing it, which another chord's outside marks
+/// stand clear of.
+type ColumnChords = BTreeMap<(Option<StaffId>, ColumnKey), Vec<(EventId, [f32; 4])>>;
 
 /// Each staff column's accidentals and ledger lines, each with the event
 /// whose head draws it, which another chord's arpeggio stands clear of.
@@ -7005,17 +8395,22 @@ fn note_stem(
 /// The least length, from the head nearest its end, of a stem carrying the
 /// one-note tremolo `glyph`, as MuseScore's `StemLayout::calcMinStemLength`
 /// counts it in quarter spaces: the tremolo's height, the 0.5 it keeps from
-/// the stem's end (`tremoloOutSidePadding`) and the 1.25 from that head
-/// (`tremoloNoteSidePadding`), or `outside` quarters where the head stands
-/// outside the staff on the stem's side ([`tremolo_outside`]); past a
+/// the stem's end (`tremoloOutSidePadding`) and its distance from that head,
+/// or `outside` quarters where the head stands outside the staff on the
+/// stem's side ([`tremolo_outside`]). Two strokes or more stand a space
+/// clear of the head's ink, 1.5 from its centre, the stem lengthened past
+/// the outermost stroke (Gould, *Behind Bars*, pp. 221 and 222; D102), where
+/// MuseScore keeps 1.25 (`tremoloNoteSidePadding`), about 0.75 from the
+/// ink; one stroke, which Gould sets across a staff line, keeps 1.25; past a
 /// `flag`, the flag's height less two quarters and the cutout its curl
 /// leaves (`hookOffset`, at most 11, less 5 up or 7 down, 2 less again for
 /// two flags or more), so the tremolo stands clear of the flag as
 /// `TremoloLayout::layoutOneNoteTremolo` sets it; in a beam of `beams`
-/// levels, the beams' height on top (3 quarters each, less 1). MuseScore
-/// keeps a beamed stem at least an inner length besides (10 quarters for one
-/// beam, 7 for three or more), which never binds here: Bravura's single
-/// stroke and paddings alone make 10.
+/// levels, the beams' height on top (3 quarters each, less 1), and for two
+/// strokes or more the stem's thickness its end stands inside the beam's
+/// outer edge. MuseScore keeps a beamed stem at least an inner length
+/// besides (10 quarters for one beam, 7 for three or more), which never
+/// binds here: Bravura's single stroke and paddings alone make 10.
 fn tremolo_stem_min(
     glyph: &str,
     up: bool,
@@ -7030,7 +8425,12 @@ fn tremolo_stem_min(
             b.top.0 - b.bottom.0
         })
     };
-    let mut quarters = (height(glyph) * 4.0).ceil() as i32 + 2 + outside.max(5);
+    let head_side = if glyph == "tremolo1" {
+        TREMOLO_HEAD_SIDE
+    } else {
+        TREMOLO_HEAD_SIDE_GOULD
+    };
+    let mut quarters = (height(glyph) * 4.0).ceil() as i32 + 2 + outside.max(head_side);
     if let Some(flag) = flag.filter(|_| !beamed) {
         let hook = ((height(flag) * 4.0).floor() as i32 - 2).min(11);
         let cutout = if up { 5 } else { 7 } - if beams >= 2 { 2 } else { 0 };
@@ -7039,8 +8439,22 @@ fn tremolo_stem_min(
     if beamed {
         quarters += i32::from(beams) * 3 - 1;
     }
-    quarters as f32 / 4.0
+    // A beamed stem ends a stem's thickness inside the beam's outer edge,
+    // which the count reaches: Gould's space is kept past it.
+    let inside = if beamed && head_side == TREMOLO_HEAD_SIDE_GOULD {
+        STEM_THICKNESS
+    } else {
+        0.0
+    };
+    quarters as f32 / 4.0 + inside
 }
+
+/// A one-note tremolo's distance from the centre of the head nearest its
+/// stem's end, in quarter spaces: one stroke's, MuseScore's
+/// `tremoloNoteSidePadding`; two or more strokes', a space clear of a
+/// head's ink half a space high (Gould, *Behind Bars*, p. 221).
+const TREMOLO_HEAD_SIDE: i32 = 5;
+const TREMOLO_HEAD_SIDE_GOULD: i32 = 6;
 
 /// How far, in quarter spaces, the head nearest a stem's end, at `y`,
 /// stands outside its staff on the stem's side, as
@@ -7271,10 +8685,13 @@ const CARRIED: i8 = i8::MIN;
 fn context_accidentals(
     objects: &[crate::logical::LayoutObject],
 ) -> BTreeMap<PitchId, Vec<&'static str>> {
+    // A note's or grace note's onset, a grace's order before its principal
+    // (none for a measured note), and its pitches.
+    type Sounded<'a> = (&'a TimePoint, Option<u16>, &'a [crate::logical::NotePitch]);
     struct Staff<'a> {
         keys: &'a [PlacedKeySignature],
         measures: Vec<&'a TimePoint>,
-        notes: Vec<&'a crate::logical::NoteContent>,
+        notes: Vec<Sounded<'a>>,
     }
     let mut staves: BTreeMap<StaffId, Staff> = BTreeMap::new();
     let mut tied_into: BTreeSet<PitchId> = BTreeSet::new();
@@ -7293,16 +8710,31 @@ fn context_accidentals(
         match object.content() {
             LayoutContent::Staff(content) => entry.keys = content.keys.as_slice(),
             LayoutContent::Measure(measure) => entry.measures.push(&measure.start),
-            LayoutContent::Note(note) => entry.notes.push(note),
+            LayoutContent::Note(note) => {
+                entry
+                    .notes
+                    .push((&note.position, None, note.pitches.as_slice()))
+            }
+            // A grace note joins its measure's accidental state before its
+            // principal, as Gould holds accidentals good for grace and
+            // measured notes alike (*Behind Bars*, p. 84; X4d.2).
+            LayoutContent::Grace(grace) => entry.notes.push((
+                &grace.position,
+                Some(grace.grace.order),
+                grace.pitches.as_slice(),
+            )),
             _ => {}
         }
     }
     let mut shown = BTreeMap::new();
     for staff in staves.values_mut() {
         staff.measures.sort_by(|a, b| time_total(a, b));
+        // In time, a grace before the measured notes at its onset, by its
+        // order.
+        let order = |grace: Option<u16>| grace.map_or((1u8, 0u16), |o| (0u8, o));
         staff
             .notes
-            .sort_by(|a, b| time_total(&a.position, &b.position));
+            .sort_by(|a, b| time_total(a.0, b.0).then(order(a.1).cmp(&order(b.1))));
         let mut measure = None;
         // Per letter and octave, the alteration in quarter-tones the measure
         // gives so far.
@@ -7310,9 +8742,9 @@ fn context_accidentals(
         // The notes of every voice that start at one time, together.
         for group in staff
             .notes
-            .chunk_by(|a, b| time_total(&a.position, &b.position) == Ordering::Equal)
+            .chunk_by(|a, b| time_total(a.0, b.0) == Ordering::Equal && a.1 == b.1)
         {
-            let at = &group[0].position;
+            let at = group[0].0;
             let index = staff
                 .measures
                 .partition_point(|start| time_total(start, at) != Ordering::Greater);
@@ -7329,7 +8761,7 @@ fn context_accidentals(
             // own tie and shows none.
             let mut heard: BTreeMap<(epiphany_core::CmnNominal, i8), (BTreeSet<i8>, bool)> =
                 BTreeMap::new();
-            for pitch in group.iter().flat_map(|note| &note.pitches) {
+            for pitch in group.iter().flat_map(|note| note.2) {
                 if let Some((place, alteration)) = tracked(pitch) {
                     let (alterations, fresh) = heard.entry(place).or_default();
                     alterations.insert(alteration);
@@ -7341,7 +8773,7 @@ fn context_accidentals(
                 .filter(|(_, (alterations, fresh))| alterations.len() > 1 && *fresh)
                 .map(|(place, _)| place)
                 .collect();
-            for pitch in group.iter().flat_map(|note| &note.pitches) {
+            for pitch in group.iter().flat_map(|note| note.2) {
                 let Some((place @ (nominal, _), alteration)) = tracked(pitch) else {
                     continue;
                 };
@@ -9169,6 +10601,17 @@ const REHEARSAL_ABOVE: f32 = 2.0;
 const REPEAT_SYMBOL_SIZE: f32 = 3.629;
 const REPEAT_ABOVE: f32 = 2.0;
 const TEXT_MIN_DISTANCE: f32 = 0.5;
+/// Expression text (X4d.6), in Edwin italic at staff text's size, as
+/// MuseScore's expression style sets it at 10 points: its baseline 2.5
+/// under its staff (`expressionPosBelow`) or 1.5 over it
+/// (`expressionPosAbove`), a half space clear of the ink it meets
+/// (`expressionMinDistance`, as [`TEXT_MIN_DISTANCE`]); after a dynamic at its
+/// note, 0.5 after its ink, or 0.2 after a forte, whose letter's open right
+/// side it kerns into (`Expression::computeDynamicExpressionDistance`).
+const EXPRESSION_BELOW: f32 = 2.5;
+const EXPRESSION_ABOVE: f32 = 1.5;
+const EXPRESSION_AFTER_DYNAMIC: f32 = 0.5;
+const EXPRESSION_AFTER_FORTE: f32 = 0.2;
 
 /// The registry ids for a staff text's further lines (key `i` for its `i`th
 /// line), a tempo mark's further runs (each next key in turn: its words'
@@ -9189,6 +10632,12 @@ struct TextMarkPlacing {
     frame: Option<[f32; 4]>,
     order: PlaceOrder,
     across: Option<(Option<ColumnKey>, MeasureMark)>,
+    /// Over its staff, not under it; the row it stands in, if any; and
+    /// whether on a grand staff it stands between the staves where it
+    /// stands on their side, as a dynamic does.
+    above: bool,
+    row: Option<Row>,
+    between: bool,
 }
 
 /// A metronome mark's beat as Bravura Text sets it: the note, then a space
@@ -9294,6 +10743,14 @@ fn dynamic_glyph(dynamic: &epiphany_core::Dynamic) -> Option<&'static str> {
     })
 }
 
+/// Whether a dynamic's last letter is a forte (mf, f to ffffff, sf, rf),
+/// which expression text after it stands nearer
+/// (`Expression::computeDynamicExpressionDistance`).
+fn ends_in_forte(dynamic: &epiphany_core::Dynamic) -> bool {
+    use epiphany_core::Dynamic::*;
+    matches!(dynamic, Mf | F | Ff | Fff | Ffff | Fffff | Ffffff | Sf | Rf)
+}
+
 /// A dynamic glyph's optical centre across, from its origin, in staff
 /// spaces: Bravura 1.392's `opticalCenter` anchors (`bravura_metadata.json` at
 /// the commit the catalog pins, SHA-256 `5c18a034…9881c`), which MuseScore
@@ -9368,6 +10825,34 @@ fn first_column<'a>(
             ColumnKey::Lead => false,
         })
 }
+
+/// The column a line ending at `time` ends before: the barline there, where
+/// a measure starts at it, as MuseScore ends a pedal released at a measure's
+/// start at the barline ending the measure before (`Pedal::linePos`), or the
+/// first column at or after it.
+fn line_end_column<'a>(
+    columns: &'a BTreeMap<ColumnKey, ColumnInfo>,
+    time: &TimePoint,
+) -> Option<(&'a ColumnKey, &'a ColumnInfo)> {
+    columns
+        .get_key_value(&ColumnKey::Timed(time.clone(), ColumnRole::Barline))
+        .or_else(|| first_column(columns, time, false))
+}
+
+/// A glissando's line as the projection draws it (X4d.1): its two ends, the
+/// slots of its heads' columns, which its ends ride, and its heads' centres.
+type GlissandoLine = (Point, Point, (SpringSlotId, SpringSlotId), [Point; 2]);
+
+/// The registry id for a grace note's further primitives (X4d.2), synthesized
+/// from its event: its flag (key 1), stem where unpitched (2), slash (3), each
+/// further head (`0x100 + n`), accidental (`0x200 + n`), ledger line
+/// (`0x300 + n`) and beam (`0x400 + n`).
+const GRACE_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x4752_4143_454E_4F54); // "GRACENOT"
+
+/// The registry id for a line's further primitives (X4d.1), synthesized from
+/// the line: its sign or words (key 0), its end hook (1) and start hook (2),
+/// its continuation's run (3), a glissando's words (4).
+const LINE_SYNTHESIS: SynthesisRegistryId = SynthesisRegistryId(0x4C49_4E45_5349_474E); // "LINESIGN"
 
 /// The chain a dynamic or hairpin belongs to, by the least stable id of its
 /// members.
@@ -9493,6 +10978,516 @@ fn fermata_glyph(fermata: &epiphany_core::Fermata, above: bool) -> &'static str 
 
 #[path = "marks.rs"]
 mod marks;
+
+/// What setting out the grace notes reads of a region (X4d.2): the heads,
+/// stems and rests of each staff's columns, with their accidentals placed,
+/// and the accidental each pitch shows by its measure.
+struct GraceInputs<'a> {
+    column_heads: &'a BTreeMap<(Option<StaffId>, ColumnKey), Vec<HeadRef>>,
+    pitch_heads: &'a BTreeMap<PitchId, Vec<Head>>,
+    unpitched_heads: &'a BTreeMap<EventId, Vec<Head>>,
+    event_stems: &'a BTreeMap<EventId, Vec<StemSeg>>,
+    event_rests: &'a BTreeMap<EventId, Vec<RestSeg>>,
+    shown: &'a BTreeMap<PitchId, Vec<&'static str>>,
+}
+
+/// A grace note set out before its principal (X4d.2): its principal's column,
+/// its parts across from that column's x at their heights, the pitches its
+/// heads draw, by index, and the beams its group draws, on the group's
+/// first grace; and its marks (X4d fix round 1), with what places them: its
+/// staff, that staff's bottom line, and the side its run takes them on.
+struct GracePlacing {
+    key: ColumnKey,
+    shape: graces::GraceShape,
+    pitches: Vec<PitchId>,
+    beams: Vec<(Point, Point)>,
+    beam_thickness: f32,
+    staff: Option<StaffId>,
+    yo: f32,
+    marks_above: bool,
+    mark_specs: Vec<(u8, &'static str, &'static str, bool)>,
+    marks: Vec<graces::GraceMark>,
+    /// Its group among its column's: its voice's place there.
+    group: u8,
+}
+
+impl GracePlacing {
+    /// The grace, its beams and its marks moved `dx` across.
+    fn shifted(&mut self, dx: f32) {
+        self.shape = std::mem::take(&mut self.shape).moved(dx);
+        let m = |p: Point| Point::new(p.x.0 + dx, p.y.0);
+        for (a, b) in &mut self.beams {
+            (*a, *b) = (m(*a), m(*b));
+        }
+        for mark in &mut self.marks {
+            mark.origin = m(mark.origin);
+        }
+    }
+
+    /// Its ink, every part's box across from its column's x.
+    fn ink(&self) -> Vec<graces::Ink> {
+        grace_ink(&self.shape)
+            .into_iter()
+            .chain(self.beams.iter().map(|(a, b)| {
+                let h = self.beam_thickness * 0.5;
+                [
+                    a.x.0.min(b.x.0),
+                    a.y.0.min(b.y.0) - h,
+                    a.x.0.max(b.x.0),
+                    a.y.0.max(b.y.0) + h,
+                ]
+            }))
+            .collect()
+    }
+}
+
+/// A grace's ink boxes: its heads, accidentals, stem, flag, ledger lines and
+/// slash.
+fn grace_ink(shape: &graces::GraceShape) -> Vec<graces::Ink> {
+    let k = graces::GRACE_MAG;
+    let glyph = |at: Point, name: &str| {
+        metrics(name).map(|m| {
+            let b = m.bounding_box();
+            [
+                at.x.0 + k * b.left.0,
+                at.y.0 + k * b.bottom.0,
+                at.x.0 + k * b.right.0,
+                at.y.0 + k * b.top.0,
+            ]
+        })
+    };
+    let line = |a: Point, b: Point, w: f32| {
+        let h = w * 0.5;
+        [
+            a.x.0.min(b.x.0) - h,
+            a.y.0.min(b.y.0) - h,
+            a.x.0.max(b.x.0) + h,
+            a.y.0.max(b.y.0) + h,
+        ]
+    };
+    let mut ink = Vec::new();
+    ink.extend(
+        shape
+            .heads
+            .iter()
+            .filter_map(|(at, name, _)| glyph(*at, name)),
+    );
+    ink.extend(
+        shape
+            .accidentals
+            .iter()
+            .filter_map(|(at, name, _)| glyph(*at, name)),
+    );
+    if let Some((x, a, b)) = shape.stem {
+        ink.push(line(Point::new(x, a), Point::new(x, b), STEM_THICKNESS * k));
+    }
+    if let Some((at, name)) = shape.flag {
+        ink.extend(glyph(at, name));
+    }
+    for (a, b) in &shape.ledgers {
+        ink.push(line(*a, *b, STAFF_LINE_THICKNESS * k));
+    }
+    if let Some((a, b)) = shape.slash {
+        ink.push(line(a, b, graces::SLASH_THICKNESS * k));
+    }
+    ink
+}
+
+/// Each grace note of a region set out before its principal (X4d.2): a
+/// voice's graces at one onset of a staff, in their order, right to left
+/// before the ink of the principal's column on that staff (its heads with
+/// their accidentals, ledger lines and dots, its stems and flags, its rests),
+/// as [`graces::place_group`] spaces them; a run of them one beam joins
+/// beamed. `frame` gives a staff's origin and its clef at a time.
+fn place_graces(
+    graces_in: &[(EventId, Option<StaffId>, &crate::logical::GraceContent)],
+    inputs: &GraceInputs<'_>,
+    frame: impl Fn(Option<StaffId>, &TimePoint) -> (f32, Clef),
+    diagnostics: &mut Vec<LayoutDiagnostic>,
+) -> BTreeMap<EventId, GracePlacing> {
+    let k = graces::GRACE_MAG;
+    let rank = |place: VoicePlace| match place {
+        VoicePlace::Alone => 0u8,
+        VoicePlace::Upper => 1,
+        VoicePlace::Lower => 2,
+    };
+    // Each voice's graces at one onset of a staff, in their order.
+    type Group<'g> = Vec<(EventId, &'g crate::logical::GraceContent)>;
+    let mut groups: BTreeMap<(Option<StaffId>, ColumnKey, u8), Group> = BTreeMap::new();
+    for (eid, staff, grace) in graces_in {
+        let key = ColumnKey::Timed(grace.position.clone(), ColumnRole::Note);
+        groups
+            .entry((*staff, key, rank(grace.voice)))
+            .or_default()
+            .push((*eid, grace));
+    }
+    let mut placed = BTreeMap::new();
+    let mut principals: BTreeMap<(Option<StaffId>, ColumnKey), Vec<graces::Ink>> = BTreeMap::new();
+    for ((staff, key, group), mut members) in groups {
+        members.sort_by_key(|(eid, grace)| (grace.grace.order, *eid));
+        let ColumnKey::Timed(time, _) = &key else {
+            continue;
+        };
+        let (yo, clef) = frame(staff, time);
+        // The principal's column's ink on the staff, from the column's x.
+        let mut principal: Vec<graces::Ink> = Vec::new();
+        if let Some(refs) = inputs.column_heads.get(&(staff, key.clone())) {
+            let mut stems = BTreeSet::new();
+            for r in refs {
+                let head = r.get(inputs.pitch_heads, inputs.unpitched_heads);
+                principal.extend(
+                    column_ink_boxes(head, 0.0, yo)
+                        .into_iter()
+                        .map(|b| [b.left, b.bottom, b.right, b.top]),
+                );
+                if stems.insert((head.event, head.comp)) {
+                    if let Some(seg) = inputs
+                        .event_stems
+                        .get(&head.event)
+                        .and_then(|segs| segs.iter().find(|seg| seg.comp == head.comp))
+                    {
+                        principal.extend(
+                            stem_ink(seg, 0.0)
+                                .into_iter()
+                                .map(|b| [b.left, b.bottom, b.right, b.top]),
+                        );
+                    }
+                }
+            }
+        }
+        for rest in inputs.event_rests.values().flatten() {
+            if rest.key != key || rest.staff != staff || !rest.visible {
+                continue;
+            }
+            if let Some(b) = rest.name.and_then(metrics).map(|m| m.bounding_box()) {
+                principal.push([b.left.0, rest.y + b.bottom.0, b.right.0, rest.y + b.top.0]);
+            }
+        }
+        principals
+            .entry((staff, key.clone()))
+            .or_insert_with(|| principal.clone());
+        // Each grace about its own origin, its heads' left edge.
+        let mut shapes: Vec<graces::GraceShape> = Vec::new();
+        let mut pitches_of: Vec<Vec<PitchId>> = Vec::new();
+        for (eid, grace) in &members {
+            let value = grace.grace.value;
+            let name = notehead_glyph(value);
+            let hb = metrics(name)
+                .expect("notehead metrics are bundled")
+                .bounding_box();
+            let up = grace.voice != VoicePlace::Lower;
+            let mut heads: Vec<(f32, StaffStep, Option<usize>)> = Vec::new();
+            for (i, pitch) in grace.pitches.iter().enumerate() {
+                let (step, missing) = spelling_step(&pitch.spelling, &clef);
+                if missing {
+                    diagnostics.push(LayoutDiagnostic {
+                        source: TypedObjectId::Pitch(pitch.pitch),
+                        kind: LayoutDiagnosticKind::MissingSpelling,
+                    });
+                }
+                heads.push((step_to_y(yo, step), step, Some(i)));
+            }
+            if let Some(position) = grace.unpitched {
+                let step = StaffStep::from(position.0);
+                heads.push((step_to_y(yo, step), step, None));
+            }
+            if heads.is_empty() {
+                let _ = eid;
+                shapes.push(graces::GraceShape::default());
+                pitches_of.push(Vec::new());
+                continue;
+            }
+            heads.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let mut shape = graces::GraceShape {
+                up,
+                ..Default::default()
+            };
+            let origin_x = -k * hb.left.0;
+            for (y, step, i) in &heads {
+                shape.heads.push((Point::new(origin_x, *y), name, *i));
+                for ledger in ledger_steps(*step, (0, 8)) {
+                    let ly = step_to_y(yo, ledger);
+                    shape.ledgers.push((
+                        Point::new(k * (hb.left.0 - LEDGER_LINE_EXTENSION) + origin_x, ly),
+                        Point::new(k * (hb.right.0 + LEDGER_LINE_EXTENSION) + origin_x, ly),
+                    ));
+                }
+                // Its accidentals, small, before its head.
+                if let Some(i) = i {
+                    let pitch = &grace.pitches[*i];
+                    let stack = match inputs.shown.get(&pitch.pitch) {
+                        Some(shown) => shown.clone(),
+                        None => pitch_accidentals(&pitch.spelling, pitch.pitch, diagnostics),
+                    };
+                    let mut right = -k * GRACE_ACCIDENTAL_GAP;
+                    for accidental in stack {
+                        let Some(ab) = metrics(accidental).map(|m| m.bounding_box()) else {
+                            continue;
+                        };
+                        let x = right - k * ab.right.0;
+                        shape.accidentals.push((Point::new(x, *y), accidental, *i));
+                        right = x + k * ab.left.0 - k * GRACE_ACCIDENTAL_GAP;
+                    }
+                }
+            }
+            if has_stem(value) {
+                let width = STEM_THICKNESS * k;
+                let x = if up {
+                    origin_x + k * hb.right.0 - width * 0.5
+                } else {
+                    origin_x + k * hb.left.0 + width * 0.5
+                };
+                let (attach, far) = if up {
+                    (heads[0].0, heads[heads.len() - 1].0 + graces::GRACE_STEM)
+                } else {
+                    (heads[heads.len() - 1].0, heads[0].0 - graces::GRACE_STEM)
+                };
+                shape.stem = Some((x, attach, far));
+            }
+            shapes.push(shape);
+            pitches_of.push(grace.pitches.iter().map(|p| p.pitch).collect());
+        }
+        // Runs of graces one beam joins.
+        let mut runs: Vec<std::ops::Range<usize>> = Vec::new();
+        let mut i = 0;
+        while i < members.len() {
+            let beam = members[i].1.beam;
+            let mut j = i + 1;
+            while beam.is_some() && j < members.len() && members[j].1.beam == beam {
+                j += 1;
+            }
+            runs.push(i..j);
+            i = j;
+        }
+        // An unbeamed grace's flag; set out before beams are known.
+        for run in &runs {
+            if run.len() > 1 {
+                continue;
+            }
+            let i = run.start;
+            let (Some((x, _, tip)), value) = (shapes[i].stem, members[i].1.grace.value) else {
+                continue;
+            };
+            let direction = if shapes[i].up {
+                epiphany_core::StemDirection::Up
+            } else {
+                epiphany_core::StemDirection::Down
+            };
+            if let Some(flag) = flag_glyph(value, direction) {
+                shapes[i].flag = Some((Point::new(x - STEM_THICKNESS * k * 0.5, tip), flag));
+            }
+        }
+        // Right to left before the principal.
+        let inks: Vec<Vec<graces::Ink>> = shapes.iter().map(grace_ink).collect();
+        let shifts = graces::place_group(&inks, &principal);
+        let mut shapes: Vec<graces::GraceShape> = shapes
+            .into_iter()
+            .zip(&shifts)
+            .map(|(shape, dx)| shape.moved(*dx))
+            .collect();
+        // A beamed run's beam from its first stem's tip to its last's, its
+        // slope held to a quarter space a space, every stem reaching it and
+        // at least its own length; then each slash.
+        let mut beams_of: BTreeMap<usize, (Vec<(Point, Point)>, f32)> = BTreeMap::new();
+        for run in &runs {
+            let stems: Vec<(usize, f32, f32, f32)> = run
+                .clone()
+                .filter_map(|i| shapes[i].stem.map(|(x, a, b)| (i, x, a, b)))
+                .collect();
+            let beamed = run.len() > 1 && stems.len() == run.len();
+            let mut slope = 0.0f32;
+            if beamed {
+                let up = shapes[run.start].up;
+                let toward = if up { 1.0 } else { -1.0 };
+                let (first, last) = (stems[0], stems[stems.len() - 1]);
+                slope = ((last.3 - first.3) / (last.1 - first.1).max(1e-3)).clamp(-0.25, 0.25);
+                let at = |base: f32, x: f32| base + slope * (x - first.1);
+                // The beam's height at the first stem: as far out as the
+                // stem of least reach needs.
+                let base = stems
+                    .iter()
+                    .map(|(_, x, attach, _)| {
+                        attach + toward * graces::GRACE_STEM - slope * (x - first.1)
+                    })
+                    .fold(
+                        if up { f32::NEG_INFINITY } else { f32::INFINITY },
+                        |m, b| {
+                            if up {
+                                m.max(b)
+                            } else {
+                                m.min(b)
+                            }
+                        },
+                    );
+                for (i, x, attach, _) in &stems {
+                    shapes[*i].stem = Some((*x, *attach, at(base, *x)));
+                }
+                let count = members[run.clone()]
+                    .iter()
+                    .map(|(_, g)| flag_count(g.grace.value))
+                    .min()
+                    .unwrap_or(1)
+                    .max(1);
+                let w = STEM_THICKNESS * k * 0.5;
+                let beams: Vec<(Point, Point)> = (0..count)
+                    .map(|n| {
+                        let dy =
+                            -toward * (k * BEAM_THICKNESS * 0.5 + f32::from(n) * k * BEAM_STEP);
+                        (
+                            Point::new(first.1 - w, at(base, first.1) + dy),
+                            Point::new(last.1 + w, at(base, last.1) + dy),
+                        )
+                    })
+                    .collect();
+                beams_of.insert(run.start, (beams, k * BEAM_THICKNESS));
+            }
+            // The slash: on an acciaccatura alone or first of its beam, kept
+            // off its ledger lines by lengthening its stem (Gould, p. 126).
+            let i = run.start;
+            if members[i].1.grace.kind != epiphany_core::GraceKind::Acciaccatura {
+                continue;
+            }
+            let Some((x, attach, tip)) = shapes[i].stem else {
+                continue;
+            };
+            let flag_right = shapes[i].flag.and_then(|(at, name)| {
+                metrics(name).map(|m| at.x.0 + k * m.bounding_box().right.0)
+            });
+            if flag_right.is_none() && !beamed {
+                continue;
+            }
+            let hb = metrics(shapes[i].heads[0].1)
+                .expect("notehead metrics are bundled")
+                .bounding_box();
+            let head_width = k * (hb.right.0 - hb.left.0);
+            let up = shapes[i].up;
+            let mut tip = tip;
+            let mut cut = graces::slash(
+                x,
+                STEM_THICKNESS * k,
+                tip,
+                up,
+                head_width,
+                flag_right,
+                slope,
+            );
+            // The slash's end nearest the head clears the ledger lines it
+            // would cross, a quarter space off the furthest from the staff.
+            let ledger_edge =
+                shapes[i]
+                    .ledgers
+                    .iter()
+                    .map(|(a, _)| a.y.0)
+                    .fold(None::<f32>, |m, y| {
+                        Some(match m {
+                            None => y,
+                            Some(m) if up => m.max(y),
+                            Some(m) => m.min(y),
+                        })
+                    });
+            if let Some(edge) = ledger_edge {
+                let low = if up {
+                    cut.0.y.0.min(cut.1.y.0)
+                } else {
+                    cut.0.y.0.max(cut.1.y.0)
+                };
+                let need = if up {
+                    edge + 0.25 - low
+                } else {
+                    low - (edge - 0.25)
+                };
+                if need > 0.0 {
+                    let toward = if up { 1.0 } else { -1.0 };
+                    tip += toward * need;
+                    shapes[i].stem = Some((x, attach, tip));
+                    if let Some((at, name)) = shapes[i].flag {
+                        shapes[i].flag = Some((Point::new(at.x.0, tip), name));
+                    }
+                    cut = graces::slash(
+                        x,
+                        STEM_THICKNESS * k,
+                        tip,
+                        up,
+                        head_width,
+                        flag_right,
+                        slope,
+                    );
+                }
+            }
+            shapes[i].slash = Some(cut);
+        }
+        // The side each run takes its marks on: beside another voice its
+        // stem's, else Gould's (`graces::marks_above`).
+        let mut run_above = vec![true; members.len()];
+        for run in &runs {
+            let above = match members[run.start].1.voice {
+                VoicePlace::Alone => {
+                    graces::marks_above(&shapes[run.clone()].iter().collect::<Vec<_>>(), yo)
+                }
+                _ => shapes[run.start].up,
+            };
+            for i in run.clone() {
+                run_above[i] = above;
+            }
+        }
+        for (i, ((eid, grace), shape)) in members.iter().zip(shapes).enumerate() {
+            let (beams, beam_thickness) = beams_of.remove(&i).unwrap_or_default();
+            placed.insert(
+                *eid,
+                GracePlacing {
+                    key: key.clone(),
+                    shape,
+                    pitches: pitches_of[i].clone(),
+                    beams,
+                    beam_thickness,
+                    staff,
+                    yo,
+                    marks_above: run_above[i],
+                    group,
+                    mark_specs: grace
+                        .marks
+                        .iter()
+                        .filter_map(|mark| {
+                            let (above, below, always) = marks::grace_mark(mark)?;
+                            Some((mark.tag(), above, below, always))
+                        })
+                        .collect(),
+                    marks: Vec::new(),
+                },
+            );
+        }
+    }
+    // Each grace's marks (X4d fix round 1), once every grace of its column
+    // stands: outside the staff as Gould sets them, clear of the ink of the
+    // column they meet, the principal's and every grace's.
+    let mut column_ink = principals;
+    for placing in placed.values() {
+        column_ink
+            .entry((placing.staff, placing.key.clone()))
+            .or_default()
+            .extend(placing.ink());
+    }
+    for placing in placed.values_mut() {
+        if placing.mark_specs.is_empty() {
+            continue;
+        }
+        let ink = column_ink
+            .get(&(placing.staff, placing.key.clone()))
+            .map_or(&[][..], Vec::as_slice);
+        placing.marks = graces::place_marks(
+            &placing.shape,
+            &placing.mark_specs,
+            placing.yo,
+            placing.marks_above,
+            ink,
+        );
+    }
+    placed
+}
+
+/// The gap between a grace's accidental and its head, and between two of its
+/// accidentals, at a note's size (scaled by the grace's).
+const GRACE_ACCIDENTAL_GAP: f32 = 0.25;
 
 #[cfg(test)]
 mod tests {

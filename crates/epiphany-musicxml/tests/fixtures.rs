@@ -2606,8 +2606,9 @@ fn a_file_with_breaks_and_expression_imports_both() {
         [vec![1, 2], vec![3]],
         "systems open at measures 1 and 2, and a page at measure 3"
     );
-    // The ink traced to an event or one of its pitches: none to a grace note,
-    // and some to the C the first two stand before (the check's control).
+    // The glyphs and the drawn strokes traced to an event or one of its
+    // pitches: a grace note draws small (X4d.2), its stem a stroke and no
+    // full-size glyph, and the C the first two stand before its head.
     let drawn = |event: &Event| {
         let mut pitches = Vec::new();
         event.collect_identified_pitches(&mut pitches);
@@ -2616,16 +2617,18 @@ fn a_file_with_breaks_and_expression_imports_both() {
             epiphany_core::TypedObjectId::Pitch(p) => pitches.iter().any(|ip| ip.id == *p),
             _ => false,
         };
-        layout
-            .glyphs
-            .iter()
-            .filter(|g| traced(&g.provenance.source))
-            .count()
-            + layout
+        (
+            layout
+                .glyphs
+                .iter()
+                .filter(|g| traced(&g.provenance.source))
+                .count(),
+            layout
                 .strokes
                 .iter()
-                .filter(|s| traced(&s.provenance.source))
-                .count()
+                .filter(|s| traced(&s.provenance.source) && s.from != s.to)
+                .count(),
+        )
     };
     let graces: Vec<&Event> = score
         .events
@@ -2634,11 +2637,9 @@ fn a_file_with_breaks_and_expression_imports_both() {
         .collect();
     assert_eq!(graces.len(), 3);
     for grace in graces {
-        assert_eq!(
-            drawn(grace),
-            0,
-            "no grace note is drawn until X4c draws them"
-        );
+        let (glyphs, strokes) = drawn(grace);
+        assert_eq!(glyphs, 0, "no full-size glyph for a grace note");
+        assert!(strokes > 0, "a grace note's stem is drawn");
     }
     let principal = score
         .events
@@ -2649,7 +2650,7 @@ fn a_file_with_breaks_and_expression_imports_both() {
                 && e.voice() == score.canvas.regions[0].staff_instances()[0].voices[0].id
         })
         .expect("the first C");
-    assert!(drawn(principal) > 0, "the C the graces precede is drawn");
+    assert!(drawn(principal).0 > 0, "the C the graces precede is drawn");
 }
 
 /// MuseScore writes expression text as italic words and staff text upright:

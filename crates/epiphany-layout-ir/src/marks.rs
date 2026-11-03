@@ -91,6 +91,11 @@ pub(super) struct Chord<'a> {
     /// (`ChordLayout::leaveSpaceForTie`).
     pub tie_above: bool,
     pub tie_below: bool,
+    /// The ink of the other chords of its staff's column, whatever their
+    /// voice, each `[left, bottom, right, top]`, `x` from the column: their
+    /// heads, ledger lines, dots and accidentals, stems and flags. An
+    /// outside mark stands clear of it as of its own chord's accidentals.
+    pub column: Vec<[f32; 4]>,
 }
 
 /// Another chord's ink in a chord's column that its arpeggio stands clear of:
@@ -229,6 +234,15 @@ enum Kind {
     /// Anchored to the top always.
     Top,
     Ornament,
+}
+
+/// A grace note's mark (X4d fix round 1): its glyph above and below, and
+/// whether it stands above whatever the grace's place, as a marcato does
+/// (Gould's strong accent, p. 117) and a string, brass or snap-pizzicato
+/// sign; `None` for a mark that is not an articulation or a technique.
+pub(super) fn grace_mark(mark: &EventMark) -> Option<(&'static str, &'static str, bool)> {
+    let (above, below, kind, _) = articulation(mark)?;
+    Some((above, below, matches!(kind, Kind::Marcato | Kind::Top)))
 }
 
 /// A mark's glyph by side, its kind, and whether it is one of the basic
@@ -608,11 +622,17 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
         let at_stem_end = m.above == seg.up && stem.is_some();
         let x = centred(m.name, centre_x(chord, stem_side));
         // MuseScore's autoplace then lifts the mark clear of what stands
-        // under it across its width, its chord's own accidentals among them,
-        // by `articulationMinDistance` (`Autoplace::autoplaceSegmentElement`).
+        // under it across its width on its staff, by
+        // `articulationMinDistance` (`Autoplace::autoplaceSegmentElement`):
+        // its chord's own accidentals, and the ink of every other chord of
+        // its column, another voice's included (X4d.3). Another chord's
+        // marks are not among it: MuseScore's autoplace lets an articulation
+        // pass another (`itemsShouldIgnoreEachOther`), and a close mark it
+        // does not autoplace at all.
         let across = chord
             .accidental_ink
             .iter()
+            .chain(&chord.column)
             .filter(|a| a[0] < x + b.right.0 && a[2] > x + b.left.0);
         // An ornament's accidentals, at 0.6 of their size, centred over and
         // under it with 0.35 between.
@@ -863,6 +883,36 @@ pub(super) fn place(chord: &Chord, marks: &[EventMark], ornaments: &[Ornament]) 
         }
     }
     placed
+}
+
+/// The ink of what a chord's marks place that takes room across as the
+/// chord's own ink does, each `[left, bottom, right, top]`, `x` from the
+/// column: its arpeggio, and its tremolo strokes, chord lines and jazz marks
+/// (X4d fix round 1: a grace group before the chord stands clear of it).
+pub(super) fn room_ink(placed: &Placed) -> Vec<[f32; 4]> {
+    let mut ink: Vec<[f32; 4]> = placed
+        .glyphs
+        .iter()
+        .filter(|g| g.room)
+        .filter_map(|g| {
+            let b = metrics(g.name)?.bounding_box();
+            Some([
+                g.x + b.left.0,
+                g.y + b.bottom.0,
+                g.x + b.right.0,
+                g.y + b.top.0,
+            ])
+        })
+        .collect();
+    if let Some(arpeggio) = &placed.arpeggio {
+        ink.push([
+            arpeggio.right - arpeggio_width(arpeggio),
+            arpeggio.bottom,
+            arpeggio.right,
+            arpeggio.top,
+        ]);
+    }
+    ink
 }
 
 /// An arpeggio's width: the ink across of its symbols turned upright, as the

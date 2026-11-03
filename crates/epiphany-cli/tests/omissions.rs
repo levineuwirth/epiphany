@@ -781,12 +781,12 @@ fn text_marks_undrawn_are_counted_by_class() {
     );
 }
 
-/// Italic words import as expression text, which the engraver draws as staff
-/// text until it is drawn italic and below (roadmap D79 Q9): drawn, it is no
-/// omission, and with its ink taken away it is counted by its own class, the
-/// upright words beside it staff text drawn and not counted.
+/// Italic words import as expression text, which the engraver draws italic
+/// under its staff (X4d.6): drawn, it is no omission, and with its ink taken
+/// away it is counted by its own class, the upright words beside it staff
+/// text drawn and not counted.
 #[test]
-fn expression_text_is_drawn_as_staff_text_and_counted_undrawn() {
+fn expression_text_is_drawn_and_counted_undrawn() {
     use epiphany_core::MarkerKind;
 
     let direction = |content: &str| {
@@ -843,7 +843,7 @@ fn expression_text_is_drawn_as_staff_text_and_counted_undrawn() {
     assert_eq!(
         drawn(&engraved, "espressivo"),
         1,
-        "the expression text is drawn as staff text"
+        "the expression text is drawn"
     );
     let counted = |engraved: &Engraved| {
         omissions(score, &engraved.layout, &engraved.diagnostics)
@@ -916,4 +916,321 @@ fn a_trill_line_and_its_trill_undrawn_are_counted() {
             ("trill line".to_owned(), 1)
         ]
     );
+}
+
+/// X4d.1's lines the engraver draws (a pedal line, an ottava, a text line, a
+/// bracket and a glissando) are no omission; their ink taken away, each is
+/// counted by its class.
+#[test]
+fn the_lines_undrawn_are_counted() {
+    let direction =
+        |t: &str| format!("<direction><direction-type>{t}</direction-type></direction>");
+    let note = |pitch: &str, notations: &str| {
+        let (step, octave) = pitch.split_at(1);
+        format!(
+            "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+             <duration>2</duration><voice>1</voice><type>quarter</type>\
+             <notations>{notations}</notations></note>"
+        )
+    };
+    let measure = [
+        direction("<pedal type=\"start\" line=\"yes\" sign=\"yes\"/>"),
+        direction("<octave-shift type=\"down\" size=\"8\"/>"),
+        "<direction><direction-type><words>rit.</words></direction-type><direction-type>\
+         <dashes type=\"start\"/></direction-type></direction>"
+            .to_owned(),
+        direction("<bracket type=\"start\" line-end=\"none\" line-type=\"solid\"/>"),
+        note(
+            "C6",
+            "<slide type=\"start\" line-type=\"solid\" number=\"1\">gliss.</slide>",
+        ),
+        note("G6", "<slide type=\"stop\" number=\"1\"/>"),
+        direction("<pedal type=\"stop\" line=\"yes\" sign=\"no\"/>"),
+        direction("<octave-shift type=\"stop\" size=\"8\"/>"),
+        direction("<dashes type=\"stop\"/>"),
+        direction("<bracket type=\"stop\" line-end=\"down\"/>"),
+        note("C5", ""),
+        note("D5", ""),
+    ]
+    .concat();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
+         <attributes><divisions>2</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time><clef><sign>G</sign><line>2</line></clef></attributes>{measure}</measure>\
+         </part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("lines_omissions.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let score = &loaded.reduced.score;
+    let classes = ["pedal line", "ottava", "text line", "bracket", "glissando"];
+    let counted = |engraved: &Engraved| -> Vec<(String, usize)> {
+        let mut found: Vec<(String, usize)> =
+            omissions(score, &engraved.layout, &engraved.diagnostics)
+                .kinds
+                .into_iter()
+                .filter(|(kind, _)| classes.contains(&kind.as_str()))
+                .collect();
+        found.sort();
+        found
+    };
+    let mut engraved = engrave(score);
+    assert_eq!(counted(&engraved), vec![], "drawn");
+    let region = TypedObjectId::Region(score.canvas.regions[0].id);
+    for s in &mut engraved.layout.strokes {
+        if matches!(s.provenance.source, TypedObjectId::Spanner(_)) {
+            s.provenance.source = region;
+        }
+    }
+    for t in &mut engraved.layout.texts {
+        if matches!(t.provenance.source, TypedObjectId::Spanner(_)) {
+            t.provenance.source = region;
+        }
+    }
+    let mut want: Vec<(String, usize)> = classes.iter().map(|c| (c.to_string(), 1)).collect();
+    want.sort();
+    assert_eq!(counted(&engraved), want);
+}
+
+/// A gradual tempo change two parts hold at one time is drawn once over the
+/// system, and the other part's is no omission.
+#[test]
+fn a_gradual_tempo_change_drawn_once_for_two_parts_is_no_omission() {
+    let measure = "<attributes><divisions>2</divisions><time><beats>4</beats><beat-type>4\
+         </beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>\
+         <direction><direction-type><words>rit.</words></direction-type><direction-type>\
+         <dashes type=\"start\"/></direction-type></direction>\
+         <note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration>\
+         <voice>1</voice><type>half</type></note><direction><direction-type>\
+         <dashes type=\"stop\"/></direction-type></direction><note><pitch><step>D</step>\
+         <octave>5</octave></pitch><duration>4</duration><voice>1</voice><type>half</type>\
+         </note>";
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part><score-part id=\"P2\"><part-name>B</part-name>\
+         </score-part></part-list><part id=\"P1\"><measure number=\"1\">{measure}</measure>\
+         </part><part id=\"P2\"><measure number=\"1\">{measure}</measure></part>\
+         </score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("tempo_change_omissions.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let score = &loaded.reduced.score;
+    let engraved = engrave(score);
+    assert_eq!(
+        engraved
+            .layout
+            .texts
+            .iter()
+            .filter(|t| t.text == "rit.")
+            .count(),
+        1,
+        "drawn once"
+    );
+    let found: Vec<_> = omissions(score, &engraved.layout, &engraved.diagnostics)
+        .kinds
+        .into_iter()
+        .filter(|(kind, _)| kind == "text line")
+        .collect();
+    assert_eq!(found, vec![]);
+}
+
+/// A mark on a grace note is checked as a note's is (X4d fix round 1): the
+/// staccato and the accent on two graces are drawn, so the report names
+/// neither; with their runs drawn as other ink, it names each, where a check
+/// that skipped graces named nothing.
+#[test]
+fn a_graces_marks_are_drawn_and_counted_undrawn() {
+    use epiphany_core::EventMark;
+    use epiphany_layout_ir::NoteMarkPart;
+
+    let grace = |step: &str, octave: u8, mark: &str| {
+        format!(
+            "<note><grace slash=\"yes\"/><pitch><step>{step}</step><octave>{octave}</octave>\
+             </pitch><voice>1</voice><type>eighth</type><notations><articulations>{mark}\
+             </articulations></notations></note>"
+        )
+    };
+    let note = |step: &str, octave: u8| {
+        format!(
+            "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+             <duration>4</duration><voice>1</voice><type>half</type></note>"
+        )
+    };
+    let measure = [
+        grace("G", 4, "<staccato/>"),
+        note("A", 4),
+        grace("D", 5, "<accent/>"),
+        note("C", 5),
+    ]
+    .concat();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
+         <attributes><divisions>2</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time><clef><sign>G</sign><line>2</line></clef></attributes>{measure}</measure>\
+         </part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("grace_mark_omissions.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let mut engraved = engrave(&loaded.reduced.score);
+    let events = &loaded.import.ids.events[0];
+    assert!(loaded
+        .reduced
+        .score
+        .events
+        .get(events[0])
+        .is_some_and(|e| e.grace().is_some()));
+    assert_eq!(count(&loaded, &engraved, "note mark: staccato"), 0);
+    assert_eq!(count(&loaded, &engraved, "note mark: accent"), 0);
+    let ids = [
+        NoteMarkPart::Glyph(EventMark::Staccato.tag()).id(events[0]),
+        NoteMarkPart::Glyph(EventMark::Accent.tag()).id(events[2]),
+    ];
+    // Re-attributed rather than removed, so the systems' indices stay valid.
+    let elsewhere = NoteMarkPart::Arpeggio.id(events[1]);
+    let mut taken = 0;
+    for t in &mut engraved.layout.texts {
+        if ids.contains(&t.provenance.stable_id) {
+            t.provenance.stable_id = elsewhere;
+            taken += 1;
+        }
+    }
+    assert_eq!(taken, 2, "both marks were drawn");
+    assert_eq!(count(&loaded, &engraved, "note mark: staccato"), 1);
+    assert_eq!(count(&loaded, &engraved, "note mark: accent"), 1);
+}
+
+/// A glissando drawn from or to a chord is named as drawn with its head
+/// guessed (X4d fix round 1): the model keeps no head for it, so the line
+/// takes its chord's head by its rank among the glissandi between the same
+/// notes. One between single notes is not named.
+#[test]
+fn a_glissando_at_a_chord_is_named_as_drawn_with_its_head_guessed() {
+    let note = |pitch: &str, chord: bool, notations: &str| {
+        let (step, octave) = pitch.split_at(1);
+        format!(
+            "<note>{}<pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+             <duration>4</duration><voice>1</voice><type>half</type>\
+             <notations>{notations}</notations></note>",
+            if chord { "<chord/>" } else { "" }
+        )
+    };
+    let start = "<slide type=\"start\" line-type=\"solid\" number=\"1\">gliss.</slide>";
+    let stop = "<slide type=\"stop\" number=\"1\"/>";
+    let measure = [
+        note("C4", false, start),
+        note("E4", true, ""),
+        note("G5", false, stop),
+        note("C5", false, start),
+        note("G5", false, stop),
+    ]
+    .concat();
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
+         <attributes><divisions>2</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time><clef><sign>G</sign><line>2</line></clef></attributes>{}</measure>\
+         <measure number=\"2\">{}</measure></part></score-partwise>",
+        &measure[..measure
+            .find("<note><pitch><step>C</step><octave>5")
+            .expect("the second")],
+        &measure[measure
+            .find("<note><pitch><step>C</step><octave>5")
+            .expect("the second")..],
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("glissando_guessed.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let engraved = engrave(&loaded.reduced.score);
+    assert_eq!(count(&loaded, &engraved, "glissando"), 0, "both drawn");
+    assert_eq!(
+        count(&loaded, &engraved, "glissando drawn with its head guessed"),
+        1
+    );
+}
+
+/// An undrawn glissando is named by why it is undrawn (X4d fix round 1):
+/// between the two staves of a grand staff, between unpitched notes, and
+/// between two thirty-seconds whose ink leaves its line no room, where
+/// Gould sets such a line above or below the notes (*Behind Bars*,
+/// p. 141); one with room is drawn and named nothing.
+#[test]
+fn an_undrawn_glissando_is_named_by_why() {
+    let start = "<notations><slide type=\"start\" line-type=\"solid\" number=\"1\">gliss.\
+                 </slide></notations>";
+    let stop = "<notations><slide type=\"stop\" number=\"1\"/></notations>";
+    let pitched = |step: &str, alter: i8, octave: u8, d: u8, kind: &str, staff: u8, n: &str| {
+        let alter = if alter == 0 {
+            String::new()
+        } else {
+            format!("<alter>{alter}</alter>")
+        };
+        let accidental = if alter.is_empty() {
+            ""
+        } else {
+            "<accidental>flat</accidental>"
+        };
+        format!(
+            "<note><pitch><step>{step}</step>{alter}<octave>{octave}</octave></pitch>\
+             <duration>{d}</duration><voice>{staff}</voice><type>{kind}</type>{accidental}\
+             <staff>{staff}</staff>{n}</note>"
+        )
+    };
+    let upper = [
+        pitched("D", 0, 5, 1, "32nd", 1, start),
+        pitched("E", -1, 5, 1, "32nd", 1, stop),
+        pitched("C", 0, 5, 2, "16th", 1, ""),
+        pitched("C", 0, 5, 4, "eighth", 1, start),
+        pitched("G", 0, 5, 8, "quarter", 1, stop),
+        pitched("C", 0, 5, 16, "half", 1, start),
+    ]
+    .concat();
+    let lower = [
+        "<note><rest/><duration>16</duration><voice>2</voice><type>half</type><staff>2</staff>\
+         </note>"
+            .to_string(),
+        pitched("C", 0, 3, 16, "half", 2, stop),
+    ]
+    .concat();
+    let drum = |n: &str| {
+        format!(
+            "<note><unpitched><display-step>C</display-step><display-octave>5</display-octave>\
+             </unpitched><duration>16</duration><voice>1</voice><type>half</type>{n}</note>"
+        )
+    };
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part><score-part id=\"P2\"><part-name>B</part-name></score-part>\
+         </part-list><part id=\"P1\"><measure number=\"1\"><attributes><divisions>8\
+         </divisions><time><beats>4</beats><beat-type>4</beat-type></time><staves>2</staves>\
+         <clef number=\"1\"><sign>G</sign><line>2</line></clef><clef number=\"2\"><sign>F\
+         </sign><line>4</line></clef></attributes>{upper}<backup><duration>32</duration>\
+         </backup>{lower}</measure></part><part id=\"P2\"><measure number=\"1\"><attributes>\
+         <divisions>8</divisions><time><beats>4</beats><beat-type>4</beat-type></time><clef>\
+         <sign>percussion</sign></clef></attributes>{}{}</measure></part></score-partwise>",
+        drum(start),
+        drum(stop),
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("glissandi_undrawn.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    assert!(loaded.fidelity.passed(), "{:#?}", loaded.fidelity.failures);
+    let glissandi = loaded
+        .reduced
+        .score
+        .cross_cutting
+        .spanners
+        .iter()
+        .filter(|s| s.kind == epiphany_core::SpannerKind::Glissando)
+        .count();
+    assert_eq!(glissandi, 4, "four glissandi imported");
+    let engraved = engrave(&loaded.reduced.score);
+    let named = |kind: &str| count(&loaded, &engraved, kind);
+    assert_eq!(named("glissando between staves"), 1);
+    assert_eq!(named("glissando of unpitched notes"), 1);
+    assert_eq!(named("glissando too short for its notes"), 1);
+    assert_eq!(named("glissando"), 0, "the one with room drawn");
 }

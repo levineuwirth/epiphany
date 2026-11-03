@@ -58,6 +58,9 @@ pub enum LayoutContent {
     Rest(RestContent),
     /// An unpitched (percussion) note: its note value and staff position.
     Unpitched(UnpitchedContent),
+    /// A grace note (X4d.2): drawn small before its principal, the event of
+    /// its voice that sounds at its position.
+    Grace(GraceContent),
     /// A measure: whether it ends the staff (a final barline) and the time
     /// signature in force, when this measure introduces one.
     Measure(MeasureContent),
@@ -81,6 +84,21 @@ pub enum LayoutContent {
     /// A syllable: its verse and text, its place in its word, and the
     /// syllables and notes its hyphen or melisma line reaches.
     Lyric(LyricContent),
+}
+
+/// A grace note's content (X4d.2): where it stands (its principal's onset),
+/// its notation, its spelled pitches or, unpitched, its staff position, its
+/// voice's place among its staff's, the beam joining it to the other graces
+/// of its group, if any, and its marks (X4d fix round 1).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct GraceContent {
+    pub position: TimePoint,
+    pub grace: epiphany_core::Grace,
+    pub pitches: Vec<NotePitch>,
+    pub unpitched: Option<epiphany_core::StaffPosition>,
+    pub voice: VoicePlace,
+    pub beam: Option<BeamId>,
+    pub marks: Vec<epiphany_core::EventMark>,
 }
 
 /// A syllable's content, resolved so the constrained pass can draw it, its
@@ -109,6 +127,9 @@ pub struct SpannerContent {
     pub kind: epiphany_core::SpannerKind,
     pub start: MarkerPlace,
     pub end: MarkerPlace,
+    /// Its line's pattern: a text line's or bracket's dashes, a glissando's
+    /// wiggle (X4d.1).
+    pub line: LineStyle,
 }
 
 /// A point mark's content: its kind, and where it stands, resolved so the
@@ -695,11 +716,27 @@ pub struct LogicalLayoutIR {
 /// stable-id collision (the same `(source, region)` reached twice, e.g. a staff
 /// listed twice in one staff extent) is de-duplicated.
 ///
-/// A grace note is left out (`drawn_view`): until grace notes are drawn
-/// (X4c), the layout lays out the score as it stood before schema major 5
-/// brought them in. The [`ScoreVersion`] is still the whole score's.
+/// The score is laid out through its drawn view (`drawn_view`): a grace note
+/// is its own content, drawn small before its principal (X4d.2), and the notes
+/// under an ottava stand at their written place (X4d.1). The
+/// [`ScoreVersion`] is still the whole score's.
 pub fn to_logical(score: &Score) -> LogicalLayoutIR {
     let source = derive_score_version(score);
+    // Each grace note's beam, where one joins it to other graces alone: the
+    // view keeps graces out of the beams the layout draws for notes.
+    let grace_beams: BTreeMap<EventId, BeamId> = score
+        .cross_cutting
+        .beams
+        .iter()
+        .filter(|beam| {
+            beam.events.len() >= 2
+                && beam
+                    .events
+                    .iter()
+                    .all(|e| score.events.get(*e).is_some_and(|e| e.grace().is_some()))
+        })
+        .flat_map(|beam| beam.events.iter().map(move |e| (*e, beam.id)))
+        .collect();
     let score = &*drawn_view(score);
     let mut regions = Vec::new();
     let mut engraving_decisions = Vec::new();
@@ -806,7 +843,7 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
                         e_src,
                         deps,
                         staff,
-                        event_content(score, *eid, &annotations, &spans, &places),
+                        event_content(score, *eid, &annotations, &spans, &places, &grace_beams),
                     );
                     for pid in pitches {
                         push(
@@ -1027,6 +1064,7 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
                         kind: spanner.kind.clone(),
                         start: marker_place(score, &spanner.start, &all_places),
                         end: marker_place(score, &spanner.end, &all_places),
+                        line: spanner.style.line,
                     })
                 })
                 .unwrap_or_default(),
@@ -1114,14 +1152,20 @@ pub fn to_logical(score: &Score) -> LogicalLayoutIR {
     }
 }
 
-/// The score as the layout draws it: every grace note left out, with the
-/// beams, slurs and ties that name one, until grace notes are drawn (X4c).
-/// Before schema major 5 the importer skipped a grace note, so the layout never
-/// met one; drawn through the paths every other note takes, a grace of zero
-/// duration would stand in its principal's chord as a full-size quarter note.
-/// A beam keeps its other notes while two remain. Borrowed when the score
-/// holds no grace note.
+/// The score as the layout draws it: the notes under an ottava at their
+/// written place, and each grace note kept out of the beams, slurs and ties
+/// the layout draws for notes. A grace note is drawn small before its
+/// principal (X4d.2: [`GraceContent`]); a beam joining graces alone is drawn
+/// with them, and a slur or tie naming one is left out until they are drawn.
 pub(crate) fn drawn_view(score: &Score) -> Cow<'_, Score> {
+    under_ottavas(without_graces(score))
+}
+
+/// The score with every grace note kept out of the beams, slurs and ties the
+/// layout draws for notes, and of the decompositions (see [`drawn_view`]). A
+/// beam keeps its other notes while two remain. Borrowed when the score holds
+/// no grace note.
+fn without_graces(score: &Score) -> Cow<'_, Score> {
     let graces: BTreeSet<EventId> = score
         .events
         .iter()
@@ -1132,16 +1176,6 @@ pub(crate) fn drawn_view(score: &Score) -> Cow<'_, Score> {
         return Cow::Borrowed(score);
     }
     let mut view = score.clone();
-    for grace in &graces {
-        view.events.remove(*grace);
-    }
-    for region in &mut view.canvas.regions {
-        if let Some(instances) = region.content.staff_instances_mut() {
-            for voice in instances.iter_mut().flat_map(|si| si.voices.iter_mut()) {
-                voice.events.retain(|event| !graces.contains(event));
-            }
-        }
-    }
     let cc = &mut view.cross_cutting;
     for beam in &mut cc.beams {
         beam.events.retain(|event| !graces.contains(event));
@@ -1154,6 +1188,86 @@ pub(crate) fn drawn_view(score: &Score) -> Cow<'_, Score> {
     view.decomposition_attachments
         .retain(|attachment| !graces.contains(&attachment.target));
     Cow::Owned(view)
+}
+
+/// The score with the notes under each ottava at their written place (X4d.1).
+/// The model holds every note at its sounding pitch, as the file gives it with
+/// its octave shift; an ottava's notes are written its octaves nearer the
+/// staff, an 8va's an octave lower, and drawn so, as Gould sets them under the
+/// sign (*Behind Bars*, pp. 28 to 31) and as MuseScore keeps a note's written
+/// pitch apart from the shift it plays at (`Note::epitch`). A note is under an
+/// ottava of its staff where its onset is at or after the ottava's start and
+/// before its end, in the start's region; its explicit spelling moves with it.
+/// Borrowed when the score draws no ottava over a note.
+fn under_ottavas(score: Cow<'_, Score>) -> Cow<'_, Score> {
+    const DEPTH: u8 = 16;
+    let musical = |anchor: &TimeAnchor| match resolve_time_anchor_inner(&score, anchor, DEPTH) {
+        Some(TimePoint::Musical(at)) => Some(at),
+        _ => None,
+    };
+    let mut moves: Vec<(EventId, epiphany_core::TranspositionInterval)> = Vec::new();
+    for spanner in &score.cross_cutting.spanners {
+        let epiphany_core::SpannerKind::OctaveLine(shift) = spanner.kind else {
+            continue;
+        };
+        let (Some(start), Some(end)) = (musical(&spanner.start), musical(&spanner.end)) else {
+            continue;
+        };
+        if shift.0 == 0 || start >= end {
+            continue;
+        }
+        let Some(region) = start_region(&score, &spanner.start) else {
+            continue;
+        };
+        let interval = epiphany_core::TranspositionInterval {
+            diatonic_steps: -7 * i32::from(shift.0),
+            chromatic_steps: -12 * i32::from(shift.0),
+        };
+        for instance in region.staff_instances() {
+            if !spanner.staves.contains(&instance.staff) {
+                continue;
+            }
+            for event in instance.voices.iter().flat_map(|voice| voice.events.iter()) {
+                let Some(EventPosition::Musical(onset)) =
+                    score.events.get(*event).map(Event::position)
+                else {
+                    continue;
+                };
+                if start <= *onset && *onset < end {
+                    moves.push((*event, interval));
+                }
+            }
+        }
+    }
+    if moves.is_empty() {
+        return score;
+    }
+    let mut view = score.into_owned();
+    crate::written::move_pitches(&mut view, moves);
+    Cow::Owned(view)
+}
+
+/// The region a line's start stands in: the one holding the event or the
+/// measure its anchor names, or the region it names.
+fn start_region<'a>(score: &'a Score, anchor: &TimeAnchor) -> Option<&'a Region> {
+    let regions = &score.canvas.regions;
+    match anchor {
+        TimeAnchor::Region { id, .. } => regions.iter().find(|region| region.id == *id),
+        TimeAnchor::Event { id, .. } => regions.iter().find(|region| {
+            region
+                .staff_instances()
+                .iter()
+                .flat_map(|instance| instance.voices.iter())
+                .any(|voice| voice.events.contains(id))
+        }),
+        TimeAnchor::Measure { id, .. } => regions.iter().find(|region| {
+            region
+                .staff_instances()
+                .iter()
+                .any(|instance| instance.measures.iter().any(|measure| measure.id == *id))
+        }),
+        TimeAnchor::WallClock { .. } => None,
+    }
 }
 
 /// The canonical bytes of a projected break override's anchor (its ordering
@@ -1601,11 +1715,46 @@ fn event_content(
     annotations: &DerivedAnnotations,
     spans: &[(TimePoint, Option<TimePoint>)],
     places: &BTreeMap<EventId, VoicePlace>,
+    grace_beams: &BTreeMap<EventId, BeamId>,
 ) -> LayoutContent {
     let Some(graph_event) = score.events.get(event) else {
         return LayoutContent::Structural;
     };
     let voice = places.get(&event).copied().unwrap_or(VoicePlace::Alone);
+    if let Some(grace) = graph_event.grace() {
+        let (pitches, unpitched, grace_marks) = match graph_event {
+            Event::Pitched(pitched) => (
+                pitched
+                    .pitches
+                    .iter()
+                    .map(|identified| NotePitch {
+                        pitch: identified.id,
+                        spelling: annotations
+                            .spellings
+                            .get(&identified.id)
+                            .map(|resolved| resolved.spelling.clone()),
+                    })
+                    .collect(),
+                None,
+                pitched.marks.clone(),
+            ),
+            Event::Unpitched(unpitched) => (
+                Vec::new(),
+                Some(unpitched.staff_position),
+                unpitched.marks.clone(),
+            ),
+            _ => return LayoutContent::Structural,
+        };
+        return LayoutContent::Grace(GraceContent {
+            position: event_time(graph_event.position()),
+            grace: grace.clone(),
+            pitches,
+            unpitched,
+            voice,
+            beam: grace_beams.get(&event).copied(),
+            marks: grace_marks,
+        });
+    }
     let components = placed_components(score, components_of(annotations, event));
     let musical = |duration: &EventDuration| match duration {
         EventDuration::Musical(duration) => Some(duration.clone()),

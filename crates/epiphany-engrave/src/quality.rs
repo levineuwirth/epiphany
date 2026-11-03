@@ -645,11 +645,17 @@ fn vertical_units(
     }
     for (system, resolved) in cast.pages.iter().flat_map(|p| &p.systems).enumerate() {
         for &i in &resolved.primitives.texts {
-            let (text, source) = (&cast.texts[i as usize], &input.texts[i as usize]);
+            let text = &cast.texts[i as usize];
+            // A text casting added after the input's (a line's run) by the
+            // band of the line it rides.
+            let band = match input.texts.get(i as usize) {
+                Some(source) => source.vertical_band,
+                None => cast.appended_text_bands[i as usize - input.texts.len()],
+            };
             let (x, y, b) = (f(text.origin.x.0), f(text.origin.y.0), text.bounds);
             put(
                 system,
-                source.vertical_band,
+                band,
                 Some(text.id()),
                 [
                     x + f(b.left.0),

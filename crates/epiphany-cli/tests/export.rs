@@ -283,7 +283,7 @@ fn pages_with_graces_and_a_visiting_voice_export_what_the_layout_draws() {
         let stems: Vec<f32> = layout
             .strokes
             .iter()
-            .filter(|s| traced(&s.provenance.source))
+            .filter(|s| traced(&s.provenance.source) && s.from.x == s.to.x && s.from != s.to)
             .map(|s| s.from.y.0.max(s.to.y.0))
             .collect();
         (heads, stems)
@@ -295,7 +295,19 @@ fn pages_with_graces_and_a_visiting_voice_export_what_the_layout_draws() {
         .collect();
     assert_eq!(graces.len(), 3);
     for grace in graces {
-        assert_eq!(ink(grace), (vec![], vec![]), "a grace note is not drawn");
+        // A grace note is drawn small (X4d.2): its head a run, its stem a
+        // stroke, no full-size glyph.
+        let (heads, stems) = ink(grace);
+        assert!(heads.is_empty(), "no full-size head");
+        assert!(!stems.is_empty(), "its stem drawn");
+        let mut pitches = Vec::new();
+        grace.collect_identified_pitches(&mut pitches);
+        assert!(
+            layout.texts.iter().any(|t| pitches
+                .iter()
+                .any(|ip| t.provenance.source == TypedObjectId::Pitch(ip.id))),
+            "its head a run"
+        );
     }
     let visiting: Vec<&Event> = score
         .events

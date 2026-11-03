@@ -651,6 +651,7 @@ mod tests {
             family: Vec::new(),
             endings: Vec::new(),
             measure_rests: Vec::new(),
+            line_texts: Vec::new(),
         }
     }
 
@@ -747,6 +748,7 @@ mod tests {
             family: Vec::new(),
             endings: Vec::new(),
             measure_rests: Vec::new(),
+            line_texts: Vec::new(),
         };
         let report = StubSolver.solve(&input, &SolverConfig::default());
         assert_eq!(report.status, SolveStatus::InternalError);

@@ -895,11 +895,15 @@ mod solve_tests {
         let systems: Vec<_> = cast.pages.iter().flat_map(|p| &p.systems).collect();
         for (s, system) in systems.iter().enumerate() {
             for &i in &system.primitives.texts {
-                let (t, source) = (&cast.texts[i as usize], &input.texts[i as usize]);
+                let t = &cast.texts[i as usize];
+                let band = match input.texts.get(i as usize) {
+                    Some(source) => source.vertical_band,
+                    None => cast.appended_text_bands[i as usize - input.texts.len()],
+                };
                 let (x, y, b) = (t.origin.x.0, t.origin.y.0, t.bounds);
                 put(
                     s,
-                    source.vertical_band,
+                    band,
                     t.id(),
                     rect(x + b.left.0, x + b.right.0, y + b.bottom.0, y + b.top.0),
                 );

@@ -2680,7 +2680,673 @@ is set:
   `a_close_mark_leaves_its_notes_tie_room`). The engraver itself is
   unchanged.
 
-## ENGRAVER_VERSION 94 → 95: staves set by their outlines (X5d.2, 2026-11-01)
+## ENGRAVER_VERSION 94 → 95: the notes under an ottava at their written place (X4d.1, 2026-11-01)
+
+- The model holds every note at its sounding pitch, as the file gives it
+  with its octave shift, and the layout drew a note under an ottava there,
+  an 8va's an octave high on ledger lines no score shows. The layout now
+  draws the score through a view (`drawn_view`) in which each note of an
+  ottava's staff whose onset is at or after the ottava's start and before
+  its end, in the start's region, stands its octaves nearer the staff, its
+  explicit spelling moved with it (`written::move_pitches`, shared with a
+  transposing part's written pitch). Gould sets the notes under the sign at
+  their written place (*Behind Bars*, pp. 28 to 31), as MuseScore keeps a
+  note's written pitch apart from the shift it plays at (`Note::epitch`)
+  (`the_notes_under_an_ottava_stand_at_their_written_place`).
+
+## ENGRAVER_VERSION 95 → 96: pedal lines, ottavas, text lines, brackets and glissandi (X4d.1, 2026-11-01)
+
+The projection draws the family's other lines, each a placed member a
+solver splits where a system break cuts it (`FamilyLine::Extension`,
+`FamilyLine::Glissando`), by MuseScore 4.7.5's defaults where Gould agrees
+or gives no figure (`epiphany-layout-ir`'s `lines.rs` cites each). A probe
+exported by MuseScore 4.7.5 itself (`x4d/probes/ms1/` in the private
+corpus cache) gives where each stands once autoplace clears it, and the
+engraver's own placing reproduces it:
+
+- A pedal line: the pedal sign half a space before its note, at least 2.5
+  under the staff; a solid line 0.11 wide from half a space after the sign,
+  its foot on the sign's baseline, to 0.75 before the column its release
+  falls in (the barline, where a measure starts there), or 1.25 before a
+  note where the staff's next pedal starts, where it rises 1.2. A pedal
+  drawn without its sign opens with that hook. Every pedal line of a staff
+  in a system stands at one height (`processLines`, `align`; Gould lets
+  consecutive signs align where there is room, p. 333). Over a system break
+  its next piece opens with "(Ped.)" (Gould's reminder, p. 332).
+- An ottava: its numeral at its first note, over the staff for an 8va or
+  15ma and under it for an 8vb, at least 2.0 off it; a dashed line from half
+  a space after the numeral, hanging from its top over the staff and on its
+  baseline under it (Gould, p. 28), to a corner 1.0 toward the staff a space
+  past its last note's ink, riding that note's column, never past the next
+  note once the system is set (`Ottava::linePos`; Gould, p. 30); its
+  numeral again at a new system. The numerals and the pedal sign are
+  Bravura's symbols at Bravura's size, as MuseScore sets a line's `<sym>`
+  text at its music font's.
+- A text line: over its staff at least 1.0 off it, its words upright and
+  its line through their middle, dashed as its style says, ending a space
+  before the column it ends at (`SLine::linePos`). One whose words open with
+  a dynamic term is a verbal crescendo, MuseScore's hairpin of the line
+  type: below by the hairpin rule (D79's Q11), italic on the line's
+  baseline, clear of a dynamic at either end and in its chain's row, its
+  next piece opening with "(cresc.)" or "(dim.)" (Gould, pp. 101 and 106).
+  A bracket draws its line alone, hooked 1.5 toward the staff at its end,
+  the model keeping no hook of its own.
+- Dashes are laid piece by piece as MuseScore distributes a dash pattern:
+  one more dash than the whole pairs of dash and gap a piece holds, its
+  first and last at its ends.
+- A glissando: on the line joining its heads' centres, from a quarter space
+  past its first note's ink at its head to a quarter space before its last
+  note's at the half its line comes from, so short of an accidental (Gould,
+  p. 141); between heads on one line a quarter space up or down at each end
+  the way it slides (p. 142); its heights read again on the line joining
+  its heads where the system sets them, and over a system break its
+  gradient kept across the pieces (p. 142); "gliss." in Edwin italic at 8
+  points centred along each piece it is shorter than, turned to its slope;
+  wavy, its pieces set as `wiggleGlissando`s. The model keeps no head for a
+  glissando: the `k`th of the glissandi joining two notes takes the `k`th
+  head of each chord from the top. A glissando whose notes stand on other
+  staves is left undrawn.
+- The corpus report names each of these lines the engraver leaves undrawn
+  (`the_lines_undrawn_are_counted`).
+
+## ENGRAVER_VERSION 96 → 97: a gradual tempo change drawn once over its system, bold (X4d.1, 2026-11-01)
+
+- A text line whose words open with a term of gradual tempo change (rit.,
+  rall., accel., allargando and the like, `epiphany_layout_ir::tempo_term`)
+  is drawn as MuseScore draws its gradual tempo change: a system object over
+  the system's top staff, drawn once for the parts that repeat its words and
+  times, its words in Edwin bold at 12 points on the line's baseline, at
+  least 2.0 over the staff and half a space clear of the ink under it, the
+  line 0.15 wide in dashes 0.9 long spread with gaps of 1.35, no hook and no
+  continuation. MuseScore's export writes each of these as words and dashes
+  (`system="only-top"`), and its own page sets them bold at 12, as Gould sets
+  a gradual tempo change as a tempo indication, bold roman above the top
+  staff, a continuing change shown by its dashes (*Behind Bars*, pp. 182 and
+  185). They had been drawn as plain text lines, upright at 10 points over
+  their own staves. The corpus report counts a part's copy of one drawn
+  for another as drawn
+  (`a_gradual_tempo_change_stands_bold_over_the_staff`,
+  `a_gradual_tempo_change_in_two_parts_is_drawn_once_over_the_system`,
+  `a_gradual_tempo_change_drawn_once_for_two_parts_is_no_omission`).
+
+## ENGRAVER_VERSION 97 → 98: grace notes drawn small before their principals (X4d.2, 2026-11-01)
+
+- A grace note is drawn, replacing D65's rule that left it out: the logical
+  pass gives it its own content (`LayoutContent::Grace`), kept out of the
+  beams, slurs and ties drawn for notes and out of the decompositions, and
+  the projection sets each voice's graces at an onset right to left before
+  the ink of the principal's column on their staff (its heads with their
+  accidentals, ledger lines and dots, its stems and flags, its rests): the
+  group wholly left of it by 0.45 and each grace wholly left of the next by
+  0.3 (MuseScore's `graceToMainNoteDist`, `graceToGraceNoteDist`), as Gould
+  sets graces before the beat (*Behind Bars*, p. 127). Its heads,
+  accidentals and flag are Bravura's at 0.7 (`graceNoteMag`; Gould: smaller
+  than a cue note's three quarters, p. 125), set from Bravura Text as runs,
+  each head carrying its pitch's exact provenance; its stem, ledger lines,
+  slash and beams are strokes at 0.7 of a note's widths. Every part rides
+  the principal's slot, and the grace is one member of the family taking
+  room as an accidental does (D79's Q13), so the principal's column stands
+  further right where the space before it is short.
+- Its stem is 2¼ spaces from its head's centre (Gould, p. 125: ruled by the
+  owner on 2026-11-01 over MuseScore's and LilyPond's 3.5 scaled to about
+  2.45), up but in a lower part (p. 126). An unbeamed grace of an eighth or
+  shorter takes its flag; a run of graces one beam joins (MuseScore's
+  export, the model's beam) is beamed, its slope held to a quarter space a
+  space and its stems reaching the beam, at least their own length.
+- An acciaccatura's slash stands on an unbeamed grace or a beam's first
+  (`ChordLayout`; Gould: at the beginning of a group, p. 126), as MuseScore
+  sets it (`TLayout::layoutStemSlash`): at 40°, from half a head's width left
+  of the stem's right edge and 1.4 under the tip to the flag's right edge, or
+  two spaces along a beam from two thirds as far. Its stem is lengthened
+  until the slash stands a quarter space clear of the grace's ledger lines
+  (Gould, p. 126).
+- A grace joins its measure's accidental state before its principal, in its
+  order, as Gould holds accidentals good for grace and measured notes alike
+  (p. 84), so a grace's sharp holds for the note after it on its line.
+- A slur or tie naming a grace is still left out, and the corpus report
+  names it; the report counts a grace drawn small as drawn, one with a
+  full-size glyph as drawn as a plain note
+  (`a_grace_note_is_drawn_small_before_its_principal`, the `graces` suite).
+
+## ENGRAVER_VERSION 98 → 99: the dynamics placed before the hairpins (X4d.3, 2026-11-01)
+
+- The family's dynamics, expression text and hairpins are one stage placed
+  in MuseScore's order (`SystemLayout::layoutDynamicExpressionAndHairpins`):
+  every dynamic of a staff in a system first, then the expression text, then
+  the hairpins, verbal ones included, each joining the ink the next is
+  placed against; once all are placed, each chain of a dynamic and the
+  hairpins meeting it is aligned at its outermost centre
+  (`AlignmentLayout::alignItemsWithTheirSnappingChain`). They had been placed
+  as one order left to right, so a hairpin starting left of a dynamic of
+  another chain it ran over pushed the dynamic out
+  (`dynamics_are_placed_before_the_hairpins`). Gould asks only that a
+  sequence of dynamics and hairpins keep one horizontal plane where it can
+  (*Behind Bars*, p. 105), which the chains' alignment keeps.
+
+## ENGRAVER_VERSION 99 → 100: a dynamic clear of a barline through the staves (X4d.3, 2026-11-01)
+
+- A dynamic stands a quarter space clear of a barline that runs through
+  the staves at it, as MuseScore moves one whose offset no user changed
+  (`DynamicsLayout::manageBarlineCollisions`, 0.25 spaces); the model keeps
+  no offset an author gave a dynamic, so every dynamic is moved (corrected
+  in X4d fix round 1, where this said a dynamic no one moved). Under its
+  staff it is judged by its own staff's barline where that runs on to the
+  next staff of a joined group; over it, by the barline of the staff above. It moves left of the
+  barline after it, then right of the one before it, which wins. Gould keeps
+  barlines whole where a marking can move before or after one, moving an
+  initial dynamic right of its barline and breaking the barline only for
+  one that cannot move (*Behind Bars*, p. 103). LilyPond 2.26.0 reaches the
+  same page another way: a dynamic takes room in the horizontal spacing, so
+  the measure widens rather than the dynamic moving, while its plain text
+  scripts cross a span bar (a hand-written probe). On one staff, or where
+  the barline stops at its staff, nothing moves
+  (`a_dynamic_stands_clear_of_a_barline_through_the_staves`).
+
+## ENGRAVER_VERSION 100 → 101: a mark at a note clear of its column's other chords (X4d.3, 2026-11-01)
+
+- A mark set outside a chord's close marks stands `articulationMinDistance`
+  (0.4) clear of the ink of every other chord in its staff's column, another
+  voice's and a visiting chord's included: their heads, ledger lines, dots
+  and accidentals, stems and flags, wherever they meet it across its width.
+  MuseScore autoplaces such a mark against its staff's skyline, every
+  voice's chords in it (`ChordLayout::layoutArticulations2`,
+  `Autoplace::autoplaceSegmentElement`); it had stood clear of its own
+  chord's ink alone, so an upper voice's accent could stand on the head of
+  a lower voice crossing above it. As in MuseScore, a close mark (a staccato
+  or tenuto set near its note) does not move, and one chord's marks pass
+  another's (`itemsShouldIgnoreEachOther` lets an articulation ignore
+  another); another voice's rests and beams, in MuseScore's skyline, are not
+  yet in the column's ink here. Gould gives no figure; she sets each part's
+  marks at its own stem's end in double-stemmed writing so that it is clear
+  which note each belongs to (*Behind Bars*, pp. 117-118), which a mark on
+  another part's head defeats. LilyPond 2.26.0 draws an accent over the
+  crossing head, its accent placed against its own voice and the staff
+  alone (a hand-written probe); MuseScore's export of the same file lifts
+  it clear. The owner's ruling D85 named MuseScore's rule
+  (`an_accent_stands_clear_of_another_voices_ink_in_its_column`).
+
+## ENGRAVER_VERSION 101 → 102: a stemmed tremolo a space clear of its head (X4d.5, D102, 2026-11-01)
+
+- A stemmed one-note tremolo of two strokes or more stands a space clear of
+  its head's ink, its stem lengthened past the outermost stroke, as Gould
+  sets it (*Behind Bars*, p. 221: with two strokes or more a space is kept
+  from the head, which they would otherwise hide; p. 222: the stem runs on
+  past the last stroke, the strokes clear of a flag or beam). The stem's
+  least length is counted as MuseScore counts it
+  (`StemLayout::calcMinStemLength`) with 1.5 spaces from the centre of the
+  head nearest its end where MuseScore
+  keeps 1.25 (`tremoloNoteSidePadding`, about 0.75 from the ink), and in a
+  beam a stem's thickness more, the stem ending that far inside the beam's
+  outer edge. One stroke, which Gould sets across a staff line and gives no
+  distance, keeps MuseScore's. LilyPond 2.26.0 keeps its strokes about 0.22
+  from the head (the coordinator's probe at D102). The owner ruled Gould's
+  rule over both engines (D102). `a_one_note_tremolo_lengthens_its_stem`
+  is rewritten to it: three strokes take a quarter's stem to 4.25, four to
+  5.0, a beamed eighth's beam 4.75 and a stem's thickness out.
+
+## ENGRAVER_VERSION 102 → 103: an arpeggio right of its barline at any height (X4d.5, D102, 2026-11-01)
+
+- An arpeggio keeps a barline's clearance (0.65) after the barline before
+  it at any height, over or under the staff as on it, in the spacing pass
+  and at the compression floor alike. A barline's clearance had held only
+  where its own ink's height met the later ink's, so an arpeggio on a chord
+  over the staff, and the flat after it, tucked left of the barline. Gould
+  sets the arpeggio sign after the barline (*Behind Bars*, p. 131);
+  MuseScore never kerns ink past a barline and pads an arpeggio after one
+  by 0.65 (`HorizontalSpacing::computeKerning`, by `isNeverKernable`, and
+  `PaddingTable`; this entry first cited `doComputeKerningType`, corrected
+  in X4d fix round 2);
+  LilyPond 2.26.0 sets the same chord's arpeggio right of the barline (a
+  hand-written probe). Other ink over or under the staff, which MuseScore
+  keeps right of a barline too, keeps the band rule here
+  (`an_arpeggio_stands_right_of_its_measures_barline`,
+  `a_compressed_systems_arpeggios_stand_right_of_their_barlines`).
+
+## ENGRAVER_VERSION 103 → 104: expression text italic under its staff (X4d.6, D79 Q9, 2026-11-01)
+
+- Expression text, the marker kind X5b appended, is drawn in Edwin italic
+  at staff text's size under its staff, its baseline 2.5 under it, or over
+  a voice's staff (D79 Q10), 1.5 over it, a half space clear of the ink it
+  meets; it had been drawn as staff text, upright and over (D105). Gould
+  keeps italic for expression marks, roman for instructions and bold for
+  tempi (*Behind Bars*, p. 489), sets them under the stave after the
+  dynamics (p. 495) and over it in vocal music (p. 434); MuseScore's
+  expression style agrees (`expressionFontStyle`, `expressionPlacement`,
+  `expressionPosBelow`, `expressionPosAbove`, `expressionMinDistance`);
+  LilyPond 2.26.0 sets a text script under its staff by default, upright
+  unless its markup is italic (`TextScript`).
+- After a dynamic at its note it stands on the dynamic's baseline, in its
+  row, half a space after the dynamic's ink, or 0.2 after one ending in a
+  forte (`Expression::computeDynamicExpressionDistance`), as Gould and
+  MuseScore place it, where LilyPond stacks it outside the dynamics' line.
+  Where a hairpin starts at its note it stands outside the dynamics and
+  hairpins, placed once they stand (`PlaceOrder::OuterExpression`), from
+  the dynamic's left where one stands there: Gould aligns a hairpin with
+  the dynamic it follows and sets the expression mark under them (p. 495),
+  as LilyPond's stacking does, where MuseScore sets the dynamic, the words
+  and the hairpin in one row. The owner ruled Gould's place, and the same
+  where a hairpin starts with no dynamic, which Gould does not cover
+  (2026-11-01). A dynamic moved off a barline (X4d.3) takes the expression
+  after it along.
+- The tests: `expression_text_stands_italic_under_its_staff_after_its_dynamic`,
+  `expression_text_stands_over_a_voices_staff`,
+  `expression_text_moves_with_its_dynamic_off_a_barline`,
+  `expression_text_stands_outside_a_verbal_crescendo_starting_with_it`; the
+  staff text test reads its italic words under the lower staff.
+
+## ENGRAVER_VERSION 104 → 105: a dynamic glyph moved off a barline (X4d.3, 2026-11-01)
+
+- A dynamic drawn as a glyph moves off a barline through the staves as
+  dynamic words do (version 100's rule): the move across was given to a
+  placed member's text runs and strokes, and not to its glyphs, so a
+  dynamic glyph stood where it was while the rule judged it moved. It is
+  drawn moved, and placed off its staff against the ink where it is moved
+  to (`a_dynamic_glyph_stands_clear_of_a_barline_through_the_staves`,
+  `a_dynamic_moved_off_a_barline_stands_clear_of_the_ink_it_moves_to`).
+  X4d.4's sweep of every page found it: a glyph dynamic within a quarter
+  space of a barline's line through the gap it stands in.
+
+## ENGRAVER_VERSION 105 → 106: a glissando's later piece after its system's lead (X4d.1, 2026-11-01)
+
+- A glissando's piece in a later system opens a quarter space after the
+  ink of the system's lead, and ends, as before, a quarter space before
+  its chord's ink at its end. It had opened at the system's first column,
+  which for the end note is that note's own, so the piece ran back over
+  the note's accidental; MuseScore opens a later segment before the first
+  column's leading ink (`System::firstNoteRestSegmentX`). Where the
+  chord's ink leaves no room the piece draws nothing; with the lead's gap
+  of 0.8 that leaves 0.3 at least, so the guard binds on no state the
+  importer reaches today: every lead it builds draws a clef. A lead holding
+  nothing, as one would once a clef marked hidden is honoured, reaches it,
+  and a test on such a lead built by hand pins it (X4d fix round 1;
+  `a_glissando_piece_after_an_empty_lead_never_runs_back`,
+  `a_glissando_continued_into_a_system_stands_between_its_lead_and_its_chord`).
+  X4d.4's sweep of every page found it: every glissando end standing
+  nearer a head than a quarter space was such a piece.
+
+## ENGRAVER_VERSION 106 → 107: a hairpin moved with a dynamic moved off a barline (X4d.3, 2026-11-01)
+
+- A hairpin of a dynamic's row that starts at the dynamic's note starts as
+  far past it once the dynamic moves right off a barline, and one ending at
+  its note ends as far before it once it moves left, whole or cut by a
+  system break, as MuseScore lays a hairpin out from the dynamics it snaps
+  to after they move (`DynamicsLayout::manageBarlineCollisions` runs in the
+  dynamic's layout, before the hairpins). The hairpin had stayed where the
+  unmoved dynamic left it, its opening on the moved dynamic's ink. A moved
+  hairpin is placed off its staff over its moved span. Placed over its
+  unmoved span instead, it is set against ink only that span meets, the
+  notes under a dynamic moved off its barline, and its row stands farther
+  off the staff with it: the placement's half is reachable, where this
+  entry first said its mutation survived for want of a page to tell it
+  (corrected in X4d fix round 1, whose test pins it,
+  `a_moved_hairpin_is_placed_over_its_drawn_span`;
+  `a_hairpin_moves_its_ends_with_dynamics_moved_off_barlines`,
+  `a_hairpin_over_a_system_break_moves_its_ends_with_its_dynamics`). X4d.4's
+  sweep of every page found the hairpins meeting their dynamics' ink once
+  dynamic glyphs moved (version 105).
+
+## ENGRAVER_VERSION 107 → 108: a grace note after the barline before its principal at any height (X4d fix round 1, 2026-11-02)
+
+- A grace note's ink, its heads, accidentals and flag, its stem, ledger
+  lines, slash and beam, keeps a barline's clearance (0.65) after the
+  barline before its principal at any height, over or under the staff as
+  on it, in the spacing pass and at the compression floor alike, as an
+  arpeggio does (version 103). A barline's clearance had held only where
+  its own ink's height met the grace's, so a grace standing off the staff
+  at a bar's first beat, on ledger lines over it or a beamed pair high
+  over it, stood over or before the barline, where it reads as the end of
+  the bar before. Gould places grace notes before a bar's first beat after
+  its barline, and always so for graces sounding on the beat, a group of
+  three or more sounding before it being free to stand before the barline
+  so the beat is not pushed far from it (*Behind Bars*, p. 127); the model
+  keeps no such timing, so every group stands after. MuseScore never kerns
+  ink past a barline (`HorizontalSpacing::computeKerning`, by
+  `isNeverKernable`, which holds key and time signatures and a clef but a
+  mid-measure one too; this entry first cited `doComputeKerningType`,
+  corrected in X4d fix round 2, version 120 taking the signatures) and sets
+  them after it; LilyPond 2.26.0 sets a high grace and a high beamed pair
+  after theirs (C4d review 1's hand-written probe). A trill's finishing
+  notes, which Gould sets before the barline (p. 127), would need graces
+  the model keeps after their note; it holds none. A grace is told by its
+  room, `Room::Grace`, which otherwise takes room as `Room::Ink` does
+  (`a_grace_off_the_staff_at_a_bars_first_beat_stands_after_its_barline`,
+  `a_compressed_systems_graces_stand_right_of_their_barlines`).
+
+## ENGRAVER_VERSION 108 → 109: a grace note's marks drawn outside the staff (X4d fix round 1, 2026-11-02)
+
+- A grace note's articulations and techniques are drawn, at the grace's
+  size (0.7), where Gould puts them: outside the staff, the most
+  conspicuous place, since small marks are hard to see on it (*Behind
+  Bars*, p. 130). Read from her examples there, a run of graces (a lone
+  grace, or graces one beam joins) takes its marks on the side where a
+  mark set outside the staff and the run's ink stands nearer its heads:
+  under heads under the staff and under a grace low on it, over a beam
+  over it and over the staff beyond the stem of a grace high on it; where
+  both stand as near, on the stem's side. Beside another voice they stand
+  at the stem, as MuseScore sets them and as Gould sets each part's marks
+  at its own stem (pp. 117 and 118); a marcato, and a string, brass or
+  snap-pizzicato sign, stand above, as a note's do. Each stands 0.4 off the
+  staff and its grace's ink (`propertyDistance`), centred on its head, or
+  on the stem's side midway between the head and the stem
+  (`articulationStemHAlign`), the next on its side 0.4 past it, and, as
+  X4d.3's column rule sets a note's outside marks, 0.4 clear of the ink of
+  its column it meets across its width, the principal's and every grace's
+  (`articulationMinDistance`). Each run carries its part's id, as a note's
+  mark does; it takes no room. They had been drawn nowhere, the logical
+  pass giving a grace no marks. MuseScore lays a grace's marks out as a
+  note's at its size, a staccato at its head, on the staff where the head
+  stands; LilyPond 2.26.0 sets a grace's staccato at its head too (C4d
+  review 1's hand-written probe). The owner ruled Gould's place (D116).
+  An ornament, a tremolo or an arpeggio on a grace is not drawn.
+- The corpus report checks a grace's marks as a note's, so a mark on a
+  grace drawn nowhere is named; the check had skipped graces, written while
+  a grace was left out with its marks
+  (`a_graces_marks_stand_small_outside_the_staff`,
+  `a_graces_marks_take_the_side_nearer_its_heads_outside_the_staff`,
+  `a_graces_mark_stands_clear_of_its_columns_ink`,
+  `a_graces_marks_are_drawn_and_counted_undrawn`).
+
+## X4d fix round 1: the barline, hairpin, grace and glissando clauses pinned (2026-11-02, no version change)
+
+- C4d's review named clauses of X4d's rules that no test pinned. Each now
+  has one, seen failing with the clause's mutation: of the barline rule, a
+  dynamic over its staff judged by the staff above's barline
+  (`words_over_the_top_staff_stay_at_their_note`), a group's bottom staff
+  running on to none (`words_under_a_groups_bottom_staff_stay_at_their_note`),
+  the barline before winning over the one after
+  (`words_wider_than_their_measure_stand_right_of_the_barline_before`), its
+  own system's barlines alone
+  (`a_dynamic_at_a_systems_first_note_is_judged_by_its_systems_barlines`); a
+  hairpin moved only with its own row's dynamic
+  (`a_hairpin_of_another_row_keeps_its_start`), and placed over its drawn
+  span (version 107); expression text moved only with its own dynamic
+  (`expression_text_moves_only_with_its_own_dynamic`) and held between a
+  grand staff's staves with its dynamic's row
+  (`expression_text_between_a_grand_staffs_staves_stays_on_its_dynamics_baseline`);
+  a grace group's reach widening its principal's column in the projection's
+  frame, where the curves and beams are first shaped
+  (`a_grace_groups_reach_widens_its_columns_place_in_the_projection`); the
+  `k`th glissando between chords taking each chord's `k`th head from the top
+  (`parallel_glissandi_between_chords_join_heads_of_one_rank`).
+- Four clauses the review found changing no corpus page. A mark at a note
+  is set from its own chord by that chord's rules and kept clear of the
+  column's other chords: its own column ink is left out, and is reachable,
+  a wide ornament over a dotted note at the staff's top line or above
+  meeting its own dot
+  (`an_outside_mark_is_set_from_its_own_chord_its_dot_left_out`). A line
+  released at a measure's start ends before the barline there even where a
+  clef change or a breath mark stands before the barline at that time
+  (`a_pedal_released_at_a_clef_change_ends_before_the_barline`). The barline
+  rule leaves a member the rule for a measure's start has set: no dynamic
+  takes a measure-start place today, only rehearsal marks, a segno and a
+  coda, so the guard binds on no state the projection builds; a test giving
+  a dynamic one by hand pins it
+  (`a_member_set_at_its_measures_start_is_not_moved_off_its_barline_again`).
+  A glissando's guard that both its notes stand on its staff is removed: it
+  is equivalent on every state, since the logical pass gives a line
+  anchored to two staves no staff, the projection draws no glissando
+  without one, and each end's ink is read on the line's staff, which holds
+  no other staff's heads (`a_glissando_between_two_staves_is_left_undrawn`).
+- A glissando's later piece after a lead holding nothing is pinned with
+  version 106's guard, above.
+
+## ENGRAVER_VERSION 109 → 110: an ottava starting at a grace numbered at the grace (X4d fix round 1, 2026-11-02)
+
+- An ottava whose first note on its staff is opened by grace notes sets its
+  numeral at the first grace's head, and its line from half a space after
+  it, where it had stood at the principal, the graces outside it. Gould
+  places the numeral just left of the first note it applies to (*Behind
+  Bars*, p. 28), which is the grace, drawn under the sign at its written
+  place (version 95); LilyPond 2.26.0 starts its "8" at the grace (C4d
+  review 1's hand-written probe). MuseScore starts the line at the
+  principal: a departure from it, which the owner ruled (D116). A grace
+  later under the ottava, or one at its start on another staff, leaves the
+  numeral at the first note
+  (`an_ottava_starting_at_a_grace_sets_its_numeral_at_the_grace`,
+  `only_a_grace_opening_an_ottava_on_its_staff_moves_its_numeral`).
+
+## ENGRAVER_VERSION 110 → 111: one "gliss." for parallel glissandi, and a guessed head named (X4d fix round 1, 2026-11-02)
+
+- Glissandi between the same two notes take one "gliss.", on the line from
+  their top heads, as Gould gives a set of parallel lines one instruction
+  whatever the number of notes (*Behind Bars*, p. 143), her example's word
+  over the top line; each had drawn its own, as MuseScore draws one on each
+  line: a departure from it, which the owner ruled (D116)
+  (`parallel_glissandi_take_one_gliss`).
+- The model keeps no head for a glissando, so one drawn from or to a chord
+  takes the chord's head by its rank among the glissandi between the same
+  notes (version 96), which may not be the file's; Gould has the line
+  follow the pitches exactly (p. 141). The corpus report names each such
+  glissando as drawn with its head guessed, until the model keeps the head
+  (`a_glissando_at_a_chord_is_named_as_drawn_with_its_head_guessed`).
+
+## X4d fix round 1: an undrawn glissando named by why (2026-11-02, no version change)
+
+- A glissando whose notes' ink leaves its line no room between them is
+  still left undrawn, and the projection now says so with a diagnostic
+  (`LayoutDiagnosticKind::GlissandoTooShort`). Gould sets such a line above
+  or below the notes, away from the stems, parallel to them, with "gliss."
+  close by (*Behind Bars*, p. 141); the room is judged here in the
+  projection's frame, before the spacing sets the page, so drawing her
+  line needs a solver to choose between the two lines once the system
+  stands, which is left for later. The corpus report names an undrawn
+  glissando by why: between staves, of unpitched notes, too short for its
+  notes, or else plainly (`an_undrawn_glissando_is_named_by_why`).
+
+## ENGRAVER_VERSION 111 → 112: a grace group clear of its principal's arpeggio (X4d fix round 1, 2026-11-02)
+
+- A group of graces stands its 0.45 (`graceToMainNoteDist`) clear of what
+  its principal's column places that takes room as its chords' ink, an
+  arpeggio above all, and a tremolo, a chord line or a jazz mark left of a
+  head. The group is set out before its column's marks are, against the
+  chords' heads, accidentals, ledger lines, dots, stems, flags and rests,
+  so it had stood on an arpeggio drawn as a run before the chord; it now
+  moves left as far as that ink reaches past it, as MuseScore keeps a
+  grace clear of its chord's shape, which takes the arpeggio in. Gould sets
+  the arpeggio before the chord (*Behind Bars*, p. 131) and the graces
+  before the beat (p. 127), so the graces stand before the arpeggio
+  (`a_grace_before_a_rolled_chord_stands_clear_of_its_arpeggio`).
+
+## ENGRAVER_VERSION 112 → 113: a grace note clear of an earlier mark and of a beam (X4d fix round 1, 2026-11-02; the beam's half removed at version 118)
+
+- A grace note's ink keeps the slot gap (0.3) from an earlier column's note
+  marks where their heights meet, in the spacing pass and at the floor, as
+  MuseScore's skyline holds a chord's articulations; a note's marks still
+  take no room against other ink. A beamed pair over the staff after a
+  sixteenth with a marcato had stood under the marcato
+  (`a_grace_keeps_clear_of_the_mark_before_it`,
+  `a_compressed_systems_graces_keep_clear_of_the_marks_before_them`).
+- (Removed at version 118.) A grace standing under or over a beam of its
+  staff, one joining its principal to the note before it, moved left once
+  its system was set, its marks with it, until its own ink stood a quarter
+  space clear of the beam, by tenths of a space and three spaces at most.
+  This entry said that, a beam over two notes rising a space at most,
+  moving cleared only a grace that met the beam a little. That held of the
+  beam and not of what the moved grace then met: the move read the beam
+  alone, so in plain beamed eighths at their own spacing it set the grace
+  over the note before it, which C4d review 2 found (its L1). The owner
+  ruled the move removed (D119).
+
+## ENGRAVER_VERSION 113 → 114: a verbal crescendo moved with a dynamic moved off a barline (X4d fix round 1, 2026-11-02)
+
+- A verbal crescendo of a dynamic's row moves with the dynamic moved off a
+  barline as a hairpin does (version 107): starting at its note, its words
+  and the start of its dashes as far right, and ending there, its end as far
+  left, whole or cut by a system break. It had stayed where the unmoved
+  dynamic left it, its words on the moved dynamic's ink. MuseScore lays a
+  line of the hairpin type out from the dynamics it snaps to once they move
+  (`DynamicsLayout::manageBarlineCollisions` runs before the hairpins), and
+  Gould keeps a dynamic and the words of a gradual change after it in one
+  plane (*Behind Bars*, pp. 101 and 105)
+  (`a_verbal_crescendo_moves_its_start_with_its_dynamic_off_a_barline`).
+
+## ENGRAVER_VERSION 114 → 115: a glissando's words off other ink, its start read again (X4d fix round 1, 2026-11-02)
+
+- A glissando's words are kept off barlines and other ink: where, centred
+  along their piece, they meet other ink of their system (a glyph, a stroke
+  but a staff line, a run, another glissando's words), they slide along the
+  piece by quarter spaces and then stand further off it, up to a space, to
+  the first place clear of it, and where none is they stay centred. Gould
+  sets the words close to the line, legible, and lets them stand on the
+  staff only so (*Behind Bars*, pp. 140 and 141); MuseScore centres them
+  along the line whatever they meet. The words are read as turned to the
+  line, not as the box that holds them turned
+  (`a_glissandos_words_stand_off_the_barline_it_crosses`,
+  `a_glissandos_words_clear_of_ink_stay_centred_on_it`).
+- A glissando's start is read again where its line, begun past its own
+  note's ink at its head, would cross other ink of its first column, a
+  stem or a head of another voice set beside it: past each box of it the
+  line meets, a quarter space on. It had read its own note's ink alone and
+  so could run through a head beside its own, which Gould's line between
+  the notes never does (p. 141)
+  (`a_glissando_starts_past_a_head_its_line_would_cross`).
+
+## ENGRAVER_VERSION 115 → 116: a glissando's start clear of a head it would graze (X4d fix round 1, 2026-11-02)
+
+- Version 115 reads a glissando's start again past ink of its first column
+  that its line would cross; the line now also starts past a box it would
+  pass nearer than its half width and a quarter space, the room it keeps
+  from its own chords' ink (version 96). Where the upper of two voices a
+  second apart stands right of the lower, its dots after its own head
+  (version 89), a line falling from the lower head had run just under the
+  upper's, its ink touching that head without crossing its box, and so
+  started where it had. Gould's line runs between the notes it joins, clear
+  of the others (*Behind Bars*, p. 141); MuseScore starts it past its own
+  chord's shape at the head's height alone
+  (`TLayout::layoutNoteAnchoredLine`), whatever another voice sets beside it
+  (`a_glissando_starts_past_a_head_it_would_graze`).
+
+## ENGRAVER_VERSION 116 → 117: a grace's marks clear of the barline as the grace is (X4d fix round 1, 2026-11-02)
+
+- A grace note's marks (version 109) keep the barline's clearance (0.65)
+  that its other ink keeps at any height after the barline before its
+  principal (version 108), in the spacing pass and at the compression
+  floor, a measure widening by them as by that room; against other ink
+  they still take none, as a note's marks take none (`Room::GraceMark`).
+  A tenuto or an accent reaches a little left of its grace's head, and so
+  had stood nearer the barline than the head by that reach. MuseScore's
+  grace chord's shape holds its articulations, and Gould sets the grace,
+  marks and all, after the barline (*Behind Bars*, pp. 127 and 130)
+  (`a_graces_mark_keeps_the_barlines_clearance`).
+
+## ENGRAVER_VERSION 117 → 118: the grace beam move removed (X4d fix round 2, 2026-11-03)
+
+- A grace under or over a beam of its staff stands where the spacing sets
+  it, before its principal and after the note before, its flag meeting the
+  beam where they cross, as MuseScore draws it; version 113's move left
+  is removed. Moving the grace to clear the beam took no account of the
+  note before it, so between two beamed eighths stemmed up, the first
+  higher, the grace stood over the first note's head beside its stem,
+  where it reads as that note's ornament or a chord. Gould sets a grace
+  before the beat it belongs to (*Behind Bars*, p. 127) and lets no symbol
+  cut through another (p. 29); LilyPond 2.26.0 keeps the grace between the
+  notes and lifts the beam over it, which waits on the decide-list (D119).
+  Version 113's other half stands: a grace's ink keeps the slot gap from an
+  earlier column's note marks
+  (`a_grace_between_two_beamed_notes_stands_after_the_earlier_note`).
+
+## ENGRAVER_VERSION 118 → 119: a parallel set's "gliss." on its topmost line long enough (X4d fix round 2, 2026-11-03)
+
+- Glissandi between the same two notes take their one "gliss." on the
+  topmost of their lines whose piece holds it once the system is set, piece
+  by piece. Version 111 put it on the line from the top heads alone, and
+  words stand only along a piece longer than they are (version 96), so where
+  the top line alone was too short, an accidental before its end note
+  shortening it, the set printed none. Each line of a set now offers the
+  words, tagged with its set and its rank from the top heads
+  (`LineTextRole::Along`), and casting keeps them on the line of least rank
+  that drew them. Gould gives parallel lines one instruction (*Behind Bars*,
+  p. 143) and asks for it at least at a line's first appearances (p. 140);
+  MuseScore prints one on each line that holds it, the departure the owner
+  ruled at version 111 (D116), and LilyPond prints none unless asked
+  (`a_parallel_sets_gliss_stands_on_its_topmost_line_long_enough`,
+  `parallel_glissandi_take_one_gliss`).
+
+## X4d fix round 2: four clauses of entries 109 and 117 pinned (2026-11-03, no version change)
+
+- C4d review 2 found four clauses surviving their mutations (its L3), each
+  now held by a hand-built test that fails with its mutation alone:
+  a marcato on a grace above whatever side the grace's other marks take
+  (entry 109; `a_graces_marcato_stands_above_whatever_side_its_marks_take`);
+  a run whose marks would stand as near its heads either way taking its
+  stem's side (entry 109; a unit test on shapes built so,
+  `a_runs_marks_take_its_stems_side_where_both_stand_as_near`); a grace's
+  marks beside another voice at its stem, not on Gould's side for a grace
+  alone (entry 109; `a_graces_marks_beside_another_voice_stand_at_its_stem`);
+  and a grace's marks widening the slot they stand in, the clause fix round
+  1 kept by removing casting's exclusion of them (entry 117): at a later
+  system's opening the measure starts at a tenuto reaching left of its
+  grace's head, the grace set right by that reach
+  (`a_graces_mark_widens_its_slot_at_a_systems_opening`). A first voice's
+  grace counts as beside another voice only while that voice holds a note
+  through it (`voice_places`), so the test sets one there.
+
+## ENGRAVER_VERSION 119 → 120: a grace note and an arpeggio clear of a key or time signature at any height (X4d fix round 2, 2026-11-03)
+
+- A grace note's ink and its marks, and an arpeggio, keep a barline's
+  clearance (0.65) at any height after a key signature or a time signature
+  as after a barline (versions 103, 108 and 117), in the spacing pass and
+  at the compression floor alike. A signature held them only where its own
+  ink's height met theirs, so a beamed pair high over a mid-system change
+  of time, a grace high over a system's opening time signature, and an
+  arpeggio on a chord over the staff after a change of time stood over the
+  signature; after a key change, which shares its barline's column, the
+  barline's clearance at any height had not held either, a grace standing
+  as near the key signature as the band rule let it. MuseScore never kerns
+  past a barline, a key or time signature, or a clef but a mid-measure one
+  (`HorizontalSpacing::computeKerning`, by `isNeverKernable`); Gould lets no
+  characters collide, keeps at least half a space between them (*Behind
+  Bars*, p. 41) and allows about two spaces after a time or key signature
+  in mid-system (p. 42), and sets graces before a bar's first beat after
+  the barline (p. 127); LilyPond 2.26.0 sets graces after a mid-system key
+  and time change and after a system's opening time signature (C4d review
+  2's hand-written probe). A clef changing at a measure's start stands
+  before its barline, whose clearance then holds after it; one changing
+  inside a measure is kerned past, as MuseScore kerns it. A slot is told by
+  the key or time signature it holds (`Extent::signature`)
+  (`a_grace_off_the_staff_after_a_signature_keeps_the_barlines_clearance`,
+  `an_arpeggio_stands_clear_of_a_time_signature_before_it`,
+  `a_compressed_systems_graces_and_arpeggios_stand_clear_of_their_signatures`).
+
+## ENGRAVER_VERSION 120 → 121: a glissando's end clear of a head it would cross or graze (X4d fix round 2, 2026-11-03)
+
+- A glissando's end is read again as its start is (versions 115 and 116):
+  before each box of the ink of its last column's other voices that its
+  line would cross or pass nearer than its half width and a quarter space,
+  a quarter space short of it. Where the upper of two voices a second apart
+  is dotted and the lower not, the upper is set right of the lower (version
+  89), so a line rising or falling to the upper's head passed the lower's
+  first, running into it or grazing it. Gould keeps the line between the
+  notes it joins (*Behind Bars*, p. 141); MuseScore ends it by its own
+  chord's shape alone (`TLayout::layoutNoteAnchoredLine`), and LilyPond
+  2.26.0 runs it through the other voice's head in this shape (C4d review
+  2's hand-written probe): a departure from both, which the owner ruled
+  (D119). The end's own chord is cleared at its head alone, as before: read
+  against it too, a parallel set's lower line stopped short of its upper
+  note's accidental and lost the words version 119 gives it
+  (`a_glissando_ends_before_a_head_beside_its_own`).
+
+## ENGRAVER_VERSION 121 → 122: a glissando its system leaves too short for its notes left undrawn and named (X4d fix round 2, 2026-11-03)
+
+- A glissando of one piece whose line, as its system sets it, is shorter
+  than it is thick or turns back, its end before its start, is left
+  undrawn: its stroke is a traced anchor, its words and wiggles none. The
+  engraver reports each such glissando (`GLISSANDO_TOO_SHORT`, an unusual
+  layout decision naming it), and `epiphany-cli` names it as the projection
+  names one its notes leave no room (version 111's `GlissandoTooShort`), so
+  the corpus report counts it "glissando too short for its notes" with
+  those. The projection judges room in its own frame, and the spacing and
+  casting then set the page, so a line it gave room could be drawn as a
+  speck, or backward, between a note and an accidental the next note
+  carries, where it read as an augmentation dot. Gould sets a line too
+  short for its notes over or under them with its words (*Behind Bars*,
+  p. 141), which waits on the follow-ups with fix round 1's attempt; until
+  then it is named, not drawn. A glissando split over a system break keeps
+  its pieces as version 106 sets them, a later piece opening after its
+  system's lead
+  (`a_compressed_systems_glissando_too_short_for_its_notes_is_named_undrawn`).
+
+## ENGRAVER_VERSION 122 → 123: staves set by their outlines (X5d.2, 2026-11-01)
 
 - A system's staves are set column by column (`vertical::stack`), no
   longer between whole extents: each staff stands as high as it can while
@@ -2724,7 +3390,7 @@ is set:
   tests that asserted it realized assert the rule instead. Four goldens
   change, re-blessed with their renders before and after recorded (D10).
 
-## ENGRAVER_VERSION 95 → 96: between systems and the page (X5d.3, 2026-11-01)
+## ENGRAVER_VERSION 123 → 124: between systems and the page (X5d.3, 2026-11-01)
 
 - Two systems stand at least 8.5 apart line to line (MuseScore's
   `minSystemSpread`, its floor with its spread on), the whole system
@@ -2780,7 +3446,7 @@ is set:
   goldens it changes are re-blessed with their renders before and after
   recorded (D10).
 
-## The vertical measure reads what a gap asks (X5d.4, 2026-11-01; ENGRAVER_VERSION stays 96)
+## The vertical measure reads what a gap asks (X5d.4, 2026-11-01; ENGRAVER_VERSION stays 124)
 
 - `req:qmc:vertical` is amended to the catalog's 0.4.0, as X5d.1 drafted it
   (D109 Q7): each realized gap's line distance `d`, read from the baked
@@ -2806,7 +3472,7 @@ is set:
   system), sharing none with the solve's outline: unspread, it reads no
   deviation on every fixture the solve sets, which makes it a check on the
   solve and the bake together.
-- The engraver's ink is unchanged, so `ENGRAVER_VERSION` stays 96; the
+- The engraver's ink is unchanged, so `ENGRAVER_VERSION` stays 124; the
   metric vector changes.
 - Tests: `quality::tests::an_unspread_solve_realizes_what_every_gap_asks`,
   `a_staff_the_bake_left_behind_reads_as_crowding`,
@@ -2817,7 +3483,7 @@ is set:
   `vertical::tests::the_gap_bands_carry_the_solves_numbers`,
   and the CLI's beam, lyric and compression tests reading the measure.
 
-## ENGRAVER_VERSION 96 → 97: rests (X5d.5, 2026-11-01)
+## ENGRAVER_VERSION 124 → 125: rests (X5d.5, 2026-11-01)
 
 - A rest filling its measure stands centred in its staff's free space in
   the measure, as Gould sets a whole-bar rest (*Behind Bars*, pp. 159-160,
@@ -2856,7 +3522,7 @@ is set:
   hidden rest's anchor, a drawn one standing centred. Two goldens change,
   re-blessed with their renders before and after recorded (D10).
 
-## ENGRAVER_VERSION 97 → 98: a staff of one line (X5d.6, 2026-11-01)
+## ENGRAVER_VERSION 125 → 126: a staff of one line (X5d.6, 2026-11-01)
 
 - A staff whose line count is one (the importer reads it from the file's
   `staff-lines`) draws that line alone, where a five-line staff draws its
@@ -2886,3 +3552,17 @@ is set:
 - Tests: the CLI's `a_staff_of_one_line_draws_its_line_and_stands_about_it`;
   `ledger_steps_cover_only_lines_outside_the_staff` for a one-line frame;
   the importer's `a_hidden_staff_is_recorded_not_dropped`.
+
+## X5d takes `main` (X5d.7, 2026-11-03; ENGRAVER_VERSION 126)
+
+- X4d's lines and grace notes meet X5d's vertical spacing. X5d's entries,
+  numbered 95 to 98 on its branch, follow X4d's last (122) as 123 to 126,
+  and `ENGRAVER_VERSION` is 126.
+- The vertical measure reads a text the casting pass adds after the
+  input's (a line's runs, drawn piece by piece: a later piece's reminder,
+  a glissando's words) by the band of the line it rides
+  (`CastLayout::appended_text_bands`), as it reads an added glyph by
+  `appended_bands`. It had read every text's band from the input's, so a
+  page holding a line's runs failed (X4d's line tests).
+- A grace note's ledger lines stand outside a five-line staff's outer
+  lines, as X4d drew them; `ledger_steps` now takes the staff's frame.

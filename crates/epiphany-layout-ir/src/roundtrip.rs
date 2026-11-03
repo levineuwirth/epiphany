@@ -30,9 +30,8 @@ use crate::solver::{ConstraintSolver, SolveStatus, SolverConfig, SolverTier, Stu
 
 /// The set of score-graph objects the pipeline lays out — the [`TypedObjectId`]s
 /// the round-trip expects to recover from the RenderIR. Kept in lockstep with
-/// [`to_logical`]'s projection so the source-set surjection holds: a grace
-/// note, which the layout leaves out until grace notes are drawn, is not laid
-/// out.
+/// [`to_logical`]'s projection so the source-set surjection holds: both read
+/// the score through its drawn view, which keeps a grace note (X4d.2).
 pub fn laid_out_object_ids(score: &Score) -> BTreeSet<TypedObjectId> {
     let score = &*drawn_view(score);
     let mut ids = BTreeSet::new();

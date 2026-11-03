@@ -7173,6 +7173,80 @@ fn a_compressed_systems_ties_are_decided_where_it_sets_them() {
     );
 }
 
+/// A compressed system's arpeggios stand right of their barlines at any
+/// height: chords over the staff, each rolled, in systems the file breaks,
+/// keep their arpeggios the barline's clearance (0.65) after the barline
+/// before them on every page down to the narrowest whose line the systems'
+/// floor fits, where the floor had let them tuck past it.
+#[test]
+fn a_compressed_systems_arpeggios_stand_right_of_their_barlines() {
+    let note = |step: &str, alter: i8, octave: u8, chord: bool| {
+        format!(
+            "<note>{}<pitch><step>{step}</step>{}<octave>{octave}</octave></pitch>\
+             <duration>8</duration><voice>1</voice><type>half</type>\
+             <notations><arpeggiate/></notations></note>",
+            if chord { "<chord/>" } else { "" },
+            if alter == 0 {
+                String::new()
+            } else {
+                format!("<alter>{alter}</alter>")
+            }
+        )
+    };
+    let measure = [
+        note("A", 0, 5, false),
+        note("C", 0, 6, true),
+        note("E", -1, 6, true),
+        "<note><rest/><duration>8</duration><voice>1</voice><type>half</type></note>".to_string(),
+    ]
+    .concat();
+    let measures = vec![measure; 12];
+    let attributes = "<time><beats>4</beats><beat-type>4</beat-type></time>\
+                      <clef><sign>G</sign><line>2</line></clef>";
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("compressed_arpeggios.musicxml");
+    let (mut held, mut checked) = (0, 0);
+    for tenth in (300..=1500).rev().step_by(5) {
+        let width = tenth as f32 / 10.0;
+        std::fs::write(&path, broken_part(width, attributes, &measures, &[7])).expect("written");
+        let loaded = load(&path).expect("loads");
+        let report = solve_loaded(&loaded);
+        if !added_systems(&report).is_empty() {
+            break;
+        }
+        let layout = &report.layout;
+        let barlines: Vec<[f32; 4]> = layout
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str().starts_with("barline"))
+            .map(glyph_box)
+            .collect();
+        for run in layout
+            .texts
+            .iter()
+            .filter(|t| matches!(t.provenance.source, epiphany_core::TypedObjectId::Event(_)))
+        {
+            let (x, y, b) = (run.origin.x.0, run.origin.y.0, &run.bounds);
+            let r = [x + b.left.0, y + b.bottom.0, x + b.right.0, y + b.top.0];
+            // The barline before it on its staff, but at a system's start.
+            let Some(barline) = barlines
+                .iter()
+                .filter(|bar| bar[0] < r[2] && (bar[3] - r[1]).abs() < 3.0)
+                .max_by(|a, b| a[0].total_cmp(&b[0]))
+            else {
+                continue;
+            };
+            assert!(
+                r[0] >= barline[2] + 0.65 - 0.01,
+                "at width {width} an arpeggio {r:?} passes its barline {barline:?}"
+            );
+            checked += 1;
+        }
+        held += 1;
+    }
+    assert!(held > 10, "pages down to the floor held the file's systems");
+    assert!(checked > 100, "{checked} arpeggios after a barline");
+}
+
 /// A compressed system's slurs pass the ink where it sets them: in systems
 /// the file breaks, each of three slurs over flats (one rising to a flat, a
 /// two-note one falling to a flat, one raised over an interior flat) and a
@@ -7736,43 +7810,13 @@ fn a_held_systems_floor_keeps_musescores_least_distances() {
     }
 }
 
-/// What a layout draws, as a sorted list: each glyph by name and place, each
-/// stroke with extent and each curve by its points, rounded, with provenance
-/// left out, so two imports whose ids differ compare by their ink.
-fn ink(layout: &epiphany_layout_ir::ResolvedLayoutIR) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for g in &layout.glyphs {
-        out.push(format!(
-            "glyph {} {:.3} {:.3}",
-            g.glyph.as_str(),
-            g.position.x.0,
-            g.position.y.0
-        ));
-    }
-    for s in layout.strokes.iter().filter(|s| s.from != s.to) {
-        out.push(format!(
-            "stroke {:.3} {:.3} {:.3} {:.3} {:.3}",
-            s.from.x.0, s.from.y.0, s.to.x.0, s.to.y.0, s.thickness.0
-        ));
-    }
-    for c in &layout.curves {
-        out.push(format!(
-            "curve {:.3} {:.3} {:.3} {:.3} {:.3} {:.3} {:.3} {:.3}",
-            c.p0.x.0, c.p0.y.0, c.p1.x.0, c.p1.y.0, c.p2.x.0, c.p2.y.0, c.p3.x.0, c.p3.y.0
-        ));
-    }
-    out.sort();
-    out
-}
-
-/// Until grace notes are drawn (X4c), the layout leaves a grace note out of
-/// what it draws: no ink traces to a grace or its pitch, its principal draws
-/// one head on its stem rather than a chord with it, and the page draws what
-/// the same measure without its graces draws, a beam among the graces and a
-/// slur from one to its principal included. The report names each grace and
-/// the slur as left undrawn.
+/// A grace note is drawn small before its principal (X4d.2), not as a member
+/// of its chord: each grace's head a run at 0.7 of a head's size traced to its
+/// pitch, no full-size glyph traced to a grace, its flat small, the group
+/// between the note before and the principal. A slur from a grace is still
+/// left undrawn, and the report names it and no grace.
 #[test]
-fn a_grace_note_is_not_drawn_as_a_member_of_its_principals_chord() {
+fn a_grace_note_is_drawn_small_before_its_principal() {
     use epiphany_core::TypedObjectId;
     let measure = |graces: &str| {
         format!(
@@ -7826,53 +7870,84 @@ fn a_grace_note_is_not_drawn_as_a_member_of_its_principals_chord() {
     let engraved = engrave(score);
     let layout = &engraved.layout;
     let mut grace_sources = Vec::new();
+    let mut grace_pitches = Vec::new();
     for e in &grace_events {
         grace_sources.push(TypedObjectId::Event(e.id()));
         if let epiphany_core::Event::Pitched(p) = e {
-            grace_sources.extend(p.pitches.iter().map(|ip| TypedObjectId::Pitch(ip.id)));
+            grace_pitches.extend(p.pitches.iter().map(|ip| TypedObjectId::Pitch(ip.id)));
         }
     }
-    let traced = layout
-        .glyphs
-        .iter()
-        .map(|g| &g.provenance)
-        .chain(
-            layout
-                .strokes
-                .iter()
-                .filter(|s| s.from != s.to)
-                .map(|s| &s.provenance),
-        )
-        .chain(layout.curves.iter().map(|c| &c.provenance))
-        .filter(|p| grace_sources.contains(&p.source))
-        .count();
-    assert_eq!(traced, 0, "no ink traces to a grace note or its pitch");
+    grace_sources.extend(grace_pitches.iter().copied());
+    assert!(
+        layout
+            .glyphs
+            .iter()
+            .all(|g| !grace_sources.contains(&g.provenance.source)),
+        "no full-size glyph traces to a grace"
+    );
     let heads = layout
         .glyphs
         .iter()
         .filter(|g| g.glyph.as_str().starts_with("notehead"))
         .count();
-    assert_eq!(heads, 4, "four heads, none of them a grace's");
+    assert_eq!(heads, 4, "four full-size heads, none of them a grace's");
+    let small: Vec<_> = layout
+        .texts
+        .iter()
+        .filter(|t| grace_pitches.contains(&t.provenance.source))
+        .collect();
+    assert_eq!(small.len(), 2, "each grace's head a run");
+    for run in &small {
+        let height = run.bounds.top.0 - run.bounds.bottom.0;
+        assert!((height - 0.7).abs() < 0.03, "a head at 0.7: {height}");
+    }
     assert!(
         layout
             .glyphs
             .iter()
             .all(|g| !g.glyph.as_str().starts_with("accidental")),
-        "the grace's flat is not drawn"
+        "no full-size accidental"
     );
+    assert_eq!(
+        layout.texts.iter().filter(|t| t.text == "\u{E260}").count(),
+        1,
+        "the grace's flat, small"
+    );
+    let principal = |layout: &epiphany_layout_ir::ResolvedLayoutIR| {
+        layout
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str().starts_with("notehead"))
+            .map(|g| g.position.x.0)
+            .fold(Vec::new(), |mut xs, x| {
+                xs.push(x);
+                xs
+            })
+    };
+    let with = principal(layout);
+    let grace_right = small
+        .iter()
+        .map(|t| t.origin.x.0 + t.bounds.right.0)
+        .fold(f32::NEG_INFINITY, f32::max);
+    // The second head of the measure is the principal, F4.
+    let mut xs = with.clone();
+    xs.sort_by(f32::total_cmp);
+    assert!(grace_right <= xs[1], "the graces before the principal");
     assert!(
         layout.curves.is_empty(),
         "the slur from a grace is not drawn"
     );
-    let without = load(&plain).expect("loads");
-    assert_eq!(
-        ink(layout),
-        ink(&engrave(&without.reduced.score).layout),
-        "the measure draws what it draws without its graces"
+    let grace_left = small
+        .iter()
+        .map(|t| t.origin.x.0 + t.bounds.left.0)
+        .fold(f32::INFINITY, f32::min);
+    assert!(
+        grace_left > xs[0] + 1.18,
+        "the graces clear of the note before"
     );
 
     let found = omissions(score, layout, &engraved.diagnostics);
-    assert_eq!(found.kinds.get("grace note left undrawn"), Some(&2));
+    assert_eq!(found.kinds.get("grace note left undrawn"), None);
     assert_eq!(
         found.kinds.get("slur on a grace note left undrawn"),
         Some(&1)
@@ -8781,4 +8856,443 @@ fn a_staff_of_one_line_draws_its_line_and_stands_about_it() {
     );
     let density = vertical_density_on("one_line_staff_measured.musicxml", &xml, unbounded_page());
     assert!(density < 1e-3, "{density}");
+}
+
+/// A compressed system's graces stand right of their barlines at any
+/// height: a slashed grace on three ledger lines over the staff at every
+/// bar's first beat, in systems the file breaks, keeps the barline's
+/// clearance (0.65) after the barline before its principal on every page
+/// down to the narrowest whose line the systems' floor fits, as the
+/// spacing pass keeps it (Gould, *Behind Bars*, p. 127).
+#[test]
+fn a_compressed_systems_graces_stand_right_of_their_barlines() {
+    let measure = "<note><grace slash=\"yes\"/><pitch><step>E</step><octave>7</octave></pitch>\
+                   <voice>1</voice><type>eighth</type></note><note><pitch><step>C</step>\
+                   <octave>6</octave></pitch><duration>8</duration><voice>1</voice>\
+                   <type>half</type></note><note><rest/><duration>8</duration><voice>1</voice>\
+                   <type>half</type></note>"
+        .to_string();
+    let measures = vec![measure; 12];
+    let attributes = "<time><beats>4</beats><beat-type>4</beat-type></time>\
+                      <clef><sign>G</sign><line>2</line></clef>";
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("compressed_graces.musicxml");
+    let (mut held, mut checked) = (0, 0);
+    for tenth in (300..=1500).rev().step_by(5) {
+        let width = tenth as f32 / 10.0;
+        std::fs::write(&path, broken_part(width, attributes, &measures, &[7])).expect("written");
+        let loaded = load(&path).expect("loads");
+        let report = solve_loaded(&loaded);
+        if !added_systems(&report).is_empty() {
+            break;
+        }
+        let layout = &report.layout;
+        let score = &loaded.reduced.score;
+        let events = &loaded.import.ids.events[0];
+        let barlines: Vec<[f32; 4]> = layout
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str().starts_with("barline"))
+            .map(glyph_box)
+            .collect();
+        for k in (0..events.len()).step_by(3) {
+            let (grace, principal) = (events[k], events[k + 1]);
+            let pitches = |event| match score.events.get(event) {
+                Some(epiphany_core::Event::Pitched(p)) => p
+                    .pitches
+                    .iter()
+                    .map(|ip| epiphany_core::TypedObjectId::Pitch(ip.id))
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let principal_pitches: Vec<_> = pitches(principal);
+            let Some(head) = layout
+                .glyphs
+                .iter()
+                .filter(|g| {
+                    principal_pitches.contains(&g.provenance.source)
+                        && g.glyph.as_str().starts_with("notehead")
+                })
+                .map(glyph_box)
+                .next()
+            else {
+                continue;
+            };
+            let mut grace_sources = pitches(grace);
+            grace_sources.push(epiphany_core::TypedObjectId::Event(grace));
+            let left = layout
+                .texts
+                .iter()
+                .filter(|t| grace_sources.contains(&t.provenance.source))
+                .map(|t| t.origin.x.0 + t.bounds.left.0)
+                .chain(
+                    layout
+                        .strokes
+                        .iter()
+                        .filter(|s| grace_sources.contains(&s.provenance.source) && s.from != s.to)
+                        .map(|s| s.from.x.0.min(s.to.x.0) - s.thickness.0 * 0.5),
+                )
+                .fold(f32::INFINITY, f32::min);
+            let y = (head[1] + head[3]) * 0.5;
+            // The barline before its principal on its staff, but at a
+            // system's start.
+            let Some(bar) = barlines
+                .iter()
+                .filter(|bar| bar[2] <= head[0] + 0.01 && bar[1] - 3.0 < y && y < bar[3] + 3.0)
+                .max_by(|a, b| a[2].total_cmp(&b[2]))
+            else {
+                continue;
+            };
+            assert!(
+                left >= bar[2] + 0.65 - 0.01,
+                "at width {width} a grace at {left} passes its barline {bar:?}"
+            );
+            checked += 1;
+        }
+        held += 1;
+    }
+    assert!(held > 10, "pages down to the floor held the file's systems");
+    assert!(checked > 100, "{checked} graces after a barline");
+}
+
+/// A compressed system's graces and arpeggios stand clear of a time
+/// signature before them at any height: in systems the file breaks, each
+/// measure changing its time signature, a slashed grace on three ledger
+/// lines over the staff opens the 3/4 measures and a rolled chord over the
+/// staff the 4/4 ones; each keeps a barline's clearance (0.65) after its
+/// signature on every page down to the narrowest whose line the systems'
+/// floor fits, as the spacing pass keeps it (X4d fix round 2).
+#[test]
+fn a_compressed_systems_graces_and_arpeggios_stand_clear_of_their_signatures() {
+    let time = |beats: u8| {
+        format!(
+            "<attributes><time><beats>{beats}</beats><beat-type>4</beat-type></time></attributes>"
+        )
+    };
+    let three = format!(
+        "{}<note><grace slash=\"yes\"/><pitch><step>E</step><octave>7</octave></pitch>\
+         <voice>1</voice><type>eighth</type></note><note><pitch><step>C</step>\
+         <octave>6</octave></pitch><duration>8</duration><voice>1</voice>\
+         <type>half</type></note><note><rest/><duration>4</duration><voice>1</voice>\
+         <type>quarter</type></note>",
+        time(3)
+    );
+    let four = format!(
+        "{}{}<note><rest/><duration>8</duration><voice>1</voice><type>half</type></note>",
+        time(4),
+        ["A5", "C6", "E6"]
+            .iter()
+            .enumerate()
+            .map(|(k, p)| {
+                let (step, octave) = p.split_at(1);
+                format!(
+                    "<note>{}<pitch><step>{step}</step><octave>{octave}</octave></pitch>\
+                     <duration>8</duration><voice>1</voice><type>half</type><notations>\
+                     <arpeggiate/></notations></note>",
+                    if k > 0 { "<chord/>" } else { "" }
+                )
+            })
+            .collect::<String>()
+    );
+    // The first measure's 3/4 is the file's opening attributes'.
+    let measures: Vec<String> = (0..12)
+        .map(|m| match m {
+            0 => three.replace(&time(3), ""),
+            _ if m % 2 == 0 => three.clone(),
+            _ => four.clone(),
+        })
+        .collect();
+    let attributes = "<time><beats>3</beats><beat-type>4</beat-type></time>\
+                      <clef><sign>G</sign><line>2</line></clef>";
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("compressed_signatures.musicxml");
+    let (mut held, mut graces, mut arpeggios) = (0, 0, 0);
+    for tenth in (300..=1500).rev().step_by(5) {
+        let width = tenth as f32 / 10.0;
+        std::fs::write(&path, broken_part(width, attributes, &measures, &[7])).expect("written");
+        let loaded = load(&path).expect("loads");
+        let report = solve_loaded(&loaded);
+        if !added_systems(&report).is_empty() {
+            break;
+        }
+        let layout = &report.layout;
+        let signatures: Vec<[f32; 4]> = layout
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str().starts_with("timeSig"))
+            .map(glyph_box)
+            .collect();
+        // The ink a grace or an arpeggio draws, by its event: its runs and
+        // strokes, their left edge and their lowest.
+        let score = &loaded.reduced.score;
+        for &event in &loaded.import.ids.events[0] {
+            let Some(epiphany_core::Event::Pitched(p)) = score.events.get(event) else {
+                continue;
+            };
+            let mut sources: Vec<_> = p
+                .pitches
+                .iter()
+                .map(|ip| epiphany_core::TypedObjectId::Pitch(ip.id))
+                .collect();
+            sources.push(epiphany_core::TypedObjectId::Event(event));
+            let (kind, ink): (&str, Vec<(f32, f32)>) = if p.grace.is_some() {
+                let ink = layout
+                    .texts
+                    .iter()
+                    .filter(|t| sources.contains(&t.provenance.source))
+                    .map(|t| {
+                        (
+                            t.origin.x.0 + t.bounds.left.0,
+                            t.origin.y.0 + t.bounds.bottom.0,
+                        )
+                    })
+                    .chain(
+                        layout
+                            .strokes
+                            .iter()
+                            .filter(|s| sources.contains(&s.provenance.source) && s.from != s.to)
+                            .map(|s| {
+                                (
+                                    s.from.x.0.min(s.to.x.0) - s.thickness.0 * 0.5,
+                                    s.from.y.0.min(s.to.y.0) - s.thickness.0 * 0.5,
+                                )
+                            }),
+                    )
+                    .collect();
+                ("grace", ink)
+            } else {
+                let Some(run) = layout.texts.iter().find(|t| {
+                    t.provenance.stable_id == epiphany_layout_ir::NoteMarkPart::Arpeggio.id(event)
+                }) else {
+                    continue;
+                };
+                (
+                    "arpeggio",
+                    vec![(
+                        run.origin.x.0 + run.bounds.left.0,
+                        run.origin.y.0 + run.bounds.bottom.0,
+                    )],
+                )
+            };
+            let left = ink.iter().map(|i| i.0).fold(f32::INFINITY, f32::min);
+            let low = ink.iter().map(|i| i.1).fold(f32::INFINITY, f32::min);
+            if !left.is_finite() {
+                continue;
+            }
+            // The signature before it on its staff: the nearest to its left
+            // within a few spaces, in its system.
+            let Some(sig) = signatures
+                .iter()
+                .filter(|b| {
+                    b[2] <= left + 2.0
+                        && b[2] > left - 6.0
+                        && ((b[1] + b[3]) * 0.5 - low).abs() < 8.0
+                })
+                .max_by(|a, b| a[2].total_cmp(&b[2]))
+            else {
+                continue;
+            };
+            assert!(
+                left >= sig[2] + 0.65 - 0.01,
+                "at width {width} a {kind} at {left} passes its signature {sig:?}"
+            );
+            if kind == "grace" {
+                graces += 1;
+            } else {
+                arpeggios += 1;
+            }
+        }
+        held += 1;
+    }
+    assert!(held > 10, "pages down to the floor held the file's systems");
+    assert!(
+        graces > 100 && arpeggios > 100,
+        "{graces} graces and {arpeggios} arpeggios after a signature"
+    );
+}
+
+/// A glissando a compressed system leaves too short for its notes is left
+/// undrawn and named (X4d fix round 2), where it had drawn a speck or a
+/// stroke backward: in systems the file breaks, a glissando from a B4
+/// eighth to the B flat after it in every measure. On every page down to
+/// the narrowest whose line the systems' floor fits, each glissando is drawn
+/// forward and at least as long as its line is thick, or drawn nowhere and
+/// named "glissando too short for its notes"; the widest page draws every
+/// one, and a narrower page leaves one undrawn.
+#[test]
+fn a_compressed_systems_glissando_too_short_for_its_notes_is_named_undrawn() {
+    let measure = "<note><pitch><step>B</step><octave>4</octave></pitch><duration>2</duration>\
+                   <voice>1</voice><type>eighth</type><notations><slide type=\"start\" \
+                   line-type=\"solid\" number=\"1\">gliss.</slide></notations></note><note>\
+                   <pitch><step>B</step><alter>-1</alter><octave>4</octave></pitch><duration>2\
+                   </duration><voice>1</voice><type>eighth</type><accidental>flat</accidental>\
+                   <notations><slide type=\"stop\" number=\"1\"/></notations></note><note>\
+                   <pitch><step>C</step><octave>5</octave></pitch><duration>4</duration>\
+                   <voice>1</voice><type>quarter</type></note><note><rest/><duration>8\
+                   </duration><voice>1</voice><type>half</type></note>"
+        .to_string();
+    let measures = vec![measure; 12];
+    let attributes = "<time><beats>4</beats><beat-type>4</beat-type></time>\
+                      <clef><sign>G</sign><line>2</line></clef>";
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("compressed_glissandi.musicxml");
+    let (mut held, mut widest_drawn, mut undrawn_seen) = (0, None, 0);
+    for tenth in (300..=1500).rev().step_by(5) {
+        let width = tenth as f32 / 10.0;
+        std::fs::write(&path, broken_part(width, attributes, &measures, &[7])).expect("written");
+        let loaded = load(&path).expect("loads");
+        if !added_systems(&solve_loaded(&loaded)).is_empty() {
+            break;
+        }
+        let engraved = epiphany_cli::engrave_loaded(&loaded);
+        let layout = &engraved.layout;
+        let glissandi: Vec<epiphany_core::TypedObjectId> = loaded
+            .reduced
+            .score
+            .cross_cutting
+            .spanners
+            .iter()
+            .filter(|s| s.kind == epiphany_core::SpannerKind::Glissando)
+            .map(|s| epiphany_core::TypedObjectId::Spanner(s.id))
+            .collect();
+        assert_eq!(glissandi.len(), 12);
+        let mut undrawn = 0;
+        for g in &glissandi {
+            let drawn: Vec<&epiphany_layout_ir::Stroke> = layout
+                .strokes
+                .iter()
+                .filter(|s| s.provenance.source == *g && s.from != s.to)
+                .collect();
+            for s in &drawn {
+                let (dx, dy) = (s.to.x.0 - s.from.x.0, s.to.y.0 - s.from.y.0);
+                assert!(
+                    dx > 0.0 && (dx * dx + dy * dy).sqrt() >= s.thickness.0,
+                    "at width {width} a glissando drawn {:?} to {:?}",
+                    s.from,
+                    s.to
+                );
+            }
+            if drawn.is_empty() {
+                undrawn += 1;
+            }
+        }
+        let named = omissions(&loaded.reduced.score, layout, &engraved.diagnostics)
+            .kinds
+            .get("glissando too short for its notes")
+            .copied()
+            .unwrap_or(0);
+        // The projection leaves each its room: the cast page alone takes it.
+        let projected = epiphany_layout_ir::to_constrained(&epiphany_layout_ir::to_logical(
+            &loaded.reduced.score,
+        ))
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.kind == epiphany_layout_ir::constrained::LayoutDiagnosticKind::GlissandoTooShort
+        })
+        .count();
+        assert_eq!(projected, 0, "at width {width} the projection's room");
+        assert_eq!(
+            named, undrawn,
+            "at width {width} each undrawn glissando named"
+        );
+        widest_drawn.get_or_insert(undrawn == 0);
+        undrawn_seen += undrawn;
+        held += 1;
+    }
+    assert!(held > 10, "pages down to the floor held the file's systems");
+    assert_eq!(
+        widest_drawn,
+        Some(true),
+        "the widest page draws every glissando"
+    );
+    assert!(undrawn_seen > 0, "a compressed page leaves one too short");
+}
+
+/// A compressed system's graces keep clear of the marks before them: in
+/// systems the file breaks, a beamed pair of graces over the staff after a
+/// sixteenth whose marcato stands over the staff keeps the slot gap (0.3)
+/// from the marcato on every page down to the narrowest whose line the
+/// systems' floor fits, as the spacing pass keeps it.
+#[test]
+fn a_compressed_systems_graces_keep_clear_of_the_marks_before_them() {
+    let measure = "<note><pitch><step>E</step><octave>5</octave></pitch><duration>1</duration>\
+                   <voice>1</voice><type>16th</type><notations><articulations><strong-accent \
+                   type=\"up\"/></articulations></notations></note><note><grace/><pitch><step>A\
+                   </step><octave>5</octave></pitch><voice>1</voice><type>16th</type><beam \
+                   number=\"1\">begin</beam></note><note><grace/><pitch><step>C</step><octave>6\
+                   </octave></pitch><voice>1</voice><type>16th</type><beam number=\"1\">end</beam>\
+                   </note><note><pitch><step>B</step><octave>5</octave></pitch><duration>1\
+                   </duration><voice>1</voice><type>16th</type></note><note><rest/><duration>14\
+                   </duration><voice>1</voice><type>half</type><dot/><dot/></note>"
+        .to_string();
+    let measures = vec![measure; 12];
+    let attributes = "<time><beats>4</beats><beat-type>4</beat-type></time>\
+                      <clef><sign>G</sign><line>2</line></clef>";
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("compressed_grace_marks.musicxml");
+    let (mut held, mut checked) = (0, 0);
+    for tenth in (300..=1500).rev().step_by(5) {
+        let width = tenth as f32 / 10.0;
+        std::fs::write(&path, broken_part(width, attributes, &measures, &[7])).expect("written");
+        let loaded = load(&path).expect("loads");
+        let report = solve_loaded(&loaded);
+        if !added_systems(&report).is_empty() {
+            break;
+        }
+        let layout = &report.layout;
+        let score = &loaded.reduced.score;
+        let events = &loaded.import.ids.events[0];
+        let marcatos: Vec<[f32; 4]> = layout
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str().starts_with("articMarcato"))
+            .map(glyph_box)
+            .collect();
+        for k in (0..events.len()).step_by(5) {
+            let group: Vec<epiphany_core::TypedObjectId> = events[k + 1..k + 3]
+                .iter()
+                .flat_map(|&g| {
+                    let mut out = vec![epiphany_core::TypedObjectId::Event(g)];
+                    if let Some(epiphany_core::Event::Pitched(p)) = score.events.get(g) {
+                        out.extend(
+                            p.pitches
+                                .iter()
+                                .map(|ip| epiphany_core::TypedObjectId::Pitch(ip.id)),
+                        );
+                    }
+                    out
+                })
+                .collect();
+            let ink: Vec<[f32; 4]> = layout
+                .texts
+                .iter()
+                .filter(|t| group.contains(&t.provenance.source))
+                .map(|t| {
+                    let (x, y, b) = (t.origin.x.0, t.origin.y.0, &t.bounds);
+                    [x + b.left.0, y + b.bottom.0, x + b.right.0, y + b.top.0]
+                })
+                .collect();
+            let Some(first) = ink.first().copied() else {
+                continue;
+            };
+            // The marcato before it: the nearest left of its first run.
+            let Some(mark) = marcatos
+                .iter()
+                .filter(|m| m[2] <= first[2] && (m[1] - first[1]).abs() < 4.0)
+                .max_by(|a, b| a[2].total_cmp(&b[2]))
+            else {
+                continue;
+            };
+            for b in ink
+                .iter()
+                .filter(|b| b[1] < mark[3] + 0.2 && b[3] > mark[1] - 0.2)
+            {
+                assert!(
+                    b[0] >= mark[2] + 0.3 - 0.01,
+                    "at width {width} a grace's run {b:?} under the marcato {mark:?}"
+                );
+            }
+            checked += 1;
+        }
+        held += 1;
+    }
+    assert!(held > 10, "pages down to the floor held the file's systems");
+    assert!(checked > 100, "{checked} grace groups after a marcato");
 }
