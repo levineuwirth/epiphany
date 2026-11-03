@@ -4744,6 +4744,113 @@ fn a_grand_staffs_dynamic_stands_between_its_staves() {
     );
 }
 
+/// A dynamic centred between a grand staff's staves stands clear of the
+/// family already placed between them (X5d.7): on a grand staff of two
+/// sung staves a lower staff's p stands above it, under the upper staff's
+/// syllables, and keeps clear of them where the middle of the gap would set
+/// it on them, as MuseScore's centring reads both staves' skylines whole
+/// (`SystemLayout::centerElementBetweenStaves`).
+#[test]
+fn a_centred_dynamic_stands_clear_of_the_syllables_between_the_staves() {
+    let words = ["one", "two", "three", "four"];
+    let sung = |pitch: &str, voice: u8, staff: u8| -> String {
+        words
+            .iter()
+            .map(|w| {
+                syllable(
+                    note(pitch, 2, "quarter", voice, staff, ""),
+                    1,
+                    "single",
+                    w,
+                    false,
+                )
+            })
+            .collect()
+    };
+    let p = "<direction><direction-type><dynamics><p/></dynamics></direction-type>\
+             <staff>2</staff></direction>";
+    let measure = [sung("A4", 1, 1), backup(8), p.to_string(), sung("C3", 5, 2)].concat();
+    let loaded = part("centred_over_syllables.musicxml", 2, &[measure]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let dynamic = only(&layout, "dynamicPiano");
+    let (x, y, b) = (
+        dynamic.position.x.0,
+        dynamic.position.y.0,
+        dynamic.bounding_box,
+    );
+    let d = [x + b.left.0, y + b.bottom.0, x + b.right.0, y + b.top.0];
+    let mut met = 0;
+    for w in words {
+        for t in runs(&layout, w) {
+            let r = [
+                t.origin.x.0 + t.bounds.left.0,
+                t.origin.y.0 + t.bounds.bottom.0,
+                t.origin.x.0 + t.bounds.right.0,
+                t.origin.y.0 + t.bounds.top.0,
+            ];
+            if r[0] < d[2] && d[0] < r[2] {
+                met += 1;
+                assert!(
+                    d[1] >= r[3] - 1e-3 || d[3] <= r[1] + 1e-3,
+                    "p {d:?} on {w} {r:?}"
+                );
+            }
+        }
+    }
+    assert!(met > 0, "the p stands across a syllable");
+}
+
+/// A dynamic centred between a grand staff's staves stands clear of its own
+/// staff's family (X5d.7): a sung lower staff's p above it, outside a
+/// fermata over the same note, under an upper staff whose ink leaves the
+/// gap's middle below the p, moves down no further than the fermata lets
+/// it.
+#[test]
+fn a_centred_dynamic_stands_clear_of_its_own_staffs_family_outside_it() {
+    let words = ["one", "two", "three", "four"];
+    let sung = |pitch: &str, voice: u8, staff: u8, first: &str| -> String {
+        words
+            .iter()
+            .enumerate()
+            .map(|(k, w)| {
+                let notations = if k == 0 { first } else { "" };
+                syllable(
+                    note(pitch, 2, "quarter", voice, staff, notations),
+                    1,
+                    "single",
+                    w,
+                    false,
+                )
+            })
+            .collect()
+    };
+    let p = "<direction><direction-type><dynamics><p/></dynamics></direction-type>\
+             <staff>2</staff></direction>";
+    let measure = [
+        note("E5", 8, "whole", 1, 1, ""),
+        backup(8),
+        p.to_string(),
+        sung("C3", 5, 2, "<fermata type=\"upright\"/>"),
+    ]
+    .concat();
+    let loaded = part("centred_under_fermata.musicxml", 2, &[measure]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let boxed = |g: &ResolvedGlyph| {
+        let (x, y, b) = (g.position.x.0, g.position.y.0, g.bounding_box);
+        [x + b.left.0, y + b.bottom.0, x + b.right.0, y + b.top.0]
+    };
+    let d = boxed(only(&layout, "dynamicPiano"));
+    let f = boxed(only(&layout, "fermataAbove"));
+    assert!(
+        f[0] < d[2] && d[0] < f[2],
+        "the fermata over the p: {d:?} {f:?}"
+    );
+    assert!(
+        d[3] <= f[1] + 1e-3 || d[1] >= f[3] - 1e-3,
+        "p {d:?} on the fermata {f:?}"
+    );
+}
+
 /// A syllable stands centred on its note's head but for its leading and
 /// trailing marks, a line under the staff; one extending a melisma stands
 /// with its letters from the head's left (`LyricsLayout::layout`).

@@ -3613,3 +3613,24 @@ engraver's own placing reproduces it:
   broken piece's own (`Hairpin`'s `vertical-skylines`); Gould lets no
   characters collide (*Behind Bars*, p. 41)
   (`a_hairpin_over_a_break_sets_the_staff_below_by_its_mouth`).
+
+## ENGRAVER_VERSION 128 → 129: a grand staff's centred dynamic clears the family placed between its staves (X5d.7, 2026-11-03)
+
+- A dynamic or hairpin of a grand staff is centred between its staves
+  "as far as the ink between them lets it" (entry 59), after the spread
+  (entry 124). That ink was the sky alone, which holds no member of the
+  family once placed: a syllable, a fermata, another dynamic. X5d.7's sweep
+  found centred dynamics and hairpins on the syllables of a sung grand
+  staff, more often once the spread widens the gap and its middle moves
+  onto them. The centring now reads, besides the sky, every family member
+  placed on either staff in that system where it stands, the centred row's
+  own members aside: one beyond the member on its own staff limits its move
+  toward that staff, one on the other staff its move toward the other.
+  MuseScore's centring reads both staves' skylines whole, lyrics and marks
+  among them, keeping each item's least distance
+  (`SystemLayout::centerElementBetweenStaves`); LilyPond centres a
+  `Dynamics` line between two staves (`staff-affinity` CENTER) as a line of
+  its own, set by skylines beside a `Lyrics` line as any line is; Gould
+  lets no characters collide (*Behind Bars*,
+  p. 41) (`a_centred_dynamic_stands_clear_of_the_syllables_between_the_staves`,
+  `a_centred_dynamic_stands_clear_of_its_own_staffs_family_outside_it`).

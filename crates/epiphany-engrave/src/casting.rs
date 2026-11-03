@@ -2741,7 +2741,33 @@ pub(crate) fn cast_off(
                 .get(&(first_of(&family_pieces, &members), s))
                 .copied()
                 .unwrap_or(0.0);
-        // As far as its own staff's ink and the other's let it.
+        // As far as its own staff's ink and the other's let it, the family
+        // already placed on either included where it now stands (X5d.7), the
+        // row's own members aside, as MuseScore's centring reads both
+        // staves' skylines whole.
+        let row: BTreeSet<usize> = members.iter().map(|&i| family_pieces[i].family).collect();
+        let (own_staff, other_staff) = (staff_of(own), staff_of(other));
+        let mut placed_own: Vec<InkRect> = Vec::new();
+        let mut placed_other: Vec<InkRect> = Vec::new();
+        for q in family_pieces
+            .iter()
+            .filter(|q| q.system == s && !row.contains(&q.family))
+        {
+            let staff = staff_of(input.family[q.family].band);
+            let lift = family_dy.get(&(q.family, s)).copied().unwrap_or(0.0);
+            let into = if staff == own_staff {
+                &mut placed_own
+            } else if staff == other_staff {
+                &mut placed_other
+            } else {
+                continue;
+            };
+            into.extend(q.boxes.iter().map(|b| InkRect {
+                bottom: b.bottom + lift,
+                top: b.top + lift,
+                ..*b
+            }));
+        }
         let (mut up, mut down) = (f32::INFINITY, f32::NEG_INFINITY);
         for &i in &members {
             let p = &family_pieces[i];
@@ -2755,6 +2781,7 @@ pub(crate) fn cast_off(
                     .get(&(s, own))
                     .into_iter()
                     .flatten()
+                    .chain(&placed_own)
                     .filter(meets)
                 {
                     if place.above {
@@ -2767,6 +2794,7 @@ pub(crate) fn cast_off(
                     .get(&(s, other))
                     .into_iter()
                     .flatten()
+                    .chain(&placed_other)
                     .filter(meets)
                 {
                     if place.above {
