@@ -3239,3 +3239,21 @@ engraver's own placing reproduces it:
   Version 113's other half stands: a grace's ink keeps the slot gap from an
   earlier column's note marks
   (`a_grace_between_two_beamed_notes_stands_after_the_earlier_note`).
+
+## ENGRAVER_VERSION 118 → 119: a parallel set's "gliss." on its topmost line long enough (X4d fix round 2, 2026-11-03)
+
+- Glissandi between the same two notes take their one "gliss." on the
+  topmost of their lines whose piece holds it once the system is set, piece
+  by piece. Version 111 put it on the line from the top heads alone, and
+  words stand only along a piece longer than they are (version 96), so where
+  the top line alone was too short, an accidental before its end note
+  shortening it, the set printed none. Each line of a set now offers the
+  words, tagged with its set and its rank from the top heads
+  (`LineTextRole::Along`), and casting keeps them on the line of least rank
+  that drew them. Gould gives parallel lines one instruction (*Behind Bars*,
+  p. 143) and asks for it at least at a line's first appearances (p. 140);
+  MuseScore prints one on each line that holds it, the departure the owner
+  ruled at version 111 (D116), and LilyPond prints none unless asked
+  (`a_parallel_sets_gliss_stands_on_its_topmost_line_long_enough`,
+  `parallel_glissandi_take_one_gliss`).
+

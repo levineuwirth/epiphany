@@ -1516,7 +1516,14 @@ pub(crate) fn cast_off(
     };
     let words_of = |id: GlyphObjectId| -> Option<(&ResolvedText, f32)> {
         line_texts.get(&id)?.iter().find_map(|t| match t.role {
-            LineTextRole::Along { raise } => Some((&t.run, raise - t.run.bounds.bottom.0)),
+            LineTextRole::Along { raise, .. } => Some((&t.run, raise - t.run.bounds.bottom.0)),
+            LineTextRole::Continuation { .. } => None,
+        })
+    };
+    // A glissando's parallel set and its rank there (X4d fix round 2).
+    let words_set = |id: GlyphObjectId| -> Option<(u128, usize)> {
+        line_texts.get(&id)?.iter().find_map(|t| match t.role {
+            LineTextRole::Along { set, rank, .. } => Some((set, rank)),
             LineTextRole::Continuation { .. } => None,
         })
     };
@@ -2671,8 +2678,9 @@ pub(crate) fn cast_off(
     // system.
     let mut line_runs: Vec<(ResolvedText, Option<usize>)> = Vec::new();
     // Each glissando's words among them, with its piece's ends, its source,
-    // and the words' width and height before they were turned to the line.
-    let mut gliss_words: Vec<(usize, Point, Point, TypedObjectId, [f32; 2])> = Vec::new();
+    // the words' width and height before they were turned to the line, and
+    // its parallel set, rank and piece.
+    let mut gliss_words: Vec<GlissWords> = Vec::new();
     for (si, ((source, spaced), fate)) in input
         .strokes
         .iter()
@@ -2775,6 +2783,7 @@ pub(crate) fn cast_off(
                         let (from, to, words_id) =
                             (stroke.from, stroke.to, line_run_id(&stroke, 0, 2));
                         let size = words_extent(words_of(source.id()));
+                        let set = words_set(source.id()).map(|(set, rank)| (set, rank, 0));
                         for run in glissando_runs(&mut stroke, *wavy, words_of(source.id()), 0) {
                             if run.provenance.stable_id == words_id {
                                 gliss_words.push((
@@ -2783,6 +2792,7 @@ pub(crate) fn cast_off(
                                     to,
                                     source.provenance.source,
                                     size,
+                                    set,
                                 ));
                             }
                             line_runs.push((run, *sys));
@@ -2944,6 +2954,7 @@ pub(crate) fn cast_off(
                             let (from, to, words_id) =
                                 (stroke.from, stroke.to, line_run_id(&stroke, k, 2));
                             let size = words_extent(words_of(source.id()));
+                            let set = words_set(source.id()).map(|(set, rank)| (set, rank, k));
                             for run in glissando_runs(&mut stroke, *wavy, words_of(source.id()), k)
                             {
                                 if run.provenance.stable_id == words_id {
@@ -2953,6 +2964,7 @@ pub(crate) fn cast_off(
                                         to,
                                         source.provenance.source,
                                         size,
+                                        set,
                                     ));
                                 }
                                 line_runs.push((run, Some(*s)));
@@ -3159,6 +3171,24 @@ pub(crate) fn cast_off(
         .collect();
     let mut texts = texts;
     let mut text_system = text_system;
+    // A parallel set's words stand, piece by piece, on its topmost line whose
+    // piece holds them (X4d fix round 2): each line offered them, and those
+    // of a lower line where a higher one drew them are dropped.
+    let mut topmost: BTreeMap<(u128, usize), usize> = BTreeMap::new();
+    for (.., set) in &gliss_words {
+        if let Some((set, rank, piece)) = set {
+            let least = topmost.entry((*set, *piece)).or_insert(*rank);
+            *least = (*least).min(*rank);
+        }
+    }
+    let dropped: BTreeSet<usize> = gliss_words
+        .iter()
+        .filter(|(.., set)| {
+            set.is_some_and(|(set, rank, piece)| topmost.get(&(set, piece)) != Some(&rank))
+        })
+        .map(|(i, ..)| *i)
+        .collect();
+    gliss_words.retain(|(i, ..)| !dropped.contains(i));
     // A glissando's words kept off barlines and other ink (X4d fix round 1):
     // where, centred along their piece, they meet other ink of their system,
     // they slide along the piece and then stand further off it, by quarter
@@ -3213,7 +3243,7 @@ pub(crate) fn cast_off(
                 ));
             }
         }
-        for &(i, from, to, source, [w, h]) in &gliss_words {
+        for &(i, from, to, source, [w, h], _) in &gliss_words {
             let Some(s) = line_runs[i].1 else {
                 continue;
             };
@@ -3290,7 +3320,10 @@ pub(crate) fn cast_off(
             }
         }
     }
-    for (run, system) in line_runs {
+    for (i, (run, system)) in line_runs.into_iter().enumerate() {
+        if dropped.contains(&i) {
+            continue;
+        }
         texts.push(run);
         text_system.push(system);
     }
@@ -4412,6 +4445,19 @@ fn line_run(template: &ResolvedText, line: &Stroke, piece: usize, role: u128) ->
         ..template.clone()
     }
 }
+
+/// A glissando's words drawn in a piece: their index among the line runs,
+/// the piece's ends, the line's source, the words' width and height before
+/// they were turned to the line, and the line's parallel set, its rank there
+/// and the piece (X4d fix round 2).
+type GlissWords = (
+    usize,
+    Point,
+    Point,
+    TypedObjectId,
+    [f32; 2],
+    Option<(u128, usize, usize)>,
+);
 
 /// How far after the ink of its system's lead a glissando's later piece
 /// opens: as far as its ends stand from its chords' ink.

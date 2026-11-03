@@ -1598,6 +1598,101 @@ fn parallel_glissandi_take_one_gliss() {
     );
 }
 
+/// A parallel set's one "gliss." stands on its topmost line long enough for
+/// it (X4d fix round 2; Gould, *Behind Bars*, pp. 140 and 143): pairs from
+/// E5 over C5 to an altered B4 over G4, quarters in a system of four
+/// measures (C4d review 2's `q_sets2`). A double sharp ends the top line
+/// short of the words, which then stand on the lower line, where the set had
+/// carried none; a double flat, a flat or a sharp ends both lines short of
+/// them, and those sets carry none. Where both lines hold the words they
+/// stand on the top one (`parallel_glissandi_take_one_gliss`).
+#[test]
+fn a_parallel_sets_gliss_stands_on_its_topmost_line_long_enough() {
+    let gliss = |n: u8, kind: &str| {
+        let words = if kind == "start" { "gliss." } else { "" };
+        format!("<glissando line-type=\"solid\" number=\"{n}\" type=\"{kind}\">{words}</glissando>")
+    };
+    let pitched = |step: &str, alter: i8, octave: u8, chord: bool, slide: &str| {
+        let alter_xml = if alter == 0 {
+            String::new()
+        } else {
+            format!("<alter>{alter}</alter>")
+        };
+        let accidental = match alter {
+            -2 => "<accidental>flat-flat</accidental>",
+            -1 => "<accidental>flat</accidental>",
+            1 => "<accidental>sharp</accidental>",
+            2 => "<accidental>double-sharp</accidental>",
+            _ => "",
+        };
+        format!(
+            "<note>{}<pitch><step>{step}</step>{alter_xml}<octave>{octave}</octave></pitch>\
+             <duration>4</duration><voice>1</voice><type>quarter</type>{accidental}\
+             <notations>{slide}</notations></note>",
+            if chord { "<chord/>" } else { "" }
+        )
+    };
+    let set = |alter: i8| {
+        format!(
+            "{}{}{}{}{}",
+            pitched("E", 0, 5, false, &gliss(1, "start")),
+            pitched("C", 0, 5, true, &gliss(2, "start")),
+            pitched("B", alter, 4, false, &gliss(1, "stop")),
+            pitched("G", 0, 4, true, &gliss(2, "stop")),
+            note("C5", 8, "half", ""),
+        )
+    };
+    let whole = note("C5", 16, "whole", "");
+    let loaded = part_in(
+        "parallel_glissandi_topmost_long_enough.musicxml",
+        4,
+        &[
+            whole.clone(),
+            format!("<print new-system=\"yes\"/>{}", set(-2)),
+            set(-1),
+            set(1),
+            set(2),
+            format!("<print new-system=\"yes\"/>{whole}"),
+        ],
+    );
+    let layout = engrave_loaded(&loaded).layout;
+    let mut lines = line_strokes(&loaded, &layout, |k| matches!(k, SpannerKind::Glissando));
+    assert_eq!(lines.len(), 8, "four sets of two lines");
+    lines.sort_by(|a, b| a.from.x.0.total_cmp(&b.from.x.0));
+    // Each set's two lines, the top one first.
+    let sets: Vec<[&Stroke; 2]> = lines
+        .chunks(2)
+        .map(|pair| {
+            assert!(
+                (pair[0].from.x.0 - pair[1].from.x.0).abs() < 1.5,
+                "a set's lines start together: {pair:?}"
+            );
+            if pair[0].from.y.0 >= pair[1].from.y.0 {
+                [pair[0], pair[1]]
+            } else {
+                [pair[1], pair[0]]
+            }
+        })
+        .collect();
+    let words = runs(&layout, "gliss.");
+    for (k, [top, lower]) in sets.iter().enumerate() {
+        let on: Vec<&str> = words
+            .iter()
+            .filter_map(|w| {
+                if w.provenance.source == top.provenance.source {
+                    Some("top")
+                } else if w.provenance.source == lower.provenance.source {
+                    Some("lower")
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let want: &[&str] = if k == 3 { &["lower"] } else { &[] };
+        assert_eq!(on, want, "set {k}: its gliss. on {want:?}");
+    }
+}
+
 /// A glissando's words are kept off barlines and other ink (X4d fix round
 /// 1): along a line nearly level from a measure's last note over the
 /// barline and a new time signature to the next measure's first, "gliss.",

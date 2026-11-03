@@ -348,7 +348,13 @@ pub enum LineTextRole {
     Continuation { gap: f32 },
     /// Centred along each piece it is shorter than, turned to the piece's
     /// slope, its baseline `raise` over the line: a glissando's words.
-    Along { raise: f32 },
+    /// Glissandi between the same two notes share `set`, and `rank` is a
+    /// line's place among them from the top heads (0 the topmost): in each
+    /// piece the set's words stand on the line of least rank whose piece
+    /// holds them, as Gould gives a set of parallel lines one instruction
+    /// (*Behind Bars*, p. 143), on the topmost line long enough for it (X4d
+    /// fix round 2).
+    Along { raise: f32, set: u128, rank: usize },
 }
 
 /// A trill line's wiggle, which a solver sets along its line piece by piece.
@@ -3832,12 +3838,16 @@ pub fn try_to_constrained(
                 _ => {}
             }
         }
-        let gliss_rank: BTreeMap<u128, (usize, usize)> = gliss_pairs
+        // Each glissando's rank among those between the same notes, their
+        // count, and the set's key, its first line's id.
+        let gliss_rank: BTreeMap<u128, ((usize, usize), u128)> = gliss_pairs
             .values_mut()
             .flat_map(|ids| {
                 ids.sort_unstable();
-                let n = ids.len();
-                ids.iter().enumerate().map(move |(k, id)| (*id, (k, n)))
+                let (n, set) = (ids.len(), ids[0]);
+                ids.iter()
+                    .enumerate()
+                    .map(move |(k, id)| (*id, ((k, n), set)))
             })
             .collect();
         // The ink a staff's column holds: its heads with their ledger lines,
@@ -6347,10 +6357,10 @@ pub fn try_to_constrained(
                         ) => {
                             // A glissando from head to head (X4d.1), each end a
                             // quarter space clear of its chord's ink at its head.
-                            let rank = gliss_rank
+                            let (rank, set) = gliss_rank
                                 .get(&provenance.stable_id.0)
                                 .copied()
-                                .unwrap_or((0, 1));
+                                .unwrap_or(((0, 1), provenance.stable_id.0));
                             match glissando_line((*e0, *e1), rank, st) {
                                 Some((from, to, (s0, s1), heads)) => {
                                     let band = band_of(staff);
@@ -6377,23 +6387,26 @@ pub fn try_to_constrained(
                                         from,
                                     );
                                     // One "gliss." for glissandi between the
-                                    // same notes, on the one from their top
-                                    // heads, as Gould gives a set of parallel
-                                    // lines one instruction (p. 143), where
+                                    // same notes, on the topmost line long
+                                    // enough for it once its system is set,
+                                    // as Gould gives a set of parallel lines
+                                    // one instruction (p. 143), where
                                     // MuseScore draws one on each (X4d fix
-                                    // round 1).
+                                    // rounds 1 and 2): each line offers it.
                                     let raise = if wavy {
                                         lines::GLISSANDO_WAVY_TEXT_RAISE
                                     } else {
                                         lines::GLISSANDO_TEXT_RAISE
                                     };
-                                    if rank.0 == 0 {
-                                        line_texts.push(LineText {
-                                            line: stroke.id(),
-                                            run: words,
-                                            role: LineTextRole::Along { raise },
-                                        });
-                                    }
+                                    line_texts.push(LineText {
+                                        line: stroke.id(),
+                                        run: words,
+                                        role: LineTextRole::Along {
+                                            raise,
+                                            set,
+                                            rank: rank.0,
+                                        },
+                                    });
                                     family.push(FamilyMark {
                                         band,
                                         glyphs: Vec::new(),
