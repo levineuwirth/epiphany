@@ -1234,3 +1234,50 @@ fn an_undrawn_glissando_is_named_by_why() {
     assert_eq!(named("glissando too short for its notes"), 1);
     assert_eq!(named("glissando"), 0, "the one with room drawn");
 }
+
+/// A whole or half rest outside its staff, drawn with its ledger line
+/// (`restWholeLegerLine`, `restHalfLegerLine`, X5d.5), is drawn at its
+/// value: rests over a second voice's F5 stand above the staff, ledgered,
+/// and no rest is counted at another value.
+#[test]
+fn a_ledgered_rest_is_drawn_at_its_value() {
+    let voices =
+        |upper: &str, lower: &str| format!("{upper}<backup><duration>4</duration></backup>{lower}");
+    let rest = |kind: &str, d: u8| {
+        format!("<note><rest/><duration>{d}</duration><voice>1</voice><type>{kind}</type></note>")
+    };
+    let note = |kind: &str, d: u8| {
+        format!(
+            "<note><pitch><step>F</step><octave>5</octave></pitch>\
+             <duration>{d}</duration><voice>2</voice><type>{kind}</type></note>"
+        )
+    };
+    let m1 = voices(&rest("whole", 4), &note("whole", 4));
+    let m2 = voices(
+        &format!("{}{}", rest("half", 2), rest("half", 2)),
+        &format!("{}{}", note("half", 2), note("half", 2)),
+    );
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
+         <attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time><clef><sign>G</sign><line>2</line></clef></attributes>{m1}</measure>\
+         <measure number=\"2\">{m2}</measure></part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("ledgered_rests_counted.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let engraved = engrave(&loaded.reduced.score);
+    let named = |name: &str| {
+        engraved
+            .layout
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str() == name)
+            .count()
+    };
+    assert_eq!(named("restWholeLegerLine"), 1, "the whole rest, ledgered");
+    assert_eq!(named("restHalfLegerLine"), 2, "the half rests, ledgered");
+    assert_eq!(count(&loaded, &engraved, "rest drawn at another value"), 0);
+    assert_eq!(count(&loaded, &engraved, "rest not drawn"), 0);
+}

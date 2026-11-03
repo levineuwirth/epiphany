@@ -404,10 +404,17 @@ pub fn omissions(
                 });
                 match event {
                     Event::Rest(_) => {
+                        // A whole or half rest outside its staff is drawn
+                        // with its ledger line (X5d.5): the same value.
                         let drawn: Vec<&str> = own
                             .iter()
                             .copied()
                             .filter(|g| g.starts_with("rest"))
+                            .map(|g| match g {
+                                "restWholeLegerLine" => "restWhole",
+                                "restHalfLegerLine" => "restHalf",
+                                other => other,
+                            })
                             .collect();
                         let expected = if whole_measure {
                             Some(String::from("restWhole"))
