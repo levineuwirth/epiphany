@@ -3577,3 +3577,17 @@ engraver's own placing reproduces it:
   three spaces over the top staff, on a page that then holds the system half
   a space short; the floor compresses by that half
   (`ink_of_no_staff_counts_toward_a_systems_fit`).
+
+## ENGRAVER_VERSION 126 → 127: a grace on a staff of one line stands as its notes do (X5d.7, 2026-11-03)
+
+- An unpitched grace on a staff of one line moves up from a five-line
+  staff's bottom line, where the file places it, onto the line, and takes
+  its ledger lines from that line, as the staff's own notes have since
+  entry 126; it had stood two spaces under the line. A pitched grace keeps
+  the five-line frame, as a pitched note does. Gould sets a grace before its
+  note at the note's own height (*Behind Bars*, pp. 125-126) and a single
+  line for indefinite pitch (p. 5). MuseScore lays each grace chord of a
+  percussion chord out by the drumset's line as it lays the chord out
+  (`SegmentLayout`, `layoutDrumset`), and LilyPond's drum note engraver
+  sets every head's staff position from its drum's entry, a grace's too;
+  no departure (`an_unpitched_grace_on_a_staff_of_one_line_stands_as_its_notes_do`).

@@ -2136,11 +2136,11 @@ pub fn try_to_constrained(
                 event_rests: &event_rests,
                 shown: &shown_accidentals,
             },
-            |staff: Option<StaffId>, time: &TimePoint| {
-                (
-                    staff.map(&y_origin).unwrap_or(0.0),
-                    active_clef_or(clef_seq(staff), time, clef_default(staff)),
-                )
+            |staff: Option<StaffId>, time: &TimePoint| GraceFrame {
+                yo: staff.map(&y_origin).unwrap_or(0.0),
+                clef: active_clef_or(clef_seq(staff), time, clef_default(staff)),
+                unpitched_shift: line_shift(staff),
+                unpitched_frame: frame_of(staff),
             },
             &mut diagnostics,
         );
@@ -10979,6 +10979,17 @@ fn fermata_glyph(fermata: &epiphany_core::Fermata, above: bool) -> &'static str 
 #[path = "marks.rs"]
 mod marks;
 
+/// Where a staff's graces stand at a time: its origin and clef, and for an
+/// unpitched grace the shift and the outer lines its staff's own notes take
+/// (X5d.6: a staff of one line moves them onto its line and ledgers them
+/// from it).
+struct GraceFrame {
+    yo: f32,
+    clef: Clef,
+    unpitched_shift: StaffStep,
+    unpitched_frame: (StaffStep, StaffStep),
+}
+
 /// What setting out the grace notes reads of a region (X4d.2): the heads,
 /// stems and rests of each staff's columns, with their accidentals placed,
 /// and the accidental each pitch shows by its measure.
@@ -11102,7 +11113,7 @@ fn grace_ink(shape: &graces::GraceShape) -> Vec<graces::Ink> {
 fn place_graces(
     graces_in: &[(EventId, Option<StaffId>, &crate::logical::GraceContent)],
     inputs: &GraceInputs<'_>,
-    frame: impl Fn(Option<StaffId>, &TimePoint) -> (f32, Clef),
+    frame: impl Fn(Option<StaffId>, &TimePoint) -> GraceFrame,
     diagnostics: &mut Vec<LayoutDiagnostic>,
 ) -> BTreeMap<EventId, GracePlacing> {
     let k = graces::GRACE_MAG;
@@ -11128,7 +11139,12 @@ fn place_graces(
         let ColumnKey::Timed(time, _) = &key else {
             continue;
         };
-        let (yo, clef) = frame(staff, time);
+        let GraceFrame {
+            yo,
+            clef,
+            unpitched_shift,
+            unpitched_frame,
+        } = frame(staff, time);
         // The principal's column's ink on the staff, from the column's x.
         let mut principal: Vec<graces::Ink> = Vec::new();
         if let Some(refs) = inputs.column_heads.get(&(staff, key.clone())) {
@@ -11188,7 +11204,7 @@ fn place_graces(
                 heads.push((step_to_y(yo, step), step, Some(i)));
             }
             if let Some(position) = grace.unpitched {
-                let step = StaffStep::from(position.0);
+                let step = StaffStep::from(position.0) + unpitched_shift;
                 heads.push((step_to_y(yo, step), step, None));
             }
             if heads.is_empty() {
@@ -11205,7 +11221,11 @@ fn place_graces(
             let origin_x = -k * hb.left.0;
             for (y, step, i) in &heads {
                 shape.heads.push((Point::new(origin_x, *y), name, *i));
-                for ledger in ledger_steps(*step, (0, 8)) {
+                // A pitched head's ledger lines from a five-line staff's
+                // outer lines, an unpitched head's from its staff's own, as
+                // the staff's notes take theirs.
+                let lines = if i.is_some() { (0, 8) } else { unpitched_frame };
+                for ledger in ledger_steps(*step, lines) {
                     let ly = step_to_y(yo, ledger);
                     shape.ledgers.push((
                         Point::new(k * (hb.left.0 - LEDGER_LINE_EXTENSION) + origin_x, ly),
