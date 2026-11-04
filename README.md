@@ -83,3 +83,19 @@ dynamics. The demo editor edits a built-in fixture and cannot yet open or
 save a file.
 The work now under way is to import MusicXML exported from real scores and
 engrave it, so that every capability is judged against music someone wrote.
+
+## License
+
+Copyright © 2026 Levi Neuwirth.
+
+Epiphany is licensed under the GNU General Public License, version 3 only
+(`GPL-3.0-only`); see [`LICENSE`](LICENSE).
+
+The fonts it carries are not covered by that grant and keep their own license,
+the SIL Open Font License 1.1: Edwin and Bravura Text in
+`crates/epiphany-text/faces/`, each beside its license and FONTLOG, and the
+Bravura outlines and subset generated into
+`crates/epiphany-glyphs/src/outlines_generated.rs` and
+`crates/epiphany-render-svg/src/font_subset_generated.rs`, whose license is
+`crates/epiphany-glyphs/tools/OFL.txt`. Third-party crates keep their own
+licenses.

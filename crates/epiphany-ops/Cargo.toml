@@ -4,6 +4,7 @@ version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
+license.workspace = true
 repository.workspace = true
 description = "Epiphany concurrent semantics (spec Chapter 6): operation envelopes, the order-independent OperationSlot model, DVV causal context, HLC monotonicity, the canonical reduction order, conflicts, transactions, undo, and integrity anomalies."
 

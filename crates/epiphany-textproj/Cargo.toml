@@ -4,6 +4,7 @@ version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
+license.workspace = true
 repository.workspace = true
 description = "The Epiphany Text Projection companion: the canonical s-expression document representation and its strict bundle round trip."
 

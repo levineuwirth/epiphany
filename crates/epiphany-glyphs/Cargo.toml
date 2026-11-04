@@ -4,6 +4,7 @@ version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
+license.workspace = true
 repository.workspace = true
 description = "Editor T4-pre W2: the shared typed glyph-asset seam. Bundled genuine Bravura SMuFL outline data (SVG path `d` strings extracted from the official OFL Bravura.otf) plus a real GlyphCatalog whose render_data returns parsed typed outlines, for any renderer or app that depends on epiphany-layout-ir. Dependency-free and MSRV-clean by design."
 

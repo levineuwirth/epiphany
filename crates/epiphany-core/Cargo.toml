@@ -4,6 +4,7 @@ version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
+license.workspace = true
 repository.workspace = true
 description = "The Epiphany score graph (spec Chapters 2-5): the typed identifier family, pitch/time primitives, the event arena, staves/voices/regions, and the Chapter 5 graph invariants with generators and shrinkers."
 

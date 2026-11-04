@@ -4,6 +4,7 @@ version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
+license.workspace = true
 repository.workspace = true
 description = "Agent I's Epiphany engraving solver (spec Chapter 9): turns a ConstrainedLayoutIR into a ResolvedLayoutIR with real geometry. A deterministic horizontal-spacing pass plus Minimal-tier casting-off (greedy system breaking at measure boundaries, vertical system stacking, page assignment) that evaluates the declared hard constraints — break constraints included — and reports SolverTier::Minimal."
 
