@@ -3772,3 +3772,13 @@ engraver's own placing reproduces it:
   case (`a_centred_dynamic_stays_inside_a_pedal_further_out_across_it`,
   `a_pedal_elsewhere_in_the_bar_leaves_a_dynamic_centred`,
   `a_sung_staffs_centred_dynamic_stays_inside_its_words_further_out`).
+
+## ENGRAVER_VERSION 136 → 137: a later system's lead joins the centring's bounds (X5d fix round 1, 2026-11-04)
+
+- The centring's bounds read the sky and the family placed on either staff, and no
+  later system's lead, which is its staff's ink at the left margin and which the
+  sky does not hold (entry 123's outlines read it). A centred mark that a first
+  column's note set across that clef's reach could stand within its least distance
+  of it. The leads join both staves' bounds, as MuseScore's centring reads both
+  skylines whole (`SystemLayout::centerElementBetweenStaves`)
+  (`a_centred_dynamic_keeps_its_distance_from_a_later_systems_lead`).

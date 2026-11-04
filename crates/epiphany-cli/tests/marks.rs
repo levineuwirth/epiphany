@@ -6548,3 +6548,67 @@ fn a_sung_staffs_centred_dynamic_stays_inside_its_words_further_out() {
         "the p, top {p_top}, under the words, bottom {run_bottom}; the staves {spans:?}"
     );
 }
+
+/// A centred dynamic at a later system's first note keeps its least distance
+/// from that system's lead: a wide dynamic reaching back under the upper staff's
+/// clef, in a gap whose middle stands close under the clef's reach. The lead is its
+/// staff's ink, and the sky does not hold it.
+#[test]
+fn a_centred_dynamic_keeps_its_distance_from_a_later_systems_lead() {
+    let clefs = "<staves>2</staves><clef number=\"1\"><sign>G</sign><line>2</line></clef>\
+                 <clef number=\"2\"><sign>G</sign><line>2</line></clef>";
+    let attrs = format!(
+        "<attributes><divisions>2</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time>{clefs}</attributes>"
+    );
+    let bar = |upper: &str, lower: &str, marks: &str| {
+        format!(
+            "{marks}{}{}{}",
+            note(upper, 8, "whole", 1, 1, ""),
+            backup(8),
+            note(lower, 8, "whole", 5, 2, "")
+        )
+    };
+    let wide = "<direction><direction-type><dynamics><ffff/></dynamics></direction-type>\
+                <staff>1</staff></direction>";
+    let first = bar("E5", "E5", "");
+    let second = bar("E5", "E5", wide);
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">{attrs}{first}\
+         </measure><measure number=\"2\"><print new-system=\"yes\"/>{second}</measure></part>\
+         </score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("centred_lead.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = engrave(&loaded.reduced.score).layout;
+    let f = layout
+        .glyphs
+        .iter()
+        .find(|g| g.glyph.as_str().starts_with("dynamicF"))
+        .expect("the dynamic");
+    let (fl, fr, fb, ft) = (
+        f.position.x.0 + f.bounding_box.left.0,
+        f.position.x.0 + f.bounding_box.right.0,
+        f.position.y.0 + f.bounding_box.bottom.0,
+        f.position.y.0 + f.bounding_box.top.0,
+    );
+    let mut met = 0;
+    for g in layout.glyphs.iter().filter(|g| g.glyph.as_str() == "gClef") {
+        let (l, r, b, t) = (
+            g.position.x.0 + g.bounding_box.left.0,
+            g.position.x.0 + g.bounding_box.right.0,
+            g.position.y.0 + g.bounding_box.bottom.0,
+            g.position.y.0 + g.bounding_box.top.0,
+        );
+        if l < fr && r > fl && b < ft + 3.0 && t > fb - 3.0 {
+            met += 1;
+            assert!(
+                b >= ft + 0.5 - 1e-3 || t <= fb - 0.5 + 1e-3,
+                "the dynamic ({fl}, {fb}, {fr}, {ft}) within its distance of a clef ({l}, {b}, {r}, {t})"
+            );
+        }
+    }
+    assert!(met > 0, "the dynamic stands across a clef");
+}

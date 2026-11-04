@@ -3096,8 +3096,8 @@ pub(crate) fn cast_off(
                 .unwrap_or(0.0);
         // As far as its own staff's ink and the other's let it, the family
         // already placed on either included where it now stands (X5d.7), the
-        // row's own members aside, as MuseScore's centring reads both
-        // staves' skylines whole.
+        // row's own members aside, and a later system's lead, as MuseScore's
+        // centring reads both staves' skylines whole.
         let row: BTreeSet<usize> = members.iter().map(|&i| family_pieces[i].family).collect();
         let (own_staff, other_staff) = (staff_of(own), staff_of(other));
         let mut placed_own: Vec<InkRect> = Vec::new();
@@ -3143,6 +3143,17 @@ pub(crate) fn cast_off(
         });
         if stacked_outside {
             continue;
+        }
+        // A later system's leads are staff ink at its left margin, which the
+        // sky has not read: a clef's reach joins the bounds.
+        for (ls, staff, b) in &lead_rects {
+            if *ls == s {
+                if Some(*staff) == own_staff {
+                    placed_own.push(*b);
+                } else if Some(*staff) == other_staff {
+                    placed_other.push(*b);
+                }
+            }
         }
         let (mut up, mut down) = (f32::INFINITY, f32::NEG_INFINITY);
         for &i in &members {
