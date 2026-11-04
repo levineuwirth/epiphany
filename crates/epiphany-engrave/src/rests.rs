@@ -12,6 +12,10 @@
 //! so a rest stands on a sharp, and it runs only where the measure has voices,
 //! so a rest stands on a visitor's head; both are read here.
 //!
+//! A tie or slur is read as well, only where it passes through the rest:
+//! neither Gould nor MuseScore lets a rest make way for a curve near it, but no
+//! characters collide.
+//!
 //! A voice's rest keeps its side of the other part, as Gould's ledger line
 //! moves far enough to stand outside it (p. 37): above all of that ink for an
 //! upper voice, below it for a lower. A rest alone on its staff has no part to
@@ -27,6 +31,9 @@ pub(crate) const REST_CLEARANCE: f32 = 0.75;
 
 /// How far across a rest filling its measure reads ink.
 pub(crate) const REST_REACH: f32 = 4.0;
+
+/// How far up and down it stands from a curve that passes across it.
+pub(crate) const CURVE_CLEARANCE: f32 = 0.25;
 
 /// One piece of ink a rest reads, a stroke's edges running straight across it.
 #[derive(Copy, Clone, Debug)]
@@ -87,6 +94,9 @@ pub(crate) struct RestToClear<'a> {
     pub column: f32,
     /// The ink it reads: the ink of its staff's note columns in its measure.
     pub ink: &'a [RestInk],
+    /// The curves of its staff, each a run of chords: a tie or slur moves it
+    /// only where it passes through it.
+    pub curves: &'a [RestInk],
     /// Each visitor's stem across its staff, and whether it turns up.
     pub stems: &'a [(f32, f32, bool)],
 }
@@ -127,21 +137,28 @@ fn rest_box(rest: &RestToClear, y: f32) -> (f32, f32, f32, f32) {
 pub(crate) fn clear(rest: &RestToClear) -> RestPlace {
     // Every piece of ink past the rest's reach is read no further; it stands
     // clear of the ink within it after at most the ink's height and its own.
-    let extent = rest
-        .ink
-        .iter()
-        .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), i| {
+    let extent = rest.ink.iter().chain(rest.curves).fold(
+        (f32::INFINITY, f32::NEG_INFINITY),
+        |(lo, hi), i| {
             (
                 lo.min(i.at_left.0).min(i.at_right.0),
                 hi.max(i.at_left.1).max(i.at_right.1),
             )
-        });
+        },
+    );
     let bound = (extent.1 - extent.0).abs() + (rest.y - extent.0).abs() + 16.0;
     let reach = |y: f32| {
         let (left, right, ..) = rest_box(rest, y);
         rest.ink
             .iter()
             .filter_map(move |i| i.within(left - REST_REACH, right + REST_REACH))
+    };
+    let off_curves = |y: f32| {
+        let (left, right, bottom, top) = rest_box(rest, y);
+        rest.curves
+            .iter()
+            .filter_map(|i| i.within(left, right))
+            .all(|(b, t)| !(bottom < t + CURVE_CLEARANCE && b < top + CURVE_CLEARANCE))
     };
     let walk = |clear_at: &dyn Fn(f32) -> bool, step: f32| {
         let (mut y, mut moved) = (rest.y, 0.0);
@@ -156,14 +173,14 @@ pub(crate) fn clear(rest: &RestToClear) -> RestPlace {
         Some(true) => walk(
             &|y| {
                 let (_, _, bottom, _) = rest_box(rest, y);
-                reach(y).all(|(_, top)| bottom - top >= REST_CLEARANCE)
+                reach(y).all(|(_, top)| bottom - top >= REST_CLEARANCE) && off_curves(y)
             },
             1.0,
         ),
         Some(false) => walk(
             &|y| {
                 let (_, _, _, top) = rest_box(rest, y);
-                reach(y).all(|(bottom, _)| bottom - top >= REST_CLEARANCE)
+                reach(y).all(|(bottom, _)| bottom - top >= REST_CLEARANCE) && off_curves(y)
             },
             -1.0,
         ),
@@ -171,6 +188,7 @@ pub(crate) fn clear(rest: &RestToClear) -> RestPlace {
             let clear_at = |y: f32| {
                 let (_, _, bottom, top) = rest_box(rest, y);
                 reach(y).all(|(b, t)| !(bottom < t + REST_CLEARANCE && b < top + REST_CLEARANCE))
+                    && off_curves(y)
             };
             if clear_at(rest.y) {
                 rest.y
@@ -225,6 +243,7 @@ mod tests {
             centre: Some(10.0),
             column: 0.0,
             ink,
+            curves: &[],
             stems,
         })
     }
@@ -302,6 +321,7 @@ mod tests {
             centre: Some(10.0),
             column: 0.0,
             ink: &ink,
+            curves: &[],
             stems: &[],
         });
         assert_eq!(raised.y, 7.0);
@@ -321,6 +341,55 @@ mod tests {
         // right, about 14.6, near -15.
         let place = whole(Some(true), &[beam], &[]);
         assert_eq!(place.y, 4.0);
+    }
+
+    /// And a lower voice's reads its bottom where it stands within the reach,
+    /// not the stroke's whole fall.
+    #[test]
+    fn a_lower_voice_reads_a_slanted_stroke_where_it_stands_within_the_reach() {
+        let beam = RestInk {
+            left: 0.0,
+            right: 40.0,
+            at_left: (30.0, 30.5),
+            at_right: (-10.0, -9.5),
+        };
+        // At the rest's reach, x about 5.4 to 14.6, its bottom stands at 24.6
+        // down to 15.4, all over the rest.
+        assert_eq!(whole(Some(false), &[beam], &[]).y, 2.0);
+    }
+
+    /// And an upper voice's its top: falling toward the rest within its reach.
+    #[test]
+    fn an_upper_voice_reads_a_stroke_rising_past_its_reach_where_it_stands() {
+        let beam = RestInk {
+            left: 0.0,
+            right: 40.0,
+            at_left: (-30.0, -29.5),
+            at_right: (30.0, 30.5),
+        };
+        // Within the reach its top stands at about -21 to -7.5, under the rest.
+        assert_eq!(whole(Some(true), &[beam], &[]).y, 4.0);
+    }
+
+    /// A voice's rest keeps outside the other part, however far from it that
+    /// part stands: it does not stay under a note high over it.
+    #[test]
+    fn a_voice_stays_outside_the_other_part_however_far() {
+        let high = [RestInk::boxed(9.5, 10.5, 9.0, 10.0)];
+        // Its bottom 0.75 over 10, its glyph 0.54 under its line, at 12.
+        assert_eq!(whole(Some(true), &high, &[]).y, 12.0);
+        let low = [RestInk::boxed(9.5, 10.5, -7.0, -6.0)];
+        // Its top 0.75 under -7, its ledgered top 0.08 over its line, at -8.
+        assert_eq!(whole(Some(false), &low, &[]).y, -8.0);
+    }
+
+    /// Only the stems within its reach turn it: a stem up beside it and a stem
+    /// down far off leave it turning down, where both ways would take it up.
+    #[test]
+    fn a_rest_alone_reads_only_the_stems_within_its_reach() {
+        let ink = [RestInk::boxed(9.5, 10.5, -0.5, 3.5)];
+        let stems = [(9.5, 10.5, true), (30.0, 31.0, false)];
+        assert!(whole(None, &ink, &stems).y < -1.0);
     }
 
     /// A rest alone moves only where visiting ink stands that near it, from
@@ -368,6 +437,7 @@ mod tests {
             centre: Some(10.0),
             column: 0.0,
             ink: &ink,
+            curves: &[],
             stems: &stems,
         });
         // Up to 4, its bottom 0.75 over 2.3 at 3.99 and its centre 2.28 off
@@ -393,9 +463,62 @@ mod tests {
             centre: Some(10.0),
             column: 0.0,
             ink: &ink,
+            curves: &[],
             stems: &stems,
         });
         assert_eq!(place.y, -1.0);
+    }
+
+    /// A curve moves it only where it passes through it, its voice's way: not
+    /// one within its reach beside it.
+    #[test]
+    fn a_curve_moves_a_rest_only_where_it_passes_through_it() {
+        let move_by = |curves: &[RestInk]| {
+            clear(&RestToClear {
+                name: "restWhole",
+                y: 4.0,
+                lines: (0.0, 4.0),
+                up: Some(true),
+                centre: Some(10.0),
+                column: 0.0,
+                ink: &[],
+                curves,
+                stems: &[],
+            })
+            .y
+        };
+        let through = [RestInk::boxed(8.0, 12.0, 3.6, 3.8)];
+        assert_eq!(move_by(&through), 5.0, "up, clear of it by a quarter");
+        let beside = [RestInk::boxed(11.0, 14.0, 3.6, 3.8)];
+        assert_eq!(move_by(&beside), 4.0, "beside it, within its reach");
+        let under = [RestInk::boxed(8.0, 12.0, 2.5, 2.7)];
+        assert_eq!(move_by(&under), 4.0, "under it, further than a quarter");
+        let near = [RestInk::boxed(8.0, 12.0, 3.1, 3.3)];
+        assert_eq!(move_by(&near), 5.0, "nearer than a quarter");
+    }
+
+    /// A lower voice's goes down from one, and a rest alone from one with no
+    /// stems to turn it, up.
+    #[test]
+    fn a_curve_moves_a_lower_voice_down_and_a_rest_alone_up() {
+        let at = |up: Option<bool>, y: f32, curves: &[RestInk]| {
+            clear(&RestToClear {
+                name: "restWhole",
+                y,
+                lines: (0.0, 4.0),
+                up,
+                centre: Some(10.0),
+                column: 0.0,
+                ink: &[],
+                curves,
+                stems: &[],
+            })
+            .y
+        };
+        let through = [RestInk::boxed(8.0, 12.0, 1.6, 1.8)];
+        assert_eq!(at(Some(false), 2.0, &through), 1.0);
+        let through = [RestInk::boxed(8.0, 12.0, 2.6, 2.8)];
+        assert_eq!(at(None, 3.0, &through), 4.0);
     }
 
     /// Where it keeps its column it reads from there.
@@ -410,6 +533,7 @@ mod tests {
             centre: None,
             column: 2.0,
             ink: &ink,
+            curves: &[],
             stems: &[],
         });
         assert_eq!(place.y, 7.0);

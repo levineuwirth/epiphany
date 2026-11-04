@@ -293,6 +293,107 @@ fn an_ottava_ending_on_a_measure_rest_ends_past_the_rest() {
         (hook - (r.1 + 1.0)).abs() < 0.2,
         "the hook at {hook}, a space past the rest {r:?}"
     );
+    // Its dashes run from its first note to the hook.
+    let dashes: Vec<(f32, f32)> = layout
+        .strokes
+        .iter()
+        .filter(|s| {
+            s.from.y == s.to.y
+                && s.from.x != s.to.x
+                && matches!(
+                    s.provenance.source,
+                    epiphany_core::TypedObjectId::Spanner(_)
+                )
+        })
+        .map(|s| (s.from.x.0, s.to.x.0))
+        .collect();
+    let (start, end) = dashes
+        .iter()
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), (from, to)| {
+            (a.min(*from), b.max(*to))
+        });
+    let c6 = ink(&layout, "noteheadWhole");
+    assert!(
+        start < c6.1 + 1.0 && (end - hook).abs() < 0.2,
+        "the line from {start} to {end}, from its first note {c6:?} to the hook {hook}"
+    );
+}
+
+/// A fermata clears its rest where it stands: over a rest raised off the staff
+/// at the bar's middle, not over the column the rest left.
+#[test]
+fn a_fermata_clears_its_rest_where_it_stands() {
+    let high = "<note><pitch><step>A</step><octave>5</octave></pitch><duration>8</duration><voice>2</voice><type>half</type></note>";
+    let rest = "<note><rest measure=\"yes\"/><duration>16</duration><voice>1</voice><notations><fermata type=\"upright\"/></notations></note>";
+    let middle = format!("{rest}<backup><duration>16</duration></backup>{high}{high}");
+    let layout = engrave("fermata_clears.musicxml", &around(&middle));
+    let (r, f) = (ink(&layout, "rest"), ink(&layout, "fermata"));
+    assert!(r.2 > top_line(&layout), "the rest above the staff: {r:?}");
+    assert!(
+        f.2 >= r.3 - 1e-3,
+        "the fermata {f:?} over the rest {r:?} as it stands"
+    );
+    assert!(
+        (centre(f) - centre(r)).abs() < 0.05,
+        "the fermata {f:?} over its rest {r:?}"
+    );
+}
+
+/// A whole-bar rest's space opens after its bar's key signature and time
+/// signature: Gould's blank space (p. 160), in a bar each opens.
+#[test]
+fn a_measure_rest_centres_after_a_key_change_opening_its_bar() {
+    let key = "<attributes><key><fifths>4</fifths></key></attributes>";
+    let rest = measure_rest(16);
+    let xml = single(&format!(
+        "<measure number=\"1\">{HEAD}{WHOLE}</measure><measure number=\"2\">{key}{rest}</measure><measure number=\"3\">{WHOLE}</measure>"
+    ));
+    let layout = engrave("rest_key.musicxml", &xml);
+    let r = ink(&layout, "restWhole");
+    let sig = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str() == "accidentalSharp")
+        .map(|g| g.position.x.0 + g.bounding_box.right.0)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let closing = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str() == "barlineSingle")
+        .map(|g| g.position.x.0 + g.bounding_box.left.0)
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(
+        (centre(r) - (sig + closing) * 0.5).abs() < 0.05,
+        "the rest {r:?} between the signature {sig} and the barline {closing}"
+    );
+}
+
+/// As it does after a time change.
+#[test]
+fn a_measure_rest_centres_after_a_time_change_opening_its_bar() {
+    let time = "<attributes><time><beats>3</beats><beat-type>4</beat-type></time></attributes>";
+    let rest = measure_rest(12);
+    let xml = single(&format!(
+        "<measure number=\"1\">{HEAD}{WHOLE}</measure><measure number=\"2\">{time}{rest}</measure><measure number=\"3\"><note><pitch><step>C</step><octave>5</octave></pitch><duration>12</duration><voice>1</voice></note></measure>"
+    ));
+    let layout = engrave("rest_time.musicxml", &xml);
+    let r = ink(&layout, "restWhole");
+    let sig = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("timeSig"))
+        .map(|g| g.position.x.0 + g.bounding_box.right.0)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let closing = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str() == "barlineSingle")
+        .map(|g| g.position.x.0 + g.bounding_box.left.0)
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(
+        (centre(r) - (sig + closing) * 0.5).abs() < 0.05,
+        "the rest {r:?} between the signature {sig} and the barline {closing}"
+    );
 }
 
 /// The staff's top line, the highest of the first staff's lines.
@@ -687,4 +788,370 @@ fn a_clef_closing_the_bar_bounds_a_measure_rest() {
         (centre(r) - (opening + clef.0) * 0.5).abs() < 0.05,
         "the rest {r:?} between the barline {opening} and the clef {clef:?}"
     );
+}
+
+/// An ottava whose last note stands in a measure rest's column, in another
+/// voice, ends past that note: MuseScore's staff shape leaves out a full measure
+/// rest beside other voices (`Segment::createShape`).
+#[test]
+fn an_ottava_ending_on_a_note_beside_a_measure_rest_stays_with_the_note() {
+    let start = "<direction placement=\"above\"><direction-type><octave-shift type=\"down\" size=\"8\" number=\"1\"/></direction-type></direction>";
+    let stop = "<direction><direction-type><octave-shift type=\"stop\" size=\"8\" number=\"1\"/></direction-type></direction>";
+    let high = "<note><pitch><step>C</step><octave>6</octave></pitch><duration>16</duration><voice>1</voice><type>whole</type></note>";
+    let beside = format!(
+        "<note><rest measure=\"yes\"/><duration>16</duration><voice>1</voice></note><backup><duration>16</duration></backup><note><pitch><step>C</step><octave>6</octave></pitch><duration>16</duration><voice>2</voice><type>whole</type><stem>down</stem></note>{stop}"
+    );
+    let xml = single(&format!(
+        "<measure number=\"1\">{HEAD}{start}{high}</measure><measure number=\"2\">{beside}</measure><measure number=\"3\">{WHOLE}</measure>"
+    ));
+    let layout = engrave("ottava_beside.musicxml", &xml);
+    let r = ink(&layout, "restWhole");
+    let hook = layout
+        .strokes
+        .iter()
+        .filter(|s| {
+            s.from.x == s.to.x
+                && s.from.y != s.to.y
+                && matches!(
+                    s.provenance.source,
+                    epiphany_core::TypedObjectId::Spanner(_)
+                )
+        })
+        .map(|s| s.from.x.0)
+        .reduce(f32::max)
+        .expect("the ottava's hook");
+    assert!(
+        hook < centre(r) - 3.0,
+        "the hook at {hook} by its note, the rest {r:?} centred"
+    );
+}
+
+/// A voice's rest does not read what the family places after it: a fermata on
+/// the other voice's note over the staff at the bar's middle leaves it on its
+/// line, and the fermata stands clear of it.
+#[test]
+fn a_voices_rest_does_not_read_the_family_placed_after_it() {
+    let low = "<note><pitch><step>E</step><octave>4</octave></pitch><duration>8</duration><voice>2</voice><type>half</type><stem>down</stem></note>";
+    let marked = "<note><pitch><step>E</step><octave>4</octave></pitch><duration>8</duration><voice>2</voice><type>half</type><stem>down</stem><notations><fermata type=\"upright\"/></notations></note>";
+    let middle = format!(
+        "<note><rest measure=\"yes\"/><duration>16</duration><voice>1</voice></note><backup><duration>16</duration></backup>{low}{marked}"
+    );
+    let layout = engrave("rest_family.musicxml", &around(&middle));
+    let (name, y) = rest_at(&layout);
+    assert_eq!(name, "restWhole");
+    assert!(
+        (y - top_line(&layout)).abs() < 0.05,
+        "hanging from the top line: {y}, {}",
+        top_line(&layout)
+    );
+    let (r, f) = (ink(&layout, "restWhole"), ink(&layout, "fermata"));
+    assert!(
+        r.1.min(f.1) - r.0.max(f.0) > -4.0,
+        "the fermata {f:?} within the rest's reach {r:?}"
+    );
+    assert!(f.2 >= r.3, "the fermata {f:?} over the rest {r:?}");
+}
+
+/// Nor a hairpin's legs: a lower voice's rest over a hairpin under the staff at
+/// the bar's middle stays at its voice's place.
+#[test]
+fn a_voices_rest_does_not_read_a_hairpin_placed_after_it() {
+    let high = "<note><pitch><step>A</step><octave>4</octave></pitch><duration>16</duration><voice>1</voice><type>whole</type><stem>up</stem></note>";
+    let pair = "<direction placement=\"below\"><direction-type><wedge type=\"crescendo\"/></direction-type></direction>";
+    let stop = "<direction><direction-type><wedge type=\"stop\"/></direction-type></direction>";
+    let middle = format!(
+        "{pair}{high}<backup><duration>16</duration></backup><note><rest measure=\"yes\"/><duration>16</duration><voice>2</voice></note>{stop}"
+    );
+    let layout = engrave("rest_hairpin.musicxml", &around(&middle));
+    let (name, y) = rest_at(&layout);
+    assert_eq!(name, "restWhole");
+    assert!(
+        (y - (top_line(&layout) - 2.0)).abs() < 0.05,
+        "a lower voice's rest hanging from the middle line: {y}, the top line {}",
+        top_line(&layout)
+    );
+}
+
+/// A bar's width in a short meter, with a low note in the other voice: the
+/// rest's reach holds what stands at each side of it.
+fn narrow_bar(after: &str, closing: &str) -> String {
+    let rest = "<note><rest measure=\"yes\"/><duration>2</duration><voice>1</voice></note>";
+    let low = "<note><pitch><step>E</step><octave>4</octave></pitch><duration>2</duration><voice>2</voice><type>eighth</type><stem>down</stem></note>";
+    let attrs = "<attributes><divisions>4</divisions><time><beats>1</beats><beat-type>8</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>";
+    let eighth = "<note><pitch><step>E</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>eighth</type></note>";
+    single(&format!(
+        "<measure number=\"1\">{attrs}{eighth}</measure><measure number=\"2\">{rest}<backup><duration>2</duration></backup>{low}{closing}</measure><measure number=\"3\">{after}</measure>"
+    ))
+}
+
+/// The ink of the bar it stands in alone: a high note opening the next bar is
+/// within its reach and is not read.
+#[test]
+fn a_measure_rest_reads_no_ink_of_the_next_bar() {
+    let high = "<note><pitch><step>A</step><octave>5</octave></pitch><duration>2</duration><voice>1</voice><type>eighth</type></note>";
+    let layout = engrave("rest_next_bar.musicxml", &narrow_bar(high, ""));
+    let (name, y) = rest_at(&layout);
+    let r = ink(&layout, "restWhole");
+    let a = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str() == "noteheadBlack")
+        .max_by(|p, q| p.position.y.0.total_cmp(&q.position.y.0))
+        .expect("the A5");
+    assert!(
+        a.position.x.0 - r.1 < 4.0,
+        "the A5 at {} within the rest's reach {r:?}",
+        a.position.x.0
+    );
+    assert_eq!(name, "restWhole");
+    assert!((y - top_line(&layout)).abs() < 0.05, "on its line: {y}");
+}
+
+/// Nor a clef closing its bar, which bounds its space and which it does not
+/// stand in: within its reach, and not read.
+#[test]
+fn a_measure_rest_does_not_read_a_clef_closing_its_bar() {
+    let clef = "<attributes><clef><sign>F</sign><line>4</line></clef></attributes>";
+    let next = "<note><pitch><step>E</step><octave>3</octave></pitch><duration>2</duration><voice>1</voice><type>eighth</type></note>";
+    let layout = engrave("rest_clef_read.musicxml", &narrow_bar(next, clef));
+    let (name, y) = rest_at(&layout);
+    let r = ink(&layout, "restWhole");
+    let f = ink(&layout, "fClef");
+    assert!(
+        f.0 - r.1 < 4.0,
+        "the clef {f:?} within the rest's reach {r:?}"
+    );
+    assert!(f.3 > r.2 - 0.75, "and tall enough to lift it: {f:?} {r:?}");
+    assert_eq!(name, "restWhole");
+    assert!((y - top_line(&layout)).abs() < 0.05, "on its line: {y}");
+}
+
+/// A rest alone reads no visitor at its first column once it stands at the bar's
+/// middle, and stays on its line.
+#[test]
+fn a_rest_away_from_a_visitor_at_its_first_column_stands_on_its_line() {
+    let clefs = "<staves>2</staves><clef number=\"1\"><sign>G</sign><line>2</line></clef><clef number=\"2\"><sign>G</sign><line>2</line></clef>";
+    let attrs = format!(
+        "<attributes><divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type></time>{clefs}</attributes>"
+    );
+    let staff = |p: &str, o: u32, v: u32, st: u32, d: u32, t: &str| {
+        format!(
+            "<note><pitch><step>{p}</step><octave>{o}</octave></pitch><duration>{d}</duration><voice>{v}</voice><type>{t}</type><staff>{st}</staff></note>"
+        )
+    };
+    let first = format!(
+        "{}<backup><duration>16</duration></backup>{}",
+        staff("C", 5, 1, 1, 16, "whole"),
+        staff("C", 5, 5, 2, 16, "whole")
+    );
+    let second = format!(
+        "{}{}<backup><duration>16</duration></backup><note><rest measure=\"yes\"/><duration>16</duration><voice>5</voice><staff>2</staff></note>",
+        staff("D", 5, 1, 2, 2, "eighth"),
+        staff("C", 5, 1, 1, 14, "half")
+    );
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A</part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">{attrs}{first}</measure><measure number=\"2\">{second}</measure><measure number=\"3\">{first}</measure></part></score-partwise>"
+    );
+    let layout = engrave("rest_visitor_first.musicxml", &xml);
+    let mut lines: Vec<f32> = layout
+        .strokes
+        .iter()
+        .filter(|s| {
+            matches!(s.provenance.source, epiphany_core::TypedObjectId::Staff(_))
+                && s.from.y == s.to.y
+        })
+        .map(|s| s.from.y.0)
+        .collect();
+    lines.sort_by(|a, b| b.total_cmp(a));
+    lines.dedup_by(|a, b| (*a - *b).abs() < 1e-3);
+    let (name, y) = rest_at(&layout);
+    assert_eq!(name, "restWhole");
+    assert!(
+        (y - lines[6]).abs() < 0.05,
+        "hanging from its staff's fourth line {}: {y}",
+        lines[6]
+    );
+}
+
+/// A visitor in the next bar within a rest's reach does not turn it: only the
+/// stems of its own bar do. The C4's stem up leaves it under the C4, its first
+/// clear place; a stem down read from the next bar would take it over.
+#[test]
+fn a_rest_alone_turns_from_the_stems_of_its_own_bar_alone() {
+    let clefs = "<staves>3</staves><clef number=\"1\"><sign>G</sign><line>2</line></clef><clef number=\"2\"><sign>G</sign><line>2</line></clef><clef number=\"3\"><sign>F</sign><line>4</line></clef>";
+    let attrs = format!(
+        "<attributes><divisions>4</divisions><time><beats>1</beats><beat-type>8</beat-type></time>{clefs}</attributes>"
+    );
+    let staff = |p: &str, o: u32, v: u32, st: u32| {
+        format!(
+            "<note><pitch><step>{p}</step><octave>{o}</octave></pitch><duration>2</duration><voice>{v}</voice><type>eighth</type><staff>{st}</staff></note><backup><duration>2</duration></backup>"
+        )
+    };
+    let first = format!(
+        "{}{}{}",
+        staff("C", 5, 1, 1),
+        staff("B", 4, 5, 2),
+        staff("C", 3, 9, 3)
+    );
+    let second = format!(
+        "{}<note><rest measure=\"yes\"/><duration>2</duration><voice>5</voice><staff>2</staff></note><backup><duration>2</duration></backup>{}",
+        staff("C", 4, 1, 2),
+        staff("C", 3, 9, 3)
+    );
+    let third = format!(
+        "{}{}{}",
+        staff("C", 5, 1, 1),
+        staff("B", 4, 5, 2),
+        staff("F", 5, 9, 2)
+    );
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A</part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">{attrs}{first}</measure><measure number=\"2\">{second}</measure><measure number=\"3\">{third}</measure></part></score-partwise>"
+    );
+    let layout = engrave("rest_own_bar_stems.musicxml", &xml);
+    let rest = layout
+        .glyphs
+        .iter()
+        .find(|g| g.glyph.as_str().starts_with("rest"))
+        .expect("the rest");
+    let visitors: Vec<(f32, f32)> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str() == "noteheadBlack")
+        .map(|g| (g.position.x.0, g.position.y.0))
+        .collect();
+    let right = rest.position.x.0 + rest.bounding_box.right.0;
+    assert!(
+        visitors.iter().any(|(x, _)| *x > right && *x - right < 3.5),
+        "the next bar's notes {visitors:?} within the rest's reach from {right}"
+    );
+    assert!(
+        rest.position.y.0
+            < visitors
+                .iter()
+                .filter(|(x, _)| (*x - rest.position.x.0).abs() < 3.0)
+                .map(|(_, y)| *y)
+                .fold(f32::NEG_INFINITY, f32::max),
+        "the rest {} under its bar's C4, {visitors:?}",
+        rest.position.y.0
+    );
+}
+
+/// A voice's rest on a staff a beam leaves does not read the stem reaching that
+/// beam, whose end the gap between the staves sets later: it stays at its voice's
+/// place by its own staff's other voice, the stem at the bar's middle.
+#[test]
+fn a_voices_rest_does_not_read_a_stem_reaching_a_beam_on_another_staff() {
+    let clefs = "<staves>2</staves><clef number=\"1\"><sign>G</sign><line>2</line></clef><clef number=\"2\"><sign>F</sign><line>4</line></clef>";
+    let attrs = format!(
+        "<attributes><divisions>2</divisions><time><beats>3</beats><beat-type>8</beat-type></time>{clefs}</attributes>"
+    );
+    let beamed = |p: &str, o: u32, st: u32, b: &str| {
+        format!(
+            "<note><pitch><step>{p}</step><octave>{o}</octave></pitch><duration>1</duration><voice>1</voice><type>eighth</type><beam number=\"1\">{b}</beam><staff>{st}</staff></note>"
+        )
+    };
+    let notes = format!(
+        "{}{}{}",
+        beamed("A", 4, 1, "begin"),
+        beamed("C", 3, 2, "continue"),
+        beamed("A", 4, 1, "end")
+    );
+    let lows = "<note><pitch><step>E</step><octave>2</octave></pitch><duration>3</duration><voice>6</voice><type>quarter</type><dot/><staff>2</staff></note>";
+    let rest = "<note><rest measure=\"yes\"/><duration>3</duration><voice>5</voice><staff>2</staff></note>";
+    let m = format!(
+        "{notes}<backup><duration>3</duration></backup>{rest}<backup><duration>3</duration></backup>{lows}"
+    );
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A</part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">{attrs}{m}</measure></part></score-partwise>"
+    );
+    let layout = engrave("rest_reaching_stem.musicxml", &xml);
+    let mut lines: Vec<f32> = layout
+        .strokes
+        .iter()
+        .filter(|s| {
+            matches!(s.provenance.source, epiphany_core::TypedObjectId::Staff(_))
+                && s.from.y == s.to.y
+        })
+        .map(|s| s.from.y.0)
+        .collect();
+    lines.sort_by(|a, b| b.total_cmp(a));
+    lines.dedup_by(|a, b| (*a - *b).abs() < 1e-3);
+    let (_, y) = rest_at(&layout);
+    assert!(
+        (y - lines[5]).abs() < 0.05,
+        "an upper voice's rest hanging from its staff's top line {}: {y}",
+        lines[5]
+    );
+}
+
+/// A page's first staff stands below a rest that is its highest ink, its extent
+/// reading the rest where it is cleared.
+#[test]
+fn a_cleared_rest_joins_its_staffs_extent() {
+    let high = "<note><pitch><step>A</step><octave>7</octave></pitch><duration>8</duration><voice>2</voice><type>half</type></note>";
+    let middle = format!(
+        "<note><rest measure=\"yes\"/><duration>16</duration><voice>1</voice></note><backup><duration>16</duration></backup>{high}{high}"
+    );
+    let layout = engrave("rest_extent.musicxml", &around(&middle));
+    let r = ink(&layout, "rest");
+    let system = layout.systems().next().expect("a system");
+    let top = system.bounding_box.origin.y.0 + system.bounding_box.size.height.0;
+    assert!(
+        (top - r.3).abs() < 0.02,
+        "the system's top {top} at the rest's {r:?}"
+    );
+}
+
+/// A tie through a rest at the bar's middle moves it, its voice's way, as far as
+/// the tie needs: another voice's high note held across the bar and over the next
+/// (Gould, p. 41). MuseScore's rule reads no curve.
+#[test]
+fn a_measure_rest_clears_a_tie_passing_through_it() {
+    let tied = |stop: bool, start: bool| {
+        let (a, b) = (
+            if stop { "<tie type=\"stop\"/>" } else { "" },
+            if start { "<tie type=\"start\"/>" } else { "" },
+        );
+        let (c, d) = (
+            if stop { "<tied type=\"stop\"/>" } else { "" },
+            if start { "<tied type=\"start\"/>" } else { "" },
+        );
+        format!(
+            "<note><pitch><step>A</step><octave>5</octave></pitch><duration>16</duration>{a}{b}<voice>2</voice><type>whole</type><notations>{c}{d}</notations></note>"
+        )
+    };
+    let middle = format!(
+        "<note><rest measure=\"yes\"/><duration>16</duration><voice>1</voice></note><backup><duration>16</duration></backup>{}",
+        tied(true, true)
+    );
+    let xml = single(&format!(
+        "<measure number=\"1\">{HEAD}{}</measure><measure number=\"2\">{middle}</measure><measure number=\"3\">{}</measure>",
+        tied(false, true),
+        tied(true, false)
+    ));
+    let layout = engrave("rest_on_tie.musicxml", &xml);
+    let r = ink(&layout, "rest");
+    let mut passed = 0;
+    for c in layout
+        .curves
+        .iter()
+        .filter(|c| matches!(c.provenance.source, epiphany_core::TypedObjectId::Tie(_)))
+    {
+        let cp = c.control_points();
+        for k in 0..=200 {
+            let t = k as f32 / 200.0;
+            let u = 1.0 - t;
+            let w = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+            let x: f32 = (0..4).map(|i| w[i] * cp[i].x.0).sum();
+            let y: f32 = (0..4).map(|i| w[i] * cp[i].y.0).sum();
+            if x > r.0 && x < r.1 {
+                passed += 1;
+                assert!(
+                    y + c.thickness.0 * 0.5 <= r.2 + 1e-3 || y - c.thickness.0 * 0.5 >= r.3 - 1e-3,
+                    "the tie at ({x}, {y}) on the rest {r:?}"
+                );
+            }
+        }
+    }
+    assert!(passed > 0, "a tie passes across the rest {r:?}");
 }

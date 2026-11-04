@@ -6636,3 +6636,95 @@ fn a_centred_text_with_no_dynamic_stands_at_the_gaps_middle() {
         "the words' box centred at {at}, the gap's middle {middle}, the staves {spans:?}"
     );
 }
+
+/// The other staff's lead bounds the centring too: a sung lower staff's dynamic
+/// above it, at a later system's first note, keeps its least distance under the
+/// upper staff's clef.
+#[test]
+fn a_centred_dynamic_keeps_its_distance_from_the_other_staffs_lead() {
+    let clefs = "<staves>2</staves><clef number=\"1\"><sign>G</sign><line>2</line></clef>\
+                 <clef number=\"2\"><sign>G</sign><line>2</line></clef>";
+    let attrs = format!(
+        "<attributes><divisions>2</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time>{clefs}</attributes>"
+    );
+    let sung = |text: &str| syllable(note("E5", 8, "whole", 5, 2, ""), 1, "single", text, false);
+    let wide = "<direction><direction-type><dynamics><ffff/></dynamics></direction-type>\
+                <staff>2</staff></direction>";
+    let bar = |marks: &str, text: &str| {
+        format!(
+            "{}{}{marks}{}",
+            note("E5", 8, "whole", 1, 1, ""),
+            backup(8),
+            sung(text)
+        )
+    };
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">{attrs}{}\
+         </measure><measure number=\"2\"><print new-system=\"yes\"/>{}</measure></part>\
+         </score-partwise>",
+        bar("", "one"),
+        bar(wide, "two")
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("centred_other_lead.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = engrave(&loaded.reduced.score).layout;
+    let f = layout
+        .glyphs
+        .iter()
+        .find(|g| g.glyph.as_str().starts_with("dynamicF"))
+        .expect("the dynamic");
+    let (fl, fr, fb, ft) = (
+        f.position.x.0 + f.bounding_box.left.0,
+        f.position.x.0 + f.bounding_box.right.0,
+        f.position.y.0 + f.bounding_box.bottom.0,
+        f.position.y.0 + f.bounding_box.top.0,
+    );
+    let mut met = 0;
+    for g in layout.glyphs.iter().filter(|g| g.glyph.as_str() == "gClef") {
+        let (l, r, b, t) = (
+            g.position.x.0 + g.bounding_box.left.0,
+            g.position.x.0 + g.bounding_box.right.0,
+            g.position.y.0 + g.bounding_box.bottom.0,
+            g.position.y.0 + g.bounding_box.top.0,
+        );
+        if l < fr && r > fl && t > fb - 3.0 && b < ft + 3.0 {
+            met += 1;
+            assert!(
+                b >= ft + 0.5 - 1e-3 || t <= fb - 0.5 + 1e-3,
+                "the dynamic ({fl}, {fb}, {fr}, {ft}) within its distance of a clef ({l}, {b}, {r}, {t})"
+            );
+        }
+    }
+    assert!(met > 0, "the dynamic stands across a clef");
+}
+
+/// A text in no row lifted off its staff's ink centres from where it stands.
+#[test]
+fn a_centred_text_lifted_off_its_staff_stands_at_the_gaps_middle() {
+    let words = "<direction><direction-type><words font-style=\"italic\">espress.</words>\
+                 </direction-type><staff>1</staff><sound/></direction>";
+    let up: String = (0..4).map(|_| note("A3", 2, "quarter", 1, 1, "")).collect();
+    let low: String = (0..4).map(|_| note("C2", 2, "quarter", 5, 2, "")).collect();
+    let wide = {
+        let up: String = (0..4).map(|_| note("C2", 2, "quarter", 1, 1, "")).collect();
+        let low: String = (0..4).map(|_| note("C6", 2, "quarter", 5, 2, "")).collect();
+        format!("{up}{}{low}", backup(8))
+    };
+    let loaded = part(
+        "centred_words_lifted.musicxml",
+        2,
+        &[format!("{words}{up}{}{low}", backup(8)), wide],
+    );
+    let layout = engrave(&loaded.reduced.score).layout;
+    let run = runs(&layout, "espress.")[0];
+    let spans = staff_spans(&layout);
+    let middle = (spans[0].0 + spans[1].1) * 0.5;
+    let at = run.origin.y.0 + (run.bounds.bottom.0 + run.bounds.top.0) * 0.5;
+    assert!(
+        (at - middle).abs() < 0.05,
+        "the words' box centred at {at}, the gap's middle {middle}, the staves {spans:?}"
+    );
+}

@@ -260,9 +260,9 @@ pub struct MeasureRest {
     /// Its voice's side: up for an upper voice, down for a lower, `None` for a
     /// rest alone on its staff.
     pub up: Option<bool>,
-    /// The stems visiting its staff in its measure, for a rest alone on it:
-    /// each one's column, its ink across from the column's x, and whether it
-    /// turns up.
+    /// The stems visiting its staff in its measure, which a rest alone on it
+    /// turns from: each one's column, its ink across from the column's x, and
+    /// whether it turns up.
     pub stems: Vec<(SpringSlotId, f32, f32, bool)>,
     /// The fermatas standing on it.
     pub marks: Vec<GlyphObjectId>,
@@ -3363,9 +3363,9 @@ pub fn try_to_constrained(
         }
         clear_visitors(&mut event_rests, &visiting, &visitor_ink, &columns);
 
-        // Each staff column's accidentals, with the event drawing each: a
-        // ledgered rest's line reaches them where its plain glyph does not.
-        let mut accidental_ink: ColumnAccidentals = BTreeMap::new();
+        // Each staff column's note ink, with the event drawing each: a ledgered
+        // rest's line reaches an accidental where its plain glyph does not.
+        let mut note_ink: ColumnNoteInk = BTreeMap::new();
         for ((staff, key), refs) in &column_heads {
             let Some(info) = columns.get(key) else {
                 continue;
@@ -3373,18 +3373,14 @@ pub fn try_to_constrained(
             let yo = staff.map(&y_origin).unwrap_or(0.0);
             for r in refs {
                 let head = r.get(&pitch_heads, &unpitched_heads);
-                accidental_ink
-                    .entry((*staff, key.clone()))
-                    .or_default()
-                    .extend(
-                        column_ink_boxes(head, info.x, yo)
-                            .into_iter()
-                            .filter(|b| b.behind)
-                            .map(|b| (head.event, b)),
-                    );
+                note_ink.entry((*staff, key.clone())).or_default().extend(
+                    column_ink_boxes(head, info.x, yo)
+                        .into_iter()
+                        .map(|b| (head.event, b)),
+                );
             }
         }
-        clear_ledgers(&mut event_rests, &accidental_ink, &columns);
+        clear_ledgers(&mut event_rests, &note_ink, &columns);
 
         // The dynamics and hairpins of each staff, placed before any is
         // emitted: a hairpin keeps its distance from a dynamic at either of its
@@ -4804,9 +4800,7 @@ pub fn try_to_constrained(
                                     stems: visitor_ink
                                         .iter()
                                         .filter(|((st, key), _)| {
-                                            seg.voice == VoicePlace::Alone
-                                                && *st == seg.staff
-                                                && in_measure(key, seg)
+                                            *st == seg.staff && in_measure(key, seg)
                                         })
                                         .flat_map(|((_, key), boxes)| {
                                             let info = column(key);
@@ -6293,14 +6287,13 @@ pub fn try_to_constrained(
                                                     x1 = right + lines::OTTAVA_END_PAST
                                                         - width * 0.5;
                                                     end_slot = slot;
-                                                    // Its last ink a rest filling its measure:
-                                                    // its end goes with the rest.
+                                                    // Its last ink a rest alone in its column:
+                                                    // one filling its measure takes its end with it.
                                                     ends_on_rest = event_rests
                                                         .iter()
                                                         .find(|(_, segs)| {
                                                             segs.iter().any(|r| {
-                                                                r.whole_measure
-                                                                    && r.visible
+                                                                r.visible
                                                                     && r.staff == Some(st)
                                                                     && columns
                                                                         .get(&r.key)
@@ -7472,8 +7465,8 @@ fn clear_rests(rests: &mut BTreeMap<EventId, Vec<RestSeg>>, sounding: &[Sounding
 /// the stem direction of the component it belongs to.
 type VisitorInk = BTreeMap<(Option<StaffId>, ColumnKey), Vec<(InkBox, bool)>>;
 
-/// Each staff column's accidentals, with the event whose head draws each.
-type ColumnAccidentals = BTreeMap<(Option<StaffId>, ColumnKey), Vec<(EventId, InkBox)>>;
+/// Each staff column's note ink, with the event whose head draws each.
+type ColumnNoteInk = BTreeMap<(Option<StaffId>, ColumnKey), Vec<(EventId, InkBox)>>;
 
 /// Each staff column's chords' ink, `[left, bottom, right, top]` from the
 /// column, with the event drawing it, which another chord's outside marks
@@ -7641,13 +7634,13 @@ fn clear_visitors(
 }
 
 /// Moves each whole or half rest drawn ledgered, its staff's outward, a space
-/// at a time, until its glyph stands `REST_CLEARANCE` up and down from every
-/// accidental of another event in its column: the ledger line's overhang
-/// reaches them where the plain glyph, which `clear_rests` leaves beside the
+/// at a time, until its glyph stands `REST_CLEARANCE` up and down from the ink
+/// of every other note in its column: the ledger line's overhang reaches an
+/// accidental where the plain glyph, which `clear_rests` leaves beside the
 /// heads, does not (Gould, p. 41).
 fn clear_ledgers(
     rests: &mut BTreeMap<EventId, Vec<RestSeg>>,
-    accidentals: &ColumnAccidentals,
+    accidentals: &ColumnNoteInk,
     columns: &BTreeMap<ColumnKey, ColumnInfo>,
 ) {
     for (eid, segs) in rests.iter_mut() {
@@ -11855,6 +11848,124 @@ mod tests {
         };
         assert!(run(0.0) < 0.0, "level both ways: down, {}", run(0.0));
         assert!(run(1.0) > 0.0, "a space nearer above: up, {}", run(1.0));
+    }
+
+    /// A rest of a voice reads the glyph its height draws: on whole spaces beside
+    /// heads on half spaces no corpus note can tell a half rest's ledgered bottom
+    /// from its plain one, so the head stands off the grid. Plain at 5 it would
+    /// clear; ledgered there it does not.
+    #[test]
+    fn a_rest_beside_a_voice_reads_the_ledgered_glyph_at_its_height() {
+        let seg = RestSeg {
+            name: Some("restHalf"),
+            key: ColumnKey::Lead,
+            y: 4.0,
+            comp: 0,
+            visible: true,
+            dots: 0,
+            dots_y: 4.5,
+            staff: None,
+            start: TimePoint::WallClock(WallClockTime(0)),
+            voice: VoicePlace::Upper,
+            whole_measure: false,
+            lines: (0.0, 4.0),
+        };
+        let mut rests = BTreeMap::new();
+        rests.insert(EventId::from_raw(1), vec![seg]);
+        let sounding = [Sounding {
+            staff: None,
+            event: EventId::from_raw(2),
+            start: TimePoint::WallClock(WallClockTime(0)),
+            ys: vec![4.22],
+        }];
+        clear_rests(&mut rests, &sounding);
+        assert_eq!(rests[&EventId::from_raw(1)][0].y, 6.0);
+    }
+
+    fn lone_rest(name: &'static str, y: f32, voice: VoicePlace) -> BTreeMap<EventId, Vec<RestSeg>> {
+        let seg = RestSeg {
+            name: Some(name),
+            key: ColumnKey::Lead,
+            y,
+            comp: 0,
+            visible: true,
+            dots: 0,
+            dots_y: y + 0.5,
+            staff: None,
+            start: TimePoint::WallClock(WallClockTime(0)),
+            voice,
+            whole_measure: false,
+            lines: (0.0, 4.0),
+        };
+        let mut rests = BTreeMap::new();
+        rests.insert(EventId::from_raw(1), vec![seg]);
+        rests
+    }
+
+    fn lead_column() -> BTreeMap<ColumnKey, ColumnInfo> {
+        let mut columns = BTreeMap::new();
+        columns.insert(
+            ColumnKey::Lead,
+            ColumnInfo {
+                x: 0.0,
+                slot: SpringSlotId(1),
+                time: TimePoint::WallClock(WallClockTime(0)),
+                note_column: true,
+            },
+        );
+        columns
+    }
+
+    fn ink_box(left: f32, right: f32, bottom: f32, top: f32) -> InkBox {
+        InkBox {
+            left,
+            right,
+            bottom,
+            top,
+            behind: false,
+        }
+    }
+
+    /// A rest moved clear of a visitor reads the glyph its height draws: a
+    /// visitor's box left of the plain glyph stands under the ledger line's
+    /// overhang once the rest stands off the staff.
+    #[test]
+    fn a_rest_clear_of_a_visitor_reads_the_ledgered_glyph_at_its_height() {
+        let mut rests = lone_rest("restHalf", 4.0, VoicePlace::Alone);
+        let mut ink = VisitorInk::new();
+        ink.insert(
+            (None, ColumnKey::Lead),
+            vec![
+                // A head on its line, whose stem turns down: the rest turns up.
+                (ink_box(0.0, 1.2, 3.8, 4.7), false),
+                // An overhang's width to its left, up to 5.5.
+                (ink_box(-0.4, -0.1, 4.8, 5.5), false),
+            ],
+        );
+        clear_visitors(&mut rests, &BTreeSet::new(), &ink, &lead_column());
+        // Plain at 5 it clears both; its ledger line reaches the box until 6.
+        assert_eq!(rests[&EventId::from_raw(1)][0].y, 6.0);
+    }
+
+    /// `clear_ledgers` lifts a rest drawn ledgered off an accidental its line
+    /// reaches, and leaves a plain rest be, whose rule it is not.
+    #[test]
+    fn only_a_ledgered_rest_lifts_off_an_accidental() {
+        let mut accidentals = ColumnNoteInk::new();
+        accidentals.insert(
+            (None, ColumnKey::Lead),
+            vec![(EventId::from_raw(2), ink_box(-0.4, 0.2, 2.0, 5.0))],
+        );
+        let mut plain = lone_rest("restHalf", 3.0, VoicePlace::Upper);
+        clear_ledgers(&mut plain, &accidentals, &lead_column());
+        assert_eq!(plain[&EventId::from_raw(1)][0].y, 3.0, "a plain rest stays");
+        let mut ledgered = lone_rest("restHalf", 5.0, VoicePlace::Upper);
+        clear_ledgers(&mut ledgered, &accidentals, &lead_column());
+        assert_eq!(
+            ledgered[&EventId::from_raw(1)][0].y,
+            6.0,
+            "a ledgered rest lifts off, 0.25 clear"
+        );
     }
 
     /// A break anchored to its music is placed where the music is (X5b.4,

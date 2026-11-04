@@ -1555,12 +1555,6 @@ pub(crate) fn cast_off(
             .unwrap_or(spaced);
         spaced + hplace[s].0.slot_dx(sx) - shift_of(glyph.horizontal_slot)
     };
-    let text_at: BTreeMap<GlyphObjectId, usize> = input
-        .texts
-        .iter()
-        .enumerate()
-        .map(|(i, text)| (text.id(), i))
-        .collect();
     let mut rest_dx: BTreeMap<usize, f32> = BTreeMap::new();
     // Each such rest's height and glyph, cleared where it stands.
     let mut rest_place: BTreeMap<usize, crate::rests::RestPlace> = BTreeMap::new();
@@ -1685,6 +1679,43 @@ pub(crate) fn cast_off(
                 at_right: (b.y.0 - half, b.y.0 + half),
             });
     }
+    // Each tie and slur of such a staff, its chords as the sky reads them.
+    let mut rest_curves: BTreeMap<(usize, VerticalBandId), Vec<crate::rests::RestInk>> =
+        BTreeMap::new();
+    for (ci, curve) in spaced_curves.iter().enumerate() {
+        let half = (curve.thickness.0 * 0.5).max(0.0);
+        for (s, cp) in curve_pieces(ci) {
+            if !bands_of_rests.contains(&(s, curve.vertical_band)) {
+                continue;
+            }
+            let at = |t: f32| {
+                let u = 1.0 - t;
+                let w = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+                (
+                    (0..4).map(|k| w[k] * cp[k].x.0).sum::<f32>(),
+                    (0..4).map(|k| w[k] * cp[k].y.0).sum::<f32>(),
+                )
+            };
+            const SAMPLES: usize = 12;
+            let chords = rest_curves.entry((s, curve.vertical_band)).or_default();
+            let mut last = at(0.0);
+            for k in 1..=SAMPLES {
+                let next = at(k as f32 / SAMPLES as f32);
+                let (a, b) = if last.0 <= next.0 {
+                    (last, next)
+                } else {
+                    (next, last)
+                };
+                chords.push(crate::rests::RestInk {
+                    left: a.0,
+                    right: b.0,
+                    at_left: (a.1 - half, a.1 + half),
+                    at_right: (b.1 - half, b.1 + half),
+                });
+                last = next;
+            }
+        }
+    }
     let no_rest_ink: Vec<crate::rests::RestInk> = Vec::new();
     for rest in &input.measure_rests {
         let Some(&s) = system_of_slot.get(&rest.slot) else {
@@ -1783,6 +1814,10 @@ pub(crate) fn cast_off(
                 centre,
                 column: placed_x(g, s),
                 ink: &ink,
+                curves: rest_curves
+                    .get(&(s, rest.band))
+                    .unwrap_or(&no_rest_ink)
+                    .as_slice(),
                 stems: &stems,
             });
             rest_dx.insert(g, place.x - placed_x(g, s));
@@ -1803,27 +1838,14 @@ pub(crate) fn cast_off(
                 carried_marks.push((f, centre - centre_of(g)));
             }
         }
-        for id in &rest.runs {
-            let (Some(&ti), Some(&f)) = (text_at.get(id), placed.texts.get(id)) else {
-                continue;
-            };
-            let dx = match rest.glyph.as_ref().and_then(|id| glyph_index.get(id)) {
-                // A syllable keeps its place about its rest; on a hidden rest,
-                // which has none, it centres as its rest would.
-                Some(&g) => centre - centre_of(g),
-                None => {
-                    let (text, spaced) = (&input.texts[ti], &spaced_texts[ti]);
-                    let sx = slot_source_x
-                        .get(&text.horizontal_slot)
-                        .copied()
-                        .unwrap_or(spaced.origin.x.0);
-                    centre
-                        - (spaced.origin.x.0 + hplace[s].0.slot_dx(sx)
-                            - shift_of(text.horizontal_slot)
-                            + (spaced.bounds.left.0 + spaced.bounds.right.0) * 0.5)
+        // A syllable keeps its place about its rest. A hidden rest's has no
+        // glyph to ride and no column of its own, and stays.
+        if let Some(&g) = rest.glyph.as_ref().and_then(|id| glyph_index.get(id)) {
+            for id in &rest.runs {
+                if let Some(&f) = placed.texts.get(id) {
+                    carried_marks.push((f, centre - centre_of(g)));
                 }
-            };
-            carried_marks.push((f, dx));
+            }
         }
         for (ids, first) in [(&rest.slur_starts, true), (&rest.slur_ends, false)] {
             for id in ids {
@@ -2038,6 +2060,12 @@ pub(crate) fn cast_off(
     // ink of the system's lead and of the columns before the member's, or on
     // the system's left edge.
     let mut family_dx: BTreeMap<usize, f32> = carried_marks.iter().copied().collect();
+    let text_at: BTreeMap<GlyphObjectId, usize> = input
+        .texts
+        .iter()
+        .enumerate()
+        .map(|(i, text)| (text.id(), i))
+        .collect();
     for (f, mark) in input.family.iter().enumerate() {
         let Some(across) = mark.placement.and_then(|p| p.across) else {
             continue;
@@ -2141,41 +2169,20 @@ pub(crate) fn cast_off(
     // Each hairpin leg whose start or end moves with a dynamic moved off a
     // barline: by its stroke, the move of its start and of its end.
     let mut hairpin_ends: BTreeMap<GlyphObjectId, (f32, f32)> = BTreeMap::new();
-    // So does an ottava's end whose last ink is a rest filling its measure,
-    // a space past the rest where it is drawn (`Ottava::linePos`), never past
-    // the next note, its line and its end's hook moved alike.
+    // So does an ottava's end whose last ink is a rest filling its measure, a
+    // space past the rest where it is drawn (`Ottava::linePos`), its line and
+    // its end's hook moved alike. The rest stands inside its barline and the
+    // next note a barline's distance past it, so the space stays short of that
+    // note, which MuseScore's `linePos` also holds it to.
     for rest in &input.measure_rests {
-        let (Some(&g), Some(&s)) = (
-            rest.glyph.as_ref().and_then(|id| glyph_index.get(id)),
-            system_of_slot.get(&rest.slot),
-        ) else {
+        let Some(&dx) = rest
+            .glyph
+            .as_ref()
+            .and_then(|id| glyph_index.get(id))
+            .and_then(|g| rest_dx.get(g))
+        else {
             continue;
         };
-        let Some(&dx) = rest_dx.get(&g) else {
-            continue;
-        };
-        let Some(body) = rest.line_ends.first().and_then(|id| stroke_index.get(id)) else {
-            continue;
-        };
-        let (source, spaced) = (&input.strokes[*body], &spaced_strokes[*body]);
-        let p = &hplace[s].0;
-        let end = place_stroke(
-            source,
-            spaced,
-            p,
-            &slot_source_x,
-            &input.glyphs,
-            anchors.get(&source.id()),
-        )
-        .to
-        .x
-        .0;
-        let limit = line_before
-            .get(&source.id())
-            .filter(|slot| system_of_slot.get(slot) == Some(&s))
-            .and_then(|slot| slot_source_x.get(slot))
-            .map_or(f32::INFINITY, |&sx| p.x(sx));
-        let dx = dx.min(limit - end);
         for (k, id) in rest.line_ends.iter().enumerate() {
             hairpin_ends.insert(*id, (if k == 0 { 0.0 } else { dx }, dx));
         }

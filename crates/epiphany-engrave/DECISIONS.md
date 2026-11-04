@@ -3701,8 +3701,11 @@ engraver's own placing reproduces it:
   is placed against the rest; the columns of a clef or a key or time signature,
   which bound its free space and which it does not stand in; another rest filling
   the measure, as MuseScore; the stem whose end rides another staff, whose height
-  the gap between the staves sets later; a curve, which the bake reshapes after
-  this and which passes over what it meets.
+  the gap between the staves sets later, as the ink of a beam across two staves is
+  read on neither. A tie or slur is read as well, only where it passes through the
+  rest, a quarter space up and down, and the rest moves its voice's way: MuseScore
+  reads none and a rest stands on a held note's tie, Gould lets no characters
+  collide, and a curve near it is no reason to move.
 - A voice's rest keeps outside the other part, above all of that ink for an upper
   voice and below it for a lower, as Gould's ledger line moves far enough to stand
   outside the other part (p. 37) and MuseScore's one-sided clearance reads. A rest
@@ -3715,9 +3718,9 @@ engraver's own placing reproduces it:
   its box is read at the height that draws it (`restHalfLegerLine` is 2.07 wide
   against `restHalf`'s 1.13): in `rests::clear`, in `clear_rests` and
   `clear_visitors` for a rest not filling its measure, and in `clear_ledgers`,
-  which lifts a ledgered rest beside another voice off that voice's accidentals,
-  which the ledger line reaches and the plain glyph, beside the heads
-  `clear_rests` reads, does not.
+  which lifts a ledgered rest beside another voice off that voice's ink, an
+  accidental above all, which the ledger line reaches and the plain glyph,
+  beside the heads `clear_rests` reads, does not.
 
 ## ENGRAVER_VERSION 131 → 132: a group's sign spans a staff of one line as boxed (X5d fix round 1, 2026-11-04)
 
@@ -3826,3 +3829,13 @@ engraver's own placing reproduces it:
   gap between systems.
 - The level-both-ways test of `clear_visitors` also runs on a half rest, whose
   centre stands off its line, so the glyph's centre is what it reads.
+
+## ENGRAVER_VERSION 138 → 139: a tie passing through a measure rest moves it (X5d fix round 1, 2026-11-04)
+
+- Entry 131 returned a rest to its line where nothing stands near it at its centre,
+  and one came down onto a tie held across its bar. A tie or slur of its staff that
+  passes across it within a quarter space now moves it its voice's way, by whole
+  spaces, only as far as that curve needs (the entry's wording stands above). The
+  sky reads the curve at the bake's chords, before the bake reshapes a slur past
+  what it passes (`a_measure_rest_clears_a_tie_passing_through_it`,
+  `a_curve_moves_a_rest_only_where_it_passes_through_it`).

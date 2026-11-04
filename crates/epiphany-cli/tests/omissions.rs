@@ -1308,3 +1308,28 @@ fn a_whole_bar_breve_rest_is_drawn_at_its_value() {
     assert_eq!(count(&loaded, &engraved, "rest drawn at another value"), 0);
     assert_eq!(count(&loaded, &engraved, "rest not drawn"), 0);
 }
+
+/// And so is one drawn ledgered, over another voice's high note.
+#[test]
+fn a_ledgered_whole_bar_breve_rest_is_drawn_at_its_value() {
+    let high = "<note><pitch><step>A</step><octave>5</octave></pitch><duration>4</duration>\
+                <voice>2</voice><type>whole</type></note>";
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
+         <attributes><divisions>1</divisions><time><beats>4</beats><beat-type>2</beat-type>\
+         </time><clef><sign>G</sign><line>2</line></clef></attributes>\
+         <note><rest measure=\"yes\"/><duration>8</duration><voice>1</voice></note>\
+         <backup><duration>8</duration></backup>{high}{high}</measure></part></score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("breve_rest_ledgered_counted.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let engraved = engrave(&loaded.reduced.score);
+    assert!(engraved
+        .layout
+        .glyphs
+        .iter()
+        .any(|g| g.glyph.as_str() == "restDoubleWholeLegerLine"));
+    assert_eq!(count(&loaded, &engraved, "rest drawn at another value"), 0);
+}
