@@ -1521,6 +1521,203 @@ pub(crate) fn cast_off(
             (placement, compressed)
         })
         .collect();
+    // ---- Measure rests (X5d.5) ---------------------------------------------
+    // A rest filling its measure stands centred in its staff's free space in
+    // the measure, as Gould sets a whole-bar rest (pp. 159-160): between the
+    // right edge of its staff's ink in the columns before it that hold no
+    // note, back to the barline opening the measure (or the system's lead
+    // where the measure opens the system), and the left edge of its staff's
+    // ink in the first such column after it, a clef, key or time signature or
+    // the barline closing the measure, as MuseScore takes them
+    // (`MeasureLayout::getMeasureStartEndPos`). Its column keeps its room.
+    // This needs the system's map across alone, so it is set here, and the
+    // sky, the family and the outlines read the rest where it is drawn. What
+    // stands on it goes with it (`MeasureRest`): its fermata, by `family_dx`,
+    // and a slur's end, by `curve_carry`.
+    let glyph_index: BTreeMap<GlyphObjectId, usize> = input
+        .glyphs
+        .iter()
+        .enumerate()
+        .map(|(i, g)| (g.id(), i))
+        .collect();
+    let placed_x = |g: usize, s: usize| -> f32 {
+        let glyph = &input.glyphs[g];
+        let spaced = spaced_glyphs[g].position.x.0;
+        let sx = slot_source_x
+            .get(&glyph.horizontal_slot)
+            .copied()
+            .unwrap_or(spaced);
+        spaced + hplace[s].0.slot_dx(sx) - shift_of(glyph.horizontal_slot)
+    };
+    let text_at: BTreeMap<GlyphObjectId, usize> = input
+        .texts
+        .iter()
+        .enumerate()
+        .map(|(i, text)| (text.id(), i))
+        .collect();
+    let mut rest_dx: BTreeMap<usize, f32> = BTreeMap::new();
+    let mut carried_marks: Vec<(usize, f32)> = Vec::new();
+    // The move across of a slur's first and last ends, each to its rest's
+    // centre, from where the system's map sets it.
+    let mut curve_carry: BTreeMap<GlyphObjectId, (f32, f32)> = BTreeMap::new();
+    let curve_index: BTreeMap<GlyphObjectId, usize> = spaced_curves
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.id(), i))
+        .collect();
+    // A curve's pieces where the system's map sets them, the staff's and the
+    // system's height aside, as the sky and the bake read them.
+    let curve_pieces = |ci: usize| -> Vec<(usize, [Point; 4])> {
+        let curve = &spaced_curves[ci];
+        match &curve_fates[ci] {
+            CurveFate::Rigid(Some(s)) => {
+                let p = &hplace[*s].0;
+                let slot_dx =
+                    |slot: &SpringSlotId| slot_source_x.get(slot).map(|&sx| p.slot_dx(sx));
+                let cp = match anchors
+                    .get(&curve.id())
+                    .and_then(|(start, end)| Some((slot_dx(start)?, slot_dx(end)?)))
+                {
+                    Some((start, end)) => crate::anchored_curve(curve.control_points(), start, end),
+                    None => curve
+                        .control_points()
+                        .map(|pt| Point::new(p.x(pt.x.0), pt.y.0)),
+                };
+                vec![(*s, cp)]
+            }
+            CurveFate::Rigid(None) => Vec::new(),
+            CurveFate::Split(segments) => segments
+                .iter()
+                .map(|(s, cp)| {
+                    let p = &hplace[*s].0;
+                    (*s, cp.map(|pt| Point::new(p.x(pt.x.0), pt.y.0)))
+                })
+                .collect(),
+        }
+    };
+    for rest in &input.measure_rests {
+        let Some(&s) = system_of_slot.get(&rest.slot) else {
+            continue;
+        };
+        let plan = &systems[s];
+        let slots = &region_slots[plan.region];
+        let Some(k) = plan.slots.iter().position(|&i| slots[i].id == rest.slot) else {
+            continue;
+        };
+        // A column holding no note: its ink on the rest's staff across.
+        let furniture = |i: usize| -> Option<(f32, f32)> {
+            if slots[i].note {
+                return None;
+            }
+            slots[i]
+                .members
+                .iter()
+                .filter(|&&m| {
+                    input.glyphs[m].vertical_band == rest.band
+                        && !family.contains(&input.glyphs[m].id())
+                })
+                .map(|&m| {
+                    let (x, b) = (placed_x(m, s), input.glyphs[m].bounding_box);
+                    (x + b.left.0, x + b.right.0)
+                })
+                .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)))
+        };
+        let mut left: Option<f32> = None;
+        let mut opened = false;
+        for &i in plan.slots[..k].iter().rev() {
+            if let Some((_, r)) = furniture(i) {
+                left = Some(left.map_or(r, |l| l.max(r)));
+            }
+            if slots[i].barline {
+                opened = true;
+                break;
+            }
+        }
+        if !opened {
+            let lead = geometry.margins.left.0 + lead_ink[s].unwrap_or(0.0);
+            left = Some(left.map_or(lead, |l| l.max(lead)));
+        }
+        let right = plan.slots[k + 1..]
+            .iter()
+            .find_map(|&i| furniture(i))
+            .map(|(l, _)| l);
+        let (Some(left), Some(right)) = (left, right) else {
+            continue;
+        };
+        if right - left <= rest.width {
+            continue;
+        }
+        let centre = (left + right) * 0.5;
+        let centre_of = |g: usize| {
+            let b = input.glyphs[g].bounding_box;
+            placed_x(g, s) + (b.left.0 + b.right.0) * 0.5
+        };
+        if let Some(&g) = rest.glyph.as_ref().and_then(|id| glyph_index.get(id)) {
+            rest_dx.insert(g, centre - centre_of(g));
+        }
+        for id in &rest.marks {
+            if let (Some(&g), Some(&f)) = (glyph_index.get(id), placed.glyphs.get(id)) {
+                carried_marks.push((f, centre - centre_of(g)));
+            }
+        }
+        for id in &rest.runs {
+            let (Some(&ti), Some(&f)) = (text_at.get(id), placed.texts.get(id)) else {
+                continue;
+            };
+            let dx = match rest.glyph.as_ref().and_then(|id| glyph_index.get(id)) {
+                // A syllable keeps its place about its rest; on a hidden rest,
+                // which has none, it centres as its rest would.
+                Some(&g) => centre - centre_of(g),
+                None => {
+                    let (text, spaced) = (&input.texts[ti], &spaced_texts[ti]);
+                    let sx = slot_source_x
+                        .get(&text.horizontal_slot)
+                        .copied()
+                        .unwrap_or(spaced.origin.x.0);
+                    centre
+                        - (spaced.origin.x.0 + hplace[s].0.slot_dx(sx)
+                            - shift_of(text.horizontal_slot)
+                            + (spaced.bounds.left.0 + spaced.bounds.right.0) * 0.5)
+                }
+            };
+            carried_marks.push((f, dx));
+        }
+        for (ids, first) in [(&rest.slur_starts, true), (&rest.slur_ends, false)] {
+            for id in ids {
+                let Some(&ci) = curve_index.get(id) else {
+                    continue;
+                };
+                let pieces = curve_pieces(ci);
+                let at = if first {
+                    pieces.first().map(|(_, cp)| cp[0].x.0)
+                } else {
+                    pieces.last().map(|(_, cp)| cp[3].x.0)
+                };
+                let Some(x) = at else {
+                    continue;
+                };
+                let carry = curve_carry.entry(*id).or_insert((0.0, 0.0));
+                if first {
+                    carry.0 = centre - x;
+                } else {
+                    carry.1 = centre - x;
+                }
+            }
+        }
+    }
+    // A slur's pieces with their ends carried: `k` of `n`, sheared as an
+    // anchored curve's ends are.
+    let carried_curve = |id: GlyphObjectId, k: usize, n: usize, cp: [Point; 4]| -> [Point; 4] {
+        match curve_carry.get(&id) {
+            Some(&(start, end)) => crate::anchored_curve(
+                cp,
+                if k == 0 { start } else { 0.0 },
+                if k + 1 == n { end } else { 0.0 },
+            ),
+            None => cp,
+        }
+    };
+
     // Each line of the family (a hairpin's leg, a hyphen, a melisma line, a
     // trill line's wiggles), by its stroke.
     let family_lines: BTreeMap<GlyphObjectId, FamilyLine> = input
@@ -1697,13 +1894,7 @@ pub(crate) fn cast_off(
     // segno or coda; or, where the measure opens its system, just after the
     // ink of the system's lead and of the columns before the member's, or on
     // the system's left edge.
-    let mut family_dx: BTreeMap<usize, f32> = BTreeMap::new();
-    let text_at: BTreeMap<GlyphObjectId, usize> = input
-        .texts
-        .iter()
-        .enumerate()
-        .map(|(i, text)| (text.id(), i))
-        .collect();
+    let mut family_dx: BTreeMap<usize, f32> = carried_marks.iter().copied().collect();
     for (f, mark) in input.family.iter().enumerate() {
         let Some(across) = mark.placement.and_then(|p| p.across) else {
             continue;
@@ -1807,6 +1998,45 @@ pub(crate) fn cast_off(
     // Each hairpin leg whose start or end moves with a dynamic moved off a
     // barline: by its stroke, the move of its start and of its end.
     let mut hairpin_ends: BTreeMap<GlyphObjectId, (f32, f32)> = BTreeMap::new();
+    // So does an ottava's end whose last ink is a rest filling its measure,
+    // a space past the rest where it is drawn (`Ottava::linePos`), never past
+    // the next note, its line and its end's hook moved alike.
+    for rest in &input.measure_rests {
+        let (Some(&g), Some(&s)) = (
+            rest.glyph.as_ref().and_then(|id| glyph_index.get(id)),
+            system_of_slot.get(&rest.slot),
+        ) else {
+            continue;
+        };
+        let Some(&dx) = rest_dx.get(&g) else {
+            continue;
+        };
+        let Some(body) = rest.line_ends.first().and_then(|id| stroke_index.get(id)) else {
+            continue;
+        };
+        let (source, spaced) = (&input.strokes[*body], &spaced_strokes[*body]);
+        let p = &hplace[s].0;
+        let end = place_stroke(
+            source,
+            spaced,
+            p,
+            &slot_source_x,
+            &input.glyphs,
+            anchors.get(&source.id()),
+        )
+        .to
+        .x
+        .0;
+        let limit = line_before
+            .get(&source.id())
+            .filter(|slot| system_of_slot.get(slot) == Some(&s))
+            .and_then(|slot| slot_source_x.get(slot))
+            .map_or(f32::INFINITY, |&sx| p.x(sx));
+        let dx = dx.min(limit - end);
+        for (k, id) in rest.line_ends.iter().enumerate() {
+            hairpin_ends.insert(*id, (if k == 0 { 0.0 } else { dx }, dx));
+        }
+    }
     // Each verbal crescendo's words moved with its start (X4d fix round 1).
     let mut verbal_words_dx: BTreeMap<GlyphObjectId, f32> = BTreeMap::new();
     for (f, mark) in input.family.iter().enumerate() {
@@ -2042,7 +2272,7 @@ pub(crate) fn cast_off(
         // Glyphs, each moved with its slot, or a moved ending's start; a
         // member of the family moved across (a dynamic off a barline) by that
         // move as well.
-        for (glyph, spaced) in input.glyphs.iter().zip(spaced_glyphs) {
+        for (gi, (glyph, spaced)) in input.glyphs.iter().zip(spaced_glyphs).enumerate() {
             let Some(&s) = system_of_slot.get(&glyph.horizontal_slot) else {
                 continue;
             };
@@ -2055,6 +2285,7 @@ pub(crate) fn cast_off(
                 None => (
                     s,
                     spaced.position.x.0 + hplace[s].0.slot_dx(sx) - shift_of(glyph.horizontal_slot)
+                        + rest_dx.get(&gi).copied().unwrap_or(0.0)
                         + member_dx(placed.glyphs.get(&glyph.id())),
                 ),
             };
@@ -2211,36 +2442,12 @@ pub(crate) fn cast_off(
             }
         }
         // Curves, sampled along their arcs where their systems set them.
-        for (curve, fate) in spaced_curves.iter().zip(&curve_fates) {
+        for (ci, curve) in spaced_curves.iter().enumerate() {
             let half = (curve.thickness.0 * 0.5).max(0.0);
-            let segments: Vec<(usize, [Point; 4])> = match fate {
-                CurveFate::Rigid(Some(s)) => {
-                    let p = &hplace[*s].0;
-                    let slot_dx =
-                        |slot: &SpringSlotId| slot_source_x.get(slot).map(|&sx| p.slot_dx(sx));
-                    let cp = match anchors
-                        .get(&curve.id())
-                        .and_then(|(start, end)| Some((slot_dx(start)?, slot_dx(end)?)))
-                    {
-                        Some((start, end)) => {
-                            crate::anchored_curve(curve.control_points(), start, end)
-                        }
-                        None => curve
-                            .control_points()
-                            .map(|pt| Point::new(p.x(pt.x.0), pt.y.0)),
-                    };
-                    vec![(*s, cp)]
-                }
-                CurveFate::Rigid(None) => Vec::new(),
-                CurveFate::Split(segments) => segments
-                    .iter()
-                    .map(|(s, cp)| {
-                        let p = &hplace[*s].0;
-                        (*s, cp.map(|pt| Point::new(p.x(pt.x.0), pt.y.0)))
-                    })
-                    .collect(),
-            };
-            for (s, cp) in segments {
+            let segments = curve_pieces(ci);
+            let n = segments.len();
+            for (k, (s, cp)) in segments.into_iter().enumerate() {
+                let cp = carried_curve(curve.id(), k, n, cp);
                 let at = |t: f32| {
                     let u = 1.0 - t;
                     let w = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
@@ -2868,99 +3075,6 @@ pub(crate) fn cast_off(
     }
     decisions.extend(skipped);
 
-    // ---- Measure rests (X5d.5) ---------------------------------------------
-    // A rest filling its measure stands centred in its staff's free space in
-    // the measure, as Gould sets a whole-bar rest (pp. 159-160): between the
-    // right edge of its staff's ink in the columns before it that hold no
-    // note, back to the barline opening the measure (or the system's lead
-    // where the measure opens the system), and the left edge of its staff's
-    // ink in the first such column after it, a clef, key or time signature or
-    // the barline closing the measure, as MuseScore takes them
-    // (`MeasureLayout::getMeasureStartEndPos`). Its column keeps its room.
-    let mut rest_dx: BTreeMap<usize, f32> = BTreeMap::new();
-    {
-        let glyph_index: BTreeMap<GlyphObjectId, usize> = input
-            .glyphs
-            .iter()
-            .enumerate()
-            .map(|(i, g)| (g.id(), i))
-            .collect();
-        let final_x = |g: usize, s: usize| -> f32 {
-            let glyph = &input.glyphs[g];
-            let spaced = spaced_glyphs[g].position.x.0;
-            let sx = slot_source_x
-                .get(&glyph.horizontal_slot)
-                .copied()
-                .unwrap_or(spaced);
-            spaced + placements[s].slot_dx(sx) - shift_of(glyph.horizontal_slot)
-        };
-        for id in &input.measure_rests {
-            let Some(&g) = glyph_index.get(id) else {
-                continue;
-            };
-            let glyph = &input.glyphs[g];
-            let Some(&s) = system_of_slot.get(&glyph.horizontal_slot) else {
-                continue;
-            };
-            let plan = &systems[s];
-            let slots = &region_slots[plan.region];
-            let Some(k) = plan
-                .slots
-                .iter()
-                .position(|&i| slots[i].id == glyph.horizontal_slot)
-            else {
-                continue;
-            };
-            let band = glyph.vertical_band;
-            // A column holding no note: its ink on the rest's staff across.
-            let furniture = |i: usize| -> Option<(f32, f32)> {
-                if slots[i].note {
-                    return None;
-                }
-                slots[i]
-                    .members
-                    .iter()
-                    .filter(|&&m| {
-                        input.glyphs[m].vertical_band == band
-                            && !family.contains(&input.glyphs[m].id())
-                    })
-                    .map(|&m| {
-                        let (x, b) = (final_x(m, s), input.glyphs[m].bounding_box);
-                        (x + b.left.0, x + b.right.0)
-                    })
-                    .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)))
-            };
-            let mut left: Option<f32> = None;
-            let mut opened = false;
-            for &i in plan.slots[..k].iter().rev() {
-                if let Some((_, r)) = furniture(i) {
-                    left = Some(left.map_or(r, |l| l.max(r)));
-                }
-                if slots[i].barline {
-                    opened = true;
-                    break;
-                }
-            }
-            if !opened {
-                let lead = geometry.margins.left.0 + lead_ink[s].unwrap_or(0.0);
-                left = Some(left.map_or(lead, |l| l.max(lead)));
-            }
-            let right = plan.slots[k + 1..]
-                .iter()
-                .find_map(|&i| furniture(i))
-                .map(|(l, _)| l);
-            let (Some(left), Some(right)) = (left, right) else {
-                continue;
-            };
-            let b = glyph.bounding_box;
-            let x = final_x(g, s);
-            let centre = (left + right) * 0.5;
-            if right - left > b.right.0 - b.left.0 {
-                rest_dx.insert(g, centre - (b.left.0 + b.right.0) * 0.5 - x);
-            }
-        }
-    }
-
     // ---- Bake the world frame ----------------------------------------------
     // A primitive's additional downward shift from the inter-staff solve.
     let staff_dy = |s: usize, staff: Option<StaffId>| -> f32 {
@@ -3443,6 +3557,7 @@ pub(crate) fn cast_off(
                     }
                     _ => placed,
                 };
+                let [p0, p1, p2, p3] = carried_curve(curve.id(), 0, 1, [p0, p1, p2, p3]);
                 curves.push(Curve {
                     p0,
                     p1,
@@ -3483,6 +3598,8 @@ pub(crate) fn cast_off(
                             }
                         }
                     }
+                    let [p0, p1, p2, p3] =
+                        carried_curve(curve.id(), k, segments.len(), [p0, p1, p2, p3]);
                     let provenance = if k == 0 {
                         curve.provenance.clone()
                     } else {

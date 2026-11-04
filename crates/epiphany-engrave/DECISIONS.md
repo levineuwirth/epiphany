@@ -3634,3 +3634,32 @@ engraver's own placing reproduces it:
   lets no characters collide (*Behind Bars*,
   p. 41) (`a_centred_dynamic_stands_clear_of_the_syllables_between_the_staves`,
   `a_centred_dynamic_stands_clear_of_its_own_staffs_family_outside_it`).
+
+## ENGRAVER_VERSION 129 → 130: a centred rest carries what stands on it (X5d fix round 1, 2026-11-04)
+
+- Entry 125 centres a rest filling its measure and moved its one glyph at the
+  bake, after the family, the sky and the outlines had read it at its first
+  column. The centre is now set as soon as the system's map across is, which
+  is all it needs, and every later step reads the rest where it is drawn: the
+  fermata's clearance, the sky, the staves' outlines, the centring between a
+  grand staff's staves.
+- What goes with it, `MeasureRest` naming each by its event: a fermata, centred
+  on its rest (*Behind Bars*, p. 188; MuseScore's `TLayout::layoutFermata`;
+  LilyPond's `R1\fermata`), a member of the family moved across as a dynamic off
+  a barline is; a slur's end, which stands at the rest's centre, the arc sheared
+  as an anchored curve's is (MuseScore's `slurPos` reads the rest's own place);
+  a hidden rest's fermata, since a hidden rest is centred as any other for what
+  stands on it, as MuseScore centres one. No test of the corpus holds two more,
+  settled by probes beside MuseScore's page: a syllable on the rest, a child of
+  the rest there though `LyricsLayout::layout` reads as if it were not (it
+  negates the rest's move at a time the rest has not moved); and an ottava whose
+  last ink is the rest, a space past it where it is drawn (`Ottava::linePos`
+  reads the segment's shape), never past the next note. Gould is silent on those
+  two and on the slur; LilyPond attaches no syllable to a rest.
+- What stays at its column, by what it is anchored to and not by a measure of
+  ours: a dynamic and words (`DynamicsLayout` anchors to the segment, probe), a
+  trill line and its sign (`SLine::linePos` reads the segment's x, probe), a
+  tempo or rehearsal mark, and a hairpin's ends, which are a time's. A melisma
+  line does not end on a rest: `lyrics_of` ends it on its last note. The rest's
+  box stays in what a grace's principal reads at its column, whose left edge a
+  rest's does not pass, and in what a glissando's ends read there.

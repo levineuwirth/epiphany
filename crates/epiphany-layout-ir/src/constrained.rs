@@ -220,16 +220,48 @@ pub struct ConstrainedLayoutIR {
     /// Each ending's start: a solver that breaks a system at the barline an
     /// ending opens after draws the whole ending on the next system.
     pub endings: Vec<EndingStart>,
-    /// Each drawn rest filling its measure, by glyph: once its system is set
-    /// across, a solver centres it in its staff's free space in the measure,
-    /// as Gould sets a whole-bar rest (*Behind Bars*, pp. 159-160) and
-    /// MuseScore and LilyPond centre theirs; its column keeps its room.
-    pub measure_rests: Vec<GlyphObjectId>,
+    /// Each rest filling its measure: once its system is set across, a solver
+    /// centres it in its staff's free space in the measure, as Gould sets a
+    /// whole-bar rest (*Behind Bars*, pp. 159-160) and MuseScore and LilyPond
+    /// centre theirs, and what stands on it goes with it; its column keeps
+    /// its room.
+    pub measure_rests: Vec<MeasureRest>,
     /// The runs the family's lines draw piece by piece (X4d.1): a pedal
     /// line's, an ottava's or a verbal crescendo's continuation at the start
     /// of each piece a system break carries into a later system, and a
     /// glissando's words along each piece.
     pub line_texts: Vec<LineText>,
+}
+
+/// A rest filling its measure (see [`ConstrainedLayoutIR::measure_rests`]),
+/// and what a solver moves with it across: a fermata, centred on its rest
+/// (Gould, p. 188; MuseScore's `TLayout::layoutFermata`); a slur's end, read
+/// from the rest's own place (MuseScore's `SlurTieLayout::slurPos`); a
+/// syllable, a child of the rest on MuseScore's page; and the end of an ottava
+/// whose last ink it is (`Ottava::linePos`). A dynamic, words and a trill line
+/// at its column stay, anchored to the time and not the rest, as MuseScore
+/// anchors each to the segment (`DynamicsLayout`, `SLine::linePos`).
+#[derive(Clone, PartialEq, Debug)]
+pub struct MeasureRest {
+    /// The rest's glyph; a hidden rest draws none, and what stands on it
+    /// stands where it would.
+    pub glyph: Option<GlyphObjectId>,
+    /// The rest's column.
+    pub slot: SpringSlotId,
+    /// The rest's staff.
+    pub band: VerticalBandId,
+    /// How wide the rest is, drawn or not.
+    pub width: f32,
+    /// The fermatas standing on it.
+    pub marks: Vec<GlyphObjectId>,
+    /// The slurs starting on it.
+    pub slur_starts: Vec<GlyphObjectId>,
+    /// The slurs ending on it.
+    pub slur_ends: Vec<GlyphObjectId>,
+    /// The syllables standing on it.
+    pub runs: Vec<GlyphObjectId>,
+    /// The strokes of an ottava ending past it: its line, then its hook.
+    pub line_ends: Vec<GlyphObjectId>,
 }
 
 /// An ending's start (see [`ConstrainedLayoutIR::endings`]): the barline
@@ -1445,7 +1477,13 @@ pub fn try_to_constrained(
     let mut constrained_regions = Vec::new();
     let mut span_anchors: Vec<SpanAnchor> = Vec::new();
     let mut endings: Vec<EndingStart> = Vec::new();
-    let mut measure_rests: Vec<GlyphObjectId> = Vec::new();
+    let mut measure_rests: Vec<MeasureRest> = Vec::new();
+    // What stands on each rest filling its measure, its index there by event.
+    let mut measure_rest_of: BTreeMap<EventId, usize> = BTreeMap::new();
+    let mut rest_marks: Vec<(EventId, GlyphObjectId)> = Vec::new();
+    let mut rest_slurs: Vec<(EventId, EventId, GlyphObjectId)> = Vec::new();
+    let mut rest_runs: Vec<(EventId, GlyphObjectId)> = Vec::new();
+    let mut rest_lines: Vec<(EventId, Vec<GlyphObjectId>)> = Vec::new();
     let mut line_texts: Vec<LineText> = Vec::new();
     let mut system_leads: Vec<SystemLead> = Vec::new();
     let mut staff_groups: Vec<GroupSpan> = Vec::new();
@@ -4697,6 +4735,23 @@ pub fn try_to_constrained(
                                 owned = component_provenance(provenance, seg.comp);
                                 &owned
                             };
+                            if seg.whole_measure {
+                                measure_rest_of.insert(eid, measure_rests.len());
+                                measure_rests.push(MeasureRest {
+                                    glyph: None,
+                                    slot: info.slot,
+                                    band: band_of(staff),
+                                    width: seg.name.and_then(metrics).map_or(0.0, |m| {
+                                        let b = m.bounding_box();
+                                        b.right.0 - b.left.0
+                                    }),
+                                    marks: Vec::new(),
+                                    slur_starts: Vec::new(),
+                                    slur_ends: Vec::new(),
+                                    runs: Vec::new(),
+                                    line_ends: Vec::new(),
+                                });
+                            }
                             match seg.name {
                                 // A hidden rest keeps its place as a traced anchor.
                                 _ if !seg.visible => emit.stroke(anchor(
@@ -4717,8 +4772,10 @@ pub fn try_to_constrained(
                                         info.slot,
                                     );
                                     if seg.whole_measure {
-                                        if let Some(glyph) = emit.glyphs.last() {
-                                            measure_rests.push(glyph.id());
+                                        if let (Some(glyph), Some(rest)) =
+                                            (emit.glyphs.last(), measure_rests.last_mut())
+                                        {
+                                            rest.glyph = Some(glyph.id());
                                         }
                                     }
                                     // Dots sit in the space above the middle line,
@@ -5431,6 +5488,12 @@ pub fn try_to_constrained(
                                             staff,
                                             info.slot,
                                         );
+                                        if let Some(event) = event {
+                                            rest_marks.push((
+                                                event,
+                                                GlyphObjectId(provenance.stable_id.0),
+                                            ));
+                                        }
                                         family.push(FamilyMark {
                                             band: band_of(staff),
                                             glyphs: vec![GlyphObjectId(provenance.stable_id.0)],
@@ -5591,6 +5654,7 @@ pub fn try_to_constrained(
                                         horizontal_slot: info.slot,
                                         vertical_band: band,
                                     });
+                                    rest_runs.push((lyric.event, syllable.run.id()));
                                     family.push(FamilyMark {
                                         band,
                                         glyphs: Vec::new(),
@@ -6014,6 +6078,7 @@ pub fn try_to_constrained(
                                     let (x0, mut x1, y, width, dashes);
                                     let mut start_hook: Option<f32> = None;
                                     let mut end_hook: Option<f32> = None;
+                                    let mut ends_on_rest: Option<EventId> = None;
                                     // The slot its end rides, and one its end
                                     // may not pass.
                                     let mut end_slot = last.slot;
@@ -6158,6 +6223,26 @@ pub fn try_to_constrained(
                                                     x1 = right + lines::OTTAVA_END_PAST
                                                         - width * 0.5;
                                                     end_slot = slot;
+                                                    // Its last ink a rest filling its measure:
+                                                    // its end goes with the rest.
+                                                    ends_on_rest = event_rests
+                                                        .iter()
+                                                        .find(|(_, segs)| {
+                                                            segs.iter().any(|r| {
+                                                                r.whole_measure
+                                                                    && r.visible
+                                                                    && r.staff == Some(st)
+                                                                    && columns
+                                                                        .get(&r.key)
+                                                                        .is_some_and(|c| {
+                                                                            c.slot == slot
+                                                                        })
+                                                                    && !column_heads.contains_key(
+                                                                        &(Some(st), r.key.clone()),
+                                                                    )
+                                                            })
+                                                        })
+                                                        .map(|(e, _)| *e);
                                                     before = first_column(&columns, &t1, true)
                                                         .map(|(_, c)| c.slot);
                                                 }
@@ -6390,6 +6475,17 @@ pub fn try_to_constrained(
                                         hairpin_anchors.push((stroke.id(), slot, slot));
                                         strokes.push(stroke);
                                     }
+                                    if let Some(event) = ends_on_rest {
+                                        // Its line and its end's hook, not a start's.
+                                        rest_lines.push((
+                                            event,
+                                            strokes
+                                                .iter()
+                                                .take(1 + usize::from(end_hook.is_some()))
+                                                .map(Stroke::id)
+                                                .collect(),
+                                        ));
+                                    }
                                     let mut runs = Vec::new();
                                     if let Some(run) = sign {
                                         runs.push(run.id());
@@ -6543,7 +6639,12 @@ pub fn try_to_constrained(
                         _ => None,
                     };
                     match curve {
-                        Some(curve) => emit.curve(curve),
+                        Some(curve) => {
+                            if let Some(LayoutContent::Slur(slur)) = content {
+                                rest_slurs.push((slur.events.0, slur.events.1, curve.id()));
+                            }
+                            emit.curve(curve)
+                        }
                         None => emit.stroke(anchor(
                             provenance,
                             Point::new(default_x, yo),
@@ -7013,6 +7114,31 @@ pub fn try_to_constrained(
         });
 
         region_x = staff_right + REGION_GAP;
+    }
+
+    // What stands on each rest filling its measure, wherever it was emitted.
+    for (event, mark) in rest_marks {
+        if let Some(&r) = measure_rest_of.get(&event) {
+            measure_rests[r].marks.push(mark);
+        }
+    }
+    for (event, run) in rest_runs {
+        if let Some(&r) = measure_rest_of.get(&event) {
+            measure_rests[r].runs.push(run);
+        }
+    }
+    for (event, strokes) in rest_lines {
+        if let Some(&r) = measure_rest_of.get(&event) {
+            measure_rests[r].line_ends.extend(strokes);
+        }
+    }
+    for (first, last, slur) in rest_slurs {
+        if let Some(&r) = measure_rest_of.get(&first) {
+            measure_rests[r].slur_starts.push(slur);
+        }
+        if let Some(&r) = measure_rest_of.get(&last) {
+            measure_rests[r].slur_ends.push(slur);
+        }
     }
 
     let names: Vec<&str> = glyphs.iter().map(|glyph| glyph.glyph.as_str()).collect();

@@ -448,6 +448,9 @@ pub struct SlurContent {
     /// note, then the notes of its voice up to its last where both ends are
     /// that voice's. Empty where it starts on no note of a staff's own voice.
     pub chords: Vec<EventId>,
+    /// The events it starts and ends on: a rest filling its measure carries
+    /// its end across when it is centred.
+    pub events: (EventId, EventId),
 }
 
 /// A slur endpoint on the region's spacing axis.
@@ -2243,6 +2246,7 @@ fn slur_content(
         kind: slur.kind,
         line: slur.style.line,
         chords: voices.chords(first, last),
+        events: (first, last),
     })
 }
 
