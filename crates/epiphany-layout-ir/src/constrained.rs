@@ -250,8 +250,6 @@ pub struct MeasureRest {
     pub slot: SpringSlotId,
     /// The rest's staff.
     pub band: VerticalBandId,
-    /// How wide the rest is, drawn or not.
-    pub width: f32,
     /// Its name on its staff, before any ledger line: a solver decides its
     /// height once it stands across, and its ledger line with it.
     pub name: &'static str,
@@ -4799,10 +4797,6 @@ pub fn try_to_constrained(
                                     glyph: None,
                                     slot: info.slot,
                                     band: band_of(staff),
-                                    width: seg.name.and_then(metrics).map_or(0.0, |m| {
-                                        let b = m.bounding_box();
-                                        b.right.0 - b.left.0
-                                    }),
                                     name: seg.name.unwrap_or("restWhole"),
                                     y: seg.y,
                                     lines: seg.lines,
@@ -7625,7 +7619,7 @@ fn clear_visitors(
                             let b = at(y);
                             (y + (b.bottom.0 + b.top.0) * 0.5 - middle).abs()
                         };
-                        off(first_clear(1.0)) < off(first_clear(-1.0))
+                        off(first_clear(1.0)) + 1e-3 < off(first_clear(-1.0))
                     } else {
                         stems_met.iter().all(|up| !up)
                     }
@@ -11800,12 +11794,20 @@ mod tests {
     /// always took, down (D109 Q8); one step nearer above, it turns up.
     #[test]
     fn a_rest_between_visitors_level_both_ways_keeps_its_side() {
-        let bounds = metrics("restQuarter").expect("bundled").bounding_box();
+        // A quarter rest's centre stands near its line, a half rest's off it,
+        // so only the half rest shows the side read by the glyph's centre.
+        for name in ["restQuarter", "restHalf"] {
+            rest_between_visitors_level_both_ways_keeps_its_side(name);
+        }
+    }
+
+    fn rest_between_visitors_level_both_ways_keeps_its_side(name: &'static str) {
+        let bounds = metrics(name).expect("bundled").bounding_box();
         let centre = (bounds.bottom.0 + bounds.top.0) * 0.5;
         let middle = 2.0;
         let run = |raise: f32| -> f32 {
             let seg = RestSeg {
-                name: Some("restQuarter"),
+                name: Some(name),
                 key: ColumnKey::Lead,
                 y: middle - centre,
                 comp: 0,
@@ -11816,7 +11818,8 @@ mod tests {
                 start: TimePoint::WallClock(WallClockTime(0)),
                 voice: VoicePlace::Alone,
                 whole_measure: false,
-                lines: (0.0, 4.0),
+                // Lines wide of it, so it stays plain either way.
+                lines: (-10.0, 14.0),
             };
             let mut rests = BTreeMap::new();
             rests.insert(EventId::from_raw(1), vec![seg]);

@@ -1737,9 +1737,9 @@ pub(crate) fn cast_off(
             .find_map(|&i| furniture(i))
             .map(|(l, _)| l);
         // Where it stands across: centred, or at its column where the staff
-        // gives it no free space to centre in.
+        // draws nothing to close its measure.
         let centre = match (left, right) {
-            (Some(left), Some(right)) if right - left > rest.width => Some((left + right) * 0.5),
+            (Some(left), Some(right)) => Some((left + right) * 0.5),
             _ => None,
         };
         let bar_x = |i: usize| {
@@ -2387,10 +2387,9 @@ pub(crate) fn cast_off(
         .filter(|(_, legs)| legs.len() == 2)
         .flat_map(|(shape, legs)| [(legs[0], (shape, 1.0)), (legs[1], (shape, -1.0))])
         .collect();
-    // Each piece of a placed hairpin over a system break as the bake draws
-    // it (`hairpin_piece_ys`), with its member and system: the piece is
-    // placed by its flat cut, but the staves and the system are set by the
-    // ink drawn (X5d.7).
+    // Each leg of a placed hairpin out to its mouth, with its member and
+    // system: a piece over a system break is placed by its flat cut, but the
+    // staves and the system are set by the ink drawn (X5d.7).
     let mut drawn_legs: Vec<(usize, usize, InkRect)> = Vec::new();
     {
         let mut pieces: Vec<crate::family::Piece> = Vec::new();
@@ -2545,22 +2544,23 @@ pub(crate) fn cast_off(
                     segs
                 }
             };
-            let pieces_n = segments.len();
-            for (k, (s, from, to)) in segments.into_iter().enumerate() {
-                if let (true, Some(&f), Some(&(shape, sign))) = (
-                    pieces_n > 1,
+            for (s, from, to) in segments {
+                // A leg's outer edge stands at the mouth, whichever piece, and
+                // the piece is drawn out to it (`hairpin_piece_ys`); its inner
+                // edge, the other leg's box covers.
+                if let (Some(&f), Some(&(shape, sign))) = (
                     placed.strokes.get(&stroke.id()),
                     hairpin_legs.get(&stroke.id()),
                 ) {
-                    let (fy, ty) = hairpin_piece_ys(shape, sign, k, pieces_n);
+                    let mouth = shape.axis + sign * HAIRPIN_HEIGHT * 0.5;
                     drawn_legs.push((
                         f,
                         s,
                         rect(
                             from.x.0 - half,
                             to.x.0 + half,
-                            fy.min(ty) - half,
-                            fy.max(ty) + half,
+                            shape.axis.min(mouth) - half,
+                            shape.axis.max(mouth) + half,
                         ),
                     ));
                 }
@@ -2665,11 +2665,9 @@ pub(crate) fn cast_off(
         }
         for (f, s, b) in drawn_legs {
             let by = family_dy.get(&(f, s)).copied().unwrap_or(0.0);
+            // A hairpin stands on a staff: with none it draws a traced anchor.
             let staff = staff_of(input.family[f].band);
-            match staff {
-                Some(_) => into_staff(&mut staff_ext, s, staff, b.bottom + by, b.top + by),
-                None => extents[s].add_y(b.bottom + by, b.top + by),
-            }
+            into_staff(&mut staff_ext, s, staff, b.bottom + by, b.top + by);
             placed_boxes.push((
                 f,
                 s,
@@ -3018,13 +3016,11 @@ pub(crate) fn cast_off(
         // A system whose ink its paper cannot hold is named, not squeezed
         // (D109 Q5).
         for (p, page) in page_systems.iter().enumerate() {
-            let frame = geometry.page_frame(p);
-            let (paper_bottom, paper_top) =
-                (frame.origin.y.0, frame.origin.y.0 + frame.size.height.0);
+            let paper_bottom = geometry.page_frame(p).origin.y.0;
             for &s in page {
-                let (lo, hi) = ink_y(s, &staff_shift);
-                let past =
-                    (paper_bottom - (lo + placements[s].dy)).max(hi + placements[s].dy - paper_top);
+                // Only downward: the rise above stops at the top margin.
+                let (lo, _) = ink_y(s, &staff_shift);
+                let past = paper_bottom - (lo + placements[s].dy);
                 if past > 0.0 {
                     let plan = &systems[s];
                     let slots = &region_slots[plan.region];
@@ -4428,7 +4424,7 @@ fn spread_page(
             if edge(GroupSign::Brace) {
                 factor = factor.max(SPREAD_BRACE);
             }
-            let cap = if inside_brace && !edge(GroupSign::Brace) {
+            let cap = if inside_brace {
                 MAX_BRACE_SPREAD / factor
             } else {
                 MAX_STAFF_SPREAD

@@ -188,7 +188,7 @@ pub(crate) fn clear(rest: &RestToClear) -> RestPlace {
                         let (_, _, bottom, top) = rest_box(rest, y);
                         ((bottom + top) * 0.5 - middle).abs()
                     };
-                    off(walk(&clear_at, 1.0)) < off(walk(&clear_at, -1.0))
+                    off(walk(&clear_at, 1.0)) + 1e-3 < off(walk(&clear_at, -1.0))
                 } else {
                     !ups
                 };

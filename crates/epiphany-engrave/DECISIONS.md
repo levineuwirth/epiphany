@@ -3792,3 +3792,25 @@ engraver's own placing reproduces it:
   gave such a text its `between` and no row; MuseScore centres the element's shape
   (`SystemLayout::centerElementBetweenStaves`)
   (`a_centred_text_with_no_dynamic_stands_at_the_gaps_middle`).
+
+## The pins of the phase's clauses, and what was not reachable (X5d fix round 1, 2026-11-04; ENGRAVER_VERSION stays 138)
+
+- Every clause of the phase's rules that a mutation showed no test holding is now
+  held by a test of its own, each seen failing with its mutation:
+  `crates/epiphany-cli/tests/vertical_rules.rs`, the clauses of the staves'
+  distances, the spread, the rests, the centring and a hairpin's lifted piece.
+- Removed, each proved unreachable and changing no page. A brace's edge read
+  inside another brace: the only braces are a grand staff's, whose staves no
+  other holds. A system past its paper's top: the rise that sets it stops at the
+  top margin, so only its bottom can pass. A split hairpin's piece index, and the
+  guard to split ones: each leg's outer edge stands at the mouth whichever piece
+  it is, and a whole hairpin's box is that rectangle already, so the outline reads
+  the mouth (entry 128). A hairpin of no staff in the extent: a hairpin with no
+  staff draws a traced anchor. A measure rest's check that its free space holds it:
+  its column keeps its room. A family glyph in a rest's furniture went with entry
+  135.
+- Kept and pinned by an amended constrained input, as entry 125's fit is, since the
+  importer makes neither: the ink of no staff and a family mark of no staff in the
+  gap between systems.
+- The level-both-ways test of `clear_visitors` also runs on a half rest, whose
+  centre stands off its line, so the glyph's centre is what it reads.
