@@ -4,6 +4,7 @@ version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
+license.workspace = true
 repository.workspace = true
 description = "Command-line entry points: `epiphany render` engraves a MusicXML file or a saved document to SVG, `epiphany new` imports a MusicXML file into a document, and `corpus-report` imports and renders a directory of exported scores and reports what each import could not carry."
 

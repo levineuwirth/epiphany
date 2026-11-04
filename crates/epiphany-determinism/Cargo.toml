@@ -4,6 +4,7 @@ version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
+license.workspace = true
 repository.workspace = true
 description = "Determinism-contract primitives for Epiphany (spec Appendix D): tolerance classes, QuantizedCoord, content hashing, canonical float hygiene, and canonical iteration order."
 

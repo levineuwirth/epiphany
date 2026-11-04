@@ -4,6 +4,7 @@ version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
+license.workspace = true
 repository.workspace = true
 description = "A headless editor core over an Epiphany score: selection state, render + hit-test queries, primitive-operation minting, apply/re-render, and selection preservation across relayouts. The solver-agnostic API a GUI drives — no UI, no rendering backend of its own (it produces a RenderIR)."
 
