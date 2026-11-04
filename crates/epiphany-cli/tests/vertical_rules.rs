@@ -802,8 +802,9 @@ fn the_gap_between_systems_reads_a_family_mark_of_no_staff() {
 }
 
 /// Only its own system's lead bounds a centred dynamic: on a page that spreads
-/// nothing, a treble clef's reach on the system before leaves a wide dynamic under
-/// a bass clef where it stands with bass clefs on every system.
+/// nothing, in a gap a low note and a high one hold 5.5 wide, a treble clef's
+/// reach on the system before leaves a wide dynamic under a bass clef where it
+/// stands with bass clefs on every system.
 #[test]
 fn a_centred_dynamic_reads_only_its_own_systems_lead() {
     let staff_one = |treble: bool| {
@@ -815,25 +816,27 @@ fn a_centred_dynamic_reads_only_its_own_systems_lead() {
     };
     let xml = |treble: bool| {
         let attrs = format!(
-            "<attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time><staves>2</staves>{}<clef number=\"2\"><sign>G</sign><line>2</line></clef></attributes>",
+            "<attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time><staves>2</staves>{}<clef number=\"2\"><sign>F</sign><line>4</line></clef></attributes>",
             staff_one(treble)
         );
         let bass =
             "<attributes><clef number=\"1\"><sign>F</sign><line>4</line></clef></attributes>";
         let wide = "<direction><direction-type><dynamics><ffff/></dynamics></direction-type><staff>1</staff></direction>";
-        let body = |marks: &str| {
-            format!(
-                "{marks}{}{BK}{}",
-                gn("G", 3, 4, "whole", 1, 1, None),
-                gn("E", 5, 4, "whole", 5, 2, None)
-            )
-        };
+        let plain = format!(
+            "{}{BK}{}",
+            gn("C", 3, 4, "whole", 1, 1, None),
+            gn("C", 3, 4, "whole", 5, 2, None)
+        );
+        let held = format!(
+            "{wide}{}{}{BK}{}{}",
+            gn("G", 3, 2, "half", 1, 1, None),
+            gn("E", 2, 2, "half", 1, 1, None),
+            gn("C", 3, 2, "half", 5, 2, None),
+            gn("G", 4, 2, "half", 5, 2, None),
+        );
         let change = if treble { bass } else { "" };
         format!(
-            "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A</part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">{attrs}{}</measure><measure number=\"2\"><print new-system=\"yes\"/>{}</measure><measure number=\"3\"><print new-system=\"yes\"/>{change}{}</measure></part></score-partwise>",
-            body(""),
-            body(""),
-            body(wide)
+            "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A</part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">{attrs}{plain}</measure><measure number=\"2\"><print new-system=\"yes\"/>{plain}</measure><measure number=\"3\"><print new-system=\"yes\"/>{change}{held}</measure></part></score-partwise>"
         )
     };
     let under = |name: &str, treble: bool| {
@@ -846,14 +849,19 @@ fn a_centred_dynamic_reads_only_its_own_systems_lead() {
             .find(|g| g.glyph.as_str().starts_with("dynamicF"))
             .expect("the dynamic");
         let system = layout.systems().nth(2).expect("a third system");
-        lines(&layout, system)[0].0 - f.position.y.0
+        let v = lines(&layout, system);
+        (v[0].0 - f.position.y.0, v[0].0 - v[1].1)
     };
-    let (a, b) = (
+    let ((a, gap_a), (b, gap_b)) = (
         under("centred_lead_treble.musicxml", true),
         under("centred_lead_bass.musicxml", false),
     );
     assert!(
+        (gap_a - gap_b).abs() < 0.01 && gap_a > 4.8,
+        "one gap: {gap_a} and {gap_b}"
+    );
+    assert!(
         (a - b).abs() < 0.01,
-        "under its staff by {a} after a treble clef's system, by {b} after a bass clef's"
+        "under its staff by {a} after a treble clef's system, by {b} after a bass clef's, in a gap of {gap_a}"
     );
 }

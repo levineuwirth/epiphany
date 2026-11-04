@@ -84,8 +84,8 @@ fn lines(layout: &ResolvedLayoutIR) -> Vec<f32> {
 }
 
 /// A bracket over one-line staves spans each as boxed, so its hooks stand off
-/// the clefs: MuseScore's `sy` and `ey`, and Gould lets no characters collide
-/// (p. 41).
+/// the clefs: MuseScore's `sy` and `ey`, and Gould keeps every sign clear of
+/// the next (p. 41).
 #[test]
 fn a_brackets_hooks_stand_clear_of_one_line_staves_clefs() {
     let layout = engrave("bracket_one.musicxml", &score(2, &[(0, 1, "bracket")]));

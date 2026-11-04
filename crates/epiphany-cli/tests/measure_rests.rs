@@ -340,7 +340,7 @@ fn a_fermata_clears_its_rest_where_it_stands() {
 }
 
 /// A whole-bar rest's space opens after its bar's key signature and time
-/// signature: Gould's blank space (p. 160), in a bar each opens.
+/// signature: the room Gould centres it in (p. 160), in a bar each opens.
 #[test]
 fn a_measure_rest_centres_after_a_key_change_opening_its_bar() {
     let key = "<attributes><key><fifths>4</fifths></key></attributes>";

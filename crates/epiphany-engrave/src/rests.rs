@@ -4,20 +4,20 @@
 //! draws, since a whole or half rest off its staff takes a wider ledgered
 //! glyph (*Behind Bars*, p. 37).
 //!
-//! A rest moves off the middle of its staff only as far as parts would
-//! otherwise collide (Gould, p. 36), and no characters collide (p. 41). Gould
-//! gives no figures. These are MuseScore's, `RestLayout::checkFullMeasureRestCollisions`:
+//! A rest leaves the middle of its staff only as far as it takes to keep the
+//! two parts apart (Gould, p. 36), and every sign stays clear of the next
+//! (p. 41). Gould gives no figures. These are MuseScore's, `RestLayout::checkFullMeasureRestCollisions`:
 //! [`REST_CLEARANCE`] up and down, against ink within [`REST_REACH`] across.
 //! Its exclusions are not copied: it takes accidentals out of what it reads,
 //! so a rest stands on a sharp, and it runs only where the measure has voices,
 //! so a rest stands on a visitor's head; both are read here.
 //!
 //! A tie or slur is read as well, only where it passes through the rest:
-//! neither Gould nor MuseScore lets a rest make way for a curve near it, but no
-//! characters collide.
+//! neither Gould nor MuseScore lets a rest make way for a curve near it, but
+//! nothing may stand on it either.
 //!
-//! A voice's rest keeps its side of the other part, as Gould's ledger line
-//! moves far enough to stand outside it (p. 37): above all of that ink for an
+//! A voice's rest keeps its side of the other part, as Gould takes a ledger
+//! line to the far side of it (p. 37): above all of that ink for an
 //! upper voice, below it for a lower. A rest alone on its staff has no part to
 //! keep outside: it moves only where visiting ink stands that near it, from
 //! the stems it meets, and between stems of both ways to the side whose first
@@ -371,7 +371,7 @@ mod tests {
         assert_eq!(whole(Some(true), &[beam], &[]).y, 4.0);
     }
 
-    /// A voice's rest keeps outside the other part, however far from it that
+    /// A voice's rest keeps past the other part, however far from it that
     /// part stands: it does not stay under a note high over it.
     #[test]
     fn a_voice_stays_outside_the_other_part_however_far() {

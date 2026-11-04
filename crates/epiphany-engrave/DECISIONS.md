@@ -3294,8 +3294,8 @@ engraver's own placing reproduces it:
   barline's clearance at any height had not held either, a grace standing
   as near the key signature as the band rule let it. MuseScore never kerns
   past a barline, a key or time signature, or a clef but a mid-measure one
-  (`HorizontalSpacing::computeKerning`, by `isNeverKernable`); Gould lets no
-  characters collide, keeps at least half a space between them (*Behind
+  (`HorizontalSpacing::computeKerning`, by `isNeverKernable`); Gould keeps
+  every sign clear of the next, at least half a space between them (*Behind
   Bars*, p. 41) and allows about two spaces after a time or key signature
   in mid-system (p. 42), and sets graces before a bar's first beat after
   the barline (p. 127); LilyPond 2.26.0 sets graces after a mid-system key
@@ -3498,7 +3498,7 @@ engraver's own placing reproduces it:
 
 - A rest filling its measure stands centred in its staff's free space in
   the measure, as Gould sets a whole-bar rest (*Behind Bars*, pp. 159-160,
-  in the blank space where the bar holds a clef, key or time signature):
+  in the room left where the bar holds a clef, key or time signature):
   between the right edge of its staff's ink in the columns before it that
   hold no note, back to the barline opening the measure (or the system's
   lead where the measure opens the system), and the left edge of its
@@ -3627,8 +3627,8 @@ engraver's own placing reproduces it:
   among them, to its staff's skyline once the segment is laid out
   (`SystemLayout`), so its skyline holds each piece as drawn;
   LilyPond takes a hairpin's skylines from its printed stencil, each
-  broken piece's own (`Hairpin`'s `vertical-skylines`); Gould lets no
-  characters collide (*Behind Bars*, p. 41)
+  broken piece's own (`Hairpin`'s `vertical-skylines`); Gould keeps every
+  sign clear of the next (*Behind Bars*, p. 41)
   (`a_hairpin_over_a_break_sets_the_staff_below_by_its_mouth`).
 
 ## ENGRAVER_VERSION 128 → 129: a grand staff's centred dynamic clears the family placed between its staves (X5d.7, 2026-11-03)
@@ -3648,7 +3648,7 @@ engraver's own placing reproduces it:
   (`SystemLayout::centerElementBetweenStaves`); LilyPond centres a
   `Dynamics` line between two staves (`staff-affinity` CENTER) as a line of
   its own, set by skylines beside a `Lyrics` line as any line is; Gould
-  lets no characters collide (*Behind Bars*,
+  keeps every sign clear of the next (*Behind Bars*,
   p. 41) (`a_centred_dynamic_stands_clear_of_the_syllables_between_the_staves`,
   `a_centred_dynamic_stands_clear_of_its_own_staffs_family_outside_it`).
 
@@ -3688,9 +3688,9 @@ engraver's own placing reproduces it:
   centre, and stood off its line in empty space for a note it had left. Its
   height is now decided once it stands across (`rests::clear`), from its default
   height, by whole spaces, reading the ink of its staff's note columns in its
-  measure where it is drawn. Gould moves a rest only as far as parts would
-  otherwise collide (*Behind Bars*, p. 36), by exact spaces (p. 35), and lets no
-  characters collide (p. 41). He gives no figures: these are MuseScore's
+  measure where it is drawn. Gould moves a rest only as far as it takes to
+  keep the two parts apart (*Behind Bars*, p. 36), by exact spaces (p. 35), and
+  keeps every sign clear of the next (p. 41). No figures are given: these are MuseScore's
   (`RestLayout::checkFullMeasureRestCollisions`, under D99), 0.75 up and down
   within 4 across.
 - Its exclusions are not copied. MuseScore takes accidentals out of what it
@@ -3704,11 +3704,11 @@ engraver's own placing reproduces it:
   the gap between the staves sets later, as the ink of a beam across two staves is
   read on neither. A tie or slur is read as well, only where it passes through the
   rest, a quarter space up and down, and the rest moves its voice's way: MuseScore
-  reads none and a rest stands on a held note's tie, Gould lets no characters
-  collide, and a curve near it is no reason to move.
-- A voice's rest keeps outside the other part, above all of that ink for an upper
-  voice and below it for a lower, as Gould's ledger line moves far enough to stand
-  outside the other part (p. 37) and MuseScore's one-sided clearance reads. A rest
+  reads none and a rest stands on a held note's tie, Gould keeps every sign clear
+  of the next, and a curve near it is no reason to move.
+- A voice's rest keeps past the other part, above all of that ink for an upper
+  voice and below it for a lower, as Gould takes a ledger line to the far side of
+  the other part (p. 37) and MuseScore's one-sided clearance reads. A rest
   alone on its staff has no part to keep outside: it moves only where ink stands
   within that box, from the stems it meets, and D109 Q8 holds at the new place:
   between visiting stems of both ways within 4 across it takes the side whose
@@ -3731,7 +3731,7 @@ engraver's own placing reproduces it:
   (entry 126). MuseScore spans a bracket from the box of its first staff to the
   box of its last (`SystemLayout`, `sy` and `ey`). LilyPond ends a bracket at the
   line and insets the clef, a way we do not take, since our clef stands flush;
-  Gould lets no characters collide (*Behind Bars*, p. 41). A joined barline runs
+  Gould keeps every sign clear of the next (*Behind Bars*, p. 41). A joined barline runs
   between the same spans, which is where a one-line staff's barline already ends.
 
 ## ENGRAVER_VERSION 132 → 133: a whole-bar rest in 2/1 or more is a breve rest (X5d fix round 1, 2026-11-04)
