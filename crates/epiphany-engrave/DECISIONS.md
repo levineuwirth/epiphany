@@ -3701,3 +3701,15 @@ engraver's own placing reproduces it:
   which lifts a ledgered rest beside another voice off that voice's accidentals,
   which the ledger line reaches and the plain glyph, beside the heads
   `clear_rests` reads, does not.
+
+## ENGRAVER_VERSION 131 → 132: a group's sign spans a staff of one line as boxed (X5d fix round 1, 2026-11-04)
+
+- Casting spanned a brace, a bracket and the system's opening line from each
+  staff's lowest and highest line, one height on a staff of one line, so a
+  bracket ended at the line and its hook stood on the staff's clef. They now read
+  that staff boxed two spaces either side of its line, as the solve boxes it
+  (entry 126). MuseScore spans a bracket from the box of its first staff to the
+  box of its last (`SystemLayout`, `sy` and `ey`). LilyPond ends a bracket at the
+  line and insets the clef, a way we do not take, since our clef stands flush;
+  Gould lets no characters collide (*Behind Bars*, p. 41). A joined barline runs
+  between the same spans, which is where a one-line staff's barline already ends.

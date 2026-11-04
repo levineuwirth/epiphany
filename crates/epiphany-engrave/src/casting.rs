@@ -3998,9 +3998,25 @@ pub(crate) fn cast_off(
     for (s, plan) in systems.iter().enumerate() {
         let region = &input.regions[plan.region];
         let margin = VerticalBandId(region.provenance.stable_id.0);
-        let marks: BTreeMap<StaffId, &StaffAgg> = staff_marks
+        // A staff of one line reads as boxed, two spaces either side of its
+        // line, as the solve boxes it: a group's sign and the system's opening
+        // line span the box, as MuseScore's a staff's bbox (`SystemLayout`, a
+        // bracket's `sy` and `ey`), so a bracket's hook stands off its clef
+        // (Gould, p. 41).
+        let marks: BTreeMap<StaffId, StaffSpan> = staff_marks
             .range((s, StaffId::from_raw(0))..=(s, StaffId::from_raw(u128::MAX)))
-            .map(|(&(_, staff), agg)| (staff, agg))
+            .map(|(&(_, staff), agg)| {
+                let one_line = agg.max_y - agg.min_y < 1.0;
+                let reach = if one_line { STAFF_SPAN * 0.5 } else { 0.0 };
+                (
+                    staff,
+                    StaffSpan {
+                        min_x: agg.min_x,
+                        min_y: agg.min_y - reach,
+                        max_y: agg.max_y + reach,
+                    },
+                )
+            })
             .collect();
         let Some(left) = marks.values().map(|a| a.min_x).reduce(f32::min) else {
             continue;
@@ -4044,7 +4060,7 @@ pub(crate) fn cast_off(
             );
         }
         for (g, group) in groups_of[plan.region].iter().enumerate() {
-            let present: Vec<&StaffAgg> = group
+            let present: Vec<StaffSpan> = group
                 .staves
                 .iter()
                 .filter_map(|st| marks.get(st).copied())
@@ -4125,7 +4141,7 @@ pub(crate) fn cast_off(
             }
             // Each barline of a staff of the group continues down to the
             // next staff below it in the group.
-            let mut order: Vec<(StaffId, &StaffAgg)> = group
+            let mut order: Vec<(StaffId, StaffSpan)> = group
                 .staves
                 .iter()
                 .filter_map(|st| marks.get(st).map(|a| (*st, *a)))
@@ -5837,6 +5853,14 @@ struct StaffAgg {
     min_y: f32,
     max_y: f32,
     bottom: (f32, Provenance),
+}
+
+/// A staff's reach as group signs read it.
+#[derive(Copy, Clone)]
+struct StaffSpan {
+    min_x: f32,
+    min_y: f32,
+    max_y: f32,
 }
 
 /// Folds a world-frame staff-line stroke into its `(system, staff)` aggregate.
