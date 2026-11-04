@@ -98,16 +98,16 @@ pub use cache::{
     ResolvedSystemCache, SystemId,
 };
 pub use constrained::{
-    active_clef, active_clef_or, is_beam_stroke, is_rigid_width_stroke, text_diagnostics, tie_arc,
-    to_constrained, try_to_constrained, Autoplace, Axis, BreakClass, BreakKind, BreakOrigin,
-    ConstrainedLayoutIR, ConstrainedLayoutRegion, ConstrainedValidationError, ConstraintParameters,
-    ConstraintRegistryId, CrossStaffBeam, Curve, EndingStart, FamilyLine, FamilyMark, GlyphObject,
-    GlyphObjectId, GlyphStyle, GroupSign, GroupSpan, HairpinShape, LayoutConstraint,
-    LayoutTransformError, LeadGlyph, LineDashes, LineText, LineTextRole, MeasureMark, MeasureRest,
-    MeasureStart, NoteMarkPart, PlaceOrder, Room, Row, SpanAnchor, SpringSlot, Stroke, SystemLead,
-    BAR_NOTE_DISTANCE, CROSS_STEM_MIN, GLISSANDO_WIGGLE, HAIRPIN_CONT_HEIGHT, HAIRPIN_HEIGHT,
-    HAIRPIN_MIN_LENGTH, LYRIC_DASH_MAX, LYRIC_DASH_MAX_DISTANCE, LYRIC_DASH_MIN, LYRIC_MELISMA_MIN,
-    TRILL_WIGGLE,
+    active_clef, active_clef_or, is_beam_stroke, is_rigid_width_stroke, ledgered_rest,
+    text_diagnostics, tie_arc, to_constrained, try_to_constrained, Autoplace, Axis, BreakClass,
+    BreakKind, BreakOrigin, ConstrainedLayoutIR, ConstrainedLayoutRegion,
+    ConstrainedValidationError, ConstraintParameters, ConstraintRegistryId, CrossStaffBeam, Curve,
+    EndingStart, FamilyLine, FamilyMark, GlyphObject, GlyphObjectId, GlyphStyle, GroupSign,
+    GroupSpan, HairpinShape, LayoutConstraint, LayoutTransformError, LeadGlyph, LineDashes,
+    LineText, LineTextRole, MeasureMark, MeasureRest, MeasureStart, NoteMarkPart, PlaceOrder, Room,
+    Row, SpanAnchor, SpringSlot, Stroke, SystemLead, BAR_NOTE_DISTANCE, CROSS_STEM_MIN,
+    GLISSANDO_WIGGLE, HAIRPIN_CONT_HEIGHT, HAIRPIN_HEIGHT, HAIRPIN_MIN_LENGTH, LYRIC_DASH_MAX,
+    LYRIC_DASH_MAX_DISTANCE, LYRIC_DASH_MIN, LYRIC_MELISMA_MIN, TRILL_WIGGLE,
 };
 pub use engrave_theory::{
     accidental_glyph, clef_glyph, clef_glyph_for, flag_count, flag_glyph, has_stem, key_signature,

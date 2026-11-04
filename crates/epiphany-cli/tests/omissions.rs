@@ -1252,7 +1252,11 @@ fn a_ledgered_rest_is_drawn_at_its_value() {
              <duration>{d}</duration><voice>2</voice><type>{kind}</type></note>"
         )
     };
-    let m1 = voices(&rest("whole", 4), &note("whole", 4));
+    // F5 at the bar's middle, where the whole rest stands.
+    let m1 = voices(
+        &rest("whole", 4),
+        &format!("{}{}", note("half", 2), note("half", 2)),
+    );
     let m2 = voices(
         &format!("{}{}", rest("half", 2), rest("half", 2)),
         &format!("{}{}", note("half", 2), note("half", 2)),

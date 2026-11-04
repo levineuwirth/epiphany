@@ -294,3 +294,214 @@ fn an_ottava_ending_on_a_measure_rest_ends_past_the_rest() {
         "the hook at {hook}, a space past the rest {r:?}"
     );
 }
+
+/// The staff's top line, the highest of the first staff's lines.
+fn top_line(layout: &ResolvedLayoutIR) -> f32 {
+    layout
+        .strokes
+        .iter()
+        .filter(|s| {
+            matches!(s.provenance.source, epiphany_core::TypedObjectId::Staff(_))
+                && s.from.y == s.to.y
+        })
+        .map(|s| s.from.y.0)
+        .reduce(f32::max)
+        .expect("a staff line")
+}
+
+/// The name of the rest a layout draws, and the height of its origin.
+fn rest_at(layout: &ResolvedLayoutIR) -> (&str, f32) {
+    let g = layout
+        .glyphs
+        .iter()
+        .find(|g| g.glyph.as_str().starts_with("rest"))
+        .expect("a rest");
+    (g.glyph.as_str(), g.position.y.0)
+}
+
+/// A rest filling its measure clears another voice where it stands, its
+/// accidental included (Gould, pp. 36 and 41): MuseScore's rule leaves it on
+/// the sharp, which it takes out of what it reads.
+#[test]
+fn a_centred_rest_clears_another_voices_accidental_where_it_stands() {
+    let low = "<note><pitch><step>C</step><octave>4</octave></pitch><duration>8</duration><voice>2</voice><type>half</type><stem>down</stem></note>";
+    let high = "<note><pitch><step>F</step><alter>1</alter><octave>5</octave></pitch><duration>8</duration><voice>2</voice><type>half</type><accidental>sharp</accidental><stem>down</stem></note>";
+    let middle = format!(
+        "<note><rest measure=\"yes\"/><duration>16</duration><voice>1</voice></note><backup><duration>16</duration></backup>{low}{high}"
+    );
+    let layout = engrave("rest_on_sharp.musicxml", &around(&middle));
+    let r = ink(&layout, "rest");
+    for g in &layout.glyphs {
+        let name = g.glyph.as_str();
+        if name.starts_with("notehead") || name.starts_with("accidental") {
+            let (x, y, b) = (g.position.x.0, g.position.y.0, g.bounding_box);
+            let across = r.1.min(x + b.right.0) - r.0.max(x + b.left.0) > -4.0;
+            if across {
+                assert!(
+                    r.2 - (y + b.top.0) >= 0.75 - 1e-3,
+                    "the rest {r:?} 0.75 over {name} at ({x}, {y})"
+                );
+            }
+        }
+    }
+}
+
+/// A rest a first column raised returns to its line where nothing stands near
+/// it at the bar's middle.
+#[test]
+fn a_rest_away_from_a_high_note_stands_on_its_line() {
+    let high = "<note><pitch><step>A</step><octave>5</octave></pitch><duration>16</duration><voice>2</voice><type>whole</type></note>";
+    let middle = format!(
+        "<note><rest measure=\"yes\"/><duration>16</duration><voice>1</voice></note><backup><duration>16</duration></backup>{high}"
+    );
+    let layout = engrave("rest_returned.musicxml", &around(&middle));
+    let (name, y) = rest_at(&layout);
+    assert_eq!(name, "restWhole", "no ledger line");
+    assert!(
+        (y - top_line(&layout)).abs() < 0.05,
+        "an upper voice's rest hanging from the top line: {y}, {}",
+        top_line(&layout)
+    );
+}
+
+/// A rest beside a voice reads the glyph it will draw: a half rest raised off
+/// the staff draws a ledger line, whose overhang reaches the accidental the
+/// plain glyph clears (Gould, pp. 37 and 41).
+#[test]
+fn a_half_rests_ledger_stands_clear_of_an_accidental() {
+    let rest = "<note><rest/><duration>8</duration><voice>1</voice><type>half</type></note><note><pitch><step>C</step><octave>6</octave></pitch><duration>8</duration><voice>1</voice><type>half</type></note>";
+    let sharp = "<note><pitch><step>F</step><alter>1</alter><octave>5</octave></pitch><duration>8</duration><voice>2</voice><type>half</type><accidental>sharp</accidental><stem>down</stem></note><note><pitch><step>G</step><octave>4</octave></pitch><duration>8</duration><voice>2</voice><type>half</type><stem>down</stem></note>";
+    let middle = format!("{rest}<backup><duration>16</duration></backup>{sharp}");
+    let layout = engrave("half_on_sharp.musicxml", &around(&middle));
+    let r = ink(&layout, "restHalfLegerLine");
+    let a = ink(&layout, "accidentalSharp");
+    let across = r.1.min(a.1) - r.0.max(a.0);
+    assert!(across > 0.0, "the ledger {r:?} over the sharp {a:?} across");
+    assert!(
+        r.2 - a.3 >= 0.25 - 1e-3,
+        "the ledgered rest {r:?} clear of the sharp {a:?}"
+    );
+}
+
+/// A measure rest drawn ledgered carries its ledgered glyph's box to the page,
+/// which what reads the page reads: bars so narrow that each rest stands by its
+/// bar's high note.
+#[test]
+fn a_rest_drawn_ledgered_keeps_the_box_it_read() {
+    let high = "<note><pitch><step>C</step><octave>6</octave></pitch><duration>16</duration><voice>2</voice><type>whole</type></note>";
+    let rest = "<note><rest measure=\"yes\"/><duration>16</duration><voice>1</voice></note>";
+    let bar = |n: u32| {
+        format!(
+            "<measure number=\"{n}\">{}{rest}<backup><duration>16</duration></backup>{high}</measure>",
+            if n == 1 { HEAD } else { "" }
+        )
+    };
+    let xml = single(&(1..=12).map(bar).collect::<String>());
+    let layout = engrave("rest_ledgered.musicxml", &xml);
+    for g in layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("rest"))
+    {
+        let wide = g.glyph.as_str() == "restWholeLegerLine";
+        let box_wide = g.bounding_box.left.0 < -0.1;
+        assert_eq!(
+            wide,
+            box_wide,
+            "the box of the glyph drawn: {}",
+            g.glyph.as_str()
+        );
+    }
+}
+
+/// Three staves of one part: a rest filling its measure on the middle one,
+/// its voice its own, with visiting notes from the staves above and below
+/// at the bar's middle.
+fn between_visitors(upper: &str, lower: &str) -> String {
+    let clefs = "<staves>3</staves><clef number=\"1\"><sign>G</sign><line>2</line></clef><clef number=\"2\"><sign>G</sign><line>2</line></clef><clef number=\"3\"><sign>F</sign><line>4</line></clef>";
+    let attrs = format!(
+        "<attributes><divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type></time>{clefs}</attributes>"
+    );
+    let open = |staff: u32, voice: u32, step: &str, octave: u32| {
+        format!(
+            "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch><duration>16</duration><voice>{voice}</voice><type>whole</type><staff>{staff}</staff></note><backup><duration>16</duration></backup>"
+        )
+    };
+    let first = format!(
+        "<measure number=\"1\">{attrs}{}{}{}</measure>",
+        open(1, 1, "C", 5),
+        open(2, 5, "B", 4),
+        open(3, 9, "C", 3)
+    );
+    let quarter = |staff: u32, voice: u32, pitch: &str| {
+        let (step, octave) = pitch.split_at(1);
+        format!(
+            "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch><duration>4</duration><voice>{voice}</voice><type>quarter</type><staff>{staff}</staff></note>"
+        )
+    };
+    let second = format!(
+        "<measure number=\"2\">{a}{b}{a}{b}<backup><duration>16</duration></backup><note><rest measure=\"yes\"/><duration>16</duration><voice>5</voice><staff>2</staff></note><backup><duration>16</duration></backup>{c}{d}{c}{d}</measure>",
+        a = quarter(2, 1, upper),
+        b = quarter(1, 1, "C5"),
+        c = quarter(2, 9, lower),
+        d = quarter(3, 9, "C3")
+    );
+    let third = format!(
+        "<measure number=\"3\">{}{}{}</measure>",
+        open(1, 1, "C", 5),
+        open(2, 5, "B", 4),
+        open(3, 9, "C", 3)
+    );
+    format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A</part-name></score-part></part-list><part id=\"P1\">{first}{second}{third}</part></score-partwise>"
+    )
+}
+
+/// The height of the rest on the second of three staves, from that staff's
+/// middle line.
+fn middle_staff_rest(layout: &ResolvedLayoutIR) -> f32 {
+    let g = layout
+        .glyphs
+        .iter()
+        .find(|g| g.glyph.as_str().starts_with("rest"))
+        .expect("the rest");
+    let mut lines: Vec<f32> = layout
+        .strokes
+        .iter()
+        .filter(|s| {
+            matches!(s.provenance.source, epiphany_core::TypedObjectId::Staff(_))
+                && s.from.y == s.to.y
+        })
+        .map(|s| s.from.y.0)
+        .collect();
+    lines.sort_by(|a, b| b.total_cmp(a));
+    lines.dedup_by(|a, b| (*a - *b).abs() < 1e-3);
+    g.position.y.0 - lines[7]
+}
+
+/// A rest between visitors from both sides takes the side whose first clear
+/// place stands nearer its staff's middle line where it now stands (D109 Q8).
+/// Each visitor's stem turns toward its home, up from the upper and down from
+/// the lower, at the bar's middle, so a place past a stem is a place past that
+/// stem's whole length. D5 and B4: under the B4's stem, -5 from the line, its
+/// glyph's centre 5.25 off; over the D5's it would be 6, 5.75 off. B4 and G4:
+/// over the B4's stem, 5, 4.75 off; under the G4's it would be -6, 6.25 off.
+/// F5 and D4 leave it clear between them, a space under its line.
+#[test]
+fn a_rest_between_visitors_at_its_centre_takes_the_nearer_side() {
+    let under = middle_staff_rest(&engrave(
+        "between_under.musicxml",
+        &between_visitors("D5", "B4"),
+    ));
+    assert!((under + 5.0).abs() < 0.01, "under the B4: {under}");
+    let over = middle_staff_rest(&engrave(
+        "between_over.musicxml",
+        &between_visitors("B4", "G4"),
+    ));
+    assert!((over - 5.0).abs() < 0.01, "over the B4: {over}");
+    let between = middle_staff_rest(&engrave(
+        "between_clear.musicxml",
+        &between_visitors("F5", "D4"),
+    ));
+    assert!(between.abs() < 0.01, "between the two: {between}");
+}

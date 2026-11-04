@@ -3663,3 +3663,41 @@ engraver's own placing reproduces it:
   line does not end on a rest: `lyrics_of` ends it on its last note. The rest's
   box stays in what a grace's principal reads at its column, whose left edge a
   rest's does not pass, and in what a glissando's ends read there.
+
+## ENGRAVER_VERSION 130 → 131: a measure rest is cleared where it stands (X5d fix round 1, 2026-11-04)
+
+- Entry 125 centres a rest filling its measure with the height `clear_rests` and
+  `clear_visitors` gave it at its first column: it could stand on ink at its
+  centre, and stood off its line in empty space for a note it had left. Its
+  height is now decided once it stands across (`rests::clear`), from its default
+  height, by whole spaces, reading the ink of its staff's note columns in its
+  measure where it is drawn. Gould moves a rest only as far as parts would
+  otherwise collide (*Behind Bars*, p. 36), by exact spaces (p. 35), and lets no
+  characters collide (p. 41). He gives no figures: these are MuseScore's
+  (`RestLayout::checkFullMeasureRestCollisions`, under D99), 0.75 up and down
+  within 4 across.
+- Its exclusions are not copied. MuseScore takes accidentals out of what it
+  reads, and a rest stands on a sharp; it runs only where the measure has voices,
+  and a rest stands on a visitor's head. Read here: every glyph and stroke of the
+  staff in a note column of the measure, a visitor's and a grace's and a tuplet's
+  included. Not read, each for its reason: what the family places after it, which
+  is placed against the rest; the columns of a clef or a key or time signature,
+  which bound its free space and which it does not stand in; another rest filling
+  the measure, as MuseScore; the stem whose end rides another staff, whose height
+  the gap between the staves sets later; a curve, which the bake reshapes after
+  this and which passes over what it meets.
+- A voice's rest keeps outside the other part, above all of that ink for an upper
+  voice and below it for a lower, as Gould's ledger line moves far enough to stand
+  outside the other part (p. 37) and MuseScore's one-sided clearance reads. A rest
+  alone on its staff has no part to keep outside: it moves only where ink stands
+  within that box, from the stems it meets, and D109 Q8 holds at the new place:
+  between visiting stems of both ways within 4 across it takes the side whose
+  first clear place stands nearer its staff's middle line, each place read with
+  the glyph it would draw.
+- A whole or half rest's ledgered glyph is decided with its height, after it, so
+  its box is read at the height that draws it (`restHalfLegerLine` is 2.07 wide
+  against `restHalf`'s 1.13): in `rests::clear`, in `clear_rests` and
+  `clear_visitors` for a rest not filling its measure, and in `clear_ledgers`,
+  which lifts a ledgered rest beside another voice off that voice's accidentals,
+  which the ledger line reaches and the plain glyph, beside the heads
+  `clear_rests` reads, does not.

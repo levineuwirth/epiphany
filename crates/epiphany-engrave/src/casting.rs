@@ -1344,6 +1344,11 @@ pub(crate) fn cast_off(
     // placed; the rest of the family's ink takes height on its staff and no
     // room across.
     let placed = crate::family::Placed::of(input);
+    let measure_rest_glyphs: BTreeSet<GlyphObjectId> = input
+        .measure_rests
+        .iter()
+        .filter_map(|rest| rest.glyph)
+        .collect();
     for (s, plan) in systems.iter().enumerate() {
         for &i in &plan.slots {
             for &g in &region_slots[plan.region][i].members {
@@ -1367,7 +1372,9 @@ pub(crate) fn cast_off(
                         x + glyph.bounding_box.right.0,
                     );
                 }
-                if between.contains(&input.glyphs[g].id()) {
+                // A rest filling its measure joins its staff's height where
+                // it is cleared, once its system stands across.
+                if between.contains(&input.glyphs[g].id()) || measure_rest_glyphs.contains(&id) {
                     continue;
                 }
                 match glyph_staff_of[g] {
@@ -1556,6 +1563,8 @@ pub(crate) fn cast_off(
         .map(|(i, text)| (text.id(), i))
         .collect();
     let mut rest_dx: BTreeMap<usize, f32> = BTreeMap::new();
+    // Each such rest's height and glyph, cleared where it stands.
+    let mut rest_place: BTreeMap<usize, crate::rests::RestPlace> = BTreeMap::new();
     let mut carried_marks: Vec<(usize, f32)> = Vec::new();
     // The move across of a slur's first and last ends, each to its rest's
     // centre, from where the system's map sets it.
@@ -1595,6 +1604,89 @@ pub(crate) fn cast_off(
                 .collect(),
         }
     };
+    // The ink each such rest reads: every glyph and stroke of a system's staff
+    // but what the family places after it, what an ending carries, a stem whose
+    // end rides another staff, and the staff's lines; the note columns' alone
+    // (a clef or key signature bounds its free space, and a rest does not stand
+    // in it).
+    let bands_of_rests: BTreeSet<(usize, VerticalBandId)> = input
+        .measure_rests
+        .iter()
+        .filter_map(|rest| Some((*system_of_slot.get(&rest.slot)?, rest.band)))
+        .collect();
+    let mut rest_ink: BTreeMap<(usize, VerticalBandId), Vec<crate::rests::RestInk>> =
+        BTreeMap::new();
+    for (s, plan) in systems.iter().enumerate() {
+        for &i in &plan.slots {
+            let info = &region_slots[plan.region][i];
+            if !info.note {
+                continue;
+            }
+            for &g in &info.members {
+                let glyph = &input.glyphs[g];
+                let id = glyph.id();
+                if !bands_of_rests.contains(&(s, glyph.vertical_band))
+                    || placed.glyphs.contains_key(&id)
+                    || measure_rest_glyphs.contains(&id)
+                    || ending_of.contains_key(&id)
+                {
+                    continue;
+                }
+                let (x, y, b) = (
+                    placed_x(g, s),
+                    spaced_glyphs[g].position.y.0,
+                    glyph.bounding_box,
+                );
+                rest_ink.entry((s, glyph.vertical_band)).or_default().push(
+                    crate::rests::RestInk::boxed(
+                        x + b.left.0,
+                        x + b.right.0,
+                        y + b.bottom.0,
+                        y + b.top.0,
+                    ),
+                );
+            }
+        }
+    }
+    for ((stroke, spaced), fate) in input.strokes.iter().zip(spaced_strokes).zip(&fates) {
+        let StrokeFate::Rigid(Some(s)) = fate else {
+            continue;
+        };
+        let id = stroke.id();
+        if stroke.from == stroke.to
+            || !bands_of_rests.contains(&(*s, stroke.vertical_band))
+            || matches!(stroke.provenance.source, TypedObjectId::Staff(_))
+            || placed.strokes.contains_key(&id)
+            || ending_of.contains_key(&id)
+            || reach_upper.contains_key(&id)
+        {
+            continue;
+        }
+        let p = place_stroke(
+            stroke,
+            spaced,
+            &hplace[*s].0,
+            &slot_source_x,
+            &input.glyphs,
+            anchors.get(&id),
+        );
+        let half = (spaced.thickness.0 * 0.5).max(0.0);
+        let (a, b) = if p.from.x.0 <= p.to.x.0 {
+            (p.from, p.to)
+        } else {
+            (p.to, p.from)
+        };
+        rest_ink
+            .entry((*s, stroke.vertical_band))
+            .or_default()
+            .push(crate::rests::RestInk {
+                left: a.x.0 - half,
+                right: b.x.0 + half,
+                at_left: (a.y.0 - half, a.y.0 + half),
+                at_right: (b.y.0 - half, b.y.0 + half),
+            });
+    }
+    let no_rest_ink: Vec<crate::rests::RestInk> = Vec::new();
     for rest in &input.measure_rests {
         let Some(&s) = system_of_slot.get(&rest.slot) else {
             continue;
@@ -1641,20 +1733,68 @@ pub(crate) fn cast_off(
             .iter()
             .find_map(|&i| furniture(i))
             .map(|(l, _)| l);
-        let (Some(left), Some(right)) = (left, right) else {
-            continue;
+        // Where it stands across: centred, or at its column where the staff
+        // gives it no free space to centre in.
+        let centre = match (left, right) {
+            (Some(left), Some(right)) if right - left > rest.width => Some((left + right) * 0.5),
+            _ => None,
         };
-        if right - left <= rest.width {
-            continue;
-        }
-        let centre = (left + right) * 0.5;
+        let bar_x = |i: usize| {
+            let info = &slots[i];
+            info.x + hplace[s].0.slot_dx(info.x) - shift_of(info.id)
+        };
+        let measure_left = left.unwrap_or(f32::NEG_INFINITY);
+        let measure_right = plan.slots[k + 1..]
+            .iter()
+            .find(|&&i| slots[i].barline)
+            .map_or(f32::INFINITY, |&i| bar_x(i));
         let centre_of = |g: usize| {
             let b = input.glyphs[g].bounding_box;
             placed_x(g, s) + (b.left.0 + b.right.0) * 0.5
         };
         if let Some(&g) = rest.glyph.as_ref().and_then(|id| glyph_index.get(id)) {
-            rest_dx.insert(g, centre - centre_of(g));
+            let ink: Vec<crate::rests::RestInk> = rest_ink
+                .get(&(s, rest.band))
+                .unwrap_or(&no_rest_ink)
+                .iter()
+                .filter(|i| {
+                    let middle = (i.left + i.right) * 0.5;
+                    middle > measure_left && middle < measure_right
+                })
+                .copied()
+                .collect();
+            let stems: Vec<(f32, f32, bool)> = rest
+                .stems
+                .iter()
+                .filter_map(|&(slot, l, r, up)| {
+                    let sx = *slot_source_x.get(&slot)?;
+                    let x = sx + hplace[s].0.slot_dx(sx) - shift_of(slot);
+                    Some((x + l, x + r, up))
+                })
+                .collect();
+            let place = crate::rests::clear(&crate::rests::RestToClear {
+                name: rest.name,
+                y: rest.y,
+                lines: rest.lines,
+                up: rest.up,
+                centre,
+                column: placed_x(g, s),
+                ink: &ink,
+                stems: &stems,
+            });
+            rest_dx.insert(g, place.x - placed_x(g, s));
+            into_staff(
+                &mut staff_ext,
+                s,
+                glyph_staff_of[g],
+                place.y + place.bounds.bottom.0,
+                place.y + place.bounds.top.0,
+            );
+            rest_place.insert(g, place);
         }
+        let Some(centre) = centre else {
+            continue;
+        };
         for id in &rest.marks {
             if let (Some(&g), Some(&f)) = (glyph_index.get(id), placed.glyphs.get(id)) {
                 carried_marks.push((f, centre - centre_of(g)));
@@ -2289,7 +2429,10 @@ pub(crate) fn cast_off(
                         + member_dx(placed.glyphs.get(&glyph.id())),
                 ),
             };
-            let (y, b) = (spaced.position.y.0, glyph.bounding_box);
+            let (y, b) = match rest_place.get(&gi) {
+                Some(place) => (place.y, place.bounds),
+                None => (spaced.position.y.0, glyph.bounding_box),
+            };
             let ink = rect(x + b.left.0, x + b.right.0, y + b.bottom.0, y + b.top.0);
             match placed.glyphs.get(&glyph.id()) {
                 Some(&f) => {
@@ -3123,9 +3266,17 @@ pub(crate) fn cast_off(
                 }
                 None => (0.0, 0.0),
             };
-            let resolved = ResolvedGlyph {
-                position: Point::new(spaced.position.x.0 + dx, spaced.position.y.0 + dy),
-                ..spaced.clone()
+            let resolved = match rest_place.get(&gi) {
+                Some(place) => ResolvedGlyph {
+                    position: Point::new(spaced.position.x.0 + dx, place.y + dy),
+                    glyph: GlyphReference::borrowed(place.name),
+                    bounding_box: place.bounds,
+                    ..spaced.clone()
+                },
+                None => ResolvedGlyph {
+                    position: Point::new(spaced.position.x.0 + dx, spaced.position.y.0 + dy),
+                    ..spaced.clone()
+                },
             };
             (resolved, system)
         })

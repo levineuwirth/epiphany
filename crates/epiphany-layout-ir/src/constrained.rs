@@ -252,6 +252,20 @@ pub struct MeasureRest {
     pub band: VerticalBandId,
     /// How wide the rest is, drawn or not.
     pub width: f32,
+    /// Its name on its staff, before any ledger line: a solver decides its
+    /// height once it stands across, and its ledger line with it.
+    pub name: &'static str,
+    /// Its height at its voice's place on its staff.
+    pub y: f32,
+    /// Its staff's bottom and top lines.
+    pub lines: (f32, f32),
+    /// Its voice's side: up for an upper voice, down for a lower, `None` for a
+    /// rest alone on its staff.
+    pub up: Option<bool>,
+    /// The stems visiting its staff in its measure, for a rest alone on it:
+    /// each one's column, its ink across from the column's x, and whether it
+    /// turns up.
+    pub stems: Vec<(SpringSlotId, f32, f32, bool)>,
     /// The fermatas standing on it.
     pub marks: Vec<GlyphObjectId>,
     /// The slurs starting on it.
@@ -3341,6 +3355,29 @@ pub fn try_to_constrained(
         }
         clear_visitors(&mut event_rests, &visiting, &visitor_ink, &columns);
 
+        // Each staff column's accidentals, with the event drawing each: a
+        // ledgered rest's line reaches them where its plain glyph does not.
+        let mut accidental_ink: ColumnAccidentals = BTreeMap::new();
+        for ((staff, key), refs) in &column_heads {
+            let Some(info) = columns.get(key) else {
+                continue;
+            };
+            let yo = staff.map(&y_origin).unwrap_or(0.0);
+            for r in refs {
+                let head = r.get(&pitch_heads, &unpitched_heads);
+                accidental_ink
+                    .entry((*staff, key.clone()))
+                    .or_default()
+                    .extend(
+                        column_ink_boxes(head, info.x, yo)
+                            .into_iter()
+                            .filter(|b| b.behind)
+                            .map(|b| (head.event, b)),
+                    );
+            }
+        }
+        clear_ledgers(&mut event_rests, &accidental_ink, &columns);
+
         // The dynamics and hairpins of each staff, placed before any is
         // emitted: a hairpin keeps its distance from a dynamic at either of its
         // ends, and a dynamic and the hairpins meeting it, end to end, are one
@@ -4717,8 +4754,19 @@ pub fn try_to_constrained(
                             }
                         }
                     }
-                    Some(LayoutContent::Rest(_)) => {
+                    Some(LayoutContent::Rest(rest)) => {
                         let segs = event_rests.get(&eid).map(Vec::as_slice).unwrap_or(&[]);
+                        // A column inside the measure a rest filling it stands in.
+                        let in_measure = |key: &ColumnKey, seg: &RestSeg| {
+                            let (ColumnKey::Timed(time, _), Some(length)) =
+                                (key, rest.duration.as_ref())
+                            else {
+                                return false;
+                            };
+                            let end = shift_time(&seg.start, length);
+                            time_total(time, &seg.start) != Ordering::Less
+                                && time_total(time, &end) == Ordering::Less
+                        };
                         if segs.is_empty() {
                             emit.stroke(anchor(
                                 provenance,
@@ -4745,6 +4793,24 @@ pub fn try_to_constrained(
                                         let b = m.bounding_box();
                                         b.right.0 - b.left.0
                                     }),
+                                    name: seg.name.unwrap_or("restWhole"),
+                                    y: seg.y,
+                                    lines: seg.lines,
+                                    up: voiced_up(seg.voice),
+                                    stems: visitor_ink
+                                        .iter()
+                                        .filter(|((st, key), _)| {
+                                            seg.voice == VoicePlace::Alone
+                                                && *st == seg.staff
+                                                && in_measure(key, seg)
+                                        })
+                                        .flat_map(|((_, key), boxes)| {
+                                            let info = column(key);
+                                            boxes.iter().map(move |(b, up)| {
+                                                (info.slot, b.left - info.x, b.right - info.x, *up)
+                                            })
+                                        })
+                                        .collect(),
                                     marks: Vec::new(),
                                     slur_starts: Vec::new(),
                                     slur_ends: Vec::new(),
@@ -7324,7 +7390,7 @@ struct RestSeg {
 /// form where the line it hangs from (a whole rest) or sits on (a half) lies
 /// outside its staff's lines, as Gould draws them (*Behind Bars*, p. 37),
 /// MuseScore (`Rest::getSymbol`) and LilyPond (`rest.cc`) alike.
-fn ledgered_rest(name: &'static str, y: f32, (bottom, top): (f32, f32)) -> &'static str {
+pub fn ledgered_rest(name: &'static str, y: f32, (bottom, top): (f32, f32)) -> &'static str {
     let outside = y < bottom - 1e-3 || y > top + 1e-3;
     match name {
         "restWhole" if outside => "restWholeLegerLine",
@@ -7354,14 +7420,22 @@ const REST_CLEARANCE: f32 = 0.25;
 /// from before stands to its left.
 fn clear_rests(rests: &mut BTreeMap<EventId, Vec<RestSeg>>, sounding: &[Sounding]) {
     for (eid, segs) in rests.iter_mut() {
-        for seg in segs.iter_mut() {
+        // A rest filling its measure is cleared by a solver where it stands.
+        for seg in segs.iter_mut().filter(|seg| !seg.whole_measure) {
             let up = match seg.voice {
                 VoicePlace::Upper => true,
                 VoicePlace::Lower => false,
                 VoicePlace::Alone => continue,
             };
-            let Some(bounds) = seg.name.and_then(metrics).map(|m| m.bounding_box()) else {
+            let Some(name) = seg.name.filter(|name| metrics(name).is_some()) else {
                 continue;
+            };
+            let lines = seg.lines;
+            // The box of the glyph it draws at a height.
+            let at = move |y: f32| {
+                metrics(ledgered_rest(name, y, lines))
+                    .expect("a rest's ledgered metrics are bundled")
+                    .bounding_box()
             };
             let start = &seg.start;
             let heads = sounding
@@ -7373,14 +7447,14 @@ fn clear_rests(rests: &mut BTreeMap<EventId, Vec<RestSeg>>, sounding: &[Sounding
                 let Some(top) = heads.reduce(f32::max) else {
                     continue;
                 };
-                while seg.y + bounds.bottom.0 < top + 0.5 + REST_CLEARANCE {
+                while seg.y + at(seg.y).bottom.0 < top + 0.5 + REST_CLEARANCE {
                     seg.y += 1.0;
                 }
             } else {
                 let Some(bottom) = heads.reduce(f32::min) else {
                     continue;
                 };
-                while seg.y + bounds.top.0 > bottom - 0.5 - REST_CLEARANCE {
+                while seg.y + at(seg.y).top.0 > bottom - 0.5 - REST_CLEARANCE {
                     seg.y -= 1.0;
                 }
             }
@@ -7391,6 +7465,9 @@ fn clear_rests(rests: &mut BTreeMap<EventId, Vec<RestSeg>>, sounding: &[Sounding
 /// Each staff column's ink of the voices visiting its staff, each box with
 /// the stem direction of the component it belongs to.
 type VisitorInk = BTreeMap<(Option<StaffId>, ColumnKey), Vec<(InkBox, bool)>>;
+
+/// Each staff column's accidentals, with the event whose head draws each.
+type ColumnAccidentals = BTreeMap<(Option<StaffId>, ColumnKey), Vec<(EventId, InkBox)>>;
 
 /// Each staff column's chords' ink, `[left, bottom, right, top]` from the
 /// column, with the event drawing it, which another chord's outside marks
@@ -7429,18 +7506,29 @@ fn clear_visitors(
         if visiting.contains(eid) {
             continue;
         }
-        for seg in segs.iter_mut().filter(|seg| seg.visible) {
+        // A rest filling its measure is cleared by a solver where it stands.
+        for seg in segs
+            .iter_mut()
+            .filter(|seg| seg.visible && !seg.whole_measure)
+        {
             let (Some(ink), Some(info)) = (
                 visitor_ink.get(&(seg.staff, seg.key.clone())),
                 columns.get(&seg.key),
             ) else {
                 continue;
             };
-            let Some(bounds) = seg.name.and_then(metrics).map(|m| m.bounding_box()) else {
+            let Some(name) = seg.name.filter(|name| metrics(name).is_some()) else {
                 continue;
             };
-            let x = info.x;
+            let (x, lines) = (info.x, seg.lines);
+            let at = move |y: f32| {
+                metrics(ledgered_rest(name, y, lines))
+                    .expect("a rest's ledgered metrics are bundled")
+                    .bounding_box()
+            };
+            // The glyph it draws at a height is the box it reads there.
             let own = |y: f32, dots_y: f32| -> Vec<InkBox> {
+                let bounds = at(y);
                 let mut boxes = vec![InkBox {
                     left: x + bounds.left.0,
                     right: x + bounds.right.0,
@@ -7520,9 +7608,11 @@ fn clear_visitors(
                     let ups = ink.iter().any(|(_, up)| *up);
                     let downs = ink.iter().any(|(_, up)| !*up);
                     if ups && downs {
-                        let centre = (bounds.bottom.0 + bounds.top.0) * 0.5;
                         let middle = (seg.lines.0 + seg.lines.1) * 0.5;
-                        let off = |y: f32| (y + centre - middle).abs();
+                        let off = |y: f32| {
+                            let b = at(y);
+                            (y + (b.bottom.0 + b.top.0) * 0.5 - middle).abs()
+                        };
                         off(first_clear(1.0)) < off(first_clear(-1.0))
                     } else {
                         stems_met.iter().all(|up| !up)
@@ -7540,6 +7630,60 @@ fn clear_visitors(
                 !meets(seg.y, seg.dots_y),
                 "a rest moved {moved} spaces, its bound, and still meets a visiting voice's ink"
             );
+        }
+    }
+}
+
+/// Moves each whole or half rest drawn ledgered, its staff's outward, a space
+/// at a time, until its glyph stands `REST_CLEARANCE` up and down from every
+/// accidental of another event in its column: the ledger line's overhang
+/// reaches them where the plain glyph, which `clear_rests` leaves beside the
+/// heads, does not (Gould, p. 41).
+fn clear_ledgers(
+    rests: &mut BTreeMap<EventId, Vec<RestSeg>>,
+    accidentals: &ColumnAccidentals,
+    columns: &BTreeMap<ColumnKey, ColumnInfo>,
+) {
+    for (eid, segs) in rests.iter_mut() {
+        for seg in segs
+            .iter_mut()
+            .filter(|seg| seg.visible && !seg.whole_measure)
+        {
+            let (Some(name), Some(info), Some(ink)) = (
+                seg.name,
+                columns.get(&seg.key),
+                accidentals.get(&(seg.staff, seg.key.clone())),
+            ) else {
+                continue;
+            };
+            if ledgered_rest(name, seg.y, seg.lines) == name {
+                continue;
+            }
+            let lines = seg.lines;
+            let meets = |y: f32| {
+                let b = metrics(ledgered_rest(name, y, lines))
+                    .expect("a rest's ledgered metrics are bundled")
+                    .bounding_box();
+                ink.iter().any(|(event, a)| {
+                    event != eid
+                        && info.x + b.left.0 < a.right
+                        && a.left < info.x + b.right.0
+                        && y + b.bottom.0 < a.top + REST_CLEARANCE
+                        && a.bottom < y + b.top.0 + REST_CLEARANCE
+                })
+            };
+            let step = if seg.y >= (lines.0 + lines.1) * 0.5 {
+                1.0
+            } else {
+                -1.0
+            };
+            // It passes ink that stays, within that ink's height and its own.
+            let mut moved = 0.0;
+            while moved < 32.0 && meets(seg.y) {
+                seg.y += step;
+                seg.dots_y += step;
+                moved += 1.0;
+            }
         }
     }
 }

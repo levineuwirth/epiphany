@@ -1,0 +1,396 @@
+//! A rest filling its measure cleared where it stands (X5d fix round 1): its
+//! height is decided once its system has set it across, at its final x, from
+//! its default height, by whole spaces, reading the box of the glyph it then
+//! draws, since a whole or half rest off its staff takes a wider ledgered
+//! glyph (*Behind Bars*, p. 37).
+//!
+//! A rest moves off the middle of its staff only as far as parts would
+//! otherwise collide (Gould, p. 36), and no characters collide (p. 41). Gould
+//! gives no figures. These are MuseScore's, `RestLayout::checkFullMeasureRestCollisions`:
+//! [`REST_CLEARANCE`] up and down, against ink within [`REST_REACH`] across.
+//! Its exclusions are not copied: it takes accidentals out of what it reads,
+//! so a rest stands on a sharp, and it runs only where the measure has voices,
+//! so a rest stands on a visitor's head; both are read here.
+//!
+//! A voice's rest keeps its side of the other part, as Gould's ledger line
+//! moves far enough to stand outside it (p. 37): above all of that ink for an
+//! upper voice, below it for a lower. A rest alone on its staff has no part to
+//! keep outside: it moves only where visiting ink stands that near it, from
+//! the stems it meets, and between stems of both ways to the side whose first
+//! clear place stands nearer its staff's middle line (D109 Q8), a tie going
+//! down as it always has.
+
+use epiphany_layout_ir::{metrics, BoundingBox};
+
+/// How far up and down a rest filling its measure stands clear of ink.
+pub(crate) const REST_CLEARANCE: f32 = 0.75;
+
+/// How far across a rest filling its measure reads ink.
+pub(crate) const REST_REACH: f32 = 4.0;
+
+/// One piece of ink a rest reads, a stroke's edges running straight across it.
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct RestInk {
+    pub left: f32,
+    pub right: f32,
+    /// Its bottom and top edges at its left.
+    pub at_left: (f32, f32),
+    /// Its bottom and top edges at its right.
+    pub at_right: (f32, f32),
+}
+
+impl RestInk {
+    /// A box's ink.
+    pub(crate) fn boxed(left: f32, right: f32, bottom: f32, top: f32) -> Self {
+        RestInk {
+            left,
+            right,
+            at_left: (bottom, top),
+            at_right: (bottom, top),
+        }
+    }
+
+    /// Its lowest and highest ink between two x, where it stands there.
+    fn within(&self, left: f32, right: f32) -> Option<(f32, f32)> {
+        let (from, to) = (left.max(self.left), right.min(self.right));
+        if from > to {
+            return None;
+        }
+        let at = |x: f32, (a, b): (f32, f32)| {
+            if self.right - self.left <= f32::EPSILON {
+                a
+            } else {
+                a + (b - a) * (x - self.left) / (self.right - self.left)
+            }
+        };
+        let bottom = at(from, (self.at_left.0, self.at_right.0))
+            .min(at(to, (self.at_left.0, self.at_right.0)));
+        let top = at(from, (self.at_left.1, self.at_right.1))
+            .max(at(to, (self.at_left.1, self.at_right.1)));
+        Some((bottom, top))
+    }
+}
+
+/// A rest filling its measure as it reads its ink.
+pub(crate) struct RestToClear<'a> {
+    /// Its name on its staff, before any ledger line.
+    pub name: &'static str,
+    /// Its default height.
+    pub y: f32,
+    /// Its staff's bottom and top lines.
+    pub lines: (f32, f32),
+    /// Its voice's side, up or down; `None` for a rest alone on its staff.
+    pub up: Option<bool>,
+    /// Where its centre stands across; `None` where it keeps its column, then
+    /// the x its glyph stands at.
+    pub centre: Option<f32>,
+    pub column: f32,
+    /// The ink it reads: the ink of its staff's note columns in its measure.
+    pub ink: &'a [RestInk],
+    /// Each visitor's stem across its staff, and whether it turns up.
+    pub stems: &'a [(f32, f32, bool)],
+}
+
+/// Where such a rest stands, and what it draws.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub(crate) struct RestPlace {
+    pub y: f32,
+    pub name: &'static str,
+    pub bounds: BoundingBox,
+    /// Its glyph's x.
+    pub x: f32,
+}
+
+/// The ledgered form a rest takes at a height; a rest's name otherwise.
+fn glyph_at(rest: &RestToClear, y: f32) -> (&'static str, BoundingBox) {
+    let name = epiphany_layout_ir::ledgered_rest(rest.name, y, rest.lines);
+    let bounds = metrics(name)
+        .or_else(|| metrics(rest.name))
+        .expect("a rest's metrics are bundled")
+        .bounding_box();
+    (name, bounds)
+}
+
+fn glyph_x(rest: &RestToClear, b: &BoundingBox) -> f32 {
+    rest.centre
+        .map_or(rest.column, |centre| centre - (b.left.0 + b.right.0) * 0.5)
+}
+
+/// The rest's box at a height.
+fn rest_box(rest: &RestToClear, y: f32) -> (f32, f32, f32, f32) {
+    let (_, b) = glyph_at(rest, y);
+    let x = glyph_x(rest, &b);
+    (x + b.left.0, x + b.right.0, y + b.bottom.0, y + b.top.0)
+}
+
+/// The rest's place, cleared of its ink.
+pub(crate) fn clear(rest: &RestToClear) -> RestPlace {
+    // Every piece of ink past the rest's reach is read no further; it stands
+    // clear of the ink within it after at most the ink's height and its own.
+    let extent = rest
+        .ink
+        .iter()
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), i| {
+            (
+                lo.min(i.at_left.0).min(i.at_right.0),
+                hi.max(i.at_left.1).max(i.at_right.1),
+            )
+        });
+    let bound = (extent.1 - extent.0).abs() + (rest.y - extent.0).abs() + 16.0;
+    let reach = |y: f32| {
+        let (left, right, ..) = rest_box(rest, y);
+        rest.ink
+            .iter()
+            .filter_map(move |i| i.within(left - REST_REACH, right + REST_REACH))
+    };
+    let walk = |clear_at: &dyn Fn(f32) -> bool, step: f32| {
+        let (mut y, mut moved) = (rest.y, 0.0);
+        while moved < bound && !clear_at(y) {
+            y += step;
+            moved += 1.0;
+        }
+        y
+    };
+    let y = match rest.up {
+        // The whole of the other part, whichever way it stands.
+        Some(true) => walk(
+            &|y| {
+                let (_, _, bottom, _) = rest_box(rest, y);
+                reach(y).all(|(_, top)| bottom - top >= REST_CLEARANCE)
+            },
+            1.0,
+        ),
+        Some(false) => walk(
+            &|y| {
+                let (_, _, _, top) = rest_box(rest, y);
+                reach(y).all(|(bottom, _)| bottom - top >= REST_CLEARANCE)
+            },
+            -1.0,
+        ),
+        None => {
+            let clear_at = |y: f32| {
+                let (_, _, bottom, top) = rest_box(rest, y);
+                reach(y).all(|(b, t)| !(bottom < t + REST_CLEARANCE && b < top + REST_CLEARANCE))
+            };
+            if clear_at(rest.y) {
+                rest.y
+            } else {
+                let (left, right, ..) = rest_box(rest, rest.y);
+                let near = rest
+                    .stems
+                    .iter()
+                    .filter(|(l, r, _)| *l < right + REST_REACH && left - REST_REACH < *r);
+                let (ups, downs) =
+                    near.fold((false, false), |(u, d), (_, _, up)| (u || *up, d || !*up));
+                let up = if ups && downs {
+                    let middle = (rest.lines.0 + rest.lines.1) * 0.5;
+                    let off = |y: f32| {
+                        let (_, _, bottom, top) = rest_box(rest, y);
+                        ((bottom + top) * 0.5 - middle).abs()
+                    };
+                    off(walk(&clear_at, 1.0)) < off(walk(&clear_at, -1.0))
+                } else {
+                    !ups
+                };
+                walk(&clear_at, if up { 1.0 } else { -1.0 })
+            }
+        }
+    };
+    let (name, bounds) = glyph_at(rest, y);
+    RestPlace {
+        y,
+        name,
+        bounds,
+        x: glyph_x(rest, &bounds),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn whole(up: Option<bool>, ink: &[RestInk], stems: &[(f32, f32, bool)]) -> RestPlace {
+        // A whole rest hanging from the top line of a staff 0 to 4, or from
+        // the fourth line alone, a lower voice's from the middle line.
+        let y = match up {
+            Some(true) => 4.0,
+            Some(false) => 2.0,
+            None => 3.0,
+        };
+        clear(&RestToClear {
+            name: "restWhole",
+            y,
+            lines: (0.0, 4.0),
+            up,
+            centre: Some(10.0),
+            column: 0.0,
+            ink,
+            stems,
+        })
+    }
+
+    #[test]
+    fn a_voice_with_no_ink_near_it_keeps_its_height() {
+        let far = [RestInk::boxed(30.0, 31.0, 3.0, 4.0)];
+        assert_eq!(whole(Some(true), &far, &[]).y, 4.0);
+        assert_eq!(whole(Some(false), &far, &[]).y, 2.0);
+        assert_eq!(whole(None, &far, &[]).y, 3.0);
+    }
+
+    /// An upper voice's rest stands above the whole of the other part within
+    /// its reach, 0.75 clear, by whole spaces, a ledger line taken above the
+    /// staff.
+    #[test]
+    fn an_upper_voice_rises_above_ink_near_it_by_whole_spaces() {
+        let ink = [RestInk::boxed(9.0, 10.0, 4.5, 5.5)];
+        let place = whole(Some(true), &ink, &[]);
+        // Its bottom, 0.54 under its line, 0.75 over 5.5.
+        assert_eq!(place.y, 7.0);
+        assert_eq!(place.name, "restWholeLegerLine");
+    }
+
+    /// One further than the reach is not read, whichever edge.
+    #[test]
+    fn the_reach_is_four_spaces_from_the_glyph_it_draws() {
+        let (left, right) = (10.0 - 1.156 * 0.5, 10.0 + 1.156 * 0.5);
+        let over = [RestInk::boxed(right + 3.9, right + 4.9, 4.5, 5.5)];
+        assert_eq!(
+            whole(Some(true), &over, &[]).y,
+            7.0,
+            "within it, on the right"
+        );
+        let past = [RestInk::boxed(right + 4.1, right + 5.1, 4.5, 5.5)];
+        assert_eq!(
+            whole(Some(true), &past, &[]).y,
+            4.0,
+            "past it, on the right"
+        );
+        let over = [RestInk::boxed(left - 4.9, left - 3.9, 4.5, 5.5)];
+        assert_eq!(
+            whole(Some(true), &over, &[]).y,
+            7.0,
+            "within it, on the left"
+        );
+        let past = [RestInk::boxed(left - 5.1, left - 4.1, 4.5, 5.5)];
+        assert_eq!(whole(Some(true), &past, &[]).y, 4.0, "past it, on the left");
+    }
+
+    /// A lower voice's stands below the other part, its top 0.75 clear.
+    #[test]
+    fn a_lower_voice_falls_below_ink_near_it() {
+        let ink = [RestInk::boxed(9.0, 10.0, 0.5, 1.5)];
+        let place = whole(Some(false), &ink, &[]);
+        // Its top, 0.04 over its line, 0.75 under 0.5.
+        assert_eq!(place.y, -1.0);
+        assert_eq!(place.name, "restWholeLegerLine");
+    }
+
+    /// The ledger line's width is read at the height that draws it: a rest
+    /// clear of the ink as plain is not clear of it as ledgered.
+    #[test]
+    fn the_ledgered_glyph_is_what_is_read() {
+        // The plain glyph reaches 10.578 + 4 = 14.578; the ledgered 11.0775 + 4.
+        let ink = [RestInk::boxed(14.8, 15.5, 4.5, 5.5)];
+        let plain = whole(Some(true), &ink, &[]);
+        assert_eq!(plain.y, 4.0, "its default stands inside the staff, plain");
+        // Starting above the top line the same ink is within the reach.
+        let raised = clear(&RestToClear {
+            name: "restWhole",
+            y: 5.0,
+            lines: (0.0, 4.0),
+            up: Some(true),
+            centre: Some(10.0),
+            column: 0.0,
+            ink: &ink,
+            stems: &[],
+        });
+        assert_eq!(raised.y, 7.0);
+    }
+
+    /// A slanted stroke reads as it stands within the reach, not its whole
+    /// rise.
+    #[test]
+    fn a_slanted_stroke_is_read_where_it_stands_within_the_reach() {
+        let beam = RestInk {
+            left: 0.0,
+            right: 40.0,
+            at_left: (-30.0, -29.5),
+            at_right: (10.0, 10.5),
+        };
+        // At the rest, x about 10, its edges stand near -20; at the reach's
+        // right, about 14.6, near -15.
+        let place = whole(Some(true), &[beam], &[]);
+        assert_eq!(place.y, 4.0);
+    }
+
+    /// A rest alone moves only where visiting ink stands that near it, from
+    /// the stems it meets.
+    #[test]
+    fn a_rest_alone_turns_from_the_stems_it_meets() {
+        let ink = [RestInk::boxed(9.5, 10.5, 2.5, 3.5)];
+        let down = whole(None, &ink, &[(9.5, 10.5, true)]);
+        assert!(down.y < 3.0, "down from a stem up: {}", down.y);
+        let up = whole(None, &ink, &[(9.5, 10.5, false)]);
+        assert!(up.y > 3.0, "up from a stem down: {}", up.y);
+    }
+
+    /// A rest alone with ink far above it stays: it has no part to keep
+    /// outside.
+    #[test]
+    fn a_rest_alone_goes_no_further_than_collision() {
+        let ink = [RestInk::boxed(9.5, 10.5, 8.0, 9.0)];
+        assert_eq!(whole(None, &ink, &[(9.5, 10.5, false)]).y, 3.0);
+    }
+
+    /// Between visitors of both ways it takes the side whose first clear
+    /// place stands nearer its staff's middle line (D109 Q8), at its centre.
+    #[test]
+    fn a_rest_between_stems_of_both_ways_takes_the_nearer_side() {
+        let stems = [(9.5, 10.5, true), (9.5, 10.5, false)];
+        // Ink under it reaching up: the way up is short.
+        let low = [RestInk::boxed(9.5, 10.5, 0.0, 2.8)];
+        assert!(whole(None, &low, &stems).y > 3.0);
+        // Ink over it reaching down: the way down is short.
+        let high = [RestInk::boxed(9.5, 10.5, 2.4, 6.0)];
+        assert!(whole(None, &high, &stems).y < 3.0);
+    }
+
+    /// A half rest, whose centre stands off its line: its box decides.
+    #[test]
+    fn a_half_rest_between_stems_reads_its_boxs_centre() {
+        let stems = [(9.5, 10.5, true), (9.5, 10.5, false)];
+        let ink = [RestInk::boxed(9.5, 10.5, 2.0, 2.3)];
+        let place = clear(&RestToClear {
+            name: "restHalf",
+            y: 2.0,
+            lines: (0.0, 4.0),
+            up: None,
+            centre: Some(10.0),
+            column: 0.0,
+            ink: &ink,
+            stems: &stems,
+        });
+        // Up to 4, its bottom 0.75 over 2.3 at 3.99 and its centre 2.28 off
+        // the middle; down to 0, its top 0.75 under 2.0 and its centre 1.72
+        // off, the nearer.
+        assert_eq!(place.y, 0.0);
+    }
+
+    /// Where it keeps its column it reads from there.
+    #[test]
+    fn a_rest_kept_at_its_column_reads_from_there() {
+        let ink = [RestInk::boxed(6.0, 7.0, 4.5, 5.5)];
+        let place = clear(&RestToClear {
+            name: "restWhole",
+            y: 4.0,
+            lines: (0.0, 4.0),
+            up: Some(true),
+            centre: None,
+            column: 2.0,
+            ink: &ink,
+            stems: &[],
+        });
+        assert_eq!(place.y, 7.0);
+        assert_eq!(place.x, 2.0);
+    }
+}

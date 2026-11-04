@@ -2112,8 +2112,8 @@ fn a_staffs_own_rest_stands_clear_of_a_visiting_voice() {
     let backup = "<backup><duration>8</duration></backup>";
     let from_above = |step: &str, alter: i8, octave: u8| {
         [
-            note(&pitch(step, alter, octave), 2, 1, "quarter", 0, 2),
             note(&pitch("C", 0, 5), 4, 1, "half", 0, 1),
+            note(&pitch(step, alter, octave), 2, 1, "quarter", 0, 2),
             note("<rest/>", 2, 1, "quarter", 0, 1),
             backup.to_owned(),
             measure_rest(5, 2),
@@ -2121,8 +2121,8 @@ fn a_staffs_own_rest_stands_clear_of_a_visiting_voice() {
         .concat()
     };
     let from_below = [
-        note(&pitch("C", 0, 5), 2, 5, "quarter", 0, 1),
         note(&pitch("D", 0, 3), 4, 5, "half", 0, 2),
+        note(&pitch("C", 0, 5), 2, 5, "quarter", 0, 1),
         note("<rest/>", 2, 5, "quarter", 0, 2),
         backup.to_owned(),
         measure_rest(1, 1),
@@ -2214,8 +2214,8 @@ fn a_rest_moved_clear_of_a_visitor_keeps_its_dot_and_its_staffs_side() {
     ]
     .concat();
     let turned = [
-        note(&pitch("D", 0, 3), 2, 1, "quarter", 0, 2),
         note(&pitch("C", 0, 5), 4, 1, "half", 0, 1),
+        note(&pitch("D", 0, 3), 2, 1, "quarter", 0, 2),
         note("<rest/>", 2, 1, "quarter", 0, 1),
         backup.to_owned(),
         "<note><rest measure=\"yes\"/><duration>8</duration><voice>5</voice><staff>2</staff>\
@@ -8759,7 +8759,11 @@ fn a_rest_outside_its_staff_takes_its_ledger_line() {
              <duration>{d}</duration><voice>2</voice><type>{kind}</type></note>"
         )
     };
-    let m1 = voices(&rest("whole", 4), &note("F", 5, "whole", 4));
+    // F5 at the bar's middle, where the whole rest stands.
+    let m1 = voices(
+        &rest("whole", 4),
+        &format!("{}{}", note("F", 5, "half", 2), note("F", 5, "half", 2)),
+    );
     let m2 = voices(
         &format!("{}{}", rest("half", 2), rest("half", 2)),
         &format!("{}{}", note("F", 5, "half", 2), note("B", 4, "half", 2)),
