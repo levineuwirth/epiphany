@@ -3420,9 +3420,14 @@ engraver's own placing reproduces it:
   it. Before it, a gap between systems is raised toward the widest gap
   between staves of a system beside it, as far as the page allows (Gould,
   p. 488). Departures named:
-  the levelling is solved exactly, where MuseScore's loop stops after
-  twenty passes and treats spacings of one integer ceiling as level, a
-  loop's bounds rather than a rule; Gould's more room above the strings
+  the levelling is solved exactly, where MuseScore's loop raises by steps,
+  undoes the step that would overspend and hands what is left to the fill,
+  stops after twenty passes and treats spacings of one integer ceiling as
+  level, so its gaps can stand uneven where these stand level, sometimes by
+  whole spaces on a page, a soloist's gap over a braced part above all (the
+  owner kept the exact levelling at D123 Q3, neither Gould nor LilyPond
+  asking for the unevenness; the pages it touches are counted in the vault's
+  pass, X5d fix round 1); Gould's more room above the strings
   (p. 520) is met only where the score brackets its sections; the old
   justification spread only non-final pages, only between systems.
 - A grand staff's centred dynamics are centred once the page is spread, as
@@ -3730,3 +3735,15 @@ engraver's own placing reproduces it:
   case stands to read it against, since every whole-bar breve rest of the corpus
   stands on five lines at its voice's place or further outside. A rest of a
   pickup's whole length is not touched: it stays on the decide-list.
+
+## ENGRAVER_VERSION 133 → 134: gaps rise level with a gap past its cap (X5d fix round 1, 2026-11-04)
+
+- `vertical::spread` levelled the page's smaller gaps up to the widest gap still
+  under its cap. A braced part's staves held apart by their ink stand past theirs,
+  and MuseScore's `smallest` passes over a gap only at its cap exactly, so its
+  other gaps rise level with one past it. The level now reads every gap the spread
+  may move, one past its cap too. Gould asks only that distances follow the
+  notation (*Behind Bars*, p. 488); LilyPond's single force has no such case; this
+  is MuseScore's reading where it is a rule rather than a loop's bound (entry 124)
+  (`gaps_rise_level_with_a_gap_past_its_cap`,
+  `a_soloist_rises_level_with_a_braced_parts_held_gap`).

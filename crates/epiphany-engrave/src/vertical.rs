@@ -398,12 +398,18 @@ fn level(base: &[f32], caps: &[f32], weights: &[f32], limit: f32, space: f32) ->
 /// The line distance each gap of a page takes once the page is spread by
 /// `space`, MuseScore's spread (`PageLayout::distributeStaves`) done exactly:
 /// in its units (a gap's distance over its weight), the smallest gaps raised
-/// level first, as far as the widest gap, each no further than its cap;
+/// level first, as far as the widest gap of the page that the spread may move,
+/// a gap its ink holds past its cap included (`VerticalGapData`'s `smallest`
+/// passes over only a gap at its cap exactly), each no further than its cap;
 /// then what space is left, no more than [`MAX_PAGE_FILL`] for each gap of
 /// the page, shared by weight, each gap taking at most [`MAX_PAGE_FILL`] in
-/// those units, and none past its cap. Its loop's twenty-pass safeguard and
-/// its grouping of near values by their ceiling are not ported: they bound
-/// a loop, they are no rule.
+/// those units, and none past its cap.
+///
+/// The levelling is a departure from MuseScore's, which raises by steps, undoes
+/// the step that would overspend and hands what is left to the fill, stops
+/// after twenty passes and treats spacings of one integer ceiling as level.
+/// Those leave gaps uneven, sometimes by whole spaces on a page, where this
+/// leaves them level; neither Gould nor LilyPond asks for it (D123 Q3).
 pub(crate) fn spread(gaps: &[SpreadGap], space: f32) -> Vec<f32> {
     let open: Vec<usize> = (0..gaps.len())
         .filter(|&i| !gaps[i].fixed && gaps[i].distance / gaps[i].factor < gaps[i].cap)
@@ -415,7 +421,10 @@ pub(crate) fn spread(gaps: &[SpreadGap], space: f32) -> Vec<f32> {
     let base: Vec<f32> = open.iter().map(|&i| units[i]).collect();
     let caps: Vec<f32> = open.iter().map(|&i| gaps[i].cap).collect();
     let weights: Vec<f32> = open.iter().map(|&i| gaps[i].factor).collect();
-    let widest = base.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let widest = (0..gaps.len())
+        .filter(|&i| !gaps[i].fixed)
+        .map(|i| units[i])
+        .fold(f32::NEG_INFINITY, f32::max);
     let (levelled, spent) = level(&base, &caps, &weights, widest, space);
     // The fill: at most MAX_PAGE_FILL a gap, for every gap of the page.
     let left = (space - spent).min(MAX_PAGE_FILL * gaps.len() as f32);
@@ -477,6 +486,35 @@ mod tests {
             cap: cap / factor,
             fixed: false,
         }
+    }
+
+    /// A gap its ink holds past its cap stays in the levelling's reach: the
+    /// others rise level with it, as `smallest` lets them.
+    #[test]
+    fn gaps_rise_level_with_a_gap_past_its_cap() {
+        let gaps = [gap(4.0, 1.0, 20.0), gap(12.0, 1.0, 6.5)];
+        // The first takes all 8, to 12, level with the second, which its cap
+        // leaves where it stands; read by the open gaps alone the first would
+        // stop at once, and take only the 6 the fill allows.
+        let d = spread(&gaps, 8.0);
+        assert!((d[0] - 12.0).abs() < 1e-5, "{d:?}");
+        assert_eq!(d[1], 12.0);
+    }
+
+    /// The page's top border moves nothing: it is not a gap to rise level with.
+    #[test]
+    fn a_fixed_gap_sets_no_level() {
+        let fixed = SpreadGap {
+            distance: 30.0,
+            factor: 1.0,
+            cap: 32.0,
+            fixed: true,
+        };
+        let gaps = [fixed, gap(4.0, 1.0, 20.0), gap(6.0, 1.0, 20.0)];
+        // 2 levels the two free gaps at 6; a further 6 is the fill.
+        let d = spread(&gaps, 2.0);
+        assert!((d[1] - 6.0).abs() < 1e-5 && d[2] == 6.0, "{d:?}");
+        assert_eq!(d[0], 30.0);
     }
 
     #[test]
