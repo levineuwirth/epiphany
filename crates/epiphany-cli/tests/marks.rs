@@ -6401,3 +6401,150 @@ fn an_outside_mark_is_set_from_its_own_chord_its_dot_left_out() {
         "the trill as high over its staff",
     );
 }
+
+/// Each staff's lines in a layout's first system, top staff first: bottom and
+/// top.
+fn staff_spans(layout: &ResolvedLayoutIR) -> Vec<(f32, f32)> {
+    let system = layout.systems().next().expect("a system");
+    let mut lines: std::collections::BTreeMap<epiphany_core::StaffId, (f32, f32)> =
+        Default::default();
+    for &i in &system.primitives.strokes {
+        let stroke = &layout.strokes[i as usize];
+        if let TypedObjectId::Staff(staff) = stroke.provenance.source {
+            if stroke.from.y == stroke.to.y {
+                let y = stroke.from.y.0;
+                let e = lines.entry(staff).or_insert((y, y));
+                e.0 = e.0.min(y);
+                e.1 = e.1.max(y);
+            }
+        }
+    }
+    let mut spans: Vec<(f32, f32)> = lines.into_values().collect();
+    spans.sort_by(|a, b| b.1.total_cmp(&a.1));
+    spans
+}
+
+/// A measure whose notes hold a grand staff's staves wide apart, so the gap's
+/// middle lies past what stands under the upper staff in the measure before.
+fn wide_measure() -> String {
+    let up: String = (0..4).map(|_| note("C3", 2, "quarter", 1, 1, "")).collect();
+    let low: String = (0..4).map(|_| note("C5", 2, "quarter", 5, 2, "")).collect();
+    format!("{up}{}{low}", backup(8))
+}
+
+/// A pedal line under a staff, from `start` to `stop` beats of four quarters,
+/// on a quarter-note staff with a p at its first note.
+fn upper_with_p_and_pedal(start: usize, stop: usize) -> String {
+    let p = "<direction><direction-type><dynamics><p/></dynamics></direction-type>\
+             <staff>1</staff></direction>";
+    let pedal = |kind: &str| {
+        format!(
+            "<direction><direction-type><pedal type=\"{kind}\" line=\"yes\"/></direction-type>\
+             <staff>1</staff></direction>"
+        )
+    };
+    let mut out = String::from(p);
+    for beat in 0..4 {
+        if beat == start {
+            out += &pedal("start");
+        }
+        out += &note("A4", 2, "quarter", 1, 1, "");
+        if beat + 1 == stop {
+            out += &pedal("stop");
+        }
+    }
+    out
+}
+
+/// A dynamic with a pedal line further out across it stays inside the line,
+/// where it was placed: the p stands as far under its staff as on a staff of
+/// its own, though the wide gap's middle lies past the line (Gould, p. 493;
+/// `elementHasAnotherStackedOutside`).
+#[test]
+fn a_centred_dynamic_stays_inside_a_pedal_further_out_across_it() {
+    let low = || -> String { (0..4).map(|_| note("C3", 2, "quarter", 5, 2, "")).collect() };
+    let upper = upper_with_p_and_pedal(0, 4);
+    let grand = part(
+        "stacked_grand.musicxml",
+        2,
+        &[format!("{upper}{}{}", backup(8), low()), wide_measure()],
+    );
+    let alone = part(
+        "stacked_alone.musicxml",
+        1,
+        &[upper.replace("<staff>1</staff>", "")],
+    );
+    let (grand, alone) = (
+        engrave(&grand.reduced.score).layout,
+        engrave(&alone.reduced.score).layout,
+    );
+    let under = |layout: &ResolvedLayoutIR| {
+        let p = only(layout, "dynamicPiano");
+        staff_spans(layout)[0].0 - p.position.y.0
+    };
+    assert!(
+        (under(&grand) - under(&alone)).abs() < 0.01,
+        "the p unmoved: {} under the staff, {} on a staff of its own",
+        under(&grand),
+        under(&alone)
+    );
+}
+
+/// A pedal line elsewhere in the bar is not across it: the p centres.
+#[test]
+fn a_pedal_elsewhere_in_the_bar_leaves_a_dynamic_centred() {
+    let low = || -> String { (0..4).map(|_| note("C3", 2, "quarter", 5, 2, "")).collect() };
+    let upper = upper_with_p_and_pedal(2, 4);
+    let grand = part(
+        "stacked_elsewhere.musicxml",
+        2,
+        &[format!("{upper}{}{}", backup(8), low()), wide_measure()],
+    );
+    let layout = engrave(&grand.reduced.score).layout;
+    let spans = staff_spans(&layout);
+    let middle = (spans[0].0 + spans[1].1) * 0.5;
+    let p = only(&layout, "dynamicPiano");
+    let (bottom, top) = (
+        p.position.y.0 + p.bounding_box.bottom.0,
+        p.position.y.0 + p.bounding_box.top.0,
+    );
+    assert!(
+        ((bottom + top) * 0.5 - middle).abs() < 1.0,
+        "the p about the gap's middle {middle}: {bottom} to {top}, the staves {spans:?}"
+    );
+}
+
+/// The mirror: a sung staff's dynamic above it stays inside words further out
+/// above it, not passing up through them.
+#[test]
+fn a_sung_staffs_centred_dynamic_stays_inside_its_words_further_out() {
+    let words = ["one", "two", "three", "four"];
+    let sung: String = words
+        .iter()
+        .map(|w| syllable(note("C3", 2, "quarter", 5, 2, ""), 1, "single", w, false))
+        .collect();
+    let above = "<direction><direction-type><dynamics><p/></dynamics></direction-type>\
+                 <staff>2</staff></direction>\
+                 <direction placement=\"above\"><direction-type><words>poco</words>\
+                 </direction-type><staff>2</staff></direction>";
+    let measure = [
+        note("C5", 8, "whole", 1, 1, ""),
+        backup(8),
+        above.to_string(),
+        sung,
+    ]
+    .concat();
+    let loaded = part("stacked_sung.musicxml", 2, &[measure, wide_measure()]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let p = only(&layout, "dynamicPiano");
+    let spans = staff_spans(&layout);
+    let run = runs(&layout, "poco")[0];
+    let (run_bottom, p_top) = (
+        run.origin.y.0 + run.bounds.bottom.0,
+        p.position.y.0 + p.bounding_box.top.0,
+    );
+    assert!(
+        p_top <= run_bottom + 1e-3,
+        "the p, top {p_top}, under the words, bottom {run_bottom}; the staves {spans:?}"
+    );
+}

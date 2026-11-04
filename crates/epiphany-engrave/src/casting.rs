@@ -3121,6 +3121,29 @@ pub(crate) fn cast_off(
                 ..*b
             }));
         }
+        // A member of its own staff's family further out across it stays
+        // further out: the row is left where it was placed, as MuseScore
+        // leaves it (`elementHasAnotherStackedOutside`), and Gould keeps
+        // dynamics between the staff and what stands further out (*Behind
+        // Bars*, p. 493).
+        let stacked_outside = members.iter().any(|&i| {
+            let p = &family_pieces[i];
+            let dy = family_dy.get(&(p.family, s)).copied().unwrap_or(0.0);
+            p.boxes.iter().any(|b| {
+                placed_own.iter().any(|r| {
+                    r.left < b.right
+                        && r.right > b.left
+                        && if place.above {
+                            r.top > b.top + dy
+                        } else {
+                            r.bottom < b.bottom + dy
+                        }
+                })
+            })
+        });
+        if stacked_outside {
+            continue;
+        }
         let (mut up, mut down) = (f32::INFINITY, f32::NEG_INFINITY);
         for &i in &members {
             let p = &family_pieces[i];

@@ -3760,3 +3760,15 @@ engraver's own placing reproduces it:
   (`a_caesura_leaves_a_measure_rest_at_the_bars_middle`,
   `a_breath_mark_inside_the_bar_leaves_a_measure_rest_at_its_middle`,
   `a_clef_closing_the_bar_bounds_a_measure_rest`).
+
+## ENGRAVER_VERSION 135 → 136: a centred mark stays inside its own staff's family (X5d fix round 1, 2026-11-04)
+
+- In a wide gap a grand staff's centred dynamic moved past a pedal line of its own
+  staff that stood further out across it, and stood beyond it, clear of it and out
+  of order. A row with a member of its own staff's family further out across any of
+  its members now stays where it was placed: Gould keeps dynamics between the staff
+  and what stands further out (*Behind Bars*, p. 493), MuseScore returns before the
+  move (`SystemLayout::elementHasAnotherStackedOutside`), and LilyPond has no such
+  case (`a_centred_dynamic_stays_inside_a_pedal_further_out_across_it`,
+  `a_pedal_elsewhere_in_the_bar_leaves_a_dynamic_centred`,
+  `a_sung_staffs_centred_dynamic_stays_inside_its_words_further_out`).
