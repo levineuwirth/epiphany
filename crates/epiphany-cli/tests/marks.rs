@@ -6612,3 +6612,27 @@ fn a_centred_dynamic_keeps_its_distance_from_a_later_systems_lead() {
     }
     assert!(met > 0, "the dynamic stands across a clef");
 }
+
+/// An expression text between a grand staff's staves with no dynamic beside it
+/// is in no row: it centres by its own box, at the gap's middle.
+#[test]
+fn a_centred_text_with_no_dynamic_stands_at_the_gaps_middle() {
+    let words = "<direction><direction-type><words font-style=\"italic\">espress.</words>\
+                 </direction-type><staff>1</staff><sound/></direction>";
+    let up: String = (0..4).map(|_| note("C5", 2, "quarter", 1, 1, "")).collect();
+    let low: String = (0..4).map(|_| note("C3", 2, "quarter", 5, 2, "")).collect();
+    let loaded = part(
+        "centred_words.musicxml",
+        2,
+        &[format!("{words}{up}{}{low}", backup(8))],
+    );
+    let layout = engrave(&loaded.reduced.score).layout;
+    let run = runs(&layout, "espress.")[0];
+    let spans = staff_spans(&layout);
+    let middle = (spans[0].0 + spans[1].1) * 0.5;
+    let at = run.origin.y.0 + (run.bounds.bottom.0 + run.bounds.top.0) * 0.5;
+    assert!(
+        (at - middle).abs() < 0.05,
+        "the words' box centred at {at}, the gap's middle {middle}, the staves {spans:?}"
+    );
+}

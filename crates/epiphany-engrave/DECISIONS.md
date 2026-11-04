@@ -3782,3 +3782,13 @@ engraver's own placing reproduces it:
   of it. The leads join both staves' bounds, as MuseScore's centring reads both
   skylines whole (`SystemLayout::centerElementBetweenStaves`)
   (`a_centred_dynamic_keeps_its_distance_from_a_later_systems_lead`).
+
+## ENGRAVER_VERSION 137 → 138: a centred text in no row is centred by its own box (X5d fix round 1, 2026-11-04)
+
+- The centring read a row's centre, and a mark in no row, an expression text with no
+  dynamic beside it, from a centre of 0, a place on no page: its move came out as
+  the distance from the page's origin to the gap's middle, and the clamp alone
+  stopped it, a space or more off the middle. It now reads its own box's centre. X4d
+  gave such a text its `between` and no row; MuseScore centres the element's shape
+  (`SystemLayout::centerElementBetweenStaves`)
+  (`a_centred_text_with_no_dynamic_stands_at_the_gaps_middle`).

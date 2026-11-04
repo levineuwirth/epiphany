@@ -3089,11 +3089,29 @@ pub(crate) fn cast_off(
                 .map_or(0.0, |s| s.thickness.0 * 0.5)
         };
         let target = (own_top - half(own) + other_top - half(other) + off - STAFF_SPAN) * 0.5;
-        let centre = place.row.map_or(0.0, |row| row.centre)
-            + family_dy
-                .get(&(first_of(&family_pieces, &members), s))
-                .copied()
-                .unwrap_or(0.0);
+        // Its row's centre where it was placed; a mark in no row, by its own
+        // box's.
+        let centre = match place.row {
+            Some(row) => {
+                row.centre
+                    + family_dy
+                        .get(&(first_of(&family_pieces, &members), s))
+                        .copied()
+                        .unwrap_or(0.0)
+            }
+            None => {
+                let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+                for &i in &members {
+                    let p = &family_pieces[i];
+                    let dy = family_dy.get(&(p.family, s)).copied().unwrap_or(0.0);
+                    for b in &p.boxes {
+                        lo = lo.min(b.bottom + dy);
+                        hi = hi.max(b.top + dy);
+                    }
+                }
+                (lo + hi) * 0.5
+            }
+        };
         // As far as its own staff's ink and the other's let it, the family
         // already placed on either included where it now stands (X5d.7), the
         // row's own members aside, and a later system's lead, as MuseScore's
