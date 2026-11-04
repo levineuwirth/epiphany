@@ -619,3 +619,72 @@ fn a_fermata_on_a_breve_rest_stands_over_it() {
         "the fermata {f:?} over its rest {r:?}"
     );
 }
+
+/// A caesura closing the bar does not narrow a measure rest's free space: only
+/// a clef, a key or time signature or a barline does (Gould, p. 160; MuseScore's
+/// `getMeasureStartEndPos`).
+#[test]
+fn a_caesura_leaves_a_measure_rest_at_the_bars_middle() {
+    let rest = "<note><rest measure=\"yes\"/><duration>16</duration><voice>1</voice><notations><articulations><caesura/></articulations></notations></note>";
+    let layout = engrave("rest_caesura.musicxml", &around(rest));
+    assert!(
+        layout
+            .glyphs
+            .iter()
+            .any(|g| g.glyph.as_str().starts_with("caesura")),
+        "the caesura is drawn"
+    );
+    let r = ink(&layout, "restWhole");
+    assert!(
+        (centre(r) - second_bar_middle(&layout)).abs() < 0.02,
+        "the rest {r:?} at the bar's middle {}",
+        second_bar_middle(&layout)
+    );
+}
+
+/// Nor does a breath mark.
+#[test]
+fn a_breath_mark_inside_the_bar_leaves_a_measure_rest_at_its_middle() {
+    let rest = "<note><rest measure=\"yes\"/><duration>16</duration><voice>1</voice><notations><articulations><breath-mark/></articulations></notations></note>";
+    let layout = engrave("rest_breath.musicxml", &around(rest));
+    assert!(
+        layout
+            .glyphs
+            .iter()
+            .any(|g| g.glyph.as_str().starts_with("breathMark")),
+        "the breath mark is drawn"
+    );
+    let r = ink(&layout, "restWhole");
+    assert!(
+        (centre(r) - second_bar_middle(&layout)).abs() < 0.02,
+        "the rest {r:?} at the bar's middle {}",
+        second_bar_middle(&layout)
+    );
+}
+
+/// A clef closing the bar does: the rest stands left of the bar's middle.
+#[test]
+fn a_clef_closing_the_bar_bounds_a_measure_rest() {
+    let rest = "<note><rest measure=\"yes\"/><duration>16</duration><voice>1</voice></note><attributes><clef><sign>F</sign><line>4</line></clef></attributes>";
+    let xml = single(&format!(
+        "<measure number=\"1\">{HEAD}{WHOLE}</measure><measure number=\"2\">{rest}</measure><measure number=\"3\"><note><pitch><step>C</step><octave>3</octave></pitch><duration>16</duration><voice>1</voice><type>whole</type></note></measure>"
+    ));
+    let layout = engrave("rest_clef.musicxml", &xml);
+    let r = ink(&layout, "restWhole");
+    let clef = ink(&layout, "fClef");
+    let bars: Vec<f32> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str() == "barlineSingle")
+        .map(|g| g.position.x.0 + g.bounding_box.right.0)
+        .collect();
+    let opening = bars.iter().copied().fold(f32::INFINITY, f32::min);
+    assert!(
+        clef.0 > opening,
+        "the clef {clef:?} inside the bar from {opening}"
+    );
+    assert!(
+        (centre(r) - (opening + clef.0) * 0.5).abs() < 0.05,
+        "the rest {r:?} between the barline {opening} and the clef {clef:?}"
+    );
+}

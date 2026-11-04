@@ -1531,11 +1531,10 @@ pub(crate) fn cast_off(
     // ---- Measure rests (X5d.5) ---------------------------------------------
     // A rest filling its measure stands centred in its staff's free space in
     // the measure, as Gould sets a whole-bar rest (pp. 159-160): between the
-    // right edge of its staff's ink in the columns before it that hold no
-    // note, back to the barline opening the measure (or the system's lead
-    // where the measure opens the system), and the left edge of its staff's
-    // ink in the first such column after it, a clef, key or time signature or
-    // the barline closing the measure, as MuseScore takes them
+    // right edge of its staff's clefs, key and time signatures in the columns
+    // before it, back to the barline opening the measure (or the system's lead
+    // where the measure opens the system), and the left edge of the first such
+    // after it or the barline closing the measure, as MuseScore takes them
     // (`MeasureLayout::getMeasureStartEndPos`). Its column keeps its room.
     // This needs the system's map across alone, so it is set here, and the
     // sky, the family and the outlines read the rest where it is drawn. What
@@ -1696,7 +1695,11 @@ pub(crate) fn cast_off(
         let Some(k) = plan.slots.iter().position(|&i| slots[i].id == rest.slot) else {
             continue;
         };
-        // A column holding no note: its ink on the rest's staff across.
+        // A column holding no note: a clef's, a key or time signature's or a
+        // barline's ink on the rest's staff across, which alone bound its
+        // space (Gould, p. 160); a caesura or a breath mark there does not,
+        // nor anything else that stands in such a column
+        // (`MeasureLayout::getMeasureStartEndPos`).
         let furniture = |i: usize| -> Option<(f32, f32)> {
             if slots[i].note {
                 return None;
@@ -1706,7 +1709,7 @@ pub(crate) fn cast_off(
                 .iter()
                 .filter(|&&m| {
                     input.glyphs[m].vertical_band == rest.band
-                        && !family.contains(&input.glyphs[m].id())
+                        && bounds_a_rest(input.glyphs[m].glyph.as_str())
                 })
                 .map(|&m| {
                     let (x, b) = (placed_x(m, s), input.glyphs[m].bounding_box);
@@ -5853,6 +5856,16 @@ struct StaffAgg {
     min_y: f32,
     max_y: f32,
     bottom: (f32, Provenance),
+}
+
+/// Whether a glyph in a column holding no note bounds a measure rest's free
+/// space: a clef, a time signature, a key signature's accidental, or a barline
+/// or repeat sign.
+fn bounds_a_rest(name: &str) -> bool {
+    name.contains("Clef")
+        || name.starts_with("timeSig")
+        || name.starts_with("accidental")
+        || is_barline_glyph(name)
 }
 
 /// A staff's reach as group signs read it.

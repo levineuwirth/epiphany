@@ -3747,3 +3747,16 @@ engraver's own placing reproduces it:
   is MuseScore's reading where it is a rule rather than a loop's bound (entry 124)
   (`gaps_rise_level_with_a_gap_past_its_cap`,
   `a_soloist_rises_level_with_a_braced_parts_held_gap`).
+
+## ENGRAVER_VERSION 134 → 135: a caesura leaves a measure rest at the bar's middle (X5d fix round 1, 2026-11-04)
+
+- A measure rest's free space read its staff's ink in any column holding no note,
+  so a caesura or breath mark closing the bar, or standing inside it, narrowed it.
+  Only a clef, a key or time signature or a barline does now: Gould centres the
+  rest in the space they leave (*Behind Bars*, p. 160), MuseScore's end point stops
+  at those and the end barline (`getMeasureStartEndPos`), and LilyPond centres
+  between break-alignment groups. Reading those names leaves a member of the family
+  out as well as the rest, so the earlier filter on the family is gone with it
+  (`a_caesura_leaves_a_measure_rest_at_the_bars_middle`,
+  `a_breath_mark_inside_the_bar_leaves_a_measure_rest_at_its_middle`,
+  `a_clef_closing_the_bar_bounds_a_measure_rest`).
