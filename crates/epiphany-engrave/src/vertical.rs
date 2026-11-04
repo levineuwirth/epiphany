@@ -335,8 +335,11 @@ pub(crate) struct SpreadGap {
     pub distance: f32,
     /// Its weight, 1.0 for a plain gap between staves.
     pub factor: f32,
-    /// The most its line distance may come to, in the spread's units: the
-    /// cap divided by the weight, as MuseScore keeps it (`m_maxActualSpacing`).
+    /// The most its line distance may come to, in the spread's units, as
+    /// MuseScore keeps it (`m_maxActualSpacing`): between systems and inside a
+    /// brace the cap divided by the weight, so its stated figure on the page;
+    /// any other gap between staves the staff cap undivided, so a bracket's
+    /// edge stops at 24 on the page, 20 in units of its 1.2.
     pub cap: f32,
     /// A gap the spread leaves: the page's top border.
     pub fixed: bool,

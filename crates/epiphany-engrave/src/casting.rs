@@ -2799,8 +2799,9 @@ pub(crate) fn cast_off(
                     .copied()
                     .unwrap_or((hi - STAFF_SPAN, hi));
                 // A staff of one line is boxed two spaces either side of it,
-                // as MuseScore boxes one (`SystemLayout`, a one-line staff's
-                // bar line span), so it keeps a five-line staff's room.
+                // so it keeps a five-line staff's room, as LilyPond's least
+                // distance between reference points does; MuseScore boxes it
+                // so for its bracket and reads this floor from the line.
                 let (bottom, top) = if top - bottom < 1e-3 {
                     (bottom - STAFF_SPAN * 0.5, top + STAFF_SPAN * 0.5)
                 } else {

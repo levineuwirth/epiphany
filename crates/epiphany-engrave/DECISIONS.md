@@ -3415,7 +3415,13 @@ engraver's own placing reproduces it:
   their weights (2.5 between systems, 1.2 at a bracket's edge, 1.1 at a
   brace's), the smallest raised level first, then the rest shared by
   weight, at most 6 a gap and 6 for each gap of the page in all; caps 20
-  between staves, 6.5 inside a brace, 32 between systems; until the last
+  between staves, 6.5 inside a brace, 32 between systems, each in those
+  units, as MuseScore keeps its `m_maxActualSpacing`: a gap at a bracket's
+  edge stops at 24 on the page, the staff cap undivided by its weight, and a
+  gap inside a brace and between systems at their stated figure. A bracket
+  inside a bracket weighs its edges 1.2, where MuseScore's skips one starting
+  within another, a departure kept (the owner's ruling at D123): the distances
+  it sets stand under his reading. Until the last
   staff's bottom line stands 7 above the bottom margin or its ink reaches
   it. Before it, a gap between systems is raised toward the widest gap
   between staves of a system beside it, as far as the page allows (Gould,
@@ -3543,9 +3549,15 @@ engraver's own placing reproduces it:
   instruments of indefinite pitch (p. 5); LilyPond's reference for a staff
   of one line is its line; MuseScore's lines follow its staff type's count.
 - For the floor between staves a staff of one line is boxed two spaces
-  either side of its line, as MuseScore boxes it, so it keeps a five-line
-  staff's room; `req:qmc:vertical` counts it so (its catalog text says so,
-  the PDF rebuilt).
+  either side of its line, so it keeps a five-line staff's room;
+  `req:qmc:vertical` counts it so (its catalog text says so, the PDF rebuilt).
+  The floor is LilyPond's: its least distance between reference points gives
+  the same room (Gould's p. 488 reads a stave's height, and a percussion line
+  keeps its). It departs from MuseScore, which boxes the staff so for its
+  bracket but reads the floor from the line (`SystemLayout`, `dist` from
+  `staffHeight`, nil on one line, plus the staff distance), so its line can stand
+  the bare distance from the next staff's top line, and a line opening a page
+  stands nearer the margin.
 - Not changed, on the owner's ruling at X5d.6: a three-line staff keeps
   five lines, to the decide-list. MuseScore can draw such a staff with its
   lines two spaces apart and its notes a space per step, which an export
