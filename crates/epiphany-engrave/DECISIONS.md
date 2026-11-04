@@ -3713,3 +3713,20 @@ engraver's own placing reproduces it:
   line and insets the clef, a way we do not take, since our clef stands flush;
   Gould lets no characters collide (*Behind Bars*, p. 41). A joined barline runs
   between the same spans, which is where a one-line staff's barline already ends.
+
+## ENGRAVER_VERSION 132 → 133: a whole-bar rest in 2/1 or more is a breve rest (X5d fix round 1, 2026-11-04)
+
+- A rest filling its measure drew a semibreve rest in every meter. From 2/1 it
+  draws a breve rest (*Behind Bars*, p. 160; MuseScore's `Rest::getSymbol` reads
+  a bar of two whole notes or more; LilyPond's whole-bar rest takes it at 2/1),
+  filling the space above the middle line (p. 35), or, on a staff of one line,
+  hanging from it (MuseScore's `computeWholeOrBreveRestOffset`, LilyPond's
+  `staff_position_internal`). `restDoubleWholeLegerLine` joins the bundled glyphs
+  from the pinned font, the others reproduced byte for byte. Its height, ledgered
+  glyph and box go through entry 131's rule. Where it hangs from a staff's last
+  line MuseScore draws the ledgered glyph and LilyPond the plain one (`rest.cc`:
+  a breve rest needs a ledger only if neither lying on nor hanging from a line);
+  this follows MuseScore, one test for every whole and half rest, and no corpus
+  case stands to read it against, since every whole-bar breve rest of the corpus
+  stands on five lines at its voice's place or further outside. A rest of a
+  pickup's whole length is not touched: it stays on the decide-list.

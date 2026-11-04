@@ -1285,3 +1285,26 @@ fn a_ledgered_rest_is_drawn_at_its_value() {
     assert_eq!(count(&loaded, &engraved, "rest drawn at another value"), 0);
     assert_eq!(count(&loaded, &engraved, "rest not drawn"), 0);
 }
+
+/// A whole-bar rest in 2/1 or more is drawn at its value as a breve rest, and
+/// no longer as a semibreve one.
+#[test]
+fn a_whole_bar_breve_rest_is_drawn_at_its_value() {
+    let xml = "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
+         <attributes><divisions>1</divisions><time><beats>4</beats><beat-type>2</beat-type>\
+         </time><clef><sign>G</sign><line>2</line></clef></attributes>\
+         <note><rest measure=\"yes\"/><duration>8</duration><voice>1</voice></note>\
+         </measure></part></score-partwise>";
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("breve_rest_counted.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let engraved = engrave(&loaded.reduced.score);
+    assert!(engraved
+        .layout
+        .glyphs
+        .iter()
+        .any(|g| g.glyph.as_str() == "restDoubleWhole"));
+    assert_eq!(count(&loaded, &engraved, "rest drawn at another value"), 0);
+    assert_eq!(count(&loaded, &engraved, "rest not drawn"), 0);
+}

@@ -232,6 +232,8 @@ pub const BRAVURA_METRICS: &[GlyphMetric] = &[
     // ledger line.
     GlyphMetric::new("restWholeLegerLine", 1155, [-480, -553, 1635, 82]),
     GlyphMetric::new("restHalfLegerLine", 1155, [-480, -54, 1635, 582]),
+    // A whole-bar breve rest outside its staff.
+    GlyphMetric::new("restDoubleWholeLegerLine", 1204, [0, -103, 1205, 1082]),
     GlyphMetric::new("restQuarter", 1106, [4, -1536, 1106, 1528]),
     GlyphMetric::new("rest8th", 1024, [0, -1029, 1012, 713]),
     GlyphMetric::new("rest16th", 1311, [0, -2048, 1311, 734]),

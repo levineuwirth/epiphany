@@ -505,3 +505,117 @@ fn a_rest_between_visitors_at_its_centre_takes_the_nearer_side() {
     ));
     assert!(between.abs() < 0.01, "between the two: {between}");
 }
+
+/// One measure's rest in a meter, between two whole-note bars of that meter.
+fn in_meter(beats: u32, beat_type: u32, middle: &str) -> String {
+    let attrs = format!(
+        "<attributes><divisions>4</divisions><time><beats>{beats}</beats><beat-type>{beat_type}</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>"
+    );
+    let filling = 16 * beats / beat_type;
+    let note = format!(
+        "<note><pitch><step>C</step><octave>5</octave></pitch><duration>{filling}</duration><voice>1</voice></note>"
+    );
+    single(&format!(
+        "<measure number=\"1\">{attrs}{note}</measure><measure number=\"2\">{middle}</measure><measure number=\"3\">{note}</measure>"
+    ))
+}
+
+fn measure_rest(duration: u32) -> String {
+    format!("<note><rest measure=\"yes\"/><duration>{duration}</duration><voice>1</voice></note>")
+}
+
+/// A whole-bar rest in 2/1 or more is a breve rest (Gould, p. 160; MuseScore's
+/// `Rest::getSymbol`; LilyPond), filling the space above the middle line and
+/// centred as any whole-bar rest, its box the breve's.
+#[test]
+fn a_whole_bar_rest_in_four_two_is_a_breve_rest() {
+    let layout = engrave("breve_4_2.musicxml", &in_meter(4, 2, &measure_rest(32)));
+    let (name, y) = rest_at(&layout);
+    assert_eq!(name, "restDoubleWhole");
+    assert!(
+        (y - (top_line(&layout) - 2.0)).abs() < 0.05,
+        "on the middle line: {y}, the top line {}",
+        top_line(&layout)
+    );
+    let r = ink(&layout, "restDoubleWhole");
+    assert!((r.1 - r.0 - 0.5).abs() < 0.01, "its box the breve's: {r:?}");
+    assert!(
+        (centre(r) - second_bar_middle(&layout)).abs() < 0.05,
+        "the rest {r:?} at the bar's middle"
+    );
+}
+
+/// In 3/2, short of 2/1, it stays a semibreve rest.
+#[test]
+fn a_whole_bar_rest_in_three_two_is_a_whole_rest() {
+    let layout = engrave("whole_3_2.musicxml", &in_meter(3, 2, &measure_rest(24)));
+    assert_eq!(rest_at(&layout).0, "restWhole");
+}
+
+/// In 2/1 exactly it is a breve rest.
+#[test]
+fn a_whole_bar_rest_in_two_one_is_a_breve_rest() {
+    let layout = engrave("breve_2_1.musicxml", &in_meter(2, 1, &measure_rest(32)));
+    assert_eq!(rest_at(&layout).0, "restDoubleWhole");
+}
+
+/// Outside its staff it draws its ledgered glyph, through the clearing of a
+/// rest filling its measure: over the other part's high note, at the bar's
+/// middle.
+#[test]
+fn a_breve_rest_outside_its_staff_is_ledgered() {
+    let high = "<note><pitch><step>A</step><octave>5</octave></pitch><duration>16</duration><voice>2</voice><type>whole</type></note>";
+    let middle = format!(
+        "{}<backup><duration>32</duration></backup>{high}{high}",
+        measure_rest(32)
+    );
+    let layout = engrave("breve_ledgered.musicxml", &in_meter(4, 2, &middle));
+    let (name, y) = rest_at(&layout);
+    assert_eq!(name, "restDoubleWholeLegerLine");
+    assert!(y > top_line(&layout), "above the staff: {y}");
+    let r = ink(&layout, "restDoubleWholeLegerLine");
+    let a = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str() == "noteheadWhole")
+        .map(|g| g.position.y.0 + g.bounding_box.top.0)
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(
+        r.2 - a >= 0.75 - 1e-3,
+        "0.75 over the note's top {a}: {r:?}"
+    );
+    assert!(
+        (centre(r) - second_bar_middle(&layout)).abs() < 0.05,
+        "its box centred, the ledger line's overhang counted: {r:?}"
+    );
+}
+
+/// On a staff of one line it hangs from the line, as MuseScore's page and
+/// LilyPond's stand it.
+#[test]
+fn a_breve_rest_on_a_staff_of_one_line_hangs_from_it() {
+    let perc = "<attributes><divisions>4</divisions><time><beats>4</beats><beat-type>2</beat-type></time><clef><sign>percussion</sign></clef><staff-details><staff-lines>1</staff-lines></staff-details></attributes>";
+    let xml = single(&format!(
+        "<measure number=\"1\">{perc}{}</measure>",
+        measure_rest(32)
+    ));
+    let layout = engrave("breve_one_line.musicxml", &xml);
+    let (name, y) = rest_at(&layout);
+    assert_eq!(name, "restDoubleWholeLegerLine");
+    assert!(
+        (y - (top_line(&layout) - 1.0)).abs() < 0.05,
+        "a space under its one line: {y}"
+    );
+}
+
+/// A fermata on one goes with it, as on any measure rest.
+#[test]
+fn a_fermata_on_a_breve_rest_stands_over_it() {
+    let rest = "<note><rest measure=\"yes\"/><duration>32</duration><voice>1</voice><notations><fermata type=\"upright\"/></notations></note>";
+    let layout = engrave("breve_fermata.musicxml", &in_meter(4, 2, rest));
+    let (r, f) = (ink(&layout, "restDoubleWhole"), ink(&layout, "fermata"));
+    assert!(
+        (centre(f) - centre(r)).abs() < 0.05,
+        "the fermata {f:?} over its rest {r:?}"
+    );
+}

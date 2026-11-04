@@ -376,6 +376,28 @@ mod tests {
         assert_eq!(place.y, 0.0);
     }
 
+    /// A breve rest's centre stands half a space up, so a whole number of
+    /// spaces can stand level both ways, and a tie goes down.
+    #[test]
+    fn a_breve_rest_level_both_ways_goes_down() {
+        let stems = [(9.5, 10.5, true), (9.5, 10.5, false)];
+        // Lines far enough apart that it stays plain either way. Up to 4 and
+        // down to -1, each 2.5 off the middle by its centre: its bottom 0.75
+        // over 3.25, and its top 0.75 under 0.75.
+        let ink = [RestInk::boxed(9.5, 10.5, 0.75, 3.25)];
+        let place = clear(&RestToClear {
+            name: "restDoubleWhole",
+            y: 2.0,
+            lines: (-5.0, 9.0),
+            up: None,
+            centre: Some(10.0),
+            column: 0.0,
+            ink: &ink,
+            stems: &stems,
+        });
+        assert_eq!(place.y, -1.0);
+    }
+
     /// Where it keeps its column it reads from there.
     #[test]
     fn a_rest_kept_at_its_column_reads_from_there() {

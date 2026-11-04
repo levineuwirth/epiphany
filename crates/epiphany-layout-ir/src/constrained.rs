@@ -1881,18 +1881,28 @@ pub fn try_to_constrained(
                         // hanging from the fourth line; every other rest sits on
                         // the middle line. Beside another voice, an upper voice's
                         // rest moves up a space and a lower voice's down one.
-                        let (name, dots) = if rest.whole_measure {
-                            (Some("restWhole"), 0)
-                        } else {
-                            (rest_glyph(value), dots)
+                        // A whole rest, or from 2/1 a breve rest (Gould, p. 160;
+                        // MuseScore's `Rest::getSymbol`; LilyPond's whole-bar rest).
+                        let breve_bar = rest
+                            .duration
+                            .as_ref()
+                            .is_some_and(|d| d.0 >= RationalTime::from_int(2));
+                        let (name, dots) = match (rest.whole_measure, breve_bar) {
+                            (true, true) => (Some("restDoubleWhole"), 0),
+                            (true, false) => (Some("restWhole"), 0),
+                            _ => (rest_glyph(value), dots),
                         };
                         let (lo, hi) = frame_of(staff);
-                        let y = if name == Some("restWhole") && lo != hi {
-                            yo + STAFF_HEIGHT * 0.75
-                        } else {
+                        let y = match name {
+                            Some("restWhole") if lo != hi => yo + STAFF_HEIGHT * 0.75,
+                            // A breve rest fills a space, up from the middle
+                            // line, or down from a staff's one line (MuseScore's
+                            // `computeWholeOrBreveRestOffset`, LilyPond's
+                            // `staff_position_internal`).
+                            Some("restDoubleWhole") if lo == hi => yo + STAFF_HEIGHT / 2.0 - 1.0,
                             // On the middle line, or, a whole rest on a staff
                             // of one line, hanging from it (Gould, p. 38).
-                            yo + STAFF_HEIGHT / 2.0
+                            _ => yo + STAFF_HEIGHT / 2.0,
                         };
                         let y = match rest.voice {
                             VoicePlace::Alone => y,
@@ -7386,15 +7396,17 @@ struct RestSeg {
     lines: (f32, f32),
 }
 
-/// The SMuFL name a whole or half rest standing at `y` takes: its ledgered
-/// form where the line it hangs from (a whole rest) or sits on (a half) lies
-/// outside its staff's lines, as Gould draws them (*Behind Bars*, p. 37),
-/// MuseScore (`Rest::getSymbol`) and LilyPond (`rest.cc`) alike.
+/// The SMuFL name a whole, half or breve rest standing at `y` takes: its
+/// ledgered form where the line it hangs from (a whole rest) or sits on (a half
+/// or a breve) lies outside its staff's lines, as Gould draws them (*Behind
+/// Bars*, p. 37), MuseScore (`Rest::getSymbol`) and LilyPond (`rest.cc`) alike,
+/// but that LilyPond leaves a breve rest hanging from a line plain.
 pub fn ledgered_rest(name: &'static str, y: f32, (bottom, top): (f32, f32)) -> &'static str {
     let outside = y < bottom - 1e-3 || y > top + 1e-3;
     match name {
         "restWhole" if outside => "restWholeLegerLine",
         "restHalf" if outside => "restHalfLegerLine",
+        "restDoubleWhole" if outside => "restDoubleWholeLegerLine",
         other => other,
     }
 }
