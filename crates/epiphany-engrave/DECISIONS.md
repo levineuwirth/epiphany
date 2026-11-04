@@ -3666,8 +3666,8 @@ engraver's own placing reproduces it:
   a barline is; a slur's end, which stands at the rest's centre, the arc sheared
   as an anchored curve's is (MuseScore's `slurPos` reads the rest's own place);
   a hidden rest's fermata, since a hidden rest is centred as any other for what
-  stands on it, as MuseScore centres one. No test of the corpus holds two more,
-  settled by probes beside MuseScore's page: a syllable on the rest, a child of
+  stands on it, as MuseScore centres one. Two more are settled by probes beside
+  MuseScore's page: a syllable on the rest, a child of
   the rest there though `LyricsLayout::layout` reads as if it were not (it
   negates the rest's move at a time the rest has not moved); and an ottava whose
   last ink is the rest, a space past it where it is drawn (`Ottava::linePos`
@@ -3746,9 +3746,8 @@ engraver's own placing reproduces it:
   glyph and box go through entry 131's rule. Where it hangs from a staff's last
   line MuseScore draws the ledgered glyph and LilyPond the plain one (`rest.cc`:
   a breve rest needs a ledger only if neither lying on nor hanging from a line);
-  this follows MuseScore, one test for every whole and half rest, and no corpus
-  case stands to read it against, since every whole-bar breve rest of the corpus
-  stands on five lines at its voice's place or further outside. A rest of a
+  this follows MuseScore, one test for every whole and half rest, and a probe is
+  all that reads it. A rest of a
   pickup's whole length is not touched: it stays on the decide-list.
 
 ## ENGRAVER_VERSION 133 → 134: gaps rise level with a gap past its cap (X5d fix round 1, 2026-11-04)

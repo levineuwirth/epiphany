@@ -11851,7 +11851,7 @@ mod tests {
     }
 
     /// A rest of a voice reads the glyph its height draws: on whole spaces beside
-    /// heads on half spaces no corpus note can tell a half rest's ledgered bottom
+    /// heads on half spaces no written note can tell a half rest's ledgered bottom
     /// from its plain one, so the head stands off the grid. Plain at 5 it would
     /// clear; ledgered there it does not.
     #[test]
