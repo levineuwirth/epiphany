@@ -4,6 +4,7 @@ version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
+license.workspace = true
 repository.workspace = true
 description = "The Epiphany .musc bundle file format (spec Chapter 8): fixed header, dual superblock atomic commit, content-addressed chunks, the manifest, retention policy, and the crash-recovery contract."
 

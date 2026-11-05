@@ -4,6 +4,7 @@ version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
+license.workspace = true
 repository.workspace = true
 description = "Renders a resolved Epiphany layout: SVG 1.1 with genuine Bravura SMuFL glyphs (inline outlines or an embedded font subset), and a dependency-free PDF writer; plus the page-by-page framing an export uses."
 
