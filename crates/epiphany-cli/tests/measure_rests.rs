@@ -1409,3 +1409,150 @@ fn a_slur_over_a_break_keeps_its_other_piece() {
         p[1]
     );
 }
+
+/// A whole note's bar on each side of an ending over `over` bars, each bar of the
+/// ending two voices with a measure rest above.
+fn score_with_an_ending(name: &str, over: usize) -> epiphany_core::Score {
+    use epiphany_core::{
+        AnchorOffset, MeasureId, MeasurePosition, RepeatKind, RepeatStructure, RepeatStructureId,
+        TimeAnchor, Volta,
+    };
+    let low: String = ["E", "F"]
+        .iter()
+        .map(|p| format!("<note><pitch><step>{p}</step><octave>4</octave></pitch><duration>8</duration><voice>2</voice><type>half</type><stem>down</stem></note>"))
+        .collect();
+    let two = format!(
+        "<note><rest measure=\"yes\"/><duration>16</duration><voice>1</voice></note><backup><duration>16</duration></backup>{low}"
+    );
+    let body: String = (0..over)
+        .map(|k| format!("<measure number=\"{}\">{two}</measure>", k + 2))
+        .collect();
+    let xml = single(&format!(
+        "<measure number=\"1\">{HEAD}{WHOLE}</measure>{body}<measure number=\"{}\">{WHOLE}</measure>",
+        over + 2
+    ));
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    std::fs::write(&path, xml).expect("written");
+    let mut score = load(&path).expect("loads").reduced.score.clone();
+    let measures: Vec<MeasureId> = score.canvas.regions[0].staff_instances()[0]
+        .measures
+        .iter()
+        .map(|m| m.id)
+        .collect();
+    let at = |i: usize| TimeAnchor::Measure {
+        id: measures[i],
+        position: MeasurePosition::Start,
+        offset: AnchorOffset::Zero,
+    };
+    let id = score.identity.mint::<RepeatStructureId>();
+    score.cross_cutting.repeats.push(RepeatStructure {
+        id,
+        start: at(0),
+        end: at(over + 1),
+        kind: RepeatKind::Volta,
+        voltas: vec![Volta {
+            endings: vec![1],
+            start: at(1),
+            end: at(over + 1),
+        }],
+    });
+    score
+}
+
+fn rest_under_an_ending(name: &str, over: usize) -> ResolvedLayoutIR {
+    Engraver::with_geometry(PageGeometry::default())
+        .solve(
+            &to_constrained(&to_logical(&score_with_an_ending(name, over))),
+            &SolverConfig::default(),
+        )
+        .layout
+}
+
+/// An ending's bracket is no other part: an upper voice's rest under an ending of
+/// one bar stays on its line, as the same rest does with no bracket, its middle
+/// standing inside the rest's own bar.
+#[test]
+fn a_measure_rest_stays_under_a_one_bar_ending() {
+    let layout = rest_under_an_ending("rest_under_one_bar_ending.musicxml", 1);
+    assert!(
+        layout.strokes.iter().any(|s| matches!(
+            s.provenance.source,
+            epiphany_core::TypedObjectId::RepeatStructure(_)
+        ) && s.from.y == s.to.y),
+        "the bracket's line is drawn"
+    );
+    assert_eq!(rest_at(&layout).0, "restWhole");
+}
+
+/// And under an ending of three bars, whose line's middle stands inside the middle
+/// bar: that bar's rest stays level with the others.
+#[test]
+fn a_measure_rest_stays_under_an_ending_of_three_bars() {
+    let layout = rest_under_an_ending("rest_under_three_bar_ending.musicxml", 3);
+    let rests: Vec<&str> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("rest"))
+        .map(|g| g.glyph.as_str())
+        .collect();
+    assert_eq!(rests, ["restWhole", "restWhole", "restWhole"]);
+}
+
+/// Nor does a rest read a repeat structure's glyph, by its source. Every glyph one
+/// draws rides a barline's or the end's column, none of whose members a rest reads,
+/// so the constrained input is amended: the head of a whole note on the top line, set
+/// across to the rest it would otherwise make climb, named as the structure's.
+#[test]
+fn a_measure_rest_reads_no_glyph_of_a_repeat_structure() {
+    use epiphany_core::{RepeatStructureId, TypedObjectId};
+    let top = "<note><pitch><step>F</step><octave>5</octave></pitch><duration>16</duration><voice>2</voice><type>whole</type></note>";
+    let middle = format!(
+        "<note><rest measure=\"yes\"/><duration>16</duration><voice>1</voice></note><backup><duration>16</duration></backup>{top}"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("rest_beside_structure_glyph.musicxml");
+    std::fs::write(&path, around(&middle)).expect("written");
+    let mut score = load(&path).expect("loads").reduced.score.clone();
+    let structure = score.identity.mint::<RepeatStructureId>();
+    let mut constrained = to_constrained(&to_logical(&score));
+    let solve = |constrained: &epiphany_layout_ir::ConstrainedLayoutIR| {
+        Engraver::with_geometry(PageGeometry::default())
+            .solve(constrained, &SolverConfig::default())
+            .layout
+    };
+    let high = |g: &&epiphany_layout_ir::ResolvedGlyph| g.glyph.as_str() == "noteheadWhole";
+    let first = solve(&constrained);
+    let head_x = first
+        .glyphs
+        .iter()
+        .filter(high)
+        .max_by(|a, b| a.position.y.0.total_cmp(&b.position.y.0))
+        .expect("the high whole note")
+        .position
+        .x
+        .0;
+    let rest_x = ink(&first, "rest").0;
+    let head = constrained
+        .glyphs
+        .iter_mut()
+        .filter(|g| g.glyph.as_str() == "noteheadWhole")
+        .max_by(|a, b| a.baseline.y.0.total_cmp(&b.baseline.y.0))
+        .expect("the high whole note");
+    head.baseline.x.0 += rest_x - head_x;
+    assert_eq!(
+        rest_at(&solve(&constrained)).0,
+        "restWholeLegerLine",
+        "it climbs a note's head"
+    );
+    let head = constrained
+        .glyphs
+        .iter_mut()
+        .filter(|g| g.glyph.as_str() == "noteheadWhole")
+        .max_by(|a, b| a.baseline.y.0.total_cmp(&b.baseline.y.0))
+        .expect("the high whole note");
+    head.provenance.source = TypedObjectId::RepeatStructure(structure);
+    assert_eq!(
+        rest_at(&solve(&constrained)).0,
+        "restWhole",
+        "it reads none of the structure's"
+    );
+}

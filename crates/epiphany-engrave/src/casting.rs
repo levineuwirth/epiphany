@@ -1599,10 +1599,11 @@ pub(crate) fn cast_off(
         }
     };
     // The ink each such rest reads: every glyph and stroke of a system's staff
-    // but what the family places after it, what an ending carries, a stem whose
-    // end rides another staff, and the staff's lines; the note columns' alone
-    // (a clef or key signature bounds its free space, and a rest does not stand
-    // in it).
+    // but what the family places after it, a repeat structure's ink (an ending's
+    // line, hooks and numbers, by their source, on whichever system or bar they
+    // stand), a stem whose end rides another staff, and the staff's lines; the
+    // note columns' alone (a clef or key signature bounds its free space, and a
+    // rest does not stand in it).
     let bands_of_rests: BTreeSet<(usize, VerticalBandId)> = input
         .measure_rests
         .iter()
@@ -1622,7 +1623,7 @@ pub(crate) fn cast_off(
                 if !bands_of_rests.contains(&(s, glyph.vertical_band))
                     || placed.glyphs.contains_key(&id)
                     || measure_rest_glyphs.contains(&id)
-                    || ending_of.contains_key(&id)
+                    || matches!(glyph.provenance.source, TypedObjectId::RepeatStructure(_))
                 {
                     continue;
                 }
@@ -1651,7 +1652,7 @@ pub(crate) fn cast_off(
             || !bands_of_rests.contains(&(*s, stroke.vertical_band))
             || matches!(stroke.provenance.source, TypedObjectId::Staff(_))
             || placed.strokes.contains_key(&id)
-            || ending_of.contains_key(&id)
+            || matches!(stroke.provenance.source, TypedObjectId::RepeatStructure(_))
             || reach_upper.contains_key(&id)
         {
             continue;

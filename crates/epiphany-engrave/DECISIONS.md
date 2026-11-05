@@ -3884,3 +3884,22 @@ engraver's own placing reproduces it:
   `a_slurs_end_stays_on_a_rest_at_its_height`,
   `a_rest_reads_a_slur_at_the_height_its_end_is_carried_to`,
   `a_rest_reads_a_slur_at_the_place_its_end_is_carried_to`.
+
+## ENGRAVER_VERSION 141 → 142: a measure rest reads no ink of a repeat structure (X5d fix round 2, 2026-11-05)
+
+- Entry 131 left out of what a rest reads "what an ending carries", by a map that
+  holds only an ending moved to the next system, so every other ending's line read
+  as the other part's ink: an upper voice's rest climbed over a one-bar ending's
+  bracket, outside it. The rest now leaves out a repeat structure's ink by its source,
+  the stroke and the glyph, whichever system or bar it stands on. MuseScore reads a
+  measure's segments alone, which hold no volta (`restlayout.cpp`), LilyPond's rest
+  collision reads note columns, and Gould moves a rest only where parts would collide
+  (p. 36).
+- No import reaches it: the importer records endings unmade, so the tests add the
+  ending through the model: `a_measure_rest_stays_under_a_one_bar_ending`, and
+  `a_measure_rest_stays_under_an_ending_of_three_bars`, the line's middle inside the
+  middle bar.
+- Every glyph a repeat structure draws rides a barline's or the end's column, whose
+  members a rest does not read, so no score reaches the glyph's half. It stays, as
+  the source's whole statement, pinned by an amended constrained input,
+  `a_measure_rest_reads_no_glyph_of_a_repeat_structure`.
