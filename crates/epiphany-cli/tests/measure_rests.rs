@@ -1339,3 +1339,73 @@ fn a_rest_reads_a_slur_at_the_place_its_end_is_carried_to() {
     let y = rest_heights(&engrave("rest_under_carried_across.musicxml", &xml));
     assert_eq!(y[0] - y[1], 6.0, "over the arc as drawn: {y:?}");
 }
+
+/// A hidden rest's traced anchor is no ink: an upper voice's measure rest stays on
+/// its line beside hidden rests of a third voice at the bar's middle.
+#[test]
+fn a_measure_rest_reads_no_hidden_rests_anchor() {
+    let low: String = ["E", "F", "F", "E"]
+        .iter()
+        .map(|p| format!("<note><pitch><step>{p}</step><octave>4</octave></pitch><duration>4</duration><voice>2</voice><type>quarter</type><stem>down</stem></note>"))
+        .collect();
+    let hidden = "<note print-object=\"no\"><rest/><duration>8</duration><voice>3</voice><type>half</type></note>";
+    let middle = format!(
+        "<note><rest measure=\"yes\"/><duration>16</duration><voice>1</voice></note><backup><duration>16</duration></backup>{low}<backup><duration>16</duration></backup>{hidden}{hidden}"
+    );
+    let layout = engrave("rest_hidden_anchor.musicxml", &around(&middle));
+    assert_eq!(rest_at(&layout).0, "restWhole");
+}
+
+/// A slur over a system's break carries only the end standing on a rest, on the
+/// piece that holds it: the other piece stays on its own line, whichever end.
+#[test]
+fn a_slur_over_a_break_keeps_its_other_piece() {
+    let on_note = |kind: &str| {
+        WHOLE.replace(
+            "<type>whole</type>",
+            &format!("<type>whole</type>{}", slur_mark(kind)),
+        )
+    };
+    let on_rest = |kind: &str| {
+        format!(
+            "<note><rest measure=\"yes\"/><duration>16</duration><voice>1</voice>{}</note>",
+            slur_mark(kind)
+        )
+    };
+    let broken = |m2: String, m3: String| {
+        single(&format!(
+            "<measure number=\"1\">{HEAD}{WHOLE}</measure><measure number=\"2\">{m2}</measure><measure number=\"3\"><print new-system=\"yes\"/>{m3}</measure><measure number=\"4\">{WHOLE}</measure>"
+        ))
+    };
+    let pieces = |layout: &ResolvedLayoutIR| -> Vec<[epiphany_layout_ir::Point; 4]> {
+        let mut c: Vec<_> = layout.curves.iter().map(|c| c.control_points()).collect();
+        assert_eq!(c.len(), 2, "two pieces");
+        // The earlier system first, standing higher.
+        c.sort_by(|a, b| b[0].y.0.total_cmp(&a[0].y.0));
+        c
+    };
+    let page = PageGeometry::default();
+    let right = page.size.width.0 - page.margins.right.0;
+    // Ending on a rest: its first piece stays on its line.
+    let ended = engrave(
+        "slur_break_end.musicxml",
+        &broken(on_note("start"), on_rest("stop")),
+    );
+    let p = pieces(&ended);
+    assert!(
+        p[0][3].x.0 <= right + 0.1,
+        "the first piece ends on its line, {right}: {:?}",
+        p[0]
+    );
+    // Starting on a rest: its last piece opens at its system's start.
+    let started = engrave(
+        "slur_break_start.musicxml",
+        &broken(on_rest("start"), on_note("stop")),
+    );
+    let p = pieces(&started);
+    assert!(
+        p[1][0].x.0 < 15.0,
+        "the last piece opens its system: {:?}",
+        p[1]
+    );
+}
