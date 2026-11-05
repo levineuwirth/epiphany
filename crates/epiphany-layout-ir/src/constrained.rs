@@ -3372,8 +3372,8 @@ pub fn try_to_constrained(
         }
         clear_visitors(&mut event_rests, &visiting, &visitor_ink, &columns);
 
-        // Each staff column's note ink, with the event drawing each: a ledgered
-        // rest's line reaches an accidental where its plain glyph does not.
+        // Each staff column's note ink: a ledgered rest's line reaches an
+        // accidental where its plain glyph does not.
         let mut note_ink: ColumnNoteInk = BTreeMap::new();
         for ((staff, key), refs) in &column_heads {
             let Some(info) = columns.get(key) else {
@@ -3382,11 +3382,10 @@ pub fn try_to_constrained(
             let yo = staff.map(&y_origin).unwrap_or(0.0);
             for r in refs {
                 let head = r.get(&pitch_heads, &unpitched_heads);
-                note_ink.entry((*staff, key.clone())).or_default().extend(
-                    column_ink_boxes(head, info.x, yo)
-                        .into_iter()
-                        .map(|b| (head.event, b)),
-                );
+                note_ink
+                    .entry((*staff, key.clone()))
+                    .or_default()
+                    .extend(column_ink_boxes(head, info.x, yo));
             }
         }
         clear_ledgers(&mut event_rests, &note_ink, &columns);
@@ -7503,8 +7502,8 @@ fn clear_rests(rests: &mut BTreeMap<EventId, Vec<RestSeg>>, sounding: &[Sounding
 /// draws no stem.
 type VisitorInk = BTreeMap<(Option<StaffId>, ColumnKey), Vec<(InkBox, Option<bool>)>>;
 
-/// Each staff column's note ink, with the event whose head draws each.
-type ColumnNoteInk = BTreeMap<(Option<StaffId>, ColumnKey), Vec<(EventId, InkBox)>>;
+/// Each staff column's note ink, which is no rest's: heads and what they carry.
+type ColumnNoteInk = BTreeMap<(Option<StaffId>, ColumnKey), Vec<InkBox>>;
 
 /// Each staff column's chords' ink, `[left, bottom, right, top]` from the
 /// column, with the event drawing it, which another chord's outside marks
@@ -7675,13 +7674,14 @@ fn clear_visitors(
 /// at a time, until its glyph stands `REST_CLEARANCE` up and down from the ink
 /// of every other note in its column: the ledger line's overhang reaches an
 /// accidental where the plain glyph, which `clear_rests` leaves beside the
-/// heads, does not (Gould, p. 41).
+/// heads, does not (Gould, p. 41). A hidden rest is left out though it would draw
+/// nothing if moved: it keeps its undrawn anchor at its height.
 fn clear_ledgers(
     rests: &mut BTreeMap<EventId, Vec<RestSeg>>,
     accidentals: &ColumnNoteInk,
     columns: &BTreeMap<ColumnKey, ColumnInfo>,
 ) {
-    for (eid, segs) in rests.iter_mut() {
+    for segs in rests.values_mut() {
         for seg in segs
             .iter_mut()
             .filter(|seg| seg.visible && !seg.whole_measure)
@@ -7701,9 +7701,8 @@ fn clear_ledgers(
                 let b = metrics(ledgered_rest(name, y, lines))
                     .expect("a rest's ledgered metrics are bundled")
                     .bounding_box();
-                ink.iter().any(|(event, a)| {
-                    event != eid
-                        && info.x + b.left.0 < a.right
+                ink.iter().any(|a| {
+                    info.x + b.left.0 < a.right
                         && a.left < info.x + b.right.0
                         && y + b.bottom.0 < a.top + REST_CLEARANCE
                         && a.bottom < y + b.top.0 + REST_CLEARANCE
@@ -12017,10 +12016,7 @@ mod tests {
     #[test]
     fn only_a_ledgered_rest_lifts_off_an_accidental() {
         let mut accidentals = ColumnNoteInk::new();
-        accidentals.insert(
-            (None, ColumnKey::Lead),
-            vec![(EventId::from_raw(2), ink_box(-0.4, 0.2, 2.0, 5.0))],
-        );
+        accidentals.insert((None, ColumnKey::Lead), vec![ink_box(-0.4, 0.2, 2.0, 5.0)]);
         let mut plain = lone_rest("restHalf", 3.0, VoicePlace::Upper);
         clear_ledgers(&mut plain, &accidentals, &lead_column());
         assert_eq!(plain[&EventId::from_raw(1)][0].y, 3.0, "a plain rest stays");

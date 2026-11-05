@@ -1758,9 +1758,11 @@ pub(crate) fn cast_off(
                 .iter()
                 .find_map(|&i| furniture(i))
                 .map(|(l, _)| l);
+            // A barline after the rest's own column: none of a later system's
+            // opening columns, which alone `shift_of` moves.
             let bar_x = |i: usize| {
                 let info = &slots[i];
-                info.x + hplace[s].0.slot_dx(info.x) - shift_of(info.id)
+                info.x + hplace[s].0.slot_dx(info.x)
             };
             Some(RestAcross {
                 s,

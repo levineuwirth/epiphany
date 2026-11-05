@@ -71,6 +71,9 @@ impl RestInk {
             return None;
         }
         let at = |x: f32, (a, b): (f32, f32)| {
+            // A stroke's edges stand a thickness apart, but a curve's chord has no
+            // thickness and can stand upright: it reads at its first end, the next
+            // chord reading its other.
             if self.right - self.left <= f32::EPSILON {
                 a
             } else {
@@ -174,6 +177,10 @@ pub(crate) fn clear(rest: &RestToClear) -> RestPlace {
             y += step;
             moved += 1.0;
         }
+        debug_assert!(
+            clear_at(y),
+            "a rest moved {moved} spaces, its bound, and still meets ink"
+        );
         y
     };
     let y = match rest.up {
@@ -274,6 +281,20 @@ mod tests {
         // Its bottom, 0.54 under its line, 0.75 over 5.5.
         assert_eq!(place.y, 7.0);
         assert_eq!(place.name, "restWholeLegerLine");
+    }
+
+    /// A curve's chord can stand upright: it reads at its first end, with no
+    /// division by its width.
+    #[test]
+    fn an_upright_chord_reads_at_its_first_end() {
+        let upright = RestInk {
+            left: 10.0,
+            right: 10.0,
+            at_left: (3.0, 3.1),
+            at_right: (8.0, 8.1),
+        };
+        assert_eq!(upright.within(9.0, 11.0), Some((3.0, 3.1)));
+        assert_eq!(upright.within(11.0, 12.0), None);
     }
 
     /// One further than the reach is not read, whichever edge.

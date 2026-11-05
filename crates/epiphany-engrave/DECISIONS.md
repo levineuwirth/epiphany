@@ -3962,3 +3962,20 @@ engraver's own placing reproduces it:
   reading its own staff's rest, and the drawn rest beside a hidden one; a measure rest's
   stems holding its own bar alone, read at the constrained stage, since at the layout a
   visitor's bar before stands past the rest's reach.
+
+## What no input reaches, and what stays named (X5d fix round 2, 2026-11-05; ENGRAVER_VERSION stays 144)
+
+- Removed, each by its proof and changing no page. A measure's right barline drawn back
+  by `shift_of`: only the columns before a later system's first note or rest are drawn
+  back, and that barline stands after the rest's own column, so nothing is. `clear_ledgers`'s
+  `event != eid`: the ink it reads is heads and what they carry, keyed by a note's event,
+  and `eid` is a rest's, so the event is gone from the map as well.
+- `rests::clear`'s bound keeps its loop and gains a `debug_assert!`, as `clear_visitors`
+  has: walking up, a rest needs at most the ink's top, the clearance and its own depth
+  below its origin, plus one, which `bound` exceeds for every height and glyph, and down
+  alike, so a move past it fails a debug build instead of settling on ink.
+- `clear_ledgers`'s `seg.visible` stays, named: a hidden rest draws nothing, and the clause
+  keeps its undrawn anchor at its height.
+- `RestInk::within`'s zero-width branch stays, no guard against an impossible case: a
+  stroke's edges stand a thickness apart, but a curve's chord has no thickness, so an
+  upright chord reaches it (`an_upright_chord_reads_at_its_first_end`).
