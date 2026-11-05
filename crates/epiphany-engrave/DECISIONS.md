@@ -3859,3 +3859,28 @@ engraver's own placing reproduces it:
   `a_ledgered_rests_dot_moves_with_it_off_an_accidental`; the last read to the exact
   half space, since a dot left one step behind still stands within a space of its
   rest.
+
+## ENGRAVER_VERSION 140 → 141: a measure rest reads no slur of its own, and a slur's end follows it (X5d fix round 2, 2026-11-05)
+
+- Entry 139's rest read every curve of its staff, its own slur among them, at the
+  place the system's map sets the slur before entry 130 carries its end to the rest:
+  a slur on a raised rest moved it further for nothing, two raised rests beside
+  each other standing two spaces apart for it. A rest now leaves out the slurs
+  standing on it, since they go where it goes.
+- A slur's end on a rest moved off its height follows it: it stands 0.9 off the
+  rest's ink on the arc's side, MuseScore's figure (`SlurTieLayout::slurPos`),
+  LilyPond's `slur-scoring.cc` also reading a rest in its column as the head a
+  slur's end stands on, Gould silent. The arc keeps its shape over the chord it now
+  has. An end on a rest that nothing moved stays over the staff, where it was.
+- Every other rest reads a carried slur where it is drawn, by order: each rest's
+  place across is set first, across being all it reads, so the carry across is known
+  to all; then the rests carrying a slur's end are cleared first, so the rests under
+  that slur read it at its height.
+- Named, not settled: two rests that each carry a slur over the other cannot each
+  read the other's as drawn. The later cleared does; the earlier reads the other's
+  slur with its carry across, at its height before the carry.
+- `a_measure_rest_reads_no_slur_of_its_own`,
+  `a_slurs_end_stands_off_a_rest_raised_from_its_height` and its lowered mirror,
+  `a_slurs_end_stays_on_a_rest_at_its_height`,
+  `a_rest_reads_a_slur_at_the_height_its_end_is_carried_to`,
+  `a_rest_reads_a_slur_at_the_place_its_end_is_carried_to`.

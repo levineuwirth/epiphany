@@ -1559,9 +1559,10 @@ pub(crate) fn cast_off(
     // Each such rest's height and glyph, cleared where it stands.
     let mut rest_place: BTreeMap<usize, crate::rests::RestPlace> = BTreeMap::new();
     let mut carried_marks: Vec<(usize, f32)> = Vec::new();
-    // The move across of a slur's first and last ends, each to its rest's
-    // centre, from where the system's map sets it.
-    let mut curve_carry: BTreeMap<GlyphObjectId, (f32, f32)> = BTreeMap::new();
+    // The move of a slur's first and last ends: across, each to its rest's
+    // centre, from where the system's map sets it; up or down, off a rest moved
+    // from its height.
+    let mut curve_carry: BTreeMap<GlyphObjectId, CurveCarry> = BTreeMap::new();
     let curve_index: BTreeMap<GlyphObjectId, usize> = spaced_curves
         .iter()
         .enumerate()
@@ -1679,109 +1680,147 @@ pub(crate) fn cast_off(
                 at_right: (b.y.0 - half, b.y.0 + half),
             });
     }
-    // Each tie and slur of such a staff, its chords as the sky reads them.
-    let mut rest_curves: BTreeMap<(usize, VerticalBandId), Vec<crate::rests::RestInk>> =
-        BTreeMap::new();
+    // Each tie and slur of such a staff, piece by piece where the system's map
+    // sets it: a rest reads every one but its own, carried as it is drawn.
+    let mut rest_curves: BTreeMap<(usize, VerticalBandId), Vec<RestCurve>> = BTreeMap::new();
     for (ci, curve) in spaced_curves.iter().enumerate() {
-        let half = (curve.thickness.0 * 0.5).max(0.0);
-        for (s, cp) in curve_pieces(ci) {
-            if !bands_of_rests.contains(&(s, curve.vertical_band)) {
-                continue;
-            }
-            let at = |t: f32| {
-                let u = 1.0 - t;
-                let w = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
-                (
-                    (0..4).map(|k| w[k] * cp[k].x.0).sum::<f32>(),
-                    (0..4).map(|k| w[k] * cp[k].y.0).sum::<f32>(),
-                )
-            };
-            const SAMPLES: usize = 12;
-            let chords = rest_curves.entry((s, curve.vertical_band)).or_default();
-            let mut last = at(0.0);
-            for k in 1..=SAMPLES {
-                let next = at(k as f32 / SAMPLES as f32);
-                let (a, b) = if last.0 <= next.0 {
-                    (last, next)
-                } else {
-                    (next, last)
-                };
-                chords.push(crate::rests::RestInk {
-                    left: a.0,
-                    right: b.0,
-                    at_left: (a.1 - half, a.1 + half),
-                    at_right: (b.1 - half, b.1 + half),
-                });
-                last = next;
+        let pieces = curve_pieces(ci);
+        let n = pieces.len();
+        for (k, (s, cp)) in pieces.into_iter().enumerate() {
+            if bands_of_rests.contains(&(s, curve.vertical_band)) {
+                rest_curves
+                    .entry((s, curve.vertical_band))
+                    .or_default()
+                    .push(RestCurve {
+                        id: curve.id(),
+                        first: k == 0,
+                        last: k + 1 == n,
+                        cp,
+                        half: (curve.thickness.0 * 0.5).max(0.0),
+                    });
             }
         }
     }
     let no_rest_ink: Vec<crate::rests::RestInk> = Vec::new();
-    for rest in &input.measure_rests {
-        let Some(&s) = system_of_slot.get(&rest.slot) else {
-            continue;
-        };
-        let plan = &systems[s];
-        let slots = &region_slots[plan.region];
-        let Some(k) = plan.slots.iter().position(|&i| slots[i].id == rest.slot) else {
-            continue;
-        };
-        // A column holding no note: a clef's, a key or time signature's or a
-        // barline's ink on the rest's staff across, which alone bound its
-        // space (Gould, p. 160); a caesura or a breath mark there does not,
-        // nor anything else that stands in such a column
-        // (`MeasureLayout::getMeasureStartEndPos`).
-        let furniture = |i: usize| -> Option<(f32, f32)> {
-            if slots[i].note {
-                return None;
+    let no_rest_curves: Vec<RestCurve> = Vec::new();
+    // Where each stands across, its system's map all that needs: first, so a
+    // slur carried to one stands where it is drawn for every other that reads it.
+    let rest_across: Vec<Option<RestAcross>> = input
+        .measure_rests
+        .iter()
+        .map(|rest| {
+            let s = *system_of_slot.get(&rest.slot)?;
+            let plan = &systems[s];
+            let slots = &region_slots[plan.region];
+            let k = plan.slots.iter().position(|&i| slots[i].id == rest.slot)?;
+            // A column holding no note: a clef's, a key or time signature's or a
+            // barline's ink on the rest's staff across, which alone bound its
+            // space (Gould, p. 160); a caesura or a breath mark there does not,
+            // nor anything else that stands in such a column
+            // (`MeasureLayout::getMeasureStartEndPos`).
+            let furniture = |i: usize| -> Option<(f32, f32)> {
+                if slots[i].note {
+                    return None;
+                }
+                slots[i]
+                    .members
+                    .iter()
+                    .filter(|&&m| {
+                        input.glyphs[m].vertical_band == rest.band
+                            && bounds_a_rest(input.glyphs[m].glyph.as_str())
+                    })
+                    .map(|&m| {
+                        let (x, b) = (placed_x(m, s), input.glyphs[m].bounding_box);
+                        (x + b.left.0, x + b.right.0)
+                    })
+                    .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)))
+            };
+            let mut left: Option<f32> = None;
+            let mut opened = false;
+            for &i in plan.slots[..k].iter().rev() {
+                if let Some((_, r)) = furniture(i) {
+                    left = Some(left.map_or(r, |l| l.max(r)));
+                }
+                if slots[i].barline {
+                    opened = true;
+                    break;
+                }
             }
-            slots[i]
-                .members
+            if !opened {
+                let lead = geometry.margins.left.0 + lead_ink[s].unwrap_or(0.0);
+                left = Some(left.map_or(lead, |l| l.max(lead)));
+            }
+            let right = plan.slots[k + 1..]
                 .iter()
-                .filter(|&&m| {
-                    input.glyphs[m].vertical_band == rest.band
-                        && bounds_a_rest(input.glyphs[m].glyph.as_str())
-                })
-                .map(|&m| {
-                    let (x, b) = (placed_x(m, s), input.glyphs[m].bounding_box);
-                    (x + b.left.0, x + b.right.0)
-                })
-                .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)))
+                .find_map(|&i| furniture(i))
+                .map(|(l, _)| l);
+            let bar_x = |i: usize| {
+                let info = &slots[i];
+                info.x + hplace[s].0.slot_dx(info.x) - shift_of(info.id)
+            };
+            Some(RestAcross {
+                s,
+                // Where it stands across: centred, or at its column where the
+                // staff draws nothing to close its measure.
+                centre: match (left, right) {
+                    (Some(left), Some(right)) => Some((left + right) * 0.5),
+                    _ => None,
+                },
+                measure_left: left.unwrap_or(f32::NEG_INFINITY),
+                measure_right: plan.slots[k + 1..]
+                    .iter()
+                    .find(|&&i| slots[i].barline)
+                    .map_or(f32::INFINITY, |&i| bar_x(i)),
+            })
+        })
+        .collect();
+    for (rest, across) in input.measure_rests.iter().zip(&rest_across) {
+        let Some(centre) = across.as_ref().and_then(|a| a.centre) else {
+            continue;
         };
-        let mut left: Option<f32> = None;
-        let mut opened = false;
-        for &i in plan.slots[..k].iter().rev() {
-            if let Some((_, r)) = furniture(i) {
-                left = Some(left.map_or(r, |l| l.max(r)));
-            }
-            if slots[i].barline {
-                opened = true;
-                break;
+        for (ids, first) in [(&rest.slur_starts, true), (&rest.slur_ends, false)] {
+            for id in ids {
+                let Some(&ci) = curve_index.get(id) else {
+                    continue;
+                };
+                let pieces = curve_pieces(ci);
+                let at = if first {
+                    pieces.first().map(|(_, cp)| cp[0].x.0)
+                } else {
+                    pieces.last().map(|(_, cp)| cp[3].x.0)
+                };
+                let Some(x) = at else {
+                    continue;
+                };
+                let carry = curve_carry.entry(*id).or_default();
+                if first {
+                    carry.start = centre - x;
+                } else {
+                    carry.end = centre - x;
+                }
             }
         }
-        if !opened {
-            let lead = geometry.margins.left.0 + lead_ink[s].unwrap_or(0.0);
-            left = Some(left.map_or(lead, |l| l.max(lead)));
-        }
-        let right = plan.slots[k + 1..]
-            .iter()
-            .find_map(|&i| furniture(i))
-            .map(|(l, _)| l);
-        // Where it stands across: centred, or at its column where the staff
-        // draws nothing to close its measure.
-        let centre = match (left, right) {
-            (Some(left), Some(right)) => Some((left + right) * 0.5),
-            _ => None,
+    }
+    // A rest carrying a slur's end first, so one under that slur reads it at the
+    // height it is carried to. Two that each carry a slur over the other cannot
+    // both: the later reads the earlier's as drawn, the earlier the later's at
+    // its height before the carry, named in entry 141.
+    let mut rests_in_order: Vec<usize> = (0..input.measure_rests.len()).collect();
+    rests_in_order.sort_by_key(|&r| {
+        let rest = &input.measure_rests[r];
+        rest.slur_starts.is_empty() && rest.slur_ends.is_empty()
+    });
+    for r in rests_in_order {
+        let rest = &input.measure_rests[r];
+        let Some(RestAcross {
+            s,
+            centre,
+            measure_left,
+            measure_right,
+        }) = rest_across[r]
+        else {
+            continue;
         };
-        let bar_x = |i: usize| {
-            let info = &slots[i];
-            info.x + hplace[s].0.slot_dx(info.x) - shift_of(info.id)
-        };
-        let measure_left = left.unwrap_or(f32::NEG_INFINITY);
-        let measure_right = plan.slots[k + 1..]
-            .iter()
-            .find(|&&i| slots[i].barline)
-            .map_or(f32::INFINITY, |&i| bar_x(i));
         let centre_of = |g: usize| {
             let b = input.glyphs[g].bounding_box;
             placed_x(g, s) + (b.left.0 + b.right.0) * 0.5
@@ -1806,6 +1845,18 @@ pub(crate) fn cast_off(
                     Some((x + l, x + r, up))
                 })
                 .collect();
+            // Its own slur stands on it and goes where it goes: no reason to
+            // move it. Every other reads as it is carried so far.
+            let curves: Vec<crate::rests::RestInk> = rest_curves
+                .get(&(s, rest.band))
+                .unwrap_or(&no_rest_curves)
+                .iter()
+                .filter(|c| !rest.slur_starts.contains(&c.id) && !rest.slur_ends.contains(&c.id))
+                .flat_map(|c| {
+                    let carry = curve_carry.get(&c.id).copied().unwrap_or_default();
+                    c.chords(carry)
+                })
+                .collect();
             let place = crate::rests::clear(&crate::rests::RestToClear {
                 name: rest.name,
                 y: rest.y,
@@ -1814,10 +1865,7 @@ pub(crate) fn cast_off(
                 centre,
                 column: placed_x(g, s),
                 ink: &ink,
-                curves: rest_curves
-                    .get(&(s, rest.band))
-                    .unwrap_or(&no_rest_ink)
-                    .as_slice(),
+                curves: &curves,
                 stems: &stems,
             });
             rest_dx.insert(g, place.x - placed_x(g, s));
@@ -1828,6 +1876,34 @@ pub(crate) fn cast_off(
                 place.y + place.bounds.bottom.0,
                 place.y + place.bounds.top.0,
             );
+            // A slur's end follows a rest moved off its height, standing off the
+            // rest's ink on the arc's side (`SlurTieLayout::slurPos`).
+            if place.y != rest.y {
+                for (ids, first) in [(&rest.slur_starts, true), (&rest.slur_ends, false)] {
+                    for id in ids {
+                        let Some(&ci) = curve_index.get(id) else {
+                            continue;
+                        };
+                        let pieces = curve_pieces(ci);
+                        let piece = if first { pieces.first() } else { pieces.last() };
+                        let Some((_, cp)) = piece else {
+                            continue;
+                        };
+                        let above = cp[1].y.0 + cp[2].y.0 > cp[0].y.0 + cp[3].y.0;
+                        let edge = if above {
+                            place.y + place.bounds.top.0 + crate::rests::SLUR_OFF_REST
+                        } else {
+                            place.y + place.bounds.bottom.0 - crate::rests::SLUR_OFF_REST
+                        };
+                        let carry = curve_carry.entry(*id).or_default();
+                        if first {
+                            carry.start_y = edge - cp[0].y.0;
+                        } else {
+                            carry.end_y = edge - cp[3].y.0;
+                        }
+                    }
+                }
+            }
             rest_place.insert(g, place);
         }
         let Some(centre) = centre else {
@@ -1847,38 +1923,11 @@ pub(crate) fn cast_off(
                 }
             }
         }
-        for (ids, first) in [(&rest.slur_starts, true), (&rest.slur_ends, false)] {
-            for id in ids {
-                let Some(&ci) = curve_index.get(id) else {
-                    continue;
-                };
-                let pieces = curve_pieces(ci);
-                let at = if first {
-                    pieces.first().map(|(_, cp)| cp[0].x.0)
-                } else {
-                    pieces.last().map(|(_, cp)| cp[3].x.0)
-                };
-                let Some(x) = at else {
-                    continue;
-                };
-                let carry = curve_carry.entry(*id).or_insert((0.0, 0.0));
-                if first {
-                    carry.0 = centre - x;
-                } else {
-                    carry.1 = centre - x;
-                }
-            }
-        }
     }
-    // A slur's pieces with their ends carried: `k` of `n`, sheared as an
-    // anchored curve's ends are.
+    // A slur's pieces with their ends carried: `k` of `n`.
     let carried_curve = |id: GlyphObjectId, k: usize, n: usize, cp: [Point; 4]| -> [Point; 4] {
         match curve_carry.get(&id) {
-            Some(&(start, end)) => crate::anchored_curve(
-                cp,
-                if k == 0 { start } else { 0.0 },
-                if k + 1 == n { end } else { 0.0 },
-            ),
+            Some(&carry) => carry.apply(cp, k == 0, k + 1 == n),
             None => cp,
         }
     };
@@ -5912,6 +5961,91 @@ struct StaffAgg {
     min_y: f32,
     max_y: f32,
     bottom: (f32, Provenance),
+}
+
+/// Where a measure rest stands across and the bounds of its measure.
+#[derive(Copy, Clone)]
+struct RestAcross {
+    s: usize,
+    centre: Option<f32>,
+    measure_left: f32,
+    measure_right: f32,
+}
+
+/// How far a slur's ends are carried with the rests they stand on.
+#[derive(Copy, Clone, Default)]
+struct CurveCarry {
+    start: f32,
+    end: f32,
+    start_y: f32,
+    end_y: f32,
+}
+
+impl CurveCarry {
+    /// A piece of the curve, sheared as an anchored curve's ends are across, and
+    /// up and down about its chord, keeping its arc over the chord it now has.
+    /// Only its first piece holds its start and its last its end.
+    fn apply(self, cp: [Point; 4], first: bool, last: bool) -> [Point; 4] {
+        let [p0, p1, p2, p3] = crate::anchored_curve(
+            cp,
+            if first { self.start } else { 0.0 },
+            if last { self.end } else { 0.0 },
+        );
+        let (a, b) = (
+            if first { self.start_y } else { 0.0 },
+            if last { self.end_y } else { 0.0 },
+        );
+        let lifted = |p: Point, by: f32| Point::new(p.x.0, p.y.0 + by);
+        [
+            lifted(p0, a),
+            lifted(p1, a + (b - a) / 3.0),
+            lifted(p2, a + (b - a) * 2.0 / 3.0),
+            lifted(p3, b),
+        ]
+    }
+}
+
+/// A piece of a tie or slur as a measure rest reads it.
+struct RestCurve {
+    id: GlyphObjectId,
+    first: bool,
+    last: bool,
+    cp: [Point; 4],
+    half: f32,
+}
+
+impl RestCurve {
+    /// Its chords, as the sky reads them, its ends carried.
+    fn chords(&self, carry: CurveCarry) -> Vec<crate::rests::RestInk> {
+        let cp = carry.apply(self.cp, self.first, self.last);
+        let at = |t: f32| {
+            let u = 1.0 - t;
+            let w = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+            (
+                (0..4).map(|k| w[k] * cp[k].x.0).sum::<f32>(),
+                (0..4).map(|k| w[k] * cp[k].y.0).sum::<f32>(),
+            )
+        };
+        const SAMPLES: usize = 12;
+        let mut chords = Vec::with_capacity(SAMPLES);
+        let mut last = at(0.0);
+        for k in 1..=SAMPLES {
+            let next = at(k as f32 / SAMPLES as f32);
+            let (a, b) = if last.0 <= next.0 {
+                (last, next)
+            } else {
+                (next, last)
+            };
+            chords.push(crate::rests::RestInk {
+                left: a.0,
+                right: b.0,
+                at_left: (a.1 - self.half, a.1 + self.half),
+                at_right: (b.1 - self.half, b.1 + self.half),
+            });
+            last = next;
+        }
+        chords
+    }
 }
 
 /// Whether a glyph in a column holding no note bounds a measure rest's free

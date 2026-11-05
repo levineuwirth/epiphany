@@ -35,6 +35,12 @@ pub(crate) const REST_REACH: f32 = 4.0;
 /// How far up and down it stands from a curve that passes across it.
 pub(crate) const CURVE_CLEARANCE: f32 = 0.25;
 
+/// How far off the ink of a rest moved from its height a slur's end stands on
+/// the arc's side: MuseScore's figure (`SlurTieLayout::slurPos`), LilyPond also
+/// taking a rest in its column as the head a slur's end reads
+/// (`slur-scoring.cc`). Gould is silent on a slur from a rest.
+pub(crate) const SLUR_OFF_REST: f32 = 0.9;
+
 /// One piece of ink a rest reads, a stroke's edges running straight across it.
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct RestInk {

@@ -1155,3 +1155,187 @@ fn a_measure_rest_clears_a_tie_passing_through_it() {
     }
     assert!(passed > 0, "a tie passes across the rest {r:?}");
 }
+
+/// What a measure's content is, for the slurs on raised rests below.
+fn raised_rest(voice: u8, slur: &str, other: &str, octave: u8) -> String {
+    let n = format!("<note><pitch><step>{other}</step><octave>{octave}</octave></pitch><duration>8</duration><voice>{}</voice><type>half</type></note>", 3 - voice);
+    format!("<note><rest measure=\"yes\"/><duration>16</duration><voice>{voice}</voice>{slur}</note><backup><duration>16</duration></backup>{n}{n}")
+}
+
+fn slur_mark(kind: &str) -> String {
+    format!("<notations><slur type=\"{kind}\" number=\"1\"/></notations>")
+}
+
+fn rest_heights(layout: &ResolvedLayoutIR) -> Vec<f32> {
+    let mut rests: Vec<(f32, f32)> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("rest"))
+        .map(|g| (g.position.x.0, g.position.y.0))
+        .collect();
+    rests.sort_by(|a, b| a.0.total_cmp(&b.0));
+    rests.into_iter().map(|r| r.1).collect()
+}
+
+/// A rest's own slur stands on it and goes where it goes, so it gives the rest
+/// no reason to move: a slur's end and a slur's start leave their rests level
+/// with one that has none.
+#[test]
+fn a_measure_rest_reads_no_slur_of_its_own() {
+    let start = WHOLE.replace("</type>", &format!("</type>{}", slur_mark("start")));
+    let stop = WHOLE.replace("</type>", &format!("</type>{}", slur_mark("stop")));
+    let xml = single(&format!(
+        "<measure number=\"1\">{HEAD}{start}</measure><measure number=\"2\">{}</measure><measure number=\"3\">{}</measure><measure number=\"4\">{stop}</measure><measure number=\"5\">{}</measure>",
+        raised_rest(1, &slur_mark("stop"), "C", 6),
+        raised_rest(1, &slur_mark("start"), "C", 6),
+        raised_rest(1, "", "C", 6),
+    ));
+    let layout = engrave("rest_own_slur.musicxml", &xml);
+    let y = rest_heights(&layout);
+    eprintln!("{y:?}");
+    assert_eq!(y.len(), 3);
+    assert_eq!(y[0], y[2], "a slur's end leaves it level: {y:?}");
+    assert_eq!(y[1], y[2], "a slur's start leaves it level: {y:?}");
+}
+
+/// A slur's end follows a rest moved off its height and stands off its ink on
+/// the arc's side, keeping its arc over the chord it now has.
+#[test]
+fn a_slurs_end_stands_off_a_rest_raised_from_its_height() {
+    let start = WHOLE.replace("</type>", &format!("</type>{}", slur_mark("start")));
+    let stop = WHOLE.replace("</type>", &format!("</type>{}", slur_mark("stop")));
+    let xml = single(&format!(
+        "<measure number=\"1\">{HEAD}{start}</measure><measure number=\"2\">{}</measure><measure number=\"3\">{}</measure><measure number=\"4\">{stop}</measure>",
+        raised_rest(1, &slur_mark("stop"), "C", 6),
+        raised_rest(1, &slur_mark("start"), "C", 6),
+    ));
+    let layout = engrave("rest_raised_slur.musicxml", &xml);
+    let mut rests: Vec<_> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("rest"))
+        .collect();
+    rests.sort_by(|a, b| a.position.x.0.total_cmp(&b.position.x.0));
+    let tops: Vec<f32> = rests
+        .iter()
+        .map(|r| r.position.y.0 + r.bounding_box.top.0)
+        .collect();
+    let mut curves: Vec<_> = layout.curves.iter().map(|c| c.control_points()).collect();
+    curves.sort_by(|a, b| a[0].x.0.total_cmp(&b[0].x.0));
+    assert_eq!(curves.len(), 2);
+    assert!(
+        (curves[0][3].y.0 - (tops[0] + 0.9)).abs() < 1e-3,
+        "the slur's end over its rest: {} against {}",
+        curves[0][3].y.0,
+        tops[0]
+    );
+    assert!(
+        (curves[1][0].y.0 - (tops[1] + 0.9)).abs() < 1e-3,
+        "the slur's start over its rest: {} against {}",
+        curves[1][0].y.0,
+        tops[1]
+    );
+    for c in &curves {
+        let third = (c[3].y.0 - c[0].y.0) / 3.0;
+        let (one, two) = (c[1].y.0 - c[0].y.0 - third, c[2].y.0 - c[3].y.0 + third);
+        assert!(
+            one > 1.0 && (one - two).abs() < 1e-3,
+            "its arc over its chord: {one} and {two}"
+        );
+    }
+}
+
+/// And under a lower voice's rest moved down, a slur below it, the slur's other
+/// end staying at its note.
+#[test]
+fn a_slurs_end_stands_off_a_rest_lowered_from_its_height() {
+    let note = "<note><pitch><step>E</step><octave>4</octave></pitch><duration>16</duration><voice>2</voice><type>whole</type><stem>up</stem><notations><slur type=\"start\" number=\"1\"/></notations></note>";
+    let xml = |rest: String| {
+        single(&format!(
+            "<measure number=\"1\">{HEAD}{note}</measure><measure number=\"2\">{rest}</measure><measure number=\"3\">{WHOLE}</measure>"
+        ))
+    };
+    let layout = engrave(
+        "rest_lowered_slur.musicxml",
+        &xml(raised_rest(2, &slur_mark("stop"), "A", 3)),
+    );
+    let r = layout
+        .glyphs
+        .iter()
+        .find(|g| g.glyph.as_str().starts_with("rest"))
+        .expect("the rest");
+    let c = layout.curves[0].control_points();
+    assert!(c[1].y.0 < c[0].y.0, "a slur below");
+    let bottom = r.position.y.0 + r.bounding_box.bottom.0;
+    assert!(
+        (c[3].y.0 - (bottom - 0.9)).abs() < 1e-3,
+        "the slur's end {} under the rest's bottom {bottom}",
+        c[3].y.0
+    );
+    let head = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str() == "noteheadWhole")
+        .min_by(|a, b| a.position.x.0.total_cmp(&b.position.x.0))
+        .expect("the E");
+    assert!(
+        c[0].y.0 < head.position.y.0 && c[0].y.0 > head.position.y.0 - 2.0,
+        "its start {} under its note {}",
+        c[0].y.0,
+        head.position.y.0
+    );
+}
+
+/// A rest that nothing moves leaves its slur's end where it was: over the staff,
+/// not off the rest's ink.
+#[test]
+fn a_slurs_end_stays_on_a_rest_at_its_height() {
+    let start = WHOLE.replace("</type>", &format!("</type>{}", slur_mark("start")));
+    let stop = format!(
+        "<note><rest measure=\"yes\"/><duration>16</duration><voice>1</voice>{}</note>",
+        slur_mark("stop")
+    );
+    let xml = single(&format!(
+        "<measure number=\"1\">{HEAD}{start}</measure><measure number=\"2\">{stop}</measure><measure number=\"3\">{WHOLE}</measure>"
+    ));
+    let layout = engrave("rest_unmoved_slur.musicxml", &xml);
+    let top = top_line(&layout);
+    let c = layout.curves[0].control_points();
+    assert!(
+        (c[3].y.0 - (top + 0.7)).abs() < 1e-3,
+        "the slur's end {} over the staff's top line {top}",
+        c[3].y.0
+    );
+}
+
+/// A rest under another's slur reads it where it is drawn: up, so one a raised
+/// rest carries over it stands clear over it and leaves it level with that rest,
+/// where the arc as first set runs through its next height.
+#[test]
+fn a_rest_reads_a_slur_at_the_height_its_end_is_carried_to() {
+    let start = WHOLE.replace("</type>", &format!("</type>{}", slur_mark("start")));
+    let xml = single(&format!(
+        "<measure number=\"1\">{HEAD}{start}</measure><measure number=\"2\">{}</measure><measure number=\"3\">{}</measure><measure number=\"4\">{WHOLE}</measure>",
+        raised_rest(1, "", "E", 6),
+        raised_rest(1, &slur_mark("stop"), "E", 6),
+    ));
+    let y = rest_heights(&engrave("rest_under_carried.musicxml", &xml));
+    assert_eq!(y[0], y[1], "level under the slur: {y:?}");
+}
+
+/// And across: the slur's end carried to the next bar's rest passes this one a
+/// little lower than the arc as first set, near enough to move it a space more.
+#[test]
+fn a_rest_reads_a_slur_at_the_place_its_end_is_carried_to() {
+    let start = WHOLE.replace("</type>", &format!("</type>{}", slur_mark("start")));
+    let stop = format!(
+        "<note><rest measure=\"yes\"/><duration>16</duration><voice>1</voice>{}</note>",
+        slur_mark("stop")
+    );
+    let xml = single(&format!(
+        "<measure number=\"1\">{HEAD}{start}</measure><measure number=\"2\">{}</measure><measure number=\"3\">{stop}</measure><measure number=\"4\">{WHOLE}</measure>",
+        raised_rest(1, "", "G", 5),
+    ));
+    let y = rest_heights(&engrave("rest_under_carried_across.musicxml", &xml));
+    assert_eq!(y[0] - y[1], 6.0, "over the arc as drawn: {y:?}");
+}
