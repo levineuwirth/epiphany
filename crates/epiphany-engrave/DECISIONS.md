@@ -3421,7 +3421,7 @@ engraver's own placing reproduces it:
   gap inside a brace and between systems at their stated figure. A bracket
   inside a bracket weighs its edges 1.2, where MuseScore's skips one starting
   within another, a departure kept (the owner's ruling at D123): the distances
-  it sets stand under his reading. Until the last
+  it sets stand under the owner's reading. Until the last
   staff's bottom line stands 7 above the bottom margin or its ink reaches
   it. Before it, a gap between systems is raised toward the widest gap
   between staves of a system beside it, as far as the page allows (Gould,
@@ -3814,8 +3814,9 @@ engraver's own placing reproduces it:
   `crates/epiphany-cli/tests/vertical_rules.rs`, the clauses of the staves'
   distances, the spread, the rests, the centring and a hairpin's lifted piece.
 - Removed, each proved unreachable and changing no page. A brace's edge read
-  inside another brace: the only braces are a grand staff's, whose staves no
-  other holds. A system past its paper's top: the rise that sets it stops at the
+  inside another brace: a staff holds one group (D26), so no brace's edge falls
+  inside another brace, though a brace can span two parts. A system past its
+  paper's top: the rise that sets it stops at the
   top margin, so only its bottom can pass. A split hairpin's piece index, and the
   guard to split ones: each leg's outer edge stands at the mouth whichever piece
   it is, and a whole hairpin's box is that rectangle already, so the outline reads
