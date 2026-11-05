@@ -20,9 +20,10 @@
 //! line to the far side of it (p. 37): above all of that ink for an
 //! upper voice, below it for a lower. A rest alone on its staff has no part to
 //! keep outside: it moves only where visiting ink stands that near it, from
-//! the stems it meets, and between stems of both ways to the side whose first
-//! clear place stands nearer its staff's middle line (D109 Q8), a tie going
-//! down as it always has.
+//! the drawn stems it meets, and between stems of both ways, or where it meets
+//! none, to the side whose first clear place stands nearer its staff's middle
+//! line (D109 Q8), a tie going down as it always has. A stemless visitor turns
+//! nothing, and a rest goes no further than the parts need (Gould, p. 36).
 
 use epiphany_layout_ir::{metrics, BoundingBox};
 
@@ -103,7 +104,8 @@ pub(crate) struct RestToClear<'a> {
     /// The curves of its staff, each a run of chords: a tie or slur moves it
     /// only where it passes through it.
     pub curves: &'a [RestInk],
-    /// Each visitor's stem across its staff, and whether it turns up.
+    /// Each visitor's drawn stem and heads across its staff, and whether its stem
+    /// turns up.
     pub stems: &'a [(f32, f32, bool)],
 }
 
@@ -206,7 +208,7 @@ pub(crate) fn clear(rest: &RestToClear) -> RestPlace {
                     .filter(|(l, r, _)| *l < right + REST_REACH && left - REST_REACH < *r);
                 let (ups, downs) =
                     near.fold((false, false), |(u, d), (_, _, up)| (u || *up, d || !*up));
-                let up = if ups && downs {
+                let up = if ups == downs {
                     let middle = (rest.lines.0 + rest.lines.1) * 0.5;
                     let off = |y: f32| {
                         let (_, _, bottom, top) = rest_box(rest, y);
@@ -409,6 +411,30 @@ mod tests {
         assert!(up.y > 3.0, "up from a stem down: {}", up.y);
     }
 
+    /// With no drawn stem near it, it takes the nearer side, a tie going down.
+    #[test]
+    fn a_rest_alone_with_no_stem_near_takes_the_nearer_side() {
+        // Ink reaching down onto it from far above: a space down clears it.
+        let high = [RestInk::boxed(9.5, 10.5, 3.6, 7.0)];
+        assert_eq!(whole(None, &high, &[]).y, 2.0, "down is the nearer");
+        // Ink reaching up onto it from far below: a space up clears it.
+        let low = [RestInk::boxed(9.5, 10.5, -3.0, 2.0)];
+        assert_eq!(whole(None, &low, &[]).y, 4.0, "up is the nearer");
+        // Level both ways, by a breve's box: it goes down.
+        let level = clear(&RestToClear {
+            name: "restDoubleWhole",
+            y: 2.0,
+            lines: (-5.0, 9.0),
+            up: None,
+            centre: Some(10.0),
+            column: 0.0,
+            ink: &[RestInk::boxed(9.5, 10.5, 0.75, 3.25)],
+            curves: &[],
+            stems: &[],
+        });
+        assert_eq!(level.y, -1.0);
+    }
+
     /// A rest alone with ink far above it stays: it has no part to keep
     /// outside.
     #[test]
@@ -504,9 +530,9 @@ mod tests {
     }
 
     /// A lower voice's goes down from one, and a rest alone from one with no
-    /// stems to turn it, up.
+    /// stems to turn it, the nearer way.
     #[test]
-    fn a_curve_moves_a_lower_voice_down_and_a_rest_alone_up() {
+    fn a_curve_moves_a_lower_voice_down_and_a_rest_alone_the_nearer_way() {
         let at = |up: Option<bool>, y: f32, curves: &[RestInk]| {
             clear(&RestToClear {
                 name: "restWhole",
@@ -523,8 +549,10 @@ mod tests {
         };
         let through = [RestInk::boxed(8.0, 12.0, 1.6, 1.8)];
         assert_eq!(at(Some(false), 2.0, &through), 1.0);
+        let through = [RestInk::boxed(8.0, 12.0, 0.7, 0.9)];
+        assert_eq!(at(None, 1.0, &through), 2.0, "under the middle, it rises");
         let through = [RestInk::boxed(8.0, 12.0, 2.6, 2.8)];
-        assert_eq!(at(None, 3.0, &through), 4.0);
+        assert_eq!(at(None, 3.0, &through), 2.0, "over the middle, it falls");
     }
 
     /// Where it keeps its column it reads from there.

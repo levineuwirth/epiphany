@@ -1811,3 +1811,68 @@ fn a_hyphen_reaching_a_syllable_on_a_hidden_rest_stays_before_it() {
     );
     assert_hyphen_between(&lyric_lines(&layout), fi, ne);
 }
+
+/// A breve rest alone in 4/2 beside a voice visiting from the staff below, a whole
+/// note at the bar's middle, each pitch given, with a bar of the voice at home.
+fn rest_beside_a_visiting_whole_note(name: &str, step: &str, octave: u8) -> ResolvedLayoutIR {
+    let attributes = "<attributes><divisions>4</divisions><time><beats>4</beats><beat-type>2</beat-type></time><staves>2</staves><clef number=\"1\"><sign>G</sign><line>2</line></clef><clef number=\"2\"><sign>F</sign><line>4</line></clef></attributes>";
+    let whole = |p: &str, o: u8, staff: u8| {
+        format!("<note><pitch><step>{p}</step><octave>{o}</octave></pitch><duration>16</duration><voice>2</voice><type>whole</type><staff>{staff}</staff></note>")
+    };
+    let xml = single(&format!(
+        "<measure number=\"1\">{attributes}<note><rest measure=\"yes\"/><duration>32</duration><voice>1</voice><staff>1</staff></note><backup><duration>32</duration></backup>{}{}</measure><measure number=\"2\"><note><pitch><step>C</step><octave>5</octave></pitch><duration>32</duration><voice>1</voice><type>breve</type><staff>1</staff></note><backup><duration>32</duration></backup><note><pitch><step>C</step><octave>3</octave></pitch><duration>32</duration><voice>2</voice><type>breve</type><staff>2</staff></note></measure>",
+        whole("C", 3, 2),
+        whole(step, octave, 1)
+    ));
+    engrave(name, &xml)
+}
+
+/// A visitor with no drawn stem turns no rest: the rest goes the nearer way, as far
+/// as the parts need (Gould, p. 36), from over its visitor to under it as the pitch
+/// falls past it.
+#[test]
+fn a_rest_alone_beside_a_stemless_visitor_takes_the_nearer_side() {
+    let rest_y = |name: &str, step: &str, octave: u8| {
+        let layout = rest_beside_a_visiting_whole_note(name, step, octave);
+        let (name, y) = rest_at(&layout);
+        (name.to_owned(), y - top_line(&layout))
+    };
+    // Far under it, nothing moves it: the default, below its top line.
+    let default = rest_y("vis_low.musicxml", "E", 4).1;
+    let moved = |name: &str, step: &str, octave: u8| rest_y(name, step, octave).1 - default;
+    assert_eq!(moved("vis_f5.musicxml", "F", 5), -1.0, "F5, one space down");
+    assert_eq!(moved("vis_e5.musicxml", "E", 5), -1.0, "E5, one space down");
+    assert_eq!(moved("vis_d5.musicxml", "D", 5), -2.0, "D5, two down");
+    assert_eq!(moved("vis_c5.musicxml", "C", 5), -2.0, "C5, two down");
+}
+
+/// So too a rest that does not fill its measure, beside the same visitor at its
+/// column: a half rest on the middle line under a whole D5 goes down, the nearer way.
+#[test]
+fn a_shorter_rest_beside_a_stemless_visitor_takes_the_nearer_side() {
+    let attributes = "<attributes><divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type></time><staves>2</staves><clef number=\"1\"><sign>G</sign><line>2</line></clef><clef number=\"2\"><sign>F</sign><line>4</line></clef></attributes>";
+    let upper = |content: &str| {
+        format!("<note><pitch><step>{content}</step><octave>5</octave></pitch><duration>16</duration><voice>1</voice><type>whole</type><staff>1</staff></note>")
+    };
+    let lower = |step: &str, octave: u8, staff: u8| {
+        format!("<note><pitch><step>{step}</step><octave>{octave}</octave></pitch><duration>16</duration><voice>2</voice><type>whole</type><staff>{staff}</staff></note>")
+    };
+    let back = "<backup><duration>16</duration></backup>";
+    let xml = |step: &str, octave: u8, staff: u8| {
+        single(&format!(
+            "<measure number=\"1\">{attributes}<note><rest/><duration>8</duration><voice>1</voice><type>half</type><staff>1</staff></note><note><pitch><step>C</step><octave>5</octave></pitch><duration>8</duration><voice>1</voice><type>half</type><staff>1</staff></note>{back}{}</measure><measure number=\"2\">{}{back}{}</measure><measure number=\"3\">{}{back}{}</measure>",
+            lower(step, octave, staff),
+            upper("C"),
+            lower("C", 3, 2),
+            upper("C"),
+            lower("C", 3, 2),
+        ))
+    };
+    let y = |name: &str, step: &str, octave: u8, staff: u8| {
+        let layout = engrave(name, &xml(step, octave, staff));
+        rest_at(&layout).1 - top_line(&layout)
+    };
+    let home = y("short_vis_home.musicxml", "C", 3, 2);
+    let beside = y("short_vis_d5.musicxml", "D", 5, 1);
+    assert_eq!(beside - home, -1.0, "under the D5 by a space");
+}

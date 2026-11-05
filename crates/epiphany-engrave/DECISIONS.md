@@ -3929,3 +3929,24 @@ engraver's own placing reproduces it:
   `a_melisma_line_starts_after_its_syllable_on_a_rest`,
   `two_verses_on_a_rest_stand_together_under_it`,
   `a_hyphen_reaching_a_syllable_on_a_hidden_rest_stays_before_it`.
+
+## ENGRAVER_VERSION 143 → 144: a stemless visitor turns no rest (X5d fix round 2, 2026-11-05)
+
+- A rest alone on its staff turned from the stems it met, and every visiting box
+  carried its component's stem direction, a whole note's too, so a rest climbed past a
+  visitor's head, turned by a stem that is not there, where a space down cleared it.
+  A box now carries its stem's direction only where that stem is drawn: `MeasureRest`
+  lists no stemless visitor, and `rests::clear` and `clear_visitors` read none.
+- With no drawn stem to turn from, a rest alone takes the nearer side, as between stems
+  of both ways (D109 Q8), a tie going down: it goes no further than the parts need
+  (Gould, p. 36). Where a stem is drawn, the side it gives stands. `clear_visitors`
+  decides by what the rest meets: a stem elsewhere in its column that it does not meet
+  does not turn it from a stemless head it does. A curve through a rest with no stem
+  near it reads the same way.
+- MuseScore does not move such a rest at all (`hasVoices`, `restlayout.cpp`), so it can
+  stand on the head; LilyPond's rest reads no note from another staff. Both leave ink
+  meeting that Gould's rule does not (p. 41), so the rest still moves.
+- `a_rest_alone_beside_a_stemless_visitor_takes_the_nearer_side`,
+  `a_shorter_rest_beside_a_stemless_visitor_takes_the_nearer_side`,
+  `a_rest_alone_with_no_stem_near_takes_the_nearer_side`,
+  `a_rest_alone_meeting_only_a_stemless_head_takes_the_nearer_side`.

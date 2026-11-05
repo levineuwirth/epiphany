@@ -260,9 +260,10 @@ pub struct MeasureRest {
     /// Its voice's side: up for an upper voice, down for a lower, `None` for a
     /// rest alone on its staff.
     pub up: Option<bool>,
-    /// The stems visiting its staff in its measure, which a rest alone on it
-    /// turns from: each one's column, its ink across from the column's x, and
-    /// whether it turns up.
+    /// The drawn stems visiting its staff in its measure, with their heads, which
+    /// a rest alone on it turns from: each box's column, its ink across from the
+    /// column's x, and whether its stem turns up. A visitor with no drawn stem is
+    /// not among them: it turns no rest.
     pub stems: Vec<(SpringSlotId, f32, f32, bool)>,
     /// The fermatas standing on it.
     pub marks: Vec<GlyphObjectId>,
@@ -3355,7 +3356,7 @@ pub fn try_to_constrained(
                 let seg = event_stems
                     .get(&head.event)
                     .and_then(|segs| segs.iter().find(|seg| seg.comp == head.comp));
-                let up = seg.is_none_or(|seg| seg.up);
+                let up = seg.and_then(|seg| seg.drawn.then_some(seg.up));
                 let boxes = visitor_ink.entry((*staff, key.clone())).or_default();
                 boxes.extend(
                     column_ink_boxes(head, info.x, yo)
@@ -4812,8 +4813,15 @@ pub fn try_to_constrained(
                                         })
                                         .flat_map(|((_, key), boxes)| {
                                             let info = column(key);
-                                            boxes.iter().map(move |(b, up)| {
-                                                (info.slot, b.left - info.x, b.right - info.x, *up)
+                                            boxes.iter().filter_map(move |(b, up)| {
+                                                up.map(|up| {
+                                                    (
+                                                        info.slot,
+                                                        b.left - info.x,
+                                                        b.right - info.x,
+                                                        up,
+                                                    )
+                                                })
                                             })
                                         })
                                         .collect(),
@@ -7491,8 +7499,9 @@ fn clear_rests(rests: &mut BTreeMap<EventId, Vec<RestSeg>>, sounding: &[Sounding
 }
 
 /// Each staff column's ink of the voices visiting its staff, each box with
-/// the stem direction of the component it belongs to.
-type VisitorInk = BTreeMap<(Option<StaffId>, ColumnKey), Vec<(InkBox, bool)>>;
+/// the stem direction of the component it belongs to, `None` where that component
+/// draws no stem.
+type VisitorInk = BTreeMap<(Option<StaffId>, ColumnKey), Vec<(InkBox, Option<bool>)>>;
 
 /// Each staff column's note ink, with the event whose head draws each.
 type ColumnNoteInk = BTreeMap<(Option<StaffId>, ColumnKey), Vec<(EventId, InkBox)>>;
@@ -7515,9 +7524,9 @@ type ColumnOthers = BTreeMap<(Option<StaffId>, ColumnKey), Vec<(EventId, marks::
 /// (`clear_rests`). A rest alone on its staff moves to the side away from the
 /// stems it meets, down from a visitor whose stem turns up, as the staff's
 /// voice would turn from a second voice there, and, where its column holds
-/// visitors from both sides, to the side whose first clear place is nearer
-/// its staff's middle line; a rest its own staff's voices have turned keeps
-/// its side. The visitor
+/// visitors from both sides or it meets no drawn stem, to the side whose first
+/// clear place is nearer its staff's middle line; a rest its own staff's voices
+/// have turned keeps its side. The visitor
 /// keeps the stem its home gives it. A rest moves no further than the column
 /// ink's vertical extent plus its own
 /// height, and a debug build asserts it then stands clear, so a defect in the
@@ -7580,7 +7589,7 @@ fn clear_visitors(
                 boxes
             };
             let across = |a: &InkBox, b: &InkBox| a.left < b.right && b.left < a.right;
-            let stems_met: Vec<bool> = ink
+            let stems_met: Vec<Option<bool>> = ink
                 .iter()
                 .filter(|(b, _)| {
                     own(seg.y, seg.dots_y)
@@ -7616,10 +7625,10 @@ fn clear_visitors(
             let bound = (ink_hi - ink_lo) + (rest_hi - rest_lo) + 2.0 * REST_CLEARANCE + 1.0;
             // A rest alone on its staff turns from the stems it meets; where
             // its column holds visitors from both sides, their stems turning
-            // both ways, it takes the side whose first clear place stands
-            // nearer its staff's middle line, as a rest's level follows the
-            // pitches around it (Gould, p. 37), a tie keeping the side it
-            // took before (D109 Q8).
+            // both ways, or it meets no drawn stem to turn from, it takes the
+            // side whose first clear place stands nearer its staff's middle line,
+            // as a rest's level follows the pitches around it (Gould, p. 37), a
+            // tie going down (D109 Q8).
             let first_clear = |step: f32| {
                 let (mut y, mut dots_y, mut moved) = (seg.y, seg.dots_y, 0.0);
                 while moved < bound && meets(y, dots_y) {
@@ -7633,9 +7642,9 @@ fn clear_visitors(
                 VoicePlace::Upper => true,
                 VoicePlace::Lower => false,
                 VoicePlace::Alone => {
-                    let ups = ink.iter().any(|(_, up)| *up);
-                    let downs = ink.iter().any(|(_, up)| !*up);
-                    if ups && downs {
+                    let ups = ink.iter().any(|(_, up)| *up == Some(true));
+                    let downs = ink.iter().any(|(_, up)| *up == Some(false));
+                    if (ups && downs) || stems_met.iter().all(Option::is_none) {
                         let middle = (seg.lines.0 + seg.lines.1) * 0.5;
                         let off = |y: f32| {
                             let b = at(y);
@@ -7643,7 +7652,7 @@ fn clear_visitors(
                         };
                         off(first_clear(1.0)) + 1e-3 < off(first_clear(-1.0))
                     } else {
-                        stems_met.iter().all(|up| !up)
+                        stems_met.iter().flatten().all(|up| !up)
                     }
                 }
             };
@@ -11858,8 +11867,8 @@ mod tests {
             ink.insert(
                 (None, ColumnKey::Lead),
                 vec![
-                    (head(middle, middle + 1.2 - raise), true),
-                    (head(middle - 1.2, middle), false),
+                    (head(middle, middle + 1.2 - raise), Some(true)),
+                    (head(middle - 1.2, middle), Some(false)),
                 ],
             );
             let mut columns = BTreeMap::new();
@@ -11966,14 +11975,41 @@ mod tests {
             (None, ColumnKey::Lead),
             vec![
                 // A head on its line, whose stem turns down: the rest turns up.
-                (ink_box(0.0, 1.2, 3.8, 4.7), false),
+                (ink_box(0.0, 1.2, 3.8, 4.7), Some(false)),
                 // An overhang's width to its left, up to 5.5.
-                (ink_box(-0.4, -0.1, 4.8, 5.5), false),
+                (ink_box(-0.4, -0.1, 4.8, 5.5), Some(false)),
             ],
         );
         clear_visitors(&mut rests, &BTreeSet::new(), &ink, &lead_column());
         // Plain at 5 it clears both; its ledger line reaches the box until 6.
         assert_eq!(rests[&EventId::from_raw(1)][0].y, 6.0);
+    }
+
+    /// A visitor drawing no stem turns no rest: a head within reach takes it the
+    /// nearer way, where the column's only stem stands off from what it meets.
+    #[test]
+    fn a_rest_alone_meeting_only_a_stemless_head_takes_the_nearer_side() {
+        let moved = |ink: Vec<(InkBox, Option<bool>)>| -> f32 {
+            let mut rests = lone_rest("restHalf", 2.0, VoicePlace::Alone);
+            let mut column = VisitorInk::new();
+            column.insert((None, ColumnKey::Lead), ink);
+            clear_visitors(&mut rests, &BTreeSet::new(), &column, &lead_column());
+            rests[&EventId::from_raw(1)][0].y
+        };
+        // A head just over the rest's middle: the way down is the shorter.
+        let head = ink_box(0.0, 1.2, 2.2, 3.1);
+        let down = moved(vec![(head, None)]);
+        assert!(down < 2.0, "alone, nearer below: {down}");
+        // A stem up elsewhere in its column, off to its right, turns it no more.
+        let far = ink_box(9.0, 9.2, -3.0, -1.0);
+        let beside = moved(vec![(head, None), (far, Some(true))]);
+        assert_eq!(beside, down, "a stem up it does not meet");
+        let beside = moved(vec![(head, None), (far, Some(false))]);
+        assert_eq!(beside, down, "a stem down it does not meet");
+        // And a head high enough makes up the nearer: not by any stem's turn.
+        let low = ink_box(0.0, 1.2, 0.9, 2.3);
+        let up = moved(vec![(low, None)]);
+        assert!(up > 2.0, "alone, nearer above: {up}");
     }
 
     /// `clear_ledgers` lifts a rest drawn ledgered off an accidental its line
