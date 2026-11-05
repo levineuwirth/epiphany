@@ -1844,6 +1844,7 @@ fn a_rest_alone_beside_a_stemless_visitor_takes_the_nearer_side() {
     assert_eq!(moved("vis_e5.musicxml", "E", 5), -1.0, "E5, one space down");
     assert_eq!(moved("vis_d5.musicxml", "D", 5), -2.0, "D5, two down");
     assert_eq!(moved("vis_c5.musicxml", "C", 5), -2.0, "C5, two down");
+    assert_eq!(moved("vis_a4.musicxml", "A", 4), 1.0, "A4, one up");
 }
 
 /// So too a rest that does not fill its measure, beside the same visitor at its
@@ -1875,4 +1876,199 @@ fn a_shorter_rest_beside_a_stemless_visitor_takes_the_nearer_side() {
     let home = y("short_vis_home.musicxml", "C", 3, 2);
     let beside = y("short_vis_d5.musicxml", "D", 5, 1);
     assert_eq!(beside - home, -1.0, "under the D5 by a space");
+}
+
+/// A slur over a break lifts only the piece on the raised rest: the piece on the
+/// other system keeps the shape it has with no carry at all, whichever end, the rest
+/// amended to name no slur.
+#[test]
+fn a_slur_over_a_break_lifts_only_the_piece_at_its_rest() {
+    let on_note = |kind: &str| {
+        WHOLE.replace(
+            "<type>whole</type>",
+            &format!("<type>whole</type>{}", slur_mark(kind)),
+        )
+    };
+    let check = |name: &str, ending: bool| {
+        let rest = raised_rest(1, &slur_mark(if ending { "stop" } else { "start" }), "E", 6);
+        let (m2, m3) = if ending {
+            (on_note("start"), rest)
+        } else {
+            (rest, on_note("stop"))
+        };
+        let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+        std::fs::write(
+            &path,
+            single(&format!(
+                "<measure number=\"1\">{HEAD}{WHOLE}</measure><measure number=\"2\">{m2}</measure><measure number=\"3\"><print new-system=\"yes\"/>{m3}</measure><measure number=\"4\">{WHOLE}</measure>"
+            )),
+        )
+        .expect("written");
+        let loaded = load(&path).expect("loads");
+        let mut constrained = to_constrained(&to_logical(&loaded.reduced.score));
+        let solve = |c: &epiphany_layout_ir::ConstrainedLayoutIR| {
+            Engraver::with_geometry(PageGeometry::default())
+                .solve(c, &SolverConfig::default())
+                .layout
+        };
+        let pieces = |layout: &ResolvedLayoutIR| {
+            let mut c: Vec<_> = layout.curves.iter().map(|c| c.control_points()).collect();
+            assert_eq!(c.len(), 2, "two pieces");
+            c.sort_by(|a, b| b[0].y.0.total_cmp(&a[0].y.0));
+            c
+        };
+        let carried = solve(&constrained);
+        let rest_top = carried
+            .glyphs
+            .iter()
+            .find(|g| g.glyph.as_str().starts_with("rest"))
+            .map(|g| g.position.y.0 + g.bounding_box.top.0)
+            .expect("the rest");
+        let carried = pieces(&carried);
+        for rest in &mut constrained.measure_rests {
+            rest.slur_starts.clear();
+            rest.slur_ends.clear();
+        }
+        let plain = pieces(&solve(&constrained));
+        let (at_rest, other) = if ending {
+            (carried[1][3].y.0, (&carried[0], &plain[0]))
+        } else {
+            (carried[0][0].y.0, (&carried[1], &plain[1]))
+        };
+        assert!(
+            (at_rest - (rest_top + 0.9)).abs() < 1e-3,
+            "{name}: its end {at_rest} over its rest's top {rest_top}"
+        );
+        for k in 0..4 {
+            let (a, b) = (other.0[k], other.1[k]);
+            assert!(
+                (a.x.0 - b.x.0).abs() < 1e-3
+                    && (a.y.0 - other.0[0].y.0 - (b.y.0 - other.1[0].y.0)).abs() < 1e-3,
+                "{name}: the other piece keeps its shape: {:?} and {:?}",
+                other.0,
+                other.1
+            );
+        }
+    };
+    check("slur_lift_end.musicxml", true);
+    check("slur_lift_start.musicxml", false);
+}
+
+/// A rest under a slur that runs over a break reads each piece as it is drawn: the
+/// later piece with no carry of the end on the earlier system, and the earlier with
+/// none of the end on the later. Each height is the first clear of its piece.
+#[test]
+fn a_rest_under_a_slur_over_a_break_reads_each_piece_as_drawn() {
+    let start = WHOLE.replace("</type>", &format!("</type>{}", slur_mark("start")));
+    let stop = WHOLE.replace("</type>", &format!("</type>{}", slur_mark("stop")));
+    let over_its_staff = |layout: &ResolvedLayoutIR, system: usize, y: f32| {
+        let s = layout.systems().nth(system).expect("the system");
+        let top = s
+            .primitives
+            .strokes
+            .iter()
+            .map(|&i| &layout.strokes[i as usize])
+            .filter(|t| matches!(t.provenance.source, epiphany_core::TypedObjectId::Staff(_)))
+            .map(|t| t.from.y.0)
+            .fold(f32::NEG_INFINITY, f32::max);
+        y - top
+    };
+    let rest_on = |layout: &ResolvedLayoutIR, system: usize| {
+        let s = layout.systems().nth(system).expect("the system");
+        s.primitives
+            .glyphs
+            .iter()
+            .map(|&i| &layout.glyphs[i as usize])
+            .find(|g| g.glyph.as_str().starts_with("rest"))
+            .expect("its rest")
+            .position
+            .y
+            .0
+    };
+    let later = engrave(
+        "rest_under_later_piece.musicxml",
+        &single(&format!(
+            "<measure number=\"1\">{HEAD}{WHOLE}</measure><measure number=\"2\">{}</measure><measure number=\"3\"><print new-system=\"yes\"/>{}</measure><measure number=\"4\">{stop}</measure>",
+            raised_rest(1, &slur_mark("start"), "C", 6),
+            raised_rest(1, "", "G", 5),
+        )),
+    );
+    assert_eq!(
+        over_its_staff(&later, 1, rest_on(&later, 1)),
+        5.0,
+        "under the later piece, with no carry of its start"
+    );
+    let earlier = engrave(
+        "rest_under_earlier_piece.musicxml",
+        &single(&format!(
+            "<measure number=\"1\">{HEAD}{start}</measure><measure number=\"2\">{}</measure><measure number=\"3\"><print new-system=\"yes\"/>{}</measure><measure number=\"4\">{WHOLE}</measure>",
+            raised_rest(1, "", "D", 6),
+            raised_rest(1, &slur_mark("stop"), "C", 6),
+        )),
+    );
+    assert_eq!(
+        over_its_staff(&earlier, 0, rest_on(&earlier, 0)),
+        6.0,
+        "under the earlier piece, with no carry of its end"
+    );
+}
+
+/// The rest carrying a slur's start clears before one under that slur, whatever
+/// order the input holds them in, so the other reads the slur at its height. The
+/// importer holds them in time, so the constrained input is amended, the two swapped.
+#[test]
+fn a_rest_clears_after_the_rest_its_slur_starts_on() {
+    let stop = WHOLE.replace("</type>", &format!("</type>{}", slur_mark("stop")));
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("rest_after_slur_start.musicxml");
+    std::fs::write(
+        &path,
+        single(&format!(
+            "<measure number=\"1\">{HEAD}{WHOLE}</measure><measure number=\"2\">{}</measure><measure number=\"3\">{}</measure><measure number=\"4\">{stop}</measure>",
+            raised_rest(1, &slur_mark("start"), "C", 6),
+            raised_rest(1, "", "C", 6),
+        )),
+    )
+    .expect("written");
+    let loaded = load(&path).expect("loads");
+    let mut constrained = to_constrained(&to_logical(&loaded.reduced.score));
+    let heights = |c: &epiphany_layout_ir::ConstrainedLayoutIR| {
+        rest_heights(
+            &Engraver::with_geometry(PageGeometry::default())
+                .solve(c, &SolverConfig::default())
+                .layout,
+        )
+    };
+    let in_time = heights(&constrained);
+    assert_eq!(in_time[0], in_time[1], "level: {in_time:?}");
+    constrained.measure_rests.swap(0, 1);
+    assert_eq!(heights(&constrained), in_time, "the order held makes none");
+}
+
+/// A melisma line keeps its end at its last note: a next syllable carried with its
+/// own rest moves a hyphen to it, and no melisma line.
+#[test]
+fn a_melisma_line_keeps_its_end_beside_a_next_syllable_on_a_rest() {
+    let extend = "<lyric number=\"1\"><syllabic>single</syllabic><text>two</text><extend type=\"start\"/></lyric>";
+    let stop = "<lyric number=\"1\"><extend type=\"stop\"/></lyric>";
+    let layout = engrave(
+        "melisma_before_rest.musicxml",
+        &bars(&[
+            sung("C", extend),
+            sung("D", stop),
+            sung_rest(&syllable("single", "next")),
+        ]),
+    );
+    let lines = lyric_lines(&layout);
+    assert_eq!(lines.len(), 1, "one melisma line: {lines:?}");
+    let d = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str() == "noteheadWhole")
+        .map(|g| g.position.x.0)
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(
+        lines[0].1 > d && lines[0].1 < d + 3.0,
+        "the line {:?} ends at its note {d}",
+        lines[0]
+    );
 }

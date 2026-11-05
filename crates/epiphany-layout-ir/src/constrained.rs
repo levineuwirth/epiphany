@@ -12011,6 +12011,26 @@ mod tests {
         assert!(up > 2.0, "alone, nearer above: {up}");
     }
 
+    /// A drawn stem still turns it beside a stemless head in its column, by its own
+    /// way: the rest goes against the nearer side, each way.
+    #[test]
+    fn a_stem_it_meets_turns_a_rest_beside_a_stemless_head() {
+        let moved = |ink: Vec<(InkBox, Option<bool>)>| -> f32 {
+            let mut rests = lone_rest("restHalf", 2.0, VoicePlace::Alone);
+            let mut column = VisitorInk::new();
+            column.insert((None, ColumnKey::Lead), ink);
+            clear_visitors(&mut rests, &BTreeSet::new(), &column, &lead_column());
+            rests[&EventId::from_raw(1)][0].y
+        };
+        // Under its middle the way up is the shorter, but a stem up turns it down.
+        let low = ink_box(0.0, 1.2, 0.9, 2.3);
+        let stemless = ink_box(0.0, 1.2, -9.0, -8.0);
+        assert!(moved(vec![(low, Some(true)), (stemless, None)]) < 2.0);
+        // Over it the way down is the shorter, but a stem down turns it up.
+        let high = ink_box(0.0, 1.2, 2.2, 3.1);
+        assert!(moved(vec![(high, Some(false)), (stemless, None)]) > 2.0);
+    }
+
     /// `clear_ledgers` lifts a rest drawn ledgered off an accidental its line
     /// reaches, and leaves a plain rest be, whose rule it is not.
     #[test]

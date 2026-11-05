@@ -3884,7 +3884,11 @@ engraver's own placing reproduces it:
   `a_slurs_end_stands_off_a_rest_raised_from_its_height` and its lowered mirror,
   `a_slurs_end_stays_on_a_rest_at_its_height`,
   `a_rest_reads_a_slur_at_the_height_its_end_is_carried_to`,
-  `a_rest_reads_a_slur_at_the_place_its_end_is_carried_to`.
+  `a_rest_reads_a_slur_at_the_place_its_end_is_carried_to`,
+  `a_slur_over_a_break_lifts_only_the_piece_at_its_rest`,
+  `a_rest_under_a_slur_over_a_break_reads_each_piece_as_drawn`, and, the importer
+  holding such rests in time, `a_rest_clears_after_the_rest_its_slur_starts_on` on an
+  amended order.
 
 ## ENGRAVER_VERSION 141 → 142: a measure rest reads no ink of a repeat structure (X5d fix round 2, 2026-11-05)
 
@@ -3929,7 +3933,8 @@ engraver's own placing reproduces it:
   `a_hyphen_between_syllables_on_two_rests_moves_both_its_ends`,
   `a_melisma_line_starts_after_its_syllable_on_a_rest`,
   `two_verses_on_a_rest_stand_together_under_it`,
-  `a_hyphen_reaching_a_syllable_on_a_hidden_rest_stays_before_it`.
+  `a_hyphen_reaching_a_syllable_on_a_hidden_rest_stays_before_it`,
+  `a_melisma_line_keeps_its_end_beside_a_next_syllable_on_a_rest`.
 
 ## ENGRAVER_VERSION 143 → 144: a stemless visitor turns no rest (X5d fix round 2, 2026-11-05)
 
@@ -3950,7 +3955,8 @@ engraver's own placing reproduces it:
 - `a_rest_alone_beside_a_stemless_visitor_takes_the_nearer_side`,
   `a_shorter_rest_beside_a_stemless_visitor_takes_the_nearer_side`,
   `a_rest_alone_with_no_stem_near_takes_the_nearer_side`,
-  `a_rest_alone_meeting_only_a_stemless_head_takes_the_nearer_side`.
+  `a_rest_alone_meeting_only_a_stemless_head_takes_the_nearer_side`,
+  `a_stem_it_meets_turns_a_rest_beside_a_stemless_head`.
 
 ## The rest's clauses pinned (X5d fix round 2, 2026-11-05; ENGRAVER_VERSION stays 144)
 
