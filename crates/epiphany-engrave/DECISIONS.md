@@ -3950,3 +3950,15 @@ engraver's own placing reproduces it:
   `a_shorter_rest_beside_a_stemless_visitor_takes_the_nearer_side`,
   `a_rest_alone_with_no_stem_near_takes_the_nearer_side`,
   `a_rest_alone_meeting_only_a_stemless_head_takes_the_nearer_side`.
+
+## The rest's clauses pinned (X5d fix round 2, 2026-11-05; ENGRAVER_VERSION stays 144)
+
+- Clauses of entries 130, 131 and 136 that a mutation showed no test holding, each with
+  a test seen failing with its mutation, in `vertical_rules.rs`'s `rest_clauses` and
+  `rests.rs`: a tie read at its arc and at its thickness; each half of the measure
+  filter, the bar before and the bar after; a slur's carry moving its own end alone,
+  either end; "across", a mark ended before the item; a stem far to the left of a rest
+  alone; a slur on a hidden rest carried, a syllable on one staying; an ottava's end
+  reading its own staff's rest, and the drawn rest beside a hidden one; a measure rest's
+  stems holding its own bar alone, read at the constrained stage, since at the layout a
+  visitor's bar before stands past the rest's reach.

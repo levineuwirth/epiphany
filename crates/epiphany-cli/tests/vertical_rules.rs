@@ -969,3 +969,476 @@ fn a_ledgered_rests_dot_moves_with_it_off_an_accidental() {
     );
     assert_eq!(dots_over_rests(&l), vec![0.5]);
 }
+
+/// Clauses of the rest filling its measure and what it carries, each on a score
+/// whose page reads only that clause.
+mod rest_clauses {
+    use super::*;
+
+    fn engrave(name: &str, xml: &str) -> ResolvedLayoutIR {
+        engrave_on(name, xml, PageGeometry::default())
+    }
+
+    fn one_part(measures: &str) -> String {
+        score(&[measures.to_owned()], None)
+    }
+
+    fn two_parts(a: &str, b: &str) -> String {
+        score(&[a.to_owned(), b.to_owned()], None)
+    }
+
+    fn attrs(beats: u32, beat_type: u32) -> String {
+        format!("<attributes><divisions>4</divisions><time><beats>{beats}</beats><beat-type>{beat_type}</beat-type></time>{TREBLE}</attributes>")
+    }
+
+    fn voiced(step: &str, octave: u32, d: u32, kind: &str, voice: u32, extra: &str) -> String {
+        format!("<note><pitch><step>{step}</step><octave>{octave}</octave></pitch><duration>{d}</duration><voice>{voice}</voice><type>{kind}</type>{extra}</note>")
+    }
+
+    fn rest(d: u32, voice: u32, extra: &str) -> String {
+        format!("<note><rest measure=\"yes\"/><duration>{d}</duration><voice>{voice}</voice>{extra}</note>")
+    }
+
+    fn hidden_rest(d: u32, voice: u32, extra: &str) -> String {
+        format!("<note print-object=\"no\"><rest measure=\"yes\"/><duration>{d}</duration><voice>{voice}</voice>{extra}</note>")
+    }
+
+    fn back(d: u32) -> String {
+        format!("<backup><duration>{d}</duration></backup>")
+    }
+
+    fn slur(kind: &str) -> String {
+        format!("<notations><slur type=\"{kind}\" number=\"1\"/></notations>")
+    }
+
+    fn c5() -> String {
+        voiced("C", 5, 16, "whole", 1, "")
+    }
+
+    fn quarters() -> String {
+        ["C", "D", "E", "F"]
+            .iter()
+            .map(|p| voiced(p, 5, 4, "quarter", 1, ""))
+            .collect()
+    }
+
+    /// Three bars of quarters, each staff of the system kept wide by them.
+    fn quarter_part() -> String {
+        format!(
+            "<measure number=\"1\">{}{q}</measure><measure number=\"2\">{q}</measure><measure number=\"3\">{q}</measure>",
+            attrs(4, 4),
+            q = quarters()
+        )
+    }
+
+    fn barlines(l: &ResolvedLayoutIR) -> Vec<f32> {
+        let mut bars: Vec<f32> = l
+            .glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str() == "barlineSingle")
+            .map(|g| g.position.x.0)
+            .collect();
+        bars.sort_by(f32::total_cmp);
+        bars.dedup_by(|a, b| (*a - *b).abs() < 0.01);
+        bars
+    }
+
+    fn rests_of(l: &ResolvedLayoutIR) -> Vec<&epiphany_layout_ir::ResolvedGlyph> {
+        l.glyphs
+            .iter()
+            .filter(|g| g.glyph.as_str().starts_with("rest"))
+            .collect()
+    }
+
+    /// A tie is read at its true arc and thickness: a B5 held under an upper
+    /// voice's rest takes it to the first height clear of the arc, not its chord.
+    #[test]
+    fn a_rest_reads_a_ties_true_arc() {
+        let held = |t: &str| {
+            format!("<note><pitch><step>B</step><octave>5</octave></pitch><duration>16</duration><tie type=\"{t}\"/><voice>2</voice><type>whole</type><stem>down</stem><notations><tied type=\"{t}\"/></notations></note>")
+        };
+        let xml = one_part(&format!(
+            "<measure number=\"1\">{}{}</measure><measure number=\"2\">{}{}{}</measure><measure number=\"3\">{}{}{}</measure><measure number=\"4\">{}</measure>",
+            attrs(4, 4),
+            c5(),
+            rest(16, 1, ""),
+            back(16),
+            held("start"),
+            rest(16, 1, ""),
+            back(16),
+            held("stop"),
+            c5()
+        ));
+        let l = engrave("rest_tie_arc.musicxml", &xml);
+        let top = lines(&l, l.systems().next().expect("a system"))[0].1;
+        let ys: Vec<f32> = rests_of(&l).iter().map(|g| g.position.y.0 - top).collect();
+        assert!(
+            (ys[0] - 2.0).abs() < 0.01,
+            "the first rest over the arc: {ys:?}"
+        );
+    }
+
+    /// A bar of 1/64 between bars holding a high note: such ink, of the bar before,
+    /// stands within a rest's reach and moves it no further than its neighbours.
+    #[test]
+    fn a_measure_rest_reads_no_ink_of_the_bar_before() {
+        let mut m = String::new();
+        for k in 0..24 {
+            let body = if k % 2 == 1 {
+                format!(
+                    "{}{}{}",
+                    rest(1, 1, ""),
+                    back(1),
+                    voiced("E", 4, 1, "64th", 2, "<stem>down</stem>")
+                )
+            } else if k % 4 == 0 {
+                voiced("A", 6, 1, "64th", 1, "<stem>up</stem>")
+            } else {
+                voiced("E", 4, 1, "64th", 1, "<stem>up</stem>")
+            };
+            let at = if k == 0 {
+                format!("<attributes><divisions>16</divisions><time><beats>1</beats><beat-type>64</beat-type></time>{TREBLE}</attributes>")
+            } else {
+                String::new()
+            };
+            m += &format!("<measure number=\"{}\">{at}{body}</measure>", k + 1);
+        }
+        let l = engrave("rest_bar_before.musicxml", &one_part(&m));
+        let ys: Vec<f32> = l
+            .systems()
+            .flat_map(|sys| {
+                let top = lines(&l, sys)[0].1;
+                sys.primitives
+                    .glyphs
+                    .iter()
+                    .map(|&i| &l.glyphs[i as usize])
+                    .filter(|g| g.glyph.as_str().starts_with("rest"))
+                    .map(move |g| g.position.y.0 - top)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let lo = ys.iter().copied().fold(f32::INFINITY, f32::min);
+        for y in &ys {
+            assert!((y - lo).abs() < 0.01, "moved by the bar before: {ys:?}");
+        }
+    }
+
+    /// And of the bar after: the note opening it.
+    #[test]
+    fn a_measure_rest_reads_no_ink_of_the_bar_after() {
+        let mut m = String::new();
+        for k in 0..16 {
+            let body = if k % 2 == 0 {
+                format!(
+                    "{}{}{}",
+                    rest(1, 1, ""),
+                    back(1),
+                    voiced("E", 4, 1, "16th", 2, "<stem>down</stem>")
+                )
+            } else {
+                format!(
+                    "{}{}{}",
+                    voiced("A", 5, 1, "16th", 1, "<stem>down</stem>"),
+                    back(1),
+                    voiced("E", 4, 1, "16th", 2, "<stem>down</stem>")
+                )
+            };
+            let at = if k == 0 { attrs(1, 16) } else { String::new() };
+            m += &format!("<measure number=\"{}\">{at}{body}</measure>", k + 1);
+        }
+        let l = engrave("rest_bar_after.musicxml", &one_part(&m));
+        for g in rests_of(&l) {
+            assert_eq!(g.glyph.as_str(), "restWhole", "at {:?}", g.position);
+        }
+    }
+
+    /// A slur's carry moves its own end alone: one starting on a rest ends where its
+    /// note stands, and one ending on a rest starts at its note.
+    #[test]
+    fn a_slur_from_a_rest_keeps_its_other_end_at_its_note() {
+        let stands_at_a_note = |l: &ResolvedLayoutIR, end: f32, what: &str| {
+            let near = l
+                .glyphs
+                .iter()
+                .filter(|g| g.glyph.as_str() == "noteheadWhole")
+                .map(|g| (end - g.position.x.0).abs())
+                .fold(f32::INFINITY, f32::min);
+            assert!(near < 2.5, "{what} {end}, {near} from a note");
+        };
+        let four = |m2: String, m3: String| {
+            one_part(&format!(
+                "<measure number=\"1\">{}{}</measure><measure number=\"2\">{m2}</measure><measure number=\"3\">{m3}</measure><measure number=\"4\">{}</measure>",
+                attrs(4, 4),
+                c5(),
+                c5()
+            ))
+        };
+        let started = engrave(
+            "slur_from_rest.musicxml",
+            &four(
+                rest(16, 1, &slur("start")),
+                voiced("D", 5, 16, "whole", 1, &slur("stop")),
+            ),
+        );
+        let c = started.curves[0].control_points();
+        stands_at_a_note(&started, c[3].x.0, "its end");
+        let ended = engrave(
+            "slur_to_rest.musicxml",
+            &four(
+                voiced("D", 5, 16, "whole", 1, &slur("start")),
+                rest(16, 1, &slur("stop")),
+            ),
+        );
+        let c = ended.curves[0].control_points();
+        stands_at_a_note(&ended, c[0].x.0, "its start");
+    }
+
+    /// A pedal ended earlier in the bar is not across a dynamic centred after it: the
+    /// p stays about the gap's middle.
+    #[test]
+    fn a_pedal_earlier_in_the_bar_leaves_a_dynamic_centred() {
+        let upper = |p: &str, o: u32| {
+            format!("<note><pitch><step>{p}</step><octave>{o}</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type><staff>1</staff></note>")
+        };
+        let lower = |p: &str, o: u32| {
+            format!("<note><pitch><step>{p}</step><octave>{o}</octave></pitch><duration>1</duration><voice>5</voice><type>quarter</type><staff>2</staff></note>")
+        };
+        let ped = |k: &str| {
+            format!("<direction><direction-type><pedal type=\"{k}\" line=\"yes\"/></direction-type><staff>1</staff></direction>")
+        };
+        let p = "<direction><direction-type><dynamics><p/></dynamics></direction-type><staff>1</staff></direction>";
+        let head = "<attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time><staves>2</staves><clef number=\"1\"><sign>G</sign><line>2</line></clef><clef number=\"2\"><sign>F</sign><line>4</line></clef></attributes>";
+        let up = format!(
+            "{}{}{}{}{}{p}{}",
+            ped("start"),
+            upper("A", 4),
+            upper("A", 4),
+            ped("stop"),
+            upper("A", 4),
+            upper("A", 4)
+        );
+        let down = lower("C", 3).repeat(4);
+        let wide = format!(
+            "{}{}{}",
+            upper("A", 5).repeat(4),
+            "<backup><duration>4</duration></backup>",
+            lower("A", 2).repeat(4)
+        );
+        let xml = one_part(&format!(
+            "<measure number=\"1\">{head}{up}<backup><duration>4</duration></backup>{down}</measure><measure number=\"2\">{wide}</measure>"
+        ));
+        let l = engrave("pedal_before_dynamic.musicxml", &xml);
+        let d = l
+            .glyphs
+            .iter()
+            .find(|g| g.glyph.as_str() == "dynamicPiano")
+            .expect("the p");
+        let staves = lines(&l, l.systems().next().expect("a system"));
+        let middle = (staves[0].0 + staves[1].1) * 0.5;
+        let centre = d.position.y.0 + (d.bounding_box.bottom.0 + d.bounding_box.top.0) * 0.5;
+        assert!(
+            (centre - middle).abs() < 1.0,
+            "the p about the gap's middle: {centre} against {middle}"
+        );
+    }
+
+    /// A slur on a hidden rest, in a bar another staff gives width, is carried as on a
+    /// drawn one: a hidden rest is centred for what stands on it.
+    #[test]
+    fn a_slur_on_a_hidden_rest_starts_at_the_bars_middle() {
+        let a = format!(
+            "<measure number=\"1\">{}{}</measure><measure number=\"2\">{}</measure><measure number=\"3\">{}</measure>",
+            attrs(4, 4),
+            c5(),
+            hidden_rest(16, 1, &slur("start")),
+            voiced("D", 5, 16, "whole", 1, &slur("stop"))
+        );
+        let l = engrave("slur_hidden_rest.musicxml", &two_parts(&a, &quarter_part()));
+        let c = l.curves[0].control_points();
+        let bars = barlines(&l);
+        let middle = (bars[0] + bars[1]) * 0.5;
+        assert!(
+            (c[0].x.0 - middle).abs() < 0.5,
+            "the slur's start {} at the bar's middle {middle}",
+            c[0].x.0
+        );
+    }
+
+    /// A syllable on a hidden rest stays at its column: it has no glyph to ride.
+    #[test]
+    fn a_syllable_on_a_hidden_rest_stays_at_its_column() {
+        let lyric = "<lyric number=\"1\"><syllabic>single</syllabic><text>two</text></lyric>";
+        let a = format!(
+            "<measure number=\"1\">{}{}</measure><measure number=\"2\">{}</measure><measure number=\"3\">{}</measure>",
+            attrs(4, 4),
+            c5(),
+            hidden_rest(16, 1, lyric),
+            voiced("D", 5, 16, "whole", 1, "")
+        );
+        let l = engrave(
+            "syllable_hidden_rest.musicxml",
+            &two_parts(&a, &quarter_part()),
+        );
+        let t = l
+            .texts
+            .iter()
+            .find(|t| t.text.as_str() == "two")
+            .expect("the syllable");
+        let x = t.origin.x.0 + (t.bounds.left.0 + t.bounds.right.0) * 0.5;
+        let bars = barlines(&l);
+        assert!(
+            x > bars[0] && x < bars[0] + 6.0,
+            "the syllable {x} at its column after {}",
+            bars[0]
+        );
+    }
+
+    fn ottava(kind: &str) -> String {
+        let place = if kind == "stop" {
+            ""
+        } else {
+            " placement=\"above\""
+        };
+        format!("<direction{place}><direction-type><octave-shift type=\"{kind}\" size=\"8\" number=\"1\"/></direction-type></direction>")
+    }
+
+    fn ottava_hook(l: &ResolvedLayoutIR) -> f32 {
+        l.strokes
+            .iter()
+            .filter(|s| {
+                matches!(s.provenance.source, TypedObjectId::Spanner(_))
+                    && s.from.x == s.to.x
+                    && s.from.y != s.to.y
+            })
+            .map(|s| s.from.x.0)
+            .fold(f32::NEG_INFINITY, f32::max)
+    }
+
+    /// An ottava's end on a rest reads its own staff's rest, not the other part's,
+    /// whose clef closing the bar stands it elsewhere, either part above.
+    #[test]
+    fn an_ottava_reads_the_rest_of_its_own_staff() {
+        let clef = "<attributes><clef><sign>F</sign><line>4</line></clef></attributes>";
+        let with_ottava = format!(
+            "<measure number=\"1\">{}{}{}</measure><measure number=\"2\">{}{}</measure><measure number=\"3\">{}</measure>",
+            attrs(4, 4),
+            ottava("down"),
+            voiced("C", 6, 16, "whole", 1, ""),
+            rest(16, 1, ""),
+            ottava("stop"),
+            c5()
+        );
+        let other = format!(
+            "<measure number=\"1\">{}{}</measure><measure number=\"2\">{}{clef}</measure><measure number=\"3\">{}</measure>",
+            attrs(4, 4),
+            c5(),
+            rest(16, 1, ""),
+            voiced("C", 3, 16, "whole", 1, "")
+        );
+        for (name, xml) in [
+            ("ottava_own_above.musicxml", two_parts(&with_ottava, &other)),
+            ("ottava_own_below.musicxml", two_parts(&other, &with_ottava)),
+        ] {
+            let l = engrave(name, &xml);
+            let hook = ottava_hook(&l);
+            let right = rests_of(&l)
+                .iter()
+                .map(|g| g.position.x.0 + g.bounding_box.right.0)
+                .fold(f32::NEG_INFINITY, f32::max);
+            assert!(
+                (hook - (right + 1.0)).abs() < 0.2,
+                "{name}: the hook {hook} a space past its own rest {right}"
+            );
+        }
+    }
+
+    /// And the drawn rest beside a hidden one in its column, either voice hidden.
+    #[test]
+    fn an_ottava_reads_the_drawn_rest_beside_a_hidden_one() {
+        for (name, bar) in [
+            (
+                "ottava_hidden_first.musicxml",
+                format!(
+                    "{}{}{}{}",
+                    hidden_rest(16, 1, ""),
+                    back(16),
+                    rest(16, 2, ""),
+                    ottava("stop")
+                ),
+            ),
+            (
+                "ottava_hidden_second.musicxml",
+                format!(
+                    "{}{}{}{}",
+                    rest(16, 1, ""),
+                    back(16),
+                    hidden_rest(16, 2, ""),
+                    ottava("stop")
+                ),
+            ),
+        ] {
+            let m = format!(
+                "<measure number=\"1\">{}{}{}</measure><measure number=\"2\">{bar}</measure><measure number=\"3\">{}</measure>",
+                attrs(4, 4),
+                ottava("down"),
+                voiced("C", 6, 16, "whole", 1, ""),
+                c5()
+            );
+            let l = engrave(name, &one_part(&m));
+            let hook = ottava_hook(&l);
+            let g = rests_of(&l)[0];
+            let right = g.position.x.0 + g.bounding_box.right.0;
+            assert!(
+                (hook - (right + 1.0)).abs() < 0.2,
+                "{name}: the hook {hook} past the drawn rest {right}"
+            );
+        }
+    }
+
+    /// A measure rest's stems hold its own bar's visitors alone, read as the
+    /// constrained stage gives them: six bars, the voice visiting in two, the bar
+    /// before the rest's among them.
+    #[test]
+    fn a_measure_rests_stems_hold_only_its_own_bar() {
+        let clefs = "<staves>3</staves><clef number=\"1\"><sign>G</sign><line>2</line></clef><clef number=\"2\"><sign>G</sign><line>2</line></clef><clef number=\"3\"><sign>F</sign><line>4</line></clef>";
+        let attributes = format!("<attributes><divisions>4</divisions><time><beats>1</beats><beat-type>8</beat-type></time>{clefs}</attributes>");
+        let on = |p: &str, o: u32, v: u32, st: u32| {
+            format!("<note><pitch><step>{p}</step><octave>{o}</octave></pitch><duration>2</duration><voice>{v}</voice><type>eighth</type><staff>{st}</staff></note><backup><duration>2</duration></backup>")
+        };
+        let plain = format!(
+            "{}{}{}",
+            on("C", 5, 1, 1),
+            on("B", 4, 5, 2),
+            on("C", 3, 9, 3)
+        );
+        let before = format!(
+            "{}{}{}",
+            on("C", 5, 1, 1),
+            on("B", 4, 5, 2),
+            on("F", 5, 9, 2)
+        );
+        let own = format!(
+            "{}<note><rest measure=\"yes\"/><duration>2</duration><voice>5</voice><staff>2</staff></note><backup><duration>2</duration></backup>{}",
+            on("C", 5, 1, 1),
+            on("C", 4, 9, 2)
+        );
+        let xml = one_part(&format!(
+            "<measure number=\"1\">{attributes}{plain}</measure><measure number=\"2\">{plain}</measure><measure number=\"3\">{before}</measure><measure number=\"4\">{own}</measure><measure number=\"5\">{plain}</measure><measure number=\"6\">{plain}</measure>"
+        ));
+        let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("rest_stems_own_bar.musicxml");
+        std::fs::write(&path, xml).expect("written");
+        let loaded = load(&path).expect("loads");
+        let constrained = to_constrained(&to_logical(&loaded.reduced.score));
+        let rests = &constrained.measure_rests;
+        assert_eq!(rests.len(), 1);
+        assert!(!rests[0].stems.is_empty(), "its bar's visitor is read");
+        assert!(
+            rests[0]
+                .stems
+                .iter()
+                .all(|(slot, ..)| *slot == rests[0].slot),
+            "{} stems, some of another bar",
+            rests[0].stems.len()
+        );
+    }
+}

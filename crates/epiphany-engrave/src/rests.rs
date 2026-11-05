@@ -400,6 +400,14 @@ mod tests {
         assert!(whole(None, &ink, &stems).y < -1.0);
     }
 
+    /// Nor one far to its left, where both ways would take it up.
+    #[test]
+    fn a_rest_alone_reads_no_stem_far_to_its_left() {
+        let ink = [RestInk::boxed(9.5, 10.5, -0.5, 3.5)];
+        let stems = [(9.5, 10.5, true), (-20.0, -19.0, false)];
+        assert!(whole(None, &ink, &stems).y < -1.0);
+    }
+
     /// A rest alone moves only where visiting ink stands that near it, from
     /// the stems it meets.
     #[test]
