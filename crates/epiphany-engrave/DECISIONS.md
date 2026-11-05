@@ -3898,7 +3898,7 @@ engraver's own placing reproduces it:
   bracket, outside it. The rest now leaves out a repeat structure's ink by its source,
   the stroke and the glyph, whichever system or bar it stands on. MuseScore reads a
   measure's segments alone, which hold no volta (`restlayout.cpp`), LilyPond's rest
-  collision reads note columns, and Gould moves a rest only where parts would collide
+  collision reads note columns, and Gould moves a rest only to keep two parts apart
   (p. 36).
 - No import reaches it: the importer records endings unmade, so the tests add the
   ending through the model: `a_measure_rest_stays_under_a_one_bar_ending`, and
@@ -3918,8 +3918,9 @@ engraver's own placing reproduces it:
   a hyphen from the syllable moves its start, a hyphen to it its end, a hyphen between
   syllables on two rests both, and a melisma line its start. The dashes are then
   shared out between the syllables as they stand, midway (*Behind Bars*, p. 448), and a
-  melisma line follows its word (p. 447). MuseScore's page draws both so; LilyPond
-  attaches no syllable to a rest.
+  melisma line follows its word (p. 447). MuseScore's page draws the hyphen so, and on
+  the probe no melisma line from a rest at all; Gould's rule is the one read here (D99).
+  LilyPond attaches no syllable to a rest.
 - A hidden rest's syllable stays at its column, having no glyph to ride, so its lines
   stay too.
 - Named, not settled: a long syllable's room. A bar's width is set with the syllable at
