@@ -1902,11 +1902,12 @@ pub fn try_to_constrained(
                             // of one line, hanging from it (Gould, p. 38).
                             _ => yo + STAFF_HEIGHT / 2.0,
                         };
-                        let y = match rest.voice {
-                            VoicePlace::Alone => y,
-                            VoicePlace::Upper => y + REST_VOICE_SHIFT,
-                            VoicePlace::Lower => y - REST_VOICE_SHIFT,
+                        let shift = match rest.voice {
+                            VoicePlace::Alone => 0.0,
+                            VoicePlace::Upper => REST_VOICE_SHIFT,
+                            VoicePlace::Lower => -REST_VOICE_SHIFT,
                         };
+                        let y = y + shift;
                         segs.push(RestSeg {
                             name,
                             key,
@@ -1914,7 +1915,7 @@ pub fn try_to_constrained(
                             comp,
                             visible: rest.visible,
                             dots,
-                            dots_y: yo + STAFF_HEIGHT / 2.0 + 0.5,
+                            dots_y: yo + STAFF_HEIGHT / 2.0 + 0.5 + shift,
                             staff,
                             start: time,
                             voice: rest.voice,
@@ -7370,7 +7371,8 @@ struct RestSeg {
     /// A hidden rest keeps its column and draws no ink.
     visible: bool,
     dots: u8,
-    /// The `y` of the space its dots sit in.
+    /// The `y` of the space its dots sit in. Whatever moves the rest moves them
+    /// by as much: a dot keeps its place against its rest (Gould, p. 38).
     dots_y: f32,
     /// Its staff, onset and voice's place, which decide which other notes it
     /// stands clear of.
@@ -7413,10 +7415,10 @@ struct Sounding {
 const REST_CLEARANCE: f32 = 0.25;
 
 /// Moves each rest of a voice beside another, a space at a time away from
-/// the middle of the staff (up for an upper voice, down for a lower), until
-/// its glyph stands `REST_CLEARANCE` clear of every head of another note on
-/// its staff that starts with it, and so stands in its column. A note held
-/// from before stands to its left.
+/// the middle of the staff (up for an upper voice, down for a lower), dots
+/// with it, until its glyph stands `REST_CLEARANCE` clear of every head of
+/// another note on its staff that starts with it, and so stands in its column.
+/// A note held from before stands to its left.
 fn clear_rests(rests: &mut BTreeMap<EventId, Vec<RestSeg>>, sounding: &[Sounding]) {
     for (eid, segs) in rests.iter_mut() {
         // A rest filling its measure is cleared by a solver where it stands.
@@ -7448,6 +7450,7 @@ fn clear_rests(rests: &mut BTreeMap<EventId, Vec<RestSeg>>, sounding: &[Sounding
                 };
                 while seg.y + at(seg.y).bottom.0 < top + 0.5 + REST_CLEARANCE {
                     seg.y += 1.0;
+                    seg.dots_y += 1.0;
                 }
             } else {
                 let Some(bottom) = heads.reduce(f32::min) else {
@@ -7455,6 +7458,7 @@ fn clear_rests(rests: &mut BTreeMap<EventId, Vec<RestSeg>>, sounding: &[Sounding
                 };
                 while seg.y + at(seg.y).top.0 > bottom - 0.5 - REST_CLEARANCE {
                     seg.y -= 1.0;
+                    seg.dots_y -= 1.0;
                 }
             }
         }

@@ -3838,3 +3838,24 @@ engraver's own placing reproduces it:
   sky reads the curve at the bake's chords, before the bake reshapes a slur past
   what it passes (`a_measure_rest_clears_a_tie_passing_through_it`,
   `a_curve_moves_a_rest_only_where_it_passes_through_it`).
+
+## ENGRAVER_VERSION 139 → 140: a dotted rest keeps its dot beside it (X5d fix round 2, 2026-11-05)
+
+- A rest's dot stood where a lone rest's stands whatever moved the rest: a voice's
+  shift at construction moved the rest alone, and `clear_rests` moved it alone off
+  the other voice's heads, so a dot could stand spaces from its rest, beside
+  another note, which reads as that note's. Older than the phase (X3).
+- `dots_y` now takes the voice's shift and each of `clear_rests`'s steps, as
+  `clear_visitors` and `clear_ledgers` already moved it: the dot stays half a space
+  over a half rest, its place against its rest wherever the rest stands (*Behind
+  Bars*, p. 38). MuseScore lays a rest's dots from the rest's own place
+  (`RestLayout`, `dotLine`), and LilyPond hangs them from their rhythmic head
+  (`dots-engraver.cc`), a rest being one.
+- The dot's box is read where it now stands: `clear_visitors` reads it as the rest
+  moves, and it enters its staff's outline, so a dot's new place can move a staff
+  by what it adds to it.
+- Each move and its dot, `a_voices_dotted_rest_keeps_its_dot_beside_it`,
+  `a_dotted_rest_moved_off_a_voices_heads_takes_its_dot`,
+  `a_ledgered_rests_dot_moves_with_it_off_an_accidental`; the last read to the exact
+  half space, since a dot left one step behind still stands within a space of its
+  rest.

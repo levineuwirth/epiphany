@@ -865,3 +865,107 @@ fn a_centred_dynamic_reads_only_its_own_systems_lead() {
         "under its staff by {a} after a treble clef's system, by {b} after a bass clef's, in a gap of {gap_a}"
     );
 }
+
+/// Each dotted rest's dot, by how far it stands above its rest's own height.
+fn dots_over_rests(l: &ResolvedLayoutIR) -> Vec<f32> {
+    l.glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str().starts_with("rest"))
+        .filter_map(|r| {
+            let right = r.position.x.0 + r.bounding_box.right.0;
+            l.glyphs
+                .iter()
+                .filter(|d| d.glyph.as_str() == "augmentationDot")
+                .filter(|d| d.position.x.0 >= right && d.position.x.0 < right + 1.5)
+                .map(|d| d.position.y.0 - r.position.y.0)
+                .next()
+        })
+        .collect()
+}
+
+/// A dotted half rest and a quarter rest in one voice, whole-note neighbours
+/// around it, beside two halves of another voice.
+fn dotted_rest_beside(voice: u8, other: u8, step: &str, octave: u8) -> String {
+    let rest = |d: u8, kind: &str, dot: &str| {
+        format!("<note><rest/><duration>{d}</duration><voice>{voice}</voice><type>{kind}</type>{dot}</note>")
+    };
+    let half = format!("<note><pitch><step>{step}</step><octave>{octave}</octave></pitch><duration>2</duration><voice>{other}</voice><type>half</type></note>");
+    let bar = format!(
+        "{}{}<backup><duration>4</duration></backup>{half}{half}",
+        rest(3, "half", "<dot/>"),
+        rest(1, "quarter", "")
+    );
+    score(
+        &[format!(
+            "<measure number=\"1\">{}{}</measure><measure number=\"2\">{bar}</measure><measure number=\"3\">{}</measure>",
+            head(),
+            whole("C", 5),
+            whole("C", 5)
+        )],
+        None,
+    )
+}
+
+/// A dot keeps its place against its rest wherever the rest stands (Gould,
+/// p. 38): half a space over a half rest, as on a staff of one voice, where the
+/// rest stands aside for its voice and nothing near it moves it further.
+#[test]
+fn a_voices_dotted_rest_keeps_its_dot_beside_it() {
+    let upper = engrave_on(
+        "dot_upper.musicxml",
+        &dotted_rest_beside(1, 2, "E", 4),
+        PageGeometry::default(),
+    );
+    assert_eq!(dots_over_rests(&upper), vec![0.5], "an upper voice's");
+    let lower = engrave_on(
+        "dot_lower.musicxml",
+        &dotted_rest_beside(2, 1, "F", 5),
+        PageGeometry::default(),
+    );
+    assert_eq!(dots_over_rests(&lower), vec![0.5], "a lower voice's");
+}
+
+/// And where the other voice's heads move the rest further, each way.
+#[test]
+fn a_dotted_rest_moved_off_a_voices_heads_takes_its_dot() {
+    let upper = engrave_on(
+        "dot_cleared_upper.musicxml",
+        &dotted_rest_beside(1, 2, "C", 6),
+        PageGeometry::default(),
+    );
+    assert_eq!(dots_over_rests(&upper), vec![0.5], "up, off a high note");
+    let lower = engrave_on(
+        "dot_cleared_lower.musicxml",
+        &dotted_rest_beside(2, 1, "A", 3),
+        PageGeometry::default(),
+    );
+    assert_eq!(dots_over_rests(&lower), vec![0.5], "down, off a low note");
+}
+
+/// A dotted half rest over a whole note's flat: the ledger line's overhang
+/// reaches the flat where the plain glyph does not, and the move off it takes
+/// the dot along, as every earlier move has.
+#[test]
+fn a_ledgered_rests_dot_moves_with_it_off_an_accidental() {
+    let bar = "<note><rest/><duration>3</duration><voice>1</voice><type>half</type><dot/></note>\
+        <note><pitch><step>A</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type></note>\
+        <backup><duration>4</duration></backup>\
+        <note><pitch><step>G</step><alter>-1</alter><octave>5</octave></pitch><duration>4</duration><voice>2</voice><type>whole</type><accidental>flat</accidental></note>";
+    let xml = score(
+        &[format!(
+            "<measure number=\"1\">{}{}</measure><measure number=\"2\">{bar}</measure><measure number=\"3\">{}</measure>",
+            head(),
+            whole("C", 5),
+            whole("C", 5)
+        )],
+        None,
+    );
+    let l = engrave_on("dot_ledger.musicxml", &xml, PageGeometry::default());
+    assert!(
+        l.glyphs
+            .iter()
+            .any(|g| g.glyph.as_str() == "restHalfLegerLine"),
+        "it stands ledgered"
+    );
+    assert_eq!(dots_over_rests(&l), vec![0.5]);
+}
