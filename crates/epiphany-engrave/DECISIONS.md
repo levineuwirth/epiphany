@@ -3956,7 +3956,10 @@ engraver's own placing reproduces it:
   `a_shorter_rest_beside_a_stemless_visitor_takes_the_nearer_side`,
   `a_rest_alone_with_no_stem_near_takes_the_nearer_side`,
   `a_rest_alone_meeting_only_a_stemless_head_takes_the_nearer_side`,
-  `a_stem_it_meets_turns_a_rest_beside_a_stemless_head`.
+  `a_stem_it_meets_turns_a_rest_beside_a_stemless_head`. A stem within a rest's reach
+  beside it still turns it, past the nearer way
+  (`a_rest_alone_turns_from_a_stem_within_its_reach_beside_it`), since with no stem now
+  meaning the nearer side an earlier test no longer told the reach from the rest's box.
 
 ## The rest's clauses pinned (X5d fix round 2, 2026-11-05; ENGRAVER_VERSION stays 144)
 

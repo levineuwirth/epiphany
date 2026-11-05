@@ -421,6 +421,22 @@ mod tests {
         assert!(whole(None, &ink, &stems).y < -1.0);
     }
 
+    /// One within its reach turns it though it stands beside the rest, either side,
+    /// past the nearer way: a stem up sends it down from ink reaching up onto it.
+    #[test]
+    fn a_rest_alone_turns_from_a_stem_within_its_reach_beside_it() {
+        let ink = [RestInk::boxed(9.5, 10.5, -3.0, 2.0)];
+        assert!(
+            whole(None, &ink, &[(12.0, 12.2, true)]).y < 3.0,
+            "on its right"
+        );
+        assert!(
+            whole(None, &ink, &[(8.0, 8.2, true)]).y < 3.0,
+            "on its left"
+        );
+        assert_eq!(whole(None, &ink, &[]).y, 4.0, "with none, the nearer way");
+    }
+
     /// Nor one far to its left, where both ways would take it up.
     #[test]
     fn a_rest_alone_reads_no_stem_far_to_its_left() {
