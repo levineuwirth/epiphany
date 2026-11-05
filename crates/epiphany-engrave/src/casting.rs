@@ -1559,6 +1559,9 @@ pub(crate) fn cast_off(
     // Each such rest's height and glyph, cleared where it stands.
     let mut rest_place: BTreeMap<usize, crate::rests::RestPlace> = BTreeMap::new();
     let mut carried_marks: Vec<(usize, f32)> = Vec::new();
+    // The hyphens and melisma lines leaving and reaching a syllable so carried.
+    let mut run_line_starts: Vec<(GlyphObjectId, f32)> = Vec::new();
+    let mut run_line_ends: Vec<(GlyphObjectId, f32)> = Vec::new();
     // The move of a slur's first and last ends: across, each to its rest's
     // centre, from where the system's map sets it; up or down, off a rest moved
     // from its height.
@@ -1915,13 +1918,21 @@ pub(crate) fn cast_off(
                 carried_marks.push((f, centre - centre_of(g)));
             }
         }
-        // A syllable keeps its place about its rest. A hidden rest's has no
-        // glyph to ride and no column of its own, and stays.
+        // A syllable keeps its place about its rest, and the lines leaving and
+        // reaching it stay with it. A hidden rest's has no glyph to ride and no
+        // column of its own, and stays.
         if let Some(&g) = rest.glyph.as_ref().and_then(|id| glyph_index.get(id)) {
+            let dx = centre - centre_of(g);
             for id in &rest.runs {
                 if let Some(&f) = placed.texts.get(id) {
-                    carried_marks.push((f, centre - centre_of(g)));
+                    carried_marks.push((f, dx));
                 }
+            }
+            for id in &rest.run_lines_from {
+                run_line_starts.push((*id, dx));
+            }
+            for id in &rest.run_lines_to {
+                run_line_ends.push((*id, dx));
             }
         }
     }
@@ -2236,6 +2247,14 @@ pub(crate) fn cast_off(
         for (k, id) in rest.line_ends.iter().enumerate() {
             hairpin_ends.insert(*id, (if k == 0 { 0.0 } else { dx }, dx));
         }
+    }
+    // And a hyphen's or melisma line's start or end at a syllable carried with
+    // its rest, both where each of a hyphen's two syllables stands on a rest.
+    for &(id, dx) in &run_line_starts {
+        hairpin_ends.entry(id).or_insert((0.0, 0.0)).0 = dx;
+    }
+    for &(id, dx) in &run_line_ends {
+        hairpin_ends.entry(id).or_insert((0.0, 0.0)).1 = dx;
     }
     // Each verbal crescendo's words moved with its start (X4d fix round 1).
     let mut verbal_words_dx: BTreeMap<GlyphObjectId, f32> = BTreeMap::new();

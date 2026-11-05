@@ -1556,3 +1556,258 @@ fn a_measure_rest_reads_no_glyph_of_a_repeat_structure() {
         "it reads none of the structure's"
     );
 }
+
+fn syllable(kind: &str, text: &str) -> String {
+    format!("<lyric number=\"1\"><syllabic>{kind}</syllabic><text>{text}</text></lyric>")
+}
+
+fn sung(step: &str, lyric: &str) -> String {
+    format!(
+        "<note><pitch><step>{step}</step><octave>5</octave></pitch><duration>16</duration><voice>1</voice><type>whole</type>{lyric}</note>"
+    )
+}
+
+fn sung_rest(lyric: &str) -> String {
+    format!("<note><rest measure=\"yes\"/><duration>16</duration><voice>1</voice>{lyric}</note>")
+}
+
+/// Bars in order, the attributes opening the first.
+fn bars(content: &[String]) -> String {
+    let body: String = content
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let head = if i == 0 { HEAD } else { "" };
+            format!("<measure number=\"{}\">{head}{c}</measure>", i + 1)
+        })
+        .collect();
+    single(&body)
+}
+
+/// A syllable's edges across.
+fn syllable_at(layout: &ResolvedLayoutIR, text: &str) -> (f32, f32) {
+    let run = layout
+        .texts
+        .iter()
+        .find(|t| t.text.as_str() == text)
+        .unwrap_or_else(|| panic!("the syllable {text}"));
+    (
+        run.origin.x.0 + run.bounds.left.0,
+        run.origin.x.0 + run.bounds.right.0,
+    )
+}
+
+/// Each dash of a hyphen or stretch of a melisma line, by its ends across.
+fn lyric_lines(layout: &ResolvedLayoutIR) -> Vec<(f32, f32)> {
+    let mut lines: Vec<(f32, f32)> = layout
+        .strokes
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.provenance.source,
+                epiphany_core::TypedObjectId::LyricLine(_)
+            ) && s.from.x != s.to.x
+        })
+        .map(|s| (s.from.x.0, s.to.x.0))
+        .collect();
+    lines.sort_by(|a, b| a.0.total_cmp(&b.0));
+    lines
+}
+
+/// A hyphen stands midway between its two syllables (Gould, p. 448): every dash
+/// between their inner edges, and their middle the gap's.
+fn assert_hyphen_between(lines: &[(f32, f32)], left: (f32, f32), right: (f32, f32)) {
+    let dashes: Vec<&(f32, f32)> = lines
+        .iter()
+        .filter(|l| l.0 > left.0 && l.1 < right.1)
+        .collect();
+    assert!(!dashes.is_empty(), "a hyphen in {lines:?}");
+    for d in &dashes {
+        assert!(
+            d.0 >= left.1 && d.1 <= right.0,
+            "a dash {d:?} between {left:?} and {right:?}"
+        );
+    }
+    let first = dashes.first().expect("a dash").0;
+    let last = dashes.last().expect("a dash").1;
+    let (middle, gap) = ((first + last) * 0.5, (left.1 + right.0) * 0.5);
+    assert!(
+        (middle - gap).abs() < 0.02,
+        "the hyphen's middle {middle} in the gap's {gap}"
+    );
+}
+
+/// A hyphen leaving a syllable carried with its rest starts after it.
+#[test]
+fn a_hyphen_stands_after_its_syllable_on_a_rest() {
+    let layout = engrave(
+        "hyphen_from_rest.musicxml",
+        &bars(&[
+            sung("C", &syllable("single", "one")),
+            sung_rest(&syllable("begin", "fi")),
+            sung("D", &syllable("end", "ne")),
+        ]),
+    );
+    assert_hyphen_between(
+        &lyric_lines(&layout),
+        syllable_at(&layout, "fi"),
+        syllable_at(&layout, "ne"),
+    );
+}
+
+/// And one reaching such a syllable ends before it.
+#[test]
+fn a_hyphen_stands_before_its_syllable_on_a_rest() {
+    let layout = engrave(
+        "hyphen_to_rest.musicxml",
+        &bars(&[
+            sung("C", &syllable("begin", "fi")),
+            sung_rest(&syllable("end", "ne")),
+            sung("D", &syllable("single", "next")),
+        ]),
+    );
+    assert_hyphen_between(
+        &lyric_lines(&layout),
+        syllable_at(&layout, "fi"),
+        syllable_at(&layout, "ne"),
+    );
+}
+
+/// A syllable on a rest between two others holds both hyphens to it.
+#[test]
+fn hyphens_stand_on_either_side_of_a_syllable_on_a_rest() {
+    let layout = engrave(
+        "hyphen_both_sides.musicxml",
+        &bars(&[
+            sung("C", &syllable("begin", "pa")),
+            sung_rest(&syllable("middle", "ri")),
+            sung("D", &syllable("end", "so")),
+        ]),
+    );
+    let (lines, pa, ri, so) = (
+        lyric_lines(&layout),
+        syllable_at(&layout, "pa"),
+        syllable_at(&layout, "ri"),
+        syllable_at(&layout, "so"),
+    );
+    assert_hyphen_between(&lines, pa, ri);
+    assert_hyphen_between(&lines, ri, so);
+}
+
+/// And a hyphen between syllables on two rests moves both its ends.
+#[test]
+fn a_hyphen_between_syllables_on_two_rests_moves_both_its_ends() {
+    let layout = engrave(
+        "hyphen_two_rests.musicxml",
+        &bars(&[
+            sung("C", &syllable("single", "one")),
+            sung_rest(&syllable("begin", "fi")),
+            sung_rest(&syllable("end", "ne")),
+            sung("D", &syllable("single", "two")),
+        ]),
+    );
+    assert_hyphen_between(
+        &lyric_lines(&layout),
+        syllable_at(&layout, "fi"),
+        syllable_at(&layout, "ne"),
+    );
+}
+
+/// A melisma line leaving a syllable carried with its rest starts just after it
+/// (Gould, p. 447), and still ends at its note.
+#[test]
+fn a_melisma_line_starts_after_its_syllable_on_a_rest() {
+    let extend = "<lyric number=\"1\"><syllabic>single</syllabic><text>two</text><extend type=\"start\"/></lyric>";
+    let stop = "<lyric number=\"1\"><extend type=\"stop\"/></lyric>";
+    let layout = engrave(
+        "melisma_from_rest.musicxml",
+        &bars(&[
+            sung("C", &syllable("single", "one")),
+            sung_rest(extend),
+            sung("D", stop),
+            sung("E", &syllable("single", "three")),
+        ]),
+    );
+    let lines = lyric_lines(&layout);
+    assert_eq!(lines.len(), 1, "one melisma line: {lines:?}");
+    let two = syllable_at(&layout, "two");
+    assert!(
+        lines[0].0 >= two.1 && lines[0].0 < two.1 + 1.0,
+        "the line {:?} just after the syllable {two:?}",
+        lines[0]
+    );
+    let d = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str() == "noteheadWhole")
+        .map(|g| g.position.x.0)
+        .filter(|x| *x > two.1)
+        .reduce(f32::min)
+        .expect("the D");
+    assert!(
+        lines[0].1 > d && lines[0].1 < d + 3.0,
+        "the line {:?} ends at its note {d}",
+        lines[0]
+    );
+}
+
+/// Two verses on a rest go with it together.
+#[test]
+fn two_verses_on_a_rest_stand_together_under_it() {
+    let verses = "<lyric number=\"1\"><syllabic>end</syllabic><text>bb</text></lyric><lyric number=\"2\"><syllabic>single</syllabic><text>zz</text></lyric>";
+    let layout = engrave(
+        "two_verses_on_rest.musicxml",
+        &bars(&[
+            sung("C", &syllable("begin", "aa")),
+            sung_rest(verses),
+            sung("D", &syllable("single", "cc")),
+        ]),
+    );
+    let r = centre(ink(&layout, "restWhole"));
+    for text in ["bb", "zz"] {
+        let (left, right) = syllable_at(&layout, text);
+        assert!(
+            ((left + right) * 0.5 - r).abs() < 0.3,
+            "{text} at {left}..{right}, its rest at {r}"
+        );
+    }
+}
+
+/// A hidden rest's syllable stays at its column, and the hyphen reaching it with it.
+#[test]
+fn a_hyphen_reaching_a_syllable_on_a_hidden_rest_stays_before_it() {
+    let hidden = format!(
+        "<note print-object=\"no\"><rest measure=\"yes\"/><duration>16</duration><voice>1</voice>{}</note>",
+        syllable("end", "ne")
+    );
+    let quarters = "<note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type></note>".repeat(4);
+    let part = |content: &[String]| {
+        content
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let head = if i == 0 { HEAD } else { "" };
+                format!("<measure number=\"{}\">{head}{c}</measure>", i + 1)
+            })
+            .collect::<String>()
+    };
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A</part-name></score-part><score-part id=\"P2\"><part-name>B</part-name></score-part></part-list><part id=\"P1\">{}</part><part id=\"P2\">{}</part></score-partwise>",
+        part(&[sung("C", &syllable("begin", "fi")), hidden, sung("D", &syllable("single", "two"))]),
+        part(&[quarters.clone(), quarters.clone(), quarters]),
+    );
+    let layout = engrave("hyphen_hidden_rest.musicxml", &xml);
+    let bar = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str() == "barlineSingle")
+        .map(|g| g.position.x.0)
+        .reduce(f32::min)
+        .expect("the first barline");
+    let (fi, ne) = (syllable_at(&layout, "fi"), syllable_at(&layout, "ne"));
+    assert!(
+        ne.0 < bar + 6.0,
+        "the syllable {ne:?} at its column after {bar}"
+    );
+    assert_hyphen_between(&lyric_lines(&layout), fi, ne);
+}

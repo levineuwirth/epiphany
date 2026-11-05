@@ -272,6 +272,11 @@ pub struct MeasureRest {
     pub slur_ends: Vec<GlyphObjectId>,
     /// The syllables standing on it.
     pub runs: Vec<GlyphObjectId>,
+    /// The hyphens and melisma lines leaving those syllables, which start where
+    /// the syllable stands.
+    pub run_lines_from: Vec<GlyphObjectId>,
+    /// The hyphens reaching them, which end where the syllable stands.
+    pub run_lines_to: Vec<GlyphObjectId>,
     /// The strokes of an ottava ending past it: its line, then its hook.
     pub line_ends: Vec<GlyphObjectId>,
 }
@@ -1495,6 +1500,8 @@ pub fn try_to_constrained(
     let mut rest_marks: Vec<(EventId, GlyphObjectId)> = Vec::new();
     let mut rest_slurs: Vec<(EventId, EventId, GlyphObjectId)> = Vec::new();
     let mut rest_runs: Vec<(EventId, GlyphObjectId)> = Vec::new();
+    let mut rest_run_lines_from: Vec<(EventId, GlyphObjectId)> = Vec::new();
+    let mut rest_run_lines_to: Vec<(EventId, GlyphObjectId)> = Vec::new();
     let mut rest_lines: Vec<(EventId, Vec<GlyphObjectId>)> = Vec::new();
     let mut line_texts: Vec<LineText> = Vec::new();
     let mut system_leads: Vec<SystemLead> = Vec::new();
@@ -4814,6 +4821,8 @@ pub fn try_to_constrained(
                                     slur_starts: Vec::new(),
                                     slur_ends: Vec::new(),
                                     runs: Vec::new(),
+                                    run_lines_from: Vec::new(),
+                                    run_lines_to: Vec::new(),
                                     line_ends: Vec::new(),
                                 });
                             }
@@ -5790,6 +5799,12 @@ pub fn try_to_constrained(
                                             info.slot,
                                             column(&key).slot,
                                         ));
+                                        rest_run_lines_from.push((lyric.event, stroke.id()));
+                                        if let (FamilyLine::Hyphen, Some((e, _))) =
+                                            (kind, lyric.next.as_ref())
+                                        {
+                                            rest_run_lines_to.push((*e, stroke.id()));
+                                        }
                                         family.push(FamilyMark {
                                             band,
                                             glyphs: Vec::new(),
@@ -7189,6 +7204,16 @@ pub fn try_to_constrained(
     for (event, run) in rest_runs {
         if let Some(&r) = measure_rest_of.get(&event) {
             measure_rests[r].runs.push(run);
+        }
+    }
+    for (event, stroke) in rest_run_lines_from {
+        if let Some(&r) = measure_rest_of.get(&event) {
+            measure_rests[r].run_lines_from.push(stroke);
+        }
+    }
+    for (event, stroke) in rest_run_lines_to {
+        if let Some(&r) = measure_rest_of.get(&event) {
+            measure_rests[r].run_lines_to.push(stroke);
         }
     }
     for (event, strokes) in rest_lines {

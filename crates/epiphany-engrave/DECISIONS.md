@@ -3903,3 +3903,29 @@ engraver's own placing reproduces it:
   members a rest does not read, so no score reaches the glyph's half. It stays, as
   the source's whole statement, pinned by an amended constrained input,
   `a_measure_rest_reads_no_glyph_of_a_repeat_structure`.
+
+## ENGRAVER_VERSION 142 → 143: a syllable carried with its rest carries its hyphen and melisma line (X5d fix round 2, 2026-11-05)
+
+- Entry 130 carried a syllable on a measure rest and nothing that follows it: a hyphen
+  stood before the syllable it follows, and a melisma line started five spaces left of
+  its word and ran under it. `MeasureRest` now names the lines leaving and reaching
+  each syllable on it, and casting moves them by the route a line's end already takes:
+  a hyphen from the syllable moves its start, a hyphen to it its end, a hyphen between
+  syllables on two rests both, and a melisma line its start. The dashes are then
+  shared out between the syllables as they stand, midway (*Behind Bars*, p. 448), and a
+  melisma line follows its word (p. 447). MuseScore's page draws both so; LilyPond
+  attaches no syllable to a rest.
+- A hidden rest's syllable stays at its column, having no glyph to ride, so its lines
+  stay too.
+- Named, not settled: a long syllable's room. A bar's width is set with the syllable at
+  its column, so a long syllable centred with its rest can overlap the next bar's
+  syllable. Its room belongs to the spacing, before any bar's width and so its middle
+  is known; a carry cut short at the neighbour would read the verse row where the
+  carry is set, and neither is a few lines.
+- `a_hyphen_stands_after_its_syllable_on_a_rest`,
+  `a_hyphen_stands_before_its_syllable_on_a_rest`,
+  `hyphens_stand_on_either_side_of_a_syllable_on_a_rest`,
+  `a_hyphen_between_syllables_on_two_rests_moves_both_its_ends`,
+  `a_melisma_line_starts_after_its_syllable_on_a_rest`,
+  `two_verses_on_a_rest_stand_together_under_it`,
+  `a_hyphen_reaching_a_syllable_on_a_hidden_rest_stays_before_it`.
