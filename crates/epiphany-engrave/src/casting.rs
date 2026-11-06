@@ -1563,8 +1563,8 @@ pub(crate) fn cast_off(
     let mut run_line_starts: Vec<(GlyphObjectId, f32)> = Vec::new();
     let mut run_line_ends: Vec<(GlyphObjectId, f32)> = Vec::new();
     // The move of a slur's first and last ends: across, each to its rest's
-    // centre, from where the system's map sets it; up or down, off a rest moved
-    // from its height.
+    // centre, from where the system's map sets it; up or down, out to stand clear
+    // of its rest's ink on the arc's side.
     let mut curve_carry: BTreeMap<GlyphObjectId, CurveCarry> = BTreeMap::new();
     let curve_index: BTreeMap<GlyphObjectId, usize> = spaced_curves
         .iter()
@@ -1882,31 +1882,33 @@ pub(crate) fn cast_off(
                 place.y + place.bounds.bottom.0,
                 place.y + place.bounds.top.0,
             );
-            // A slur's end follows a rest moved off its height, standing off the
-            // rest's ink on the arc's side (`SlurTieLayout::slurPos`).
-            if place.y != rest.y {
-                for (ids, first) in [(&rest.slur_starts, true), (&rest.slur_ends, false)] {
-                    for id in ids {
-                        let Some(&ci) = curve_index.get(id) else {
-                            continue;
-                        };
-                        let pieces = curve_pieces(ci);
-                        let piece = if first { pieces.first() } else { pieces.last() };
-                        let Some((_, cp)) = piece else {
-                            continue;
-                        };
-                        let above = cp[1].y.0 + cp[2].y.0 > cp[0].y.0 + cp[3].y.0;
-                        let edge = if above {
-                            place.y + place.bounds.top.0 + crate::rests::SLUR_OFF_REST
-                        } else {
-                            place.y + place.bounds.bottom.0 - crate::rests::SLUR_OFF_REST
-                        };
-                        let carry = curve_carry.entry(*id).or_default();
-                        if first {
-                            carry.start_y = edge - cp[0].y.0;
-                        } else {
-                            carry.end_y = edge - cp[3].y.0;
-                        }
+            // A slur's end stands at least `SLUR_OFF_REST` off its rest's ink on
+            // the arc's side, moved or not. So it follows a rest toward its arc and
+            // never away, where it would pull the arc through what sent the rest,
+            // and keeps its default height where that stands further out.
+            for (ids, first) in [(&rest.slur_starts, true), (&rest.slur_ends, false)] {
+                for id in ids {
+                    let Some(&ci) = curve_index.get(id) else {
+                        continue;
+                    };
+                    let pieces = curve_pieces(ci);
+                    let piece = if first { pieces.first() } else { pieces.last() };
+                    let Some((_, cp)) = piece else {
+                        continue;
+                    };
+                    let above = cp[1].y.0 + cp[2].y.0 > cp[0].y.0 + cp[3].y.0;
+                    let end = if first { cp[0].y.0 } else { cp[3].y.0 };
+                    let lift = if above {
+                        (place.y + place.bounds.top.0 + crate::rests::SLUR_OFF_REST - end).max(0.0)
+                    } else {
+                        (place.y + place.bounds.bottom.0 - crate::rests::SLUR_OFF_REST - end)
+                            .min(0.0)
+                    };
+                    let carry = curve_carry.entry(*id).or_default();
+                    if first {
+                        carry.start_y = lift;
+                    } else {
+                        carry.end_y = lift;
                     }
                 }
             }

@@ -1198,7 +1198,7 @@ fn a_measure_rest_reads_no_slur_of_its_own() {
     assert_eq!(y[1], y[2], "a slur's start leaves it level: {y:?}");
 }
 
-/// A slur's end follows a rest moved off its height and stands off its ink on
+/// A slur's end follows a rest moved toward its arc and stands off its ink on
 /// the arc's side, keeping its arc over the chord it now has.
 #[test]
 fn a_slurs_end_stands_off_a_rest_raised_from_its_height() {
@@ -1286,8 +1286,9 @@ fn a_slurs_end_stands_off_a_rest_lowered_from_its_height() {
     );
 }
 
-/// A rest that nothing moves leaves its slur's end where it was: over the staff,
-/// not off the rest's ink.
+/// A rest that nothing moves leaves its slur's end at its default where that
+/// already stands further from the rest than the floor: over the staff, not at
+/// the rest's ink.
 #[test]
 fn a_slurs_end_stays_on_a_rest_at_its_height() {
     let start = WHOLE.replace("</type>", &format!("</type>{}", slur_mark("start")));
@@ -1306,6 +1307,360 @@ fn a_slurs_end_stays_on_a_rest_at_its_height() {
         "the slur's end {} over the staff's top line {top}",
         c[3].y.0
     );
+}
+
+const BACK: &str = "<backup><duration>16</duration></backup>";
+
+/// A whole note on the upper of two staves, its first voice at home.
+fn upper_whole(step: &str, octave: u8, notations: &str) -> String {
+    format!("<note><pitch><step>{step}</step><octave>{octave}</octave></pitch><duration>16</duration><voice>1</voice><type>whole</type><staff>1</staff>{notations}</note>")
+}
+
+/// A whole note of the second voice, at home on the lower staff or visiting the
+/// upper, with no drawn stem.
+fn second_voice_whole(step: &str, octave: u8, staff: u8) -> String {
+    format!("<note><pitch><step>{step}</step><octave>{octave}</octave></pitch><duration>16</duration><voice>2</voice><type>whole</type><staff>{staff}</staff></note>")
+}
+
+/// A note of the second voice sounding with the last, up on the upper staff.
+fn second_voice_chord(step: &str, octave: u8) -> String {
+    second_voice_whole(step, octave, 1).replacen("<note>", "<note><chord/>", 1)
+}
+
+/// The second voice's half notes on the upper staff, stems drawn, so a rest alone
+/// beside them stays at its height.
+fn second_voice_halves(step: &str, octave: u8) -> String {
+    format!("<note><pitch><step>{step}</step><octave>{octave}</octave></pitch><duration>8</duration><voice>2</voice><type>half</type><stem>up</stem><staff>1</staff></note>").repeat(2)
+}
+
+/// A bar's first voice on the upper staff with the second voice given.
+fn upper_rest_beside(notations: &str, second_voice: &str) -> String {
+    format!("<note><rest measure=\"yes\"/><duration>16</duration><voice>1</voice><staff>1</staff>{notations}</note>{BACK}{second_voice}")
+}
+
+/// Twelve bars on two staves, narrow enough that a voice visiting the upper staff
+/// stands within a rest's reach: the bars given, the rest whole notes on each.
+fn narrow_system(bars: &[String]) -> String {
+    let attributes = "<attributes><divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type></time><staves>2</staves><clef number=\"1\"><sign>G</sign><line>2</line></clef><clef number=\"2\"><sign>F</sign><line>4</line></clef></attributes>";
+    let filler = at_home("");
+    let mut measures = String::new();
+    for k in 0..12 {
+        let first = if k == 0 { attributes } else { "" };
+        let bar = bars.get(k).unwrap_or(&filler);
+        measures += &format!("<measure number=\"{}\">{first}{bar}</measure>", k + 1);
+    }
+    single(&measures)
+}
+
+/// A bar of whole notes, one on each staff, the upper carrying what is given.
+fn at_home(notations: &str) -> String {
+    format!(
+        "{}{BACK}{}",
+        upper_whole("C", 5, notations),
+        second_voice_whole("C", 3, 2)
+    )
+}
+
+/// A slur ending on a rest alone in the second bar, from a whole note before it.
+fn slur_ending_on_rest(from: (&str, u8), second_voice: &str) -> String {
+    narrow_system(&[
+        format!(
+            "{}{BACK}{}",
+            upper_whole(from.0, from.1, &slur_mark("start")),
+            second_voice_whole("C", 3, 2)
+        ),
+        upper_rest_beside(&slur_mark("stop"), second_voice),
+    ])
+}
+
+/// A slur starting on a rest alone in the second bar, to the third bar's first note.
+fn slur_starting_on_rest(second_voice: &str, below: bool) -> String {
+    let to = if below {
+        let half = |notations: &str| {
+            format!("<note><pitch><step>E</step><octave>4</octave></pitch><duration>8</duration><voice>1</voice><type>half</type><stem>up</stem><staff>1</staff>{notations}</note>")
+        };
+        format!(
+            "{}{}{BACK}{}",
+            half(&slur_mark("stop")),
+            half(""),
+            second_voice_whole("C", 3, 2)
+        )
+    } else {
+        at_home(&slur_mark("stop"))
+    };
+    narrow_system(&[
+        at_home(""),
+        upper_rest_beside(&slur_mark("start"), second_voice),
+        to,
+    ])
+}
+
+/// The ink of each head in the second bar of the first system's upper staff, by
+/// height: left, right, bottom, top.
+fn second_bar_heads(layout: &ResolvedLayoutIR) -> Vec<(f32, f32, f32, f32)> {
+    let top = top_line(layout);
+    let mut bars: Vec<f32> = layout
+        .glyphs
+        .iter()
+        .filter(|g| g.glyph.as_str() == "barlineSingle" && g.position.y.0 > top - 10.0)
+        .map(|g| g.position.x.0)
+        .collect();
+    bars.sort_by(f32::total_cmp);
+    bars.dedup();
+    let mut heads: Vec<(f32, f32, f32, f32)> = layout
+        .glyphs
+        .iter()
+        .filter(|g| {
+            let (x, y) = (g.position.x.0, g.position.y.0);
+            g.glyph.as_str().starts_with("notehead") && x > bars[0] && x < bars[1] && y > top - 10.0
+        })
+        .map(|g| {
+            let (x, y, b) = (g.position.x.0, g.position.y.0, g.bounding_box);
+            (x + b.left.0, x + b.right.0, y + b.bottom.0, y + b.top.0)
+        })
+        .collect();
+    heads.sort_by(|a, b| a.2.total_cmp(&b.2));
+    heads
+}
+
+/// How near a curve's line comes to a box of ink: left, right, bottom, top.
+fn curve_off(c: [epiphany_layout_ir::Point; 4], ink: (f32, f32, f32, f32)) -> f32 {
+    (0..=120)
+        .map(|k| {
+            let (t, u) = (k as f32 / 120.0, 1.0 - k as f32 / 120.0);
+            let along = |p: [f32; 4]| {
+                u * u * u * p[0]
+                    + 3.0 * u * u * t * p[1]
+                    + 3.0 * u * t * t * p[2]
+                    + t * t * t * p[3]
+            };
+            let x = along(c.map(|p| p.x.0));
+            let y = along(c.map(|p| p.y.0));
+            let dx = (ink.0 - x).max(x - ink.1).max(0.0);
+            let dy = (ink.2 - y).max(y - ink.3).max(0.0);
+            (dx * dx + dy * dy).sqrt()
+        })
+        .fold(f32::INFINITY, f32::min)
+}
+
+/// The slur's end on the rest, and how far its rest stands from its height, in
+/// spaces: a rest alone on this staff hangs a space under its top line.
+fn end_on_rest(layout: &ResolvedLayoutIR, ending: bool) -> (f32, f32) {
+    let c = layout.curves[0].control_points();
+    (
+        if ending { c[3].y.0 } else { c[0].y.0 },
+        rest_at(layout).1 - top_line(layout) + 1.0,
+    )
+}
+
+/// A rest sent down from its slur's arc leaves the slur's end at its default, over
+/// the head that sent it, where following the rest would pull the arc through that
+/// head. The end stands far more than the floor off the rest.
+#[test]
+fn a_slurs_end_keeps_its_default_off_a_rest_sent_down_from_its_arc() {
+    let beside = second_voice_whole("F", 5, 1);
+    for (name, ending, xml) in [
+        (
+            "floor_down_end.musicxml",
+            true,
+            slur_ending_on_rest(("C", 5), &beside),
+        ),
+        (
+            "floor_down_start.musicxml",
+            false,
+            slur_starting_on_rest(&beside, false),
+        ),
+    ] {
+        let layout = engrave(name, &xml);
+        let (end, moved) = end_on_rest(&layout, ending);
+        assert_eq!(moved, -1.0, "{name}: the head sends the rest a space down");
+        let c = layout.curves[0].control_points();
+        assert!(c[1].y.0 > c[0].y.0, "{name}: its arc above");
+        let head = second_bar_heads(&layout)[0];
+        assert!(
+            (end - (head.3 + 0.7)).abs() < 1e-3,
+            "{name}: its end {end} at its default over the head's top {}",
+            head.3
+        );
+        let rest = ink(&layout, "rest");
+        assert!(
+            end - rest.3 > 0.9,
+            "{name}: its end {end} further out than the floor over the rest's top {}",
+            rest.3
+        );
+        let off = curve_off(c, head);
+        assert!(off > 1.0, "{name}: the arc {off} clear of the head");
+    }
+}
+
+/// And its mirror: a rest sent up from an arc below keeps the end at its default,
+/// under the head that sent it. An import reaches it both ways, a note's stem turning
+/// the arc under.
+#[test]
+fn a_slurs_end_keeps_its_default_off_a_rest_sent_up_from_its_arc() {
+    let beside = second_voice_whole("A", 4, 1);
+    for (name, ending, xml) in [
+        (
+            "floor_up_end.musicxml",
+            true,
+            slur_ending_on_rest(("E", 4), &beside),
+        ),
+        (
+            "floor_up_start.musicxml",
+            false,
+            slur_starting_on_rest(&beside, true),
+        ),
+    ] {
+        let layout = engrave(name, &xml);
+        let (end, moved) = end_on_rest(&layout, ending);
+        assert_eq!(moved, 1.0, "{name}: the head sends the rest a space up");
+        let c = layout.curves[0].control_points();
+        assert!(c[1].y.0 < c[0].y.0, "{name}: its arc below");
+        let head = second_bar_heads(&layout)[0];
+        assert!(
+            (end - (head.2 - 0.7)).abs() < 1e-3,
+            "{name}: its end {end} at its default under the head's bottom {}",
+            head.2
+        );
+        let rest = ink(&layout, "rest");
+        assert!(
+            rest.2 - end > 0.9,
+            "{name}: its end {end} further out than the floor under the rest's bottom {}",
+            rest.2
+        );
+        let off = curve_off(c, head);
+        assert!(off > 1.0, "{name}: the arc {off} clear of the head");
+    }
+}
+
+/// A rest nothing moved still holds its slur's end off its ink: the default reads
+/// the column's heads and can stand on the rest, where the floor lifts it.
+#[test]
+fn a_slurs_end_stands_off_a_rest_nothing_moved_from_an_arc_above() {
+    let beside = second_voice_halves("G", 4);
+    for (name, ending, xml) in [
+        (
+            "floor_unmoved_end.musicxml",
+            true,
+            slur_ending_on_rest(("C", 5), &beside),
+        ),
+        (
+            "floor_unmoved_start.musicxml",
+            false,
+            slur_starting_on_rest(&beside, false),
+        ),
+    ] {
+        let layout = engrave(name, &xml);
+        let (end, moved) = end_on_rest(&layout, ending);
+        assert_eq!(moved, 0.0, "{name}: nothing moves the rest");
+        let c = layout.curves[0].control_points();
+        assert!(c[1].y.0 > c[0].y.0, "{name}: its arc above");
+        let rest = ink(&layout, "rest");
+        assert!(
+            (end - (rest.3 + 0.9)).abs() < 1e-3,
+            "{name}: its end {end} off the rest's top {}",
+            rest.3
+        );
+    }
+}
+
+/// And under an arc below, a head high over the rest setting the default on the
+/// rest's far side: the floor brings the end round under it.
+#[test]
+fn a_slurs_end_stands_off_a_rest_nothing_moved_from_an_arc_below() {
+    let beside = second_voice_whole("C", 6, 1);
+    for (name, ending, xml) in [
+        (
+            "floor_unmoved_below_end.musicxml",
+            true,
+            slur_ending_on_rest(("E", 4), &beside),
+        ),
+        (
+            "floor_unmoved_below_start.musicxml",
+            false,
+            slur_starting_on_rest(&beside, true),
+        ),
+    ] {
+        let layout = engrave(name, &xml);
+        let (end, moved) = end_on_rest(&layout, ending);
+        assert_eq!(moved, 0.0, "{name}: nothing moves the rest");
+        let c = layout.curves[0].control_points();
+        assert!(
+            c[1].y.0 + c[2].y.0 < c[0].y.0 + c[3].y.0,
+            "{name}: its arc below"
+        );
+        let rest = ink(&layout, "rest");
+        assert!(
+            (end - (rest.2 - 0.9)).abs() < 1e-3,
+            "{name}: its end {end} off the rest's bottom {}",
+            rest.2
+        );
+    }
+}
+
+/// A rest moved toward its arc takes the end along only as far as the floor: a head
+/// beyond it holds the default further out, and the end keeps that, where drawing it
+/// in to the rest would run the arc through that head.
+#[test]
+fn a_slurs_end_keeps_a_default_further_out_than_a_rest_moved_toward_its_arc() {
+    let over = format!(
+        "{}{}",
+        second_voice_whole("A", 4, 1),
+        second_voice_chord("D", 6)
+    );
+    let under = format!(
+        "{}{}",
+        second_voice_whole("C", 4, 1),
+        second_voice_chord("F", 5)
+    );
+    for (name, ending, xml, up, moved_by) in [
+        (
+            "floor_toward_up_end.musicxml",
+            true,
+            slur_ending_on_rest(("C", 5), &over),
+            true,
+            1.0,
+        ),
+        (
+            "floor_toward_up_start.musicxml",
+            false,
+            slur_starting_on_rest(&over, false),
+            true,
+            1.0,
+        ),
+        (
+            "floor_toward_down_end.musicxml",
+            true,
+            slur_ending_on_rest(("E", 4), &under),
+            false,
+            -1.0,
+        ),
+        (
+            "floor_toward_down_start.musicxml",
+            false,
+            slur_starting_on_rest(&under, true),
+            false,
+            -1.0,
+        ),
+    ] {
+        let layout = engrave(name, &xml);
+        let (end, moved) = end_on_rest(&layout, ending);
+        assert_eq!(moved, moved_by, "{name}: the near head moves the rest");
+        let heads = second_bar_heads(&layout);
+        let c = layout.curves[0].control_points();
+        let (head, default) = if up {
+            let h = heads[heads.len() - 1];
+            (h, h.3 + 0.7)
+        } else {
+            (heads[0], heads[0].2 - 0.7)
+        };
+        assert!(
+            (end - default).abs() < 1e-3,
+            "{name}: its end {end} at its default {default}"
+        );
+        let off = curve_off(c, head);
+        assert!(off > 0.7, "{name}: the arc {off} clear of the far head");
+    }
 }
 
 /// A rest under another's slur reads it where it is drawn: up, so one a raised

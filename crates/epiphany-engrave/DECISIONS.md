@@ -3990,3 +3990,40 @@ engraver's own placing reproduces it:
 - `RestInk::within`'s zero-width branch stays, no guard against an impossible case: a
   stroke's edges stand a thickness apart, but a curve's chord has no thickness, so an
   upright chord reaches it (`an_upright_chord_reads_at_its_first_end`).
+
+## ENGRAVER_VERSION 144 → 145: a slur's end stands at least 0.9 off its rest, moved or not (X5d fix round 3, 2026-11-06)
+
+- Amends entry 141, "a measure rest reads no slur of its own, and a slur's end follows
+  it". There an end on a rest moved off its height stood exactly 0.9 off the rest's ink on
+  the arc's side, whichever way the rest went, and an end on a rest nothing moved stayed at
+  its default whatever that stood on.
+- Now an end stands at least 0.9 off its rest's ink on the arc's side, moved or not. It
+  follows a rest toward its arc and never away, and it keeps its default height where that
+  already stands further out. The default reads the heads of its column on the arc's side,
+  so it is where the arc clears them, and the floor makes it clear the rest too.
+- Three shapes the old rule drew wrong. A rest alone sent away from its arc by a stemless
+  head: the end followed it inside the staff and pulled the arc through that head, each way.
+  A rest moved toward its arc with a head further out in its column: the end was drawn in to
+  the rest and the arc ran through that head, each way. A rest nothing moved: a default
+  reading another voice's head could stand on the rest, under an arc above, or on the rest's
+  far side, under an arc below.
+- Gould is silent on a slur from a rest; of a head, an end may stand as near as half a space
+  from its centre, and with room to spare a slur keeps further off (pp. 110-111). The figure
+  stays MuseScore's, where it is an end's first place, read off the rest's box alone
+  (`SlurTieLayout::slurPos`): `adjustEndPoints` takes it off a staff line and `avoidCollisions`
+  lifts it from what the arc meets, each further out. So MuseScore's page also stands an end at
+  least that far off, up to 2.2, by a rest no visitor moves, while its arc can pass a head
+  further out by a quarter of a space or cross that head's ledger line; this engraver's default
+  clears both. LilyPond's `slur-scoring.cc` reads a rest in its column as the head an end stands
+  on. The floor over the default is this engraver's, under D99.
+- Named, not settled. The floor reads the end's height and not the arc's: on a short piece over
+  a break, climbing steeply to its end, the line passes the rest's corner nearer than the end
+  stands. A fermata over the rest stands clear of the end as it always has, so it rises with a
+  default further out and stands further from its rest. A slur between staves draws no curve
+  (`a_cross_staff_slur_keeps_its_anchor_rather_than_floating`), so a lift reads one staff.
+- `a_slurs_end_keeps_its_default_off_a_rest_sent_down_from_its_arc` and its `_sent_up_` mirror,
+  which an import reaches, a note's stem turning the arc under;
+  `a_slurs_end_stands_off_a_rest_nothing_moved_from_an_arc_above` and `_below`;
+  `a_slurs_end_keeps_a_default_further_out_than_a_rest_moved_toward_its_arc`. Each an end and a
+  start. Entry 141's `a_slurs_end_stands_off_a_rest_raised_from_its_height`, its lowered mirror
+  and `a_slurs_end_stays_on_a_rest_at_its_height` hold what stays.
