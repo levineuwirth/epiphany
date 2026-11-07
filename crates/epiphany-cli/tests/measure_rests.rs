@@ -1663,6 +1663,319 @@ fn a_slurs_end_keeps_a_default_further_out_than_a_rest_moved_toward_its_arc() {
     }
 }
 
+/// A whole note carrying one numbered slur's mark.
+fn whole_with_slur(step: &str, kind: &str, number: u8) -> String {
+    WHOLE
+        .replace("<step>C</step>", &format!("<step>{step}</step>"))
+        .replace(
+            "</type>",
+            &format!("</type><notations><slur type=\"{kind}\" number=\"{number}\"/></notations>"),
+        )
+}
+
+/// Two slurs' marks of one kind on one rest.
+fn two_slur_marks(kind: &str) -> String {
+    format!("<notations><slur type=\"{kind}\" number=\"1\"/><slur type=\"{kind}\" number=\"2\"/></notations>")
+}
+
+/// Both of a rest's slurs at its centre and at the floor off its top, with the rest
+/// where the same bar without them leaves it: each list is read whole, not by its
+/// first. `at` reads the end on the rest from a curve's control points.
+fn assert_both_slurs_stand_off_the_rest(
+    layout: &ResolvedLayoutIR,
+    plain: &ResolvedLayoutIR,
+    at: impl Fn(&[epiphany_layout_ir::Point; 4]) -> epiphany_layout_ir::Point,
+) {
+    let height = |l: &ResolvedLayoutIR| rest_at(l).1 - top_line(l);
+    assert!(
+        height(plain) + 1.0 > 0.0,
+        "another voice raises the rest from its height: {}",
+        height(plain)
+    );
+    assert!(
+        (height(layout) - height(plain)).abs() < 1e-3,
+        "the rest reads neither slur: {} against {}",
+        height(layout),
+        height(plain)
+    );
+    let rest = ink(layout, "rest");
+    assert_eq!(layout.curves.len(), 2, "both slurs drawn");
+    for curve in &layout.curves {
+        let c = curve.control_points();
+        let end = at(&c);
+        assert!(c[1].y.0 + c[2].y.0 > c[0].y.0 + c[3].y.0, "its arc above");
+        assert!(
+            (end.y.0 - (rest.3 + 0.9)).abs() < 1e-3,
+            "its end {} off the rest's top {}",
+            end.y.0,
+            rest.3
+        );
+        assert!(
+            (end.x.0 - centre(rest)).abs() < 1e-3,
+            "its end {} at the rest's centre {}",
+            end.x.0,
+            centre(rest)
+        );
+    }
+}
+
+/// Two slurs ending on one rest moved from its height: each stands off it and at
+/// its centre, the second as much as the first.
+#[test]
+fn two_slurs_ending_on_a_rest_moved_from_its_height_both_stand_off_it() {
+    let xml = |first: String, second: String, marks: &str| {
+        single(&format!(
+            "<measure number=\"1\">{HEAD}{first}</measure><measure number=\"2\">{second}</measure><measure number=\"3\">{}</measure><measure number=\"4\">{WHOLE}</measure>",
+            raised_rest(1, marks, "C", 6)
+        ))
+    };
+    let d5 = WHOLE.replace("<step>C</step>", "<step>D</step>");
+    assert_both_slurs_stand_off_the_rest(
+        &engrave(
+            "two_slur_ends.musicxml",
+            &xml(
+                whole_with_slur("C", "start", 1),
+                whole_with_slur("D", "start", 2),
+                &two_slur_marks("stop"),
+            ),
+        ),
+        &engrave(
+            "two_slur_ends_plain.musicxml",
+            &xml(WHOLE.to_string(), d5, ""),
+        ),
+        |c| c[3],
+    );
+}
+
+/// And two starting on one rest, each to its own note.
+#[test]
+fn two_slurs_starting_on_a_rest_moved_from_its_height_both_stand_off_it() {
+    let xml = |first: String, second: String, marks: &str| {
+        single(&format!(
+            "<measure number=\"1\">{HEAD}{WHOLE}</measure><measure number=\"2\">{}</measure><measure number=\"3\">{first}</measure><measure number=\"4\">{second}</measure>",
+            raised_rest(1, marks, "C", 6)
+        ))
+    };
+    let d5 = WHOLE.replace("<step>C</step>", "<step>D</step>");
+    assert_both_slurs_stand_off_the_rest(
+        &engrave(
+            "two_slur_starts.musicxml",
+            &xml(
+                whole_with_slur("D", "stop", 1),
+                whole_with_slur("C", "stop", 2),
+                &two_slur_marks("start"),
+            ),
+        ),
+        &engrave(
+            "two_slur_starts_plain.musicxml",
+            &xml(d5, WHOLE.to_string(), ""),
+        ),
+        |c| c[0],
+    );
+}
+
+/// The layout drawn, and each piece of a slur as first set, the rests amended to name
+/// none. What a carry leaves of a piece's side reads on the drawn one; how steep a
+/// piece stands before its rest moves it reads on this one.
+fn drawn_and_first_set(
+    name: &str,
+    xml: &str,
+) -> (ResolvedLayoutIR, Vec<[epiphany_layout_ir::Point; 4]>) {
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let mut constrained = to_constrained(&to_logical(&loaded.reduced.score));
+    let solve = |c: &epiphany_layout_ir::ConstrainedLayoutIR| {
+        Engraver::with_geometry(PageGeometry::default())
+            .solve(c, &SolverConfig::default())
+            .layout
+    };
+    let drawn = solve(&constrained);
+    for rest in &mut constrained.measure_rests {
+        rest.slur_starts.clear();
+        rest.slur_ends.clear();
+    }
+    let first_set = solve(&constrained)
+        .curves
+        .iter()
+        .map(|c| c.control_points())
+        .collect();
+    (drawn, first_set)
+}
+
+/// A note of the given length, in the given voice.
+fn voiced(step: &str, octave: u8, voice: u8, length: (&str, u8), notations: &str) -> String {
+    format!(
+        "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch><duration>{}</duration><voice>{voice}</voice><type>{}</type>{notations}</note>",
+        length.1, length.0
+    )
+}
+
+const QUARTER: (&str, u8) = ("quarter", 4);
+
+/// A slur climbing steeply from a low note to a rest raised over the staff keeps its
+/// arc above, though its climb outruns that arc by the rest, and so its end stands off
+/// the rest's top: the side reads the whole curve, not the control point beside the end.
+#[test]
+fn a_slur_climbing_steeply_to_a_raised_rest_stands_over_it() {
+    let c5 = voiced("C", 5, 1, QUARTER, "");
+    for (name, other) in [
+        ("steep_climb_e6.musicxml", "E"),
+        ("steep_climb_g6.musicxml", "G"),
+    ] {
+        let (drawn, first_set) = drawn_and_first_set(
+            name,
+            &single(&format!(
+                "<measure number=\"1\">{HEAD}{c5}{c5}{c5}{}</measure><measure number=\"2\">{}</measure><measure number=\"3\">{WHOLE}</measure>",
+                voiced("A", 3, 1, QUARTER, &slur_mark("start")),
+                raised_rest(1, &slur_mark("stop"), other, 6),
+            )),
+        );
+        let set = first_set[0];
+        assert!(
+            set[1].y.0 + set[2].y.0 > set[0].y.0 + set[3].y.0,
+            "{name}: its arc above"
+        );
+        assert!(
+            set[2].y.0 < set[3].y.0,
+            "{name}: its climb outruns its arc by the rest: {} and {}",
+            set[2].y.0,
+            set[3].y.0
+        );
+        let rest = ink(&drawn, "rest");
+        assert!(rest.2 > top_line(&drawn), "{name}: the rest over the staff");
+        let end = drawn.curves[0].control_points()[3].y.0;
+        assert!(
+            (end - (rest.3 + 0.9)).abs() < 1e-3,
+            "{name}: its end {end} off the rest's top {}",
+            rest.3
+        );
+    }
+}
+
+/// And over a break: the piece reaching the rest, climbing to it from the system's
+/// opening with almost no arc of its own, keeps that arc above.
+#[test]
+fn a_slur_climbing_over_a_break_to_a_raised_rest_stands_over_it() {
+    let by_system = |mut pieces: Vec<[epiphany_layout_ir::Point; 4]>| {
+        assert_eq!(pieces.len(), 2, "two pieces");
+        pieces.sort_by(|a, b| b[0].y.0.total_cmp(&a[0].y.0));
+        pieces
+    };
+    let (drawn, first_set) = drawn_and_first_set(
+        "steep_climb_break.musicxml",
+        &single(&format!(
+            "<measure number=\"1\">{HEAD}{}</measure><measure number=\"2\"><print new-system=\"yes\"/>{}</measure><measure number=\"3\">{WHOLE}</measure>",
+            voiced("A", 3, 1, ("whole", 16), &slur_mark("start")),
+            raised_rest(1, &slur_mark("stop"), "G", 6),
+        )),
+    );
+    let set = by_system(first_set)[1];
+    assert!(
+        set[1].y.0 + set[2].y.0 > set[0].y.0 + set[3].y.0,
+        "its arc above"
+    );
+    assert!(
+        set[2].y.0 < set[3].y.0,
+        "its climb outruns its arc by the rest: {} and {}",
+        set[2].y.0,
+        set[3].y.0
+    );
+    let rest = ink(&drawn, "rest");
+    let piece = by_system(drawn.curves.iter().map(|c| c.control_points()).collect())[1];
+    assert!(
+        (piece[3].y.0 - (rest.3 + 0.9)).abs() < 1e-3,
+        "its end {} off the rest's top {}",
+        piece[3].y.0,
+        rest.3
+    );
+}
+
+/// A slur falling steeply from a raised rest to a low note keeps its arc above, though
+/// its fall outruns that arc by the rest, and so its start stays at its default over the
+/// higher head of the rest's bar. Only a head standing well over the one that raises the
+/// rest lets the fall outrun the arc, so the default is further out than the floor here.
+#[test]
+fn a_slur_falling_steeply_from_a_raised_rest_keeps_its_default_over_it() {
+    let half = ("half", 8);
+    let beside = format!(
+        "{}{}",
+        voiced("C", 7, 2, half, "<staff>1</staff>"),
+        voiced("E", 6, 2, half, "<staff>1</staff>")
+    );
+    let (drawn, first_set) = drawn_and_first_set(
+        "steep_fall_start.musicxml",
+        &narrow_system(&[
+            at_home(""),
+            upper_rest_beside(&slur_mark("start"), &beside),
+            format!(
+                "{}{BACK}{}",
+                upper_whole("A", 3, &slur_mark("stop")),
+                second_voice_whole("C", 3, 2)
+            ),
+        ]),
+    );
+    let set = first_set[0];
+    assert!(
+        set[1].y.0 + set[2].y.0 > set[0].y.0 + set[3].y.0,
+        "its arc above"
+    );
+    assert!(
+        set[1].y.0 < set[0].y.0,
+        "its fall outruns its arc by the rest: {} and {}",
+        set[1].y.0,
+        set[0].y.0
+    );
+    let rest = ink(&drawn, "rest");
+    assert!(rest.2 > top_line(&drawn), "the rest over the staff");
+    let heads = second_bar_heads(&drawn);
+    let start = drawn.curves[0].control_points()[0].y.0;
+    let default = heads[heads.len() - 1].3 + 0.7;
+    assert!(
+        (start - default).abs() < 1e-3,
+        "its start {start} at its default {default}"
+    );
+    assert!(
+        start - rest.3 > 0.9,
+        "its start {start} further out than the floor over the rest's top {}",
+        rest.3
+    );
+}
+
+/// And the climb's mirror: a lower voice's slur falling steeply to a rest lowered under
+/// the staff keeps its arc below, and its end stands off the rest's bottom.
+#[test]
+fn a_slur_falling_steeply_to_a_lowered_rest_stands_under_it() {
+    let e4 = voiced("E", 4, 2, QUARTER, "");
+    let (drawn, first_set) = drawn_and_first_set(
+        "steep_fall_end.musicxml",
+        &single(&format!(
+            "<measure number=\"1\">{HEAD}{e4}{e4}{e4}{}</measure><measure number=\"2\">{}</measure><measure number=\"3\">{WHOLE}</measure>",
+            voiced("E", 6, 2, QUARTER, &slur_mark("start")),
+            raised_rest(2, &slur_mark("stop"), "A", 3),
+        )),
+    );
+    let set = first_set[0];
+    assert!(
+        set[1].y.0 + set[2].y.0 < set[0].y.0 + set[3].y.0,
+        "its arc below"
+    );
+    assert!(
+        set[2].y.0 > set[3].y.0,
+        "its fall outruns its arc by the rest: {} and {}",
+        set[2].y.0,
+        set[3].y.0
+    );
+    let rest = ink(&drawn, "rest");
+    assert!(rest.3 < top_line(&drawn) - 4.0, "the rest under the staff");
+    let end = drawn.curves[0].control_points()[3].y.0;
+    assert!(
+        (end - (rest.2 - 0.9)).abs() < 1e-3,
+        "its end {end} off the rest's bottom {}",
+        rest.2
+    );
+}
+
 /// A rest under another's slur reads it where it is drawn: up, so one a raised
 /// rest carries over it stands clear over it and leaves it level with that rest,
 /// where the arc as first set runs through its next height.

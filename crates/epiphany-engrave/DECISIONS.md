@@ -4016,11 +4016,13 @@ engraver's own placing reproduces it:
   further out by a quarter of a space or cross that head's ledger line; this engraver's default
   clears both. LilyPond's `slur-scoring.cc` reads a rest in its column as the head an end stands
   on. The floor over the default is this engraver's, under D99.
-- Named, not settled. The floor reads the end's height and not the arc's: on a short piece over
-  a break, climbing steeply to its end, the line passes the rest's corner nearer than the end
-  stands. A fermata over the rest stands clear of the end as it always has, so it rises with a
-  default further out and stands further from its rest. A slur between staves draws no curve
-  (`a_cross_staff_slur_keeps_its_anchor_rather_than_floating`), so a lift reads one staff.
+- Named, not settled. The floor reads a rest filling its measure and no other, so an end on a
+  shorter rest keeps its default, as it did before this phase, which beside another voice can
+  stand on the rest's far side. The floor reads the end's height and not the arc's: on a short
+  piece over a break, climbing steeply to its end, the line passes the rest's corner nearer than
+  the end stands. A fermata over the rest stands clear of the end as it always has, so it rises
+  with a default further out and stands further from its rest. A slur between staves draws no
+  curve (`a_cross_staff_slur_keeps_its_anchor_rather_than_floating`), so a lift reads one staff.
 - `a_slurs_end_keeps_its_default_off_a_rest_sent_down_from_its_arc` and its `_sent_up_` mirror,
   which an import reaches, a note's stem turning the arc under;
   `a_slurs_end_stands_off_a_rest_nothing_moved_from_an_arc_above` and `_below`;
