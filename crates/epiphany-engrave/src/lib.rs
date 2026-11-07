@@ -76,7 +76,9 @@ pub mod casting;
 mod clearance;
 mod family;
 mod quality;
+mod rests;
 mod spacing;
+mod vertical;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -360,7 +362,7 @@ pub struct Engraver {
 /// when the resolved layout began carrying shaped text runs, a fourth
 /// primitive each riding its slot and joining its staff's extent, whose count
 /// enters every layout's canonical bytes though no score yet draws one.
-pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(122);
+pub const ENGRAVER_VERSION: SolverVersion = SolverVersion(145);
 
 /// The decision a solver reports for each glissando its system sets too
 /// short for its notes, shorter than its line is thick or turned back, which
@@ -512,6 +514,19 @@ impl Engraver {
                 )),
                 affected_objects: added.opens.into_iter().collect(),
                 message: "system added within the score's breaks".to_owned(),
+            });
+        }
+        // Each system whose ink its paper cannot hold, named with how far it
+        // passes the paper, not squeezed (D109 Q5).
+        for overfull in cast.iter().flat_map(|cast| &cast.overfull) {
+            warnings.push(SolverWarning {
+                kind: SolverWarningKind::UnusualLayoutDecision(format!(
+                    "a system taller than its page: its ink passes the paper by {:.2} \
+                     staff spaces",
+                    overfull.past
+                )),
+                affected_objects: overfull.opens.into_iter().collect(),
+                message: "system taller than its page".to_owned(),
             });
         }
         // Each glissando the cast page leaves too short for its notes, left
@@ -1228,7 +1243,12 @@ mod tests {
         // threshold column (the fixture's three regions each cast onto a
         // single system, so the break-family axes degenerate to exactly 0.0
         // under the vacuous-geometry rule).
-        let report = Engraver::default().solve(&fixture(), &SolverConfig::default());
+        // On a page of no height, which nothing spreads: a spread page trades
+        // the vertical axis for page fill (`req:qmc:vertical`), and this
+        // fixture's one sparse page would spend that trade on sprawl.
+        let mut geometry = PageGeometry::default();
+        geometry.size.height = epiphany_layout_ir::StaffSpace(0.0);
+        let report = Engraver::with_geometry(geometry).solve(&fixture(), &SolverConfig::default());
         assert_ne!(report.metric_vector, QualityMetricVector::unmeasured());
         assert_eq!(report.metric_vector.collision_penalty.0, 0.0);
         for kind in QUALITY_METRIC_KINDS {
@@ -1283,6 +1303,7 @@ mod tests {
                     manifested(
                         TypedObjectId::StaffInstance(StaffInstanceId::from_raw(1)),
                         LayoutContent::Staff(StaffContent {
+                            lines: 5,
                             default_clef: epiphany_core::Clef::default(),
                             clefs: vec![],
                             keys: vec![],
@@ -1738,6 +1759,7 @@ mod tests {
         let mut objects = vec![manifested(
             TypedObjectId::StaffInstance(StaffInstanceId::from_raw(1)),
             LayoutContent::Staff(StaffContent {
+                lines: 5,
                 default_clef: epiphany_core::Clef::default(),
                 clefs: vec![],
                 keys: vec![],
@@ -2262,6 +2284,7 @@ mod tests {
                     manifested(
                         TypedObjectId::StaffInstance(StaffInstanceId::from_raw(1)),
                         LayoutContent::Staff(StaffContent {
+                            lines: 5,
                             default_clef: epiphany_core::Clef::default(),
                             clefs: vec![],
                             keys: vec![PlacedKeySignature {
@@ -2712,11 +2735,14 @@ mod tests {
         let geometry = engraver.geometry();
         let page2_content_top =
             -(geometry.size.height.0 + crate::INTER_PAGE_GAP) - geometry.margins.top.0;
+        // The fixture draws no staff lines, so its ink's top stands for its
+        // first staff's top line: the page's border below the top margin
+        // (D109 Q4).
         let system2 = &report.layout.pages[1].systems[0];
         let system2_top = system2.bounding_box.origin.y.0 + system2.bounding_box.size.height.0;
         assert!(
-            (system2_top - page2_content_top).abs() < 1e-3,
-            "page 2's first system starts at page 2's content top \
+            (system2_top - (page2_content_top - crate::vertical::PAGE_BORDER)).abs() < 1e-3,
+            "page 2's first system stands the border below its content top \
              ({system2_top} vs {page2_content_top})"
         );
         assert!(report
@@ -2725,29 +2751,6 @@ mod tests {
             .iter()
             .any(|d| d.kind == EngravingDecisionKind::PageBreak
                 && d.source == DecisionSource::Automatic));
-    }
-
-    #[test]
-    fn vertical_stacking_respects_the_inter_system_gap() {
-        use epiphany_layout_ir::{VerticalBand, VerticalBandId};
-        let report =
-            Engraver::default().solve(&ten_measure_constrained(), &SolverConfig::default());
-        let systems = &report.layout.pages[0].systems;
-        assert!(systems.len() >= 2);
-        // The gap between consecutive systems' real extents is exactly the
-        // vertical-band model's preferred inter-system gap.
-        let preferred = VerticalBand::inter_system_gap(VerticalBandId(0))
-            .preferred_height
-            .0;
-        for pair in systems.windows(2) {
-            let upper_bottom = pair[0].bounding_box.origin.y.0;
-            let lower_top = pair[1].bounding_box.origin.y.0 + pair[1].bounding_box.size.height.0;
-            let gap = upper_bottom - lower_top;
-            assert!(
-                (gap - preferred).abs() < 1e-3,
-                "inter-system gap {gap} != preferred {preferred}"
-            );
-        }
     }
 
     #[test]
@@ -2920,12 +2923,16 @@ mod tests {
     /// The solve sizes each system's gaps from that system's own content, so one
     /// region's systems end up at genuinely different staff distances: the system
     /// carrying the colliding first measure opens wide, the slack one after it is
-    /// pulled CLOSER than the constrained stage's fixed pitch. Two-sided
-    /// renegotiation is what makes the second half of that sentence true.
+    /// pulled CLOSER than the constrained stage's fixed pitch, to the floor.
+    /// Two-sided renegotiation is what makes the second half of that sentence
+    /// true.
     #[test]
     fn each_system_solves_its_own_staff_distance() {
         use epiphany_layout_ir::{to_constrained, to_logical};
-        let report = Engraver::default().solve(
+        // On a page of no height, which nothing spreads.
+        let mut geometry = PageGeometry::default();
+        geometry.size.height = epiphany_layout_ir::StaffSpace(0.0);
+        let report = Engraver::with_geometry(geometry).solve(
             &to_constrained(&to_logical(
                 &epiphany_testkit::fixtures::two_staff_wrapping_pressure(1),
             )),
@@ -2944,26 +2951,22 @@ mod tests {
         };
         let (first, second) = (pitch(systems[0]), pitch(systems[1]));
         assert!(
-            first > second + 7.5,
+            first > second + 7.0,
             "the pressured system opens far wider: {first} vs {second}"
         );
         // The slack system is pulled to exactly what its own content needs:
         // its notes sit inside the staves, so its tallest ink is its lead's
         // treble clefs, reaching above the lower staff and below the upper,
-        // and the solve leaves the band's preferred gap between them, whether
-        // that is wider or narrower than the constrained stage's fixed pitch.
+        // and those keep the clearance at less than the floor, so the floor
+        // sets the staves, nearer than the constrained stage's fixed pitch.
         let clef = epiphany_layout_ir::metrics("gClef")
             .expect("bundled")
             .bounding_box();
-        let (above, below) = (1.0 + clef.top.0, -(1.0 + clef.bottom.0));
-        let gap = epiphany_layout_ir::VerticalBand::inter_staff_gap(
-            epiphany_layout_ir::VerticalBandId(0),
-        )
-        .preferred_height
-        .0;
+        let (above, below) = (1.0 + clef.top.0 - 4.0, -(1.0 + clef.bottom.0));
+        assert!(above + below + crate::vertical::INK_CLEARANCE < crate::vertical::STAFF_FLOOR);
         assert!(
-            (second - (above + below + gap)).abs() < 1e-3,
-            "the slack system realizes its own clefs' clearance: {second}"
+            (second - (4.0 + crate::vertical::STAFF_FLOOR)).abs() < 1e-3,
+            "the slack system stands its staves the floor apart: {second}"
         );
         assert_eq!(report.metric_vector.collision_penalty.0, 0.0);
     }
@@ -2984,40 +2987,19 @@ mod tests {
         let sys = &report.layout.pages[0].systems[0];
         assert_eq!(sys.staves.len(), 2, "two staves in the system");
         // Staff records are top-first; the gap between the two staves' staff-line
-        // boxes now exceeds the fixed inter-staff pitch (12 staff spaces), where
-        // under fixed stacking it is ~8 — the solve opened room for the colliding
-        // ledgers and slur (their content clears with margin to spare).
+        // boxes now exceeds the fixed inter-staff pitch's 8 and the floor, the
+        // solve having opened room for the colliding ledgers and slur in the
+        // column where they meet (`vertical::solve_tests` reads that column's
+        // clearance back).
         let (top, bottom) = (&sys.staves[0].bounding_box, &sys.staves[1].bounding_box);
         let gap = top.origin.y.0 - (bottom.origin.y.0 + bottom.size.height.0);
         assert!(
-            gap > 12.0,
+            gap > 8.0,
             "the colliding staves separate: staff-line gap {gap}"
         );
         assert_eq!(
             report.metric_vector.collision_penalty.0, 0.0,
             "the separated staves collide nowhere"
-        );
-        // A correctly separated system scores ~0 on the deviation-from-preferred
-        // axis: the solve expands each gap until the staves' CONTENT clears the
-        // declared `InterStaffGap` band's preferred height, and the metric reads
-        // that same declared band against the same content. It used to saturate
-        // at 1.0 here -- the metric measured the gap between the staves' *glyph*
-        // ink while the solve targeted their full content, so the ledger and slur
-        // ink the solve had correctly accounted for was rescored as crowding, and
-        // a Standard-tier floor warning fired on a correct layout.
-        let density = report.metric_vector.vertical_density_penalty.0;
-        assert!(
-            density < 1e-4,
-            "a correctly separated system deviates from its declared gap by ~0: {density}"
-        );
-        assert!(
-            !report.warnings.iter().any(|w| matches!(
-                w.kind,
-                epiphany_layout_ir::SolverWarningKind::QualityFloorApproached {
-                    metric: epiphany_layout_ir::QualityMetricKind::VerticalDensity
-                }
-            )),
-            "and earns no vertical-density floor warning"
         );
         // A no-pressure single-staff score has no inter-staff pair, so it is
         // untouched — its goldens stay byte-stable (see the render-svg suite).
@@ -3085,13 +3067,14 @@ mod tests {
             "the bottom staff inherits the shift above it: s1={s1} s2={s2}"
         );
 
-        // Every adjacent pair ends up clear of the fixed pitch, and nothing
-        // collides — the invariant a broken cascade destroys for the lower pair.
+        // Every adjacent pair ends up past the fixed pitch's 8, and nothing
+        // collides — the invariant a broken cascade destroys for the lower pair
+        // (`vertical::solve_tests` reads each pair's clearance back).
         for i in 0..2 {
             let (upper, lower) = (&sys.staves[i].bounding_box, &sys.staves[i + 1].bounding_box);
             let gap = upper.origin.y.0 - (lower.origin.y.0 + lower.size.height.0);
             assert!(
-                gap > 12.0,
+                gap > 8.0,
                 "staves {i}/{} separate: staff-line gap {gap}",
                 i + 1
             );
@@ -3127,23 +3110,42 @@ mod tests {
         // Its endpoints now hug the C6 noteheads, three ledger lines above that
         // staff's top line, so the gap to the staff-line box is a few spaces —
         // not the fixed 0.7 of a staff-relative endpoint. What matters is that it
-        // is an order nearer its own staff than the one above.
-        // The middle staff is more than a staff height (4 spaces) further away.
+        // is an order nearer its own staff than the one above. Set by their
+        // outlines (X5d.2), the staves stand nearer than their whole extents
+        // once set them, so the middle staff is two spaces further away, not
+        // a staff height.
         assert!(
-            gaps[1] > gaps[2] + 4.0,
+            gaps[1] > gaps[2] + 2.0,
             "and by a wide margin over the middle staff: {gaps:?}"
         );
     }
 
+    /// Every page is spread, the last included (D109 Q3): where a page holds
+    /// gaps to spread, they grow until its last staff's bottom line stands
+    /// the page's border above the bottom margin, or the fill MuseScore
+    /// allows is spent (`MAX_PAGE_FILL` for each gap of the page, its top
+    /// border counted, and no more than that in the spread's units a gap,
+    /// `SPREAD_SYSTEM` times it between systems), the borders' aims (Q4);
+    /// each page's first staff stands the border below the top margin. Here
+    /// every gap stands at the floor before the spread, so its growth past
+    /// the floor is what the spread gave it.
     #[test]
-    fn vertical_justification_fills_non_final_pages() {
+    fn the_spread_fills_every_page_to_its_border() {
+        let mut last_spread = false;
+        for height in [60.0, 100.0] {
+            last_spread |= spread_pages_fill(height);
+        }
+        assert!(last_spread, "a last page with two systems was spread");
+    }
+
+    /// Whether the last page held two systems, so was spread.
+    fn spread_pages_fill(height: f32) -> bool {
+        use crate::vertical::{MAX_PAGE_FILL, PAGE_BORDER, SPREAD_SYSTEM, SYSTEM_FLOOR};
         use epiphany_layout_ir::{Margins, Size2D, StaffSpace};
-        // Narrow and short, so the ten-measure fixture wraps into several
-        // systems with two-plus fitting a page — a non-final page to justify.
         let geometry = PageGeometry {
             size: Size2D {
                 width: StaffSpace(40.0),
-                height: StaffSpace(30.0),
+                height: StaffSpace(height),
             },
             margins: Margins {
                 top: StaffSpace(5.0),
@@ -3152,58 +3154,57 @@ mod tests {
                 left: StaffSpace(5.0),
             },
         };
-        let engraver = Engraver::with_geometry(geometry);
-        let report = engraver.solve(&ten_measure_constrained(), &SolverConfig::default());
+        let report = Engraver::with_geometry(geometry)
+            .solve(&ten_measure_constrained(), &SolverConfig::default());
         assert_eq!(report.status, SolveStatus::Solved, "{:?}", report.warnings);
         let pages = &report.layout.pages;
-        assert!(
-            pages.len() >= 2,
-            "the fixture spans pages; got {}",
-            pages.len()
-        );
-
-        let content_bottom_of = |index: usize| {
-            let page_top = -(index as f32) * (geometry.size.height.0 + crate::INTER_PAGE_GAP)
-                - geometry.margins.top.0;
-            page_top - geometry.content_height()
-        };
-        // Every non-final page with ≥2 systems fills: its last system's bottom
-        // lands on the content bottom.
-        let mut justified = 0;
+        let half = 0.13 * 0.5;
+        let (mut filled, mut capped) = (0, 0);
         for (index, page) in pages.iter().enumerate() {
-            if index + 1 == pages.len() || page.systems.len() < 2 {
+            let content_top = -(index as f32) * (geometry.size.height.0 + crate::INTER_PAGE_GAP)
+                - geometry.margins.top.0;
+            let content_bottom = content_top - geometry.content_height();
+            let top_line = |sys: &epiphany_layout_ir::ResolvedSystem| {
+                let b = &sys.staves[0].bounding_box;
+                b.origin.y.0 + b.size.height.0 - half
+            };
+            let bottom_line = |sys: &epiphany_layout_ir::ResolvedSystem| {
+                sys.staves[0].bounding_box.origin.y.0 + half
+            };
+            assert!(
+                (top_line(&page.systems[0]) - (content_top - PAGE_BORDER)).abs() < 1e-3,
+                "page {}'s first staff stands the border below its margin",
+                page.number
+            );
+            if page.systems.len() < 2 {
                 continue;
             }
-            let last_bottom = page.systems.last().unwrap().bounding_box.origin.y.0;
-            assert!(
-                (last_bottom - content_bottom_of(index)).abs() < 1e-2,
-                "page {} last-system bottom {last_bottom} should reach content \
-                 bottom {}",
-                page.number,
-                content_bottom_of(index)
-            );
-            justified += 1;
+            let gaps: Vec<f32> = page
+                .systems
+                .windows(2)
+                .map(|w| bottom_line(&w[0]) - top_line(&w[1]))
+                .collect();
+            let last = bottom_line(page.systems.last().unwrap());
+            if (last - (content_bottom + PAGE_BORDER)).abs() < 1e-2 {
+                filled += 1;
+            } else {
+                // Short of the border, the fill is spent.
+                let n = gaps.len() as f32;
+                let fill = (MAX_PAGE_FILL * (n + 1.0)).min(MAX_PAGE_FILL * SPREAD_SYSTEM * n);
+                let given: f32 = gaps.iter().map(|g| g - SYSTEM_FLOOR).sum();
+                assert!(
+                    (given - fill).abs() < 0.05,
+                    "page {} stops short of its border with fill to spare: {gaps:?}",
+                    page.number
+                );
+                capped += 1;
+            }
         }
-        assert!(
-            justified > 0,
-            "no non-final page carried ≥2 systems to justify"
-        );
-        // The LAST page stays ragged-bottom — its last system's bottom sits
-        // above the content bottom, not force-filled.
-        let last_index = pages.len() - 1;
-        let last_bottom = pages[last_index]
-            .systems
-            .last()
-            .unwrap()
-            .bounding_box
-            .origin
-            .y
-            .0;
-        assert!(
-            last_bottom > content_bottom_of(last_index) + 1.0,
-            "the last page is ragged-bottom: {last_bottom} vs {}",
-            content_bottom_of(last_index)
-        );
+        assert!(filled + capped > 0, "no page held two systems to spread");
+        if height < 80.0 {
+            assert!(filled > 0, "a page filled to its border");
+        }
+        pages.last().is_some_and(|p| p.systems.len() >= 2)
     }
 
     #[test]

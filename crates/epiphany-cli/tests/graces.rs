@@ -436,6 +436,92 @@ fn an_unpitched_grace_is_drawn() {
     let _ = stem(&layout, e[0]);
 }
 
+/// On a staff of one line an unpitched grace stands where the staff's own
+/// notes do (X5d.6): moved up from the five-line staff's bottom line, where
+/// the file places it, onto the line, and ledgered from that line, so a
+/// grace on the file's E4 stands on the line with no ledger line, and one on
+/// C4 a space under it on one, as the notes after them do.
+#[test]
+fn an_unpitched_grace_on_a_staff_of_one_line_stands_as_its_notes_do() {
+    let unpitched = |step: &str, octave: u8| {
+        format!(
+            "<unpitched><display-step>{step}</display-step><display-octave>{octave}\
+             </display-octave></unpitched>"
+        )
+    };
+    let flam = |step: &str, octave: u8| {
+        format!(
+            "<note><grace slash=\"no\"/>{}<voice>1</voice><type>eighth</type></note>",
+            unpitched(step, octave)
+        )
+    };
+    let quarter = |step: &str, octave: u8| {
+        format!(
+            "<note>{}<duration>1</duration><voice>1</voice><type>quarter</type></note>",
+            unpitched(step, octave)
+        )
+    };
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>\
+         Snare</part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">\
+         <attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time><clef><sign>percussion</sign></clef><staff-details><staff-lines>1\
+         </staff-lines></staff-details></attributes>{}{}{}{}{}{}</measure></part>\
+         </score-partwise>",
+        flam("E", 4),
+        quarter("E", 4),
+        flam("C", 4),
+        quarter("C", 4),
+        quarter("E", 4),
+        quarter("E", 4),
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("grace_one_line.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = engrave_loaded(&loaded).layout;
+    let lines: Vec<f32> = layout
+        .strokes
+        .iter()
+        .filter(|s| matches!(s.provenance.source, TypedObjectId::Staff(_)) && s.from.y == s.to.y)
+        .map(|s| s.from.y.0)
+        .collect();
+    assert!(!lines.is_empty() && lines.iter().all(|&y| (y - lines[0]).abs() < 1e-4));
+    let line = lines[0];
+    let e = events(&loaded);
+    let small_head = |event: EventId| -> f32 {
+        let runs: Vec<&ResolvedText> = layout
+            .texts
+            .iter()
+            .filter(|t| t.provenance.source == TypedObjectId::Event(event) && t.text == "\u{E0A4}")
+            .collect();
+        assert_eq!(runs.len(), 1, "its head, small");
+        let b = text_box(runs[0]);
+        (b[1] + b[3]) * 0.5
+    };
+    let full_head = |event: EventId| -> f32 {
+        let b = head(&loaded, &layout, event);
+        (b[1] + b[3]) * 0.5
+    };
+    let ledgers = |event: EventId| -> Vec<f32> {
+        strokes(&layout, event)
+            .into_iter()
+            .filter(|s| s.from.y == s.to.y)
+            .map(|s| s.from.y.0)
+            .collect()
+    };
+    // The grace on E4 and the note after it, on the line.
+    near(small_head(e[0]), line, "the E4 grace on the line");
+    near(full_head(e[1]), line, "the E4 note on the line");
+    assert!(ledgers(e[0]).is_empty(), "no ledger line on the line");
+    // The grace on C4 and the note after it, a space under the line, each
+    // on one ledger line there.
+    near(small_head(e[2]), line - 1.0, "the C4 grace a space under");
+    near(full_head(e[3]), line - 1.0, "the C4 note a space under");
+    let grace_ledgers = ledgers(e[2]);
+    assert_eq!(grace_ledgers.len(), 1, "one ledger line: {grace_ledgers:?}");
+    near(grace_ledgers[0], line - 1.0, "the grace's ledger line");
+}
+
 /// A grace group takes room in its principal's column (D79's Q13): before a
 /// principal that follows sixteenths closely, the column stands further right
 /// than without its graces, and the graces clear the note before.

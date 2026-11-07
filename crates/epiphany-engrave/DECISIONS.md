@@ -3294,8 +3294,8 @@ engraver's own placing reproduces it:
   barline's clearance at any height had not held either, a grace standing
   as near the key signature as the band rule let it. MuseScore never kerns
   past a barline, a key or time signature, or a clef but a mid-measure one
-  (`HorizontalSpacing::computeKerning`, by `isNeverKernable`); Gould lets no
-  characters collide, keeps at least half a space between them (*Behind
+  (`HorizontalSpacing::computeKerning`, by `isNeverKernable`); Gould keeps
+  every sign clear of the next, at least half a space between them (*Behind
   Bars*, p. 41) and allows about two spaces after a time or key signature
   in mid-system (p. 42), and sets graces before a bar's first beat after
   the barline (p. 127); LilyPond 2.26.0 sets graces after a mid-system key
@@ -3345,3 +3345,687 @@ engraver's own placing reproduces it:
   its pieces as version 106 sets them, a later piece opening after its
   system's lead
   (`a_compressed_systems_glissando_too_short_for_its_notes_is_named_undrawn`).
+
+## ENGRAVER_VERSION 122 → 123: staves set by their outlines (X5d.2, 2026-11-01)
+
+- A system's staves are set column by column (`vertical::stack`), no
+  longer between whole extents: each staff stands as high as it can while
+  its top line keeps the floor below the bottom line of the staff above,
+  its ink 0.5 below the merged outline of every staff above it wherever
+  the two come within 0.25 across, and every beam joining it to a staff
+  above keeps its `rise_limit` (D109 Q1, Q2). Whole extents added a high
+  note in one bar to a low note in another, and fitted no orchestral
+  system on its paper. The outline keeps each rectangle at its own edges,
+  a curve in the 12 chords the family's sky already used; the family
+  placed off its staves, a later system's lead and every primitive of a
+  staff's band feed it, by declared band, and the ink of a beam across two
+  staves feeds neither.
+- The floor is Gould's: staves at least a stave's height apart, 4.0 line
+  to line (*Behind Bars*, p. 488; LilyPond's least between ungrouped
+  staves). It compresses toward MuseScore's `minStaffSpread`, 3.5, only in
+  a system whose ink would otherwise stand taller than its page's content,
+  as far as it needs and no further (`vertical::stack_fitting`). D63's
+  floors by score kind are withdrawn (D109 Q1): MuseScore's one floor with
+  its spread on is 3.5 between every pair, and its spread's cap inside a
+  brace is 6.5 (`maxAkkoladeDistance`).
+- The clearances are MuseScore's (`minVerticalDistance` 0.5,
+  `skylineMinHorizontalClearance` 0.25), Gould giving none (D99).
+  Departures named: LilyPond pads 1.0 between staves and nothing across;
+  MuseScore compares a staff with the one above it alone, where a staff
+  here clears every staff above it (LilyPond's `align-interface.cc`, D109
+  Q2), which matters only where ink passes a staff that draws no lines
+  there.
+- A syllable, and a verse's lines, keep 1.5 from the next staff's ink on
+  the side they stand, as MuseScore pads a verse in its skyline
+  (`LyricsLayout::addToSkyline`, `lyricsMinBottomDistance`) and LilyPond
+  keeps a lyric line from an unrelated staff; the two agree.
+- Tests: `vertical::tests` (the outline, the reach, the clearance, the
+  merged outline, the beam bound, the floor and its compression) and
+  `vertical::solve_tests`, which read every gap back from the baked output
+  pairwise; `a_syllable_keeps_its_room_from_the_next_staffs_ink`,
+  `a_later_systems_lead_sets_its_staves_apart` and
+  `the_floor_compresses_only_as_far_as_the_system_needs` in the CLI's
+  render tests. The quality census still reads the whole extents' unit,
+  which no solve now realizes, until X5d.4 amends `req:qmc:vertical`; the
+  tests that asserted it realized assert the rule instead. Four goldens
+  change, re-blessed with their renders before and after recorded (D10).
+
+## ENGRAVER_VERSION 123 → 124: between systems and the page (X5d.3, 2026-11-01)
+
+- Two systems stand at least 8.5 apart line to line (MuseScore's
+  `minSystemSpread`, its floor with its spread on), the whole system
+  above's ink 0.5 from the whole system below's where they come within
+  0.25 across (`SystemLayout::minDistance` reads the last staff above and
+  the first below; with staff lines across every system the two agree).
+  LilyPond keeps 4 at least and 8 by default; MuseScore's is nearer
+  Gould's p. 488 (D109 Q3).
+- A page's first staff's top line stands 7 below its top margin, or lower
+  where its ink needs (`staffUpperBorder`), and a further system goes on
+  the page only where its last staff's bottom line keeps 7 above the
+  bottom margin, or its ink does where it reaches further
+  (`staffLowerBorder`), as MuseScore collects a page (D109 Q4). A system
+  taller than its page stays alone on it; there the top border yields, the
+  system rising until its ink stands at the top margin, so the borders are
+  aims that cost no system its fit, as Q4's figures assume (MuseScore keeps
+  the top border even then); one whose ink its paper still cannot hold is
+  named in a warning, not squeezed (D109 Q5).
+- Every page, the last included, is spread by MuseScore's rule
+  (`PageLayout::distributeStaves`, `VerticalGapData`), its numbers its
+  style defaults: the gaps between staves and between systems, in units of
+  their weights (2.5 between systems, 1.2 at a bracket's edge, 1.1 at a
+  brace's), the smallest raised level first, then the rest shared by
+  weight, at most 6 a gap and 6 for each gap of the page in all; caps 20
+  between staves, 6.5 inside a brace, 32 between systems, each in those
+  units, as MuseScore keeps its `m_maxActualSpacing`: a gap at a bracket's
+  edge stops at 24 on the page, the staff cap undivided by its weight, and a
+  gap inside a brace and between systems at their stated figure. A bracket
+  inside a bracket weighs its edges 1.2, where MuseScore's skips one starting
+  within another, a departure kept (the owner's ruling at D123): the distances
+  it sets stand under the owner's reading. Until the last
+  staff's bottom line stands 7 above the bottom margin or its ink reaches
+  it. Before it, a gap between systems is raised toward the widest gap
+  between staves of a system beside it, as far as the page allows (Gould,
+  p. 488). Departures named:
+  the levelling is solved exactly, where MuseScore's loop raises by steps,
+  undoes the step that would overspend and hands what is left to the fill,
+  stops after twenty passes and treats spacings of one integer ceiling as
+  level, so its gaps can stand uneven where these stand level, sometimes by
+  whole spaces on a page, a soloist's gap over a braced part above all (the
+  owner kept the exact levelling at D123 Q3, neither Gould nor LilyPond
+  asking for the unevenness; the pages it touches are counted in the vault's
+  pass, X5d fix round 1); Gould's more room above the strings
+  (p. 520) is met only where the score brackets its sections; the old
+  justification spread only non-final pages, only between systems.
+- A grand staff's centred dynamics are centred once the page is spread, as
+  MuseScore centres them after `distributeStaves`.
+- The spread's chosen sprawl is what `req:qmc:vertical` reads as
+  deviation, so a sparse page reads near 1.0 on that axis; the Reference
+  Suite's RS-1 and RS-2, each one sparse A4 page, carry it as a measured
+  Minimal miss (the owner's ruling at X5d.3), and the tier test claims its
+  thresholds on a page nothing spreads.
+- Tests: `vertical::tests` (the spread's levelling, weights, caps and
+  fill, and that it spends no more than it is given),
+  `vertical::solve_tests::systems_stand_their_floor_or_their_inks_clearance_apart`,
+  `the_spread_fills_every_page_to_its_border` and
+  `a_hard_page_break_starts_a_new_page` here; the CLI's
+  `systems_clear_each_others_ink`,
+  `a_system_taller_than_its_page_rises_and_is_named`,
+  `a_brace_keeps_its_staves_within_its_cap`,
+  `a_brackets_edge_takes_more_of_the_spread`,
+  `a_gap_between_systems_is_raised_first_and_a_system_keeps_the_border` and
+  the marks suite's `a_grand_staffs_dynamic_stands_between_its_staves`. The
+  goldens it changes are re-blessed with their renders before and after
+  recorded (D10).
+
+## The vertical measure reads what a gap asks (X5d.4, 2026-11-01; ENGRAVER_VERSION stays 124)
+
+- `req:qmc:vertical` is amended to the catalog's 0.4.0, as X5d.1 drafted it
+  (D109 Q7): each realized gap's line distance `d`, read from the baked
+  staff lines, against `d* = max(f, s + c, b)`: the band's floor, the
+  skyline separation of the inks either side read column by column (every
+  staff above an inter-staff gap; the whole systems either side of an
+  inter-system one) with `c` 0.5 and inks meeting within `h` 0.25 across,
+  and a beam across the two staves' least distance. Crowding and sprawl
+  both deviate. Three things the draft left unsaid are stated: the axis
+  is still the mean over its units, as every axis's is; a curve is read
+  as twelve chords and a box of positive extent only; a syllable and its
+  verse's lines reach 1.0 further on their side, as the solve keeps them
+  (X5d.2), so a lyric's room reads as asked, not as sprawl.
+- The gap bands become line distances carrying the solve's numbers
+  (`VerticalBand::inter_staff_gap`: floor 4.0 as both `min_height` and
+  `preferred_height`, cap 20, weight 1.0; `inter_system_gap`: floor 8.5,
+  cap 32, weight 2.5), as X5d.1's note set the band. The floor the measure
+  reads is Gould's 4.0, so a system casting compresses toward 3.5 to fit its
+  page reads the crowding it is (0.25 in 4.0 a gap), and a plain gap at the
+  floor reads none.
+- The census reads the baked output with code of its own (`separation`,
+  step functions over the boxes' edges, merged staff by staff down a
+  system), sharing none with the solve's outline: unspread, it reads no
+  deviation on every fixture the solve sets, which makes it a check on the
+  solve and the bake together.
+- The engraver's ink is unchanged, so `ENGRAVER_VERSION` stays 124; the
+  metric vector changes.
+- Tests: `quality::tests::an_unspread_solve_realizes_what_every_gap_asks`,
+  `a_staff_the_bake_left_behind_reads_as_crowding`,
+  `the_separation_is_the_greatest_over_meeting_pairs` (against every pair,
+  on boxes drawn at random), `inks_meet_across_within_a_quarter_space`,
+  `a_gap_reads_every_staff_above_it` (ink planted past the lines' end,
+  where only the merged outline sees it),
+  `vertical::tests::the_gap_bands_carry_the_solves_numbers`,
+  and the CLI's beam, lyric and compression tests reading the measure.
+
+## ENGRAVER_VERSION 124 → 125: rests (X5d.5, 2026-11-01)
+
+- A rest filling its measure stands centred in its staff's free space in
+  the measure, as Gould sets a whole-bar rest (*Behind Bars*, pp. 159-160,
+  in the room left where the bar holds a clef, key or time signature):
+  between the right edge of its staff's ink in the columns before it that
+  hold no note, back to the barline opening the measure (or the system's
+  lead where the measure opens the system), and the left edge of its
+  staff's ink in the first such column after it, as MuseScore takes them
+  (`MeasureLayout::getMeasureStartEndPos`) and LilyPond centres a measure
+  rest between its break-alignment groups. Casting sets it once the
+  system's map across is known; its column keeps its room. The constrained
+  stage names each such rest (`ConstrainedLayoutIR::measure_rests`). It had
+  stood at its measure's first column (D70).
+- A whole or half rest standing outside its staff, the line it hangs from
+  or sits on beyond the staff's lines, takes its ledgered glyph
+  (`restWholeLegerLine`, `restHalfLegerLine`, now bundled from the pinned
+  Bravura with their metrics), chosen on its final line after it has moved
+  clear, as Gould draws it (p. 37) and MuseScore (`Rest::getSymbol`) and
+  LilyPond (`rest.cc`) choose it (D73). A rest centred in its measure and
+  moved clear of another voice in its column keeps that height where it
+  stands; a visiting voice's ink elsewhere in the measure is not cleared,
+  named for X5d.7's sweep.
+- A staff's rest whose column holds voices visiting from the staves above
+  and below at once, their stems turning both ways, takes the side whose
+  first clear place stands nearer its staff's middle line, a tie keeping
+  the side it took before (D109 Q8); it had always turned down, past the
+  lower visitor's stem (X4b review 3's q4). Gould's principle is the same
+  (a rest's level follows the pitches around it, p. 37); neither engine
+  treats a cross-staff visitor so.
+- Tests: the CLI's `a_measure_rest_stands_centred_in_its_measure`,
+  `a_measure_rest_opening_a_system_centres_after_its_lead`,
+  `a_rest_outside_its_staff_takes_its_ledger_line` and
+  `a_rest_between_visitors_from_both_sides_takes_the_nearer_side`; the
+  constrained stage's `a_rest_between_visitors_level_both_ways_keeps_its_side`;
+  `a_rest_filling_its_measure_is_one_span` now reads its column through a
+  hidden rest's anchor, a drawn one standing centred. Two goldens change,
+  re-blessed with their renders before and after recorded (D10).
+
+## ENGRAVER_VERSION 125 → 126: a staff of one line (X5d.6, 2026-11-01)
+
+- A staff whose line count is one (the importer reads it from the file's
+  `staff-lines`) draws that line alone, where a five-line staff draws its
+  middle line, so its clef, time signature and barlines stand about it, the
+  stems, beams and rests its middle line decides turn by it, and a roll on a
+  note there takes its strokes on the side that line gives (D97: the roll
+  MuseScore sets under its head). Its unpitched notes, which MusicXML and
+  MuseScore's export place from the line as a five-line staff's bottom line
+  (E4), move up by the two spaces between, so they stand on the line the
+  file gives. A note a space or more off the line takes ledger lines from
+  it, as MuseScore's one-line staff shows them; a whole rest hangs from the
+  line (Gould, *Behind Bars*, p. 38). Gould sets a single line for
+  instruments of indefinite pitch (p. 5); LilyPond's reference for a staff
+  of one line is its line; MuseScore's lines follow its staff type's count.
+- For the floor between staves a staff of one line is boxed two spaces
+  either side of its line, so it keeps a five-line staff's room;
+  `req:qmc:vertical` counts it so (its catalog text says so, the PDF rebuilt).
+  The floor is LilyPond's: its least distance between reference points gives
+  the same room (Gould's p. 488 reads a stave's height, and a percussion line
+  keeps its). It departs from MuseScore, which boxes the staff so for its
+  bracket but reads the floor from the line (`SystemLayout`, `dist` from
+  `staffHeight`, nil on one line, plus the staff distance), so its line can stand
+  the bare distance from the next staff's top line, and a line opening a page
+  stands nearer the margin.
+- Not changed, on the owner's ruling at X5d.6: a three-line staff keeps
+  five lines, to the decide-list. MuseScore can draw such a staff with its
+  lines two spaces apart and its notes a space per step, which an export
+  records only by its `staff-size` and its two-step shift of the unpitched
+  notes.
+- The importer records a staff the file hides in a system
+  (`<staff-details print-object="no"/>`) as the feature "hidden staff",
+  drawing it regardless, where it dropped it silently (D109 Q6).
+- Tests: the CLI's `a_staff_of_one_line_draws_its_line_and_stands_about_it`;
+  `ledger_steps_cover_only_lines_outside_the_staff` for a one-line frame;
+  the importer's `a_hidden_staff_is_recorded_not_dropped`.
+
+## X5d takes `main` (X5d.7, 2026-11-03; ENGRAVER_VERSION 126)
+
+- X4d's lines and grace notes meet X5d's vertical spacing. X5d's entries,
+  numbered 95 to 98 on its branch, follow X4d's last (122) as 123 to 126,
+  and `ENGRAVER_VERSION` is 126.
+- The vertical measure reads a text the casting pass adds after the
+  input's (a line's runs, drawn piece by piece: a later piece's reminder,
+  a glissando's words) by the band of the line it rides
+  (`CastLayout::appended_text_bands`), as it reads an added glyph by
+  `appended_bands`. It had read every text's band from the input's, so a
+  page holding a line's runs failed (X4d's line tests).
+- A grace note's ledger lines stand outside a five-line staff's outer
+  lines, as X4d drew them; `ledger_steps` now takes the staff's frame.
+
+## X5d.7: a system's fit reads its ink of no staff, pinned (2026-11-03, no version change)
+
+- The fit that decides whether a system's floor compresses (entry 123)
+  reads the ink of no staff with its staves' ink. No test held that: the
+  margin band of every score drawn holds only ink inside its staves' range,
+  so the fit read the same without it. Pinned by a hand-built test that
+  lifts the region's traced anchor, the one primitive its margin band holds,
+  three spaces over the top staff, on a page that then holds the system half
+  a space short; the floor compresses by that half
+  (`ink_of_no_staff_counts_toward_a_systems_fit`).
+
+## ENGRAVER_VERSION 126 → 127: a grace on a staff of one line stands as its notes do (X5d.7, 2026-11-03)
+
+- An unpitched grace on a staff of one line moves up from a five-line
+  staff's bottom line, where the file places it, onto the line, and takes
+  its ledger lines from that line, as the staff's own notes have since
+  entry 126; it had stood two spaces under the line. A pitched grace keeps
+  the five-line frame, as a pitched note does. Gould sets a grace before its
+  note at the note's own height (*Behind Bars*, pp. 125-126) and a single
+  line for indefinite pitch (p. 5). MuseScore lays each grace chord of a
+  percussion chord out by the drumset's line as it lays the chord out
+  (`SegmentLayout`, `layoutDrumset`), and LilyPond's drum note engraver
+  sets every head's staff position from its drum's entry, a grace's too;
+  no departure (`an_unpitched_grace_on_a_staff_of_one_line_stands_as_its_notes_do`).
+
+## ENGRAVER_VERSION 127 → 128: a hairpin over a break sets the staves by its pieces as drawn (X5d.7, 2026-11-03)
+
+- A hairpin over a system break is drawn a piece to a system, each opening
+  from its axis as MuseScore draws it (entry 59's pieces; now
+  `hairpin_piece_ys`, which the bake and the outline share): a crescendo's
+  first piece from its tip to its full mouth, a diminuendo's last from its
+  full mouth to its tip. The family places each piece by the stroke as cut
+  at the break, flat at the leg's one end, and the outlines that set the
+  staves (entry 123) and a system's extent read that cut: the drawn mouth
+  stood up to its half height (0.575) nearer the next staff's ink than the
+  outline held, across the clearance where that ink set the distance.
+  X5d.7's sweep found it (every staff's ink against the merged ink above
+  it, drawn). Each such piece now feeds the outline and the system's
+  extent as drawn, lifted as its piece is; where the family places it is
+  unchanged. MuseScore adds each spanner segment's shape, a hairpin's piece
+  among them, to its staff's skyline once the segment is laid out
+  (`SystemLayout`), so its skyline holds each piece as drawn;
+  LilyPond takes a hairpin's skylines from its printed stencil, each
+  broken piece's own (`Hairpin`'s `vertical-skylines`); Gould keeps every
+  sign clear of the next (*Behind Bars*, p. 41)
+  (`a_hairpin_over_a_break_sets_the_staff_below_by_its_mouth`).
+
+## ENGRAVER_VERSION 128 → 129: a grand staff's centred dynamic clears the family placed between its staves (X5d.7, 2026-11-03)
+
+- A dynamic or hairpin of a grand staff is centred between its staves
+  "as far as the ink between them lets it" (entry 59), after the spread
+  (entry 124). That ink was the sky alone, which holds no member of the
+  family once placed: a syllable, a fermata, another dynamic. X5d.7's sweep
+  found centred dynamics and hairpins on the syllables of a sung grand
+  staff, more often once the spread widens the gap and its middle moves
+  onto them. The centring now reads, besides the sky, every family member
+  placed on either staff in that system where it stands, the centred row's
+  own members aside: one beyond the member on its own staff limits its move
+  toward that staff, one on the other staff its move toward the other.
+  MuseScore's centring reads both staves' skylines whole, lyrics and marks
+  among them, keeping each item's least distance
+  (`SystemLayout::centerElementBetweenStaves`); LilyPond centres a
+  `Dynamics` line between two staves (`staff-affinity` CENTER) as a line of
+  its own, set by skylines beside a `Lyrics` line as any line is; Gould
+  keeps every sign clear of the next (*Behind Bars*,
+  p. 41) (`a_centred_dynamic_stands_clear_of_the_syllables_between_the_staves`,
+  `a_centred_dynamic_stands_clear_of_its_own_staffs_family_outside_it`).
+
+## ENGRAVER_VERSION 129 → 130: a centred rest carries what stands on it (X5d fix round 1, 2026-11-04)
+
+- Entry 125 centres a rest filling its measure and moved its one glyph at the
+  bake, after the family, the sky and the outlines had read it at its first
+  column. The centre is now set as soon as the system's map across is, which
+  is all it needs, and every later step reads the rest where it is drawn: the
+  fermata's clearance, the sky, the staves' outlines, the centring between a
+  grand staff's staves.
+- What goes with it, `MeasureRest` naming each by its event: a fermata, centred
+  on its rest (*Behind Bars*, p. 188; MuseScore's `TLayout::layoutFermata`;
+  LilyPond's `R1\fermata`), a member of the family moved across as a dynamic off
+  a barline is; a slur's end, which stands at the rest's centre, the arc sheared
+  as an anchored curve's is (MuseScore's `slurPos` reads the rest's own place);
+  a hidden rest's fermata, since a hidden rest is centred as any other for what
+  stands on it, as MuseScore centres one. Two more are settled by probes beside
+  MuseScore's page: a syllable on the rest, a child of
+  the rest there though `LyricsLayout::layout` reads as if it were not (it
+  negates the rest's move at a time the rest has not moved); and an ottava whose
+  last ink is the rest, a space past it where it is drawn (`Ottava::linePos`
+  reads the segment's shape), never past the next note. Gould is silent on those
+  two and on the slur; LilyPond attaches no syllable to a rest.
+- What stays at its column, by what it is anchored to and not by a measure of
+  ours: a dynamic and words (`DynamicsLayout` anchors to the segment, probe), a
+  trill line and its sign (`SLine::linePos` reads the segment's x, probe), a
+  tempo or rehearsal mark, and a hairpin's ends, which are a time's. A melisma
+  line does not end on a rest: `lyrics_of` ends it on its last note. The rest's
+  box stays in what a grace's principal reads at its column, whose left edge a
+  rest's does not pass, and in what a glissando's ends read there.
+
+## ENGRAVER_VERSION 130 → 131: a measure rest is cleared where it stands (X5d fix round 1, 2026-11-04)
+
+- Entry 125 centres a rest filling its measure with the height `clear_rests` and
+  `clear_visitors` gave it at its first column: it could stand on ink at its
+  centre, and stood off its line in empty space for a note it had left. Its
+  height is now decided once it stands across (`rests::clear`), from its default
+  height, by whole spaces, reading the ink of its staff's note columns in its
+  measure where it is drawn. Gould moves a rest only as far as it takes to
+  keep the two parts apart (*Behind Bars*, p. 36), by exact spaces (p. 35), and
+  keeps every sign clear of the next (p. 41). No figures are given: these are MuseScore's
+  (`RestLayout::checkFullMeasureRestCollisions`, under D99), 0.75 up and down
+  within 4 across.
+- Its exclusions are not copied. MuseScore takes accidentals out of what it
+  reads, and a rest stands on a sharp; it runs only where the measure has voices,
+  and a rest stands on a visitor's head. Read here: every glyph and stroke of the
+  staff in a note column of the measure, a visitor's and a grace's and a tuplet's
+  included. Not read, each for its reason: what the family places after it, which
+  is placed against the rest; the columns of a clef or a key or time signature,
+  which bound its free space and which it does not stand in; another rest filling
+  the measure, as MuseScore; the stem whose end rides another staff, whose height
+  the gap between the staves sets later, as the ink of a beam across two staves is
+  read on neither. A tie or slur is read as well, only where it passes through the
+  rest, a quarter space up and down, and the rest moves its voice's way: MuseScore
+  reads none and a rest stands on a held note's tie, Gould keeps every sign clear
+  of the next, and a curve near it is no reason to move.
+- A voice's rest keeps past the other part, above all of that ink for an upper
+  voice and below it for a lower, as Gould takes a ledger line to the far side of
+  the other part (p. 37) and MuseScore's one-sided clearance reads. A rest
+  alone on its staff has no part to keep outside: it moves only where ink stands
+  within that box, from the stems it meets, and D109 Q8 holds at the new place:
+  between visiting stems of both ways within 4 across it takes the side whose
+  first clear place stands nearer its staff's middle line, each place read with
+  the glyph it would draw.
+- A whole or half rest's ledgered glyph is decided with its height, after it, so
+  its box is read at the height that draws it (`restHalfLegerLine` is 2.07 wide
+  against `restHalf`'s 1.13): in `rests::clear`, in `clear_rests` and
+  `clear_visitors` for a rest not filling its measure, and in `clear_ledgers`,
+  which lifts a ledgered rest beside another voice off that voice's ink, an
+  accidental above all, which the ledger line reaches and the plain glyph,
+  beside the heads `clear_rests` reads, does not.
+
+## ENGRAVER_VERSION 131 → 132: a group's sign spans a staff of one line as boxed (X5d fix round 1, 2026-11-04)
+
+- Casting spanned a brace, a bracket and the system's opening line from each
+  staff's lowest and highest line, one height on a staff of one line, so a
+  bracket ended at the line and its hook stood on the staff's clef. They now read
+  that staff boxed two spaces either side of its line, as the solve boxes it
+  (entry 126). MuseScore spans a bracket from the box of its first staff to the
+  box of its last (`SystemLayout`, `sy` and `ey`). LilyPond ends a bracket at the
+  line and insets the clef, a way we do not take, since our clef stands flush;
+  Gould keeps every sign clear of the next (*Behind Bars*, p. 41). A joined barline runs
+  between the same spans, which is where a one-line staff's barline already ends.
+
+## ENGRAVER_VERSION 132 → 133: a whole-bar rest in 2/1 or more is a breve rest (X5d fix round 1, 2026-11-04)
+
+- A rest filling its measure drew a semibreve rest in every meter. From 2/1 it
+  draws a breve rest (*Behind Bars*, p. 160; MuseScore's `Rest::getSymbol` reads
+  a bar of two whole notes or more; LilyPond's whole-bar rest takes it at 2/1),
+  filling the space above the middle line (p. 35), or, on a staff of one line,
+  hanging from it (MuseScore's `computeWholeOrBreveRestOffset`, LilyPond's
+  `staff_position_internal`). `restDoubleWholeLegerLine` joins the bundled glyphs
+  from the pinned font, the others reproduced byte for byte. Its height, ledgered
+  glyph and box go through entry 131's rule. Where it hangs from a staff's last
+  line MuseScore draws the ledgered glyph and LilyPond the plain one (`rest.cc`:
+  a breve rest needs a ledger only if neither lying on nor hanging from a line);
+  this follows MuseScore, one test for every whole and half rest, and a probe is
+  all that reads it. A rest of a
+  pickup's whole length is not touched: it stays on the decide-list.
+
+## ENGRAVER_VERSION 133 → 134: gaps rise level with a gap past its cap (X5d fix round 1, 2026-11-04)
+
+- `vertical::spread` levelled the page's smaller gaps up to the widest gap still
+  under its cap. A braced part's staves held apart by their ink stand past theirs,
+  and MuseScore's `smallest` passes over a gap only at its cap exactly, so its
+  other gaps rise level with one past it. The level now reads every gap the spread
+  may move, one past its cap too. Gould asks only that distances follow the
+  notation (*Behind Bars*, p. 488); LilyPond's single force has no such case; this
+  is MuseScore's reading where it is a rule rather than a loop's bound (entry 124)
+  (`gaps_rise_level_with_a_gap_past_its_cap`,
+  `a_soloist_rises_level_with_a_braced_parts_held_gap`).
+
+## ENGRAVER_VERSION 134 → 135: a caesura leaves a measure rest at the bar's middle (X5d fix round 1, 2026-11-04)
+
+- A measure rest's free space read its staff's ink in any column holding no note,
+  so a caesura or breath mark closing the bar, or standing inside it, narrowed it.
+  Only a clef, a key or time signature or a barline does now: Gould centres the
+  rest in the space they leave (*Behind Bars*, p. 160), MuseScore's end point stops
+  at those and the end barline (`getMeasureStartEndPos`), and LilyPond centres
+  between break-alignment groups. Reading those names leaves a member of the family
+  out as well as the rest, so the earlier filter on the family is gone with it
+  (`a_caesura_leaves_a_measure_rest_at_the_bars_middle`,
+  `a_breath_mark_inside_the_bar_leaves_a_measure_rest_at_its_middle`,
+  `a_clef_closing_the_bar_bounds_a_measure_rest`).
+
+## ENGRAVER_VERSION 135 → 136: a centred mark stays inside its own staff's family (X5d fix round 1, 2026-11-04)
+
+- In a wide gap a grand staff's centred dynamic moved past a pedal line of its own
+  staff that stood further out across it, and stood beyond it, clear of it and out
+  of order. A row with a member of its own staff's family further out across any of
+  its members now stays where it was placed: Gould keeps dynamics between the staff
+  and what stands further out (*Behind Bars*, p. 493), MuseScore returns before the
+  move (`SystemLayout::elementHasAnotherStackedOutside`), and LilyPond has no such
+  case (`a_centred_dynamic_stays_inside_a_pedal_further_out_across_it`,
+  `a_pedal_elsewhere_in_the_bar_leaves_a_dynamic_centred`,
+  `a_sung_staffs_centred_dynamic_stays_inside_its_words_further_out`).
+
+## ENGRAVER_VERSION 136 → 137: a later system's lead joins the centring's bounds (X5d fix round 1, 2026-11-04)
+
+- The centring's bounds read the sky and the family placed on either staff, and no
+  later system's lead, which is its staff's ink at the left margin and which the
+  sky does not hold (entry 123's outlines read it). A centred mark that a first
+  column's note set across that clef's reach could stand within its least distance
+  of it. The leads join both staves' bounds, as MuseScore's centring reads both
+  skylines whole (`SystemLayout::centerElementBetweenStaves`)
+  (`a_centred_dynamic_keeps_its_distance_from_a_later_systems_lead`).
+
+## ENGRAVER_VERSION 137 → 138: a centred text in no row is centred by its own box (X5d fix round 1, 2026-11-04)
+
+- The centring read a row's centre, and a mark in no row, an expression text with no
+  dynamic beside it, from a centre of 0, a place on no page: its move came out as
+  the distance from the page's origin to the gap's middle, and the clamp alone
+  stopped it, a space or more off the middle. It now reads its own box's centre. X4d
+  gave such a text its `between` and no row; MuseScore centres the element's shape
+  (`SystemLayout::centerElementBetweenStaves`)
+  (`a_centred_text_with_no_dynamic_stands_at_the_gaps_middle`).
+
+## The pins of the phase's clauses, and what was not reachable (X5d fix round 1, 2026-11-04; ENGRAVER_VERSION stays 138)
+
+- Every clause of the phase's rules that a mutation showed no test holding is now
+  held by a test of its own, each seen failing with its mutation:
+  `crates/epiphany-cli/tests/vertical_rules.rs`, the clauses of the staves'
+  distances, the spread, the rests, the centring and a hairpin's lifted piece.
+- Removed, each proved unreachable and changing no page. A brace's edge read
+  inside another brace: a staff holds one group (D26), so no brace's edge falls
+  inside another brace, though a brace can span two parts. A system past its
+  paper's top: the rise that sets it stops at the
+  top margin, so only its bottom can pass. A split hairpin's piece index, and the
+  guard to split ones: each leg's outer edge stands at the mouth whichever piece
+  it is, and a whole hairpin's box is that rectangle already, so the outline reads
+  the mouth (entry 128). A hairpin of no staff in the extent: a hairpin with no
+  staff draws a traced anchor. A measure rest's check that its free space holds it:
+  its column keeps its room. A family glyph in a rest's furniture went with entry
+  135.
+- Kept and pinned by an amended constrained input, as entry 125's fit is, since the
+  importer makes neither: the ink of no staff and a family mark of no staff in the
+  gap between systems.
+- The level-both-ways test of `clear_visitors` also runs on a half rest, whose
+  centre stands off its line, so the glyph's centre is what it reads.
+
+## ENGRAVER_VERSION 138 → 139: a tie passing through a measure rest moves it (X5d fix round 1, 2026-11-04)
+
+- Entry 131 returned a rest to its line where nothing stands near it at its centre,
+  and one came down onto a tie held across its bar. A tie or slur of its staff that
+  passes across it within a quarter space now moves it its voice's way, by whole
+  spaces, only as far as that curve needs (the entry's wording stands above). The
+  sky reads the curve at the bake's chords, before the bake reshapes a slur past
+  what it passes (`a_measure_rest_clears_a_tie_passing_through_it`,
+  `a_curve_moves_a_rest_only_where_it_passes_through_it`).
+
+## ENGRAVER_VERSION 139 → 140: a dotted rest keeps its dot beside it (X5d fix round 2, 2026-11-05)
+
+- A rest's dot stood where a lone rest's stands whatever moved the rest: a voice's
+  shift at construction moved the rest alone, and `clear_rests` moved it alone off
+  the other voice's heads, so a dot could stand spaces from its rest, beside
+  another note, which reads as that note's. Older than the phase (X3).
+- `dots_y` now takes the voice's shift and each of `clear_rests`'s steps, as
+  `clear_visitors` and `clear_ledgers` already moved it: the dot stays half a space
+  over a half rest, its place against its rest wherever the rest stands (*Behind
+  Bars*, p. 38). MuseScore lays a rest's dots from the rest's own place
+  (`RestLayout`, `dotLine`), and LilyPond hangs them from their rhythmic head
+  (`dots-engraver.cc`), a rest being one.
+- The dot's box is read where it now stands: `clear_visitors` reads it as the rest
+  moves, and it enters its staff's outline, so a dot's new place can move a staff
+  by what it adds to it.
+- Each move and its dot, `a_voices_dotted_rest_keeps_its_dot_beside_it`,
+  `a_dotted_rest_moved_off_a_voices_heads_takes_its_dot`,
+  `a_ledgered_rests_dot_moves_with_it_off_an_accidental`; the last read to the exact
+  half space, since a dot left one step behind still stands within a space of its
+  rest.
+
+## ENGRAVER_VERSION 140 → 141: a measure rest reads no slur of its own, and a slur's end follows it (X5d fix round 2, 2026-11-05)
+
+- Entry 139's rest read every curve of its staff, its own slur among them, at the
+  place the system's map sets the slur before entry 130 carries its end to the rest:
+  a slur on a raised rest moved it further for nothing, two raised rests beside
+  each other standing two spaces apart for it. A rest now leaves out the slurs
+  standing on it, since they go where it goes.
+- A slur's end on a rest moved off its height follows it: it stands 0.9 off the
+  rest's ink on the arc's side, MuseScore's figure (`SlurTieLayout::slurPos`),
+  LilyPond's `slur-scoring.cc` also reading a rest in its column as the head a
+  slur's end stands on, Gould silent. The arc keeps its shape over the chord it now
+  has. An end on a rest that nothing moved stays over the staff, where it was.
+- Every other rest reads a carried slur where it is drawn, by order: each rest's
+  place across is set first, across being all it reads, so the carry across is known
+  to all; then the rests carrying a slur's end are cleared first, so the rests under
+  that slur read it at its height.
+- Named, not settled: two rests that each carry a slur over the other cannot each
+  read the other's as drawn. The later cleared does; the earlier reads the other's
+  slur with its carry across, at its height before the carry.
+- `a_measure_rest_reads_no_slur_of_its_own`,
+  `a_slurs_end_stands_off_a_rest_raised_from_its_height` and its lowered mirror,
+  `a_slurs_end_stays_on_a_rest_at_its_height`,
+  `a_rest_reads_a_slur_at_the_height_its_end_is_carried_to`,
+  `a_rest_reads_a_slur_at_the_place_its_end_is_carried_to`,
+  `a_slur_over_a_break_lifts_only_the_piece_at_its_rest`,
+  `a_rest_under_a_slur_over_a_break_reads_each_piece_as_drawn`, and, the importer
+  holding such rests in time, `a_rest_clears_after_the_rest_its_slur_starts_on` on an
+  amended order.
+
+## ENGRAVER_VERSION 141 → 142: a measure rest reads no ink of a repeat structure (X5d fix round 2, 2026-11-05)
+
+- Entry 131 left out of what a rest reads "what an ending carries", by a map that
+  holds only an ending moved to the next system, so every other ending's line read
+  as the other part's ink: an upper voice's rest climbed over a one-bar ending's
+  bracket, outside it. The rest now leaves out a repeat structure's ink by its source,
+  the stroke and the glyph, whichever system or bar it stands on. MuseScore reads a
+  measure's segments alone, which hold no volta (`restlayout.cpp`), LilyPond's rest
+  collision reads note columns, and Gould moves a rest only to keep two parts apart
+  (p. 36).
+- No import reaches it: the importer records endings unmade, so the tests add the
+  ending through the model: `a_measure_rest_stays_under_a_one_bar_ending`, and
+  `a_measure_rest_stays_under_an_ending_of_three_bars`, the line's middle inside the
+  middle bar.
+- Every glyph a repeat structure draws rides a barline's or the end's column, whose
+  members a rest does not read, so no score reaches the glyph's half. It stays, as
+  the source's whole statement, pinned by an amended constrained input,
+  `a_measure_rest_reads_no_glyph_of_a_repeat_structure`.
+
+## ENGRAVER_VERSION 142 → 143: a syllable carried with its rest carries its hyphen and melisma line (X5d fix round 2, 2026-11-05)
+
+- Entry 130 carried a syllable on a measure rest and nothing that follows it: a hyphen
+  stood before the syllable it follows, and a melisma line started five spaces left of
+  its word and ran under it. `MeasureRest` now names the lines leaving and reaching
+  each syllable on it, and casting moves them by the route a line's end already takes:
+  a hyphen from the syllable moves its start, a hyphen to it its end, a hyphen between
+  syllables on two rests both, and a melisma line its start. The dashes are then
+  shared out between the syllables as they stand, midway (*Behind Bars*, p. 448), and a
+  melisma line follows its word (p. 447). MuseScore's page draws the hyphen so, and on
+  the probe no melisma line from a rest at all; Gould's rule is the one read here (D99).
+  LilyPond attaches no syllable to a rest.
+- A hidden rest's syllable stays at its column, having no glyph to ride, so its lines
+  stay too.
+- Named, not settled: a long syllable's room. A bar's width is set with the syllable at
+  its column, so a long syllable centred with its rest can overlap the next bar's
+  syllable. Its room belongs to the spacing, before any bar's width and so its middle
+  is known; a carry cut short at the neighbour would read the verse row where the
+  carry is set, and neither is a few lines.
+- `a_hyphen_stands_after_its_syllable_on_a_rest`,
+  `a_hyphen_stands_before_its_syllable_on_a_rest`,
+  `hyphens_stand_on_either_side_of_a_syllable_on_a_rest`,
+  `a_hyphen_between_syllables_on_two_rests_moves_both_its_ends`,
+  `a_melisma_line_starts_after_its_syllable_on_a_rest`,
+  `two_verses_on_a_rest_stand_together_under_it`,
+  `a_hyphen_reaching_a_syllable_on_a_hidden_rest_stays_before_it`,
+  `a_melisma_line_keeps_its_end_beside_a_next_syllable_on_a_rest`.
+
+## ENGRAVER_VERSION 143 → 144: a stemless visitor turns no rest (X5d fix round 2, 2026-11-05)
+
+- A rest alone on its staff turned from the stems it met, and every visiting box
+  carried its component's stem direction, a whole note's too, so a rest climbed past a
+  visitor's head, turned by a stem that is not there, where a space down cleared it.
+  A box now carries its stem's direction only where that stem is drawn: `MeasureRest`
+  lists no stemless visitor, and `rests::clear` and `clear_visitors` read none.
+- With no drawn stem to turn from, a rest alone takes the nearer side, as between stems
+  of both ways (D109 Q8), a tie going down: it goes no further than the parts need
+  (Gould, p. 36). Where a stem is drawn, the side it gives stands. `clear_visitors`
+  decides by what the rest meets: a stem elsewhere in its column that it does not meet
+  does not turn it from a stemless head it does. A curve through a rest with no stem
+  near it reads the same way.
+- MuseScore does not move such a rest at all (`hasVoices`, `restlayout.cpp`), so it can
+  stand on the head; LilyPond's rest reads no note from another staff. Both leave ink
+  meeting that Gould's rule does not (p. 41), so the rest still moves.
+- `a_rest_alone_beside_a_stemless_visitor_takes_the_nearer_side`,
+  `a_shorter_rest_beside_a_stemless_visitor_takes_the_nearer_side`,
+  `a_rest_alone_with_no_stem_near_takes_the_nearer_side`,
+  `a_rest_alone_meeting_only_a_stemless_head_takes_the_nearer_side`,
+  `a_stem_it_meets_turns_a_rest_beside_a_stemless_head`. A stem within a rest's reach
+  beside it still turns it, past the nearer way
+  (`a_rest_alone_turns_from_a_stem_within_its_reach_beside_it`), since with no stem now
+  meaning the nearer side an earlier test no longer told the reach from the rest's box.
+
+## The rest's clauses pinned (X5d fix round 2, 2026-11-05; ENGRAVER_VERSION stays 144)
+
+- Clauses of entries 130, 131 and 136 that a mutation showed no test holding, each with
+  a test seen failing with its mutation, in `vertical_rules.rs`'s `rest_clauses` and
+  `rests.rs`: a tie read at its arc and at its thickness; each half of the measure
+  filter, the bar before and the bar after; a slur's carry moving its own end alone,
+  either end; "across", a mark ended before the item; a stem far to the left of a rest
+  alone; a slur on a hidden rest carried, a syllable on one staying; an ottava's end
+  reading its own staff's rest, and the drawn rest beside a hidden one; a measure rest's
+  stems holding its own bar alone, read at the constrained stage, since at the layout a
+  visitor's bar before stands past the rest's reach.
+
+## What no input reaches, and what stays named (X5d fix round 2, 2026-11-05; ENGRAVER_VERSION stays 144)
+
+- Removed, each by its proof and changing no page. A measure's right barline drawn back
+  by `shift_of`: only the columns before a later system's first note or rest are drawn
+  back, and that barline stands after the rest's own column, so nothing is. `clear_ledgers`'s
+  `event != eid`: the ink it reads is heads and what they carry, keyed by a note's event,
+  and `eid` is a rest's, so the event is gone from the map as well.
+- `rests::clear`'s bound keeps its loop and gains a `debug_assert!`, as `clear_visitors`
+  has: walking up, a rest needs at most the ink's top, the clearance and its own depth
+  below its origin, plus one, which `bound` exceeds for every height and glyph, and down
+  alike, so a move past it fails a debug build instead of settling on ink.
+- `clear_ledgers`'s `seg.visible` stays, named: a hidden rest draws nothing, and the clause
+  keeps its undrawn anchor at its height.
+- `RestInk::within`'s zero-width branch stays, no guard against an impossible case: a
+  stroke's edges stand a thickness apart, but a curve's chord has no thickness, so an
+  upright chord reaches it (`an_upright_chord_reads_at_its_first_end`).
+
+## ENGRAVER_VERSION 144 → 145: a slur's end stands at least 0.9 off its rest, moved or not (X5d fix round 3, 2026-11-06)
+
+- Amends entry 141, "a measure rest reads no slur of its own, and a slur's end follows
+  it". There an end on a rest moved off its height stood exactly 0.9 off the rest's ink on
+  the arc's side, whichever way the rest went, and an end on a rest nothing moved stayed at
+  its default whatever that stood on.
+- Now an end stands at least 0.9 off its rest's ink on the arc's side, moved or not. It
+  follows a rest toward its arc and never away, and it keeps its default height where that
+  already stands further out. The default reads the heads of its column on the arc's side,
+  so it is where the arc clears them, and the floor makes it clear the rest too.
+- Three shapes the old rule drew wrong. A rest alone sent away from its arc by a stemless
+  head: the end followed it inside the staff and pulled the arc through that head, each way.
+  A rest moved toward its arc with a head further out in its column: the end was drawn in to
+  the rest and the arc ran through that head, each way. A rest nothing moved: a default
+  reading another voice's head could stand on the rest, under an arc above, or on the rest's
+  far side, under an arc below.
+- Gould is silent on a slur from a rest; of a head, an end may stand as near as half a space
+  from its centre, and with room to spare a slur keeps further off (pp. 110-111). The figure
+  stays MuseScore's, where it is an end's first place, read off the rest's box alone
+  (`SlurTieLayout::slurPos`): `adjustEndPoints` takes it off a staff line and `avoidCollisions`
+  lifts it from what the arc meets, each further out. So MuseScore's page also stands an end at
+  least that far off, up to 2.2, by a rest no visitor moves, while its arc can pass a head
+  further out by a quarter of a space or cross that head's ledger line; this engraver's default
+  clears both. LilyPond's `slur-scoring.cc` reads a rest in its column as the head an end stands
+  on. The floor over the default is this engraver's, under D99.
+- Named, not settled. The floor reads a rest filling its measure and no other, so an end on a
+  shorter rest keeps its default, as it did before this phase, which beside another voice can
+  stand on the rest's far side. The floor reads the end's height and not the arc's: on a short
+  piece over a break, climbing steeply to its end, the line passes the rest's corner nearer than
+  the end stands. A fermata over the rest stands clear of the end as it always has, so it rises
+  with a default further out and stands further from its rest. A slur between staves draws no
+  curve (`a_cross_staff_slur_keeps_its_anchor_rather_than_floating`), so a lift reads one staff.
+- `a_slurs_end_keeps_its_default_off_a_rest_sent_down_from_its_arc` and its `_sent_up_` mirror,
+  which an import reaches, a note's stem turning the arc under;
+  `a_slurs_end_stands_off_a_rest_nothing_moved_from_an_arc_above` and `_below`;
+  `a_slurs_end_keeps_a_default_further_out_than_a_rest_moved_toward_its_arc`. Each an end and a
+  start. Entry 141's `a_slurs_end_stands_off_a_rest_raised_from_its_height`, its lowered mirror
+  and `a_slurs_end_stays_on_a_rest_at_its_height` hold what stays.

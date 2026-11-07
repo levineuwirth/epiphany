@@ -220,11 +220,66 @@ pub struct ConstrainedLayoutIR {
     /// Each ending's start: a solver that breaks a system at the barline an
     /// ending opens after draws the whole ending on the next system.
     pub endings: Vec<EndingStart>,
+    /// Each rest filling its measure: once its system is set across, a solver
+    /// centres it in its staff's free space in the measure, as Gould sets a
+    /// whole-bar rest (*Behind Bars*, pp. 159-160) and MuseScore and LilyPond
+    /// centre theirs, and what stands on it goes with it; its column keeps
+    /// its room.
+    pub measure_rests: Vec<MeasureRest>,
     /// The runs the family's lines draw piece by piece (X4d.1): a pedal
     /// line's, an ottava's or a verbal crescendo's continuation at the start
     /// of each piece a system break carries into a later system, and a
     /// glissando's words along each piece.
     pub line_texts: Vec<LineText>,
+}
+
+/// A rest filling its measure (see [`ConstrainedLayoutIR::measure_rests`]),
+/// and what a solver moves with it across: a fermata, centred on its rest
+/// (Gould, p. 188; MuseScore's `TLayout::layoutFermata`); a slur's end, read
+/// from the rest's own place (MuseScore's `SlurTieLayout::slurPos`); a
+/// syllable, a child of the rest on MuseScore's page; and the end of an ottava
+/// whose last ink it is (`Ottava::linePos`). A dynamic, words and a trill line
+/// at its column stay, anchored to the time and not the rest, as MuseScore
+/// anchors each to the segment (`DynamicsLayout`, `SLine::linePos`).
+#[derive(Clone, PartialEq, Debug)]
+pub struct MeasureRest {
+    /// The rest's glyph; a hidden rest draws none, and what stands on it
+    /// stands where it would.
+    pub glyph: Option<GlyphObjectId>,
+    /// The rest's column.
+    pub slot: SpringSlotId,
+    /// The rest's staff.
+    pub band: VerticalBandId,
+    /// Its name on its staff, before any ledger line: a solver decides its
+    /// height once it stands across, and its ledger line with it.
+    pub name: &'static str,
+    /// Its height at its voice's place on its staff.
+    pub y: f32,
+    /// Its staff's bottom and top lines.
+    pub lines: (f32, f32),
+    /// Its voice's side: up for an upper voice, down for a lower, `None` for a
+    /// rest alone on its staff.
+    pub up: Option<bool>,
+    /// The drawn stems visiting its staff in its measure, with their heads, which
+    /// a rest alone on it turns from: each box's column, its ink across from the
+    /// column's x, and whether its stem turns up. A visitor with no drawn stem is
+    /// not among them: it turns no rest.
+    pub stems: Vec<(SpringSlotId, f32, f32, bool)>,
+    /// The fermatas standing on it.
+    pub marks: Vec<GlyphObjectId>,
+    /// The slurs starting on it.
+    pub slur_starts: Vec<GlyphObjectId>,
+    /// The slurs ending on it.
+    pub slur_ends: Vec<GlyphObjectId>,
+    /// The syllables standing on it.
+    pub runs: Vec<GlyphObjectId>,
+    /// The hyphens and melisma lines leaving those syllables, which start where
+    /// the syllable stands.
+    pub run_lines_from: Vec<GlyphObjectId>,
+    /// The hyphens reaching them, which end where the syllable stands.
+    pub run_lines_to: Vec<GlyphObjectId>,
+    /// The strokes of an ottava ending past it: its line, then its hook.
+    pub line_ends: Vec<GlyphObjectId>,
 }
 
 /// An ending's start (see [`ConstrainedLayoutIR::endings`]): the barline
@@ -1440,6 +1495,15 @@ pub fn try_to_constrained(
     let mut constrained_regions = Vec::new();
     let mut span_anchors: Vec<SpanAnchor> = Vec::new();
     let mut endings: Vec<EndingStart> = Vec::new();
+    let mut measure_rests: Vec<MeasureRest> = Vec::new();
+    // What stands on each rest filling its measure, its index there by event.
+    let mut measure_rest_of: BTreeMap<EventId, usize> = BTreeMap::new();
+    let mut rest_marks: Vec<(EventId, GlyphObjectId)> = Vec::new();
+    let mut rest_slurs: Vec<(EventId, EventId, GlyphObjectId)> = Vec::new();
+    let mut rest_runs: Vec<(EventId, GlyphObjectId)> = Vec::new();
+    let mut rest_run_lines_from: Vec<(EventId, GlyphObjectId)> = Vec::new();
+    let mut rest_run_lines_to: Vec<(EventId, GlyphObjectId)> = Vec::new();
+    let mut rest_lines: Vec<(EventId, Vec<GlyphObjectId>)> = Vec::new();
     let mut line_texts: Vec<LineText> = Vec::new();
     let mut system_leads: Vec<SystemLead> = Vec::new();
     let mut staff_groups: Vec<GroupSpan> = Vec::new();
@@ -1489,6 +1553,7 @@ pub fn try_to_constrained(
         // ones. An empty sequence falls back to the staff's own `default_clef`.
         let mut clef_seq_of: BTreeMap<StaffId, Vec<PlacedClef>> = BTreeMap::new();
         let mut clef_default_of: BTreeMap<StaffId, Clef> = BTreeMap::new();
+        let mut one_line: BTreeSet<StaffId> = BTreeSet::new();
         for object in &region.objects {
             if let (Some(staff), LayoutContent::Staff(content)) = (object.staff(), object.content())
             {
@@ -1496,8 +1561,32 @@ pub fn try_to_constrained(
                     .entry(staff)
                     .or_insert_with(|| content.clefs.clone());
                 clef_default_of.entry(staff).or_insert(content.default_clef);
+                if content.lines == 1 {
+                    one_line.insert(staff);
+                }
             }
         }
+        // A staff of one line draws it where a five-line staff draws its
+        // middle line, so its clef, signatures, barlines and the stems and
+        // rests the middle line decides stand about it, and its unpitched
+        // notes, which the file places from that line as a five-line staff's
+        // bottom line (E4: MusicXML, and MuseScore's export), move up by the
+        // two spaces between (X5d.6). Its frame, the steps of its outer
+        // lines, is that line's alone.
+        let line_shift = |staff: Option<StaffId>| -> StaffStep {
+            if staff.is_some_and(|s| one_line.contains(&s)) {
+                4
+            } else {
+                0
+            }
+        };
+        let frame_of = |staff: Option<StaffId>| -> (StaffStep, StaffStep) {
+            if staff.is_some_and(|s| one_line.contains(&s)) {
+                (4, 4)
+            } else {
+                (0, 8)
+            }
+        };
         let clef_seq = |staff: Option<StaffId>| -> &[PlacedClef] {
             staff
                 .and_then(|s| clef_seq_of.get(&s))
@@ -1662,6 +1751,7 @@ pub fn try_to_constrained(
                                 key: key.clone(),
                                 y: step_to_y(yo, step),
                                 step,
+                                frame: (0, 8),
                                 comp,
                                 accidentals,
                                 accidental_x: Vec::new(),
@@ -1711,7 +1801,7 @@ pub fn try_to_constrained(
                         unpitched.duration.as_ref(),
                     ));
                     let mut stems = Vec::new();
-                    let step = StaffStep::from(unpitched.staff_position.0);
+                    let step = StaffStep::from(unpitched.staff_position.0) + line_shift(staff);
                     for (comp, (offset, value, dots, tied)) in
                         components_of(&unpitched.components).enumerate()
                     {
@@ -1740,6 +1830,7 @@ pub fn try_to_constrained(
                             key: key.clone(),
                             y: step_to_y(yo, step),
                             step,
+                            frame: frame_of(staff),
                             comp,
                             accidentals: Vec::new(),
                             accidental_x: Vec::new(),
@@ -1796,21 +1887,35 @@ pub fn try_to_constrained(
                         // hanging from the fourth line; every other rest sits on
                         // the middle line. Beside another voice, an upper voice's
                         // rest moves up a space and a lower voice's down one.
-                        let (name, dots) = if rest.whole_measure {
-                            (Some("restWhole"), 0)
-                        } else {
-                            (rest_glyph(value), dots)
+                        // A whole rest, or from 2/1 a breve rest (Gould, p. 160;
+                        // MuseScore's `Rest::getSymbol`; LilyPond's whole-bar rest).
+                        let breve_bar = rest
+                            .duration
+                            .as_ref()
+                            .is_some_and(|d| d.0 >= RationalTime::from_int(2));
+                        let (name, dots) = match (rest.whole_measure, breve_bar) {
+                            (true, true) => (Some("restDoubleWhole"), 0),
+                            (true, false) => (Some("restWhole"), 0),
+                            _ => (rest_glyph(value), dots),
                         };
-                        let y = if name == Some("restWhole") {
-                            yo + STAFF_HEIGHT * 0.75
-                        } else {
-                            yo + STAFF_HEIGHT / 2.0
+                        let (lo, hi) = frame_of(staff);
+                        let y = match name {
+                            Some("restWhole") if lo != hi => yo + STAFF_HEIGHT * 0.75,
+                            // A breve rest fills a space, up from the middle
+                            // line, or down from a staff's one line (MuseScore's
+                            // `computeWholeOrBreveRestOffset`, LilyPond's
+                            // `staff_position_internal`).
+                            Some("restDoubleWhole") if lo == hi => yo + STAFF_HEIGHT / 2.0 - 1.0,
+                            // On the middle line, or, a whole rest on a staff
+                            // of one line, hanging from it (Gould, p. 38).
+                            _ => yo + STAFF_HEIGHT / 2.0,
                         };
-                        let y = match rest.voice {
-                            VoicePlace::Alone => y,
-                            VoicePlace::Upper => y + REST_VOICE_SHIFT,
-                            VoicePlace::Lower => y - REST_VOICE_SHIFT,
+                        let shift = match rest.voice {
+                            VoicePlace::Alone => 0.0,
+                            VoicePlace::Upper => REST_VOICE_SHIFT,
+                            VoicePlace::Lower => -REST_VOICE_SHIFT,
                         };
+                        let y = y + shift;
                         segs.push(RestSeg {
                             name,
                             key,
@@ -1818,10 +1923,12 @@ pub fn try_to_constrained(
                             comp,
                             visible: rest.visible,
                             dots,
-                            dots_y: yo + STAFF_HEIGHT / 2.0 + 0.5,
+                            dots_y: yo + STAFF_HEIGHT / 2.0 + 0.5 + shift,
                             staff,
                             start: time,
                             voice: rest.voice,
+                            whole_measure: rest.whole_measure,
+                            lines: (step_to_y(yo, lo), step_to_y(yo, hi)),
                         });
                         if rest.whole_measure {
                             break;
@@ -2098,11 +2205,11 @@ pub fn try_to_constrained(
                 event_rests: &event_rests,
                 shown: &shown_accidentals,
             },
-            |staff: Option<StaffId>, time: &TimePoint| {
-                (
-                    staff.map(&y_origin).unwrap_or(0.0),
-                    active_clef_or(clef_seq(staff), time, clef_default(staff)),
-                )
+            |staff: Option<StaffId>, time: &TimePoint| GraceFrame {
+                yo: staff.map(&y_origin).unwrap_or(0.0),
+                clef: active_clef_or(clef_seq(staff), time, clef_default(staff)),
+                unpitched_shift: line_shift(staff),
+                unpitched_frame: frame_of(staff),
             },
             &mut diagnostics,
         );
@@ -2995,7 +3102,7 @@ pub fn try_to_constrained(
                     let b = m.bounding_box();
                     (b.left.0, b.right.0)
                 });
-                for step in ledger_steps(head.step) {
+                for step in ledger_steps(head.step, head.frame) {
                     others.push((
                         head.event,
                         marks::OtherInk::Ledger {
@@ -3249,7 +3356,7 @@ pub fn try_to_constrained(
                 let seg = event_stems
                     .get(&head.event)
                     .and_then(|segs| segs.iter().find(|seg| seg.comp == head.comp));
-                let up = seg.is_none_or(|seg| seg.up);
+                let up = seg.and_then(|seg| seg.drawn.then_some(seg.up));
                 let boxes = visitor_ink.entry((*staff, key.clone())).or_default();
                 boxes.extend(
                     column_ink_boxes(head, info.x, yo)
@@ -3264,6 +3371,24 @@ pub fn try_to_constrained(
             }
         }
         clear_visitors(&mut event_rests, &visiting, &visitor_ink, &columns);
+
+        // Each staff column's note ink: a ledgered rest's line reaches an
+        // accidental where its plain glyph does not.
+        let mut note_ink: ColumnNoteInk = BTreeMap::new();
+        for ((staff, key), refs) in &column_heads {
+            let Some(info) = columns.get(key) else {
+                continue;
+            };
+            let yo = staff.map(&y_origin).unwrap_or(0.0);
+            for r in refs {
+                let head = r.get(&pitch_heads, &unpitched_heads);
+                note_ink
+                    .entry((*staff, key.clone()))
+                    .or_default()
+                    .extend(column_ink_boxes(head, info.x, yo));
+            }
+        }
+        clear_ledgers(&mut event_rests, &note_ink, &columns);
 
         // The dynamics and hairpins of each staff, placed before any is
         // emitted: a hairpin keeps its distance from a dynamic at either of its
@@ -4090,9 +4215,11 @@ pub fn try_to_constrained(
                     // keyed on the manifestation and line index).
                     let manifestation =
                         manifestation_layout_id(&TypedObjectId::Staff(s), region_id);
-                    for line in 0..5u32 {
+                    // A staff of one line draws it alone, at its frame's middle.
+                    let drawn = if one_line.contains(&s) { 2..3 } else { 0..5u32 };
+                    for line in drawn.clone() {
                         let y = yo + line as f32;
-                        let provenance = if line == 0 {
+                        let provenance = if line == drawn.start {
                             provenance.clone()
                         } else {
                             Provenance::synthesized(
@@ -4121,6 +4248,7 @@ pub fn try_to_constrained(
                         Some(LayoutContent::Staff(c)) => c,
                         _ => {
                             default_content = StaffContent {
+                                lines: 5,
                                 clefs: Vec::new(),
                                 keys: Vec::new(),
                                 default_clef: Clef::default(),
@@ -4638,8 +4766,19 @@ pub fn try_to_constrained(
                             }
                         }
                     }
-                    Some(LayoutContent::Rest(_)) => {
+                    Some(LayoutContent::Rest(rest)) => {
                         let segs = event_rests.get(&eid).map(Vec::as_slice).unwrap_or(&[]);
+                        // A column inside the measure a rest filling it stands in.
+                        let in_measure = |key: &ColumnKey, seg: &RestSeg| {
+                            let (ColumnKey::Timed(time, _), Some(length)) =
+                                (key, rest.duration.as_ref())
+                            else {
+                                return false;
+                            };
+                            let end = shift_time(&seg.start, length);
+                            time_total(time, &seg.start) != Ordering::Less
+                                && time_total(time, &end) == Ordering::Less
+                        };
                         if segs.is_empty() {
                             emit.stroke(anchor(
                                 provenance,
@@ -4656,6 +4795,44 @@ pub fn try_to_constrained(
                                 owned = component_provenance(provenance, seg.comp);
                                 &owned
                             };
+                            if seg.whole_measure {
+                                measure_rest_of.insert(eid, measure_rests.len());
+                                measure_rests.push(MeasureRest {
+                                    glyph: None,
+                                    slot: info.slot,
+                                    band: band_of(staff),
+                                    name: seg.name.unwrap_or("restWhole"),
+                                    y: seg.y,
+                                    lines: seg.lines,
+                                    up: voiced_up(seg.voice),
+                                    stems: visitor_ink
+                                        .iter()
+                                        .filter(|((st, key), _)| {
+                                            *st == seg.staff && in_measure(key, seg)
+                                        })
+                                        .flat_map(|((_, key), boxes)| {
+                                            let info = column(key);
+                                            boxes.iter().filter_map(move |(b, up)| {
+                                                up.map(|up| {
+                                                    (
+                                                        info.slot,
+                                                        b.left - info.x,
+                                                        b.right - info.x,
+                                                        up,
+                                                    )
+                                                })
+                                            })
+                                        })
+                                        .collect(),
+                                    marks: Vec::new(),
+                                    slur_starts: Vec::new(),
+                                    slur_ends: Vec::new(),
+                                    runs: Vec::new(),
+                                    run_lines_from: Vec::new(),
+                                    run_lines_to: Vec::new(),
+                                    line_ends: Vec::new(),
+                                });
+                            }
                             match seg.name {
                                 // A hidden rest keeps its place as a traced anchor.
                                 _ if !seg.visible => emit.stroke(anchor(
@@ -4664,6 +4841,9 @@ pub fn try_to_constrained(
                                     band_of(staff),
                                 )),
                                 Some(name) => {
+                                    // On its final line, a whole or half rest
+                                    // outside its staff takes its ledger line.
+                                    let name = ledgered_rest(name, seg.y, seg.lines);
                                     emit.glyph(
                                         prov_ref,
                                         name,
@@ -4672,6 +4852,13 @@ pub fn try_to_constrained(
                                         staff,
                                         info.slot,
                                     );
+                                    if seg.whole_measure {
+                                        if let (Some(glyph), Some(rest)) =
+                                            (emit.glyphs.last(), measure_rests.last_mut())
+                                        {
+                                            rest.glyph = Some(glyph.id());
+                                        }
+                                    }
                                     // Dots sit in the space above the middle line,
                                     // right of the rest, and move with a rest
                                     // moved clear of a visiting voice.
@@ -5382,6 +5569,12 @@ pub fn try_to_constrained(
                                             staff,
                                             info.slot,
                                         );
+                                        if let Some(event) = event {
+                                            rest_marks.push((
+                                                event,
+                                                GlyphObjectId(provenance.stable_id.0),
+                                            ));
+                                        }
                                         family.push(FamilyMark {
                                             band: band_of(staff),
                                             glyphs: vec![GlyphObjectId(provenance.stable_id.0)],
@@ -5542,6 +5735,7 @@ pub fn try_to_constrained(
                                         horizontal_slot: info.slot,
                                         vertical_band: band,
                                     });
+                                    rest_runs.push((lyric.event, syllable.run.id()));
                                     family.push(FamilyMark {
                                         band,
                                         glyphs: Vec::new(),
@@ -5612,6 +5806,12 @@ pub fn try_to_constrained(
                                             info.slot,
                                             column(&key).slot,
                                         ));
+                                        rest_run_lines_from.push((lyric.event, stroke.id()));
+                                        if let (FamilyLine::Hyphen, Some((e, _))) =
+                                            (kind, lyric.next.as_ref())
+                                        {
+                                            rest_run_lines_to.push((*e, stroke.id()));
+                                        }
                                         family.push(FamilyMark {
                                             band,
                                             glyphs: Vec::new(),
@@ -5965,6 +6165,7 @@ pub fn try_to_constrained(
                                     let (x0, mut x1, y, width, dashes);
                                     let mut start_hook: Option<f32> = None;
                                     let mut end_hook: Option<f32> = None;
+                                    let mut ends_on_rest: Option<EventId> = None;
                                     // The slot its end rides, and one its end
                                     // may not pass.
                                     let mut end_slot = last.slot;
@@ -6109,6 +6310,25 @@ pub fn try_to_constrained(
                                                     x1 = right + lines::OTTAVA_END_PAST
                                                         - width * 0.5;
                                                     end_slot = slot;
+                                                    // Its last ink a rest alone in its column:
+                                                    // one filling its measure takes its end with it.
+                                                    ends_on_rest = event_rests
+                                                        .iter()
+                                                        .find(|(_, segs)| {
+                                                            segs.iter().any(|r| {
+                                                                r.visible
+                                                                    && r.staff == Some(st)
+                                                                    && columns
+                                                                        .get(&r.key)
+                                                                        .is_some_and(|c| {
+                                                                            c.slot == slot
+                                                                        })
+                                                                    && !column_heads.contains_key(
+                                                                        &(Some(st), r.key.clone()),
+                                                                    )
+                                                            })
+                                                        })
+                                                        .map(|(e, _)| *e);
                                                     before = first_column(&columns, &t1, true)
                                                         .map(|(_, c)| c.slot);
                                                 }
@@ -6341,6 +6561,17 @@ pub fn try_to_constrained(
                                         hairpin_anchors.push((stroke.id(), slot, slot));
                                         strokes.push(stroke);
                                     }
+                                    if let Some(event) = ends_on_rest {
+                                        // Its line and its end's hook, not a start's.
+                                        rest_lines.push((
+                                            event,
+                                            strokes
+                                                .iter()
+                                                .take(1 + usize::from(end_hook.is_some()))
+                                                .map(Stroke::id)
+                                                .collect(),
+                                        ));
+                                    }
                                     let mut runs = Vec::new();
                                     if let Some(run) = sign {
                                         runs.push(run.id());
@@ -6494,7 +6725,12 @@ pub fn try_to_constrained(
                         _ => None,
                     };
                     match curve {
-                        Some(curve) => emit.curve(curve),
+                        Some(curve) => {
+                            if let Some(LayoutContent::Slur(slur)) = content {
+                                rest_slurs.push((slur.events.0, slur.events.1, curve.id()));
+                            }
+                            emit.curve(curve)
+                        }
                         None => emit.stroke(anchor(
                             provenance,
                             Point::new(default_x, yo),
@@ -6966,6 +7202,41 @@ pub fn try_to_constrained(
         region_x = staff_right + REGION_GAP;
     }
 
+    // What stands on each rest filling its measure, wherever it was emitted.
+    for (event, mark) in rest_marks {
+        if let Some(&r) = measure_rest_of.get(&event) {
+            measure_rests[r].marks.push(mark);
+        }
+    }
+    for (event, run) in rest_runs {
+        if let Some(&r) = measure_rest_of.get(&event) {
+            measure_rests[r].runs.push(run);
+        }
+    }
+    for (event, stroke) in rest_run_lines_from {
+        if let Some(&r) = measure_rest_of.get(&event) {
+            measure_rests[r].run_lines_from.push(stroke);
+        }
+    }
+    for (event, stroke) in rest_run_lines_to {
+        if let Some(&r) = measure_rest_of.get(&event) {
+            measure_rests[r].run_lines_to.push(stroke);
+        }
+    }
+    for (event, strokes) in rest_lines {
+        if let Some(&r) = measure_rest_of.get(&event) {
+            measure_rests[r].line_ends.extend(strokes);
+        }
+    }
+    for (first, last, slur) in rest_slurs {
+        if let Some(&r) = measure_rest_of.get(&first) {
+            measure_rests[r].slur_starts.push(slur);
+        }
+        if let Some(&r) = measure_rest_of.get(&last) {
+            measure_rests[r].slur_ends.push(slur);
+        }
+    }
+
     let names: Vec<&str> = glyphs.iter().map(|glyph| glyph.glyph.as_str()).collect();
     let catalog = BravuraCatalog.identity(&names);
     if let Some(object) = logical
@@ -6998,6 +7269,7 @@ pub fn try_to_constrained(
         cross_staff_beams,
         family,
         endings,
+        measure_rests,
         line_texts,
     })
 }
@@ -7010,6 +7282,9 @@ struct Head {
     y: f32,
     /// The note's diatonic staff position, for ledger-line emission.
     step: StaffStep,
+    /// The steps of its staff's outer lines (`0` and `8` for five lines),
+    /// beyond which it takes ledger lines.
+    frame: (StaffStep, StaffStep),
     comp: usize,
     /// The spelling's accidental stack (innermost — nearest the notehead — first),
     /// each drawn left of the notehead. Present only on the first component (a tie
@@ -7128,13 +7403,33 @@ struct RestSeg {
     /// A hidden rest keeps its column and draws no ink.
     visible: bool,
     dots: u8,
-    /// The `y` of the space its dots sit in.
+    /// The `y` of the space its dots sit in. Whatever moves the rest moves them
+    /// by as much: a dot keeps its place against its rest (Gould, p. 38).
     dots_y: f32,
     /// Its staff, onset and voice's place, which decide which other notes it
     /// stands clear of.
     staff: Option<StaffId>,
     start: TimePoint,
     voice: VoicePlace,
+    /// Whether it fills its measure.
+    whole_measure: bool,
+    /// Its staff's bottom and top lines.
+    lines: (f32, f32),
+}
+
+/// The SMuFL name a whole, half or breve rest standing at `y` takes: its
+/// ledgered form where the line it hangs from (a whole rest) or sits on (a half
+/// or a breve) lies outside its staff's lines, as Gould draws them (*Behind
+/// Bars*, p. 37), MuseScore (`Rest::getSymbol`) and LilyPond (`rest.cc`) alike,
+/// but that LilyPond leaves a breve rest hanging from a line plain.
+pub fn ledgered_rest(name: &'static str, y: f32, (bottom, top): (f32, f32)) -> &'static str {
+    let outside = y < bottom - 1e-3 || y > top + 1e-3;
+    match name {
+        "restWhole" if outside => "restWholeLegerLine",
+        "restHalf" if outside => "restHalfLegerLine",
+        "restDoubleWhole" if outside => "restDoubleWholeLegerLine",
+        other => other,
+    }
 }
 
 /// One component of a note or unpitched note, starting at `start` on
@@ -7152,20 +7447,28 @@ struct Sounding {
 const REST_CLEARANCE: f32 = 0.25;
 
 /// Moves each rest of a voice beside another, a space at a time away from
-/// the middle of the staff (up for an upper voice, down for a lower), until
-/// its glyph stands `REST_CLEARANCE` clear of every head of another note on
-/// its staff that starts with it, and so stands in its column. A note held
-/// from before stands to its left.
+/// the middle of the staff (up for an upper voice, down for a lower), dots
+/// with it, until its glyph stands `REST_CLEARANCE` clear of every head of
+/// another note on its staff that starts with it, and so stands in its column.
+/// A note held from before stands to its left.
 fn clear_rests(rests: &mut BTreeMap<EventId, Vec<RestSeg>>, sounding: &[Sounding]) {
     for (eid, segs) in rests.iter_mut() {
-        for seg in segs.iter_mut() {
+        // A rest filling its measure is cleared by a solver where it stands.
+        for seg in segs.iter_mut().filter(|seg| !seg.whole_measure) {
             let up = match seg.voice {
                 VoicePlace::Upper => true,
                 VoicePlace::Lower => false,
                 VoicePlace::Alone => continue,
             };
-            let Some(bounds) = seg.name.and_then(metrics).map(|m| m.bounding_box()) else {
+            let Some(name) = seg.name.filter(|name| metrics(name).is_some()) else {
                 continue;
+            };
+            let lines = seg.lines;
+            // The box of the glyph it draws at a height.
+            let at = move |y: f32| {
+                metrics(ledgered_rest(name, y, lines))
+                    .expect("a rest's ledgered metrics are bundled")
+                    .bounding_box()
             };
             let start = &seg.start;
             let heads = sounding
@@ -7177,15 +7480,17 @@ fn clear_rests(rests: &mut BTreeMap<EventId, Vec<RestSeg>>, sounding: &[Sounding
                 let Some(top) = heads.reduce(f32::max) else {
                     continue;
                 };
-                while seg.y + bounds.bottom.0 < top + 0.5 + REST_CLEARANCE {
+                while seg.y + at(seg.y).bottom.0 < top + 0.5 + REST_CLEARANCE {
                     seg.y += 1.0;
+                    seg.dots_y += 1.0;
                 }
             } else {
                 let Some(bottom) = heads.reduce(f32::min) else {
                     continue;
                 };
-                while seg.y + bounds.top.0 > bottom - 0.5 - REST_CLEARANCE {
+                while seg.y + at(seg.y).top.0 > bottom - 0.5 - REST_CLEARANCE {
                     seg.y -= 1.0;
+                    seg.dots_y -= 1.0;
                 }
             }
         }
@@ -7193,8 +7498,12 @@ fn clear_rests(rests: &mut BTreeMap<EventId, Vec<RestSeg>>, sounding: &[Sounding
 }
 
 /// Each staff column's ink of the voices visiting its staff, each box with
-/// the stem direction of the component it belongs to.
-type VisitorInk = BTreeMap<(Option<StaffId>, ColumnKey), Vec<(InkBox, bool)>>;
+/// the stem direction of the component it belongs to, `None` where that component
+/// draws no stem.
+type VisitorInk = BTreeMap<(Option<StaffId>, ColumnKey), Vec<(InkBox, Option<bool>)>>;
+
+/// Each staff column's note ink, which is no rest's: heads and what they carry.
+type ColumnNoteInk = BTreeMap<(Option<StaffId>, ColumnKey), Vec<InkBox>>;
 
 /// Each staff column's chords' ink, `[left, bottom, right, top]` from the
 /// column, with the event drawing it, which another chord's outside marks
@@ -7213,9 +7522,12 @@ type ColumnOthers = BTreeMap<(Option<StaffId>, ColumnKey), Vec<(EventId, marks::
 /// ink in its column, as a rest beside another voice moves off its heads
 /// (`clear_rests`). A rest alone on its staff moves to the side away from the
 /// stems it meets, down from a visitor whose stem turns up, as the staff's
-/// voice would turn from a second voice there; a rest its own staff's voices
-/// have turned keeps its side. The visitor keeps the stem its home gives it.
-/// A rest moves no further than the column ink's vertical extent plus its own
+/// voice would turn from a second voice there, and, where its column holds
+/// visitors from both sides or it meets no drawn stem, to the side whose first
+/// clear place is nearer its staff's middle line; a rest its own staff's voices
+/// have turned keeps its side. The visitor
+/// keeps the stem its home gives it. A rest moves no further than the column
+/// ink's vertical extent plus its own
 /// height, and a debug build asserts it then stands clear, so a defect in the
 /// move fails instead of looping (X4b fix round 4: before it the loop had no
 /// bound).
@@ -7230,18 +7542,29 @@ fn clear_visitors(
         if visiting.contains(eid) {
             continue;
         }
-        for seg in segs.iter_mut().filter(|seg| seg.visible) {
+        // A rest filling its measure is cleared by a solver where it stands.
+        for seg in segs
+            .iter_mut()
+            .filter(|seg| seg.visible && !seg.whole_measure)
+        {
             let (Some(ink), Some(info)) = (
                 visitor_ink.get(&(seg.staff, seg.key.clone())),
                 columns.get(&seg.key),
             ) else {
                 continue;
             };
-            let Some(bounds) = seg.name.and_then(metrics).map(|m| m.bounding_box()) else {
+            let Some(name) = seg.name.filter(|name| metrics(name).is_some()) else {
                 continue;
             };
-            let x = info.x;
+            let (x, lines) = (info.x, seg.lines);
+            let at = move |y: f32| {
+                metrics(ledgered_rest(name, y, lines))
+                    .expect("a rest's ledgered metrics are bundled")
+                    .bounding_box()
+            };
+            // The glyph it draws at a height is the box it reads there.
             let own = |y: f32, dots_y: f32| -> Vec<InkBox> {
+                let bounds = at(y);
                 let mut boxes = vec![InkBox {
                     left: x + bounds.left.0,
                     right: x + bounds.right.0,
@@ -7265,7 +7588,7 @@ fn clear_visitors(
                 boxes
             };
             let across = |a: &InkBox, b: &InkBox| a.left < b.right && b.left < a.right;
-            let stems_met: Vec<bool> = ink
+            let stems_met: Vec<Option<bool>> = ink
                 .iter()
                 .filter(|(b, _)| {
                     own(seg.y, seg.dots_y)
@@ -7277,12 +7600,6 @@ fn clear_visitors(
             if stems_met.is_empty() {
                 continue;
             }
-            let up = match seg.voice {
-                VoicePlace::Upper => true,
-                VoicePlace::Lower => false,
-                VoicePlace::Alone => stems_met.iter().all(|up| !up),
-            };
-            let step = if up { 1.0 } else { -1.0 };
             let meets = |y: f32, dots_y: f32| {
                 own(y, dots_y).iter().any(|r| {
                     ink.iter().any(|(b, _)| {
@@ -7305,6 +7622,40 @@ fn clear_visitors(
             let (ink_lo, ink_hi) = extent(&mut ink.iter().map(|(b, _)| b));
             let (rest_lo, rest_hi) = extent(&mut own(seg.y, seg.dots_y).iter());
             let bound = (ink_hi - ink_lo) + (rest_hi - rest_lo) + 2.0 * REST_CLEARANCE + 1.0;
+            // A rest alone on its staff turns from the stems it meets; where
+            // its column holds visitors from both sides, their stems turning
+            // both ways, or it meets no drawn stem to turn from, it takes the
+            // side whose first clear place stands nearer its staff's middle line,
+            // as a rest's level follows the pitches around it (Gould, p. 37), a
+            // tie going down (D109 Q8).
+            let first_clear = |step: f32| {
+                let (mut y, mut dots_y, mut moved) = (seg.y, seg.dots_y, 0.0);
+                while moved < bound && meets(y, dots_y) {
+                    y += step;
+                    dots_y += step;
+                    moved += 1.0;
+                }
+                y
+            };
+            let up = match seg.voice {
+                VoicePlace::Upper => true,
+                VoicePlace::Lower => false,
+                VoicePlace::Alone => {
+                    let ups = ink.iter().any(|(_, up)| *up == Some(true));
+                    let downs = ink.iter().any(|(_, up)| *up == Some(false));
+                    if (ups && downs) || stems_met.iter().all(Option::is_none) {
+                        let middle = (seg.lines.0 + seg.lines.1) * 0.5;
+                        let off = |y: f32| {
+                            let b = at(y);
+                            (y + (b.bottom.0 + b.top.0) * 0.5 - middle).abs()
+                        };
+                        off(first_clear(1.0)) + 1e-3 < off(first_clear(-1.0))
+                    } else {
+                        stems_met.iter().flatten().all(|up| !up)
+                    }
+                }
+            };
+            let step = if up { 1.0 } else { -1.0 };
             let mut moved = 0.0;
             while moved < bound && meets(seg.y, seg.dots_y) {
                 seg.y += step;
@@ -7315,6 +7666,60 @@ fn clear_visitors(
                 !meets(seg.y, seg.dots_y),
                 "a rest moved {moved} spaces, its bound, and still meets a visiting voice's ink"
             );
+        }
+    }
+}
+
+/// Moves each whole or half rest drawn ledgered, its staff's outward, a space
+/// at a time, until its glyph stands `REST_CLEARANCE` up and down from the ink
+/// of every other note in its column: the ledger line's overhang reaches an
+/// accidental where the plain glyph, which `clear_rests` leaves beside the
+/// heads, does not (Gould, p. 41). A hidden rest is left out though it would draw
+/// nothing if moved: it keeps its undrawn anchor at its height.
+fn clear_ledgers(
+    rests: &mut BTreeMap<EventId, Vec<RestSeg>>,
+    accidentals: &ColumnNoteInk,
+    columns: &BTreeMap<ColumnKey, ColumnInfo>,
+) {
+    for segs in rests.values_mut() {
+        for seg in segs
+            .iter_mut()
+            .filter(|seg| seg.visible && !seg.whole_measure)
+        {
+            let (Some(name), Some(info), Some(ink)) = (
+                seg.name,
+                columns.get(&seg.key),
+                accidentals.get(&(seg.staff, seg.key.clone())),
+            ) else {
+                continue;
+            };
+            if ledgered_rest(name, seg.y, seg.lines) == name {
+                continue;
+            }
+            let lines = seg.lines;
+            let meets = |y: f32| {
+                let b = metrics(ledgered_rest(name, y, lines))
+                    .expect("a rest's ledgered metrics are bundled")
+                    .bounding_box();
+                ink.iter().any(|a| {
+                    info.x + b.left.0 < a.right
+                        && a.left < info.x + b.right.0
+                        && y + b.bottom.0 < a.top + REST_CLEARANCE
+                        && a.bottom < y + b.top.0 + REST_CLEARANCE
+                })
+            };
+            let step = if seg.y >= (lines.0 + lines.1) * 0.5 {
+                1.0
+            } else {
+                -1.0
+            };
+            // It passes ink that stays, within that ink's height and its own.
+            let mut moved = 0.0;
+            while moved < 32.0 && meets(seg.y) {
+                seg.y += step;
+                seg.dots_y += step;
+                moved += 1.0;
+            }
         }
     }
 }
@@ -9196,7 +9601,7 @@ fn column_ink_boxes(head: &Head, x: f32, yo: f32) -> Vec<InkBox> {
     let head_box = metrics(head.name).map(|m| m.bounding_box());
     let left = head_box.map_or(0.0, |b| b.left.0);
     let right = head_box.map_or(NOTEHEAD_STEM_X, |b| b.right.0);
-    for step in ledger_steps(head.step) {
+    for step in ledger_steps(head.step, head.frame) {
         let y = step_to_y(yo, step);
         boxes.push(InkBox {
             left: hx + left - LEDGER_LINE_EXTENSION,
@@ -9556,7 +9961,7 @@ fn place_heads(
                     let [l, bottom, r, top] = ink(heads[j]);
                     let (bl, br) = (dx[j] + l, dx[j] + r);
                     let mut obstacles = vec![(bl, br, heads[j].y + bottom, heads[j].y + top)];
-                    for step in ledger_steps(heads[j].step) {
+                    for step in ledger_steps(heads[j].step, heads[j].frame) {
                         let y = heads[j].y + (step - heads[j].step) as f32 * 0.5;
                         obstacles.push((
                             bl - LEDGER_LINE_EXTENSION,
@@ -10004,7 +10409,7 @@ fn stack_accidentals(
         let head = heads[i];
         let left = dx[i] + metrics(head.name).map_or(0.0, |m| m.bounding_box().left.0);
         heads_left = heads_left.min(left);
-        for step in ledger_steps(head.step) {
+        for step in ledger_steps(head.step, head.frame) {
             let y = head.y + (step - head.step) as f32 * 0.5;
             ledgers.push((left - LEDGER_LINE_EXTENSION, y));
         }
@@ -10114,7 +10519,7 @@ fn emit_head(
     let head_box = metrics(head.name).map(|m| m.bounding_box());
     let head_left = head_box.map_or(0.0, |b| b.left.0);
     let head_right = head_box.map_or(NOTEHEAD_STEM_X, |b| b.right.0);
-    for ledger_step in ledger_steps(head.step) {
+    for ledger_step in ledger_steps(head.step, head.frame) {
         let y = step_to_y(yo, ledger_step);
         let ledger_provenance = Provenance::synthesized(
             provenance.source,
@@ -10240,18 +10645,19 @@ fn step_to_y(y_origin: f32, step: StaffStep) -> f32 {
 }
 
 /// The staff steps at which a note at `step` needs ledger lines: the even steps
-/// strictly outside the five-line staff (whose lines are the even steps `0..=8`),
-/// from the staff out to the note. Empty when the note is on or within the staff,
-/// or one space just outside it (an odd step at `±1` from the nearest line). At
-/// most one of the two loops runs, since a step cannot be both above and below.
-fn ledger_steps(step: StaffStep) -> Vec<StaffStep> {
+/// strictly outside its staff's lines (`frame`, the steps of its outer lines:
+/// `0` and `8` for five lines, the line's alone for one), from the staff out
+/// to the note. Empty when the note is on or within the staff, or one space
+/// just outside it (an odd step at `±1` from the nearest line). At most one of
+/// the two loops runs, since a step cannot be both above and below.
+fn ledger_steps(step: StaffStep, (bottom, top): (StaffStep, StaffStep)) -> Vec<StaffStep> {
     let mut steps = Vec::new();
-    let mut above = 10;
+    let mut above = top + 2;
     while above <= step {
         steps.push(above);
         above += 2;
     }
-    let mut below = -2;
+    let mut below = bottom - 2;
     while below >= step {
         steps.push(below);
         below -= 2;
@@ -10879,6 +11285,17 @@ fn fermata_glyph(fermata: &epiphany_core::Fermata, above: bool) -> &'static str 
 #[path = "marks.rs"]
 mod marks;
 
+/// Where a staff's graces stand at a time: its origin and clef, and for an
+/// unpitched grace the shift and the outer lines its staff's own notes take
+/// (X5d.6: a staff of one line moves them onto its line and ledgers them
+/// from it).
+struct GraceFrame {
+    yo: f32,
+    clef: Clef,
+    unpitched_shift: StaffStep,
+    unpitched_frame: (StaffStep, StaffStep),
+}
+
 /// What setting out the grace notes reads of a region (X4d.2): the heads,
 /// stems and rests of each staff's columns, with their accidentals placed,
 /// and the accidental each pitch shows by its measure.
@@ -11002,7 +11419,7 @@ fn grace_ink(shape: &graces::GraceShape) -> Vec<graces::Ink> {
 fn place_graces(
     graces_in: &[(EventId, Option<StaffId>, &crate::logical::GraceContent)],
     inputs: &GraceInputs<'_>,
-    frame: impl Fn(Option<StaffId>, &TimePoint) -> (f32, Clef),
+    frame: impl Fn(Option<StaffId>, &TimePoint) -> GraceFrame,
     diagnostics: &mut Vec<LayoutDiagnostic>,
 ) -> BTreeMap<EventId, GracePlacing> {
     let k = graces::GRACE_MAG;
@@ -11028,7 +11445,12 @@ fn place_graces(
         let ColumnKey::Timed(time, _) = &key else {
             continue;
         };
-        let (yo, clef) = frame(staff, time);
+        let GraceFrame {
+            yo,
+            clef,
+            unpitched_shift,
+            unpitched_frame,
+        } = frame(staff, time);
         // The principal's column's ink on the staff, from the column's x.
         let mut principal: Vec<graces::Ink> = Vec::new();
         if let Some(refs) = inputs.column_heads.get(&(staff, key.clone())) {
@@ -11088,7 +11510,7 @@ fn place_graces(
                 heads.push((step_to_y(yo, step), step, Some(i)));
             }
             if let Some(position) = grace.unpitched {
-                let step = StaffStep::from(position.0);
+                let step = StaffStep::from(position.0) + unpitched_shift;
                 heads.push((step_to_y(yo, step), step, None));
             }
             if heads.is_empty() {
@@ -11105,7 +11527,11 @@ fn place_graces(
             let origin_x = -k * hb.left.0;
             for (y, step, i) in &heads {
                 shape.heads.push((Point::new(origin_x, *y), name, *i));
-                for ledger in ledger_steps(*step) {
+                // A pitched head's ledger lines from a five-line staff's
+                // outer lines, an unpitched head's from its staff's own, as
+                // the staff's notes take theirs.
+                let lines = if i.is_some() { (0, 8) } else { unpitched_frame };
+                for ledger in ledger_steps(*step, lines) {
                     let ly = step_to_y(yo, ledger);
                     shape.ledgers.push((
                         Point::new(k * (hb.left.0 - LEDGER_LINE_EXTENSION) + origin_x, ly),
@@ -11392,6 +11818,236 @@ const GRACE_ACCIDENTAL_GAP: f32 = 0.25;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A rest between visitors from both sides whose first clear places
+    /// stand equally far from its staff's middle line keeps the side it
+    /// always took, down (D109 Q8); one step nearer above, it turns up.
+    #[test]
+    fn a_rest_between_visitors_level_both_ways_keeps_its_side() {
+        // A quarter rest's centre stands near its line, a half rest's off it,
+        // so only the half rest shows the side read by the glyph's centre.
+        for name in ["restQuarter", "restHalf"] {
+            rest_between_visitors_level_both_ways_keeps_its_side(name);
+        }
+    }
+
+    fn rest_between_visitors_level_both_ways_keeps_its_side(name: &'static str) {
+        let bounds = metrics(name).expect("bundled").bounding_box();
+        let centre = (bounds.bottom.0 + bounds.top.0) * 0.5;
+        let middle = 2.0;
+        let run = |raise: f32| -> f32 {
+            let seg = RestSeg {
+                name: Some(name),
+                key: ColumnKey::Lead,
+                y: middle - centre,
+                comp: 0,
+                visible: true,
+                dots: 0,
+                dots_y: middle + 0.5,
+                staff: None,
+                start: TimePoint::WallClock(WallClockTime(0)),
+                voice: VoicePlace::Alone,
+                whole_measure: false,
+                // Lines wide of it, so it stays plain either way.
+                lines: (-10.0, 14.0),
+            };
+            let mut rests = BTreeMap::new();
+            rests.insert(EventId::from_raw(1), vec![seg]);
+            // Two visitors' heads over each other, one stem up and one down,
+            // symmetric about the middle line, the upper `raise` lower.
+            let head = |bottom: f32, top: f32| InkBox {
+                left: 0.0,
+                right: 1.2,
+                bottom,
+                top,
+                behind: false,
+            };
+            let mut ink = VisitorInk::new();
+            ink.insert(
+                (None, ColumnKey::Lead),
+                vec![
+                    (head(middle, middle + 1.2 - raise), Some(true)),
+                    (head(middle - 1.2, middle), Some(false)),
+                ],
+            );
+            let mut columns = BTreeMap::new();
+            columns.insert(
+                ColumnKey::Lead,
+                ColumnInfo {
+                    x: 0.0,
+                    slot: SpringSlotId(1),
+                    time: TimePoint::WallClock(WallClockTime(0)),
+                    note_column: true,
+                },
+            );
+            clear_visitors(&mut rests, &BTreeSet::new(), &ink, &columns);
+            rests[&EventId::from_raw(1)][0].y + centre - middle
+        };
+        assert!(run(0.0) < 0.0, "level both ways: down, {}", run(0.0));
+        assert!(run(1.0) > 0.0, "a space nearer above: up, {}", run(1.0));
+    }
+
+    /// A rest of a voice reads the glyph its height draws: on whole spaces beside
+    /// heads on half spaces no written note can tell a half rest's ledgered bottom
+    /// from its plain one, so the head stands off the grid. Plain at 5 it would
+    /// clear; ledgered there it does not.
+    #[test]
+    fn a_rest_beside_a_voice_reads_the_ledgered_glyph_at_its_height() {
+        let seg = RestSeg {
+            name: Some("restHalf"),
+            key: ColumnKey::Lead,
+            y: 4.0,
+            comp: 0,
+            visible: true,
+            dots: 0,
+            dots_y: 4.5,
+            staff: None,
+            start: TimePoint::WallClock(WallClockTime(0)),
+            voice: VoicePlace::Upper,
+            whole_measure: false,
+            lines: (0.0, 4.0),
+        };
+        let mut rests = BTreeMap::new();
+        rests.insert(EventId::from_raw(1), vec![seg]);
+        let sounding = [Sounding {
+            staff: None,
+            event: EventId::from_raw(2),
+            start: TimePoint::WallClock(WallClockTime(0)),
+            ys: vec![4.22],
+        }];
+        clear_rests(&mut rests, &sounding);
+        assert_eq!(rests[&EventId::from_raw(1)][0].y, 6.0);
+    }
+
+    fn lone_rest(name: &'static str, y: f32, voice: VoicePlace) -> BTreeMap<EventId, Vec<RestSeg>> {
+        let seg = RestSeg {
+            name: Some(name),
+            key: ColumnKey::Lead,
+            y,
+            comp: 0,
+            visible: true,
+            dots: 0,
+            dots_y: y + 0.5,
+            staff: None,
+            start: TimePoint::WallClock(WallClockTime(0)),
+            voice,
+            whole_measure: false,
+            lines: (0.0, 4.0),
+        };
+        let mut rests = BTreeMap::new();
+        rests.insert(EventId::from_raw(1), vec![seg]);
+        rests
+    }
+
+    fn lead_column() -> BTreeMap<ColumnKey, ColumnInfo> {
+        let mut columns = BTreeMap::new();
+        columns.insert(
+            ColumnKey::Lead,
+            ColumnInfo {
+                x: 0.0,
+                slot: SpringSlotId(1),
+                time: TimePoint::WallClock(WallClockTime(0)),
+                note_column: true,
+            },
+        );
+        columns
+    }
+
+    fn ink_box(left: f32, right: f32, bottom: f32, top: f32) -> InkBox {
+        InkBox {
+            left,
+            right,
+            bottom,
+            top,
+            behind: false,
+        }
+    }
+
+    /// A rest moved clear of a visitor reads the glyph its height draws: a
+    /// visitor's box left of the plain glyph stands under the ledger line's
+    /// overhang once the rest stands off the staff.
+    #[test]
+    fn a_rest_clear_of_a_visitor_reads_the_ledgered_glyph_at_its_height() {
+        let mut rests = lone_rest("restHalf", 4.0, VoicePlace::Alone);
+        let mut ink = VisitorInk::new();
+        ink.insert(
+            (None, ColumnKey::Lead),
+            vec![
+                // A head on its line, whose stem turns down: the rest turns up.
+                (ink_box(0.0, 1.2, 3.8, 4.7), Some(false)),
+                // An overhang's width to its left, up to 5.5.
+                (ink_box(-0.4, -0.1, 4.8, 5.5), Some(false)),
+            ],
+        );
+        clear_visitors(&mut rests, &BTreeSet::new(), &ink, &lead_column());
+        // Plain at 5 it clears both; its ledger line reaches the box until 6.
+        assert_eq!(rests[&EventId::from_raw(1)][0].y, 6.0);
+    }
+
+    /// A visitor drawing no stem turns no rest: a head within reach takes it the
+    /// nearer way, where the column's only stem stands off from what it meets.
+    #[test]
+    fn a_rest_alone_meeting_only_a_stemless_head_takes_the_nearer_side() {
+        let moved = |ink: Vec<(InkBox, Option<bool>)>| -> f32 {
+            let mut rests = lone_rest("restHalf", 2.0, VoicePlace::Alone);
+            let mut column = VisitorInk::new();
+            column.insert((None, ColumnKey::Lead), ink);
+            clear_visitors(&mut rests, &BTreeSet::new(), &column, &lead_column());
+            rests[&EventId::from_raw(1)][0].y
+        };
+        // A head just over the rest's middle: the way down is the shorter.
+        let head = ink_box(0.0, 1.2, 2.2, 3.1);
+        let down = moved(vec![(head, None)]);
+        assert!(down < 2.0, "alone, nearer below: {down}");
+        // A stem up elsewhere in its column, off to its right, turns it no more.
+        let far = ink_box(9.0, 9.2, -3.0, -1.0);
+        let beside = moved(vec![(head, None), (far, Some(true))]);
+        assert_eq!(beside, down, "a stem up it does not meet");
+        let beside = moved(vec![(head, None), (far, Some(false))]);
+        assert_eq!(beside, down, "a stem down it does not meet");
+        // And a head high enough makes up the nearer: not by any stem's turn.
+        let low = ink_box(0.0, 1.2, 0.9, 2.3);
+        let up = moved(vec![(low, None)]);
+        assert!(up > 2.0, "alone, nearer above: {up}");
+    }
+
+    /// A drawn stem still turns it beside a stemless head in its column, by its own
+    /// way: the rest goes against the nearer side, each way.
+    #[test]
+    fn a_stem_it_meets_turns_a_rest_beside_a_stemless_head() {
+        let moved = |ink: Vec<(InkBox, Option<bool>)>| -> f32 {
+            let mut rests = lone_rest("restHalf", 2.0, VoicePlace::Alone);
+            let mut column = VisitorInk::new();
+            column.insert((None, ColumnKey::Lead), ink);
+            clear_visitors(&mut rests, &BTreeSet::new(), &column, &lead_column());
+            rests[&EventId::from_raw(1)][0].y
+        };
+        // Under its middle the way up is the shorter, but a stem up turns it down.
+        let low = ink_box(0.0, 1.2, 0.9, 2.3);
+        let stemless = ink_box(0.0, 1.2, -9.0, -8.0);
+        assert!(moved(vec![(low, Some(true)), (stemless, None)]) < 2.0);
+        // Over it the way down is the shorter, but a stem down turns it up.
+        let high = ink_box(0.0, 1.2, 2.2, 3.1);
+        assert!(moved(vec![(high, Some(false)), (stemless, None)]) > 2.0);
+    }
+
+    /// `clear_ledgers` lifts a rest drawn ledgered off an accidental its line
+    /// reaches, and leaves a plain rest be, whose rule it is not.
+    #[test]
+    fn only_a_ledgered_rest_lifts_off_an_accidental() {
+        let mut accidentals = ColumnNoteInk::new();
+        accidentals.insert((None, ColumnKey::Lead), vec![ink_box(-0.4, 0.2, 2.0, 5.0)]);
+        let mut plain = lone_rest("restHalf", 3.0, VoicePlace::Upper);
+        clear_ledgers(&mut plain, &accidentals, &lead_column());
+        assert_eq!(plain[&EventId::from_raw(1)][0].y, 3.0, "a plain rest stays");
+        let mut ledgered = lone_rest("restHalf", 5.0, VoicePlace::Upper);
+        clear_ledgers(&mut ledgered, &accidentals, &lead_column());
+        assert_eq!(
+            ledgered[&EventId::from_raw(1)][0].y,
+            6.0,
+            "a ledgered rest lifts off, 0.25 clear"
+        );
+    }
 
     /// A break anchored to its music is placed where the music is (X5b.4,
     /// breaks keyed by their anchors): an event's onset plus the offset, a
@@ -11776,17 +12432,32 @@ mod tests {
     #[test]
     fn ledger_steps_cover_only_lines_outside_the_staff() {
         // Within the five-line staff (steps 0..=8) and one space just outside: none.
+        let five = (0, 8);
         for step in [-1, 0, 4, 8, 9] {
-            assert!(ledger_steps(step).is_empty(), "no ledger at step {step}");
+            assert!(
+                ledger_steps(step, five).is_empty(),
+                "no ledger at step {step}"
+            );
         }
         // First ledger above (step 10) and below (-2): exactly one line, on the note.
-        assert_eq!(ledger_steps(10), vec![10]);
-        assert_eq!(ledger_steps(-2), vec![-2]);
+        assert_eq!(ledger_steps(10, five), vec![10]);
+        assert_eq!(ledger_steps(-2, five), vec![-2]);
         // A note in the space above the first ledger still needs just that line.
-        assert_eq!(ledger_steps(11), vec![10]);
+        assert_eq!(ledger_steps(11, five), vec![10]);
         // Two lines above / below, in order from the staff outward.
-        assert_eq!(ledger_steps(12), vec![10, 12]);
-        assert_eq!(ledger_steps(-4), vec![-2, -4]);
+        assert_eq!(ledger_steps(12, five), vec![10, 12]);
+        assert_eq!(ledger_steps(-4, five), vec![-2, -4]);
+        // A staff of one line (at step 4): a note a space off it takes a
+        // ledger line, one on it or touching it none.
+        let one = (4, 4);
+        for step in [3, 4, 5] {
+            assert!(
+                ledger_steps(step, one).is_empty(),
+                "no ledger at step {step}"
+            );
+        }
+        assert_eq!(ledger_steps(6, one), vec![6]);
+        assert_eq!(ledger_steps(1, one), vec![2]);
     }
 
     #[test]
@@ -12569,6 +13240,7 @@ mod tests {
         let instance = StaffInstanceId::from_raw(1);
         // D major (two sharps), default treble clef.
         let content = LayoutContent::Staff(StaffContent {
+            lines: 5,
             default_clef: Clef::default(),
             clefs: vec![],
             keys: vec![PlacedKeySignature {
@@ -12900,6 +13572,7 @@ mod tests {
         let staff = StaffId::from_raw(10);
         let at = |n, d| TimePoint::Musical(MusicalPosition(RationalTime::new(n, d).unwrap()));
         let content = LayoutContent::Staff(StaffContent {
+            lines: 5,
             default_clef: Clef::default(),
             // Authored out of order: bass at time 1, treble at time 0.
             clefs: vec![
@@ -13285,6 +13958,7 @@ mod tests {
                     TypedObjectId::StaffInstance(StaffInstanceId::from_raw(si)),
                     staff,
                     LayoutContent::Staff(StaffContent {
+                        lines: 5,
                         default_clef: Clef::default(),
                         clefs: vec![],
                         keys: vec![],

@@ -3991,6 +3991,20 @@ fn a_mark_past_a_beam_across_two_staves_stands_past_it() {
     near(bow[1], beam_top + 0.4, "the up-bow's bottom, past the beam");
 }
 
+/// A page of no height, which nothing spreads, so the staves stand where the
+/// staff solve sets them (X5d.3 spreads every page).
+fn engrave_unspread(score: &epiphany_core::Score) -> epiphany_layout_ir::ResolvedLayoutIR {
+    use epiphany_layout_ir::{to_constrained, to_logical, ConstraintSolver, SolverConfig};
+    let mut geometry = epiphany_engrave::PageGeometry::default();
+    geometry.size.height = epiphany_layout_ir::StaffSpace(0.0);
+    epiphany_engrave::Engraver::with_geometry(geometry)
+        .solve(
+            &to_constrained(&to_logical(score)),
+            &SolverConfig::default(),
+        )
+        .layout
+}
+
 /// A fermata over a note above the lower staff of two is its staff's ink:
 /// the staves stand apart so that it clears the upper staff's.
 #[test]
@@ -4004,7 +4018,7 @@ fn a_fermata_between_two_staves_holds_them_apart() {
         .concat()
     };
     let gap = |loaded: &Loaded| {
-        let layout = engrave(&loaded.reduced.score).layout;
+        let layout = engrave_unspread(&loaded.reduced.score);
         let lines = staff_lines(&layout);
         (lines[0].0 - lines[1].1, layout)
     };
@@ -4727,6 +4741,113 @@ fn a_grand_staffs_dynamic_stands_between_its_staves() {
         only(&layout, "dynamicMF").position.y.0 + 0.46,
         middle,
         "mf's centre",
+    );
+}
+
+/// A dynamic centred between a grand staff's staves stands clear of the
+/// family already placed between them (X5d.7): on a grand staff of two
+/// sung staves a lower staff's p stands above it, under the upper staff's
+/// syllables, and keeps clear of them where the middle of the gap would set
+/// it on them, as MuseScore's centring reads both staves' skylines whole
+/// (`SystemLayout::centerElementBetweenStaves`).
+#[test]
+fn a_centred_dynamic_stands_clear_of_the_syllables_between_the_staves() {
+    let words = ["one", "two", "three", "four"];
+    let sung = |pitch: &str, voice: u8, staff: u8| -> String {
+        words
+            .iter()
+            .map(|w| {
+                syllable(
+                    note(pitch, 2, "quarter", voice, staff, ""),
+                    1,
+                    "single",
+                    w,
+                    false,
+                )
+            })
+            .collect()
+    };
+    let p = "<direction><direction-type><dynamics><p/></dynamics></direction-type>\
+             <staff>2</staff></direction>";
+    let measure = [sung("A4", 1, 1), backup(8), p.to_string(), sung("C3", 5, 2)].concat();
+    let loaded = part("centred_over_syllables.musicxml", 2, &[measure]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let dynamic = only(&layout, "dynamicPiano");
+    let (x, y, b) = (
+        dynamic.position.x.0,
+        dynamic.position.y.0,
+        dynamic.bounding_box,
+    );
+    let d = [x + b.left.0, y + b.bottom.0, x + b.right.0, y + b.top.0];
+    let mut met = 0;
+    for w in words {
+        for t in runs(&layout, w) {
+            let r = [
+                t.origin.x.0 + t.bounds.left.0,
+                t.origin.y.0 + t.bounds.bottom.0,
+                t.origin.x.0 + t.bounds.right.0,
+                t.origin.y.0 + t.bounds.top.0,
+            ];
+            if r[0] < d[2] && d[0] < r[2] {
+                met += 1;
+                assert!(
+                    d[1] >= r[3] - 1e-3 || d[3] <= r[1] + 1e-3,
+                    "p {d:?} on {w} {r:?}"
+                );
+            }
+        }
+    }
+    assert!(met > 0, "the p stands across a syllable");
+}
+
+/// A dynamic centred between a grand staff's staves stands clear of its own
+/// staff's family (X5d.7): a sung lower staff's p above it, outside a
+/// fermata over the same note, under an upper staff whose ink leaves the
+/// gap's middle below the p, moves down no further than the fermata lets
+/// it.
+#[test]
+fn a_centred_dynamic_stands_clear_of_its_own_staffs_family_outside_it() {
+    let words = ["one", "two", "three", "four"];
+    let sung = |pitch: &str, voice: u8, staff: u8, first: &str| -> String {
+        words
+            .iter()
+            .enumerate()
+            .map(|(k, w)| {
+                let notations = if k == 0 { first } else { "" };
+                syllable(
+                    note(pitch, 2, "quarter", voice, staff, notations),
+                    1,
+                    "single",
+                    w,
+                    false,
+                )
+            })
+            .collect()
+    };
+    let p = "<direction><direction-type><dynamics><p/></dynamics></direction-type>\
+             <staff>2</staff></direction>";
+    let measure = [
+        note("E5", 8, "whole", 1, 1, ""),
+        backup(8),
+        p.to_string(),
+        sung("C3", 5, 2, "<fermata type=\"upright\"/>"),
+    ]
+    .concat();
+    let loaded = part("centred_under_fermata.musicxml", 2, &[measure]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let boxed = |g: &ResolvedGlyph| {
+        let (x, y, b) = (g.position.x.0, g.position.y.0, g.bounding_box);
+        [x + b.left.0, y + b.bottom.0, x + b.right.0, y + b.top.0]
+    };
+    let d = boxed(only(&layout, "dynamicPiano"));
+    let f = boxed(only(&layout, "fermataAbove"));
+    assert!(
+        f[0] < d[2] && d[0] < f[2],
+        "the fermata over the p: {d:?} {f:?}"
+    );
+    assert!(
+        d[3] <= f[1] + 1e-3 || d[1] >= f[3] - 1e-3,
+        "p {d:?} on the fermata {f:?}"
     );
 }
 
@@ -6278,5 +6399,332 @@ fn an_outside_mark_is_set_from_its_own_chord_its_dot_left_out() {
         dotted_trill[1] - dotted_top,
         plain_trill[1] - plain_top,
         "the trill as high over its staff",
+    );
+}
+
+/// Each staff's lines in a layout's first system, top staff first: bottom and
+/// top.
+fn staff_spans(layout: &ResolvedLayoutIR) -> Vec<(f32, f32)> {
+    let system = layout.systems().next().expect("a system");
+    let mut lines: std::collections::BTreeMap<epiphany_core::StaffId, (f32, f32)> =
+        Default::default();
+    for &i in &system.primitives.strokes {
+        let stroke = &layout.strokes[i as usize];
+        if let TypedObjectId::Staff(staff) = stroke.provenance.source {
+            if stroke.from.y == stroke.to.y {
+                let y = stroke.from.y.0;
+                let e = lines.entry(staff).or_insert((y, y));
+                e.0 = e.0.min(y);
+                e.1 = e.1.max(y);
+            }
+        }
+    }
+    let mut spans: Vec<(f32, f32)> = lines.into_values().collect();
+    spans.sort_by(|a, b| b.1.total_cmp(&a.1));
+    spans
+}
+
+/// A measure whose notes hold a grand staff's staves wide apart, so the gap's
+/// middle lies past what stands under the upper staff in the measure before.
+fn wide_measure() -> String {
+    let up: String = (0..4).map(|_| note("C3", 2, "quarter", 1, 1, "")).collect();
+    let low: String = (0..4).map(|_| note("C5", 2, "quarter", 5, 2, "")).collect();
+    format!("{up}{}{low}", backup(8))
+}
+
+/// A pedal line under a staff, from `start` to `stop` beats of four quarters,
+/// on a quarter-note staff with a p at its first note.
+fn upper_with_p_and_pedal(start: usize, stop: usize) -> String {
+    let p = "<direction><direction-type><dynamics><p/></dynamics></direction-type>\
+             <staff>1</staff></direction>";
+    let pedal = |kind: &str| {
+        format!(
+            "<direction><direction-type><pedal type=\"{kind}\" line=\"yes\"/></direction-type>\
+             <staff>1</staff></direction>"
+        )
+    };
+    let mut out = String::from(p);
+    for beat in 0..4 {
+        if beat == start {
+            out += &pedal("start");
+        }
+        out += &note("A4", 2, "quarter", 1, 1, "");
+        if beat + 1 == stop {
+            out += &pedal("stop");
+        }
+    }
+    out
+}
+
+/// A dynamic with a pedal line further out across it stays inside the line,
+/// where it was placed: the p stands as far under its staff as on a staff of
+/// its own, though the wide gap's middle lies past the line (Gould, p. 493;
+/// `elementHasAnotherStackedOutside`).
+#[test]
+fn a_centred_dynamic_stays_inside_a_pedal_further_out_across_it() {
+    let low = || -> String { (0..4).map(|_| note("C3", 2, "quarter", 5, 2, "")).collect() };
+    let upper = upper_with_p_and_pedal(0, 4);
+    let grand = part(
+        "stacked_grand.musicxml",
+        2,
+        &[format!("{upper}{}{}", backup(8), low()), wide_measure()],
+    );
+    let alone = part(
+        "stacked_alone.musicxml",
+        1,
+        &[upper.replace("<staff>1</staff>", "")],
+    );
+    let (grand, alone) = (
+        engrave(&grand.reduced.score).layout,
+        engrave(&alone.reduced.score).layout,
+    );
+    let under = |layout: &ResolvedLayoutIR| {
+        let p = only(layout, "dynamicPiano");
+        staff_spans(layout)[0].0 - p.position.y.0
+    };
+    assert!(
+        (under(&grand) - under(&alone)).abs() < 0.01,
+        "the p unmoved: {} under the staff, {} on a staff of its own",
+        under(&grand),
+        under(&alone)
+    );
+}
+
+/// A pedal line elsewhere in the bar is not across it: the p centres.
+#[test]
+fn a_pedal_elsewhere_in_the_bar_leaves_a_dynamic_centred() {
+    let low = || -> String { (0..4).map(|_| note("C3", 2, "quarter", 5, 2, "")).collect() };
+    let upper = upper_with_p_and_pedal(2, 4);
+    let grand = part(
+        "stacked_elsewhere.musicxml",
+        2,
+        &[format!("{upper}{}{}", backup(8), low()), wide_measure()],
+    );
+    let layout = engrave(&grand.reduced.score).layout;
+    let spans = staff_spans(&layout);
+    let middle = (spans[0].0 + spans[1].1) * 0.5;
+    let p = only(&layout, "dynamicPiano");
+    let (bottom, top) = (
+        p.position.y.0 + p.bounding_box.bottom.0,
+        p.position.y.0 + p.bounding_box.top.0,
+    );
+    assert!(
+        ((bottom + top) * 0.5 - middle).abs() < 1.0,
+        "the p about the gap's middle {middle}: {bottom} to {top}, the staves {spans:?}"
+    );
+}
+
+/// The mirror: a sung staff's dynamic above it stays inside words further out
+/// above it, not passing up through them.
+#[test]
+fn a_sung_staffs_centred_dynamic_stays_inside_its_words_further_out() {
+    let words = ["one", "two", "three", "four"];
+    let sung: String = words
+        .iter()
+        .map(|w| syllable(note("C3", 2, "quarter", 5, 2, ""), 1, "single", w, false))
+        .collect();
+    let above = "<direction><direction-type><dynamics><p/></dynamics></direction-type>\
+                 <staff>2</staff></direction>\
+                 <direction placement=\"above\"><direction-type><words>poco</words>\
+                 </direction-type><staff>2</staff></direction>";
+    let measure = [
+        note("C5", 8, "whole", 1, 1, ""),
+        backup(8),
+        above.to_string(),
+        sung,
+    ]
+    .concat();
+    let loaded = part("stacked_sung.musicxml", 2, &[measure, wide_measure()]);
+    let layout = engrave(&loaded.reduced.score).layout;
+    let p = only(&layout, "dynamicPiano");
+    let spans = staff_spans(&layout);
+    let run = runs(&layout, "poco")[0];
+    let (run_bottom, p_top) = (
+        run.origin.y.0 + run.bounds.bottom.0,
+        p.position.y.0 + p.bounding_box.top.0,
+    );
+    assert!(
+        p_top <= run_bottom + 1e-3,
+        "the p, top {p_top}, under the words, bottom {run_bottom}; the staves {spans:?}"
+    );
+}
+
+/// A centred dynamic at a later system's first note keeps its least distance
+/// from that system's lead: a wide dynamic reaching back under the upper staff's
+/// clef, in a gap whose middle stands close under the clef's reach. The lead is its
+/// staff's ink, and the sky does not hold it.
+#[test]
+fn a_centred_dynamic_keeps_its_distance_from_a_later_systems_lead() {
+    let clefs = "<staves>2</staves><clef number=\"1\"><sign>G</sign><line>2</line></clef>\
+                 <clef number=\"2\"><sign>G</sign><line>2</line></clef>";
+    let attrs = format!(
+        "<attributes><divisions>2</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time>{clefs}</attributes>"
+    );
+    let bar = |upper: &str, lower: &str, marks: &str| {
+        format!(
+            "{marks}{}{}{}",
+            note(upper, 8, "whole", 1, 1, ""),
+            backup(8),
+            note(lower, 8, "whole", 5, 2, "")
+        )
+    };
+    let wide = "<direction><direction-type><dynamics><ffff/></dynamics></direction-type>\
+                <staff>1</staff></direction>";
+    let first = bar("E5", "E5", "");
+    let second = bar("E5", "E5", wide);
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">{attrs}{first}\
+         </measure><measure number=\"2\"><print new-system=\"yes\"/>{second}</measure></part>\
+         </score-partwise>"
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("centred_lead.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = engrave(&loaded.reduced.score).layout;
+    let f = layout
+        .glyphs
+        .iter()
+        .find(|g| g.glyph.as_str().starts_with("dynamicF"))
+        .expect("the dynamic");
+    let (fl, fr, fb, ft) = (
+        f.position.x.0 + f.bounding_box.left.0,
+        f.position.x.0 + f.bounding_box.right.0,
+        f.position.y.0 + f.bounding_box.bottom.0,
+        f.position.y.0 + f.bounding_box.top.0,
+    );
+    let mut met = 0;
+    for g in layout.glyphs.iter().filter(|g| g.glyph.as_str() == "gClef") {
+        let (l, r, b, t) = (
+            g.position.x.0 + g.bounding_box.left.0,
+            g.position.x.0 + g.bounding_box.right.0,
+            g.position.y.0 + g.bounding_box.bottom.0,
+            g.position.y.0 + g.bounding_box.top.0,
+        );
+        if l < fr && r > fl && b < ft + 3.0 && t > fb - 3.0 {
+            met += 1;
+            assert!(
+                b >= ft + 0.5 - 1e-3 || t <= fb - 0.5 + 1e-3,
+                "the dynamic ({fl}, {fb}, {fr}, {ft}) within its distance of a clef ({l}, {b}, {r}, {t})"
+            );
+        }
+    }
+    assert!(met > 0, "the dynamic stands across a clef");
+}
+
+/// An expression text between a grand staff's staves with no dynamic beside it
+/// is in no row: it centres by its own box, at the gap's middle.
+#[test]
+fn a_centred_text_with_no_dynamic_stands_at_the_gaps_middle() {
+    let words = "<direction><direction-type><words font-style=\"italic\">espress.</words>\
+                 </direction-type><staff>1</staff><sound/></direction>";
+    let up: String = (0..4).map(|_| note("C5", 2, "quarter", 1, 1, "")).collect();
+    let low: String = (0..4).map(|_| note("C3", 2, "quarter", 5, 2, "")).collect();
+    let loaded = part(
+        "centred_words.musicxml",
+        2,
+        &[format!("{words}{up}{}{low}", backup(8))],
+    );
+    let layout = engrave(&loaded.reduced.score).layout;
+    let run = runs(&layout, "espress.")[0];
+    let spans = staff_spans(&layout);
+    let middle = (spans[0].0 + spans[1].1) * 0.5;
+    let at = run.origin.y.0 + (run.bounds.bottom.0 + run.bounds.top.0) * 0.5;
+    assert!(
+        (at - middle).abs() < 0.05,
+        "the words' box centred at {at}, the gap's middle {middle}, the staves {spans:?}"
+    );
+}
+
+/// The other staff's lead bounds the centring too: a sung lower staff's dynamic
+/// above it, at a later system's first note, keeps its least distance under the
+/// upper staff's clef.
+#[test]
+fn a_centred_dynamic_keeps_its_distance_from_the_other_staffs_lead() {
+    let clefs = "<staves>2</staves><clef number=\"1\"><sign>G</sign><line>2</line></clef>\
+                 <clef number=\"2\"><sign>G</sign><line>2</line></clef>";
+    let attrs = format!(
+        "<attributes><divisions>2</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+         </time>{clefs}</attributes>"
+    );
+    let sung = |text: &str| syllable(note("E5", 8, "whole", 5, 2, ""), 1, "single", text, false);
+    let wide = "<direction><direction-type><dynamics><ffff/></dynamics></direction-type>\
+                <staff>2</staff></direction>";
+    let bar = |marks: &str, text: &str| {
+        format!(
+            "{}{}{marks}{}",
+            note("E5", 8, "whole", 1, 1, ""),
+            backup(8),
+            sung(text)
+        )
+    };
+    let xml = format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+         </part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\">{attrs}{}\
+         </measure><measure number=\"2\"><print new-system=\"yes\"/>{}</measure></part>\
+         </score-partwise>",
+        bar("", "one"),
+        bar(wide, "two")
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("centred_other_lead.musicxml");
+    std::fs::write(&path, xml).expect("written");
+    let loaded = load(&path).expect("loads");
+    let layout = engrave(&loaded.reduced.score).layout;
+    let f = layout
+        .glyphs
+        .iter()
+        .find(|g| g.glyph.as_str().starts_with("dynamicF"))
+        .expect("the dynamic");
+    let (fl, fr, fb, ft) = (
+        f.position.x.0 + f.bounding_box.left.0,
+        f.position.x.0 + f.bounding_box.right.0,
+        f.position.y.0 + f.bounding_box.bottom.0,
+        f.position.y.0 + f.bounding_box.top.0,
+    );
+    let mut met = 0;
+    for g in layout.glyphs.iter().filter(|g| g.glyph.as_str() == "gClef") {
+        let (l, r, b, t) = (
+            g.position.x.0 + g.bounding_box.left.0,
+            g.position.x.0 + g.bounding_box.right.0,
+            g.position.y.0 + g.bounding_box.bottom.0,
+            g.position.y.0 + g.bounding_box.top.0,
+        );
+        if l < fr && r > fl && t > fb - 3.0 && b < ft + 3.0 {
+            met += 1;
+            assert!(
+                b >= ft + 0.5 - 1e-3 || t <= fb - 0.5 + 1e-3,
+                "the dynamic ({fl}, {fb}, {fr}, {ft}) within its distance of a clef ({l}, {b}, {r}, {t})"
+            );
+        }
+    }
+    assert!(met > 0, "the dynamic stands across a clef");
+}
+
+/// A text in no row lifted off its staff's ink centres from where it stands.
+#[test]
+fn a_centred_text_lifted_off_its_staff_stands_at_the_gaps_middle() {
+    let words = "<direction><direction-type><words font-style=\"italic\">espress.</words>\
+                 </direction-type><staff>1</staff><sound/></direction>";
+    let up: String = (0..4).map(|_| note("A3", 2, "quarter", 1, 1, "")).collect();
+    let low: String = (0..4).map(|_| note("C2", 2, "quarter", 5, 2, "")).collect();
+    let wide = {
+        let up: String = (0..4).map(|_| note("C2", 2, "quarter", 1, 1, "")).collect();
+        let low: String = (0..4).map(|_| note("C6", 2, "quarter", 5, 2, "")).collect();
+        format!("{up}{}{low}", backup(8))
+    };
+    let loaded = part(
+        "centred_words_lifted.musicxml",
+        2,
+        &[format!("{words}{up}{}{low}", backup(8)), wide],
+    );
+    let layout = engrave(&loaded.reduced.score).layout;
+    let run = runs(&layout, "espress.")[0];
+    let spans = staff_spans(&layout);
+    let middle = (spans[0].0 + spans[1].1) * 0.5;
+    let at = run.origin.y.0 + (run.bounds.bottom.0 + run.bounds.top.0) * 0.5;
+    assert!(
+        (at - middle).abs() < 0.05,
+        "the words' box centred at {at}, the gap's middle {middle}, the staves {spans:?}"
     );
 }

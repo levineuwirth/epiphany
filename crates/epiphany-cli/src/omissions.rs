@@ -398,18 +398,30 @@ pub fn omissions(
                 let whole_measure = measure_span(&onset.0).is_some_and(|(start, length, full)| {
                     full && start == onset.0 && length == duration.0
                 });
+                // A whole-bar rest in 2/1 or more is a breve rest (X5d fix round 1).
+                let breve_bar = whole_measure && duration.0 >= RationalTime::from_int(2);
                 let value = notated(&match written_scale.get(id) {
                     Some(scale) => duration.0.mul(scale),
                     None => duration.0.clone(),
                 });
                 match event {
                     Event::Rest(_) => {
+                        // A whole or half rest outside its staff is drawn
+                        // with its ledger line (X5d.5): the same value.
                         let drawn: Vec<&str> = own
                             .iter()
                             .copied()
                             .filter(|g| g.starts_with("rest"))
+                            .map(|g| match g {
+                                "restWholeLegerLine" => "restWhole",
+                                "restHalfLegerLine" => "restHalf",
+                                "restDoubleWholeLegerLine" => "restDoubleWhole",
+                                other => other,
+                            })
                             .collect();
-                        let expected = if whole_measure {
+                        let expected = if breve_bar {
+                            Some(String::from("restDoubleWhole"))
+                        } else if whole_measure {
                             Some(String::from("restWhole"))
                         } else {
                             value.map(|(exp, _)| rest_for(exp))

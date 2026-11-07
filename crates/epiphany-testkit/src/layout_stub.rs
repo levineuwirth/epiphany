@@ -226,6 +226,7 @@ pub fn gen_layout_content(rng: &mut Rng) -> LayoutContent {
             marks: Vec::new(),
         }),
         1 => LayoutContent::Staff(StaffContent {
+            lines: 5,
             default_clef: epiphany_core::Clef::default(),
             clefs: clefs(rng),
             keys: keys(rng),
@@ -459,6 +460,7 @@ pub fn gen_constrained_layout_ir(rng: &mut Rng) -> ConstrainedLayoutIR {
         cross_staff_beams: Vec::new(),
         family: Vec::new(),
         endings: Vec::new(),
+        measure_rests: Vec::new(),
         line_texts: Vec::new(),
     };
     // Text runs ride the slots and band above, drawn last so the glyphs,

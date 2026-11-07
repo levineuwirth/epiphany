@@ -31,11 +31,13 @@
 //! [`SuiteEntry::minimal_xfail`] is a *documented, measured* threshold miss —
 //! asserted to still miss, so the marking cannot rot (an `XPASS` fails the
 //! harness demanding promotion), and reported for spec-side resolution rather
-//! than silently waived. As of engrave v3 every v0.1 entry passes every Minimal
-//! threshold, so no entry carries an xfail row: RS-1's original
-//! `casting_off_quality` miss (P12-I11 — greedy first-fit's stub last system)
-//! was cleared by the engraver's casting-off widow-rebalance phase, the machinery
-//! that would have asserted the miss now stands ready for the next one.
+//! than silently waived. RS-1's original `casting_off_quality` miss (P12-I11 —
+//! greedy first-fit's stub last system) was cleared by the engraver's
+//! casting-off widow-rebalance phase. Since the engraver spreads every page,
+//! the last included (X5d.3), RS-1 and RS-2, each one sparse A4 page, carry a
+//! `vertical_density_penalty` row: the spread's chosen sprawl, which the
+//! vertical measure reads as deviation, the spec-side question of how it
+//! should read a spread page being the owner's.
 //!
 //! Following the testkit's library-module-per-harness policy (DECISIONS F0),
 //! this module holds the machinery and `tests/reference_suite.rs` asserts it —
@@ -131,14 +133,24 @@ pub fn entries() -> Vec<SuiteEntry> {
             // miss the honest way — an engrave-side balance pass, goldens
             // regenerated, no QMC anchor/threshold relaxation. See DECISIONS.md
             // and the engrave casting module.
-            minimal_xfail: &[],
+            minimal_xfail: &[MinimalXfail {
+                axis: QualityMetricKind::VerticalDensity,
+                reason: "the spread opens a sparse page's gaps to its fill caps, the \
+                         sprawl the vertical measure reads; how it should read a \
+                         spread page is on the decide-list (X5d.3)",
+            }],
         },
         SuiteEntry {
             id: "RS-2",
             title: "Rich multi-region score",
             construction: "generators::valid_score_rich(0xF302) = corpus gen_valid_score_rich",
             build: rs2,
-            minimal_xfail: &[],
+            minimal_xfail: &[MinimalXfail {
+                axis: QualityMetricKind::VerticalDensity,
+                reason: "the spread opens a sparse page's gaps to its fill caps, the \
+                         sprawl the vertical measure reads; how it should read a \
+                         spread page is on the decide-list (X5d.3)",
+            }],
         },
         SuiteEntry {
             id: "RS-3",

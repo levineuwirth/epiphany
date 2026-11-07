@@ -41,17 +41,19 @@ pub fn inter_staff_gap_id(region: LayoutObjectId, gap_index: usize) -> VerticalB
 ///   its outer lines. It is not solved: the staff's content (ledger lines,
 ///   stems, slurs, its clef) reaches beyond it, and that content, not the box,
 ///   is what the gap bands on either side measure from.
-/// - An **inter-staff gap** band's height is the ink clearance between two
-///   adjacent staves of a system: from the lowest ink of the upper staff to
-///   the highest ink of the lower. The engraver's inter-staff solve sets every
-///   such clearance, in every system, to the band's `preferred_height`,
-///   opening a crowded pair and closing a slack one; the quality census
-///   (`req:qmc:vertical`) measures the realized clearance against the same
-///   number.
-/// - An **inter-system gap** band's height is the clearance between the
-///   content of two consecutive systems on a page. Casting stacks systems at
-///   its `preferred_height` and, on a page that is not the last, spreads them
-///   further so the page fills.
+/// - An **inter-staff gap** band's height is a *line distance*: from the
+///   bottom line of the upper of two adjacent staves of a system to the top
+///   line of the lower. Its `min_height` and `preferred_height` are the floor
+///   between them, its `max_height` the cap a page's spread raises it to, its
+///   `stretch_factor` the spread's weight for a plain gap. The engraver sets
+///   the staves by their outlines, never nearer than the floor but where a
+///   system would otherwise stand taller than its page; the quality census
+///   (`req:qmc:vertical`) measures the realized line distance against the
+///   floor and what the ink asks.
+/// - An **inter-system gap** band's height is likewise the line distance
+///   between two consecutive systems on a page, from the last staff's bottom
+///   line to the next system's first staff's top line, with its floor, its
+///   cap and its weight in the spread.
 /// - A **margin** band holds a region's content that belongs to no staff; its
 ///   height is not solved.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -133,47 +135,44 @@ impl VerticalBand {
     /// two staves of a system (Chapter 7 §"Vertical Bands": `InterStaffGap`). Its
     /// height is a spring the solver resolves; it carries no glyphs.
     ///
-    /// **Its height is an INK CLEARANCE**, not a distance between staff lines:
-    /// the vertical separation between the two staves' outermost *content* —
-    /// ledger lines, stems, slurs, everything. That is the unit the Quality
-    /// Metric Catalog's `vertical_density_penalty` measures against
-    /// (`req:qmc:vertical`, "the adjacent content extents the band separates"),
-    /// so the solve and the metric read one number.
+    /// **Its height is a line distance**, from the upper staff's bottom line
+    /// to the lower's top line (X5d). Its floor is a stave's height, 4.0, as
+    /// Gould asks staves stand at least (*Behind Bars*, p. 488): two staves
+    /// stand no nearer, but in a system that would otherwise stand taller than
+    /// its page, where the engraver compresses it toward 3.5, MuseScore's
+    /// `minStaffSpread` (D109 Q1), which the quality census reads as the
+    /// crowding it is. It stretches no further than MuseScore's
+    /// `maxStaffSpread` 20 when a page is spread, at a weight of 1.0; a gap at
+    /// a bracket's or a brace's edge weighs more, and one inside a brace is
+    /// capped at 6.5, by the staff groups the engraver reads.
     ///
-    /// `preferred` is a staff height plus a space: two staves whose ink is that
-    /// far apart read as separate systems of lines without wasting the page.
-    /// Plain ledgered content then lands at a staff *pitch* of about 10.6 staff
-    /// spaces — near conventional two-staff spacing — while ledgered or slurred
-    /// content pushes the staves further apart on its own. `min` is the hardest
-    /// squeeze a compressing solve may apply.
-    ///
-    /// (The earlier `preferred = 2.0` was a placeholder reconciled with nothing:
-    /// it is neither the 8.0 staff-box gap the constrained stage's fixed
-    /// `SYSTEM_STAFF_PITCH` produces, nor the ~6.4 ink clearance that stacking
-    /// leaves for plain content. Realizing it would have crushed a relaxed
-    /// system to a pitch of ~7.6.)
+    /// (Through X5d it was an ink clearance between whole extents, 5.0
+    /// preferred, which no orchestral system could realize on its paper.)
     pub fn inter_staff_gap(id: VerticalBandId) -> Self {
         VerticalBand {
             id,
             kind: VerticalBandKind::InterStaffGap,
-            min_height: StaffSpace(2.0),
-            preferred_height: StaffSpace(5.0),
-            max_height: None,
+            min_height: StaffSpace(4.0),
+            preferred_height: StaffSpace(4.0),
+            max_height: Some(StaffSpace(20.0)),
             stretch_factor: 1.0,
             compress_factor: 1.0,
             members: Vec::new(),
         }
     }
 
-    /// An inter-system gap band used during page casting-off.
+    /// An inter-system gap band used during page casting-off: a line distance
+    /// whose floor is MuseScore's `minSystemSpread` 8.5, its cap
+    /// `maxSystemSpread` 32 and its weight in a page's spread `spreadSystem`
+    /// 2.5 (D109 Q3).
     pub fn inter_system_gap(id: VerticalBandId) -> Self {
         VerticalBand {
             id,
             kind: VerticalBandKind::InterSystemGap,
-            min_height: StaffSpace(2.0),
-            preferred_height: StaffSpace(4.0),
-            max_height: None,
-            stretch_factor: 1.0,
+            min_height: StaffSpace(8.5),
+            preferred_height: StaffSpace(8.5),
+            max_height: Some(StaffSpace(32.0)),
+            stretch_factor: 2.5,
             compress_factor: 1.0,
             members: Vec::new(),
         }

@@ -194,6 +194,9 @@ pub struct TieContent {
 /// defaults to treble / C major.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct StaffContent {
+    /// The staff's line count (`Staff::default_staff_lines`): a solver draws a
+    /// staff of one line with that line alone.
+    pub lines: u8,
     pub clefs: Vec<PlacedClef>,
     pub keys: Vec<PlacedKeySignature>,
     /// The staff's own `default_clef` — the clef in force before the first
@@ -445,6 +448,9 @@ pub struct SlurContent {
     /// note, then the notes of its voice up to its last where both ends are
     /// that voice's. Empty where it starts on no note of a staff's own voice.
     pub chords: Vec<EventId>,
+    /// The events it starts and ends on: a rest filling its measure carries
+    /// its end across when it is centred.
+    pub events: (EventId, EventId),
 }
 
 /// A slur endpoint on the region's spacing axis.
@@ -1303,13 +1309,11 @@ fn staff_content(
     region_events: &BTreeSet<EventId>,
     annotations: &DerivedAnnotations,
 ) -> LayoutContent {
-    let default_clef = score
-        .staves
-        .iter()
-        .find(|staff| staff.id == si.staff)
-        .map(|staff| staff.default_clef)
-        .unwrap_or_default();
+    let staff = score.staves.iter().find(|staff| staff.id == si.staff);
+    let default_clef = staff.map(|staff| staff.default_clef).unwrap_or_default();
+    let lines = staff.map_or(5, |staff| staff.default_staff_lines.line_count);
     LayoutContent::Staff(StaffContent {
+        lines,
         default_clef,
         clefs: si
             .clef_sequence
@@ -2242,6 +2246,7 @@ fn slur_content(
         kind: slur.kind,
         line: slur.style.line,
         chords: voices.chords(first, last),
+        events: (first, last),
     })
 }
 

@@ -1,11 +1,12 @@
 //! **Real quality-metric computation** — the nine normative axes of the
-//! *Quality Metric Catalog* companion (v0.3.0, Chapter 3), measured over what
+//! *Quality Metric Catalog* companion (v0.4.0, Chapter 3), measured over what
 //! the pipeline already produced: the resolved world-frame geometry
 //! ([`CastLayout`]), the constrained input (slot identity, vertical bands), and
-//! the declared page geometry. This module implements the v0.3.0 unit set:
+//! the declared page geometry. This module implements the v0.4.0 unit set:
 //! `spacing_distortion` over rhythmic columns (v0.2.0) and
-//! `vertical_density_penalty` over each *realization* of a gap band (v0.3.0).
-//! Both revisions narrowed what is measured over, not what it is normalized
+//! `vertical_density_penalty` over each *realization* of a gap band (v0.3.0),
+//! its raw measurement a gap's line distance against what its floor and its
+//! ink ask (v0.4.0). None of the revisions changed what an axis is normalized
 //! against: the anchors, threshold tables, and warning fraction are the
 //! catalog's, transcribed unchanged in [`epiphany_layout_ir::quality`].
 //!
@@ -40,16 +41,15 @@
 //!   vacuous-geometry rule. **`beam_slope_penalty`** stays
 //!   **vacuous 0.0**: no beam geometry is drawn yet (beams exist logically, not
 //!   as segments), so its contributing-unit set is empty.
-//! * **`vertical_density_penalty`** — realized gaps against the band model's
-//!   preferred heights: the constrained input's `InterStaffGap` bands
-//!   (adjacent staff bands' resolved ink extents; the constrained stage's
-//!   fixed staff stacking is preserved verbatim, so this measures what the
-//!   resolved geometry actually shows), plus the casting pass's realized
-//!   inter-system gaps (consecutive systems on a page) against
-//!   [`VerticalBand::inter_system_gap`]'s preferred height — the same
-//!   constructor the stacking consults. (`to_constrained` declares no
-//!   `InterSystemGap` bands, so the realized page-tree gaps are the honest
-//!   measurable unit set; see DECISIONS.)
+//! * **`vertical_density_penalty`** (0.4.0) — each realized gap's line
+//!   distance `d`, read from the baked staff lines, against what it asks,
+//!   `max(f, s + c, b)`: its band's floor (an `InterStaffGap` band of the
+//!   constrained input; for a gap between systems, which `to_constrained`
+//!   declares no band for, [`VerticalBand::inter_system_gap`]'s), the skyline
+//!   separation `s` of the inks above and below it as baked, column by column
+//!   (every staff above an inter-staff gap; the whole systems either side of
+//!   an inter-system one), the clearance `c`, and a beam across the two
+//!   staves' bound `b`. Crowding and sprawl both deviate.
 //! * **`system_break_penalty`** — per-region non-final systems: `|W − w_s| / W`
 //!   with `W` the declared content width and `w_s` the system's glyph-ink
 //!   span.
@@ -330,9 +330,9 @@ fn spacing_raw(census: &SystemCensus) -> f64 {
     mean_or_zero(&per_system)
 }
 
-/// `vertical_density_penalty` (catalog §`vertical_density_penalty`): mean
-/// relative deviation `|r − p| / p` over the realized inter-staff and
-/// inter-system gaps (see the module docs for the unit reconstruction).
+/// `vertical_density_penalty` (catalog §`vertical_density_penalty`, 0.4.0):
+/// mean relative deviation `|d − d*| / d*` of each realized gap's line
+/// distance from what its floor and its ink ask (see the module docs).
 fn vertical_raw(input: &ConstrainedLayoutIR, cast: &CastLayout, census: &SystemCensus) -> f64 {
     let units = vertical_units(input, cast, census);
     mean_or_zero(&[units.inter_staff, units.inter_system].concat())
@@ -341,15 +341,170 @@ fn vertical_raw(input: &ConstrainedLayoutIR, cast: &CastLayout, census: &SystemC
 /// The axis's contributing units, split by kind (catalog §`vertical_density_penalty`:
 /// "each *realization* … contributes one unit per system").
 ///
-/// Split out so tests can assert the unit **set**, not merely its mean. Once the
-/// inter-staff solve realizes each gap band's declared clearance exactly, every
-/// inter-staff unit is `0` on a healthy solve — the axis is a self-check that
-/// fires only on a solver or bake defect. Its mean therefore cannot distinguish
-/// "measured every realization" from "measured one", which is precisely the
-/// defect this split lets a regression catch.
+/// Split out so tests can assert the unit **set**, not merely its mean.
 struct VerticalUnits {
     inter_staff: Vec<f64>,
     inter_system: Vec<f64>,
+}
+
+/// The catalog's clearances (`req:qmc:vertical`): `c` between inks up and
+/// down, `h` across within which they meet, and how much further a lyric
+/// reaches on the side it stands. Fixed here, in the measure, so that it
+/// does not depend on the solver it judges.
+const VERTICAL_CLEARANCE: f64 = 0.5;
+const HORIZONTAL_CLEARANCE: f64 = 0.25;
+const LYRIC_REACH: f64 = 1.0;
+
+/// One primitive's ink box, `[left, bottom, right, top]`, with how much
+/// further it reaches below and above for the measure (a lyric's padding).
+type Ink = ([f64; 4], f64, f64);
+
+/// An `f64` ordered totally, for the sweep's heap.
+#[derive(Copy, Clone, PartialEq)]
+struct Total(f64);
+
+impl Eq for Total {}
+
+impl PartialOrd for Total {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Total {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
+}
+
+/// A step function across x: on `[edges[i], edges[i + 1])` the value
+/// `values[i]`, the fill (infinite) where nothing covers it.
+#[derive(Clone, Default)]
+struct Steps {
+    edges: Vec<f64>,
+    values: Vec<f64>,
+}
+
+impl Steps {
+    /// The least (`lowest`) or greatest value of the spans `(left, right,
+    /// value)` covering each interval between their edges.
+    fn of(spans: &[(f64, f64, f64)], lowest: bool) -> Steps {
+        let sign = if lowest { -1.0 } else { 1.0 };
+        let mut sorted = spans.to_vec();
+        sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut edges: Vec<f64> = sorted.iter().flat_map(|&(l, r, _)| [l, r]).collect();
+        edges.sort_by(f64::total_cmp);
+        edges.dedup();
+        let mut heap: std::collections::BinaryHeap<(Total, Total)> =
+            std::collections::BinaryHeap::new();
+        let (mut values, mut next) = (Vec::new(), 0);
+        for w in edges.windows(2) {
+            while next < sorted.len() && sorted[next].0 <= w[0] {
+                heap.push((Total(sign * sorted[next].2), Total(sorted[next].1)));
+                next += 1;
+            }
+            while heap.peek().is_some_and(|(_, end)| end.0 <= w[0]) {
+                heap.pop();
+            }
+            values.push(
+                heap.peek()
+                    .map_or(sign * f64::NEG_INFINITY, |(v, _)| sign * v.0),
+            );
+        }
+        Steps { edges, values }
+    }
+
+    fn fill(lowest: bool) -> f64 {
+        if lowest {
+            f64::INFINITY
+        } else {
+            f64::NEG_INFINITY
+        }
+    }
+
+    /// The value on the interval starting at or before `x`.
+    fn at(&self, x: f64, lowest: bool) -> f64 {
+        let i = self.edges.partition_point(|&e| e <= x);
+        if i == 0 || i >= self.edges.len() {
+            return Steps::fill(lowest);
+        }
+        self.values[i - 1]
+    }
+
+    /// The pointwise least (`lowest`) or greatest of two step functions.
+    fn merge(&self, other: &Steps, lowest: bool) -> Steps {
+        let mut edges: Vec<f64> = self.edges.iter().chain(&other.edges).copied().collect();
+        edges.sort_by(f64::total_cmp);
+        edges.dedup();
+        let pick = |a: f64, b: f64| if lowest { a.min(b) } else { a.max(b) };
+        let values = edges
+            .windows(2)
+            .map(|w| pick(self.at(w[0], lowest), other.at(w[0], lowest)))
+            .collect();
+        Steps { edges, values }
+    }
+}
+
+/// Whether an ink box has positive extent both ways, finite.
+fn held(b: &[f64; 4]) -> bool {
+    b.iter().all(|v| v.is_finite()) && b[2] > b[0] && b[3] > b[1]
+}
+
+/// The least bottom, less its reach down, of each interval across, every box
+/// widened by `h` on either side: the ink above a gap, as it faces the gap.
+fn lowest_bottoms(ink: &[Ink]) -> Steps {
+    let spans: Vec<(f64, f64, f64)> = ink
+        .iter()
+        .filter(|(b, ..)| held(b))
+        .map(|(b, down, _)| {
+            (
+                b[0] - HORIZONTAL_CLEARANCE,
+                b[2] + HORIZONTAL_CLEARANCE,
+                b[1] - down,
+            )
+        })
+        .collect();
+    Steps::of(&spans, true)
+}
+
+/// The greatest top, with its reach up, of each interval across: the ink
+/// below a gap, as it faces the gap.
+fn highest_tops(ink: &[Ink]) -> Steps {
+    let spans: Vec<(f64, f64, f64)> = ink
+        .iter()
+        .filter(|(b, ..)| held(b))
+        .map(|(b, _, up)| (b[0], b[2], b[3] + up))
+        .collect();
+    Steps::of(&spans, false)
+}
+
+/// The skyline separation `s` of `req:qmc:vertical`: over every pair of an
+/// ink above the gap and one below it that meet across (their extents of
+/// positive size, the upper's widened by `h` on each side, overlapping), the
+/// greatest depth the upper reaches below `line_above` plus the height the
+/// lower reaches above `line_below`; minus infinity where no pair meets. Two
+/// boxes meet exactly where some interval between all the boxes' edges lies
+/// under both, so the greatest over those intervals is the greatest over
+/// the pairs.
+fn separation(above: &Steps, below: &Steps, line_above: f64, line_below: f64) -> f64 {
+    let mut edges: Vec<f64> = above.edges.iter().chain(&below.edges).copied().collect();
+    edges.sort_by(f64::total_cmp);
+    edges.dedup();
+    edges
+        .windows(2)
+        .filter_map(|w| {
+            let (low, high) = (above.at(w[0], true), below.at(w[0], false));
+            (low.is_finite() && high.is_finite())
+                .then_some((line_above - low) + (high - line_below))
+        })
+        .fold(f64::NEG_INFINITY, f64::max)
+}
+
+/// One unit's raw value: the realized line distance `d` against what the gap
+/// asks, `max(f, s + c, b)`.
+fn vertical_unit(d: f64, floor: f64, separation: f64, beam: f64) -> Option<f64> {
+    let asked = floor.max(separation + VERTICAL_CLEARANCE).max(beam);
+    (asked > 0.0 && d.is_finite()).then(|| (d - asked).abs() / asked)
 }
 
 fn vertical_units(
@@ -357,183 +512,323 @@ fn vertical_units(
     cast: &CastLayout,
     census: &SystemCensus,
 ) -> VerticalUnits {
-    let mut per_unit: Vec<f64> = Vec::new();
-
-    // --- InterStaffGap bands declared by the constrained input -------------
-    // The realized gap between two staves is measured over their FULL content —
-    // every glyph, stroke, and curve the band owns — not over the band's glyph
-    // `members` alone. A staff's ink is mostly not glyphs: ledger lines, stems,
-    // and slurs routinely reach further from the staff than any notehead, and
-    // the inter-staff solve separates staves until their *content* clears the
-    // declared gap. Measuring glyphs only scored a correctly separated system
-    // against a gap it never targeted, reporting the ledger and slur ink the
-    // solve had already accounted for as crowding.
-    //
+    // --- Every primitive's ink, read back from the BAKED output ------------
     // Ownership comes from each primitive's declared `vertical_band`
-    // (`req:layoutir:primitive-band-ownership`); the geometry is read back from
-    // the BAKED output, so a shift the bake failed to apply to some primitive
-    // class surfaces here as a real deviation rather than hiding behind the
-    // solver's own intent.
-    // W1 pin 7, same as the census: the published attribution, not a second
-    // derivation. `glyph_system` is parallel to `input.glyphs`, exactly as the
-    // `stroke_system`/`curve_system` reads below are to their arrays.
-    let system_of_glyph = |index: usize| -> Option<usize> { cast.glyph_system[index] };
-    // A beam across two staves stands between them, the content of neither
-    // (the solve keeps its own room for it, `rise_limit`).
+    // (`req:layoutir:primitive-band-ownership`); the geometry is the resolved
+    // output's, so a shift the bake failed to apply to some primitive class
+    // surfaces here as a deviation rather than hiding behind the solver's
+    // own record. W1 pin 7: the published attribution (`glyph_system` and
+    // its siblings), not a second derivation.
+    //
+    // A beam across two staves stands between them, the content of neither:
+    // it enters the measure through its bound `b` alone.
     let between: BTreeSet<GlyphObjectId> = input
         .cross_staff_beams
         .iter()
         .flat_map(|beam| beam.ink.iter().copied())
         .collect();
-    let mut content: BTreeMap<(usize, VerticalBandId), (f64, f64)> = BTreeMap::new();
-    {
-        let mut add = |system: usize, band: VerticalBandId, lo: f64, hi: f64| {
-            let entry = content
-                .entry((system, band))
-                .or_insert((f64::INFINITY, f64::NEG_INFINITY));
-            entry.0 = entry.0.min(lo);
-            entry.1 = entry.1.max(hi);
-        };
-        for (index, glyph) in input.glyphs.iter().enumerate() {
-            if between.contains(&glyph.id()) {
-                continue;
-            }
-            if let Some(system) = system_of_glyph(index) {
-                let ink = ink_box(cast, input, index);
-                add(system, glyph.vertical_band, ink[1], ink[3]);
-            }
-        }
-        // A later system's leads, appended after the input's glyphs, on the
-        // bands the casting pass placed them on.
-        for (k, band) in cast.appended_bands.iter().enumerate() {
-            let index = input.glyphs.len() + k;
-            if let (Some(Some(system)), Some(glyph)) =
-                (cast.glyph_system.get(index), cast.glyphs.get(index))
-            {
-                let (y, b) = (glyph.position.y.0, glyph.bounding_box);
-                add(
-                    *system,
-                    *band,
-                    f64::from(y + b.bottom.0),
-                    f64::from(y + b.top.0),
-                );
-            }
-        }
-        for (index, stroke) in cast.strokes.iter().enumerate() {
-            let Some(system) = cast.stroke_system[index] else {
-                continue;
-            };
-            if between.contains(&stroke.id()) {
-                continue;
-            }
-            let half = f64::from(stroke.thickness.0.max(0.0)) * 0.5;
-            let lo = f64::from(stroke.from.y.0.min(stroke.to.y.0)) - half;
-            let hi = f64::from(stroke.from.y.0.max(stroke.to.y.0)) + half;
-            add(system, stroke.vertical_band, lo, hi);
-        }
-        for (index, curve) in cast.curves.iter().enumerate() {
-            let Some(system) = cast.curve_system[index] else {
-                continue;
-            };
-            let half = f64::from(curve.thickness.0.max(0.0)) * 0.5;
-            for point in curve.control_points() {
-                let y = f64::from(point.y.0);
-                add(system, curve.vertical_band, y - half, y + half);
+    // A lyric's ink by id, and whether it stands above its staff.
+    let mut lyric: BTreeMap<GlyphObjectId, bool> = BTreeMap::new();
+    for mark in &input.family {
+        if let Some(p) = mark
+            .placement
+            .filter(|p| p.order == epiphany_layout_ir::PlaceOrder::Lyric)
+        {
+            for id in mark.glyphs.iter().chain(&mark.strokes).chain(&mark.texts) {
+                lyric.insert(*id, p.above);
             }
         }
     }
+    let staff_band: BTreeSet<VerticalBandId> = input
+        .vertical_bands
+        .iter()
+        .filter(|band| matches!(band.kind, VerticalBandKind::Staff(_)))
+        .map(|band| band.id)
+        .collect();
+    let mut ink: BTreeMap<(usize, VerticalBandId), Vec<Ink>> = BTreeMap::new();
+    let mut put = |system: usize, band: VerticalBandId, id: Option<GlyphObjectId>, b: [f64; 4]| {
+        if id.is_some_and(|id| between.contains(&id)) || !staff_band.contains(&band) {
+            return;
+        }
+        let (down, up) = match id.and_then(|id| lyric.get(&id)) {
+            Some(true) => (0.0, LYRIC_REACH),
+            Some(false) => (LYRIC_REACH, 0.0),
+            None => (0.0, 0.0),
+        };
+        ink.entry((system, band)).or_default().push((b, down, up));
+    };
+    let f = f64::from;
+    for (index, glyph) in cast.glyphs.iter().enumerate() {
+        let Some(system) = cast.glyph_system[index] else {
+            continue;
+        };
+        let (band, id) = match input.glyphs.get(index) {
+            Some(source) => (source.vertical_band, Some(source.id())),
+            None => (cast.appended_bands[index - input.glyphs.len()], None),
+        };
+        let (x, y, b) = (
+            f(glyph.position.x.0),
+            f(glyph.position.y.0),
+            glyph.bounding_box,
+        );
+        put(
+            system,
+            band,
+            id,
+            [
+                x + f(b.left.0),
+                y + f(b.bottom.0),
+                x + f(b.right.0),
+                y + f(b.top.0),
+            ],
+        );
+    }
+    // Each staff's lowest and highest line in each system.
+    let mut lines: BTreeMap<(usize, VerticalBandId), (f64, f64)> = BTreeMap::new();
+    for (index, stroke) in cast.strokes.iter().enumerate() {
+        let Some(system) = cast.stroke_system[index] else {
+            continue;
+        };
+        let half = f(stroke.thickness.0.max(0.0)) * 0.5;
+        let (x0, x1) = (f(stroke.from.x.0), f(stroke.to.x.0));
+        let (y0, y1) = (f(stroke.from.y.0), f(stroke.to.y.0));
+        put(
+            system,
+            stroke.vertical_band,
+            Some(stroke.id()),
+            [
+                x0.min(x1) - half,
+                y0.min(y1) - half,
+                x0.max(x1) + half,
+                y0.max(y1) + half,
+            ],
+        );
+        if matches!(stroke.provenance.source, TypedObjectId::Staff(_)) && y0 == y1 {
+            let entry = lines
+                .entry((system, stroke.vertical_band))
+                .or_insert((y0, y0));
+            entry.0 = entry.0.min(y0);
+            entry.1 = entry.1.max(y0);
+        }
+    }
+    // A curve by twelve chords of equal parameter step.
+    for (index, curve) in cast.curves.iter().enumerate() {
+        let Some(system) = cast.curve_system[index] else {
+            continue;
+        };
+        let half = f(curve.thickness.0.max(0.0)) * 0.5;
+        let cp = curve.control_points();
+        let at = |t: f64| {
+            let u = 1.0 - t;
+            let w = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+            (
+                (0..4).map(|k| w[k] * f(cp[k].x.0)).sum::<f64>(),
+                (0..4).map(|k| w[k] * f(cp[k].y.0)).sum::<f64>(),
+            )
+        };
+        let mut last = at(0.0);
+        for k in 1..=12 {
+            let next = at(f64::from(k) / 12.0);
+            put(
+                system,
+                curve.vertical_band,
+                Some(curve.id()),
+                [
+                    last.0.min(next.0) - half,
+                    last.1.min(next.1) - half,
+                    last.0.max(next.0) + half,
+                    last.1.max(next.1) + half,
+                ],
+            );
+            last = next;
+        }
+    }
+    for (system, resolved) in cast.pages.iter().flat_map(|p| &p.systems).enumerate() {
+        for &i in &resolved.primitives.texts {
+            let text = &cast.texts[i as usize];
+            // A text casting added after the input's (a line's run) by the
+            // band of the line it rides.
+            let band = match input.texts.get(i as usize) {
+                Some(source) => source.vertical_band,
+                None => cast.appended_text_bands[i as usize - input.texts.len()],
+            };
+            let (x, y, b) = (f(text.origin.x.0), f(text.origin.y.0), text.bounds);
+            put(
+                system,
+                band,
+                Some(text.id()),
+                [
+                    x + f(b.left.0),
+                    y + f(b.bottom.0),
+                    x + f(b.right.0),
+                    y + f(b.top.0),
+                ],
+            );
+        }
+    }
+    // Each system's staves, top first by their highest line.
+    let staves_of = |system: usize| -> Vec<(VerticalBandId, (f64, f64))> {
+        // A staff of one line counts its lines two spaces either side of it.
+        let mut staves: Vec<(VerticalBandId, (f64, f64))> = lines
+            .range((system, VerticalBandId(0))..=(system, VerticalBandId(u128::MAX)))
+            .map(|(&(_, band), &(lo, hi))| {
+                (
+                    band,
+                    if hi - lo < 1e-3 {
+                        (lo - 2.0, hi + 2.0)
+                    } else {
+                        (lo, hi)
+                    },
+                )
+            })
+            .collect();
+        staves.sort_by(|a, b| b.1 .1.total_cmp(&a.1 .1).then(a.0.cmp(&b.0)));
+        staves
+    };
+    let none: Vec<Ink> = Vec::new();
+    let ink_of = |system: usize, band: VerticalBandId| ink.get(&(system, band)).unwrap_or(&none);
 
+    // --- The bound a beam across two staves keeps --------------------------
+    // The least line distance at which every stem reaching it keeps its
+    // length: the two staves' line distance in the constrained frame less how
+    // far the lower may rise from there (`rise_limit`), in the system the
+    // beam's ink landed in.
+    let mut constrained_lines: BTreeMap<VerticalBandId, (f64, f64)> = BTreeMap::new();
+    for stroke in &input.strokes {
+        if matches!(stroke.provenance.source, TypedObjectId::Staff(_))
+            && stroke.from.y == stroke.to.y
+        {
+            let y = f(stroke.from.y.0);
+            let entry = constrained_lines
+                .entry(stroke.vertical_band)
+                .or_insert((y, y));
+            entry.0 = entry.0.min(y);
+            entry.1 = entry.1.max(y);
+        }
+    }
+    let staff_to_band: BTreeMap<(usize, epiphany_core::StaffId), VerticalBandId> = input
+        .vertical_bands
+        .iter()
+        .filter_map(|band| match band.kind {
+            VerticalBandKind::Staff(staff) => Some((staff, band.id)),
+            _ => None,
+        })
+        .filter_map(|(staff, band)| {
+            // A staff band belongs to the region whose systems hold its ink.
+            let region = (0..census.region.len())
+                .find(|&s| lines.contains_key(&(s, band)))
+                .map(|s| census.region[s])?;
+            Some(((region, staff), band))
+        })
+        .collect();
+    let stroke_system: BTreeMap<GlyphObjectId, usize> = cast
+        .strokes
+        .iter()
+        .zip(&cast.stroke_system)
+        .filter_map(|(stroke, system)| Some((stroke.id(), (*system)?)))
+        .collect();
+    let mut beams: BTreeMap<(usize, VerticalBandId, VerticalBandId), f64> = BTreeMap::new();
+    for beam in &input.cross_staff_beams {
+        let (Some(&upper), Some(&lower)) = (
+            staff_to_band.get(&(beam.region, beam.upper)),
+            staff_to_band.get(&(beam.region, beam.lower)),
+        ) else {
+            continue;
+        };
+        let (Some(system), Some(&(upper_bottom, _)), Some(&(_, lower_top))) = (
+            beam.ink
+                .iter()
+                .find_map(|id| stroke_system.get(id).copied()),
+            constrained_lines.get(&upper),
+            constrained_lines.get(&lower),
+        ) else {
+            continue;
+        };
+        let least = upper_bottom - lower_top - f64::from(beam.rise_limit);
+        let entry = beams
+            .entry((system, upper, lower))
+            .or_insert(f64::NEG_INFINITY);
+        *entry = entry.max(least);
+    }
+
+    // --- InterStaffGap units ------------------------------------------------
+    // Gap g of a region separates its staves g−1 and g, top first (per
+    // `to_constrained`); EVERY system realizing the pair contributes a unit.
+    // Above the gap stands every staff above it in the system.
+    let mut inter_staff = Vec::new();
     for (region_index, region) in input.regions.iter().enumerate() {
-        // The region's systems, in page order. A staff band is `to_constrained`'s
-        // per-*manifestation* band — one per (staff, region) — so its content can
-        // only land in its own region's systems, and "has content in one of this
-        // region's systems" identifies the region's staff bands exactly.
-        //
-        // Membership is NOT read from `VerticalBand::members`. That list holds
-        // glyphs, and a staff band is allowed to have none: a staff whose clef is
-        // unbundled engraves to an anchor *stroke*, and its staff lines are
-        // strokes regardless. Filtering by glyph members would silently drop such
-        // a staff from the axis — the same glyph-members assumption this metric
-        // exists to shed.
-        let region_systems: Vec<usize> = census
+        let region_layout_id = region.provenance.stable_id;
+        for (system, _) in census
             .region
             .iter()
             .enumerate()
             .filter(|&(_, &r)| r == region_index)
-            .map(|(system, _)| system)
-            .collect();
-        let Some(&first_system) = region_systems.first() else {
-            continue;
-        };
-        // Top staff first, ordered within the region's first system: a system
-        // translates rigidly as a whole, so the staff ORDER is the same in each
-        // (only the gaps between them are renegotiated per system).
-        let mut staves: Vec<(f64, VerticalBandId)> = input
-            .vertical_bands
-            .iter()
-            .filter(|band| matches!(band.kind, VerticalBandKind::Staff(_)))
-            .filter_map(|band| {
-                content
-                    .get(&(first_system, band.id))
-                    .map(|&(_, top)| (top, band.id))
-            })
-            .collect();
-        staves.sort_by(|a, b| b.0.total_cmp(&a.0));
-
-        // The region's declared inter-staff gap bands, by their derived ids
-        // (gap g separates the region's staves g−1 and g, per to_constrained).
-        let region_layout_id = region.provenance.stable_id;
-        for gap in 1.. {
-            let gap_id = inter_staff_gap_id(region_layout_id, gap);
-            let Some(band) = input.vertical_bands.iter().find(|band| band.id == gap_id) else {
-                break;
-            };
-            let preferred = f64::from(band.preferred_height.0);
-            if preferred <= 0.0 || staves.len() <= gap {
-                continue;
-            }
-            let (upper, lower) = (staves[gap - 1].1, staves[gap].1);
-            // EVERY system realizing the pair contributes a unit, not just the
-            // first. The inter-staff solve sizes each system's gaps from that
-            // system's own content, so one band's realized height genuinely
-            // differs across the systems of a region — a later system may carry
-            // different pressure, or a bake bug touching one primitive class.
-            // Measuring only the first would average away both.
-            for &system in &region_systems {
-                let (Some(&(upper_bottom, _)), Some(&(_, lower_top))) =
-                    (content.get(&(system, upper)), content.get(&(system, lower)))
-                else {
+        {
+            let staves = staves_of(system);
+            // The ink of every staff above the gap, merged staff by staff.
+            let mut above = Steps::default();
+            for g in 1..staves.len() {
+                let (upper, (line_above, _)) = staves[g - 1];
+                let (lower, (_, line_below)) = staves[g];
+                above = above.merge(&lowest_bottoms(ink_of(system, upper)), true);
+                let gap_id = inter_staff_gap_id(region_layout_id, g);
+                let Some(band) = input.vertical_bands.iter().find(|band| band.id == gap_id) else {
                     continue;
                 };
-                let realized = (upper_bottom - lower_top).max(0.0);
-                per_unit.push((realized - preferred).abs() / preferred);
+                let below = highest_tops(ink_of(system, lower));
+                let s = separation(&above, &below, line_above, line_below);
+                let b = beams
+                    .get(&(system, upper, lower))
+                    .copied()
+                    .unwrap_or(f64::NEG_INFINITY);
+                if let Some(raw) =
+                    vertical_unit(line_above - line_below, f(band.min_height.0), s, b)
+                {
+                    inter_staff.push(raw);
+                }
             }
         }
     }
 
-    let inter_staff = std::mem::take(&mut per_unit);
-
-    // --- Realized inter-system gaps (consecutive systems on a page) --------
-    let preferred = f64::from(
-        VerticalBand::inter_system_gap(VerticalBandId(0))
-            .preferred_height
-            .0,
-    );
-    if preferred > 0.0 {
-        for page in &cast.pages {
-            for pair in page.systems.windows(2) {
-                let upper_bottom = f64::from(pair[0].bounding_box.origin.y.0);
-                let lower_top =
-                    f64::from(pair[1].bounding_box.origin.y.0 + pair[1].bounding_box.size.height.0);
-                let realized = (upper_bottom - lower_top).max(0.0);
-                per_unit.push((realized - preferred).abs() / preferred);
+    // --- InterSystemGap units (consecutive systems on a page) ---------------
+    // `to_constrained` declares no InterSystemGap band, so the floor is the
+    // band constructor's, the one casting reads.
+    let floor = f(VerticalBand::inter_system_gap(VerticalBandId(0))
+        .min_height
+        .0);
+    let mut inter_system = Vec::new();
+    let mut first = 0;
+    for page in &cast.pages {
+        for k in 1..page.systems.len() {
+            let (upper, lower) = (first + k - 1, first + k);
+            let (above, below) = (staves_of(upper), staves_of(lower));
+            let (Some(&(_, (line_above, _))), Some(&(_, (_, line_below)))) =
+                (above.last(), below.first())
+            else {
+                continue;
+            };
+            let gather = |system: usize, staves: &[(VerticalBandId, (f64, f64))]| -> Vec<Ink> {
+                staves
+                    .iter()
+                    .flat_map(|(b, _)| ink_of(system, *b).iter().copied())
+                    .collect()
+            };
+            let s = separation(
+                &lowest_bottoms(&gather(upper, &above)),
+                &highest_tops(&gather(lower, &below)),
+                line_above,
+                line_below,
+            );
+            if let Some(raw) = vertical_unit(line_above - line_below, floor, s, f64::NEG_INFINITY) {
+                inter_system.push(raw);
             }
         }
+        first += page.systems.len();
     }
 
     VerticalUnits {
         inter_staff,
-        inter_system: per_unit,
+        inter_system,
     }
 }
 
@@ -705,8 +1000,11 @@ pub(crate) fn floor_warnings(
 
 #[cfg(test)]
 mod tests {
-    use super::{census, vertical_units, VerticalUnits};
-    use crate::Engraver;
+    use super::{
+        census, held, highest_tops, lowest_bottoms, separation, vertical_units, Ink, VerticalUnits,
+        HORIZONTAL_CLEARANCE, LYRIC_REACH,
+    };
+    use crate::{Engraver, PageGeometry};
     use epiphany_layout_ir::{
         to_constrained, to_logical, ConstrainedLayoutIR, ConstraintSolver, QualityMetricKind,
         QualityMetricVector, SolveStatus, SolverConfig, SolverProfile, SolverWarningKind,
@@ -1004,20 +1302,6 @@ mod tests {
     }
 
     #[test]
-    fn realized_inter_system_gaps_measure_the_band_models_preferred_height() {
-        // The casting pass stacks systems at the vertical-band constructor's
-        // preferred inter-system gap, so the vertical-density axis measures
-        // realized == preferred (raw 0.0) on the wrapping fixture — the honest
-        // near-zero the catalog's rationale describes, *measured* from the
-        // resolved page tree rather than assumed.
-        let report = Engraver::default().solve(&ten_measure(), &SolverConfig::default());
-        // Zero to the f32 precision the baked positions carry: the fixture's
-        // tie arcs below the first system, so its extent is no longer a whole
-        // number of staff spaces.
-        assert!(report.metric_vector.vertical_density_penalty.0.abs() < 1e-6);
-    }
-
-    #[test]
     fn vertical_justification_trades_page_fill_for_inter_system_density() {
         use crate::PageGeometry;
         use epiphany_layout_ir::{Margins, Size2D, StaffSpace};
@@ -1034,7 +1318,7 @@ mod tests {
         let geometry = PageGeometry {
             size: Size2D {
                 width: StaffSpace(40.0),
-                height: StaffSpace(34.0),
+                height: StaffSpace(60.0),
             },
             margins: Margins {
                 top: StaffSpace(5.0),
@@ -1049,9 +1333,10 @@ mod tests {
             report.layout.pages.len() >= 2,
             "the small page forces multiple pages"
         );
-        // Justification fills the non-final pages…
+        // Justification fills the non-final pages, to the borders its first
+        // and last staves keep from the margins (X5d.3)…
         assert!(
-            report.metric_vector.page_fill_efficiency.0 < 0.1,
+            report.metric_vector.page_fill_efficiency.0 < 0.3,
             "non-final pages fill: {}",
             report.metric_vector.page_fill_efficiency.0
         );
@@ -1070,19 +1355,22 @@ mod tests {
     }
 
     fn units_of(input: ConstrainedLayoutIR) -> VerticalUnits {
-        let engraver = Engraver::default();
+        units_on(input, Engraver::default().geometry())
+    }
+
+    /// The units of `input` cast on `geometry`, with `bake` applied to the
+    /// cast first (a defect the census must see).
+    fn units_baked(
+        input: ConstrainedLayoutIR,
+        geometry: PageGeometry,
+        bake: impl FnOnce(&ConstrainedLayoutIR, &mut crate::casting::CastLayout),
+    ) -> VerticalUnits {
         let remap = crate::HorizontalRemap::build(&input);
-        let (glyphs, strokes, curves) = (
-            remap.glyphs(&input),
-            remap.strokes(&input),
-            remap.curves(&input),
-        );
-        let geometry = engraver.geometry();
-        let cast = crate::casting::cast_off(
+        let mut cast = crate::casting::cast_off(
             &input,
-            &glyphs,
-            &strokes,
-            &curves,
+            &remap.glyphs(&input),
+            &remap.strokes(&input),
+            &remap.curves(&input),
             &remap.texts(&input),
             &crate::casting::Respacing {
                 skyline: &remap.skyline,
@@ -1090,8 +1378,196 @@ mod tests {
             },
             &geometry,
         );
+        bake(&input, &mut cast);
         let census = census(&input, &cast);
         vertical_units(&input, &cast, &census)
+    }
+
+    /// A page of no height, which nothing spreads.
+    fn unbounded() -> PageGeometry {
+        let mut geometry = Engraver::default().geometry();
+        geometry.size.height = epiphany_layout_ir::StaffSpace(0.0);
+        geometry
+    }
+
+    fn units_on(input: ConstrainedLayoutIR, geometry: PageGeometry) -> VerticalUnits {
+        units_baked(input, geometry, |_, _| {})
+    }
+
+    /// Unspread, the solve stands every gap exactly where its floor or its
+    /// ink asks, so each unit reads no deviation: the census, reading the
+    /// baked output with code of its own, agrees with the solve.
+    #[test]
+    fn an_unspread_solve_realizes_what_every_gap_asks() {
+        for score in [
+            epiphany_testkit::fixtures::two_staff_close_content(1),
+            epiphany_testkit::fixtures::three_staff_close_content(1),
+            epiphany_testkit::fixtures::two_staff_wrapping_pressure(1),
+            epiphany_testkit::fixtures::ten_measure_single_staff(1),
+            epiphany_testkit::fixtures::ten_measure_with_slurs(1),
+        ] {
+            let u = units_on(to_constrained(&to_logical(&score)), unbounded());
+            assert!(!u.inter_staff.is_empty() || !u.inter_system.is_empty());
+            for value in u.inter_staff.iter().chain(&u.inter_system) {
+                assert!(*value < 1e-3, "{:?} {:?}", u.inter_staff, u.inter_system);
+            }
+        }
+        let u = units_on(
+            epiphany_testkit::fixtures::percussion_placeholder_constrained(1),
+            unbounded(),
+        );
+        assert!(
+            u.inter_staff.iter().all(|v| *v < 1e-3),
+            "{:?}",
+            u.inter_staff
+        );
+    }
+
+    /// A staff the bake failed to move reads as crowding: the two-staff
+    /// fixture's lower staff, every primitive of its band raised one space
+    /// after casting, stands a space nearer than its ink asks.
+    #[test]
+    fn a_staff_the_bake_left_behind_reads_as_crowding() {
+        let score = epiphany_testkit::fixtures::two_staff_close_content(1);
+        let input = to_constrained(&to_logical(&score));
+        let lower = input
+            .vertical_bands
+            .iter()
+            .filter(|b| matches!(b.kind, epiphany_layout_ir::VerticalBandKind::Staff(_)))
+            .map(|b| b.id)
+            .nth(1)
+            .expect("two staves");
+        let clean = units_on(input.clone(), unbounded());
+        let moved = units_baked(input, unbounded(), |input, cast| {
+            for (g, source) in cast.glyphs.iter_mut().zip(&input.glyphs) {
+                if source.vertical_band == lower {
+                    g.position =
+                        epiphany_layout_ir::Point::new(g.position.x.0, g.position.y.0 + 1.0);
+                }
+            }
+            for s in cast.strokes.iter_mut().filter(|s| s.vertical_band == lower) {
+                s.from = epiphany_layout_ir::Point::new(s.from.x.0, s.from.y.0 + 1.0);
+                s.to = epiphany_layout_ir::Point::new(s.to.x.0, s.to.y.0 + 1.0);
+            }
+            for c in cast.curves.iter_mut().filter(|c| c.vertical_band == lower) {
+                for p in [&mut c.p0, &mut c.p1, &mut c.p2, &mut c.p3] {
+                    *p = epiphany_layout_ir::Point::new(p.x.0, p.y.0 + 1.0);
+                }
+            }
+        });
+        assert!(clean.inter_staff[0] < 1e-3, "{:?}", clean.inter_staff);
+        // Its ink one space nearer, the gap asks one space more than it has.
+        assert!(moved.inter_staff[0] > 0.02, "{:?}", moved.inter_staff);
+    }
+
+    /// Inks meet across where they come within a quarter space: 0.2 apart
+    /// they do, 0.3 apart they do not.
+    #[test]
+    fn inks_meet_across_within_a_quarter_space() {
+        let above: Vec<Ink> = vec![([0.0, -2.0, 1.0, 0.0], 0.0, 0.0)];
+        let near: Vec<Ink> = vec![([1.2, -6.0, 2.0, -3.0], 0.0, 0.0)];
+        let far: Vec<Ink> = vec![([1.3, -6.0, 2.0, -3.0], 0.0, 0.0)];
+        let s =
+            |below: &[Ink]| separation(&lowest_bottoms(&above), &highest_tops(below), 0.0, -4.0);
+        assert!((s(&near) - 3.0).abs() < 1e-9, "{}", s(&near));
+        assert_eq!(s(&far), f64::NEG_INFINITY);
+    }
+
+    /// Ink of a staff two above a gap counts as the staff next above does:
+    /// planted past the end of the lines, where the middle staff draws
+    /// nothing, the top staff's reach down meets the bottom staff's reach
+    /// up, and the gap reads the crowding.
+    #[test]
+    fn a_gap_reads_every_staff_above_it() {
+        let score = epiphany_testkit::fixtures::three_staff_close_content(1);
+        let input = to_constrained(&to_logical(&score));
+        let staves: Vec<_> = input
+            .vertical_bands
+            .iter()
+            .filter(|b| matches!(b.kind, epiphany_layout_ir::VerticalBandKind::Staff(_)))
+            .map(|b| b.id)
+            .collect();
+        let (top, bottom) = (staves[0], staves[2]);
+        let clean = units_on(input.clone(), unbounded());
+        let planted = units_baked(input, unbounded(), |_, cast| {
+            let line = |band| {
+                cast.strokes
+                    .iter()
+                    .filter(|s| {
+                        s.vertical_band == band
+                            && matches!(s.provenance.source, epiphany_core::TypedObjectId::Staff(_))
+                    })
+                    .map(|s| (s.from.y.0, s.to.x.0.max(s.from.x.0), s.clone()))
+                    .fold(
+                        (f32::INFINITY, f32::NEG_INFINITY, None),
+                        |(lo, right, _), (y, x, s)| (lo.min(y), right.max(x), Some(s)),
+                    )
+            };
+            let (top_low, right, top_stroke) = line(top);
+            let (bottom_low, _, bottom_stroke) = line(bottom);
+            let x = right + 5.0;
+            let bottom_top_line = bottom_low + 4.0;
+            let mut reach = top_stroke.expect("a top staff line");
+            reach.from = epiphany_layout_ir::Point::new(x, top_low);
+            reach.to = epiphany_layout_ir::Point::new(x, bottom_top_line - 1.0);
+            let mut rise = bottom_stroke.expect("a bottom staff line");
+            rise.from = epiphany_layout_ir::Point::new(x, bottom_top_line);
+            rise.to = epiphany_layout_ir::Point::new(x, bottom_top_line + 0.5);
+            for stroke in [reach, rise] {
+                cast.strokes.push(stroke);
+                cast.stroke_system.push(Some(0));
+            }
+        });
+        assert!(clean.inter_staff[1] < 1e-3, "{:?}", clean.inter_staff);
+        assert!(planted.inter_staff[1] > 0.1, "{:?}", planted.inter_staff);
+    }
+
+    /// The separation over intervals equals the greatest over every pair that
+    /// meets, on boxes drawn at random.
+    #[test]
+    fn the_separation_is_the_greatest_over_meeting_pairs() {
+        let mut rng = epiphany_determinism::fuzz::SplitMix64::new(0x5d4);
+        let mut draw = |lo: f64, span: f64| lo + (rng.next_u64() % 10_000) as f64 / 10_000.0 * span;
+        for _ in 0..200 {
+            let mut boxes = |n: usize, y: f64| -> Vec<Ink> {
+                (0..n)
+                    .map(|_| {
+                        let (l, b) = (draw(0.0, 20.0), draw(y, 4.0));
+                        let (w, h) = (draw(0.0, 3.0), draw(0.0, 3.0));
+                        let pad = if draw(0.0, 1.0) < 0.2 {
+                            LYRIC_REACH
+                        } else {
+                            0.0
+                        };
+                        ([l, b, l + w, b + h], pad, pad)
+                    })
+                    .collect()
+            };
+            let (above, below) = (boxes(6, 0.0), boxes(6, -5.0));
+            let (line_above, line_below) = (1.0, -3.0);
+            let mut naive = f64::NEG_INFINITY;
+            for (a, down, _) in &above {
+                for (b, _, up) in &below {
+                    if held(a)
+                        && held(b)
+                        && a[2] + HORIZONTAL_CLEARANCE > b[0]
+                        && a[0] - HORIZONTAL_CLEARANCE < b[2]
+                    {
+                        naive = naive.max((line_above - (a[1] - down)) + (b[3] + up - line_below));
+                    }
+                }
+            }
+            let swept = separation(
+                &lowest_bottoms(&above),
+                &highest_tops(&below),
+                line_above,
+                line_below,
+            );
+            assert!(
+                swept == naive || (swept - naive).abs() < 1e-9,
+                "{swept} against {naive}"
+            );
+        }
     }
 
     /// A staff band owning no glyphs is still a staff of its region, so its gap
@@ -1114,18 +1590,15 @@ mod tests {
             systems,
             "one unit per system realizing the pair, not zero"
         );
-        for value in &u.inter_staff {
-            assert!(
-                *value < 1e-4,
-                "and the solve realizes the declared gap: {value}"
-            );
-        }
     }
 
     /// A gap band realized in several systems contributes one unit PER SYSTEM.
     /// The inter-staff solve sizes each system's gaps from that system's own
     /// content, so the realizations are independent measurements; the wrapping
-    /// fixture's systems sit at very different staff distances.
+    /// fixture's systems sit at very different staff distances. (Since the
+    /// staves are set by their outlines, X5d.2, no solve realizes the whole
+    /// extents' clearance this unit reads; the solve's own rule is read back by
+    /// `vertical::solve_tests`.)
     #[test]
     fn each_system_realizing_a_gap_band_contributes_its_own_unit() {
         let score = epiphany_testkit::fixtures::two_staff_wrapping_pressure(1);
@@ -1140,14 +1613,8 @@ mod tests {
         let u = units(&score);
         assert!(systems >= 2, "the fixture wraps");
         assert_eq!(u.inter_staff.len(), systems, "one realization a system");
-        for value in &u.inter_staff {
-            assert!(*value < 1e-4, "each solved to its declared gap: {value}");
-        }
         // Three staves in one system: two gap bands, one realization each.
         let u = units(&epiphany_testkit::fixtures::three_staff_close_content(1));
         assert_eq!(u.inter_staff.len(), 2, "two gap bands, one system");
-        for value in &u.inter_staff {
-            assert!(*value < 1e-4, "the cascade realizes both gaps: {value}");
-        }
     }
 }

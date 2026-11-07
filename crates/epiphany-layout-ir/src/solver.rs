@@ -650,6 +650,7 @@ mod tests {
             cross_staff_beams: Vec::new(),
             family: Vec::new(),
             endings: Vec::new(),
+            measure_rests: Vec::new(),
             line_texts: Vec::new(),
         }
     }
@@ -746,6 +747,7 @@ mod tests {
             cross_staff_beams: Vec::new(),
             family: Vec::new(),
             endings: Vec::new(),
+            measure_rests: Vec::new(),
             line_texts: Vec::new(),
         };
         let report = StubSolver.solve(&input, &SolverConfig::default());

@@ -2705,3 +2705,49 @@ fn italic_words_import_as_expression_text() {
     sorted.sort();
     assert_eq!(sorted, [None, Some(16), Some(16)]);
 }
+
+/// A staff the file hides in a system (`<staff-details print-object="no"/>`,
+/// which MuseScore writes where its style hides an empty staff) is recorded
+/// by name, the staff drawn regardless: it is no longer dropped silently
+/// (D109 Q6). A staff the file shows records nothing.
+#[test]
+fn a_hidden_staff_is_recorded_not_dropped() {
+    let measure = |m: u8, details: &str| {
+        let head = if m == 1 {
+            "<attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type>\
+             </time><clef><sign>G</sign><line>2</line></clef></attributes>"
+        } else {
+            ""
+        };
+        format!(
+            "<measure number=\"{m}\">{head}{details}<note><rest measure=\"yes\"/>\
+             <duration>4</duration><voice>1</voice></note></measure>"
+        )
+    };
+    let score = |details: &str| {
+        format!(
+            "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\"><part-name>A\
+             </part-name></score-part></part-list><part id=\"P1\">{}{}</part>\
+             </score-partwise>",
+            measure(1, ""),
+            measure(2, details)
+        )
+    };
+    let hidden = import(&score(
+        "<attributes><staff-details print-object=\"no\"/></attributes>",
+    ))
+    .expect("imports");
+    assert_eq!(
+        hidden
+            .source
+            .features
+            .kinds
+            .get("hidden staff")
+            .map(|k| k.places.len()),
+        Some(1),
+        "{:?}",
+        hidden.source.features.kinds
+    );
+    let shown = import(&score("")).expect("imports");
+    assert!(!shown.source.features.kinds.contains_key("hidden staff"));
+}
